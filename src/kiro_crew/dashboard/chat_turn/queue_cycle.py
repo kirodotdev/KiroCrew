@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _note_mate_wakes,
         _run_chat,
+        _schedule_consumed_merge_context_stamp,
         chat_done_payload,
         effective_session_key,
         generate_session_summary,
@@ -35,7 +36,12 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.steer_queue import _requeue_unconsumed_steers
+    from kiro_crew.dashboard.chat_turn.turn_context import (
+        _register_consumed_merge_contexts,
+        _restore_consumed_merge_contexts,
+    )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_stats import _merge_cards_reached_the_model
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
@@ -690,7 +696,37 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
     _turn_priority = turn._turn_priority
     _turn_tool_calls = turn._turn_tool_calls
     _turn_tool_identities = turn._turn_tool_identities
+    slot = turn.slot
+    state = turn.state
     turn_exit = turn.turn_exit
+    # Cards registered in the process guard whose durable stamp this phase still
+    # owes, started once the lock handback and outcome record below are done.
+    _pending_merge_stamp: list[tuple[str, str]] = []
+    if turn._drained_merge_contexts and not turn._merge_contexts_completed:
+        if not _merge_cards_reached_the_model(turn):
+            # The prompt never went out, kiro-cli did not keep it (a Stop,
+            # an empty-response re-queue), or the session the next turn
+            # runs on does not hold it: reset before the model finished
+            # answering, discarded, or replaced after a runtime death
+            # (``_native_session_lacks_the_prompt``). The next turn
+            # re-sends it.
+            _restore_consumed_merge_contexts(slot, turn._drained_merge_contexts)
+        else:
+            # The prompt was kept and the session the next turn runs on
+            # still holds it, but the turn left before the landing write (a
+            # backend error or an exception after output streamed), or a
+            # landed turn's stamp was cancelled or did not land. Register
+            # every card in the process guard synchronously -- that is the
+            # replay guard a twin reads while the stamp is in flight -- and
+            # leave the durable stamp to the tracked task started after the
+            # lock handback and outcome record below: this phase and the ones
+            # before it in _run_chat's finally await nothing ahead of them,
+            # because a cancel landing in such an await would skip them. A
+            # later full save removes the hold with row proof.
+            _pending_merge_stamp = _register_consumed_merge_contexts(
+                state, turn._drained_merge_contexts
+            )
+    slot._inflight_merge_contexts = []
     # First: hand back the session-switch lock if this turn exited between
     # its acquire and its post-registration release. Before anything that
     # can await, and before _restore_refusal_fallback (chat_turn/model_fallback.py) takes the
@@ -726,3 +762,10 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
             "nudge_turn": _directive_self_wake and turn._turn_landed,
         },
     )
+    # Third: the durable consumption stamp this turn still owes -- after the
+    # handback and the record above, so nothing this stamp does can cost
+    # them, and in a tracked task because this phase awaits nothing. Its
+    # retries are bounded; a card left unstamped re-delivers its context
+    # once on the next restart.
+    if _pending_merge_stamp:
+        _schedule_consumed_merge_context_stamp(state, _pending_merge_stamp)

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         body_int,
         deny_app_slot_access,
         effective_session_key,
+        load_window_off_loop,
         logger,
         loop_slot_keys,
         note_slot_closed,
@@ -1191,6 +1192,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 # archived, and something was lost" rather than "nothing to do".
                 failed.append(name)
             continue
+        handover_attempted = False
         try:
             # Order is unchanged and load-bearing: the cancel above, then the
             # flush, then the save. What the guard adds is failure handling, and
@@ -1205,6 +1207,24 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # restart and reported as success. Sharing the arm restores the
             # slot with its notes still held and reports the key in ``failed``
             # instead.
+            # Gated on the hold, because that is the condition the sync load it
+            # replaced sat behind: ``flush_deferred_notes`` returns 0 on an
+            # empty hold before it loads anything. An empty hold has nothing to
+            # flush, so loading would read a whole idle restored tab's
+            # transcript for no delivery, and a read that raises would land in
+            # the arm below and leave the tab unarchivable.
+            if removed._deferred_notes:
+                await load_window_off_loop(removed)
+            # The preload is an await after the first transcript-sharing check.
+            # A same-key replacement can register while the window is read, so
+            # recheck before flushing and saving the original as closed.
+            if _replacement_shares_transcript(state, name, removed):
+                handover_attempted = True
+                drained = await _persist_handover_tail(state, name, removed)
+                _resettle_restricted_key(state, name)
+                if not drained.rows_committed:
+                    failed.append(name)
+                continue
             removed.flush_deferred_notes()
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
@@ -1239,7 +1259,8 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 # The ``failed`` report is what carries the outcome instead — which
                 # is also why the drain's answer needs no branch here, unlike at the
                 # pre-save exit above: this key reaches ``failed`` regardless.
-                await _persist_handover_tail(state, name, removed)
+                if not handover_attempted:
+                    await _persist_handover_tail(state, name, removed)
             # Either way the key-scoped restricted marker must describe whoever holds
             # `name` now — the restored original, or the replacement that kept it.
             # This arm never reaches the discard below, so it settles it here.

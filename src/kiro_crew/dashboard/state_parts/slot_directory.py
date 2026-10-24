@@ -26,6 +26,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
+from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
 from kiro_crew.dashboard.state_parts.dashboard_services import _registry_for
 from kiro_crew.dashboard.state_parts.transcript_rows import chat_message_note
@@ -165,16 +166,12 @@ def _ascii_slot_key(name: str) -> str:
 _SLOT_KEY_FILENAME_UNSAFE_RE = re.compile(r"[^\w\-.]", flags=re.ASCII)
 
 
-# Longest slot key kept verbatim. A transcript is ``<stem>.jsonl`` -- the stem
-# is ``dashboard_<key>`` for a dashboard slot and the key itself for a channel
-# slot -- and filesystems refuse a name over 255 bytes (ENAMETOOLONG). So a key
-# longer than this could never have had a transcript of either kind; only such
-# a key is shortened, and a key whose transcript may already exist keeps its
-# spelling so a restart still finds it. A longer key keeps its first
-# ``_SLOT_KEY_KEEP_CHARS`` characters plus ``-`` and a short sha256 of the whole
-# folded key: a valid filename stem, stable across calls, distinct per name, and
-# short enough to stay unchanged when folded again.
-_SLOT_KEY_MAX_CHARS = 255 - len(".jsonl")
+# A key longer than ``MAX_SLOT_KEY_CHARS`` (defined in ``slot_buffers``, which
+# says why that is the bound) keeps its first ``_SLOT_KEY_KEEP_CHARS`` characters
+# plus ``-`` and a short sha256 of the whole folded key: a valid filename stem,
+# stable across calls, distinct per name, and short enough to stay unchanged
+# when folded again.
+_SLOT_KEY_MAX_CHARS = MAX_SLOT_KEY_CHARS
 
 
 _SLOT_KEY_KEEP_CHARS = 180

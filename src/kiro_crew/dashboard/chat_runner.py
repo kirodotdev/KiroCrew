@@ -238,7 +238,10 @@ from kiro_crew.dashboard.chat_turn.tool_rows import (
     _tcid_identity_key,
 )
 from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
-from kiro_crew.dashboard.chat_turn.turn_context import _startup_query_prewarm_applies  # noqa: F401
+from kiro_crew.dashboard.chat_turn.turn_context import (  # noqa: F401
+    _stamp_and_reconcile_consumed_merge_contexts,
+    _startup_query_prewarm_applies,
+)
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
     _turn_dispatch_gates,
     _turn_dispatch_prep,
@@ -324,6 +327,9 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive_outcome,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONSUMED_MERGE_CARDS,
+    _MAX_CONTEXT_PER_SOURCE,
+    _MAX_PENDING_CONTEXT,
     _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
@@ -334,6 +340,8 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
     DashboardState,
     _ChatSlot,
+    _ConsumedMergeCard,
+    _log_task_exception,
     append_and_surface,
     build_infra_retry_prompt,
     build_stale_recovery_prompt,
@@ -373,6 +381,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     first_advertised_fallback,
     probe_fallback_restore,
     provider_last_turn_usage,
+    record_interaction_event,
     run_bg_oneliner,
     slot_switch_session_lock,
     throttle_retry_delay,
@@ -1051,6 +1060,39 @@ def _turn_reply_segments(turn: "_ChatTurn") -> list[str]:
     return [p for p in parts if p]
 
 
+# The durable ``consumed`` stamp is the record of a merge card's consumption, so
+# a failed write is retried rather than logged and abandoned: the in-memory guard
+# dies with this process, and a hold without the stamp re-queues the card's
+# context on the next restart. The retries run here, in the tracked task nothing
+# awaits -- the landing path takes one attempt and hands the rest over, rather
+# than holding a turn open across their backoff. Bounded, because a transcript
+# that refuses every write would otherwise retry forever.
+_MERGE_STAMP_ATTEMPTS = 3
+_MERGE_STAMP_RETRY_DELAY_SECS = 0.5
+
+
+def _schedule_consumed_merge_context_stamp(
+    state: DashboardState, identities: list[tuple[str, str]]
+) -> None:
+    """Stamp already-registered cards in a tracked task the finally does not await.
+
+    A state with no conversation log is NOT short-circuited here: the task's own
+    no-log branch reconciles the live twins and marks those guards, and skipping
+    it would leave guards that can never resolve sitting unstamped ahead of
+    genuine stamp-pending ones in the eviction order.
+    """
+    if not identities:
+        return
+    task = asyncio.create_task(
+        _stamp_and_reconcile_consumed_merge_contexts(
+            state, identities, attempts=_MERGE_STAMP_ATTEMPTS
+        )
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
+
+
 @_hands_off_queue_on_exit
 async def _run_chat(
     state: DashboardState,
@@ -1211,6 +1253,29 @@ async def _run_chat(
     # to clear it, and a cut with no text after it leaves nothing to judge.
     _compaction_text_offset = 0
     turn._compaction_text_offset = _compaction_text_offset
+    # The merge-card state below is bound here, after the phases that run
+    # before the outer try and before it, so the phases cut from _run_chat, the
+    # except arms and the finally all read a defined value on every exit. It
+    # lives on the turn, which is the one storage cell those phases and this
+    # frame share.
+    # True only when an empty-response verdict found no productive activity, so
+    # the prompt is still unanswered even if the recovery ladder gives up.
+    turn._empty_verdict_left_prompt_unanswered = False
+    # Merge-card context is consumed once the prompt carrying it has reached the
+    # model's native session and stays there (``_merge_cards_reached_the_model``);
+    # every other exit returns it to the draining slot from ``_turn_record_outcome``
+    # (chat_turn/queue_cycle.py), the first phase of the finally below.
+    turn._drained_merge_contexts = []
+    turn._merge_contexts_completed = False
+    # Whether this turn lands, decided after the stream by _turn_ending_chain;
+    # bound here so the finally reads a defined value on every exit, including
+    # one that never reached the decision.
+    turn._turn_lands = False
+    # What a verbatim replay of this turn re-queues: the message without the
+    # merge-card frames the drain below prepends (``TurnContext.prefix_without_cards``);
+    # ``_queue_recovery`` substitutes it for a requeue of ``message``.
+    _message_without_merge_cards = message
+    turn._message_without_merge_cards = _message_without_merge_cards
     try:
         _flow = await _turn_admit(turn)
         if _flow is _Flow.END:

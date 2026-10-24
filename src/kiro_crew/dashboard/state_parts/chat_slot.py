@@ -253,6 +253,7 @@ class _ChatSlot:
         "_pending_memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_inflight_merge_contexts",
         "_deferred_notes",
         "_dropped_note_ids",
         "_app",
@@ -261,6 +262,7 @@ class _ChatSlot:
         "_pending_variants",
         "_lock",
         "forked_from",
+        "forked_from_created_at",
         "_fork_lock",
         "_model_pick_lock",
         "_tab_id",
@@ -432,6 +434,7 @@ class _ChatSlot:
     _human_seen: bool
     _origin: str
     forked_from: str | None
+    forked_from_created_at: str
     _fork_lock: asyncio.Lock
     _model_pick_lock: asyncio.Lock
     _tab_id: str
@@ -493,6 +496,7 @@ class _ChatSlot:
     _cycle_reached_provider: bool
     _subagent_delivery_pending: dict[str, list[SubagentDelivery]]
     _pending_context: list[dict[str, Any]]
+    _inflight_merge_contexts: list[dict[str, Any]]
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]

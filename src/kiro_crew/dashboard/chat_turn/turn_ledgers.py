@@ -66,8 +66,22 @@ def _queue_recovery(
     kind: str,
     payload: str = "",
     extra_meta: dict | None = None,
+    keep_merge_cards: bool = False,
 ) -> str:
     """Queue a retry without losing a producer's consumption settlement.
+
+    A verbatim requeue of this turn's ``message`` goes out as
+    ``_message_without_merge_cards``: a turn that does not land puts its
+    merge-card contexts back on the queue in the finally, and the replay
+    turn drains them, so a replay still carrying the card's frame would
+    hand the model the same card twice in one prompt. The thinking-binding
+    rebuild passes ``message``, so this substitution is what strips its
+    frame. The other arms pass ``_message_without_merge_cards`` themselves
+    (the false-tool-blocker replay passes the pre-enrichment
+    ``_incoming_message``, which carries no frame either; the auth-retry
+    helper must, because it compares the text it is handed with the queue
+    before queueing). The one caller that keeps the frames, the refusal
+    fallback's replay, says so with ``keep_merge_cards``.
 
     Stamps FRESH admission context: a recovery entry replays
     externally admitted content verbatim under a new queue id, so without
@@ -108,6 +122,8 @@ def _queue_recovery(
         containment_meta,
     )
 
+    if content == turn.message and not keep_merge_cards:
+        content = turn._message_without_merge_cards
     _address_keys = (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY)
     _recovery_meta = containment_meta(state, slot)
     # A caller's extra meta can be the handed row's whole meta, so its
@@ -154,14 +170,15 @@ def _queue_recovery(
         directive_user_origin=_directive_user_origin,
         directive_channel_origin=_directive_channel_origin,
     )
-    if content == turn.message and _turn_is_completion:
+    _replays_this_turn = content in (turn.message, turn._message_without_merge_cards)
+    if _replays_this_turn and _turn_is_completion:
         # A verbatim requeue still replays the completion; runner-written
         # text queued after it (a continuation, a retry prompt) does not.
         for _entry in slot._queue:
             if _entry.get("id") == _recovery_qid:
                 _entry[_REPLAYS_COMPLETION_KEY] = True
                 break
-    if turn._is_refusal_retry_turn and index == 0 and content == turn.message:
+    if turn._is_refusal_retry_turn and index == 0 and _replays_this_turn:
         # A verbatim requeue of the refusal retry's own message REPLACES
         # the consumed replay, whichever recovery family issued it: carry
         # the retry identity and fresh stop snapshots onto the new entry.
@@ -212,12 +229,16 @@ def _replay_owes_delivery(turn) -> bool:
 
 
 def _requeue_owed_completion(turn) -> None:
-    """Queue this turn's owed completion again, as a completion."""
+    """Queue this turn's owed completion again, as a completion.
+
+    Without its merge-card frames: the finally puts the cards' contexts back
+    on the queue and the replay turn drains them.
+    """
     _current_message = turn._current_message
     _queue_recovery(
         turn,
         0,
-        turn.message,
+        turn._message_without_merge_cards,
         kind=SUBAGENT_COMPLETION_KIND,
         extra_meta=(
             _current_message.get("meta")

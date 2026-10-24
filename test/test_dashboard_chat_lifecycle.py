@@ -193,6 +193,7 @@ class TestSaveDoesNotResurrectDeletedSession:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("reborn")
+        slot.created_at = "2026-10-01T12:00:00+00:00"
         slot.append("user", "the deleted conversation", "msg msg-u")
         slot.drain()
         assert _save_slot_to_history(state, slot, force=True) is True
@@ -201,6 +202,10 @@ class TestSaveDoesNotResurrectDeletedSession:
         log = state.conversation_log
         assert log.delete_session("dashboard:reborn") is True
         # A foreign writer recreates the session file with a fresh identity.
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso",
+            lambda: "2026-10-01T12:00:01+00:00",
+        )
         log.append("dashboard:reborn", "assistant", "foreign row in the new file")
         path = log._path("dashboard:reborn")
         assert path.exists()
@@ -231,6 +236,9 @@ class TestSaveDoesNotResurrectDeletedSession:
         state = _make_state(tmp_path)
         log = state.conversation_log
         key = "slack:thread-77"
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:00+00:00"
+        )
         log.append(key, "user", "channel turn")
         meta = log.get_metadata(key)
         assert meta.get("created_at"), "fixture transcript must carry an identity"
@@ -250,6 +258,9 @@ class TestSaveDoesNotResurrectDeletedSession:
         # Delete, then a foreign append recreates the file with a new identity:
         # the surviving slot's pending save must skip, not merge.
         assert log.delete_session(key) is True
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:01+00:00"
+        )
         log.append(key, "assistant", "new incarnation row")
         assert _save_slot_to_history(state, slot, force=True) is False
         content = log._path(key).read_text(encoding="utf-8")
@@ -565,6 +576,117 @@ class TestSaveDoesNotResurrectDeletedSession:
         assert (
             session_was_deleted(state, slot) is False
         ), "legacy metadata with no created_at must still fail open while the file exists"
+
+    @staticmethod
+    def _observed_slot(tmp_path, monkeypatch, name: str, *, created_at: str | None = None):
+        """A slot that has seen its own transcript on disk, and its log."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(name)
+        if created_at is not None:
+            slot.created_at = created_at
+        slot.append("user", "hello", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_created_at, "save must record the disk identity"
+        return state, slot, state.conversation_log
+
+    def test_witness_answers_present_for_a_live_transcript(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, _log = self._observed_slot(tmp_path, monkeypatch, "alive")
+        assert session_delete_witness(state, slot) is DeleteWitness.PRESENT
+
+    def test_witness_answers_deleted_for_a_gone_transcript(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "gone")
+        assert log.delete_session("dashboard:gone") is True
+        assert session_delete_witness(state, slot) is DeleteWitness.DELETED
+
+    def test_witness_answers_deleted_for_a_new_incarnation(self, tmp_path, monkeypatch):
+        """A file recreated by another writer after the delete is not this session."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(
+            tmp_path,
+            monkeypatch,
+            "reincarnated",
+            created_at="2026-10-01T12:00:00+00:00",
+        )
+        assert log.delete_session("dashboard:reincarnated") is True
+        monkeypatch.setattr(
+            "kiro_crew.history.metadata_now_iso", lambda: "2026-10-01T12:00:01+00:00"
+        )
+        log.append("dashboard:reincarnated", "assistant", "foreign row in the new file")
+        assert log._path("dashboard:reincarnated").exists()
+        assert session_delete_witness(state, slot) is DeleteWitness.DELETED
+
+    def test_witness_answers_deleted_when_the_file_vanishes_mid_probe(self, tmp_path, monkeypatch):
+        """A delete landing between the stat and the metadata read is a delete,
+        not the unverifiable empty it reads back as."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "midway")
+        real_status = log.get_metadata_status
+
+        def _delete_then_read(key):
+            log.delete_session("dashboard:midway")
+            return real_status(key)
+
+        monkeypatch.setattr(log, "get_metadata_status", _delete_then_read)
+        assert session_delete_witness(state, slot) is DeleteWitness.DELETED
+
+    def test_witness_answers_unverifiable_on_a_stat_error(self, tmp_path, monkeypatch):
+        """A stat failure other than a missing file proves nothing either way."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "unstatable")
+        real_path = log._path
+
+        class _UnstatablePath(type(real_path("dashboard:unstatable"))):
+            def stat(self, *args, **kwargs):
+                raise PermissionError("stat refused")
+
+        monkeypatch.setattr(log, "_path", lambda key: _UnstatablePath(real_path(key)))
+        assert session_delete_witness(state, slot) is DeleteWitness.UNVERIFIABLE
+
+    def test_witness_answers_unverifiable_on_unreadable_metadata(self, tmp_path, monkeypatch):
+        """The file is there; its identity cannot be read. Not a delete."""
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "murkier")
+        monkeypatch.setattr(log, "get_metadata_status", lambda key: ({}, False))
+        assert session_delete_witness(state, slot) is DeleteWitness.UNVERIFIABLE
+
+    def test_witness_answers_unverifiable_when_the_metadata_read_raises(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat_persistence import DeleteWitness, session_delete_witness
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "raising")
+
+        def _raise(key):
+            raise OSError("metadata read failed")
+
+        monkeypatch.setattr(log, "get_metadata_status", _raise)
+        assert session_delete_witness(state, slot) is DeleteWitness.UNVERIFIABLE
+
+    def test_republishers_refuse_on_deleted_and_on_unverifiable_alike(self, tmp_path, monkeypatch):
+        """``session_was_deleted`` is the witness with the two refusing answers
+        collapsed, so fork and transfer keep failing closed on both."""
+        from kiro_crew.dashboard.chat_persistence import session_was_deleted
+
+        state, slot, log = self._observed_slot(tmp_path, monkeypatch, "collapsed")
+        real_status = log.get_metadata_status
+        assert session_was_deleted(state, slot) is False
+        monkeypatch.setattr(log, "get_metadata_status", lambda key: ({}, False))
+        assert session_was_deleted(state, slot) is True
+        monkeypatch.setattr(log, "get_metadata_status", real_status)
+        assert log.delete_session("dashboard:collapsed") is True
+        assert session_was_deleted(state, slot) is True
 
 
 # ── Slot lifecycle ──

@@ -267,9 +267,9 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     _prompt_depth = turn._prompt_depth
     slot = turn.slot
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _turn_emitted = turn._turn_emitted
     client = turn.client
-    message = turn.message
     logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
     # The class this handler caught is a fact only this site holds, and the
     # closer in `_turn_close_crew_log` (chat_turn/crew_log_attribution.py), from `_run_chat`'s
@@ -279,6 +279,10 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     turn._crew_log_error = _crew_log_error
     needs_session_reset = True
     turn.needs_session_reset = needs_session_reset
+    # The process died mid-answer, so kiro-cli never wrote this prompt to
+    # its log and the ``session/load`` the next claim runs lacks it: the
+    # reset returns a drained merge card to the queue whether or not a
+    # recovery is queued below (``_native_session_lacks_the_prompt``).
     if getattr(exc, "ambiguous_delivery", False) is True:
         # Every steer written into this turn sits in the same stalled pipe as
         # its prompt, so the teardown requeues each as possibly delivered.
@@ -326,7 +330,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
         _retry_msg = "⟳ Connection lost — retrying…"
         slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
         _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
+            _message_without_merge_cards,
             _turn_emitted,
             cause=ResetCause.CONNECTION_LOST,
             message_is_synthetic=_is_synthetic,
@@ -363,11 +367,11 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
 async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     """An ACP error the turn retries on a fresh session."""
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
     client = turn.client
-    message = turn.message
     slot = turn.slot
     logger.info(
         "ACP transient (%s) in slot %s — resetting session",
@@ -399,6 +403,12 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     # verdict is the correct one and stays unchanged.
     _own_fault = True
     if _is_pipe_death:
+        # The pipe death that arrives as a plain AcpError is the same
+        # mid-answer death the typed arm handles: the reloaded native
+        # session lacks this prompt, so the reset returns a drained
+        # merge card to the queue (``_native_session_lacks_the_prompt``).
+        # A busy session refused the prompt before any output, so there
+        # the restore follows from nothing having streamed.
         # Same attribution question as `_on_process_died`,
         # and the same answer: this arm catches the pipe-death that
         # arrives as an AcpError instead of a typed one, so a shared
@@ -454,7 +464,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
         )
         slot.append("error", turn._status, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
         _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
+            _message_without_merge_cards,
             _turn_emitted,
             # Shared branch: `_status` above already told the user
             # which of the two happened, so the continuation must
@@ -485,9 +495,9 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
 async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
     """The session the turn spoke to is gone."""
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     # The backend process is alive but holds no session under the id this
@@ -506,6 +516,9 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
     )
     needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
     turn.needs_session_reset = needs_session_reset
+    # Either cause replaces the process before the model answered, so
+    # nothing it reloads holds this prompt: the reset returns a drained
+    # merge card to the queue (``_native_session_lacks_the_prompt``).
     await _persist_partial_reply(
         turn,
         "error: cloud credentials not loaded" if _creds else "error: session not found",
@@ -524,7 +537,7 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             meta={"kind": TRANSIENT_RETRY_KIND},
         )
         _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
+            _message_without_merge_cards,
             _turn_emitted,
             cause=ResetCause.CONNECTION_LOST,
             message_is_synthetic=_is_synthetic,
@@ -629,8 +642,8 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
     """The model refused the turn's image format."""
     _escalation = turn._escalation
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _turn_emitted = turn._turn_emitted
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     # Kiro accepted this turn with no new attachment, then rejected an
@@ -665,7 +678,9 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
     else:
         # No model activity landed, so the current text is safe to
         # replay verbatim after removing the poisoned native history.
-        _image_recovery_text = message
+        # Without its merge-card frames: the finally puts the cards'
+        # contexts back on the queue and the replay turn drains them.
+        _image_recovery_text = _message_without_merge_cards
         _image_recovery_payload = payload_for_replay(_is_synthetic)
     slot.append(
         "error",
@@ -710,10 +725,10 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
 async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
     """A transient error before the first token: retry the turn."""
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     client = turn.client
-    message = turn.message
     slot = turn.slot
     # Transient backend 5xx (InternalServerError / DispatchFailure /
     # ConnectionReset, JSON-RPC -32603): the kiro-cli process is ALIVE —
@@ -878,7 +893,7 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
             _queue_recovery(
                 turn,
                 0,
-                message,
+                _message_without_merge_cards,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 # Verbatim replay: ORIGINAL only if the incoming text was
                 # the user's. On a recovery turn it is the runner's
@@ -901,8 +916,8 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
     _crew_log_sid = turn._crew_log_sid
     _crew_log_turn_no = turn._crew_log_turn_no
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     client = turn.client
-    message = turn.message
     slot = turn.slot
     # Append-only the session's log (flag-gated, fail-soft). Emitted HERE,
     # in the branch body, so it runs after _fallback_swap_for_turn has
@@ -995,7 +1010,7 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
         _queue_recovery(
             turn,
             0,
-            message,
+            _message_without_merge_cards,
             kind=SYNTHETIC_RECOVERY_KIND,
             # Verbatim replay, same rule as in _on_acp_transient_retry.
             payload=payload_for_replay(_is_synthetic),

@@ -68,6 +68,7 @@ from slot_close_recreation_race_helpers import (
 from kiro_crew import autonudge
 from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.dashboard import chat_handlers as handlers
+from kiro_crew.testing.wait import await_until
 
 
 def _state_with_slot(tmp_path, name: str = NAME):
@@ -635,6 +636,103 @@ async def test_cleanup_recreate_during_task_cancel_hits_first_guard(tmp_path, mo
     # the rows without rebuilding a metadata line the replacement owns.
     assert saved == [(False, True)], "the hand-over write was not the rows-only open save"
     assert removed_keys == [], "sessions.remove ran past the first guard on the replacement's key"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_recreate_during_note_preload_uses_handover(tmp_path, monkeypatch) -> None:
+    """A replacement registered during note preload gets the open rows-only handover."""
+    state = _state_with_slot(tmp_path)
+    original = _make_stale(state)
+    original._deferred_notes.append(
+        {"content": "HELD-NOTE", "cls": "msg msg-note", "session": HKEY}
+    )
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    preload_calls = 0
+    preload_wait_failure: AssertionError | None = None
+
+    async def _preload(_slot) -> None:
+        nonlocal preload_calls, preload_wait_failure
+        preload_calls += 1
+        if preload_calls == 1:
+            entered.set()
+            try:
+                await await_until(release, what="the test releasing held-note preload")
+            except AssertionError as exc:
+                preload_wait_failure = exc
+                raise
+
+    saved: list[tuple[bool, bool]] = []
+    removed_keys: list[str] = []
+
+    async def _persist(_state, _slot, *_a, **kw) -> bool:
+        saved.append((bool(kw.get("closed")), bool(kw.get("rows_only"))))
+        return True
+
+    async def _remove(key) -> None:
+        removed_keys.append(key)
+
+    monkeypatch.setattr(handlers, "load_window_off_loop", _preload)
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+    state.sessions.remove = _remove  # type: ignore[assignment]
+
+    close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
+    try:
+        await _reached(entered, close, seam="the held-note preload for NAME")
+        replacement = state.get_or_create_slot(NAME)
+        assert replacement is not original
+        release.set()
+        resp = await await_until(close, what="cleanup finishing after held-note preload")
+    finally:
+        release.set()
+        if not close.done():
+            close.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(close, what="the cancelled cleanup")
+
+    assert preload_wait_failure is None, str(preload_wait_failure)
+    payload = _json(resp)
+    assert resp.status == 200
+    assert NAME not in payload["keys"], "a live replacement was reported archived-over"
+    assert state._slots.get(NAME) is replacement, "cleanup lost the replacement"
+    assert saved == [(False, True)], "cleanup closed the replacement's live transcript"
+    assert removed_keys == [], "cleanup tore down the replacement's session"
+    assert preload_calls == 2, "the handover did not perform its own gated preload"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_recheck_drain_failure_is_not_retried(tmp_path, monkeypatch) -> None:
+    """A failed post-preload handover drain runs once before cleanup reports failure."""
+    state = _state_with_slot(tmp_path)
+    original = _make_stale(state)
+    original._deferred_notes.append(
+        {"content": "HELD-NOTE", "cls": "msg msg-note", "session": HKEY}
+    )
+    replacement_holder = {}
+
+    async def _preload(_slot) -> None:
+        replacement_holder["slot"] = state.get_or_create_slot(NAME)
+
+    drain_calls = 0
+
+    async def _drain(*_args, **_kwargs):
+        nonlocal drain_calls
+        drain_calls += 1
+        raise RuntimeError("handover failed")
+
+    monkeypatch.setattr(handlers, "load_window_off_loop", _preload)
+    monkeypatch.setattr(handlers, "_persist_handover_tail", _drain)
+
+    resp = await handlers.api_chat_slots_cleanup(_Req(state, NAME))
+
+    payload = _json(resp)
+    replacement = replacement_holder["slot"]
+    assert resp.status == 200
+    assert payload["failed"] == [NAME]
+    assert NAME not in payload["keys"]
+    assert state._slots.get(NAME) is replacement
+    assert drain_calls == 1, "cleanup retried the same failed handover drain"
 
 
 @pytest.mark.asyncio
