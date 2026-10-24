@@ -581,6 +581,7 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
     """
 
     async def _on_recycled(key: str, *, reason: str) -> None:
+        from kiro_crew.dashboard.chat_handlers import _has_conversation
         from kiro_crew.dashboard.chat_utils import (
             _broadcast_expired_oauth_banners,
             dashboard_slot_key,
@@ -597,17 +598,25 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             return
         message = _SESSION_RECYCLED_NOTICE.format(reason=reason)
         try:
+            # A tab starts its agent before the first message (eager spawn),
+            # and that idle tree can already sit over the RSS ceiling, so the
+            # watchdog can recycle a session nobody has talked to yet. The
+            # notice explains a reset of a conversation; on a tab with none it
+            # only makes a fresh "+ New" chat look broken. The banner
+            # verdict below still goes out: the recycle did end that child.
+            #
             # Tag kind="compaction" so the dashboard's follow-up [OPTIONS:]
             # backward scan skips this proactive system notice, matching the
             # auto-compact notice invariant. `notice` marks it as borrowing
             # the tag: it reports no compaction, so `is_turn_interrupted`
             # must not read it as a `/compact` request's result.
-            slot.append(
-                "assistant",
-                message,
-                "msg msg-a",
-                meta={"kind": "compaction", "notice": "session_recycled"},
-            )
+            if _has_conversation(slot):
+                slot.append(
+                    "assistant",
+                    message,
+                    "msg msg-a",
+                    meta={"kind": "compaction", "notice": "session_recycled"},
+                )
         except Exception:
             logging.getLogger("kiro_crew.dashboard.state").exception(
                 "Failed to append recycle notice to slot %s", slot_key
