@@ -12933,6 +12933,8 @@
       "remote_sessions_not_shown_in_board_view_one": "{{count}} session distante n'est pas affichée dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
       "remote_sessions_not_shown_in_board_view_many": "{{count}} sessions distantes ne sont pas affichées dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} sessions distantes ne sont pas affichées dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
+      "search_scan_cut_short": "Recherche effectuée dans les {{searched}} sessions les plus récentes sur {{total}} ; les sessions plus anciennes n’ont pas été recherchées.",
+      "search_scan_cut_short_local": "Recherche effectuée dans les {{searched}} sessions les plus récentes sur {{total}} sur cette machine ; les sessions plus anciennes ici n’ont pas été recherchées.",
       "sessions_from_instance_unavailable": "Les sessions de {{names}} sont indisponibles pour le moment.",
       "checking_remote_instances": "Vérification des crews distantes…",
       "machine_group_local": "Local",

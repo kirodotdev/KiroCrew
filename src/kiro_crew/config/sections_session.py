@@ -13,6 +13,7 @@ from kiro_crew.config.sections_defaults import (
     DEFAULT_AUTOCOMPACT_PCT,
     DEFAULT_POOL_SIZE,
     DEFAULT_RECONCILE_MAX_KILLS,
+    DEFAULT_SEARCH_SCAN_WINDOW,
     DEFAULT_SESSION_TIMEOUT,
     DEFAULT_WATCHDOG_RSS_MAX_MB,
     SectionReader,
@@ -176,6 +177,18 @@ class SessionConfig:
             "turn keeps its file list, and the rows that held its copies are "
             "written to the session archive first. 0, the default, keeps every "
             "turn's copies.",
+        ),
+    )
+    search_scan_window: int = field(
+        default=DEFAULT_SEARCH_SCAN_WINDOW,
+        metadata=_meta(
+            "Session Search Scan Window",
+            "How many of the most recently changed session transcripts a session "
+            "search reads: the dashboard search, search_chat_history and a chat "
+            "channel's session picker. An older session is not searched, and the "
+            "results say how many were searched out of how many there are. A larger "
+            "window makes each search read more transcripts. Clamped to "
+            "100..100000. Read at each search, so a change needs no restart.",
         ),
     )
     watchdog_rss_max_mb: int = field(

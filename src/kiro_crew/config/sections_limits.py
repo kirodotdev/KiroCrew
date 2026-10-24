@@ -244,6 +244,11 @@ EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative
 # value reads as 0, and any larger count is a real choice.
 FILE_CHANGES_KEEP_TURNS_MIN = 0
+# Also load-only. ``session.search_scan_window`` (default
+# ``DEFAULT_SEARCH_SCAN_WINDOW``): the ceiling keeps a hand-edited value from making
+# every search read a whole very large store.
+SEARCH_SCAN_WINDOW_MIN = 100
+SEARCH_SCAN_WINDOW_MAX = 100_000
 # A hand-edited ``session.idle_exempt_keys`` can be any size, and every idle sweep copies it.
 # Each listed key can also keep a whole kiro-cli process and its MCP servers running, the
 # per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.

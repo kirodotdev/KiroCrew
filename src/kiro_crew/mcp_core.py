@@ -42,9 +42,11 @@ from kiro_crew.config.loader import (  # noqa: F401
     read_local_secret,
     resolve_agent_bindings,
 )
+from kiro_crew.config.sections_defaults import (  # noqa: F401
+    DEFAULT_SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW,
+)
 from kiro_crew.context_management import summarize_result
 from kiro_crew.dashboard.origin import dashboard_socket_path  # noqa: F401
-from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW  # noqa: F401
 from kiro_crew.history import (  # noqa: F401
     ConversationLog,
     is_incognito_transcript,
@@ -1061,7 +1063,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_core_parts.history import (  # noqa: F401
         _HISTORY_SNIPPET_ROLES,
-        _SEARCH_HISTORY_SCAN,
         _SNIPPET_MAX_LEN,
         _SNIPPET_RADIUS,
         _caller_workspace,
@@ -1070,6 +1071,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _history_is_incognito,
         _parse_iso_date_epoch,
         _redact_history_output,
+        _search_history_scan,
         _snippet_contents,
         _ws_bucket,
     )

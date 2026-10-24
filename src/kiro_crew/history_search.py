@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import _facade_mirror
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
+from kiro_crew.config.sections_defaults import DEFAULT_SEARCH_SCAN_WINDOW
 from kiro_crew.history_cache import _GroupRecencyMemo
 from kiro_crew.history_index import (
     INDEX_FILENAME,
@@ -136,7 +137,9 @@ _UNREADABLE = object()
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _PHRASE_BOOST = 4  # extra weight per exact whole-query hit in a multi-word search
-_SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
+#: An override for the scan window, for a test or an embedder. ``None`` reads
+#: ``session.search_scan_window`` at each search; see :func:`configured_search_scan_window`.
+_SEARCH_SCAN_WINDOW: int | None = None
 
 #: Seconds a session's transcript must have gone unmodified before the backfill
 #: pass indexes it. A session that is being written changes on every turn, and
@@ -159,15 +162,93 @@ _RECENCY_HALF_WEIGHT_DAYS = 30.0
 
 
 def _facade_search_scan_window() -> int:
-    """Read the facade's live scan limit without creating an import cycle.
+    """The scan limit in force for this search, read without an import cycle.
 
-    The import happens only when a search runs.  Keeping this as a getter is
-    intentional: tests and callers patch
-    ``kiro_crew.history._SEARCH_SCAN_WINDOW`` after construction.
+    The import happens only when a search runs. A test or an embedder that sets
+    ``kiro_crew.history._SEARCH_SCAN_WINDOW`` after construction overrides the
+    config; left at ``None``, the window is ``session.search_scan_window``.
     """
     from kiro_crew import history as history_facade
 
-    return history_facade._SEARCH_SCAN_WINDOW
+    override = history_facade._SEARCH_SCAN_WINDOW
+    if override is not None:
+        return override
+    return configured_search_scan_window()
+
+
+def configured_search_scan_window() -> int:
+    """``session.search_scan_window`` as of now, or its default when unreadable.
+
+    Read at each search, not at import, so a config change applies to the next
+    search with no restart. The gateway's config watcher holds the current
+    config, which costs an attribute read; a process without one (the MCP server)
+    loads the file. A window is a bound on reads, not an authorization, so a
+    config that cannot be read falls back to the default rather than failing
+    the search.
+    """
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is None:
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+        except Exception:
+            return DEFAULT_SEARCH_SCAN_WINDOW
+    value = getattr(getattr(cfg, "session", None), "search_scan_window", None)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return DEFAULT_SEARCH_SCAN_WINDOW
+
+
+class SearchRows(list[dict]):
+    """A session search's rows, and how much of the store the search read.
+
+    *searched* of *eligible* sessions were read: *eligible* counts every session
+    the query could have reached, and *searched* the ones inside the scan window.
+    ``searched < eligible`` means the window cut the search short, so a session
+    it left out may also match. Both are ``0`` when the count is not known (a
+    search restricted by *keys* alone judges only the window's sessions; one that
+    is also ``title:``-scoped counts the caller's own title matches).
+    """
+
+    def __init__(self, rows: Iterable[dict] = (), *, searched: int = 0, eligible: int = 0):
+        super().__init__(rows)
+        self.searched = searched
+        self.eligible = eligible
+
+    def copy_rows(self) -> "SearchRows":
+        """A copy with its own row dicts, keeping the counts."""
+        return SearchRows(
+            (dict(row) for row in self), searched=self.searched, eligible=self.eligible
+        )
+
+
+def search_coverage(rows: object) -> tuple[int, int] | None:
+    """``(searched, eligible)`` when the scan window cut *rows*' search short, else ``None``."""
+    if isinstance(rows, SearchRows) and 0 <= rows.searched < rows.eligible:
+        return rows.searched, rows.eligible
+    return None
+
+
+def search_coverage_note(rows: object) -> str:
+    """One plain-English line saying the window cut *rows*' search short, or ``""``."""
+    coverage = search_coverage(rows)
+    if coverage is None:
+        return ""
+    searched, eligible = coverage
+    return (
+        f"Searched the {searched:,} most recent of {eligible:,} sessions; "
+        "older sessions were not searched."
+    )
+
+
+def _copy_rows(rows: list[dict]) -> list[dict]:
+    """A private copy of a search result, keeping its coverage counts."""
+    if isinstance(rows, SearchRows):
+        return rows.copy_rows()
+    return [dict(row) for row in rows]
 
 
 def _history_lock_timeout() -> type[BaseException]:
@@ -551,13 +632,13 @@ class SessionCatalogProjection:
         if running is not None:
             running.done.wait()
             if running.result is not None:
-                return [dict(row) for row in running.result]
+                return _copy_rows(running.result)
             return self._search_sessions(query, limit)
         try:
             rows = self._search_sessions(query, limit)
             # A private copy, so a caller editing the rows it was handed cannot
             # change what a waiting caller receives.
-            flight.result = [dict(row) for row in rows]
+            flight.result = _copy_rows(rows)
             return rows
         finally:
             with _flights_lock:
@@ -667,8 +748,9 @@ class SessionCatalogProjection:
         two-pass scan needed for corpus stats.)  Sessions missing any
         required needle are dropped.  Ties break by recency (existing
         ``list_sessions`` order - newest first).  Caps results at *limit*.
-        Only the ``_SEARCH_SCAN_WINDOW`` most recent files are scored, so
-        I/O stays bounded even with hundreds of sessions.
+        Only the ``session.search_scan_window`` most recent files are scored, so
+        I/O stays bounded even with thousands of sessions. The rows come back as
+        :class:`SearchRows`, which say when that window left sessions out.
 
         *keys*, when given, restricts scoring to those session keys (as
         ``list_sessions`` spells them) inside that same window. It is applied
@@ -757,7 +839,7 @@ class SessionCatalogProjection:
         """The scoring and snippet half of :meth:`_search_sessions`.
 
         *title_filter*, when given (a ``title:`` query's term), makes the window
-        the newest ``_SEARCH_SCAN_WINDOW`` sessions whose title it accepts, chosen
+        the newest scan-window count of sessions whose title it accepts, chosen
         from every session after the memo prune. Judging a title reads no
         transcript, so an older session that ``title:x`` finds is still searched
         for ``title:x more``, and the cap still bounds the transcripts scored.
@@ -775,6 +857,10 @@ class SessionCatalogProjection:
         scan_window = _facade_search_scan_window()
         window = sessions[:scan_window]
         self._log._prune_search_memos({m["key"] for m in window})
+        # How much of the store the query could reach, for the results' note.
+        # Unknown (0) for *keys* alone: judging ownership past the window is the
+        # very read the window exists to bound.
+        eligible = len(sessions) if keys is None else 0
         if title_filter is not None:
             window = [m for m in sessions if title_filter(m.get("title") or "")]
         if keys is not None:
@@ -782,7 +868,9 @@ class SessionCatalogProjection:
             # shared with every unrestricted search.
             window = [m for m in window if m["key"] in keys]
         if title_filter is not None:
+            eligible = len(window)
             window = window[:scan_window]
+        searched = len(window) if eligible else 0
         allowed, rowids = self._index_shortlist(window, needles)
         if keys is None and title_filter is None:
             # Only an unrestricted search sees every live session's row; one
@@ -882,7 +970,9 @@ class SessionCatalogProjection:
         # full re-read back on the hot path — dominating the query once the fold
         # itself was memoized.
         picked = [(meta, needs_snippet) for _v, _s, _r, meta, needs_snippet in scored[:limit]]
-        return self._result_rows(picked, keys, query)
+        return SearchRows(
+            self._result_rows(picked, keys, query), searched=searched, eligible=eligible
+        )
 
     def _result_rows(
         self, picked: list[tuple[dict, bool]], keys: Container[str] | None, query: str

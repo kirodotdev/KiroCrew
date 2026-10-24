@@ -935,6 +935,13 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _safe_int,
             _sections.FILE_CHANGES_KEEP_TURNS_MIN,
         ),
+        # Bounds via the module handle, like the rest of this section.
+        search_scan_window=section.read(
+            "search_scan_window",
+            _safe_int,
+            _sections.SEARCH_SCAN_WINDOW_MIN,
+            _sections.SEARCH_SCAN_WINDOW_MAX,
+        ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips

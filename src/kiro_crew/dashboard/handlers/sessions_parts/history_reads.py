@@ -45,6 +45,7 @@ from kiro_crew.history import (
     _archive_dir,
     transcript_stems,
 )
+from kiro_crew.history_search import search_coverage
 from kiro_crew.messaging.link import _in_namespace
 from kiro_crew.security import redact
 from kiro_crew.validation import sanitize_string
@@ -401,7 +402,13 @@ async def api_sessions_search(request: web.Request) -> web.Response:
             value = s.get(field)
             if value:
                 s[field] = redact(value)
-    return web.json_response({"sessions": sessions})
+    body: dict[str, object] = {"sessions": sessions}
+    coverage = search_coverage(sessions)
+    if coverage is not None:
+        # Present only when the scan window left sessions out, so the list can
+        # say its results come from the newest sessions alone.
+        body["scan"] = {"searched": coverage[0], "total": coverage[1]}
+    return web.json_response(body)
 
 
 async def api_session_detail(request: web.Request) -> web.Response:

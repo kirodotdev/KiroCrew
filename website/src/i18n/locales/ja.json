@@ -12527,6 +12527,8 @@
       "open_crew_members_desc": "クルーメイトのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",
       "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。",
       "remote_sessions_not_shown_in_board_view_other": "ボード列はローカルセッションのみを管理するため、リモートセッション {{count}} 件はボードビューに表示されません。",
+      "search_scan_cut_short": "{{total}} 件のセッションのうち最新の {{searched}} 件を検索しました。それより古いセッションは検索されていません。",
+      "search_scan_cut_short_local": "このマシンの {{total}} 件のセッションのうち最新の {{searched}} 件を検索しました。ここにあるそれより古いセッションは検索されていません。",
       "sessions_from_instance_unavailable": "{{names}} のセッションは現在利用できません。",
       "checking_remote_instances": "リモートクルーを確認しています…",
       "machine_group_local": "ローカル",

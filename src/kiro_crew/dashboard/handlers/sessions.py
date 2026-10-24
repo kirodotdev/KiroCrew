@@ -200,6 +200,7 @@ if TYPE_CHECKING:
     from kiro_crew.history import transcript_stem  # noqa: F401
     from kiro_crew.history import transcript_stems  # noqa: F401
     from kiro_crew.history import transcript_withholds_derivation  # noqa: F401
+    from kiro_crew.history_search import search_coverage  # noqa: F401
     from kiro_crew.kiro_cli import kiro_cli_version_at  # noqa: F401
     from kiro_crew.kiro_cli import pin_kiro_cli  # noqa: F401
     from kiro_crew.label_guard import PROSE_OPENERS  # noqa: F401

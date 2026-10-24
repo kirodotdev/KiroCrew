@@ -12933,6 +12933,8 @@
       "remote_sessions_not_shown_in_board_view_one": "{{count}} sessione remota non è mostrata nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
       "remote_sessions_not_shown_in_board_view_many": "{{count}} sessioni remote non sono mostrate nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} sessioni remote non sono mostrate nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "search_scan_cut_short": "Cercate le {{searched}} sessioni più recenti su {{total}}; le sessioni meno recenti non sono state cercate.",
+      "search_scan_cut_short_local": "Cercate le {{searched}} sessioni più recenti su {{total}} in questo computer; le sessioni meno recenti qui non sono state cercate.",
       "sessions_from_instance_unavailable": "Le sessioni di {{names}} non sono disponibili al momento.",
       "checking_remote_instances": "Controllo delle crew remote…",
       "machine_group_local": "Locale",

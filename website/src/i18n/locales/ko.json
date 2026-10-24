@@ -12527,6 +12527,8 @@
       "open_crew_members_desc": "크루메이트 페이지를 엽니다. 각 멤버는 자기 스레드를 가진 상주 에이전트입니다.",
       "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다.",
       "remote_sessions_not_shown_in_board_view_other": "보드 열은 로컬 세션만 관리하므로 원격 세션 {{count}}개는 보드 보기에 표시되지 않습니다.",
+      "search_scan_cut_short": "{{total}}개 세션 중 최근 {{searched}}개를 검색했습니다. 이전 세션은 검색하지 않았습니다.",
+      "search_scan_cut_short_local": "이 컴퓨터의 {{total}}개 세션 중 최근 {{searched}}개를 검색했습니다. 여기의 이전 세션은 검색하지 않았습니다.",
       "sessions_from_instance_unavailable": "{{names}}의 세션을 현재 사용할 수 없습니다.",
       "checking_remote_instances": "원격 크루 확인 중…",
       "machine_group_local": "로컬",

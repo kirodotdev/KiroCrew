@@ -69,6 +69,7 @@ from kiro_crew.dashboard.session_transfer import (
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401
 from kiro_crew.history import SEARCH_MIN_CHARS
+from kiro_crew.history_search import search_coverage
 from kiro_crew.instances.constants import (  # noqa: F401
     PEER_SLOTS_REPLY_MAX_BYTES,
     PROXY_PATH_MAX_DECODE_PASSES,
@@ -1230,7 +1231,14 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
         if len(merged) >= limit:
             break
     _audit("search_sessions", "success", request_id=f"{len(connected)} peers")
-    return web.json_response({"sessions": merged, "unreachable": unreachable})
+    body: dict[str, object] = {"sessions": merged, "unreachable": unreachable}
+    # THIS machine's scan window, as /api/sessions/search reports it, marked
+    # ``local`` so the page says the count is this machine's; a peer's own window
+    # is its own and is not carried here.
+    coverage = search_coverage(local_rows)
+    if coverage is not None:
+        body["scan"] = {"searched": coverage[0], "total": coverage[1], "scope": "local"}
+    return web.json_response(body)
 
 
 async def api_instances_send_session(request: web.Request) -> web.Response:

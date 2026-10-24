@@ -12730,6 +12730,8 @@
       "open_crew_members_gated_desc": "पहले सेटिंग्स खोलता है, ताकि तुम इस प्रीव्यू को चालू कर सको — चालू करने तक यह पेज उपलब्ध नहीं है।",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} रिमोट सत्र बोर्ड व्यू में नहीं दिखाया जाता — बोर्ड कॉलम केवल स्थानीय सत्रों को प्रबंधित करते हैं।",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} रिमोट सत्र बोर्ड व्यू में नहीं दिखाए जाते — बोर्ड कॉलम केवल स्थानीय सत्रों को प्रबंधित करते हैं।",
+      "search_scan_cut_short": "{{total}} सत्रों में से सबसे हाल के {{searched}} खोजे गए; पुराने सत्र नहीं खोजे गए।",
+      "search_scan_cut_short_local": "इस मशीन के {{total}} सत्रों में से सबसे हाल के {{searched}} खोजे गए; यहाँ के पुराने सत्र नहीं खोजे गए।",
       "sessions_from_instance_unavailable": "{{names}} के सत्र इस समय अनुपलब्ध हैं।",
       "checking_remote_instances": "रिमोट क्रू जाँचे जा रहे हैं…",
       "machine_group_local": "लोकल",

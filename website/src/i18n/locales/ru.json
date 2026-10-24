@@ -13136,6 +13136,8 @@
       "remote_sessions_not_shown_in_board_view_few": "{{count}} удалённых сеанса не отображаются в режиме доски — столбцы доски управляют только локальными сеансами.",
       "remote_sessions_not_shown_in_board_view_many": "{{count}} удалённых сеансов не отображаются в режиме доски — столбцы доски управляют только локальными сеансами.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} удалённых сеансов не отображаются в режиме доски — столбцы доски управляют только локальными сеансами.",
+      "search_scan_cut_short": "Поиск выполнен по {{searched}} последним сеансам из {{total}}; более старые сеансы не просматривались.",
+      "search_scan_cut_short_local": "Поиск выполнен по {{searched}} последним сеансам из {{total}} на этом компьютере; более старые сеансы здесь не просматривались.",
       "sessions_from_instance_unavailable": "Сеансы с {{names}} сейчас недоступны.",
       "checking_remote_instances": "Проверка удалённых команд…",
       "machine_group_local": "Локально",

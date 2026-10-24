@@ -12933,6 +12933,8 @@
       "remote_sessions_not_shown_in_board_view_one": "{{count}} sesión remota no se muestra en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
       "remote_sessions_not_shown_in_board_view_many": "{{count}} sesiones remotas no se muestran en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} sesiones remotas no se muestran en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
+      "search_scan_cut_short": "Se buscó en las {{searched}} sesiones más recientes de {{total}}; las sesiones más antiguas no se buscaron.",
+      "search_scan_cut_short_local": "Se buscó en las {{searched}} sesiones más recientes de {{total}} en este equipo; las sesiones más antiguas de aquí no se buscaron.",
       "sessions_from_instance_unavailable": "Las sesiones de {{names}} no están disponibles en este momento.",
       "checking_remote_instances": "Comprobando crews remotos…",
       "machine_group_local": "Local",

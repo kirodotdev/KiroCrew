@@ -33,9 +33,14 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // so gating the render would gate the rows but not the wire. The SAME switch as
   // "New chat on crew": a chat started on a crew must have a group to return to.
   const instanceSessionsEnabled = useRemoteCrewChat()
-  const historySearchResults = useDebouncedSessionSearch(
-    historyFilter, s => s, slotTitleDigest, hasWarmInstances,
+  const historySearch = useDebouncedSessionSearch(
+    historyFilter, (rows, scan) => ({ rows, scan }), slotTitleDigest, hasWarmInstances,
   )
+  // Both are fields of one state value, so each keeps its identity until the
+  // next response lands: no memo needed for downstream dependency arrays.
+  const historySearchResults = historySearch?.rows ?? null
+  // Set only when THIS machine's scan window left older sessions out of the search.
+  const historySearchScan = historySearch?.scan ?? null
   // Shared ['instances'] cache + shared select-and-maybe-reconnect semantics for
   // activating a remote row. THE ONLY `['instances']` observer in this component:
   // the merged-sessions hook takes this list as a parameter rather than opening a
@@ -169,7 +174,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // adopt (see `adoptPeerSession` in ChatSidebar).
   const { selectInstance } = useSelectInstance(instancesList)
   return {
-    historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
-    selectInstance, crewGroups,
+    historySearchResults, historySearchScan, instancesList, instanceSessions, remoteSessionsError, allRows,
+    allLiveSlots, selectInstance, crewGroups,
   }
 }
