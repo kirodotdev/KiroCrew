@@ -73,6 +73,7 @@ from kiro_crew.acp.session_mcp import (
 )
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
 from kiro_crew.providers.mirrors.base import (
+    RESOURCES_NO_READER,
     AgentConfigMirror,
     Concern,
     Disposition,
@@ -535,8 +536,7 @@ class OpenCodeMirror(AgentConfigMirror):
             ),
             Concern.RESOURCES: Ruling(
                 _D.WITHHELD,
-                "same as PROMPT -- steering files are injected as context text, "
-                "not projected into a backend's config",
+                RESOURCES_NO_READER,
             ),
             Concern.HOOKS: Ruling(
                 _D.TRANSLATED,
