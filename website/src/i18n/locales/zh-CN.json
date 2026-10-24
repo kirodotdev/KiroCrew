@@ -134,6 +134,11 @@
     "client": {
       "accepted_body_unreadable": "服务器已接受请求，但无法读取其响应。",
       "paste_token_url_or_raw_token": "粘贴登录 URL…",
+      "scan_qr_code": "扫描二维码",
+      "scan_qr_cancel": "取消扫描",
+      "scan_qr_point_camera": "将摄像头对准电脑上显示的登录二维码。",
+      "camera_permission_denied": "摄像头访问被拒绝，因此无法扫描二维码。请允许此网站使用摄像头，或将登录 URL 粘贴到下方。",
+      "camera_unavailable": "无法打开摄像头，因此无法扫描二维码。请改为将登录 URL 粘贴到下方。",
       "proxy_challenge_reload": "请重新加载此浏览器标签页：如果出现登录页面，说明访问代理的会话已过期。否则，则是此仪表板前方的代理或防火墙拒绝了请求；请查看代理日志，或稍后重试。",
       "proxy_challenge_framed": "请在新标签页中打开 {{origin}}：如果出现登录页面，说明访问代理的会话已过期。在此面板内无法完成登录。请在那里登录后，重新加载此页面。",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",

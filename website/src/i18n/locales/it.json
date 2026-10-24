@@ -154,6 +154,11 @@
     "client": {
       "accepted_body_unreadable": "Il server ha accettato la richiesta, ma la risposta non è stata leggibile.",
       "paste_token_url_or_raw_token": "Incolla l'URL di accesso…",
+      "scan_qr_code": "Scansiona il codice QR",
+      "scan_qr_cancel": "Annulla la scansione",
+      "scan_qr_point_camera": "Punta la fotocamera verso il codice QR di accesso mostrato sul computer.",
+      "camera_permission_denied": "L’accesso alla fotocamera è stato negato, quindi il codice QR non è stato scansionato. Consenti la fotocamera per questo sito oppure incolla l’URL di accesso qui sotto.",
+      "camera_unavailable": "La fotocamera non si è aperta, quindi il codice QR non è stato scansionato. Incolla invece l’URL di accesso qui sotto.",
       "proxy_challenge_reload": "Ricarica questa scheda del browser: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Altrimenti un proxy o un firewall davanti a questa dashboard ha rifiutato la richiesta; controlla i log del proxy oppure riprova più tardi.",
       "proxy_challenge_framed": "Apri {{origin}} in una nuova scheda: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Dentro questo pannello non funziona. Accedi lì, poi ricarica questa pagina.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",

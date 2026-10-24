@@ -154,6 +154,11 @@
     "client": {
       "accepted_body_unreadable": "Le serveur a accepté la requête, mais la réponse n'a pas pu être lue.",
       "paste_token_url_or_raw_token": "Colle l’URL de connexion…",
+      "scan_qr_code": "Scanner le QR code",
+      "scan_qr_cancel": "Annuler le scan",
+      "scan_qr_point_camera": "Pointe la caméra vers le QR code de connexion affiché sur l’ordinateur.",
+      "camera_permission_denied": "L’accès à la caméra a été refusé, le QR code n’a donc pas pu être scanné. Autorise la caméra pour ce site, ou colle l’URL de connexion ci-dessous.",
+      "camera_unavailable": "La caméra n’a pas pu être ouverte, le QR code n’a donc pas pu être scanné. Colle plutôt l’URL de connexion ci-dessous.",
       "proxy_challenge_reload": "Recharge cet onglet du navigateur : si une page de connexion apparaît, la session de ton proxy d'accès a expiré. Sinon, un proxy ou un pare-feu devant ce tableau de bord a refusé la requête ; consulte les journaux du proxy ou réessaie plus tard.",
       "proxy_challenge_framed": "Ouvre {{origin}} dans un nouvel onglet : si une page de connexion apparaît, la session de ton proxy d'accès a expiré. La connexion ne fonctionne pas dans ce panneau. Connecte-toi là-bas, puis recharge cette page.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
