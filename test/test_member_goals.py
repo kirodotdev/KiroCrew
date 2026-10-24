@@ -167,23 +167,23 @@ def test_the_record_is_name_scoped_and_never_written_over_for_another_name() -> 
     assert _goal(member_goals.read_goals(slug, ORDINARY)) == "Keep the release notes current"
 
 
-def test_the_goal_lives_under_trust_and_never_in_the_rules_file() -> None:
+def test_the_goal_lives_in_the_member_records_and_never_in_the_rules_file() -> None:
     _seed()
     slug = _slug(ORDINARY)
     member_goals.set_goal(slug, ORDINARY, "Ship it", by="user")
     path = member_goals.member_goals_path(slug)
-    assert path.parent == (data_home() / "trust" / member_goals.GOALS_DIR_NAME).resolve()
+    assert path.parent == (data_home() / "member-records" / member_goals.GOALS_DIR_NAME).resolve()
     assert path.is_file()
     assert not _rules_dir().exists() or not any(_rules_dir().iterdir())
     assert members_mod.member_dir(slug) not in path.parents
 
 
-@pytest.mark.parametrize("linked", ["member-goals", "trust"])
+@pytest.mark.parametrize("linked", ["member-goals", "member-records"])
 @pytest.mark.parametrize("pinned", [True, False], ids=["openat", "lstat-fallback"])
 def test_a_symlinked_goal_directory_never_redirects_the_gateways_write(
     linked: str, pinned: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sandboxed shell can plant a link in ``trust/``; the gateway must not follow it."""
+    """A link at the records leaf or the goals directory is never followed by the gateway."""
     if pinned and not member_goals._PINNED:
         pytest.skip("no openat/O_NOFOLLOW on this platform")
     monkeypatch.setattr(member_goals, "_PINNED", pinned)
@@ -192,16 +192,16 @@ def test_a_symlinked_goal_directory_never_redirects_the_gateways_write(
     home = data_home()
     sealed = home / "profiles"
     sealed.mkdir(parents=True, exist_ok=True)
-    (home / "trust").mkdir(parents=True, exist_ok=True)
-    if linked == "trust":
-        real_trust = home / "trust"
-        for child in list(real_trust.iterdir()):
+    records = home / "member-records"
+    records.mkdir(parents=True, exist_ok=True)
+    if linked == "member-records":
+        for child in list(records.iterdir()):
             child.rename(home / f"moved-{child.name}")
-        real_trust.rmdir()
+        records.rmdir()
         (sealed / member_goals.GOALS_DIR_NAME).mkdir()
-        (home / "trust").symlink_to(sealed, target_is_directory=True)
+        records.symlink_to(sealed, target_is_directory=True)
     else:
-        (home / "trust" / member_goals.GOALS_DIR_NAME).symlink_to(sealed, target_is_directory=True)
+        (records / member_goals.GOALS_DIR_NAME).symlink_to(sealed, target_is_directory=True)
     with pytest.raises(member_goals.GoalsUnreadable):
         member_goals.set_goal(slug, ORDINARY, "Ship it", by="user")
     with pytest.raises(member_goals.GoalsUnreadable):
@@ -220,7 +220,7 @@ def test_the_fallback_treats_a_junction_as_a_link(monkeypatch: pytest.MonkeyPatc
     home = data_home()
     sealed = home / "profiles"
     sealed.mkdir(parents=True, exist_ok=True)
-    junction = home / "trust" / member_goals.GOALS_DIR_NAME
+    junction = home / "member-records" / member_goals.GOALS_DIR_NAME
     junction.mkdir(parents=True, exist_ok=True)
     real = platform_compat.is_link_or_junction
     monkeypatch.setattr(

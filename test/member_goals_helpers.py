@@ -150,7 +150,7 @@ def _owner(state: FakeState, method: str, path: str, body: dict | None = None) -
 
 
 def _rules_dir() -> Path:
-    return data_home() / "trust" / members_mod.RULES_DIR_NAME
+    return data_home() / "member-records" / members_mod.RULES_DIR_NAME
 
 
 def _reminder_state(tmp_path: Path) -> FakeState:

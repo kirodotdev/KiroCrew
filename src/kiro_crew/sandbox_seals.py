@@ -186,11 +186,15 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #:   the target while the link NAME stays writable in the data home, so a sandboxed
 #:   process unlinks it, drops its own directory, and forges dismissals the gateway
 #:   reads back as the operator's -- hiding finished runs from the panel.
+#: * ``member-records`` -- created by the GATEWAY and read by nothing else, with the
+#:   same link hazard: the mask would attach to the target while the link NAME stays
+#:   writable, and the gateway would then read rules, goals and DM bindings back from
+#:   a directory a sandboxed process filled.
 #:
 #: So for these, a link is refused: the disposition must attach to the same name the
 #: reader uses, and following a link is exactly the gap that voids it.
 _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
-    {"crew-panels", "panel-dismissals", "panel-templates"}
+    {"crew-panels", "member-records", "panel-dismissals", "panel-templates"}
 )
 
 
