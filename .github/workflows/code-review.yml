@@ -21,9 +21,11 @@ jobs:
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      # The merge commit and its two parents. The diff-base step fetches the
+      # rest this job reads: see .github/scripts/code-review-history.sh.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Resolve diff base (merge-base)
@@ -31,15 +33,7 @@ jobs:
         env:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # base.sha is the base branch tip when the PR event fired, not the
-          # branch-off point, so diffing it directly pulls in sibling commits.
-          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
-            exit 1
-          fi
-          echo "Diff base: $MERGE_BASE"
-          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+        run: bash .github/scripts/code-review-history.sh
 
       - name: Get changed files
         id: changed
@@ -218,9 +212,11 @@ jobs:
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      # The merge commit and its two parents. The diff-base step fetches the
+      # rest this job reads: see .github/scripts/code-review-history.sh.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Resolve diff base (merge-base)
@@ -228,15 +224,7 @@ jobs:
         env:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # base.sha is the base branch tip when the PR event fired, not the
-          # branch-off point, so diffing it directly pulls in sibling commits.
-          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
-            exit 1
-          fi
-          echo "Diff base: $MERGE_BASE"
-          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+        run: bash .github/scripts/code-review-history.sh
 
       - name: Install woke
         env:
@@ -317,9 +305,11 @@ jobs:
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
+      # The merge commit and its two parents. The diff-base step fetches the
+      # rest this job reads: see .github/scripts/code-review-history.sh.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -334,15 +324,7 @@ jobs:
         env:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # base.sha is the base branch tip when the PR event fired, not the
-          # branch-off point, so diffing it directly pulls in sibling commits.
-          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
-            exit 1
-          fi
-          echo "Diff base: $MERGE_BASE"
-          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+        run: bash .github/scripts/code-review-history.sh
 
       # Regression harness for the custom rules in semgrep/. The fixtures in
       # semgrep-tests/ assert both directions from inline annotations — a
@@ -385,10 +367,21 @@ jobs:
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      # The merge commit and its two parents. The diff-base step fetches the
+      # rest this job reads: see .github/scripts/code-review-history.sh.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
+
+      # First, because the commit count reads history and the Proof line and
+      # Sibling sweep steps read the base tip's tree.
+      - name: Resolve diff base (merge-base)
+        id: diffbase
+        env:
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/code-review-history.sh
 
       # ── Conventional commit format on PR title ──────────────────────
       # PR title becomes the squash-merge commit message, so it must
@@ -534,7 +527,9 @@ jobs:
       # only; a hand-typed PROVEN line passes here, and only the local
       # diff_signals.py --check-body comparison with prove.py's record catches
       # it. The script is read from the base ref so a branch cannot weaken its
-      # own check; the checkout copy runs only while the base has none. WARN
+      # own check. The checkout copy runs only while the base tip has no such
+      # file; any read that fails fails the step under the runner's `bash -e`,
+      # since the diff-base step made the base tip's files local. WARN
       # mode: findings annotate and exit 0 until ENFORCE_FROM in the script
       # names a date.
       - name: Require a Proof line inside ## Tests on fix PRs
@@ -545,7 +540,10 @@ jobs:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
         run: |
           script="$(mktemp)"
-          if ! git show "$BASE_TIP:.github/scripts/proof_line_check.py" > "$script" 2>/dev/null; then
+          listed="$(git ls-tree --name-only "$BASE_TIP" -- .github/scripts/proof_line_check.py)"
+          if [ -n "$listed" ]; then
+            git show "$BASE_TIP:.github/scripts/proof_line_check.py" > "$script"
+          else
             cp .github/scripts/proof_line_check.py "$script"
           fi
           python3 "$script"
@@ -557,22 +555,6 @@ jobs:
       # listed). Detection and format live in the script; presence/format
       # only, the content is the reviewers' job. See
       # docs/system-specs/common/take-away-changes.md.
-      - name: Resolve diff base (merge-base)
-        id: diffbase
-        env:
-          BASE_TIP: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          err() { printf '::%s::%s\n' error "$*"; }
-          # base.sha is the base branch tip when the PR event fired, not the
-          # branch-off point, so diffing it directly pulls in sibling commits.
-          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            err "Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
-            exit 1
-          fi
-          echo "Diff base: $MERGE_BASE"
-          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
-
       - name: Require a reader list on take-away diffs
         if: github.event.pull_request.user.login != 'dependabot[bot]'
         env:
@@ -589,8 +571,10 @@ jobs:
       # partial_fix. Fix/revert PRs list every other place with the same defect
       # under "## Sibling sweep" (format and limits: sibling_list_check.py).
       # Shape and path existence only; completeness is the reviewers' job. The
-      # script is read from the base ref so a branch cannot weaken its own check;
-      # the checkout copy runs only while the base has none. WARN mode: findings
+      # script is read from the base ref so a branch cannot weaken its own
+      # check. The checkout copy runs only while the base tip has no such file;
+      # any read that fails fails the step under the runner's `bash -e`, since
+      # the diff-base step made the base tip's files local. WARN mode: findings
       # annotate and exit 0 until ENFORCE_FROM in the script names a date.
       - name: Require a Sibling sweep section on fix PRs
         env:
@@ -602,7 +586,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           script="$(mktemp)"
-          if ! git show "$BASE_TIP:.github/scripts/sibling_list_check.py" > "$script" 2>/dev/null; then
+          listed="$(git ls-tree --name-only "$BASE_TIP" -- .github/scripts/sibling_list_check.py)"
+          if [ -n "$listed" ]; then
+            git show "$BASE_TIP:.github/scripts/sibling_list_check.py" > "$script"
+          else
             cp .github/scripts/sibling_list_check.py "$script"
           fi
           python3 "$script"
