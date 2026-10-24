@@ -291,5 +291,6 @@
   "pages.settings.chatPanel.follow_default_done",
   "pages.settings.chatPanel.follow_default_model_chats",
   "pages.settings.chatPanel.follow_default_more",
-  "pages.membersPage.goals_heartbeat_per_day"
+  "pages.membersPage.goals_heartbeat_per_day",
+  "apps.issueRadar.components.threads.show_earlier"
 ]

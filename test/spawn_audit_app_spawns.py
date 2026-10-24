@@ -329,6 +329,10 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # completion. No child process, and every payload is a literal in the test
         # file.
         "apps/builtins/issue_radar/tests/test_assignees.py::_await",
+        # Same construct again for the comment-batch route tests: ``asyncio.run``
+        # drives one in-process aiohttp handler coroutine. No child process; every
+        # payload is a literal in the test file.
+        "apps/builtins/issue_radar/tests/test_comment_batch.py::_await",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``). These four TEST functions drive Code Review
         # Sage's ``_save_runs`` coroutine to completion without a running loop --

@@ -25,7 +25,7 @@ import {
   Copy, Check, AlertCircle, RefreshCw, CircleDot, CircleCheck, CircleSlash, MessageSquare,
   Tag, UserPlus, UserMinus, Pencil, Milestone as MilestoneIcon, GitPullRequest,
   GitCommitHorizontal, Link2, Users, CalendarDays, Lock, Sparkles,
-  Plus, Loader2,
+  Plus, Loader2, CornerDownRight,
   ThumbsUp, ThumbsDown, Laugh, PartyPopper, Frown, Heart, Rocket, Eye,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -47,6 +47,12 @@ import {
 } from '../../../components/ui/dropdown-menu'
 import ListDetailBack from '../../../components/ListDetailBack'
 import InvestigateButton from './InvestigateButton'
+import TimelineComposer from './TimelineComposer'
+import ReplyButton from './ReplyButton'
+import InlineReply from './InlineReply'
+import CommentBatchProvider from './CommentBatchProvider'
+import { ReplyMarker, ThreadReplies, type ReplyPart } from './ThreadReplies'
+import { groupThreads } from '../lib/threads'
 import { useIssueRadar } from '../context'
 import { useTitleScrolledOut } from '../lib/useTitleScrolledOut'
 import { relativeTimeOrDate, hexToRgba, asArray, detailPollMs, resolveAiLanguage } from '../lib/format'
@@ -58,7 +64,7 @@ import {
   type RepoRef,
 } from '../api'
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
-import { providerTerms, readOnlyHint } from '../lib/links'
+import { providerKeyOf, providerTerms, readOnlyHint } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -261,20 +267,30 @@ function TimelineRow({
 
 /** The opening post and every comment share this card (header + markdown). */
 function CommentCard({
-  author, when, assoc, role, body, reactions, opening,
+  author, when, assoc, role, body, reactions, opening, replyEv, part,
 }: {
   author: string | null; when?: string; assoc?: string | null; role?: string | null; body?: string
   reactions?: Reactions | null; opening?: boolean
+  /** The event a Reply button answers; omitted when the viewer cannot comment. */
+  replyEv?: TimelineEvent
+  /** Set inside a thread's reply run, which draws the frame: a continuation shows
+   * only its time under a divider, since the run's first reply names the author. */
+  part?: ReplyPart
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden">
-      <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-bg-elevated/60 text-[12.5px] flex-wrap">
-        <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
-        <MemberBadge role={role} assoc={assoc} />
-        <span className="text-muted">{opening ? i18nT('apps.issueRadar.components.issueDetail.opened_this_issue') : i18nT('apps.issueRadar.components.issueDetail.commented')}</span>
-        <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
-      </div>
-      <div className="px-3.5 py-3">
+    <div className={part ? (part.continuation ? 'border-t border-border' : '') : 'rounded-lg border border-border bg-card overflow-hidden'}>
+      {part?.continuation ? (
+        part.showTime && when ? <div className="px-3.5 pt-2 text-[11.5px] text-muted"><RelTime iso={when} /></div> : null
+      ) : (
+        <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-bg-elevated/60 text-[12.5px] flex-wrap">
+          <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
+          <MemberBadge role={role} assoc={assoc} />
+          <span className="text-muted">{opening ? i18nT('apps.issueRadar.components.issueDetail.opened_this_issue') : i18nT('apps.issueRadar.components.issueDetail.commented')}</span>
+          <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
+          {replyEv && <ReplyButton ev={replyEv} />}
+        </div>
+      )}
+      <div className={part?.continuation && part.showTime && when ? 'px-3.5 pt-1 pb-3' : 'px-3.5 py-3'}>
         {body?.trim()
           ? <RefMarkdown content={body} />
           : <div className="text-[13px] text-muted italic">{i18nT('apps.issueRadar.components.issueDetail.no_description_provided')}</div>}
@@ -575,6 +591,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     setRefreshing(true)
     detailQuery.refetch().finally(() => setRefreshing(false))
   }
+
+  // After a post the backend has dropped its detail cache; a plain refetch reads
+  // the new comments without spinning the user-refresh indicator.
+  const afterPost = () => { refreshRef.current = true; void detailQuery.refetch() }
 
   // AI triage (summary + suggested labels): fires on open, cache-first
   // server-side (one model call per issue, served instantly on re-open). The
@@ -980,13 +1000,39 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               <span className="text-muted normal-case tracking-normal opacity-70">{i18nT('apps.issueRadar.components.issueDetail.newest_first')}</span>
             </div>
 
-            {activityDesc.map((ev, i) => {
-              const isOldest = i === activityDesc.length - 1
+            {/* Newest-first, so the box for the next comment sits where it lands. */}
+            {/* One batch for the whole timeline: the head box and every inline reply
+                feed it. Keyed by item so switching items loads that item's batch. */}
+            <CommentBatchProvider key={issue.number} target="issue" number={issue.number} onPosted={afterPost}>
+            <TimelineComposer />
+
+            {groupThreads(activityDesc, { rootIsThreadId: providerKeyOf(active) === 'github' }).map((item, i, items) => {
+              const isOldest = i === items.length - 1
               const isNewest = i === 0
+              if (item.type === 'reply-marker') {
+                return (
+                  <TimelineRow key={i} time={item.ev.created_at} icon={<CornerDownRight size={13} />} iconColor="text-muted" connector={!isOldest} pulse={isNewest}>
+                    <ReplyMarker ev={item.ev} root={item.root} />
+                  </TimelineRow>
+                )
+              }
+              const ev = item.type === 'thread' ? item.root : item.ev
               if (ev.kind === 'comment') {
+                // Every card of a thread answers into the same thread, under its root.
+                const card = (c: TimelineEvent, part?: ReplyPart) => (
+                  <CommentCard
+                    author={c.actor} when={c.created_at} assoc={c.author_association}
+                    role={c.actor ? memberRoleByLogin.get(c.actor) ?? null : null}
+                    body={c.body} reactions={c.reactions ?? null}
+                    replyEv={canWrite ? ev : undefined}
+                    part={part}
+                  />
+                )
                 return (
                   <TimelineRow key={i} time={ev.created_at} icon={<MessageSquare size={13} />} iconColor="text-muted" connector={!isOldest} pulse={isNewest}>
-                    <CommentCard author={ev.actor} when={ev.created_at} assoc={ev.author_association} role={ev.actor ? memberRoleByLogin.get(ev.actor) ?? null : null} body={ev.body} reactions={ev.reactions ?? null} />
+                    {card(ev)}
+                    {item.type === 'thread' && <ThreadReplies replies={item.replies} renderReply={card} />}
+                    <InlineReply ev={ev} />
                   </TimelineRow>
                 )
               }
@@ -997,6 +1043,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 </TimelineRow>
               )
             })}
+            </CommentBatchProvider>
 
             {activityLoading && <TimelineSkeleton />}
             {activityError && (

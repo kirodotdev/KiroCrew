@@ -19,7 +19,7 @@ import {
   Copy, Check, AlertCircle, RefreshCw, GitPullRequest, GitMerge, GitPullRequestClosed, GitPullRequestDraft,
   MessageSquare, Tag, Users, CalendarDays, GitCommitHorizontal, FileDiff, Milestone as MilestoneIcon,
   Link2, CircleDot, CircleSlash, Pencil, UserPlus, UserMinus,
-  CheckCircle2, XCircle, Eye, GitBranch, ChevronDown, ChevronUp, Loader2, ShieldCheck,
+  CheckCircle2, XCircle, Eye, GitBranch, ChevronDown, ChevronUp, Loader2, ShieldCheck, CornerDownRight,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
@@ -33,6 +33,12 @@ import AiSummaryCard from './AiSummaryCard'
 import ReviewButton from './ReviewButton'
 import PrActionsBar from './PrActionsBar'
 import PrRunActions from './PrRunActions'
+import TimelineComposer from './TimelineComposer'
+import ReplyButton from './ReplyButton'
+import InlineReply from './InlineReply'
+import CommentBatchProvider from './CommentBatchProvider'
+import { ReplyMarker, ThreadReplies, type ReplyPart } from './ThreadReplies'
+import { groupThreads } from '../lib/threads'
 import DetailHeader from './DetailHeader'
 import DetailOverflowMenu from './DetailOverflowMenu'
 import { DropdownMenuItem } from '../../../components/ui/dropdown-menu'
@@ -47,7 +53,7 @@ import {
   type RepoRef,
 } from '../api'
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
-import { providerTerms } from '../lib/links'
+import { providerKeyOf, providerTerms } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -207,25 +213,35 @@ function CollapsibleBody({ body }: { body: string }) {
  * `opening` marks the PR DESCRIPTION: it renders in FULL, while every other
  * comment is clamped to ~3 lines and expands on click (see CollapsibleBody). */
 function CommentCard({
-  author, when, body, opening, role, assoc, repoRef,
+  author, when, body, opening, role, assoc, repoRef, replyEv, part,
 }: {
   author: string | null; when?: string; body?: string; opening?: boolean
   role?: string | null; assoc?: string | null
   repoRef: RepoRef
+  /** The event a Reply button answers; omitted when the viewer cannot comment. */
+  replyEv?: TimelineEvent
+  /** Set inside a thread's reply run, which draws the frame: a continuation shows
+   * only its time under a divider, since the run's first reply names the author. */
+  part?: ReplyPart
 }) {
   const terms = providerTerms(repoRef)
   const text = body?.trim() ? body : ''
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden">
-      <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-bg-elevated/60 text-[12.5px] flex-wrap">
-        <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
-        <MemberBadge role={role} assoc={assoc} />
-        <span className="text-muted">
-          {opening ? `opened this ${terms.changeRequestTitle}` : i18nT('apps.issueRadar.components.prDetail.commented')}
-        </span>
-        <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
-      </div>
-      <div className="px-3.5 py-3">
+    <div className={part ? (part.continuation ? 'border-t border-border' : '') : 'rounded-lg border border-border bg-card overflow-hidden'}>
+      {part?.continuation ? (
+        part.showTime && when ? <div className="px-3.5 pt-2 text-[11.5px] text-muted"><RelTime iso={when} /></div> : null
+      ) : (
+        <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-bg-elevated/60 text-[12.5px] flex-wrap">
+          <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
+          <MemberBadge role={role} assoc={assoc} />
+          <span className="text-muted">
+            {opening ? `opened this ${terms.changeRequestTitle}` : i18nT('apps.issueRadar.components.prDetail.commented')}
+          </span>
+          <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
+          {replyEv && <ReplyButton ev={replyEv} />}
+        </div>
+      )}
+      <div className={part?.continuation && part.showTime && when ? 'px-3.5 pt-1 pb-3' : 'px-3.5 py-3'}>
         {!text
           ? <div className="text-[13px] text-muted italic">{i18nT('apps.issueRadar.components.prDetail.no_description_provided')}</div>
           : opening
@@ -627,6 +643,9 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
     detailQuery.refetch().finally(() => setRefreshing(false))
   }
 
+  // The backend dropped its detail cache on the post; read the new comments now.
+  const afterPost = () => { refreshRef.current = true; void detailQuery.refetch() }
+
   // Push the freshly-read check state onto this PR's row in whichever cached
   // list holds it (plain list and search results both). Without this the card
   // keeps whatever the last LIST refresh computed, so a check that turns red in
@@ -926,9 +945,36 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <span className="text-muted normal-case tracking-normal opacity-70">{i18nT('apps.issueRadar.components.prDetail.newest_first')}</span>
             </div>
 
-            {activityDesc.map((ev, i) => {
-              const isOldest = i === activityDesc.length - 1
+            {/* Newest-first, so the box for the next comment sits where it lands. */}
+            {/* One batch for the whole timeline: the head box and every inline reply
+                feed it. Keyed by item so switching items loads that item's batch. */}
+            <CommentBatchProvider key={pull.number} target="pull" number={pull.number} onPosted={afterPost}>
+            <TimelineComposer />
+
+            {groupThreads(activityDesc, { rootIsThreadId: providerKeyOf(active) === 'github' }).map((item, i, items) => {
+              const isOldest = i === items.length - 1
               const isNewest = i === 0
+              if (item.type === 'reply-marker') {
+                return (
+                  <TimelineRow key={i} time={item.ev.created_at} icon={<CornerDownRight size={13} />} iconColor="text-muted" connector={!isOldest} pulse={isNewest}>
+                    <ReplyMarker ev={item.ev} root={item.root} />
+                  </TimelineRow>
+                )
+              }
+              const ev = item.type === 'thread' ? item.root : item.ev
+              // Every card of a thread answers into the same thread, under its root.
+              const card = (c: TimelineEvent, part?: ReplyPart) => (
+                <CommentCard
+                  repoRef={active}
+                  author={c.actor}
+                  when={c.created_at}
+                  body={c.body}
+                  role={c.actor ? memberRoleByLogin.get(c.actor) ?? null : null}
+                  assoc={c.author_association}
+                  replyEv={canWrite ? ev : undefined}
+                  part={part}
+                />
+              )
               if (ev.kind === 'comment' || ev.kind === 'review_comment') {
                 // An inline review comment is a comment that also says WHERE it
                 // was made; the file:line is the part that makes it actionable.
@@ -949,14 +995,9 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                         {anchor}
                       </div>
                     )}
-                    <CommentCard
-                      repoRef={active}
-                      author={ev.actor}
-                      when={ev.created_at}
-                      body={ev.body}
-                      role={ev.actor ? memberRoleByLogin.get(ev.actor) ?? null : null}
-                      assoc={ev.author_association}
-                    />
+                    {card(ev)}
+                    {item.type === 'thread' && <ThreadReplies replies={item.replies} renderReply={card} />}
+                    <InlineReply ev={ev} />
                   </TimelineRow>
                 )
               }
@@ -967,6 +1008,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 </TimelineRow>
               )
             })}
+            </CommentBatchProvider>
 
             {activityLoading && <TimelineSkeleton />}
             {activityError && (
