@@ -198,11 +198,32 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
   const lessons = {
     // Lessons
     lessons: () => fetch('/api/lessons').then(j),
-    createLesson: (rule: string, category: string) =>
-      post('/api/lessons', { rule, category }).then(j) as Promise<{
+    createLesson: (
+      rule: string,
+      category: string,
+      options?: {
+        scope?: 'global' | 'workspace'
+        repo_scope?: string | null
+        workspace?: string
+        applies?: string | null
+        negative?: string | null
+        replaces?: string | null
+      },
+    ) =>
+      post('/api/lessons', {
+        rule,
+        category,
+        ...(options?.scope ? { scope: options.scope } : {}),
+        ...(typeof options?.repo_scope === 'string' ? { repo_scope: options.repo_scope } : {}),
+        ...(options?.workspace ? { workspace: options.workspace } : {}),
+        ...(typeof options?.applies === 'string' && options.applies ? { applies: options.applies } : {}),
+        ...(typeof options?.negative === 'string' && options.negative ? { negative: options.negative } : {}),
+        ...(typeof options?.replaces === 'string' && options.replaces ? { replaces: options.replaces } : {}),
+      }).then(j) as Promise<{
         ok: boolean
         outcome: 'inserted' | 'enriched' | 'unchanged' | 'deduped' | 'refused'
         reason: string
+        superseded?: string[]
         // Present only on `deduped`: the stored lesson the write lost to.
         winner?: string
         winner_repo_scope?: string | null

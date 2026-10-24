@@ -14846,7 +14846,13 @@
         "summarize_now": "Resumir agora",
         "tool": "ferramenta",
         "when": "Quando",
-        "save_profile": "Salvar perfil"
+        "save_profile": "Salvar perfil",
+        "search_lessons": "Pesquisar lições…",
+        "edit": "Editar",
+        "cancel": "Cancelar",
+        "edit_rule": "Editar regra",
+        "edit_failed": "Não foi possível atualizar a lição",
+        "lessons_refresh_failed_edit": "Lição atualizada, mas não foi possível atualizar a lista"
       },
       "portabilityTab": {
         "archive_contents": "Conteúdo do arquivo:",

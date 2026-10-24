@@ -15084,7 +15084,13 @@
         "summarize_now": "Создать сводку",
         "tool": "инструмент",
         "when": "Когда",
-        "save_profile": "Сохранить профиль"
+        "save_profile": "Сохранить профиль",
+        "search_lessons": "Поиск уроков…",
+        "edit": "Редактировать",
+        "cancel": "Отмена",
+        "edit_rule": "Редактировать правило",
+        "edit_failed": "Не удалось обновить урок",
+        "lessons_refresh_failed_edit": "Урок обновлен, но не удалось обновить список"
       },
       "portabilityTab": {
         "archive_contents": "Содержимое архива:",

@@ -997,3 +997,42 @@ class TestWriteLessonTruthValueIsTheOldBool:
         # matches on the rule alone so it never dedups one rule against another.
         assert LessonWriteOutcome.REFUSED.value == "refused"
         assert LessonWriteOutcome.DEDUPED.value == "deduped"
+
+
+class TestWriteLessonWithReplaces:
+    """write_lesson with replaces bypasses self-dedup and supersedes the old rule."""
+
+    def test_shortening_rule_with_replaces_supersedes_original(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            r1 = store.write_lesson("Always use tabs, not spaces", "preference")
+            assert r1.outcome is LessonWriteOutcome.INSERTED
+            assert store.get_lessons()
+
+            r2 = store.write_lesson(
+                "Always use tabs",
+                "preference",
+                replaces="Always use tabs, not spaces",
+            )
+            assert r2.outcome is LessonWriteOutcome.INSERTED
+            assert r2.superseded == ("Always use tabs, not spaces",)
+            assert _rule_of(store.get_lessons()) == ["Always use tabs"]
+        finally:
+            store.close()
+
+    def test_changing_case_with_replaces_replaces_original(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            r1 = store.write_lesson("Always Use Tabs", "preference")
+            assert r1.outcome is LessonWriteOutcome.INSERTED
+
+            r2 = store.write_lesson(
+                "always use tabs",
+                "preference",
+                replaces="Always Use Tabs",
+            )
+            assert r2.outcome is LessonWriteOutcome.INSERTED
+            assert r2.superseded == ("Always Use Tabs",)
+            assert _rule_of(store.get_lessons()) == ["always use tabs"]
+        finally:
+            store.close()

@@ -14370,7 +14370,13 @@
         "summarize_now": "지금 요약",
         "tool": "도구",
         "when": "시점",
-        "save_profile": "프로필 저장"
+        "save_profile": "프로필 저장",
+        "search_lessons": "레슨 검색…",
+        "edit": "편집",
+        "cancel": "취소",
+        "edit_rule": "규칙 편집",
+        "edit_failed": "레슨을 업데이트할 수 없습니다",
+        "lessons_refresh_failed_edit": "레슨이 업데이트되었지만 목록을 새로 고칠 수 없습니다"
       },
       "portabilityTab": {
         "archive_contents": "아카이브 내용:",

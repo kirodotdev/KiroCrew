@@ -53,6 +53,7 @@ def write_lesson(
     rule_emb_resolved: bool = False,
     defer_backfills: bool = False,
     facets: "memory_schema.MemoryFacets | None" = None,
+    replaces: str | None = None,
 ) -> LessonWriteResult:
     """Write a lesson as a semantic entry with key lesson.<hash>.
 
@@ -294,9 +295,28 @@ def write_lesson(
     #
     lesson_rows = _lessons.lesson_rows_in_scope(self.get_lessons(), repo_scope)
 
+    replaces_clean = (
+        replaces.strip() if isinstance(replaces, str) and replaces.strip() else None
+    )
+    replaces_key = _lesson_key(replaces_clean, repo_scope) if replaces_clean else None
+
+    def _is_replaced_row(existing_row: dict) -> bool:
+        if not replaces_clean:
+            return False
+        if existing_row.get("key") == replaces_key:
+            return True
+        text = _lessons._lesson_row_text(existing_row)
+        if text is not None and (text == replaces_clean or text.strip() == replaces_clean):
+            return True
+        rep = _lessons._lesson_row_report_text(existing_row)
+        if rep is not None and (rep == replaces_clean or rep.strip() == replaces_clean):
+            return True
+        return False
+
+    exact_rows = [r for r in lesson_rows if not _is_replaced_row(r)] if replaces_clean else lesson_rows
     exact = _lessons.resolve_exact_rule(
         self,
-        lesson_rows,
+        exact_rows,
         rule=rule,
         key=key,
         negative=negative,
@@ -361,6 +381,8 @@ def write_lesson(
         and not matched
     ):
         for existing in lesson_rows:
+            if _is_replaced_row(existing):
+                continue
             pre_text = _lessons._lesson_row_text(existing)
             if pre_text is None:
                 continue
@@ -453,6 +475,18 @@ def write_lesson(
                         ),
                     )
 
+    if replaces_clean and self.algorithm_version == "v2":
+        for existing in lesson_rows:
+            if _is_replaced_row(existing):
+                existing_report = (
+                    _lessons._lesson_row_report_text(existing)
+                    or _lessons._lesson_row_text(existing)
+                    or replaces_clean
+                )
+                deferred_supersedes.append(
+                    (existing["key"], existing_report, existing["value_json"], "replaced")
+                )
+
     # Private V2 keeps exact-rule enrichment above, but similarity cannot
     # authorize deleting a different instruction. Corrections target a key
     # explicitly; uncertain conflicts remain visible for owner review.
@@ -468,6 +502,12 @@ def write_lesson(
         # when a row has no display form, so the report can never be emptier than
         # the row it names.
         existing_report = _lessons._lesson_row_report_text(existing) or existing_text
+
+        if _is_replaced_row(existing):
+            deferred_supersedes.append(
+                (existing["key"], existing_report, existing["value_json"], "replaced")
+            )
+            continue
 
         may_retire_existing, covering_row_arrives_less_often = _lessons.tier_permissions(
             existing, applies

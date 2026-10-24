@@ -305,6 +305,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # which the context builder serves as a standing rule. Both write paths carry
     # it so the JSONL fallback tiers identically to the vector store.
     applies = cleaned.get("applies") or None
+    replaces_raw = body.get("replaces")
+    replaces = replaces_raw.strip() if isinstance(replaces_raw, str) and replaces_raw.strip() else None
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -367,6 +369,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             # over; the exact-rule, substring and keyword-overlap rules still apply
             # to it.
             defer_backfills=True,
+            replaces=replaces,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -508,6 +511,12 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an eviction,
         # not this write superseding a rule it overlaps.)
         superseded = []
+        if stored and outcome != "refused" and replaces:
+            del_ok = await asyncio.to_thread(
+                store.delete, replaces, repo_scope=repo_scope, exact=True
+            )
+            if del_ok:
+                superseded.append(replaces)
         # This store never answers ``deduped``, so there is no winner to name.
         winner = None
         winner_repo_scope = None
@@ -891,6 +900,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         negative: object = None,
         repo_scope: object = None,
         *,
+        bare_rule: object = None,
         tier: tuple[str, str | None] | None = None,
         applies: object = None,
         source: object = None,
@@ -948,6 +958,10 @@ async def api_lessons(request: web.Request) -> web.Response:
             result["applies"] = authored_applies
         if isinstance(source, str) and source.strip():
             result["source"] = _redact_memory_field(source.strip())[:64]
+        if isinstance(negative, str) and negative.strip():
+            result["negative"] = _redact_memory_field(negative.strip())
+        if isinstance(bare_rule, str) and bare_rule.strip():
+            result["bare_rule"] = _redact_memory_field(bare_rule.strip())
         if contains_volatile_lesson_fact(rule, negative):
             result["withheld_reason"] = "volatile_session_fact"
         return result
@@ -1012,6 +1026,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         rule = _lesson_display_text(decoded) or str(decoded)
         fields = _lesson_fields_for_row(decoded, e["key"])
         negative = fields[1] if fields is not None else None
+        bare_rule = fields[0] if fields is not None else rule
         raw_category = decoded.get("category") if isinstance(decoded, dict) else None
         # The RAW stored value, key-present or not: a legacy string row has
         # nowhere to carry a scope and reads as global, exactly as the
@@ -1025,6 +1040,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 e.get("updated_at", ""),
                 negative,
                 raw_scope,
+                bare_rule=bare_rule,
                 applies=raw_applies,
                 source=e.get("source"),
             )
@@ -1103,6 +1119,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 le.ts,
                 le.negative,
                 le.repo_scope,
+                bare_rule=le.rule,
                 tier=tier,
                 # ``getattr``, not ``le.applies``: this branch renders whatever
                 # the JSONL loader produced, and a row from an older file (or a
