@@ -13,7 +13,7 @@ expected contract.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -171,8 +171,12 @@ class TestLibraryPruning:
         assert got == ["Mail"]
 
     @pytest.mark.asyncio
-    async def test_index_at_home_skips_gated_library(self, tmp_path):
-        """End-to-end through the walk that re-runs every 30s."""
+    async def test_index_at_home_indexes_gated_library(self, tmp_path):
+        """The index serves only deliberately-scoped roots, so it does NOT
+        TCC-prune -- even a $HOME root indexes the gated folders in full,
+        matching the scoped walk fallback. Pruning here would silently drop
+        them from an explicit ``?project=$HOME`` search while the walk kept them.
+        """
         for rel in ("Library/Mail", "Library/CloudStorage/Work"):
             d = tmp_path / rel
             d.mkdir(parents=True)
@@ -185,12 +189,15 @@ class TestLibraryPruning:
             entries, _ = await __import__("asyncio").to_thread(idx._walk)
         rels = {os.path.relpath(e[0], tmp_path) for e in entries}
         assert os.path.join("Library", "CloudStorage", "Work", "target.txt") in rels
-        assert not any(r.startswith(os.path.join("Library", "Mail")) for r in rels)
+        assert os.path.join("Library", "Mail", "target.txt") in rels
 
 
 class TestFileIndexPruning:
     @pytest.mark.asyncio
-    async def test_home_root_skips_tcc_dirs(self, tmp_path):
+    async def test_home_root_indexes_tcc_dirs(self, tmp_path):
+        """A $HOME-rooted index only arises from an explicit ``?project=$HOME``,
+        so the TCC dirs are indexed in full -- the index never prunes, matching
+        the scoped walk fallback."""
         _make_home(tmp_path)
         with (
             patch.object(platform_compat, "IS_MACOS", True),
@@ -200,18 +207,13 @@ class TestFileIndexPruning:
             entries, _ = await __import__("asyncio").to_thread(idx._walk)
         walked = {os.path.relpath(e[0], tmp_path).split(os.sep)[0] for e in entries}
         for name in _TCC_DIRS:
-            assert name not in walked, f"{name} must not be walked from a $HOME root"
-        assert "code" in walked, "non-TCC project dirs must still be indexed"
+            assert name in walked, f"{name} must be indexed from a deliberately-scoped $HOME root"
+        assert "code" in walked
 
     @pytest.mark.asyncio
-    async def test_home_root_offers_dot_dir_but_not_tcc_dir(self, tmp_path):
-        """A dot-dir is an offered candidate; a TCC dir is not.
-
-        Regression: offering dot-dirs as candidates must not also start offering
-        (and os.stat-ing) the TCC-gated top-level folders from a $HOME root --
-        stat'ing one pops a consent modal. The candidate list must be TCC-pruned
-        too, while the dot-dir stays offered.
-        """
+    async def test_home_root_offers_dot_dir_and_tcc_dir(self, tmp_path):
+        """Dot-dirs are offered as candidates; the index does not prune TCC
+        dirs, so those are offered too."""
         _make_home(tmp_path)
         (tmp_path / ".config").mkdir()
         with (
@@ -223,11 +225,11 @@ class TestFileIndexPruning:
         dir_names = {e[1] for e in entries if e[5] == "dir"}
         assert ".config" in dir_names, "a dot-dir must be offered as a candidate"
         for name in _TCC_DIRS:
-            assert name not in dir_names, f"{name} must not be offered as a candidate from $HOME"
+            assert name in dir_names, f"{name} must be offered as a candidate (no prune)"
 
     @pytest.mark.asyncio
     async def test_scoped_tcc_dir_is_still_indexed(self, tmp_path):
-        """Indexing ~/Downloads directly is deliberate — index it fully."""
+        """Indexing ~/Downloads directly is deliberate -- index it fully."""
         _make_home(tmp_path)
         scoped = tmp_path / "Downloads"
         with (
@@ -239,13 +241,9 @@ class TestFileIndexPruning:
         assert [e for e in entries if e[1] == "target.txt"]
 
     @pytest.mark.asyncio
-    async def test_nested_dir_sharing_a_tcc_name_is_not_pruned(self, tmp_path):
-        """Only the TOP level of $HOME is pruned.
-
-        A project's own ``Documents/`` subdirectory is not TCC-gated (TCC covers
-        ``~/Documents`` specifically), so a name-only match deeper in the tree
-        must stay indexed — otherwise the prune silently hides real project files.
-        """
+    async def test_nested_dir_sharing_a_tcc_name_is_indexed(self, tmp_path):
+        """A project's own ``Documents/`` subdirectory is indexed like any other
+        directory -- the index applies no TCC prune at any level."""
         nested = tmp_path / "code" / "Documents"
         nested.mkdir(parents=True)
         (nested / "deep.txt").write_text("x")
@@ -259,14 +257,14 @@ class TestFileIndexPruning:
             entries, _ = await __import__("asyncio").to_thread(idx._walk)
         rels = {os.path.relpath(e[0], tmp_path) for e in entries}
         assert os.path.join("code", "Documents", "deep.txt") in rels
-        assert not any(r.startswith("Downloads") for r in rels)
+        assert os.path.join("Downloads", "top.txt") in rels
 
 
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
-    state.file_indexes.get.return_value = None  # force the walk fallback
+    state.file_indexes.ensure = AsyncMock(return_value=None)  # force the walk fallback
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""

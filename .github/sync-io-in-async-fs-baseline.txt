@@ -40,7 +40,7 @@
 3 src/kiro_crew/dashboard/file_api/outbox.py
 2 src/kiro_crew/dashboard/file_api/uploads.py
 15 src/kiro_crew/dashboard/file_api/workspaces.py
-2 src/kiro_crew/dashboard/file_index.py
+1 src/kiro_crew/dashboard/file_index.py
 3 src/kiro_crew/dashboard/handlers/artifacts_parts/item_lifecycle.py
 7 src/kiro_crew/dashboard/handlers/core.py
 3 src/kiro_crew/dashboard/handlers/diagnostics.py
