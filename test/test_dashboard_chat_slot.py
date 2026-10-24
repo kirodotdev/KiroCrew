@@ -298,6 +298,44 @@ class TestChatSlot:
 
         assert slot.to_dict()["source_links_total"] == 0
 
+    @pytest.mark.parametrize("role", ["chunk", "done", "streaming"])
+    def test_wire_only_append_does_not_dirty_or_invalidate(self, role):
+        """A streamed token must not mark the slot dirty or churn the link cache.
+
+        A wire-only row is never persisted and carries no source link, so
+        dirtying the slot would make the 5-second flush re-serialize and fsync
+        the whole transcript once per cycle while a reply streams, and bumping
+        the source-link revision would make the next broadcast rescan the whole
+        window. Neither may happen for such a row.
+        """
+        slot = _ChatSlot("s1")
+        slot._dirty = False
+        gen_before = slot._dirty_gen
+        rev_before = slot._source_links_revision
+
+        for _ in range(50):
+            slot.append(role, "tok ")
+
+        assert slot._dirty is False
+        assert slot._dirty_gen == gen_before
+        assert slot._source_links_revision == rev_before
+
+    def test_durable_append_dirties_and_invalidates(self):
+        """The counterpart: a persisted row still arms the flush and the rescan.
+
+        Guards against a fix that silences wire-only rows by weakening the
+        signal for every role -- the row ``_flush_segment`` writes when a
+        segment closes must still reach disk and refresh the link cache.
+        """
+        slot = _ChatSlot("s1")
+        slot._dirty = False
+        rev_before = slot._source_links_revision
+
+        slot.append("assistant", "hello")
+
+        assert slot._dirty is True
+        assert slot._source_links_revision == rev_before + 1
+
     def test_pr_source_links_stop_scanning_at_per_slot_cap(self):
         class CountingMessage(dict):
             reads = 0

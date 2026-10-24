@@ -423,9 +423,25 @@ def append(
             "mid": mint_row_mid(),
         }
     self.messages.append(msg)
-    self.invalidate_source_links()
     self.total_messages += 1
-    self._dirty = True
+    # A wire-only row (``chunk``/``done``/``streaming``) is never persisted
+    # (``_build_message_entry`` returns ``None`` for it) and carries no
+    # source link, so neither marking the slot dirty nor invalidating the
+    # source-link cache buys anything for it -- and both are expensive during
+    # a stream. ``chunk`` is appended once per streamed token, so dirtying the
+    # slot makes the 5-second flush re-serialize and fsync the WHOLE transcript
+    # every cycle a reply is streaming, putting the same durable bytes back on
+    # disk (a 6-8 MB transcript is tens of ms of JSON on a GIL-holding worker),
+    # and invalidating per token makes the next slots broadcast rescan the
+    # whole window for PR/issue links. The durable row ``_flush_segment`` writes
+    # when the segment closes still marks the slot dirty, so the reply is
+    # persisted exactly once. ``chat_fork`` and ``_save_slot_to_history``'s
+    # resumed-slot guard read ``_dirty`` as "unpersisted DURABLE state exists",
+    # which a wire-only row is not -- a fork taken mid-stream drops nothing,
+    # because the dropped rows were never going to reach disk.
+    if role not in _WIRE_ONLY_ROLES:
+        self.invalidate_source_links()
+        self._dirty = True
     self._pending.append(msg)
     self.event.set()
     if broadcast and self._on_card_event and role in {"user", "assistant", "error", "done"}:
