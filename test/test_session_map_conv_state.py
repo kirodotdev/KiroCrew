@@ -544,19 +544,21 @@ class TestPrivacyFlagsAndPrune:
         has exactly one ``async with``, its context is ``_serialized(...)``,
         the row is re-read (``privacy_flags``) inside it before the probe, and
         the probe is handed to ``to_thread`` there -- never called on the loop,
-        never outside the lock. Mutation: drop the lock, drop the re-read, or
+        never outside the lock. The locked walk lives in
+        ``privacy_mode.stamp_flagged_headers`` (its home, beside the lock it
+        owns), not ``SessionMap``. Mutation: drop the lock, drop the re-read, or
         move the probe out of the block -- red by name.
         """
         import ast
         import inspect
 
-        from kiro_crew import session_map as session_map_mod
+        from kiro_crew.messaging import privacy_mode as privacy_mode_mod
 
-        tree = ast.parse(inspect.getsource(session_map_mod))
+        tree = ast.parse(inspect.getsource(privacy_mode_mod))
         sweep = next(
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "stamp_privacy_headers"
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "stamp_flagged_headers"
         )
         blocks = [node for node in ast.walk(sweep) if isinstance(node, ast.AsyncWith)]
         assert len(blocks) == 1, "one lock block per row"
@@ -751,6 +753,62 @@ class TestANonBlockingStartDoesNotWaitForTheSweep:
             assert [t for t in seen if t is loop_thread] == []
             assert real_get(ConversationLog(), key).get("memory_mode") == "incognito"
             assert mgr._session_map.get_flag(key, "incognito") is True
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_runs_once_per_process_and_before_the_background_start(
+        self, patched, monkeypatch
+    ):
+        """A reset path (``refresh_defaults`` / ``reload_provider_factory`` / the
+        dashboard restart) sets ``pool_started`` False and re-enters
+        ``start_pool``. The sweep must run only ONCE across both -- it repairs a
+        legacy row, which appears only at a real process start -- so the reset is
+        a no-op and never re-pays its per-row cost. The sweep runs BEFORE the
+        background session so a legacy-flagged thread's header is stamped before
+        any turn can read it as persistent. Recorded as an ORDER of events, never
+        by timing. Mutation: drop the once-flag guard -> the sweep runs twice;
+        order the sweep after ``ensure_background`` -> the ordering assertion
+        goes red.
+        """
+        from kiro_crew.session_pool import WarmSessionPool
+
+        events: list[str] = []
+
+        real_ensure = WarmSessionPool._ensure_background_unless_lazy
+
+        async def _recording_ensure(self) -> None:
+            events.append("ensure_background")
+            await real_ensure(self)
+
+        async def _recording_sweep(self) -> int:
+            events.append("sweep")
+            await asyncio.sleep(0)
+            return 0
+
+        monkeypatch.setattr(WarmSessionPool, "_ensure_background_unless_lazy", _recording_ensure)
+        monkeypatch.setattr(SessionMap, "stamp_privacy_headers", _recording_sweep)
+
+        async def _drain(mgr) -> None:
+            for _ in range(20):
+                pending = [t for t in mgr._background_tasks if not t.done()]
+                if not pending:
+                    break
+                await asyncio.gather(*pending)
+
+        mgr = self._manager()
+        try:
+            await mgr.start_pool(blocking=False)
+            await _drain(mgr)
+            # A live-config apply / provider reload resets the gate and re-enters.
+            mgr._pool_started = False
+            await mgr.start_pool(blocking=False)
+            await _drain(mgr)
+            assert events.count("sweep") == 1, f"the sweep re-ran on the reset: {events}"
+            assert events.count("ensure_background") == 2, events
+            # The one sweep ran before the first background start, so no turn can
+            # read a legacy row as persistent before its header is stamped.
+            assert events.index("sweep") < events.index("ensure_background"), events
         finally:
             await mgr.close_all()
 

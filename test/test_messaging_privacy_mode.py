@@ -779,6 +779,19 @@ class TestTranscriptHeaderDurability:
         path.write_text(text, encoding="utf-8")
         return log
 
+    @staticmethod
+    def _raw_first_line_bytes(data: bytes):
+        """A transcript whose first line is raw *data*, which may not be valid
+        UTF-8 -- the shape the reader reports unreadable rather than corrupt."""
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog()
+        log.init()
+        path = log._path(_TG_KEY)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return log
+
     async def _apply_against(self, log, sm, rec) -> tuple[str, BaseException | None]:
         outcome, refused = "published", None
         try:
@@ -813,24 +826,114 @@ class TestTranscriptHeaderDurability:
         assert len(rec.notices) == 1 and "NOT processed" in rec.notices[0]
 
     @pytest.mark.asyncio
-    async def test_a_damaged_first_line_refuses_and_publishes_nothing(self, audits, session_map):
-        """The transcript's first line is not JSON. ``update_metadata_if`` reports
-        it unreadable and writes nothing -- answering ``False``, the same answer as
-        "already carries the mode". Mutation: discard the writer's answer and skip
-        the read-back (the r30 shape) -- red: the mode is marked, audited
-        ``allowed`` and announced ON while the header-only gates
-        (``capture_session_execution`` -> ``register_hook``) read no mode at all.
+    async def test_an_unreadable_first_line_refuses_and_publishes_nothing(
+        self, audits, session_map
+    ):
+        """The transcript's first line is bytes the reader cannot decode (invalid
+        UTF-8), which it reports ``METADATA_LINE_TRANSIENT`` -- a line a retry
+        might yet read, never rebuilt from under the caller. ``update_metadata_if``
+        writes nothing and answers ``False``, the same answer as "already carries
+        the mode". Mutation: discard the writer's answer and skip the read-back
+        (the r30 shape) -- red: the mode is marked, audited ``allowed`` and
+        announced ON while the header-only gates (``capture_session_execution`` ->
+        ``register_hook``) read no mode at all.
         """
-        log = self._raw_first_line("this is not a JSON line\n")
+        raw = b"\xff\xfe not valid utf-8\n"
+        log = self._raw_first_line_bytes(raw)
         assert log.get_metadata(_TG_KEY) == {}, "premise: the header cannot be read"
         sm = session_map()
         rec = _Recorder()
         outcome, refused = await self._apply_against(log, sm, rec)
         self._assert_nothing_published(
-            log, sm, rec, audits, outcome, refused, header_was="a damaged first line"
+            log, sm, rec, audits, outcome, refused, header_was="an unreadable first line"
         )
         assert refused.__cause__.written is False, "the writer's own answer for an unreadable line"
-        assert log._path(_TG_KEY).read_text(encoding="utf-8") == "this is not a JSON line\n"
+        assert log._path(_TG_KEY).read_bytes() == raw, "the unreadable bytes are left untouched"
+
+    @pytest.mark.asyncio
+    async def test_a_corrupt_first_line_heals_and_the_mode_is_applied(self, audits, session_map):
+        """The transcript's first line is valid UTF-8 but not JSON
+        (``METADATA_LINE_CORRUPT``) -- bytes no retry will ever read, which every
+        line writer replaces atomically. ``_persist_transcript_mode`` sees the
+        tighten-only write do nothing (the strictest-mode substitute the reader
+        builds for a corrupt line is already at least as strict as the request),
+        so it heals the line with a guard that always admits: the rebuild drops
+        the bad bytes and carries ``STRICTEST_MEMORY_MODE`` (``temporary``), at
+        least as strict as any requested mode, so the read-back then records a
+        header no weaker than the request and the mode is applied -- not refused
+        forever with a "try again" remedy no retry can clear. Mutation: drop the
+        corrupt-line heal branch in ``_persist_transcript_mode`` -- red: the
+        read-back still shows no mode and it raises ``REFUSAL_PERSIST_FAILED``.
+        """
+        log = self._raw_first_line("this is not a JSON line\n")
+        assert log.get_metadata(_TG_KEY) == {}, "premise: the header cannot be read"
+        from kiro_crew.history import METADATA_LINE_CORRUPT
+
+        assert (
+            log.metadata_line_state(_TG_KEY) == METADATA_LINE_CORRUPT
+        ), "premise: the line is corrupt, not transiently unreadable"
+        sm = session_map()
+        rec = _Recorder()
+        outcome, refused = await self._apply_against(log, sm, rec)
+        assert outcome == "published" and refused is None, (
+            f"a corrupt line should heal and apply the mode: outcome={outcome}, "
+            f"refused={refused!r}"
+        )
+        # The healed header carries the STRICTEST mode, never the weaker requested
+        # one: incognito was asked for, temporary is at least as strict.
+        from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
+
+        healed = log.get_metadata(_TG_KEY)
+        assert healed.get("memory_mode") == STRICTEST_MEMORY_MODE, healed
+        assert "memory_store" not in healed, "a healed line names no store"
+        assert privacy_mode.is_restricted(_TG_KEY) is True, "the mode is applied"
+        trail = [e["outcome"] for e in audits]
+        assert trail == ["allowed"], trail
+        assert len(rec.notices) == 1 and "NOT processed" not in rec.notices[0]
+
+    @pytest.mark.asyncio
+    async def test_the_corrupt_heal_never_loosens_a_concurrently_healed_header(
+        self, audits, session_map
+    ):
+        """A competing writer (a reservation release, an End) heals the corrupt
+        line to the strictest mode between the corruption probe and the repair
+        write. The repair must write STRICTEST_MEMORY_MODE, never the weaker
+        requested mode -- writing the requested ``incognito`` over a healed
+        ``temporary`` would re-enable memory reads, and the read-back would treat
+        ``incognito`` as enough for an ``incognito`` request, so the loosening
+        goes unflagged. Pins the repair's write FIELDS so the loosening cannot
+        slip back in. Mutation: write the requested *mode* in the repair -- red.
+        """
+        from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
+        from kiro_crew.history import ConversationLog
+
+        log = self._raw_first_line("this is not a JSON line\n")
+        assert log.get_metadata(_TG_KEY) == {}, "premise: the header cannot be read"
+
+        import kiro_crew.messaging.privacy_mode as pm
+
+        # Capture the fields of every update_metadata_if call: the repair write is
+        # the one whose guard always admits (lambda), where a loosening could land.
+        real_update = ConversationLog.update_metadata_if
+        repair_fields: list[dict] = []
+
+        def _recording_update(self, key, fields, guard, **kwargs):
+            # The repair write is the heal with the always-admit guard; the
+            # tighten-only first write names a function, not a lambda.
+            if key == _TG_KEY and getattr(guard, "__name__", "") == "<lambda>":
+                repair_fields.append(dict(fields))
+            return real_update(self, key, fields, guard, **kwargs)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(ConversationLog, "update_metadata_if", _recording_update)
+            await pm._persist_transcript_mode(_TG_KEY, pm.MODE_INCOGNITO)
+
+        assert repair_fields == [{"memory_mode": STRICTEST_MEMORY_MODE}], (
+            "the repair must write the strictest mode, never the requested one: "
+            f"{repair_fields!r}"
+        )
+        # And end-to-end the header is the strictest, not the requested incognito.
+        assert ConversationLog().get_metadata(_TG_KEY).get("memory_mode") == STRICTEST_MEMORY_MODE
 
     @pytest.mark.asyncio
     async def test_a_message_first_transcript_refuses_and_publishes_nothing(

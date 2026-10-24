@@ -109,6 +109,14 @@ class WarmPoolState:
     """Mutable state exclusively owned by :class:`WarmSessionPool`."""
 
     pool_started: bool = False
+    # True once the startup privacy-header sweep has run in THIS process. Unlike
+    # ``pool_started`` (which the live-config appliers and the dashboard's
+    # background restart reset to False so they can re-run ``start_pool``), this
+    # is never reset: the sweep only repairs a LEGACY row (a flag written before
+    # the modifier stamped headers), which can appear at a real process start and
+    # never mid-process, so re-running it on every config apply or provider
+    # reload only re-pays its per-row cross-process lock and header reads.
+    privacy_headers_stamped: bool = False
     size: int = 0
     agent: str = ""
     ttl_secs: int = 0
@@ -194,6 +202,14 @@ class WarmSessionPool:
     @_pool_started.setter
     def _pool_started(self, value: bool) -> None:
         self.state.pool_started = value
+
+    @property
+    def _privacy_headers_stamped(self) -> bool:
+        return self.state.privacy_headers_stamped
+
+    @_privacy_headers_stamped.setter
+    def _privacy_headers_stamped(self, value: bool) -> None:
+        self.state.privacy_headers_stamped = value
 
     @property
     def _pool_size(self) -> int:
@@ -301,12 +317,14 @@ class WarmSessionPool:
 
         Both paths run the same sequence -- ``prune``, the privacy-header sweep
         (:meth:`_stamp_privacy_headers_for_startup`), the background session,
-        the pool -- and differ only in what the caller awaits: the blocking
-        path awaits all of it; the non-blocking path returns as soon as the
-        sequence is scheduled, so the sweep, whose cost scales with the
-        retained privacy-flagged rows (a cross-process lock and two header
-        reads each, off the loop), never sits between a live-config apply or a
-        background-session restart and its return.
+        the pool -- and differ only in what the caller awaits: the blocking path
+        awaits all of it; the non-blocking path returns as soon as the sequence
+        is scheduled. The sweep runs FIRST so a legacy-flagged thread's header is
+        stamped before any turn can run and read it as persistent, and it is
+        guarded to run only ONCE per process: the rows it repairs are legacy
+        ones that can only appear at a real process start, so a live-config apply
+        or a provider reload (both of which reset ``pool_started`` and re-enter
+        here) re-runs it as a no-op and never pays its per-row cost again.
         """
         if self._pool_started or not self._owner._provider_factory:
             return
@@ -359,15 +377,22 @@ class WarmSessionPool:
         await self._owner._ensure_background()
 
     async def _stamp_privacy_headers_for_startup(self) -> None:
-        """Stamp the mode into the flagged rows' transcript headers, once per start.
+        """Stamp the mode into the flagged rows' transcript headers, once per process.
 
         The privacy-flagged rows ``prune`` kept (it removes none of them):
         whether each one's transcript header already records the mode is a
         disk read, taken on a worker thread rather than on this loop inside
-        prune, and the header is written where it does not. Housekeeping: a
-        failure leaves the headers for the next startup and must not stop the
-        pool from starting.
+        prune, and the header is written where it does not. It repairs only a
+        LEGACY row -- a flag written before the modifier stamped headers -- and
+        such a row can only be present at a real process start, so this runs at
+        most once per process however often ``start_pool`` re-enters (a
+        live-config apply, a provider reload, a dashboard background restart).
+        Housekeeping: a failure leaves the headers for the next process start and
+        must not stop the pool from starting; it does not set the once-flag, so
+        a later ``start_pool`` retries it.
         """
+        if self._privacy_headers_stamped:
+            return
         try:
             await self._owner._session_map.stamp_privacy_headers()
         except Exception:  # noqa: BLE001 - startup housekeeping never blocks the pool
@@ -375,6 +400,8 @@ class WarmSessionPool:
                 "could not stamp privacy modes into the flagged threads' transcript headers",
                 exc_info=True,
             )
+            return
+        self._privacy_headers_stamped = True
 
     async def _fill_warm_pool(self) -> None:
         """Spawn providers up to the configured size and enqueue them."""

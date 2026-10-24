@@ -2822,11 +2822,14 @@ and composed onto it.
   other path: a flagged row is never removed, however complete the transcript
   header, because the sync gates hydrate from the map alone and a transcript can
   be deleted or recreated apart from its row. `SessionMap.stamp_privacy_headers` --
-  awaited by `start_pool` right after `prune`, the header probes on a worker
-  thread, the map-lock-held half touching no file, each row re-read and stamped
-  under the session's durable-write lock (`_serialized`, below) so a release
-  landing after its snapshot is never re-stamped -- only ensures each flagged
-  row's existing transcript header carries the mode.
+  awaited by `start_pool` BEFORE the background session and warm pool start
+  (so a legacy row's header is stamped before any turn reads it) and once per
+  process, its locked per-row walk hosted in
+  `privacy_mode.stamp_flagged_headers` (beside the lock), the header probes on a
+  worker thread, the map-lock-held half touching no file, each row re-read and
+  stamped under the session's durable-write lock (`_serialized`, below) so a
+  release landing after its snapshot is never re-stamped -- only ensures each
+  flagged row's existing transcript header carries the mode.
   The transcript header's `memory_mode` is the record the memory readers
   consult: `apply_mode` stamps it through `_persist_transcript_mode`
   (`ConversationLog.update_metadata_if` on the default `ConversationLog`, off the
@@ -2867,12 +2870,22 @@ and composed onto it.
   a header write that fails, or returns with the header NOT recording the mode,
   is the same refusal as a row that cannot land. The writer's answer is consumed
   and read past: `update_metadata_if` has two silent no-write answers -- `False`
-  for a damaged first line it cannot read (the same answer as "already at least
-  this strict") and `True` for a first line that is valid JSON but not the
-  metadata record (a legacy message-first transcript), which it skips -- so the
+  for a first line it CANNOT read (bytes it reports `METADATA_LINE_TRANSIENT`,
+  which a retry might yet read; the same answer as "already at least this
+  strict") and `True` for a first line that is valid JSON but not the metadata
+  record (a legacy message-first transcript), which it skips -- so the
   stamp reads the header back and raises `HeaderNotRecorded` unless it carries
-  at least the mode. Either way the
-  row is taken back (`_land` to the value it had BEFORE the commit, never forced
+  at least the mode. A first line that is valid UTF-8 but not JSON
+  (`METADATA_LINE_CORRUPT`) is NOT one of those: no retry will ever read it, so
+  rather than refuse forever `_persist_transcript_mode` HEALS it when the
+  read-back shows a too-weak header and the line is corrupt -- a second write
+  with a guard that always admits forces the corrupt-line rewrite, which drops
+  the bad bytes and carries `STRICTEST_MEMORY_MODE`, at least as strict as any
+  requested mode, so the next read-back records a header no weaker than the
+  request and the mode is applied, where once it refused with `persist_failed`
+  forever under a "try again" remedy no retry could clear. Either way a row
+  whose stamp genuinely did not land
+  is taken back (`_land` to the value it had BEFORE the commit, never forced
   off: after a restart a re-sent modifier commits over a row already on disk,
   and clearing it would erase the thread's one durable private record) and the message is
   NOT processed; only then the in-memory mark, the audit
@@ -2974,7 +2987,7 @@ and composed onto it.
   (**`_serialized`**, refcounted, made on first use and dropped with its last
   user) shared by `_commit_mode`'s two durable steps, `_release_mode`'s
   whole sequence and the startup sweep's per-row re-read and stamp
-  (`SessionMap.stamp_privacy_headers`, which otherwise re-stamped a mode a
+  (`privacy_mode.stamp_flagged_headers`, which otherwise re-stamped a mode a
   release had taken back after its snapshot): two modes on one key are two groups, and two releases
   interleaved each read the other's mode as a standing claim (tracker and group
   retire only after the header write), each wrote the other mode into the

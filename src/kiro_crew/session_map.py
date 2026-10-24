@@ -32,7 +32,7 @@ from kiro_crew.messaging.link import (  # noqa: F401
     legacy_dashboard_mirror_key,
     split_dm_session_key,
 )
-from kiro_crew.messaging.privacy_mode import PRIVACY_LRU_MAX, _serialized, needs_tightening
+from kiro_crew.messaging.privacy_mode import PRIVACY_LRU_MAX, needs_tightening
 from kiro_crew.sel import _infer_source, sel
 from kiro_crew.session_map_links import ConversationOwnershipConflict  # noqa: F401
 from kiro_crew.session_map_store import _MAP_LOCK, _P, _R, _guarded  # noqa: F401
@@ -1097,55 +1097,28 @@ class SessionMap:
     async def stamp_privacy_headers(self) -> int:
         """Ensure every privacy-flagged row's EXISTING transcript header records its mode.
 
-        The startup path awaits this right after :meth:`prune`. The rows are
-        NAMED under the map lock with no filesystem call
-        (:meth:`privacy_flagged_entries`) -- a snapshot of candidates, nothing
-        more -- and each is then stamped one at a time under that row's
-        durable-write lock (``privacy_mode._serialized``, the lock the
-        modifier's commit and a reservation's release hold across their own
-        row-and-header sequences): the row is re-read under the lock
-        (:meth:`privacy_flags`), a row the re-read finds unflagged is skipped,
-        and only a row still flagged has its transcript header probed and --
-        for a row flagged before the modifier stamped headers, or tightened
-        since -- written, on a worker thread
-        (:func:`_header_records_privacy_mode`: tighten-only,
-        ``require_existing``, so a transcript that does not exist stays that
-        way). The event loop never pays a transcript read for these rows and
-        the map lock is never held across one.
-
-        Serialized with the release because the snapshot goes stale: on a
-        non-blocking pool start the sweep runs as a detached task while traffic
-        flows, and a reservation released after the snapshot restores the
-        header and clears the row under ITS lock. Unserialized, a stamp from
-        the snapshot alone writes the released mode back into a header the
-        release has just restored, over a row that is gone -- and nothing
-        loosens a header from there: the sweep only tightens, from rows, and a
-        later release of the same mode reads the stale stamp as its own
-        ``header_before`` and restores to it, so the thread's consolidation
-        stays refused for good. Under the row's lock the stamp lands either
-        before the release, which then finds the header still saying the mode
-        and restores it, or after it, when the re-read finds no flag and
-        nothing is written.
+        The startup path awaits this once per process, before the background
+        session and warm pool start. The locked
+        per-row walk lives in :func:`privacy_mode.stamp_flagged_headers`, which
+        owns the durable-write lock (``privacy_mode._serialized``) so the lock
+        stays module-private and the invariant "every durable privacy write on a
+        key runs under its lock" has one owner. This map supplies the two data
+        probes it keeps undecorated per the locking ratchet:
+        :meth:`privacy_flagged_entries` names the candidate rows under the map
+        lock with no filesystem call (the snapshot), and :meth:`privacy_flags`
+        re-reads one row. The event loop never pays a transcript read for these
+        rows and the map lock is never held across one.
 
         REMOVES NOTHING. A privacy row is the record the channel's inbound gate
         hydrates from, and removing it -- however complete the header -- leaves
         that gate reading the thread as persistent after the next restart (the
-        module comment above ``_PRIVACY_STRICTNESS``). A flag tightened DURING
-        the probe leaves the header stamped with the mode the worker saw: never
-        looser than before, since the stamp is tighten-only, and never lost,
-        since the next pass reads the current flags and re-stamps the tightened
-        mode. Returns the number of rows whose header records the mode
-        afterwards -- housekeeping telemetry, nothing acts on it.
+        module comment above ``_PRIVACY_STRICTNESS``). Returns the number of rows
+        whose header records the mode afterwards -- housekeeping telemetry,
+        nothing acts on it.
         """
-        recorded = 0
-        for key in self.privacy_flagged_entries():
-            async with _serialized(key):
-                flagged = self.privacy_flags(key)
-                if not flagged:
-                    continue
-                if await asyncio.to_thread(_header_records_privacy_mode, key, flagged):
-                    recorded += 1
-        return recorded
+        from kiro_crew.messaging import privacy_mode
+
+        return await privacy_mode.stamp_flagged_headers(self)
 
     @_guarded
     def mapped_sids_by_key(self) -> dict[str, str]:

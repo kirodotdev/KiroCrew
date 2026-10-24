@@ -93,10 +93,13 @@ import re
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.sel import sel
+
+if TYPE_CHECKING:
+    from kiro_crew.session_map import SessionMap
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +334,7 @@ async def _serialized(session_key: str) -> AsyncIterator[None]:
 
     :func:`_commit_mode` runs its durable steps under it, :func:`_release_mode`
     its whole sequence, :func:`hydrate_inbound` its header read and mark, and
-    the startup sweep (``SessionMap.stamp_privacy_headers``)
+    the startup sweep (:func:`stamp_flagged_headers`)
     each row's re-read and stamp, so on one session the durable records are
     written by one sequence at a time -- a release computes its restore target
     from claims no other release is in the middle of taking back, a commit's
@@ -353,6 +356,53 @@ async def _serialized(session_key: str) -> AsyncIterator[None]:
         entry.users -= 1
         if entry.users <= 0 and _key_locks.get(session_key) is entry:
             _key_locks.pop(session_key, None)
+
+
+async def stamp_flagged_headers(sessions: "SessionMap") -> int:
+    """Stamp each privacy-flagged row's EXISTING transcript header, under its lock.
+
+    The locked per-row walk of the startup sweep, hosted here so the lock
+    (:func:`_serialized`) stays module-private and the invariant "every durable
+    privacy write on a key runs under its lock" has one owner. *sessions* supplies
+    the data probes it keeps: :meth:`SessionMap.privacy_flagged_entries` names the
+    candidate rows under the map lock with no filesystem call (a snapshot), and
+    :meth:`SessionMap.privacy_flags` re-reads one row.
+
+    Each candidate is stamped one at a time under that row's lock: the row is
+    RE-READ inside the lock, a row the re-read finds unflagged is skipped, and only
+    a row still flagged has its transcript header probed and -- for a row flagged
+    before the modifier stamped headers, or tightened since -- written, on a worker
+    thread (``_header_records_privacy_mode``: tighten-only, ``require_existing``, so
+    a transcript that does not exist stays that way). The event loop never pays a
+    transcript read, and the map lock is never held across one.
+
+    Serialized with a reservation's release because the snapshot goes stale: on a
+    non-blocking pool start this runs detached while traffic flows, and a release
+    after the snapshot restores the header and clears the row under the same lock.
+    Unserialized, a stamp from the snapshot alone would write the released mode back
+    into a header the release just restored, over a row that is gone -- and nothing
+    loosens a header from there, so the thread's consolidation would stay refused for
+    good. Under the row's lock the stamp lands either before the release (which then
+    finds the header still saying the mode and restores it) or after it (when the
+    re-read finds no flag and nothing is written).
+
+    Returns the number of rows whose header records the mode afterwards --
+    housekeeping telemetry, nothing acts on it.
+    """
+    # Call-time import: ``session_map`` imports THIS module at module scope, so a
+    # module-scope import here would cycle. The probe is a leaf data function with
+    # no event-loop state; it ensures and reads the header on the worker thread.
+    from kiro_crew.session_map import _header_records_privacy_mode
+
+    recorded = 0
+    for key in sessions.privacy_flagged_entries():
+        async with _serialized(key):
+            flagged = sessions.privacy_flags(key)
+            if not flagged:
+                continue
+            if await asyncio.to_thread(_header_records_privacy_mode, key, flagged):
+                recorded += 1
+    return recorded
 
 
 #: An awaitable that posts one line on the channel.
@@ -705,7 +755,37 @@ async def _persist_transcript_mode(session_key: str, mode: str) -> None:
     # and ctime, which the writer's tmp-plus-rename changes.
     found = (await asyncio.to_thread(log.get_metadata, session_key)).get("memory_mode")
     if needs_tightening(transcript_privacy_mode(found), mode):
-        raise HeaderNotRecorded(session_key, mode, found, written=written)
+        # A CORRUPT first line (valid-UTF-8 bytes that are not JSON) reads as no
+        # header at all, so the tighten-only write above sees the strictest-mode
+        # substitute ``update_metadata_if`` builds for it, finds nothing to
+        # tighten, and writes nothing -- and no retry ever reads those bytes, so
+        # this would refuse the modifier forever under a "try again" remedy.
+        # Heal it instead with a guard that always admits. The field written is
+        # STRICTEST_MEMORY_MODE, never the requested *mode*: if the line is still
+        # corrupt the rewrite carries the strictest value regardless, and if a
+        # concurrent writer (a reservation release, an End) healed it to a valid
+        # header first, writing the strictest cannot LOOSEN it -- writing *mode*
+        # could turn a healed ``temporary`` back into ``incognito`` and re-enable
+        # memory reads. The strictest is at least as strict as *mode*, so the
+        # read-back still records enough. A TRANSIENT line (bytes that cannot be
+        # decoded, which a retry might yet read) is left to refuse, as is any
+        # other too-weak header.
+        from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
+        from kiro_crew.history import METADATA_LINE_CORRUPT
+
+        corrupt = (
+            await asyncio.to_thread(log.metadata_line_state, session_key)
+        ) == METADATA_LINE_CORRUPT
+        if corrupt:
+            written = await asyncio.to_thread(
+                log.update_metadata_if,
+                session_key,
+                {"memory_mode": STRICTEST_MEMORY_MODE},
+                lambda _metadata: True,
+            )
+            found = (await asyncio.to_thread(log.get_metadata, session_key)).get("memory_mode")
+        if needs_tightening(transcript_privacy_mode(found), mode):
+            raise HeaderNotRecorded(session_key, mode, found, written=written)
 
 
 def strip_token(text: str, mode: str) -> tuple[str, bool]:

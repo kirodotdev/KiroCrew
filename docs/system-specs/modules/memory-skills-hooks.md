@@ -545,9 +545,17 @@ says, because the sync gates hydrate from the map alone and a transcript can be
 deleted or recreated apart from its row, so a removed row can leave a gate
 reading the thread as persistent after the next restart. The header of a row
 flagged before the stamp existed is ensured by `SessionMap.stamp_privacy_headers`,
-which the session pool's `start_pool` runs right after `prune` (awaited in place
-by a blocking start; inside the already-scheduled task by a non-blocking one, so
-a live-config apply or a background-session restart never waits on it): every
+which the session pool's `start_pool` runs BEFORE the background session and warm
+pool start -- so a legacy-flagged thread's header is stamped before any turn can
+read it as persistent -- and ONCE per process (a once-per-process flag the
+`pool_started` resets do not clear, so a live-config apply or a background-session
+restart re-runs it as a no-op): it repairs only a legacy row -- a flag
+written before the modifier stamped headers -- which can appear at a real
+process start and never mid-process. The locked per-row walk lives in
+`privacy_mode.stamp_flagged_headers`, beside the lock it holds, so the lock stays
+module-private and the invariant "every durable privacy write on a key runs
+under its lock" has one owner; `SessionMap` supplies only the two undecorated
+data probes `privacy_flagged_entries` and `privacy_flags`. Every
 flagged row is named under the map lock (a snapshot of candidates, no file
 touched), then each row is re-read and stamped under that session's
 durable-write lock (`privacy_mode._serialized`, the lock the modifier's commit
@@ -561,7 +569,10 @@ from the snapshot alone re-wrote the released mode into that header over a row
 that was gone -- which nothing loosens again (the sweep only tightens, from
 rows; a later release of the same mode reads the stale stamp as its own
 `header_before`), so the thread's consolidation stayed refused for good. A flag
-tightened during the probe is re-stamped by the next pass, and a header that
+tightened after the snapshot is stamped by the modifier's OWN commit
+(`_persist_transcript_mode`, tighten-only), not by waiting for another sweep pass
+-- the once-per-process sweep repairs only a legacy row with no header, which
+the modifier writes durably the moment it tightens -- and a header that
 already records the mode costs no write (`needs_tightening`). The rows are
 capped at the module constant `session_map.PRIVACY_ROW_CAP` (the trackers' `PRIVACY_LRU_MAX`), held
 by refusing a NEW flag fail-closed -- the modifier tells the user the message
