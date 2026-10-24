@@ -785,7 +785,7 @@
       "label": "Show Full Titles While Scrolling",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.show-full-titles-while-scrolling",
-      "hint": "While you scroll the session list, titles the sidebar cuts off show in full"
+      "hint": "While you scroll the session list, cut-off titles show in full"
     },
     {
       "id": "chat.show-pasted-text-in-full",
