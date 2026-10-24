@@ -75,8 +75,6 @@ def _ineligible_ids(self: VectorMemoryStore, record_ids: list[str] | None = None
         rows = []
         for start in range(0, len(unique), _MAX_SQL_PARAMS):
             chunk = unique[start : start + _MAX_SQL_PARAMS]
-            if not chunk:
-                continue
             placeholders = ",".join("?" * len(chunk))
             rows.extend(
                 self._fetch_all_locked(

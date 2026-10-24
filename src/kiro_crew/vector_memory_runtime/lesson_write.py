@@ -214,7 +214,7 @@ def write_lesson(
     else:
         lesson_embed_generation = self._space_generation
     if rule_emb is None and not rule_emb_resolved:
-        rule_emb = self._try_embed(rule) if self.embed_fn else None
+        rule_emb = self.embed_lesson(rule)
     backfills_done = 0
     # (blob, key, space generation, exact value embedded). The generation is
     # recorded per entry, not once for the call: these lazy backfills embed
@@ -487,29 +487,9 @@ def write_lesson(
                 winner_repo_scope=_lessons._lesson_scope(json.loads(existing["value_json"])),
             )
         if existing_lower in rule_lower:
-            # This branch was the only one of the four here that deleted a row
-            # WITHOUT saying so at any level: its three siblings each log, and
-            # this one went straight to delete_semantic. So the deletion left no
-            # trace a user or an operator could find -- not in the result, not in
-            # the log, and not in the store, since the row is tombstoned and
-            # every read path filters it. Log like the siblings do.
-            #
-            # IDENTITIES, never content, and that is the point of this whole scan's
-            # logging rather than a limitation of this line. A lesson holds whatever
-            # the user once told the agent -- credentials, paths, names -- so a log
-            # line carrying its text turns a silent-deletion bug into a disclosure
-            # bug, on a sink that persists to disk and may reach a notification
-            # channel. Both keys ARE the store's own row ids (``lesson.<digest>``),
-            # so an operator can join this line to the tombstoned row, to the
-            # delete_semantic audit record, and to the matching ``superseded`` entry
-            # in the result -- which is the read path where the text belongs, and
-            # where it is redacted at every surface.
-            #
-            # The id is logged rather than a fresh digest deliberately: a
-            # newly-computed hash would correlate with nothing. Nothing here HASHES
-            # anything, so this adds no weak-hashing exposure -- ``_lesson_key``
-            # already derived these ids, and CodeQL flags that derivation at its own
-            # site, not at a line that merely logs the result.
+            # Like the topic and semantic branches below, this one deletes nothing:
+            # at most it queues the supersede, and the drain after ``set_semantic``
+            # logs each queued row it retires or skips.
             if may_retire_existing:
                 deferred_supersedes.append(
                     (existing["key"], existing_report, existing["value_json"], "contains")
@@ -661,8 +641,16 @@ def write_lesson(
     # row sharing that key fails it, and no separate same-key check is needed.
     #
     # A supersede is LOGGED here because this is where one happens; the scan only
-    # nominates rows. IDENTITIES only, never row text -- a lesson can hold
-    # whatever the user tells the agent, and this sink persists to disk.
+    # nominates rows. The scan's log lines and this drain's carry keys and labels
+    # (category, source, reason, a count), never row text: a lesson can hold
+    # whatever the user tells the agent (credentials, paths, names), and a log
+    # record can outlive the turn, on disk and in the dashboard's log stream.
+    # Both keys are row keys, so an operator can join a supersede line to the
+    # retired row's tombstone and audit event, and by its "so far" count to the
+    # matching ``superseded`` entry in the result. Logging the keys rather than a
+    # fresh digest is deliberate: a newly computed hash would correlate with
+    # nothing. No log line here hashes anything; a weak-hash finding belongs at
+    # ``_lesson_slug``'s digest, not at a line that logs a key.
     #
     # The attribution is passed INTO delete_semantic (winning key + reason), so
     # the tombstone's record status and audit event record it durably in the
