@@ -46,6 +46,7 @@ from urllib.parse import urlsplit
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics import otlp_governance
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -1138,6 +1139,51 @@ def _filter_metric_destinations(
     return tuple(kept)
 
 
+def _policy_redactor() -> "Callable[[str], str] | None":
+    """The redaction OTLP SEL rows go through when this process has no context.
+
+    ``None`` -- the SEL's own ``redact_via_context`` -- whenever a context exists.
+    Without one, the composed companion provider's ``governance_redact``.
+    """
+    try:
+        current_context()
+        return None
+    except PlatformCompositionError:
+        pass
+    try:
+        redact = getattr(_telemetry_provider(), "governance_redact", None)
+    except Exception:
+        return None
+    return redact if callable(redact) else None
+
+
+def _policy_ceiling() -> object | None:
+    """The policy ceiling OTLP export is held to in this process, or ``None``.
+
+    The platform context's, when the process has one. A process that never boots
+    the platform on a non-standalone profile (the MCP gateway daemon) has none; its
+    composed companion provider carries the companion's ceiling instead
+    (``bootstrap.compose_telemetry_provider``), and before composition it has no
+    destinations at all.
+
+    ``otlp_governance.UNEVALUABLE`` when neither answers: the context failed to
+    compose and the provider carries no ceiling of its own (for instance a
+    standalone daemon whose policy could not be read). Every host is refused then;
+    a failure to load the policy is not the absence of one.
+    """
+    try:
+        return getattr(current_context(), "governance", None)
+    except PlatformCompositionError:
+        pass
+    try:
+        provider = _telemetry_provider()
+    except Exception:
+        return otlp_governance.UNEVALUABLE
+    if not hasattr(provider, "governance_ceiling"):
+        return otlp_governance.UNEVALUABLE
+    return getattr(provider, "governance_ceiling", None)
+
+
 def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
     """Resolve the metric egress destinations the active edition supplies.
 
@@ -1183,7 +1229,18 @@ def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
         logger.warning("platform context unavailable; OTLP egress disabled (local-only)")
         return ()
 
-    return _filter_metric_destinations(supplied)
+    # The policy's ``otlp_hosts`` list narrows what is BUILT, audited here, and
+    # ``gate_exporter`` re-checks each export. Deliberately not applied in
+    # ``otlp_egress_active``: that answers whether enabling collection could ever
+    # send metrics off the machine, and a host refused today may be permitted later.
+    kept = _filter_metric_destinations(supplied)
+    if not kept:
+        # Nothing to hold to a policy; and resolving the ceiling could compose a
+        # companion the provider read above just failed to compose.
+        return ()
+    return otlp_governance.governed_destinations(
+        kept, _policy_ceiling(), audit=True, redact=_policy_redactor()
+    )
 
 
 _FOREIGN_SIGNAL_ROUTES = (("/v1/traces", "traces"), ("/v1/logs", "logs"))
@@ -1289,6 +1346,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             # separate field on the descriptor.
             kwargs["session"] = dest.session
         exporter = OTLPMetricExporter(**kwargs)
+        # Every later export is held to the policy in force THEN, so a runtime
+        # policy install stops a running reader without waiting for a rebuild.
+        otlp_governance.gate_exporter(
+            exporter, endpoint, _policy_ceiling, redact=_policy_redactor()
+        )
         return PeriodicExportingMetricReader(
             exporter,
             export_interval_millis=float(getattr(cfg, "export_interval_seconds", 60)) * 1000.0,

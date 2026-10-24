@@ -258,7 +258,17 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # per-surface profile is not the question it answers.
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # theme_install).
-    "capabilities.telemetry": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Inner ``otlp_hosts`` ruleset (``host`` matcher): which OTLP collector hosts
+    # the metrics exporter may send to (RFC crew-enterprise-edition, appendix row
+    # "Diagnostic telemetry target"). Queried as ``otlp_hosts:<host>`` for every
+    # destination before its reader is built and before each export
+    # (``metrics/otlp_governance.py``), policy layer only like the beacon probe. A policy that names the row with
+    # ``enabled: false`` therefore stops OTLP export too; an unnamed ruleset
+    # leaves every host permitted, as before.
+    "capabilities.telemetry": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"otlp_hosts": "host"}
+    ),
     # Auto-deriving the dashboard's OWN tailnet origin (``dashboard/tailnet.py``,
     # RFC §4). When ``dashboard.tailscale.enabled`` is on, the gateway shells out
     # to the local ``tailscale`` daemon at startup and, on success, puts the

@@ -832,6 +832,7 @@ class SecurityEventLog:
         layer: str = "",
         reason: str = "",
         critical: bool = False,
+        redact: "Callable[[str], str] | None" = None,
     ) -> None:
         """Convenience: log a governance (Level 1 ∩ Level 2) decision.
 
@@ -856,15 +857,21 @@ class SecurityEventLog:
         proceed unaudited. Without it the write is enqueued to the background
         writer, which swallows persistence failures — fine for best-effort audits
         (e.g. an ungoverned allow) but NOT for audit-or-deny.
+
+        *redact* replaces ``redact_via_context`` for a process that installs no
+        platform context (the MCP gateway daemon), where that shim raises: the
+        caller passes the redaction of the companion it composed itself, so the
+        broader pass still applies. Omitted everywhere else.
         """
         # Lazy import: sel.py is imported very early (security.py imports it), and
         # platform.context imports security indirectly — keep this off the
         # module-load path to avoid a cycle (documented pattern).
         from kiro_crew.platform.context import redact_via_context
 
-        safe_operation = redact_via_context(tool_name)
-        safe_item = redact_via_context(item) if item else ""
-        safe_reason = redact_via_context(reason) if reason else ""
+        _redact = redact or redact_via_context
+        safe_operation = _redact(tool_name)
+        safe_item = _redact(item) if item else ""
+        safe_reason = _redact(reason) if reason else ""
         self.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
