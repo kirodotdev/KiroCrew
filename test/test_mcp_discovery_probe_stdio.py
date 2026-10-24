@@ -238,13 +238,15 @@ class TestProbeServerStderrCapture:
         tail is appended to `server.error`."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "broken-server.sh"
+        stub = tmp_path / "broken-server.py"
         stub.write_text(
-            "#!/bin/sh\n" "echo 'ModuleNotFoundError: No module named foo' >&2\n" "exit 1\n"
+            "import sys\n"
+            "print('ModuleNotFoundError: No module named foo', file=sys.stderr)\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="broken", command=str(stub))
+        server = McpServerInfo(name="broken", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
@@ -262,22 +264,24 @@ class TestProbeServerStderrCapture:
         `server.error`."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "noisy-ok-server.sh"
+        stub = tmp_path / "noisy-ok-server.py"
         stub.write_text(
-            "#!/bin/sh\n"
-            "echo 'WARNING: deprecated flag' >&2\n"
-            "while IFS= read -r line; do\n"
-            '  case "$line" in\n'
-            '    *\\"initialize\\"*) '
-            'printf \'{"jsonrpc":"2.0","id":1,"result":{}}\\n\' ;;\n'
-            '    *\\"tools/list\\"*) '
-            'printf \'{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}\\n\' ;;\n'
-            "  esac\n"
-            "done\n"
+            "import json, sys\n"
+            "print('WARNING: deprecated flag', file=sys.stderr, flush=True)\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if request.get('method') == 'initialize':\n"
+            "        result = {}\n"
+            "    elif request.get('method') == 'tools/list':\n"
+            "        result = {'tools': []}\n"
+            "    else:\n"
+            "        continue\n"
+            "    reply = {'jsonrpc': '2.0', 'id': request['id'], 'result': result}\n"
+            "    print(json.dumps(reply), flush=True)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="noisy-ok", command=str(stub))
+        server = McpServerInfo(name="noisy-ok", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 3
@@ -295,17 +299,17 @@ class TestProbeServerStderrCapture:
         dashboard responses."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "verbose-broken.sh"
+        stub = tmp_path / "verbose-broken.py"
         stub.write_text(
-            "#!/bin/sh\n"
-            "for i in $(seq 1 200); do\n"
-            "  echo 'this is a long diagnostic line that repeats many times' >&2\n"
-            "done\n"
-            "exit 1\n"
+            "import sys\n"
+            "line = 'this is a long diagnostic line that repeats many times'\n"
+            "for _ in range(200):\n"
+            "    print(line, file=sys.stderr)\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="verbose", command=str(stub))
+        server = McpServerInfo(name="verbose", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
@@ -314,6 +318,8 @@ class TestProbeServerStderrCapture:
             result = await probe_server(server)
 
         assert result.status == "error"
+        # The bound is measured on a captured tail, not on an error that has none.
+        assert "stderr:" in (result.error or "")
         # 500-char stderr tail + 200-char error head + headers = well under 1KB.
         assert len(result.error or "") < 1024
 
@@ -323,17 +329,17 @@ class TestProbeServerStderrCapture:
         must be scrubbed before they land in `server.error`."""
         from kiro_crew.mcp_discovery import probe_server
 
-        stub = tmp_path / "leaky-server.sh"
+        stub = tmp_path / "leaky-server.py"
         stub.write_text(
-            "#!/bin/sh\n"
-            "echo 'config error: AWS_SECRET_"
+            "import sys\n"
+            "print('config error: AWS_SECRET_"
             "ACCESS_KEY=AKIAIOSFODNN7"
-            "EXAMPLEXXX' >&2\n"
-            "exit 1\n"
+            "EXAMPLEXXX', file=sys.stderr)\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
         )
-        stub.chmod(0o755)
 
-        server = McpServerInfo(name="leaky", command=str(stub))
+        server = McpServerInfo(name="leaky", command=sys.executable, args=[str(stub)])
         with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
             mock_cfg = MagicMock()
             mock_cfg.dashboard.mcp_probe_timeout_secs = 2
@@ -342,6 +348,8 @@ class TestProbeServerStderrCapture:
             result = await probe_server(server)
 
         assert result.status == "error"
+        # The redaction is checked on a captured tail, not on an error that has none.
+        assert "stderr:" in (result.error or "")
         # The literal secret must not appear verbatim in the error field.
         assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
 
