@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -158,6 +159,114 @@ def _doctor_headless_auth(issues: list[str]) -> None:
     print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
     for line in warning.splitlines():
         print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
+
+
+#: Seconds ``kiro-cli-chat --version`` may take. A local read of a resolved
+#: binary, so it gets the same short leash as the ``kiro-cli --version`` row.
+_CHAT_DELEGATE_PROBE_TIMEOUT_SECS = 5
+
+#: The one remedy for a chat delegate that will not launch. Every observed case
+#: (a ``~/.local/bin/kiro-cli-chat`` link left pointing at a removed release, a
+#: partial upgrade) was fixed by reinstalling, and nothing Crew can change helps.
+CHAT_DELEGATE_BROKEN_FIX = "reinstall Kiro CLI (rerun its installer), then rerun kirocrew doctor"
+
+
+def _chat_delegate_target(kiro: str) -> str | None:
+    """The ``kiro-cli-chat`` a session started through *kiro* will exec, or ``None``.
+
+    ``kiro-cli --version`` is answered by the launcher itself, so it passes while
+    the chat binary every session actually runs cannot start (the field report:
+    ``failed to launch kiro-cli-chat``, surfaced as ``process exited (rc=None)``).
+    The launcher finds the chat binary in ``$HOME/.local/bin`` and then on
+    ``PATH``, never in its own directory (see ``kiro_cli.BUNDLED_KIRO_CLI_ENTRY``),
+    so this looks in the same two places in the same order. A path that merely
+    EXISTS as a link counts -- a dangling link is the broken install this check
+    is for, and ``os.path.lexists`` keeps it in view where a PATH lookup would
+    skip past it to a different copy the launcher never reaches.
+
+    The exception is a macOS launcher inside ``Kiro CLI.app/Contents/MacOS``: it
+    finds ``.app/Contents/MacOS/`` in its own path and execs the chat binary
+    beside it (``kiro_prerequisite_candidate``), so that sibling is the target.
+
+    *kiro* already named ``kiro-cli-chat`` (the desktop bundle, or an operator's
+    ``KIROCREW_KIRO_BIN``) is probed as itself. Any other name is a wrapper whose
+    delegate is unknown, and Windows ships one self-contained ``kiro-cli.exe``;
+    both return ``None`` so the row stays silent rather than guessing. A
+    ``kiro-cli`` launcher with no chat binary anywhere returns ``""``: that
+    launcher fails every ``chat``/``acp`` start, so the caller reports it broken.
+    """
+    if sys.platform == "win32" or not kiro:
+        return None
+    name = os.path.basename(kiro)
+    if name == "kiro-cli-chat":
+        return kiro
+    if name != "kiro-cli":
+        return None
+    launcher_dir = os.path.dirname(kiro)
+    if sys.platform == "darwin" and launcher_dir.endswith(".app/Contents/MacOS"):
+        return os.path.join(launcher_dir, "kiro-cli-chat")
+    local_chat = os.path.join(os.path.expanduser("~"), ".local", "bin", "kiro-cli-chat")
+    if os.path.lexists(local_chat):
+        return local_chat
+    return shutil.which("kiro-cli-chat") or ""
+
+
+def _doctor_kiro_chat_delegate(kiro: str | None, issues: list[str], *, required: bool) -> None:
+    """Run ``kiro-cli-chat --version`` and report it when it cannot launch.
+
+    *required* is whether the harness selected for either role (the main
+    backend or the crewmate backend) spawns kiro-cli at all. When one does, a
+    broken delegate fails every session on that role, so it is appended to ``issues``
+    and doctor exits non-zero. When it does not (Claude, a KAS bundle, any other
+    harness), the same failure is printed as advisory and left out of
+    ``issues``, like the ``kiro-cli --version`` row: failing doctor over an
+    unused backend would make a working host red. Silent when there is no
+    kiro-cli, on Windows, and for a wrapper whose delegate cannot be named
+    (:func:`_chat_delegate_target`).
+    """
+    if not kiro:
+        return
+    target = _chat_delegate_target(kiro)
+    if target is None:
+        return
+    reason: str | None = None
+    version = ""
+    if not target:
+        reason = "no kiro-cli-chat in ~/.local/bin or on PATH"
+    else:
+        try:
+            result = subprocess.run(
+                [target, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_CHAT_DELEGATE_PROBE_TIMEOUT_SECS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            reason = f"{target} --version did not answer in {_CHAT_DELEGATE_PROBE_TIMEOUT_SECS}s"
+        except OSError as exc:
+            # A dangling link lands here as FileNotFoundError: the link exists,
+            # the release it points at was removed.
+            reason = f"{target} cannot be launched ({exc.strerror or type(exc).__name__})"
+        else:
+            if result.returncode == 0:
+                version = (result.stdout or result.stderr).strip()
+            else:
+                reason = f"{target} --version exited {result.returncode}"
+    if reason is None:
+        print(f"  kiro-cli-chat: ✅ {version or target}")
+        return
+    if not required:
+        print(
+            f"  kiro-cli-chat: ⚠️  Kiro CLI is broken: {reason} (not used by the selected backends)"
+        )
+        print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
+        return
+    print(f"  kiro-cli-chat: ❌ Kiro CLI is broken: {reason}")
+    print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
+    issues.append("Kiro CLI is broken (kiro-cli-chat will not launch): reinstall Kiro CLI")
 
 
 class DashboardBinding(NamedTuple):

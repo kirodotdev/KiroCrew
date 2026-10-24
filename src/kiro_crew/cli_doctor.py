@@ -87,6 +87,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
 )
 from kiro_crew.agent_sdk import kas_engine_gap
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401
     NATIVE_SKILL_ALIAS_PREFIX,
@@ -829,6 +830,21 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  kiro-cli:    ⚠️  exits with error (optional backend)")
     else:
         print("  kiro-cli:    ⏭  skipped (not installed)")
+    # The launcher answers ``--version`` itself; this row asks the chat binary
+    # every session actually execs, which is what a stale install breaks. It is
+    # fatal only when a harness that spawns kiro-cli is selected for either role:
+    # the Kiro CLI backend, or KAS served through kiro-cli's relay, as the main
+    # backend or as the crewmate backend (the loader already reads a member
+    # "kiro" as KAS). Positive tests, so a harness added later does not inherit
+    # a fatal row for a binary it never runs.
+    relay_kas = not cfg.agent.kas_bundle
+    services._doctor_kiro_chat_delegate(
+        kiro,
+        issues,
+        required=cfg.agent.acp_backend == ACP_BACKEND_KIRO
+        or (relay_kas and cfg.agent.acp_backend == ACP_BACKEND_KAS)
+        or (relay_kas and cfg.agent.member_acp_backend == ACP_BACKEND_KAS),
+    )
     services._doctor_gateway_reachability(dashboard, issues)
 
     # ── Summary ──

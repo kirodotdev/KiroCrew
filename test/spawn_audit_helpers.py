@@ -558,6 +558,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # a probe there would be the one reader the floor cannot fence. Those rows
         # print their declared remedy unprobed instead (``_doctor_agent_auth``).
         "cli_doctor_parts/host_probes.py::_kiro_cli_signed_in",
+        # ``kiro-cli-chat --version``: fixed argv with nothing interpolated, a 5 s
+        # timeout, read-only. The binary is the one the resolved kiro-cli launcher
+        # itself execs for every session (``~/.local/bin``, then ``PATH``, or the
+        # sibling in a macOS ``.app`` bundle), so probing it runs nothing a
+        # session start would not already run; no agent-influenced component.
+        "doctor_checks/services.py::_doctor_kiro_chat_delegate",
         # ``systemctl is-active <unit>`` probes for the memory-pressure
         # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
         # names), no agent influence, 5s-capped, read-only query.
