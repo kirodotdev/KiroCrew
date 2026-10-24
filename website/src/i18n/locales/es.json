@@ -19381,8 +19381,11 @@
       "export_lessons_draft_failed": "El borrador falló. Puedes escribir tú las lecciones.",
       "export_plan_changed": "Lo que sale cambió desde que se abrió esta vista. Revisa la lista de arriba y vuelve a pulsar Exportar archivo.",
       "export_lessons_refused": "El texto de lecciones contiene una credencial o un carácter de control. Quítalo y vuelve a exportar.",
-      "export_discard_lessons": "¿Descartar el texto de lecciones?",
-      "export_discard_lessons_confirm": "Descartar",
+      "export_lessons_exfil_url": "El texto de lecciones contiene un enlace que podría sacar datos. Quítalo y vuelve a exportar.",
+      "export_lessons_too_large": "El texto de lecciones supera 256 KiB. Acórtalo y vuelve a exportar.",
+      "export_discard_lessons": "¿Descartar las lecciones escritas para este archivo?",
+      "export_discard_lessons_body": "La memoria del miembro no cambia.",
+      "export_discard_lessons_confirm": "Descartar texto",
       "export_reason_first_goal_only": "En este archivo solo cabe el primer objetivo"
     },
     "tasksCapacityCard": {

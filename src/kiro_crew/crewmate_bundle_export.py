@@ -13,9 +13,9 @@ the plan. No :data:`~kiro_crew.portability_archive.EXPORT_EXCLUDE` name is opene
 Until the mate-owned per-mate file exists (RFC §5.7), ``agent.json`` carries no MCP
 server and no skill entry, the one part of the file that waits on it. The template's
 MCP servers are still listed in the preview, with the keys a receiver would fill in,
-and marked as not in the file. Rules, crons and bundled skills are written in the full
-§5.2 format; the reader on main still refuses rules and skills until Phase 1 widens
-it (§5.2 "Phase 1 widens ``crewmate_bundle.py`` to read them").
+and marked as not in the file. Rules, crons and bundled skills are written in the §5.2
+format Phase 1's reader (``crewmate_bundle.py``) takes, inside its list caps, so a file
+this writes never refuses on import.
 """
 
 from __future__ import annotations
@@ -34,8 +34,20 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
-from kiro_crew.change_card_catalog_kinds import CREWMATE_FORMAT_VERSIONS
+from kiro_crew import change_card_catalog as catalog
+from kiro_crew import crewmate_bundle as reader
+from kiro_crew.change_card_catalog_kinds import _CREWMATE_NAME_MAX, CREWMATE_FORMAT_VERSIONS
+
+# Every cap and name rule is the reader's own (RFC §5.2), so the writer cannot drift
+# from what an import accepts. The names here are the ones this module and its tests use.
+from kiro_crew.crewmate_bundle import AVATAR_MAX_BYTES as MAX_AVATAR_BYTES
+from kiro_crew.crewmate_bundle import CARRIED_FILE_MAX_BYTES as MAX_FILE_BYTES
 from kiro_crew.crewmate_bundle import CREWMATE_FORMAT
+from kiro_crew.crewmate_bundle import ENTRY_MAX as MAX_ENTRIES
+from kiro_crew.crewmate_bundle import FILE_MAX_BYTES as MAX_BUNDLE_BYTES
+from kiro_crew.crewmate_bundle import JSON_MAX_BYTES as MAX_JSON_BYTES
+from kiro_crew.crewmate_bundle import SKILL_FILE
+from kiro_crew.crewmate_bundle import SKILL_FOLDER_MAX_BYTES as MAX_SKILL_BYTES
 from kiro_crew.guide_catalog import _has_control_chars, _redacts
 from kiro_crew.portability_archive import EXPORT_EXCLUDE, _is_excluded
 from kiro_crew.portability_templates import placeholder_mcp_values
@@ -43,20 +55,6 @@ from kiro_crew.preview_text import drop_format_chars
 
 FORMAT_VERSION = max(CREWMATE_FORMAT_VERSIONS)
 
-#: A skill folder, a file in one, and a cron script file (RFC §5.2).
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_FUNC_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-MAX_AVATAR_BYTES = 512 * 1024
-MAX_JSON_BYTES = 64 * 1024
-MAX_FILE_BYTES = 256 * 1024
-MAX_SKILL_BYTES = 1024 * 1024
-MAX_ENTRIES = 64
-
-GRANT_FIELDS = frozenset({"allowedTools", "autoApprove", "permissions"})
-AVATAR_EXTS = ("png", "jpg", "webp")
-SKILL_FILE = "SKILL.md"
 
 #: Why a part was left out. The confirm view words each one.
 REASON_SCRIPT_MISSING = "script_missing"
@@ -87,6 +85,15 @@ class ExportRefused(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _allowed_name(name: str) -> bool:
+    """Whether the reader takes *name* for a skill folder, a file in one or a cron script."""
+    try:
+        reader._part_name(name, "name")
+    except catalog.CardCatalogError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -201,7 +208,7 @@ def has_exfil_url(text: str) -> bool:
 def _strip_grants(value: Any) -> Any:
     """*value* with every grant field removed at any depth (``autoApprove`` sits per server too)."""
     if isinstance(value, dict):
-        return {k: _strip_grants(v) for k, v in value.items() if k not in GRANT_FIELDS}
+        return {k: _strip_grants(v) for k, v in value.items() if k not in reader._GRANT_KEYS}
     if isinstance(value, list):
         return [_strip_grants(v) for v in value]
     return value
@@ -236,12 +243,18 @@ def mcp_placeholder_rows(agent: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _read_capped(path: Path, within: Path, cap: int) -> bytes | str:
-    """Bytes of *path* through the link-refusing chokepoint, or a refusal reason."""
+def _read_capped(path: Path, within: Path, cap: int, *, canonical: bool = False) -> bytes | str:
+    """Bytes of *path* through the link-refusing chokepoint, or a refusal reason.
+
+    ``canonical`` says *within* is already resolved, so the chokepoint keeps it as
+    given instead of resolving it again through whatever now sits at that path.
+    """
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 
     try:
-        data = safe_read_file_bytes_nolink(str(path), within_root=str(within), max_bytes=cap)
+        data = safe_read_file_bytes_nolink(
+            str(path), within_root=str(within), max_bytes=cap, within_root_is_canonical=canonical
+        )
     except FileTooLargeError:
         return REASON_TOO_LARGE
     except OSError:
@@ -277,11 +290,11 @@ def read_cron_script(spec: str, crons_root: Path) -> tuple[str, str, str] | Left
         return LeftOut("cron", "", REASON_SCRIPT_REFUSED)
     path = Path(file_path)
     root = crons_root.resolve()
-    if path.parent != root or not NAME_RE.fullmatch(path.name) or path.suffix != ".py":
+    if path.parent != root or not _allowed_name(path.name) or path.suffix != ".py":
         return LeftOut("cron", "", REASON_SCRIPT_REFUSED)
     if text_refusal(path.name) or text_refusal(func):
         return LeftOut("cron", "", REASON_CREDENTIAL)
-    if not _FUNC_RE.fullmatch(func):
+    if not reader._FUNC_RE.fullmatch(func):
         return LeftOut("cron", "", REASON_SCRIPT_REFUSED)
     data = _read_capped(path, root, MAX_FILE_BYTES)
     if isinstance(data, str):
@@ -297,14 +310,23 @@ def read_cron_script(spec: str, crons_root: Path) -> tuple[str, str, str] | Left
     return path.name, func, text
 
 
-def _schedule(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict) or raw.get("kind") not in ("every", "at", "cron"):
+def _cron_expr(raw: Any) -> str | None:
+    """The job's 5-field cron expression, or ``None`` when its schedule cannot travel.
+
+    The reader (``crewmate_bundle._crons``) takes a ``cron_expr`` and nothing else, so
+    an ``every`` or ``at`` schedule stays home, listed as not portable, and the
+    expression meets the reader's own check here, so a file never holds one it refuses.
+    """
+    if not isinstance(raw, dict) or raw.get("kind") != "cron":
         return None
-    out: dict[str, Any] = {"kind": raw["kind"]}
-    for key in ("every_secs", "at_ts", "cron_expr"):
-        if raw.get(key) is not None:
-            out[key] = raw[key]
-    return out
+    expr = raw.get("cron_expr")
+    if not isinstance(expr, str):
+        return None
+    try:
+        clean, _tz = catalog._clean_cron({"cron_expr": expr}, required=True)
+    except catalog.CardCatalogError:
+        return None
+    return clean
 
 
 def portable_crons(
@@ -328,22 +350,26 @@ def portable_crons(
         if job.get("command"):
             left_out.append(LeftOut("cron", name, REASON_SHELL_COMMAND))
             continue
-        schedule = _schedule(job.get("schedule"))
+        raw_schedule = job.get("schedule")
         tz = job.get("timezone")
-        refusal = _text_refusal([schedule, tz])
+        refusal = _text_refusal([raw_schedule, tz])
         if refusal:
             left_out.append(LeftOut("cron", "", refusal))
             continue
-        if schedule is None:
-            left_out.append(LeftOut("cron", name, REASON_NOT_PORTABLE))
-            continue
+        expr = _cron_expr(raw_schedule)
         raw_message = job.get("message")
         message = raw_message if isinstance(raw_message, str) else ""
+        # The reader needs a prompt on a cron with no script, and refuses an empty one.
+        if expr is None or (not job.get("script") and not message.strip()):
+            left_out.append(LeftOut("cron", name, REASON_NOT_PORTABLE))
+            continue
         refusal = text_refusal(message)
         if refusal:
             left_out.append(LeftOut("cron", name, refusal))
             continue
-        entry: dict[str, Any] = {"name": name, "message": message, "schedule": schedule}
+        entry: dict[str, Any] = {"name": name, "cron_expr": expr}
+        if message.strip():
+            entry["message"] = message
         if isinstance(tz, str) and tz:
             entry["timezone"] = tz[:64]
         spec = job.get("script")
@@ -357,18 +383,41 @@ def portable_crons(
                 left_out.append(LeftOut("cron", name, got.reason))
                 continue
             file_name, func, source = got
-            if file_name in scripts:
+            if file_name.casefold() in {n.casefold() for n in scripts}:
                 left_out.append(LeftOut("cron", name, REASON_SCRIPT_SHARED))
                 continue
-            scripts[file_name] = source
-            entry["script"] = f"crons/{file_name}:{func}"
+            # The reader pairs ``<file>.py:<function>`` with the ``crons/<file>.py`` entry.
+            entry["script"] = f"{file_name}:{func}"
+        # The reader's own check on this one cron (prompt length, a carriage return,
+        # name), so the file never holds a cron that refuses the whole import.
+        try:
+            reader._crons([entry])
+        except catalog.CardCatalogError:
+            left_out.append(LeftOut("cron", name, REASON_NOT_PORTABLE))
+            continue
+        if len(crons) >= reader._MAX_CRONS:
+            left_out.append(LeftOut("cron", name, REASON_BUNDLE_FULL))
+            continue
+        if "script" in entry:
+            scripts[entry["script"].split(":", 1)[0]] = source
         crons.append(entry)
     return crons, scripts, left_out
 
 
-def _scan(directory: Path) -> list[os.DirEntry[str]]:
+class _TooManyEntries(Exception):
+    """A folder lists more entries than any file could carry."""
+
+
+def _scan(directory: Path, limit: int | None = None) -> list[os.DirEntry[str]]:
+    """The folder's entries by name. With *limit*, stops listing past it and raises,
+    so a folder of thousands of files is never held whole."""
+    out: list[os.DirEntry[str]] = []
     with os.scandir(directory) as it:
-        return sorted(it, key=lambda e: e.name)
+        for entry in it:
+            out.append(entry)
+            if limit is not None and len(out) > limit:
+                raise _TooManyEntries(str(directory))
+    return sorted(out, key=lambda e: e.name)
 
 
 def _entry_is_link(entry: os.DirEntry[str]) -> bool:
@@ -380,9 +429,13 @@ def _entry_is_link(entry: os.DirEntry[str]) -> bool:
 def _read_skill(directory: Path) -> dict[str, str] | str:
     """Every file of one skill folder as text, or the reason the skill stays home."""
     files: dict[str, str] = {}
+    seen: set[str] = set()
     total = 0
     try:
-        entries = _scan(directory)
+        # No file holds more than MAX_ENTRIES entries, so a folder with more stays home.
+        entries = _scan(directory, MAX_ENTRIES)
+    except _TooManyEntries:
+        return REASON_TOO_LARGE
     except OSError:
         return REASON_UNREADABLE
     for entry in entries:
@@ -392,14 +445,21 @@ def _read_skill(directory: Path) -> dict[str, str] | str:
             return REASON_SUBFOLDER
         if entry.name in EXPORT_EXCLUDE or _is_excluded(PurePosixPath(entry.name)):
             return REASON_EXCLUDED
-        if not NAME_RE.fullmatch(entry.name):
+        # The reader folds case when it checks for a name used twice.
+        if not _allowed_name(entry.name) or entry.name.casefold() in seen:
             return REASON_BAD_NAME
+        seen.add(entry.name.casefold())
         if text_refusal(entry.name):
             # A file NAME travels too (preview keys, zip entry names).
             return REASON_CREDENTIAL
-        if not stat.S_ISREG(entry.stat(follow_symlinks=False).st_mode):
+        try:
+            regular = stat.S_ISREG(entry.stat(follow_symlinks=False).st_mode)
+        except OSError:
             return REASON_UNREADABLE
-        data = _read_capped(directory / entry.name, directory, MAX_FILE_BYTES)
+        if not regular:
+            return REASON_UNREADABLE
+        # *directory* is already resolved: kept literal, a swap for a link cannot widen it.
+        data = _read_capped(directory / entry.name, directory, MAX_FILE_BYTES, canonical=True)
         if isinstance(data, str):
             return data
         total += len(data)
@@ -417,10 +477,16 @@ def _read_skill(directory: Path) -> dict[str, str] | str:
     return files
 
 
-def bundled_skills(root: Path | None) -> tuple[dict[str, dict[str, str]], list[LeftOut]]:
+def bundled_skills(
+    root: Path | None, picked: frozenset[str] | None = None
+) -> tuple[dict[str, dict[str, str]], list[LeftOut]]:
     """The skill folders under *root* that can travel as files, and the ones that cannot.
 
-    Never follows a link: a linked root, folder or file leaves that part out.
+    Never follows a link: a linked root, folder or file leaves that part out. The
+    root is resolved once and every read is held inside that one path, so a folder
+    swapped for a link mid-walk cannot move the boundary. Only what a file could
+    carry is kept: a folder not in *picked*, or past the reader's skill count or the
+    bundle's size cap, is never read into memory.
     """
     from kiro_crew.platform_compat import is_link_or_junction
 
@@ -431,13 +497,16 @@ def bundled_skills(root: Path | None) -> tuple[dict[str, dict[str, str]], list[L
             return {}, [LeftOut("skill", "", REASON_LINK)]
         if not root.is_dir():
             return {}, []
-        entries = _scan(root)
+        canon = Path(os.path.realpath(root))
+        entries = _scan(canon)
     except OSError:
         return {}, [LeftOut("skill", "", REASON_UNREADABLE)]
     skills: dict[str, dict[str, str]] = {}
     left_out: list[LeftOut] = []
+    folded: set[str] = set()
+    held = 0
     for entry in entries:
-        shown = entry.name if NAME_RE.fullmatch(entry.name) and not text_refusal(entry.name) else ""
+        shown = entry.name if _allowed_name(entry.name) and not text_refusal(entry.name) else ""
         if _entry_is_link(entry):
             left_out.append(LeftOut("skill", shown, REASON_LINK))
             continue
@@ -446,11 +515,26 @@ def bundled_skills(root: Path | None) -> tuple[dict[str, dict[str, str]], list[L
         if not shown:
             left_out.append(LeftOut("skill", "", REASON_BAD_NAME))
             continue
-        got = _read_skill(root / entry.name)
+        if entry.name.casefold() in folded:
+            # A second folder whose name differs only in case: the reader refuses both.
+            left_out.append(LeftOut("skill", shown, REASON_BAD_NAME))
+            continue
+        folded.add(entry.name.casefold())
+        if picked is not None and entry.name not in picked:
+            continue
+        if len(skills) >= reader._MAX_SKILLS or held >= MAX_BUNDLE_BYTES:
+            left_out.append(LeftOut("skill", shown, REASON_BUNDLE_FULL))
+            continue
+        got = _read_skill(canon / entry.name)
         if isinstance(got, str):
             left_out.append(LeftOut("skill", shown, got))
-        else:
-            skills[entry.name] = got
+            continue
+        size = sum(len(t.encode("utf-8")) for t in got.values())
+        if held + size > MAX_BUNDLE_BYTES:
+            left_out.append(LeftOut("skill", shown, REASON_BUNDLE_FULL))
+            continue
+        held += size
+        skills[entry.name] = got
     return skills, left_out
 
 
@@ -623,16 +707,6 @@ def portable_image(ext: str, data: bytes) -> bytes | None:
         return None
 
 
-def _sniff(data: bytes) -> str:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "jpg"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp"
-    return ""
-
-
 def lessons_skill_name(slug: str) -> str:
     """``<slug>-lessons``, held to the §5.2 name pattern."""
     suffix = "-lessons"
@@ -650,24 +724,44 @@ def plan_export(
     the crewmate itself cannot leave (its name or the lessons text fails the checks)."""
     # Before text_refusal, whose credential pass also removes these links: named on
     # its own, the owner is told it is the link, not a credential, that stops the file.
+    # A refusal of the lessons text carries a ``lessons_`` code, so the view can tell
+    # it from a refusal of the crewmate itself.
     if choices.lessons and has_exfil_url(choices.lessons):
-        raise ExportRefused("exfil_url", "the lessons hold a link that could carry data out")
-    for label, text in (("name", src.name), ("lessons", choices.lessons or "")):
-        refusal = text_refusal(text)
-        if refusal:
-            raise ExportRefused(refusal, f"the {label} holds a credential or control character")
+        raise ExportRefused(
+            "lessons_exfil_url", "the lessons hold a link that could carry data out"
+        )
+    refusal = text_refusal(choices.lessons or "")
+    if refusal:
+        raise ExportRefused(
+            f"lessons_{refusal}", "the lessons hold a credential or control character"
+        )
+    refusal = text_refusal(src.name)
+    if refusal:
+        raise ExportRefused(refusal, "the name holds a credential or control character")
     if not src.name.strip():
         raise ExportRefused("invalid_name", "the crewmate has no name")
+    try:
+        # The name the import card takes, so a file never carries one it refuses.
+        catalog._member_name({"name": src.name}, "name", max_len=_CREWMATE_NAME_MAX)
+    except catalog.CardCatalogError as exc:
+        raise ExportRefused("invalid_name", f"the name cannot be imported: {exc}") from None
     left: list[LeftOut] = []
 
     description = src.description
     if description and text_refusal(description):
         left.append(LeftOut("description", "", text_refusal(description) or ""))
         description = ""
+    if "\r" in description:
+        # The reader refuses a carriage return in the description and the rules.
+        left.append(LeftOut("description", "", REASON_CONTROL_CHARS))
+        description = ""
+    if len(description) > reader.DESCRIPTION_MAX_CHARS:
+        left.append(LeftOut("description", "", REASON_TOO_LARGE))
+        description = ""
 
     rules: str | None = None
     if choices.rules and src.rules:
-        refusal = text_refusal(src.rules)
+        refusal = text_refusal(src.rules) or (REASON_CONTROL_CHARS if "\r" in src.rules else "")
         if refusal:
             left.append(LeftOut("rules", "", refusal))
         else:
@@ -685,16 +779,16 @@ def plan_export(
         crons, scripts, cron_left = portable_crons(src.crons, src.crons_root)
         left += cron_left
 
-    found, skill_left = bundled_skills(src.skills_root)
+    found, skill_left = bundled_skills(src.skills_root, choices.skills)
     left += skill_left
     lessons_name = ""
     if choices.lessons is not None and choices.lessons.strip():
         lessons_name = lessons_skill_name(slug)
-        if lessons_name in found:
-            left.append(LeftOut("skill", lessons_name, REASON_NAME_TAKEN))
-            del found[lessons_name]
+        for taken in [n for n in found if n.casefold() == lessons_name.casefold()]:
+            left.append(LeftOut("skill", taken, REASON_NAME_TAKEN))
+            del found[taken]
         if len(choices.lessons.encode("utf-8")) > MAX_FILE_BYTES:
-            raise ExportRefused(REASON_TOO_LARGE, "the lessons text is over 256 KiB")
+            raise ExportRefused("lessons_too_large", "the lessons text is over 256 KiB")
     skills = {
         name: files
         for name, files in found.items()
@@ -707,7 +801,10 @@ def plan_export(
     traits: dict[str, Any] = {}
     kind = src.avatar.get("kind") if isinstance(src.avatar, dict) else None
     if kind == "image" and src.avatar_image:
-        ext = _sniff(src.avatar_image)
+        # The upload route's own sniffer, which the import side's check calls too.
+        from kiro_crew.dashboard.handlers.agents import _sniff_image_ext
+
+        ext = _sniff_image_ext(src.avatar_image[:16])
         pixels = portable_image(ext, src.avatar_image) if ext else None
         if pixels is None:
             left.append(LeftOut("avatar", "", REASON_NOT_PORTABLE))
@@ -779,7 +876,22 @@ def plan_export(
         raise ExportRefused(
             refusal, "a part of this crewmate holds a credential or control character"
         )
+    _check_importable(plan)
     return plan
+
+
+def _check_importable(plan: ExportPlan) -> None:
+    """Read the planned file back through Phase 1's reader, as an import would.
+
+    The checks above leave out each part the reader refuses, naming it. This is the
+    last check: should any rule still differ, the export stops here with the
+    reader's own words, rather than handing the owner a file every import refuses.
+    """
+    try:
+        parsed = reader.read_crewmate_file(write_bundle(plan))
+        reader.crewmate_import_params(parsed.bundle, parsed)
+    except catalog.CardCatalogError as exc:
+        raise ExportRefused("not_importable", f"the file would not import: {exc}") from None
 
 
 def _over_caps(plan: ExportPlan) -> bool:
@@ -812,6 +924,10 @@ def _fit_skills(plan: ExportPlan, skills: dict[str, dict[str, str]]) -> None:
     order = sorted(skills, key=lambda n: (n != plan.lessons_name, n))
     for name in order:
         files = skills[name]
+        if len(plan.skills) >= reader._MAX_SKILLS:
+            # The reader names at most this many skills; one more refuses the file.
+            plan.left_out.append(LeftOut("skill", name, REASON_BUNDLE_FULL))
+            continue
         plan.skills[name] = files
         plan.manifest["skills"] = [{"name": n, "source": "bundled"} for n in sorted(plan.skills)]
         if _over_caps(plan):
@@ -842,7 +958,7 @@ def _fit_parts(plan: ExportPlan) -> None:
         cron = plan.crons.pop()
         script = cron.get("script")
         if script:
-            plan.scripts.pop(script[len("crons/") :].split(":", 1)[0], None)
+            plan.scripts.pop(script.split(":", 1)[0], None)
         plan.left_out.append(LeftOut("cron", cron["name"], REASON_BUNDLE_FULL))
 
 
@@ -907,7 +1023,7 @@ def _preview_body(plan: ExportPlan) -> dict[str, Any]:
         "goals": plan.goals,
         "crons": [
             (
-                {**c, "source": plan.scripts.get(c["script"][6:].split(":", 1)[0], "")}
+                {**c, "source": plan.scripts.get(c["script"].split(":", 1)[0], "")}
                 if "script" in c
                 else c
             )

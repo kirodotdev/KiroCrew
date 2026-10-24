@@ -42,6 +42,8 @@ SKILL_FOLDER_MAX_BYTES = 1024 * 1024
 #: Bounds a bundle's lists so a card stays small; not a §5.2 cap.
 _MAX_SKILLS = 32
 _MAX_CRONS = 16
+#: The longest ``description`` an import takes (the export writer reads it too).
+DESCRIPTION_MAX_CHARS = 1000
 
 #: ``<name>`` and ``<file>`` of the two folders (§5.2): no slash, no drive letter.
 PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -385,7 +387,9 @@ def crewmate_import_params(bundle: Any, files: CrewmateFile | None = None) -> di
     params: dict[str, Any] = {
         "name": m.get("name"),
         "format_version": version,
-        "description": _text(m.get("description") or "", "description", max_len=1000),
+        "description": _text(
+            m.get("description") or "", "description", max_len=DESCRIPTION_MAX_CHARS
+        ),
         "goal": goals.get("longTerm") or None,
         "sender": sender.get("label"),
     }

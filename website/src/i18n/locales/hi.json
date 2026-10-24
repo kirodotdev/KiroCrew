@@ -19087,8 +19087,11 @@
       "export_lessons_draft_failed": "मसौदा विफल रहा। तुम सीख खुद लिख सकते हो।",
       "export_plan_changed": "यह दृश्य खुलने के बाद जो जाएगा वह बदल गया है। ऊपर की सूची देखो, फिर फ़ाइल निर्यात करो दोबारा दबाओ।",
       "export_lessons_refused": "सीख के पाठ में क्रेडेंशियल या नियंत्रण वर्ण है। उसे हटाओ, फिर दोबारा निर्यात करो।",
-      "export_discard_lessons": "सीख का पाठ छोड़ दो?",
-      "export_discard_lessons_confirm": "छोड़ो",
+      "export_lessons_exfil_url": "सीख के पाठ में ऐसा लिंक है जो डेटा बाहर ले जा सकता है। उसे हटाओ, फिर दोबारा निर्यात करो।",
+      "export_lessons_too_large": "सीख का पाठ 256 KiB से बड़ा है। उसे छोटा करो, फिर दोबारा निर्यात करो।",
+      "export_discard_lessons": "इस फ़ाइल के लिए लिखी सीख छोड़ दो?",
+      "export_discard_lessons_body": "क्रू सदस्य की याददाश्त नहीं बदलती।",
+      "export_discard_lessons_confirm": "पाठ छोड़ो",
       "export_reason_first_goal_only": "इस फ़ाइल में केवल पहला लक्ष्य समाता है"
     },
     "tasksCapacityCard": {

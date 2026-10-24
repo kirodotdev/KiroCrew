@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import type { CrewmateExportChoices, CrewmateExportPreview } from '../../api/client'
+import { ApiError } from '../../api/apiError'
+import { i18nT } from '../../i18n/t'
 
 const memberExportPreview = vi.fn()
 const memberExportFile = vi.fn()
@@ -40,7 +42,7 @@ const view = (over: Partial<CrewmateExportPreview> = {}): CrewmateExportPreview 
   avatar_digest: 'avatar-shown',
   rules: 'Ask before pushing.',
   goals: { longTerm: 'Ship release notes', keyResults: [{ text: 'Notes out', target: 'weekly' }] },
-  crons: [{ name: 'notes', message: '', schedule: { kind: 'every', every_secs: 60 }, script: 'crons/notes.py:run', source: 'def run():\n    pass\n' }],
+  crons: [{ name: 'notes', cron_expr: '0 9 * * *', script: 'notes.py:run', source: 'def run():\n    pass\n' }],
   skills: [{ name: 'triage', lessons: false, files: { 'SKILL.md': '# Triage', 'helper.py': 'print(1)' } }],
   mcp_servers: [{ server: 'gh', placeholders: ['env.GITHUB_TOKEN'] }],
   mcp_in_file: false,
@@ -165,7 +167,7 @@ describe('CrewExportView', () => {
   })
 
   it('shows each schedule prompt that leaves', async () => {
-    servePlan(view({ crons: [{ name: 'daily', message: 'Summarise my inbox', schedule: { kind: 'every', every_secs: 60 }, timezone: 'Europe/Paris' }] }))
+    servePlan(view({ crons: [{ name: 'daily', cron_expr: '0 9 * * *', message: 'Summarise my inbox', timezone: 'Europe/Paris' }] }))
     renderWithProviders(<CrewExportView slug="scout" member="scout" />)
     const cron = await screen.findByTestId('crew-export-cron')
     expect(within(cron).getByTestId('crew-export-cron-message').textContent).toBe('Summarise my inbox')
@@ -247,6 +249,34 @@ describe('CrewExportView', () => {
     fireEvent.click(within(screen.getByTestId('crew-export-lessons')).getByRole('switch'))
     fireEvent.change(screen.getByTestId('crew-export-lessons-editor'), { target: { value: 'x' } })
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+  })
+
+  it('still reports dirty after the lessons toggle turns off, since the view keeps the text', async () => {
+    servePlan(view({ skills: [] }))
+    const onDirtyChange = vi.fn()
+    renderWithProviders(<CrewExportView slug="scout" member="scout" onDirtyChange={onDirtyChange} />)
+    await screen.findByTestId('crew-export-view')
+    const toggle = () => within(screen.getByTestId('crew-export-lessons')).getByRole('switch')
+    fireEvent.click(toggle())
+    fireEvent.change(screen.getByTestId('crew-export-lessons-editor'), { target: { value: 'x' } })
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+    fireEvent.click(toggle())
+    await waitFor(() => expect(screen.queryByTestId('crew-export-lessons-editor')).toBeNull())
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it.each([
+    ['lessons_credential', 'pages.membersPage.export_lessons_refused'],
+    ['lessons_exfil_url', 'pages.membersPage.export_lessons_exfil_url'],
+    ['lessons_too_large', 'pages.membersPage.export_lessons_too_large'],
+    ['invalid_name', 'pages.membersPage.export_failed'],
+  ])('words a %s refusal on the press as its own cause', async (code, key) => {
+    servePlan(view())
+    memberExportFile.mockRejectedValue(new ApiError(400, 'no', JSON.stringify({ error: 'no', code })))
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    await screen.findByTestId('crew-export-view')
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    expect((await screen.findByTestId('crew-export-error')).textContent).toContain(i18nT(key))
   })
 
   it('shows a built-in dashboard id as is', async () => {

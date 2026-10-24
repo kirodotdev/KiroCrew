@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api, type CrewmateExportChoices, type CrewmateExportPreview } from '../../api/client'
+import { apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
@@ -112,7 +113,8 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
     mutationFn: () => api.memberExportLessonsDraft(slug, member),
     onSuccess: r => setLessons(prev => (prev.trim() ? prev : r.text)),
   })
-  const dirty = lessonsOn && lessons.trim() !== ''
+  // Typed text counts while the toggle is off too: the view keeps it, and an exit drops it.
+  const dirty = lessons.trim() !== ''
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
   const turnLessons = (on: boolean) => {
@@ -188,10 +190,16 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
   }
   const v = checked?.plan ?? preview.data
   const leftOut = v.left_out
-  // A 400 on the press is the lessons text failing the credential check.
-  const saveError = (save.error as { status?: number } | null)?.status === 400
-    ? t('pages.membersPage.export_lessons_refused')
-    : t('pages.membersPage.export_failed')
+  // Only a `lessons_` code is the lessons text failing a check; any other refusal is
+  // about the crewmate, so it gets the general message.
+  const saveCode = apiErrorCode(save.error)
+  const saveError = saveCode === 'lessons_exfil_url'
+    ? t('pages.membersPage.export_lessons_exfil_url')
+    : saveCode === 'lessons_too_large'
+      ? t('pages.membersPage.export_lessons_too_large')
+      : saveCode.startsWith('lessons_')
+        ? t('pages.membersPage.export_lessons_refused')
+        : t('pages.membersPage.export_failed')
   const ownSkills = v.skills.filter(s => !s.lessons)
   const toggleSkill = (name: string, on: boolean) => setSkippedSkills(prev => {
     const next = new Set(prev)

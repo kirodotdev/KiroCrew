@@ -19087,8 +19087,11 @@
       "export_lessons_draft_failed": "Der Entwurf ist fehlgeschlagen. Du kannst die Erkenntnisse selbst schreiben.",
       "export_plan_changed": "Was mitgeht, hat sich seit dem Öffnen dieser Ansicht geändert. Prüf die Liste oben und drück dann noch einmal auf Datei exportieren.",
       "export_lessons_refused": "Der Erkenntnis-Text enthält Zugangsdaten oder ein Steuerzeichen. Entfern sie und exportier erneut.",
-      "export_discard_lessons": "Erkenntnis-Text verwerfen?",
-      "export_discard_lessons_confirm": "Verwerfen",
+      "export_lessons_exfil_url": "Der Erkenntnis-Text enthält einen Link, der Daten hinaustragen könnte. Entfern ihn und exportier erneut.",
+      "export_lessons_too_large": "Der Erkenntnis-Text ist größer als 256 KiB. Kürz ihn und exportier erneut.",
+      "export_discard_lessons": "Die für diese Datei geschriebenen Erkenntnisse verwerfen?",
+      "export_discard_lessons_body": "Das Gedächtnis des Crew-Mitglieds bleibt unverändert.",
+      "export_discard_lessons_confirm": "Text verwerfen",
       "export_reason_first_goal_only": "Nur das erste Ziel passt in diese Datei"
     },
     "tasksCapacityCard": {

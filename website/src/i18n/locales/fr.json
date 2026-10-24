@@ -19381,8 +19381,11 @@
       "export_lessons_draft_failed": "Le brouillon a échoué. Tu peux écrire les leçons toi-même.",
       "export_plan_changed": "Ce qui part a changé depuis l'ouverture de cette vue. Vérifie la liste ci-dessus, puis appuie à nouveau sur Exporter le fichier.",
       "export_lessons_refused": "Le texte des leçons contient un identifiant ou un caractère de contrôle. Retire-le, puis exporte à nouveau.",
-      "export_discard_lessons": "Abandonner le texte des leçons ?",
-      "export_discard_lessons_confirm": "Abandonner",
+      "export_lessons_exfil_url": "Le texte des leçons contient un lien qui pourrait faire sortir des données. Retire-le, puis exporte à nouveau.",
+      "export_lessons_too_large": "Le texte des leçons dépasse 256 Kio. Raccourcis-le, puis exporte à nouveau.",
+      "export_discard_lessons": "Abandonner les leçons écrites pour ce fichier ?",
+      "export_discard_lessons_body": "La mémoire du membre ne change pas.",
+      "export_discard_lessons_confirm": "Abandonner le texte",
       "export_reason_first_goal_only": "Seul le premier objectif tient dans ce fichier"
     },
     "tasksCapacityCard": {

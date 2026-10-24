@@ -19087,8 +19087,11 @@
       "export_lessons_draft_failed": "খসড়া ব্যর্থ হয়েছে। তুমি নিজে শিক্ষাগুলো লিখতে পারো।",
       "export_plan_changed": "এই ভিউ খোলার পর যা যাবে তা বদলেছে। উপরের তালিকা দেখো, তারপর আবার ফাইল রপ্তানি করো চাপো।",
       "export_lessons_refused": "শিক্ষার লেখায় ক্রেডেনশিয়াল বা নিয়ন্ত্রণ অক্ষর আছে। সেটি সরিয়ে আবার রপ্তানি করো।",
-      "export_discard_lessons": "শিক্ষার লেখা বাদ দেবে?",
-      "export_discard_lessons_confirm": "বাদ দাও",
+      "export_lessons_exfil_url": "শিক্ষার লেখায় এমন লিংক আছে যা ডেটা বাইরে নিতে পারে। সেটি সরিয়ে আবার রপ্তানি করো।",
+      "export_lessons_too_large": "শিক্ষার লেখা 256 KiB-এর বেশি। ছোট করে আবার রপ্তানি করো।",
+      "export_discard_lessons": "এই ফাইলের জন্য লেখা শিক্ষা বাদ দেবে?",
+      "export_discard_lessons_body": "সদস্যের স্মৃতি বদলায় না।",
+      "export_discard_lessons_confirm": "লেখা বাদ দাও",
       "export_reason_first_goal_only": "এই ফাইলে শুধু প্রথম লক্ষ্যটি আঁটে"
     },
     "tasksCapacityCard": {

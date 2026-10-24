@@ -567,6 +567,7 @@ export default function MembersPage() {
     if (!exportDraft.current) return true
     return confirmSched({
       title: t('pages.membersPage.export_discard_lessons'),
+      body: t('pages.membersPage.export_discard_lessons_body'),
       confirmLabel: t('pages.membersPage.export_discard_lessons_confirm'),
     })
   }, [confirmSched, t])
@@ -611,7 +612,7 @@ export default function MembersPage() {
     if (!schedulesMounted) return true
     if (schedSaving.current || goalsDraft.current.busy) return false
     if (goalsDraft.current.dirty && !window.confirm(t('components.markdownPanel.discard_unsaved_changes'))) return false
-    if (exportDraft.current && !window.confirm(t('pages.membersPage.export_discard_lessons'))) return false
+    if (exportDraft.current && !window.confirm(`${t('pages.membersPage.export_discard_lessons')}\n${t('pages.membersPage.export_discard_lessons_body')}`)) return false
     if (!schedDraftDirty.current) return true
     const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
     if (ok) releaseSchedRetention()

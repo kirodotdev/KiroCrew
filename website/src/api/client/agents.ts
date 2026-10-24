@@ -37,7 +37,7 @@ export interface CrewmateExportPreview {
   avatar_digest: string
   rules: string | null
   goals: { longTerm: string; keyResults: { text: string; target: string }[] } | null
-  crons: { name: string; message: string; schedule: Record<string, unknown>; timezone?: string; script?: string; source?: string }[]
+  crons: { name: string; cron_expr: string; message?: string; timezone?: string; script?: string; source?: string }[]
   skills: { name: string; lessons: boolean; files: Record<string, string> }[]
   mcp_servers: { server: string; placeholders: string[] }[]
   /** False until the per-mate config lands: MCP servers are listed, not carried. */

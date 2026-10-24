@@ -18793,8 +18793,11 @@
       "export_lessons_draft_failed": "下書きに失敗しました。教訓はご自身で書けます。",
       "export_plan_changed": "この画面を開いてから、書き出す内容が変わりました。上の一覧を確認して、もう一度「ファイルを書き出す」を押してください。",
       "export_lessons_refused": "教訓のテキストに認証情報か制御文字があります。取り除いてからもう一度書き出してください。",
-      "export_discard_lessons": "教訓のテキストを破棄しますか？",
-      "export_discard_lessons_confirm": "破棄",
+      "export_lessons_exfil_url": "教訓のテキストにデータを持ち出せるリンクがあります。取り除いてからもう一度書き出してください。",
+      "export_lessons_too_large": "教訓のテキストが 256 KiB を超えています。短くしてからもう一度書き出してください。",
+      "export_discard_lessons": "このファイル用に書いた教訓を破棄しますか？",
+      "export_discard_lessons_body": "クルーメイトの記憶は変わりません。",
+      "export_discard_lessons_confirm": "テキストを破棄",
       "export_reason_first_goal_only": "このファイルには最初の目標だけが入ります"
     },
     "tasksCapacityCard": {

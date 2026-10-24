@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -21,7 +22,6 @@ from kiro_crew import crewmate_bundle_export as export_mod
 from kiro_crew import member_goals
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
-from kiro_crew.config.loader_pipeline import workspace_dir_for
 from kiro_crew.config.sections_session import DEFAULT_KIRO_TEMPLATE
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -85,7 +85,7 @@ def _dashboard(slug: str) -> tuple[str, bool]:
         entry = catalog.load_one(record.template_id)
     except Exception:
         return "", True
-    if entry.origin != catalog.BUILTIN_SOURCE or not export_mod.NAME_RE.fullmatch(entry.id):
+    if entry.origin != catalog.BUILTIN_SOURCE or not export_mod.reader.PART_RE.fullmatch(entry.id):
         return "", True
     return f"builtin:{entry.id}", False
 
@@ -140,9 +140,33 @@ def _gather(
         goals=member_goals.read_goals(slug, member),
         crons=crons,
         crons_root=config_dir() / "crons",
-        skills_root=workspace_dir_for(record.workspace) / "skills",
+        skills_root=_skills_root(cfg, record),
         agent_spec=_agent_spec(record.kiro_agent or DEFAULT_KIRO_TEMPLATE),
     )
+
+
+def _skills_root(cfg: KiroCrewConfig, record: Any) -> Path | None:
+    """``<the crewmate's own workspace>/.kiro/skills``, the folder its sessions read and
+    an import writes, or ``None`` when it has no workspace of its own.
+
+    Never the shared default workspace: those skills are not this crewmate's to pass on.
+    """
+    from kiro_crew.config.loader import workspace_dir_from_entry
+    from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+    from kiro_crew.platform_compat import is_link_or_junction
+
+    if not record.workspace or record.workspace == DEFAULT_WORKSPACE:
+        return None
+    entry = cfg.workspaces.get(record.workspace)
+    if entry is None:
+        return None
+    workspace = workspace_dir_from_entry(entry)
+    root = workspace / ".kiro" / "skills"
+    # The import route's rule: a link anywhere on the way could point at another
+    # folder's skills, so none are read.
+    if any(is_link_or_junction(p) for p in (workspace, workspace / ".kiro")):
+        return None
+    return root
 
 
 def _audit(request: web.Request, operation: str, slug: str) -> None:
@@ -218,12 +242,13 @@ async def api_member_export(request: web.Request) -> web.Response:
         logger.warning("export: a record of %r is unreadable", slug, exc_info=True)
         return _deny(500, "record_unreadable", "a record of this crewmate cannot be read")
     if body.get("preview") is True:
-        return web.json_response(export_mod.preview(plan))
+        # Serialising and hashing every carried file is megabytes of CPU work: off the loop.
+        return web.json_response(await asyncio.to_thread(export_mod.preview, plan))
     confirm = body.get("confirm")
     if confirm is not None:
         if not isinstance(confirm, str):
             return _deny(400, "invalid_choice", "'confirm' must be the preview's fingerprint")
-        if confirm != export_mod.plan_fingerprint(plan):
+        if confirm != await asyncio.to_thread(export_mod.plan_fingerprint, plan):
             # Something the owner confirmed changed before the file was built.
             return _deny(409, "plan_changed", "the export changed since it was shown")
     data = await asyncio.to_thread(export_mod.write_bundle, plan)
@@ -293,6 +318,73 @@ async def _member_lessons(store: str) -> str | None:
 #: draft just over the cap still reaches the route's own ``draft_too_large`` answer.
 _DRAFT_OUTPUT_MARGIN = 4096
 
+#: Prefix of the one-draft session key; a fresh uuid follows it on every draft.
+_DRAFT_KEY_PREFIX = "crewmate-export-lessons:"
+
+
+async def _draft_turn(request: web.Request, prompt: str) -> str:
+    """Run the draft as ONE tool-free turn in its own session, then destroy it.
+
+    Not the shared ``_bg`` one-liner: on a backend whose background turns share one
+    provider conversation, every draft would stay in that conversation, so a draft
+    for one crewmate would carry the last crewmate's lessons, and so would every
+    later background turn. Here each draft gets a new key, so its session starts
+    with no history, and the key is released and destroyed after the turn, so
+    nothing is left for a later turn to read. The same shape issue radar's
+    one-shot model call uses: ``kirocrew-lite`` (no tools), ``REJECT_ALL`` (every
+    permission request is refused and audited), release and destroy in ``finally``.
+    """
+    from uuid import uuid4
+
+    from kiro_crew.dashboard.request_priority import owner_start_priority
+    from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+    from kiro_crew.session import BACKGROUND_AGENT
+
+    sessions = request.app["state"].sessions
+    key = f"{_DRAFT_KEY_PREFIX}{uuid4().hex}"
+    budget = export_mod.MAX_FILE_BYTES + _DRAFT_OUTPUT_MARGIN
+    seen = 0
+
+    def _bound(chunk: str) -> None:
+        nonlocal seen
+        seen += len(chunk.encode("utf-8"))
+        if seen > budget:
+            raise ValueError("lessons draft exceeded its output budget")
+
+    provider, _new, _resumed = await sessions.get_or_create(
+        key, agent=BACKGROUND_AGENT, start_priority=owner_start_priority(request)
+    )
+    sid = ""
+    try:
+        sid = str(getattr(provider, "session_id", "") or "")
+        return await stream_and_collect(
+            provider,
+            prompt,
+            approval_policy=ToolApprovalPolicy.REJECT_ALL,
+            on_chunk=_bound,
+            session_key=key,
+            allow_image=False,
+        )
+    finally:
+        try:
+            sessions.release(key)
+        except Exception:
+            logger.debug("lessons draft: session release failed for %s", key, exc_info=True)
+        try:
+            await sessions.destroy(key)
+        except Exception:
+            logger.warning("lessons draft: session destroy failed for %s", key, exc_info=True)
+        # A persistent session's shutdown keeps its native transcript, which holds
+        # the lessons and the draft; this turn has no later use for it.
+        sid = sid or str(getattr(provider, "session_id", "") or "")
+        if sid:
+            try:
+                await provider.cleanup_session(sid)
+            except Exception:
+                logger.warning(
+                    "lessons draft: transcript cleanup failed for %s", key, exc_info=True
+                )
+
 
 async def api_member_export_lessons_draft(request: web.Request) -> web.Response:
     """POST /api/members/{slug}/export/lessons-draft — ``{member}`` → ``{text}``.
@@ -328,19 +420,8 @@ async def api_member_export_lessons_draft(request: web.Request) -> web.Response:
         return _deny(409, "no_private_memory", "this crewmate has no memory of its own")
     if not lessons.strip():
         return web.json_response({"text": ""})
-    from kiro_crew.dashboard.request_priority import owner_start_priority
-    from kiro_crew.llm_helpers import run_bg_oneliner
-
     try:
-        # The shared one-shot helper: tool-free by contract (every permission request
-        # is rejected and audited) and, with no crew_log_kind, charged to no session.
-        raw = await run_bg_oneliner(
-            request.app["state"].sessions,
-            _draft_prompt(record.display_name or member, lessons),
-            sel_source=_DRAFT_OPERATION,
-            start_priority=owner_start_priority(request),
-            max_output_bytes=export_mod.MAX_FILE_BYTES + _DRAFT_OUTPUT_MARGIN,
-        )
+        raw = await _draft_turn(request, _draft_prompt(record.display_name or member, lessons))
     except Exception:
         logger.warning("lessons draft: the turn failed for %r", slug, exc_info=True)
         return _deny(502, "draft_failed", "the draft could not be written")

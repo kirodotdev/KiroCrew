@@ -8242,8 +8242,11 @@
       "export_lessons_draft_failed": "The draft failed. You can write the lessons yourself.",
       "export_plan_changed": "What leaves changed since this view loaded. Check the list above, then press Export file again.",
       "export_lessons_refused": "The lessons text holds a credential or a control character. Remove it, then export again.",
-      "export_discard_lessons": "Discard the lessons text?",
-      "export_discard_lessons_confirm": "Discard",
+      "export_lessons_exfil_url": "The lessons text holds a link that could carry data out. Remove it, then export again.",
+      "export_lessons_too_large": "The lessons text is over 256 KiB. Shorten it, then export again.",
+      "export_discard_lessons": "Discard the lessons written for this file?",
+      "export_discard_lessons_body": "The mate's memory is not changed.",
+      "export_discard_lessons_confirm": "Discard text",
       "export_reason_first_goal_only": "Only the first goal fits in this file"
     },
     "migrationPage": {

@@ -19381,8 +19381,11 @@
       "export_lessons_draft_failed": "O rascunho falhou. Você pode escrever as lições.",
       "export_plan_changed": "O que sai mudou desde que esta tela abriu. Confira a lista acima e pressione Exportar arquivo de novo.",
       "export_lessons_refused": "O texto de lições contém uma credencial ou um caractere de controle. Remova-o e exporte de novo.",
-      "export_discard_lessons": "Descartar o texto de lições?",
-      "export_discard_lessons_confirm": "Descartar",
+      "export_lessons_exfil_url": "O texto de lições contém um link que poderia levar dados para fora. Remova-o e exporte de novo.",
+      "export_lessons_too_large": "O texto de lições passa de 256 KiB. Encurte-o e exporte de novo.",
+      "export_discard_lessons": "Descartar as lições escritas para este arquivo?",
+      "export_discard_lessons_body": "A memória do membro não muda.",
+      "export_discard_lessons_confirm": "Descartar texto",
       "export_reason_first_goal_only": "Só a primeira meta cabe neste arquivo"
     },
     "tasksCapacityCard": {

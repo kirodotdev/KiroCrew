@@ -19381,8 +19381,11 @@
       "export_lessons_draft_failed": "La bozza non è riuscita. Puoi scrivere tu le lezioni.",
       "export_plan_changed": "Ciò che esce è cambiato da quando si è aperta questa vista. Controlla l'elenco qui sopra, poi premi di nuovo Esporta file.",
       "export_lessons_refused": "Il testo delle lezioni contiene una credenziale o un carattere di controllo. Toglilo, poi esporta di nuovo.",
-      "export_discard_lessons": "Scartare il testo delle lezioni?",
-      "export_discard_lessons_confirm": "Scarta",
+      "export_lessons_exfil_url": "Il testo delle lezioni contiene un link che potrebbe portare fuori dati. Toglilo, poi esporta di nuovo.",
+      "export_lessons_too_large": "Il testo delle lezioni supera 256 KiB. Accorcialo, poi esporta di nuovo.",
+      "export_discard_lessons": "Scartare le lezioni scritte per questo file?",
+      "export_discard_lessons_body": "La memoria del membro non cambia.",
+      "export_discard_lessons_confirm": "Scarta il testo",
       "export_reason_first_goal_only": "In questo file entra solo il primo obiettivo"
     },
     "tasksCapacityCard": {

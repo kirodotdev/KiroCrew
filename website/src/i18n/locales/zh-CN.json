@@ -18793,8 +18793,11 @@
       "export_lessons_draft_failed": "起草失败。你可以自己写下经验。",
       "export_plan_changed": "这个视图打开后，要导出的内容变了。请看上面的列表，然后再按一次导出文件。",
       "export_lessons_refused": "经验文字里有凭据或控制字符。请删掉后再导出。",
-      "export_discard_lessons": "丢弃经验文字？",
-      "export_discard_lessons_confirm": "丢弃",
+      "export_lessons_exfil_url": "经验文字里有可能把数据带出去的链接。请删掉后再导出。",
+      "export_lessons_too_large": "经验文字超过 256 KiB。请缩短后再导出。",
+      "export_discard_lessons": "丢弃为这个文件写的经验？",
+      "export_discard_lessons_body": "这个队友的记忆不会改变。",
+      "export_discard_lessons_confirm": "丢弃文字",
       "export_reason_first_goal_only": "这个文件只放得下第一个目标"
     },
     "tasksCapacityCard": {

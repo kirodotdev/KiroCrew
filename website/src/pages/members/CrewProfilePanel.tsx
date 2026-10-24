@@ -1,4 +1,4 @@
-import { createContext, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
+import { createContext, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { AlarmClock, Brain, ChevronLeft, ChevronRight, Download, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -10,7 +10,8 @@ import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
 import CrewMonitorDetails, { type MonitorReadState } from './CrewMonitorDetails'
 import CrewScheduleList from './CrewScheduleList'
-import CrewExportView from './CrewExportView'
+// Loaded on first open, so the export view stays out of the profile card's chunk.
+const CrewExportView = lazy(() => import('./CrewExportView'))
 import { cn } from '../../lib/utils'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -566,7 +567,9 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               ) : pushed === 'notes' ? (
                 p.notesBody
               ) : pushed === 'export' ? (
-                <CrewExportView slug={p.member.slug} member={p.member.name} onDirtyChange={p.onExportDraftChange} />
+                <Suspense fallback={<div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t('pages.membersPage.export_loading')}</div>}>
+                  <CrewExportView slug={p.member.slug} member={p.member.name} onDirtyChange={p.onExportDraftChange} />
+                </Suspense>
               ) : (
                 p.newScheduleBody
               )}

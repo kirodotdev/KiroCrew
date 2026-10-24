@@ -18793,8 +18793,11 @@
       "export_lessons_draft_failed": "초안 작성에 실패했습니다. 교훈을 직접 적을 수 있습니다.",
       "export_plan_changed": "이 화면을 연 뒤 나갈 내용이 바뀌었습니다. 위 목록을 확인한 뒤 파일 내보내기를 다시 누르세요.",
       "export_lessons_refused": "교훈 글에 자격 증명이나 제어 문자가 있습니다. 지운 뒤 다시 내보내세요.",
-      "export_discard_lessons": "교훈 글을 버리시겠습니까?",
-      "export_discard_lessons_confirm": "버리기",
+      "export_lessons_exfil_url": "교훈 글에 데이터를 내보낼 수 있는 링크가 있습니다. 지운 뒤 다시 내보내세요.",
+      "export_lessons_too_large": "교훈 글이 256 KiB를 넘습니다. 줄인 뒤 다시 내보내세요.",
+      "export_discard_lessons": "이 파일을 위해 쓴 교훈을 버리시겠습니까?",
+      "export_discard_lessons_body": "멤버의 기억은 바뀌지 않습니다.",
+      "export_discard_lessons_confirm": "글 버리기",
       "export_reason_first_goal_only": "이 파일에는 첫 번째 목표만 들어갑니다"
     },
     "tasksCapacityCard": {

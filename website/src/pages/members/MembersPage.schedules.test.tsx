@@ -550,7 +550,8 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     const card = await screen.findByTestId('crew-profile-panel')
     fireEvent.click(within(card).getByRole('tab', { name: 'Profile' }))
     fireEvent.click(await screen.findByTestId('crew-profile-export'))
-    fireEvent.click(within(await screen.findByTestId('crew-export-lessons')).getByRole('switch'))
+    // The export view is a lazy import, then it waits on its preview query.
+    fireEvent.click(within(await screen.findByTestId('crew-export-lessons', {}, { timeout: 5000 })).getByRole('switch'))
     fireEvent.change(await screen.findByTestId('crew-export-lessons-editor'), { target: { value: '# Lessons' } })
 
     fireEvent.click(screen.getByTestId('crew-profile-modal'))
