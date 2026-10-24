@@ -824,8 +824,12 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     never scanned at all -- ``is_denied`` allowed a command bash runs.
 
     Quoting is not the only way a ``)`` reaches this walk as an ordinary
-    character. Two COMMAND-GRAMMAR constructs put one there too, and each was
+    character. Three SHELL-GRAMMAR constructs put one there too, and each was
     measured allowing a payload this module still refuses:
+
+    * a ``${...}`` PARAMETER EXPANSION holds its own text, so the ``)`` in
+      ``$(: ${v:-)}; ...)`` is the default word and the body runs on to the
+      later ``)`` (:func:`_expansion_step`).
 
     * a ``#`` COMMENT runs to the end of its line, so the ``)`` in
       ``$(: # )`` is commented out and the substitution closes on a LATER line.
@@ -850,21 +854,88 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     caller must fail CLOSED on that: for an extractor the safe reading is the
     whole remainder (scan more, never less). All three call sites are extractors,
     so a span that reaches too far only feeds them text to inspect.
+
+    Where expansion frames cannot be read the way every bash reads them -- a
+    here-document body (``${`` there is data), a ``$[`` inside an expansion
+    (bash builds disagree on whether it nests), an unclosed backtick or
+    expansion -- the paren-only span is returned instead, so such text is read
+    exactly as it was before expansions were modelled.
     """
-    depth = 1
+    span = _close_paren_walk(text, open_end, True)
+    if span is not None and span[1]:
+        return span
+    return _close_paren_walk(text, open_end, False) or (len(text), False)
+
+
+def _close_paren_walk(text: str, open_end: int, expansions: bool) -> "tuple[int, bool] | None":
+    """The walk behind :func:`_matching_close_paren`; None means "fall back".
+
+    With *expansions* off this is the paren-only walk, which never returns None.
+    """
+    # One frame per open span, innermost last: ``(`` for a paren body, ``{`` for a
+    # ``${...}`` expansion.  A stack rather than recursion, so deep nesting that
+    # fits the command-size ceiling cannot exhaust the interpreter stack.  A
+    # substitution opened INSIDE an expansion is an ``s`` frame: it is a new
+    # command, so it starts with no open ``case`` and gets the outer count back
+    # when it closes.
+    frames = ["("]
+    outer_cases: "list[int]" = []
     cases = 0
     pos = 0
     state = 0
     ansi = False
+    skip = -1
     while pos <= len(text):
         jumped = False
         for step in _iter_shell_chars(text[pos:], state, ansi):
             off = pos + step.offset
-            if off < open_end:
+            if off < open_end or off == skip:
                 continue
             if not step.active:
                 continue
             ch = step.char
+            if expansions and ch == "$" and _opens_expansion(text, off):
+                frames.append("{")
+                skip = off + 1
+                continue
+            if frames[-1] == "{":
+                opener = text[off + 1 : off + 2]
+                nested = opener in ("(", "[") and (
+                    (ch == "$" and _opens_expansion(text, off, opener))
+                    or (ch in "<>" and opener == "(")
+                )
+                if nested and opener == "[":
+                    return None
+                if nested:
+                    frames.append("s")
+                    outer_cases.append(cases)
+                    cases = 0
+                    skip = off + 1
+                    continue
+                jump = _expansion_step(text, off, ch, frames)
+                if jump is None:
+                    continue
+                if jump < 0:
+                    return None
+                pos = jump
+                state, ansi = 0, False
+                jumped = True
+                break
+            # A here-document body is data the walk does not model (its ``${``
+            # opens nothing), so an active ``<<`` -- not a ``<<<`` here-string --
+            # before the closer hands the text to the paren-only walk.
+            if expansions and ch == "<" and _opens_heredoc(text, off):
+                return None
+            # A backtick body is opaque to the walk around it: a ``${`` or ``)``
+            # inside one belongs to the inner command.
+            if expansions and ch == "`":
+                close = _backtick_closer(text, off + 1)
+                if close < 0:
+                    return None
+                pos = close + 1
+                state, ansi = 0, False
+                jumped = True
+                break
             # A ``#`` opens a comment only at the START of a word, and the
             # character before it is read as the shell reads it -- a folded
             # continuation leaves ``a\`` + newline + ``#b`` one ordinary word.
@@ -885,14 +956,75 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
             if cases and ch in "()":
                 continue
             if ch == "(":
-                depth += 1
+                frames.append("(")
             elif ch == ")":
-                depth -= 1
-                if depth == 0:
+                if frames.pop() == "s":
+                    cases = outer_cases.pop()
+                if not frames:
                     return (off + len(step.text), True)
         if not jumped:
             break
     return (len(text), False)
+
+
+def _opens_heredoc(text: str, index: int) -> bool:
+    """True if the active ``<`` at *index* starts a ``<<`` here-document operator."""
+    return (
+        text.startswith("<<", index)
+        and not text.startswith("<<<", index)
+        and (index == 0 or text[index - 1] != "<")
+    )
+
+
+def _opens_expansion(text: str, index: int, opener: str = "{") -> bool:
+    """True if the unquoted ``$`` at *index* opens ``${``, ``$(`` or ``$[`` (*opener*).
+
+    Only an UNPAIRED ``$`` does: in a run of dollars the shell pairs them off
+    (``$$`` is the PID parameter), so ``$${`` is the PID followed by a literal
+    ``{`` and ``$$[`` the PID followed by a literal ``[``.  A ``$`` escaped by a
+    backslash never reaches here, because the walk reads an escape pair as
+    inactive data -- but it still counts toward the run in front of this one, so
+    it is stepped over the same way.
+    """
+    if not opener or not text.startswith(opener, index + 1):
+        return False
+    run = 0
+    k = index - 1
+    while k >= 0 and text[k] == "$":
+        run += 1
+        k -= 1
+    slashes = 0
+    while k - slashes >= 0 and text[k - slashes] == "\\":
+        slashes += 1
+    if run and slashes % 2 == 1:
+        run -= 1  # the first ``$`` of the run is escaped data, not a parameter
+    return run % 2 == 0
+
+
+def _expansion_step(text: str, off: int, ch: str, frames: "list[str]") -> "int | None":
+    """Read one active character inside a ``${...}`` frame for the paren walk.
+
+    Returns None to keep walking, an offset to resume the walk at, or -1 when a
+    backtick body never closes (the caller falls back to the paren-only span).
+
+    The ``}`` that closes an expansion is one the shell reads as SYNTAX, so
+    quoting runs through the span (POSIX 2.6.2): ``${v:-"}"}`` and ``${v:-'}'}``
+    close at their last brace.  A bare ``{`` opens nothing -- bash closes
+    ``${v:-{}`` at its first ``}`` and ``${p//{/}`` is a literal pattern -- so
+    only a nested ``${`` (pushed by the caller) adds a level.  Parens and ``#``
+    are the expansion's own text here.
+
+    A brace inside a nested COMMAND SUBSTITUTION is that command's text: in
+    ``${v:-$(echo })}`` the first ``}`` is an argument to ``echo``.  So the caller
+    opens a paren frame at an unpaired ``$(`` and at a ``<(`` / ``>(`` process
+    substitution, and a backtick body is stepped over whole.
+    """
+    if ch == "}":
+        frames.pop()
+    elif ch == "`":
+        close = _backtick_closer(text, off + 1)
+        return close + 1 if close >= 0 else -1
+    return None
 
 
 def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
