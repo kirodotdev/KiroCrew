@@ -904,3 +904,107 @@ async def test_a_failed_existence_read_fails_closed_to_gone():
 
     state.read_folders = _boom
     assert await af.arrival_folder_exists(state, "id-Imported") is False
+
+
+# ── the sender's folder (third level) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_sender_folder_is_recreated_below_the_provenance_rows():
+    """A session sent with its folder lands in ``Imported`` / ``from <sender>`` /
+    ``<folder>``: the folder is recreated on the receiver, and never beside the
+    person's own top-level folders."""
+    state = _store()
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="", folder="Payments")
+
+    group = next(f for f in state._folders if f["name"] == "Imported")
+    child = next(f for f in state._folders if f["name"] == "from mac")
+    leaf = next(f for f in state._folders if f["name"] == "Payments")
+    assert _tree(state) == {
+        "Imported": "",
+        "from mac": str(group["id"]),
+        "Payments": str(child["id"]),
+    }
+    assert filing.folder_id == str(leaf["id"])
+    # Parent before child, so a rollback walking it in reverse meets the leaf first.
+    assert [name for _, name, _ in filing.created_rows] == ["Imported", "from mac", "Payments"]
+    assert state.mutations == 1
+
+
+@pytest.mark.asyncio
+async def test_every_session_of_one_sent_folder_lands_in_the_same_row():
+    state = _store()
+    first = (
+        await af.arrival_folder_id(state, origin="mac", request_app="", folder="Payments")
+    ).folder_id
+    second = (
+        await af.arrival_folder_id(state, origin="mac", request_app="", folder="Payments")
+    ).folder_id
+    assert first == second
+    assert len(state._folders) == 3, _tree(state)
+
+
+@pytest.mark.asyncio
+async def test_the_same_folder_name_from_two_senders_stays_two_rows():
+    """The name is scoped by its sender: ``Payments`` from two machines is two
+    folders, so neither peer's sessions are mixed into the other's."""
+    state = _store()
+    a = (
+        await af.arrival_folder_id(state, origin="mac", request_app="", folder="Payments")
+    ).folder_id
+    b = (
+        await af.arrival_folder_id(state, origin="crew-1", request_app="", folder="Payments")
+    ).folder_id
+    assert a != b
+
+
+@pytest.mark.asyncio
+async def test_a_sender_folder_without_a_sender_sits_under_imported():
+    state = _store()
+    filing = await af.arrival_folder_id(state, origin="", request_app="", folder="Payments")
+    group = next(f for f in state._folders if f["name"] == "Imported")
+    assert _tree(state) == {"Imported": "", "Payments": str(group["id"])}
+    assert filing.folder_id != str(group["id"])
+
+
+@pytest.mark.asyncio
+async def test_a_full_store_files_one_level_up_rather_than_refusing():
+    """The folder level is optional: with room for the provenance pair and no
+    more, the arrival is filed in ``from <sender>`` instead of being refused or
+    landing unfiled -- a folder-carrying arrival never lands LESS filed than one
+    without."""
+    filler = [_row(f"f{i}") for i in range(MAX_CHAT_FOLDERS - 2)]
+    state = _store(filler)
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="", folder="Payments")
+    child = next(f for f in state._folders if f["name"] == "from mac")
+    assert filing.folder_id == str(child["id"])
+    assert "Payments" not in _tree(state)
+
+
+@pytest.mark.asyncio
+async def test_a_sender_folder_name_is_clipped_like_the_store_writes_it():
+    long_name = "z" * 300
+    state = _store()
+    await af.arrival_folder_id(state, origin="mac", request_app="", folder=long_name)
+    await af.arrival_folder_id(state, origin="mac", request_app="", folder=long_name)
+    assert len(state._folders) == 3, _tree(state)
+    assert ("z" * 100) in _tree(state)
+
+
+@pytest.mark.asyncio
+async def test_an_app_arrival_with_a_folder_is_still_never_filed():
+    state = _store()
+    filing = await af.arrival_folder_id(
+        state, origin="mac", request_app="some-app", folder="Payments"
+    )
+    assert filing.folder_id == ""
+    assert state._folders == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_import_unwinds_all_three_rows():
+    state = _store()
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="", folder="Payments")
+    state._slots = {}
+    await af.discard_arrival_folders(state, filing.created_rows)
+    assert state._folders == []

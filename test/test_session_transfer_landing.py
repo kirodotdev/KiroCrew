@@ -1070,3 +1070,35 @@ async def test_a_folder_store_failure_leaves_the_session_filed_nowhere(monkeypat
     assert resp.status == 200, resp.body
     assert json.loads(resp.body)["ok"] is True
     assert _filed_folder(state) == ""
+
+
+# ── a sent folder is recreated on the peer ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_carrying_its_folder_is_filed_in_a_folder_of_that_name(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+    resp = await st.api_chat_slot_import(
+        _make_request(state, _valid(origin="mac", folder="Payments"))
+    )
+
+    assert resp.status == 200, resp.body
+    names = _folder_names(state)
+    child_id = next(f["id"] for f in state._folders if f["name"] == "from mac")
+    assert names["Payments"] == child_id
+    assert _filed_folder(state) == "Payments"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_folder_hint_is_dropped_not_refused(monkeypatch):
+    """A filing hint must never cost the transcript: a non-string ``folder``
+    lands the session in ``from <sender>`` as if the field were absent."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+    resp = await st.api_chat_slot_import(_make_request(state, _valid(origin="mac", folder=42)))
+
+    assert resp.status == 200, resp.body
+    assert _filed_folder(state) == "from mac"

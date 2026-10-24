@@ -260,8 +260,14 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
         resume_mode: string
       }
     },
-    sendSessionToInstance: (id: string, slot: string) =>
-      post('/api/instances/' + encodeURIComponent(id) + '/send-session', { slot }).then(j) as Promise<{
+    /** *withFolder* asks the peer to file the copy under this session's folder
+     *  name (`Imported` / `from <this instance>` / `<folder>`); the folder menu's
+     *  "Send a copy to" sets it. Omitted, the body is exactly the old one. */
+    sendSessionToInstance: (id: string, slot: string, withFolder = false) =>
+      post(
+        '/api/instances/' + encodeURIComponent(id) + '/send-session',
+        withFolder ? { slot, with_folder: true } : { slot },
+      ).then(j) as Promise<{
         ok: boolean
         instance: string
         remote_key: string

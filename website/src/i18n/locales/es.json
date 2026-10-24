@@ -10301,6 +10301,22 @@
         "tool_search_label": "Búsqueda de herramientas",
         "tool_search_description": "Cargar especificaciones de herramientas MCP diferidas bajo demanda."
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "Las copias se guardan en la crew en una carpeta con el mismo nombre.",
+      "nothing_to_send": "No hay sesiones para enviar",
+      "progress": "{{done}} de {{total}}",
+      "resend_all": "Haz clic para enviar otra copia de las {{total}}",
+      "retry_failed": "Haz clic para reenviar las {{count}} que fallaron",
+      "sent_all": "Enviado: {{count}}",
+      "sent_some": "{{sent}} de {{total}} enviadas",
+      "sent_transcript_only": "Enviado: {{sent}} ({{count}} solo transcripción)",
+      "skipped_private_many": "{{count}} sesiones de incógnito o temporales no se envían",
+      "skipped_private_one": "{{count}} sesión de incógnito o temporal no se envía",
+      "skipped_private_other": "{{count}} sesiones de incógnito o temporales no se envían",
+      "transcript_only_hint_many": "Ese crew no pudo restaurar el contexto completo de la conversación, así que {{count}} copias se reanudan solo desde la transcripción.",
+      "transcript_only_hint_one": "Ese crew no pudo restaurar el contexto completo de la conversación, así que {{count}} copia se reanuda solo desde la transcripción.",
+      "transcript_only_hint_other": "Ese crew no pudo restaurar el contexto completo de la conversación, así que {{count}} copias se reanudan solo desde la transcripción."
     }
   },
   "hooks": {

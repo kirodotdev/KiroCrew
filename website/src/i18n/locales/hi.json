@@ -10157,6 +10157,20 @@
         "tool_search_label": "उपकरण खोज",
         "tool_search_description": "माँग पर स्थगित MCP उपकरण विनिर्देश लोड करें।"
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "कॉपियाँ क्रू पर इसी नाम के फ़ोल्डर में रखी जाती हैं।",
+      "nothing_to_send": "भेजने के लिए कोई सत्र नहीं",
+      "progress": "{{total}} में से {{done}}",
+      "resend_all": "सभी {{total}} की एक और कॉपी भेजने के लिए क्लिक करो",
+      "retry_failed": "विफल हुए {{count}} दोबारा भेजने के लिए क्लिक करो",
+      "sent_all": "भेजा गया: {{count}}",
+      "sent_some": "{{total}} में से {{sent}} भेजे गए",
+      "sent_transcript_only": "भेजा गया: {{sent}} ({{count}} केवल ट्रांसक्रिप्ट)",
+      "skipped_private_one": "{{count}} इनकॉग्निटो या अस्थायी सत्र नहीं भेजा जाता",
+      "skipped_private_other": "{{count}} इनकॉग्निटो या अस्थायी सत्र नहीं भेजे जाते",
+      "transcript_only_hint_one": "वह क्रू पूरा संवाद संदर्भ पुनर्स्थापित नहीं कर सका, इसलिए {{count}} प्रतिलिपि केवल ट्रांसक्रिप्ट से जारी रहती है।",
+      "transcript_only_hint_other": "वह क्रू पूरा संवाद संदर्भ पुनर्स्थापित नहीं कर सका, इसलिए {{count}} प्रतिलिपियाँ केवल ट्रांसक्रिप्ट से जारी रहती हैं।"
     }
   },
   "hooks": {

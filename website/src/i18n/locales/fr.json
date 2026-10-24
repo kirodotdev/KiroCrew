@@ -10301,6 +10301,22 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "Les copies sont classées sur la crew dans un dossier du même nom.",
+      "nothing_to_send": "Aucune session à envoyer",
+      "progress": "{{done}} sur {{total}}",
+      "resend_all": "Clique pour envoyer une autre copie des {{total}}",
+      "retry_failed": "Clique pour renvoyer les {{count}} en échec",
+      "sent_all": "Envoyé : {{count}}",
+      "sent_some": "{{sent}} sur {{total}} envoyées",
+      "sent_transcript_only": "Envoyé : {{sent}} ({{count}} en transcription seule)",
+      "skipped_private_many": "{{count}} sessions incognito ou temporaires ne sont pas envoyées",
+      "skipped_private_one": "{{count}} session incognito ou temporaire n’est pas envoyée",
+      "skipped_private_other": "{{count}} sessions incognito ou temporaires ne sont pas envoyées",
+      "transcript_only_hint_many": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; {{count}} copies reprennent uniquement à partir de la transcription.",
+      "transcript_only_hint_one": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; {{count}} copie reprend uniquement à partir de la transcription.",
+      "transcript_only_hint_other": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; {{count}} copies reprennent uniquement à partir de la transcription."
     }
   },
   "hooks": {

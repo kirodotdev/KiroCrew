@@ -10301,6 +10301,22 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "Le copie vengono archiviate sulla crew in una cartella con lo stesso nome.",
+      "nothing_to_send": "Nessuna sessione da inviare",
+      "progress": "{{done}} di {{total}}",
+      "resend_all": "Fai clic per inviare un'altra copia di tutte le {{total}}",
+      "retry_failed": "Fai clic per reinviare le {{count}} non riuscite",
+      "sent_all": "Inviato: {{count}}",
+      "sent_some": "{{sent}} di {{total}} inviate",
+      "sent_transcript_only": "Inviato: {{sent}} ({{count}} solo trascrizione)",
+      "skipped_private_many": "{{count}} sessioni in incognito o temporanee non vengono inviate",
+      "skipped_private_one": "{{count}} sessione in incognito o temporanea non viene inviata",
+      "skipped_private_other": "{{count}} sessioni in incognito o temporanee non vengono inviate",
+      "transcript_only_hint_many": "Quella crew non ha potuto ripristinare il contesto completo della conversazione, quindi {{count}} copie riprendono solo dalla trascrizione.",
+      "transcript_only_hint_one": "Quella crew non ha potuto ripristinare il contesto completo della conversazione, quindi {{count}} copia riprende solo dalla trascrizione.",
+      "transcript_only_hint_other": "Quella crew non ha potuto ripristinare il contesto completo della conversazione, quindi {{count}} copie riprendono solo dalla trascrizione."
     }
   },
   "hooks": {

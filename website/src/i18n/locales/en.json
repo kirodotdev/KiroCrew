@@ -6032,6 +6032,20 @@
       "session_queued": "This session: {{queued}} queued",
       "session_queued_hint": "Agents this session started are waiting for a free slot while fewer run at once.",
       "load_failed": "Could not check for queued agents"
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "Copies are filed on the crew in a folder of the same name.",
+      "nothing_to_send": "No sessions to send",
+      "progress": "{{done}} of {{total}}",
+      "resend_all": "Click to send another copy of all {{total}}",
+      "retry_failed": "Click to resend the {{count}} that failed",
+      "sent_all": "Sent: {{count}}",
+      "sent_some": "{{sent}} of {{total}} sent",
+      "sent_transcript_only": "Sent: {{sent}} ({{count}} transcript only)",
+      "skipped_private_one": "{{count}} incognito or temporary session is not sent",
+      "skipped_private_other": "{{count}} incognito or temporary sessions are not sent",
+      "transcript_only_hint_one": "That crew could not restore the full conversation context, so {{count}} copy resumes from the transcript alone.",
+      "transcript_only_hint_other": "That crew could not restore the full conversation context, so {{count}} copies resume from the transcript alone."
     }
   },
   "hooks": {
