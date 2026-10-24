@@ -282,12 +282,119 @@ def unaccounted_areas(paths, body):
     return missing
 
 
+# A CommonMark fence: up to three spaces of indent, then three or more backticks
+# or tildes. A backtick fence's info string may not hold a backtick. The fence
+# may follow list markers (``- ~~~``, ``1. ```py``); group 1 is that prefix.
+# The quantifiers are possessive: a marker's trailing spaces and the next
+# marker's indent share the space character, so a backtracking prefix tries
+# exponentially many splits of a long ``-   -   -`` line that holds no fence.
+_LIST_PREFIX = r"(?: {0,3}+(?:[-+*]|\d{1,9}+[.)]) {1,4}+)*+"
+_FENCE_OPEN = re.compile(r"^(" + _LIST_PREFIX + r") {0,3}+(`{3,}+(?=[^`]*$)|~{3,}+)")
+
+# A line that starts, after any list markers, with ``<`` may open an HTML block,
+# where a fence line is text. Group 1 is what follows the ``<``.
+_HTML_START = re.compile(r"^" + _LIST_PREFIX + r" {0,3}+<(.*)$")
+
+# HTML blocks that run past a blank line, to their own end marker, keyed by how
+# the text after ``<`` starts. Every other HTML block ends at a blank line.
+_HTML_RAW_ENDS = [
+    (re.compile(r"(?i)(pre|script|style|textarea)(?=[\s>]|$)"), None),
+    (re.compile(r"!--"), "-->"),
+    (re.compile(r"\?"), "?>"),
+    (re.compile(r"!\[CDATA\["), "]]>"),
+    (re.compile(r"![A-Za-z]"), ">"),
+]
+
+
+def _html_end(rest):
+    """How the HTML block whose start line follows ``<`` with ``rest`` ends.
+
+    A regex matching its end marker, or None for a block that ends at a blank line.
+    """
+    for start, end in _HTML_RAW_ENDS:
+        m = start.match(rest)
+        if m:
+            if end is None:
+                return re.compile(r"(?i)</%s>" % m.group(1))
+            return re.compile(re.escape(end))
+    return None
+
+
+def _strip_fences(text):
+    """``text`` with every closed fenced code block removed, fence lines included.
+
+    When unsure, count it as prose. A block closes on a line of the same
+    character, at least as long as the opener, followed only by blanks and
+    indented like the opener's content: up to three spaces past the list
+    markers it sits behind. Indent is measured with tabs expanded to
+    four-column stops, as CommonMark does. A non-blank line indented left of
+    the opener's fence characters ends the block unclosed: it may be a list
+    item's end or text after the fence's container, which this scanner does
+    not track. A block that ends unclosed, there or at the end of the section,
+    is left counted, opener included. This overcounts one valid form, a fence
+    indented one to three spaces whose content starts at column 0, which
+    CommonMark renders as code. No fence opens inside an HTML block,
+    a run from a line starting with ``<`` (after any list markers) to the next
+    blank line, or to the end marker of a ``<pre>``, ``<script>``, ``<style>``,
+    ``<textarea>``, comment, ``<?``, ``<!X`` or CDATA block. The scanner leans to
+    counting: each of these rules can only count more than CommonMark renders as
+    prose, never less, because stripping rendered prose would let an over-limit
+    body pass. A fence in a blockquote is left counted: every line of it starts
+    with ``>``, so none can be read as an opener here.
+    """
+    kept = []
+    held = []  # the open block's lines, opener first, until it closes
+    close = None
+    width = 0
+    column = 0  # where the open fence's characters start
+    html = False  # inside an HTML block
+    html_end = None  # its end marker, or None when a blank line ends it
+    for raw in text.splitlines():
+        line = raw.expandtabs(4)
+        if html:
+            kept.append(raw)
+            if html_end is None:
+                html = bool(line.strip())
+            elif html_end.search(line):
+                html = False
+            continue
+        if close is not None:
+            if close.match(line):
+                held = []
+                close = None
+                continue
+            if line.strip() and len(line) - len(line.lstrip(" ")) < column:
+                kept.extend(held)  # left of the fence: unsure, so count it
+                held = []
+                close = None
+            else:
+                held.append(raw)
+                continue
+        m = _FENCE_OPEN.match(line)
+        if m:
+            width = len(m.group(1))
+            column = m.start(2)
+            fence = m.group(2)
+            close = re.compile(
+                "^ {%d} {0,3}%s{%d,}[ \t]*$" % (width, re.escape(fence[0]), len(fence))
+            )
+            held = [raw]
+            continue
+        kept.append(raw)
+        h = _HTML_START.match(line)
+        if h:
+            html_end = _html_end(h.group(1))
+            html = html_end is None or not html_end.search(h.group(1))
+    kept.extend(held)  # never closed: count it
+    return "\n".join(kept)
+
+
 def _what_changed_unfenced(body):
     """The ``## What changed`` section with fenced blocks removed, or None if absent."""
     m = re.search(r"^## +What changed[^\n]*\n(.*?)(?=^## |\Z)", body, re.MULTILINE | re.DOTALL)
     if not m:
         return None
-    return re.sub(r"^```.*?^```[ \t]*$", "", m.group(1), flags=re.MULTILINE | re.DOTALL)
+    return _strip_fences(m.group(1))
 
 
 _TABLE_SEPARATOR = re.compile(r"^\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
