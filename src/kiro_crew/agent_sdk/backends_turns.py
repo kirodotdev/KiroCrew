@@ -205,10 +205,14 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset(
 # That makes membership here mean ``steer_needs_loss_recovery`` as well, like
 # codex.
 #
-# The live measurement is on 1.19.0, quoted here. The Real Adapter Contract lane
-# pins opencode in ``test/real_adapters/package.json``, and
-# ``test/test_opencode_concurrent_prompt_steer.py`` drives a scripted stdout, so no
-# lane re-measures this membership against a real opencode.
+# The live measurement was first taken on 1.19.0, and is captured on 1.19.1, the
+# Real Adapter Contract lane's pin (``test/real_adapters/package.json``):
+# ``test/fixtures/acp_frames/opencode/concurrent-prompt-steer-live.jsonl``. A
+# second ``session/prompt`` sent while the turn's bash ran reached the model in
+# the turn's one remaining request, beside the bash result, and the two prompts
+# were answered ``end_turn`` together. ``test/test_opencode_concurrent_prompt_steer.py``
+# drives a scripted stdout, so no lane re-measures this membership against a real
+# opencode.
 #
 # Not ``ACP_BACKENDS_STEER``: a deny notice cannot ride this verb, because the
 # denial already ended the turn it was meant for.

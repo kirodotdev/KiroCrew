@@ -9,6 +9,7 @@ Today's gaps sit in a shrink-only allowlist. Contract:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 
@@ -21,7 +22,7 @@ sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
 # The ceiling only moves down. Raising it is the change this test exists to stop.
-X_CAPTURE_CEILING = 6
+X_CAPTURE_CEILING = 4
 KIRO_KAS_PAIR_CEILING = 0
 
 
@@ -260,3 +261,68 @@ def test_every_live_kas_capture_names_the_engine_version() -> None:
         if "kiro_cli_version" in meta:
             assert version != meta["kiro_cli_version"], f
     assert {"markdown-agent-live.jsonl", "worker-kit-live.jsonl"} <= set(live)
+
+
+def _updates(rel: str, kind: str) -> list[dict]:
+    return [
+        (f.get("params") or {}).get("update") or {}
+        for f in _frames(rel)[1:]
+        if ((f.get("params") or {}).get("update") or {}).get("sessionUpdate") == kind
+    ]
+
+
+def _methods(rel: str, method: str) -> list[dict]:
+    return [f for f in _frames(rel)[1:] if f.get("method") == method]
+
+
+def test_kiro_and_kas_refuse_every_tool_natively_on_a_zero_tool_spec() -> None:
+    """Four asks on ``"tools": []``, every permission answered allow: no call starts."""
+    for rel in ("kiro/zero-tools-live.jsonl", "kas/zero-tools-live.jsonl"):
+        assert not _updates(rel, "tool_call"), rel
+        assert not _methods(rel, "session/request_permission"), rel
+        ends = [f for f in _frames(rel)[1:] if (f.get("result") or {}).get("stopReason")]
+        assert len(ends) == 4, rel
+    _, tags = _reply_and_tool_tags("kas/zero-tools-live.jsonl")
+    assert tags == []
+
+
+def test_opencode_zero_tool_requests_are_refused_before_any_consumer() -> None:
+    rel = "opencode/zero-tools-refused-live.jsonl"
+    asked = _methods(rel, "session/request_permission")
+    assert len(asked) == 3
+    failed = [
+        u
+        for u in _updates(rel, "tool_call_update")
+        if "rejected permission" in json.dumps(u.get("content"))
+    ]
+    assert len(failed) == 3
+
+
+def test_codex_and_opencode_reach_the_server_on_the_session_array() -> None:
+    """The saved spec's server and the member entry, each called once and answered."""
+    for rel, server, tool in (
+        ("codex/saved-spec-projection-live.jsonl", "probe", "probe_codeword"),
+        ("codex/member-dispatch-live.jsonl", "kirocrew-dashboard", "session_status"),
+    ):
+        (call,) = _updates(rel, "tool_call")
+        assert call["rawInput"] == {"server": server, "tool": tool, "arguments": {}}, rel
+        assert len(_methods(rel, "session/request_permission")) == 1, rel
+        assert any(u.get("status") == "completed" for u in _updates(rel, "tool_call_update")), rel
+    done = _updates("codex/saved-spec-projection-live.jsonl", "tool_call_update")[-1]
+    assert done["rawOutput"]["result"]["content"][0]["text"] == "tangerine-42"
+    rel = "opencode/member-dispatch-live.jsonl"
+    (call,) = _updates(rel, "tool_call")
+    assert call["title"] == "kirocrew-dashboard_session_status"
+    assert len(_methods(rel, "session/request_permission")) == 1
+
+
+def test_opencode_second_prompt_joins_the_running_turn() -> None:
+    """The steer is read by the same turn, and both prompts end together."""
+    frames = _frames("opencode/concurrent-prompt-steer-live.jsonl")[1:]
+    assert [f.get("id") for f in frames[-2:]] == [3, 4]
+    assert all(f["result"]["stopReason"] == "end_turn" for f in frames[-2:])
+    reply = "".join(
+        u["content"]["text"]
+        for u in _updates("opencode/concurrent-prompt-steer-live.jsonl", "agent_message_chunk")
+    )
+    assert reply.strip() == "first-done pineapple"

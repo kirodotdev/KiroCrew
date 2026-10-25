@@ -1,0 +1,328 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "acp": false,
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {}
+      }
+    },
+    "agent_version": "2.2.2",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "detail": "stub",
+        "kind": "gateway",
+        "label": "Custom model gateway"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "agent",
+        "description": "Approval and sandboxing preset for the session",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Only ask for actions detected as potentially unsafe",
+            "name": "Auto review",
+            "value": "agent"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "collaboration_mode",
+        "currentValue": "default",
+        "description": "How Codex collaborates for subsequent turns",
+        "id": "collaboration_mode",
+        "name": "Collaboration mode",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "gpt-5-codex",
+        "description": "Model Codex uses for the session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "5 Codex",
+            "value": "gpt-5-codex"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "agent",
+      "ids": [
+        "read-only",
+        "workspace-write",
+        "agent",
+        "agent-full-access"
+      ]
+    },
+    "session_id": "codex-member-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "read-only",
+        "description": "Approval and sandboxing preset for the session",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Requires approval to edit files and access the internet.",
+            "name": "Read-only",
+            "value": "read-only"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "collaboration_mode",
+        "currentValue": "default",
+        "description": "How Codex collaborates for subsequent turns",
+        "id": "collaboration_mode",
+        "name": "Collaboration mode",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "gpt-5-codex",
+        "description": "Model Codex uses for the session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "5 Codex",
+            "value": "gpt-5-codex"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Warning: Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Warning: Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "kirocrew-dashboard",
+        "raw_tool_params": {
+          "arguments": {},
+          "server": "kirocrew-dashboard",
+          "tool": "session_status"
+        },
+        "title": "mcp.kirocrew-dashboard.session_status",
+        "tool_call_id": "call_probe_1",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"server\": \"kirocrew-dashboard\",\n  \"tool\": \"session_status\",\n  \"arguments\": {}\n}",
+        "tool_kind": "execute",
+        "tool_name": "session_status",
+        "wire_title": "mcp.kirocrew-dashboard.session_status"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "kirocrew-dashboard",
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Allow"
+          },
+          {
+            "id": "allow_session",
+            "label": "Allow for this session"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always allow"
+          },
+          {
+            "id": "cancel",
+            "label": "Cancel"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "arguments": {},
+          "server": "kirocrew-dashboard",
+          "tool": "session_status"
+        },
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "call_probe_1",
+        "tool_input": "{\n  \"server\": \"kirocrew-dashboard\",\n  \"tool\": \"session_status\",\n  \"arguments\": {}\n}",
+        "tool_kind": "execute",
+        "tool_name": "session_status"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_session",
+      "once": "allow_once",
+      "reject": "cancel"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_probe_1",
+        "tool_final": true,
+        "tool_output": "Error: tool 'session_status' is unavailable because this server could not reach the gateway to read session probe-member-key's tool policy (resolution_failed): the read got no answer, or the gateway answered that it is broken (cause: URLError). No agent spec is implicated and nothing needs editing. Refusing the call rather than ignoring an operator's exclusion list; the call succeeds on retry within 60s of the gateway answering again.",
+        "tool_output_bytes": 438,
+        "tool_output_digest": "f3a62fcb6c6a5ab902ba6c6fde32a272427af04cdf3b332684fdda6a8c39d57b",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      105,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      105,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      200,
+      10,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

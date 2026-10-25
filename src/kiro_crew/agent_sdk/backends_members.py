@@ -35,8 +35,12 @@ from kiro_crew.agent_sdk.backends import (
 # Each requires a live dedicated runtime before reporting a saved template.
 # Claude's consumed projection is captured live on claude-agent-acp 0.94.0
 # (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``): the
-# server the mirror projected out of a saved spec ran in the session. Codex and
-# DeepSeek rest on unit tests only.
+# server the mirror projected out of a saved spec ran in the session. Codex's is
+# captured live on codex-acp 2.2.2, the lane's pin
+# (``test/fixtures/acp_frames/codex/saved-spec-projection-live.jsonl``): the
+# element codex's mirror projected out of a saved spec, on a session armed
+# read-only, answered the model's call with the server's own result after one
+# permission request. DeepSeek rests on unit tests only.
 # kiro-cli and KAS are captured live on kiro-cli 2.32.0 / KAS 0.66.43 with one probe
 # spec whose only tool is an MCP server it declares:
 # ``test/fixtures/acp_frames/kiro/saved-spec-live.jsonl`` (``--agent probe``) and
@@ -148,6 +152,13 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
 #     structurally stronger than claude's ``settings.local.json`` ownership check,
 #     which covers a routing this core declares and does not enforce.
 #
+# Captured live on codex-acp 2.2.2, the lane's pin:
+# ``test/fixtures/acp_frames/codex/member-dispatch-live.jsonl``. With the member
+# entry as the session's one ``session/new`` element and ``mode`` set to
+# ``read-only``, the model's ``session_status`` call raised one permission request
+# and then reached the server, which answered it (it refuses, as the probe key
+# names no live session).
+#
 # Membership is a DECISION on top of those two rather than a consequence of them:
 # mounting session control into a codex DM thread is a capability separate from
 # giving a codex session the tools its own agent spec declares. The decision is
@@ -179,6 +190,11 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
 # H6 is explicit that supporting one harness establishes nothing about another, so
 # the decision above is codex's alone and this membership carries its own: a member
 # DM thread on opencode holds the session-control tools.
+#
+# Captured through ``AcpClient`` on opencode 1.19.1, the lane's pin:
+# ``test/fixtures/acp_frames/opencode/member-dispatch-live.jsonl``. On a member key
+# the client appended the entry, the model's ``session_status`` call raised a
+# permission request, and once approved the server answered it.
 #
 # The mount asks for no owned permission file here, and must not: the client's
 # fallback answers for an UNENFORCED routing alone (``tool_gate.is_enforced`` is true

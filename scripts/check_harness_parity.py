@@ -397,9 +397,9 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_MEMBER_CAPABILITIES": None,
     "ACP_BACKENDS_MARKDOWN_AGENT_SPECS": None,
     "ACP_BACKENDS_KIRO_SLASH_COMMANDS": None,
-    "ACP_BACKENDS_MEMBER_DISPATCH": frozenset({"kas"}),
+    "ACP_BACKENDS_MEMBER_DISPATCH": frozenset({"codex", "kas", "opencode"}),
     # pi's membership rides its gate extension's confirm dialog, not a mirror.
-    "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"pi"}),
+    "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"kas", "kiro", "opencode", "pi"}),
     "ACP_BACKENDS_MATE_WORKER_KIT": None,
 }
 
@@ -447,9 +447,7 @@ X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
         "under investigation"
     ),
     ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
-    ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", "opencode"): "opencode second session/prompt",
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
-    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "codex"): "codex saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
 }
 
