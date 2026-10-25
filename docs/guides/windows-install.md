@@ -526,8 +526,9 @@ platform-neutral names.
 
 ### The five-whys log lock follows the same rule
 
-`scripts/five_whys.py` serializes each mutating command on a `<log>.lock`
-sidecar, and it cannot import `platform_compat`: a skill script is copied out of
+`src/kiro_crew/builtin_skills/five-whys/scripts/five_whys.py` serializes each
+mutating command on a `<log>.lock` sidecar, and it cannot import
+`platform_compat`: a skill script is copied out of
 the package and run as a bare `python3` file, so `kiro_crew` is usually not on
 its path. Its `_flock` therefore applies the rule above itself, with the
 helper's poll interval and ceiling. On Windows it polls
