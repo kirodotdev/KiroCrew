@@ -332,14 +332,22 @@ def test_an_unreadable_or_protected_checkout_keeps_its_variant(agents_dir, tmp_p
         patch.setattr(os, "scandir", refusing_scandir)
         assert srs.reap_orphaned_readonly_specs() == []
 
+    # Resolved before os.stat is patched: on Python 3.12 ``Path.resolve()`` calls
+    # ``os.stat`` itself, so a refusal that resolves inside the patch recurses until
+    # a RecursionError keeps the variant, never the PermissionError under test.
+    checkout = str(project.resolve())
+    refused: list[str] = []
+
     def refusing_stat(path, *a, **k):
-        if isinstance(path, (str, os.PathLike)) and str(path) == str(project.resolve()):
+        if isinstance(path, (str, os.PathLike)) and str(path) == checkout:
+            refused.append(str(path))
             raise PermissionError("denied")
         return real_stat(path, *a, **k)
 
     with monkeypatch.context() as patch:
         patch.setattr(os, "stat", refusing_stat)
         assert srs.reap_orphaned_readonly_specs() == []
+    assert refused, "the checkout's stat was never refused, so nothing above was tested"
 
     with monkeypatch.context() as patch:
         patch.setattr(agent_discovery, "_project_scope_denied", lambda *a, **k: True)
