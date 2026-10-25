@@ -90,9 +90,7 @@ class TestNoPolicyDefault:
     def test_enterprise_unnamed_scope_reports_the_baseline(self, profiles_dir, monkeypatch):
         # An enterprise build answers an unnamed scope from the built-in baseline,
         # so the viewer must not call it "ungoverned" (RFC D3).
-        _install_ceiling(
-            {"version": 1, "boot": {}}, edition="enterprise", monkeypatch=monkeypatch
-        )
+        _install_ceiling({"version": 1, "boot": {}}, edition="enterprise", monkeypatch=monkeypatch)
         rows = _by_scope(build_governance_policy_snapshot())
 
         assert rows["capabilities.browse"]["governed"] is True
