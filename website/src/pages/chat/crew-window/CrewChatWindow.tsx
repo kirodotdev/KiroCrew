@@ -29,6 +29,8 @@ import Glass from '../../../components/Glass'
 import ChatInput from '../../../components/ChatInput'
 import ChatMessageList from '../../../app-sdk/ChatMessageList'
 import ChatFooter from '../ChatFooter'
+import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../../../components/QueueStack'
+import { hydrateQueuedBubbles, normalizeQueueEntries } from '../../../store/chatSlice'
 import { ReadOnlyCodeCtx } from '../../../components/markdown/contexts'
 import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
@@ -53,7 +55,7 @@ interface PeerSlot extends PeerModelFields, PeerAgentModeFields {
   stopping?: boolean; stop_state?: ChatSlot['stop_state']; stop_declined?: boolean; compacting?: boolean; project?: string
 }
 /** The slot detail, with the peer's own context meter reading. */
-interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage[]; context_pct?: number; context_used_tokens?: number; context_window_tokens?: number }
+interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage[]; queue?: unknown[]; context_pct?: number; context_used_tokens?: number; context_window_tokens?: number }
 
 /** How long a burst of peer frames waits before one transcript re-read. */
 const REFETCH_THROTTLE_MS = 300
@@ -284,6 +286,14 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
     return { ...m, meta: { ...m.meta, approval_id: JSON.stringify([aid, mid]) } }
   }), [detailQ.data?.messages])
+  // Sends the peer holds behind its running turn, from the same slot detail,
+  // through the hydration and split the local panes use (a sub-agent delivery
+  // shows as the progress line, not a user card). Read-only: cancel and edit
+  // would need peer queue routes this window does not call.
+  const { queuedMessages, systemDeliveryCount } = useMemo(
+    () => splitPaneMessages(hydrateQueuedBubbles([], normalizeQueueEntries(detailQ.data?.queue))),
+    [detailQ.data?.queue],
+  )
   const approve = useCallback((approvalId: string, decision: string) => {
     let row: unknown
     try { row = JSON.parse(approvalId) } catch { row = null }
@@ -470,6 +480,13 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             <div className="flex items-center gap-2 text-muted">
               {i18nT('pages.chat.crewWindow.rewinding')}
               <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
+            </div>
+          )}
+          {/* fuseBelow off: the stack stands as whole cards over the composer. */}
+          {(queuedMessages.length > 0 || systemDeliveryCount > 0) && (
+            <div data-testid="crew-window-queue">
+              <SubagentDeliveryProgress count={systemDeliveryCount} />
+              <QueueStack messages={queuedMessages} fuseBelow={false} />
             </div>
           )}
         </div>

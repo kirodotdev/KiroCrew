@@ -330,6 +330,30 @@ describe('CrewChatWindow', () => {
     await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'after this', slot: 'k1' }]))
   })
 
+  it('shows a message the PEER queued behind its running turn as a queued card', async () => {
+    slotRow = { ...slotRow, running: true }
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await screen.findByRole('button', { name: 'Stop generation' }, PEER_ROW_WAIT)
+    expect(screen.queryByTestId('queue-card')).toBeNull()
+    // The peer accepts the send and holds it in the slot's queue; the
+    // re-read after the send returns that entry.
+    mocks.crewPeerPost.mockImplementation(async () => {
+      detail = { ...detail, queue: [{ id: 'q-1', content: 'after this' }] }
+      return { ok: true, queued: true, queue_id: 'q-1' }
+    })
+    fireEvent.change(box, { target: { value: 'after this' } })
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true })
+    const card = await screen.findByTestId('queue-card', {}, PEER_ROW_WAIT)
+    expect(card).toHaveTextContent('after this')
+    // Read-only: a cancel or edit here would act on no peer route.
+    expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull()
+    // The drain lands the row in the transcript and the card retires.
+    detail = { ...detail, queue: [], messages: [...(detail.messages as object[]), { role: 'user', content: 'after this', ts: 't3' }] }
+    FakeEventSource.all[FakeEventSource.all.length - 1].emit('chat_message', { slot: 'k1' })
+    await waitFor(() => expect(screen.queryByTestId('queue-card')).toBeNull(), PEER_ROW_WAIT)
+  })
+
   it('puts a refused steer back into the composer', async () => {
     slotRow = { ...slotRow, running: true }
     mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
