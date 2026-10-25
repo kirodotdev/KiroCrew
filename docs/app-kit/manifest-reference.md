@@ -115,7 +115,7 @@ calls to that chat, say) can opt in on its entry:
 
 ```json
 "mcpServers": {
-  "memory": {
+  "notes": {
     "command": "python3",
     "args": ["server.py"],
     "x-kirocrew-session-label": true
