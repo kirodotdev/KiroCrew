@@ -1003,6 +1003,9 @@ class TestSelectedBackendProjectionRow:
         receives Crew's servers through its gate extension instead and is declared
         ``broker-only`` like deepseek. The case that follows pins that pi's row is
         therefore silent.
+
+        Qoder is ``broker-only`` too, until an agent-spec mirror and per-tool deny
+        projection are measured; it is not a no-channel backend.
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 

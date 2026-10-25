@@ -380,6 +380,9 @@ async def cancel_session(self: AcpClient, grace_secs: float = 0.0) -> None:
         # A cancelled gate dialog is not an approval, so pi's tripwire treats
         # the call exactly as it treats a rejected one.
         self._note_pi_gate_denied(request_id)
+        # Qoder needs the same explicit verdict: a later `failed` terminal is
+        # its acknowledgement of this denial, not evidence of a bypass.
+        self._note_qoder_denied(request_id)
 
     await self._audit_cancelled_approvals(open_requests)
     for request_id in open_requests:

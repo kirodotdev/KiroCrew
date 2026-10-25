@@ -33,6 +33,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_KNOWN,
     Routing,
@@ -110,14 +111,17 @@ def test_only_implemented_mechanisms_are_enforced() -> None:
     observation: SESSION_CONFIG checks the advertised option before the first
     prompt, VERIFIED_SEEDED_SETTINGS reads back the setting it wrote, and
     VERIFIED_GATE_EXTENSION reads the harness's own command registry back for the
-    gate it loaded. Plain SEEDED_SETTINGS is absent for exactly that reason -- it
-    writes without reading.
+    gate it loaded. PINNED_ASK_RULE has no resolved-rule read-back; it pins the
+    settings on argv and refuses unmeasured release, mode, and unasked-execution
+    witnesses. Plain SEEDED_SETTINGS is absent for exactly that reason -- it writes
+    without reading.
     """
     assert gate.ENFORCED_ROUTINGS == frozenset(
         {
             Routing.SESSION_CONFIG,
             Routing.VERIFIED_SEEDED_SETTINGS,
             Routing.VERIFIED_GATE_EXTENSION,
+            Routing.PINNED_ASK_RULE,
         }
     )
     assert gate.is_enforced(ACP_BACKEND_CODEX) is True
@@ -130,6 +134,8 @@ def test_only_implemented_mechanisms_are_enforced() -> None:
     # composes into it and reads back before the first prompt.
     assert gate.is_enforced(ACP_BACKEND_DEEPSEEK) is True
     assert routing_for(ACP_BACKEND_DEEPSEEK) is Routing.VERIFIED_GATE_EXTENSION
+    assert gate.is_enforced(ACP_BACKEND_QODER) is True
+    assert routing_for(ACP_BACKEND_QODER) is Routing.PINNED_ASK_RULE
     assert gate.is_enforced(ACP_BACKEND_CLAUDE) is False
     for backend in AGENT_SPEC_BACKENDS:
         assert gate.is_enforced(backend) is False

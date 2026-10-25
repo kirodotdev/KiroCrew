@@ -1618,6 +1618,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "Permission requested for tool: %s (req=%s)",
             "approve_tool: security floor rejected req=%s: %s",
             "auto-approve identity gate rejected req=%s: %s",
+            "qoder gate: refusing allow_always for req=%s; the session must ask ",
         ],
         "src/kiro_crew/acp/client_claude_seed.py": [],
         "src/kiro_crew/acp/client_claude_session.py": [],

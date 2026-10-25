@@ -20,14 +20,17 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     effort_config_option_id,
     effort_config_option_value,
 )
 from kiro_crew.llm_helpers import resolve_substitute_set_model
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.providers.acp_model_effort import _roll_back_effort_push
 
 #: Per config-option backend: (model left, model switched to, whether the new
 #: model takes an effort write). deepseek, goose, opencode and pi answer from the option
@@ -40,6 +43,9 @@ BACKEND_CASES = {
     ACP_BACKEND_KAS: ("claude-opus-5", "claude-opus-5.5", True),
     ACP_BACKEND_OPENCODE: ("stub/think-1", "stub/think-2", True),
     ACP_BACKEND_PI: ("pi-model-a", "pi-model-b", True),
+    # qfmodel is session-owned. Only low was accepted/reflected, so the generic
+    # high-level fallback case must not pretend Qoder advertised Crew's full ladder.
+    ACP_BACKEND_QODER: ("qfmodel", "qfmodel", True),
 }
 
 
@@ -78,23 +84,80 @@ def test_the_fallback_walk_resolves_the_provider_method() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend,expected", [(ACP_BACKEND_CLAUDE, True), (ACP_BACKEND_QODER, False)]
+)
+async def test_unknown_effort_option_is_fatal_only_for_qoder(backend, expected):
+    applied: list[tuple[str, str]] = []
+    provider = _provider(backend, BACKEND_CASES[backend][0], applied)
+    provider._client.set_config_option = AsyncMock(
+        side_effect=AcpError("JSON-RPC error: Unknown config option: effort")
+    )
+
+    assert await provider._set_effort_config_option("high") is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend,clears_cli_overlay",
+    [
+        (ACP_BACKEND_KIRO, True),
+        (ACP_BACKEND_KAS, False),
+        (ACP_BACKEND_QODER, False),
+        (ACP_BACKEND_CLAUDE, False),
+    ],
+)
+async def test_rollback_clears_the_cli_overlay_only_for_the_overlay_harness(
+    backend: str, clears_cli_overlay: bool, tmp_path
+) -> None:
+    """The caller's overlay-harness decision owns overlay cleanup; other backends skip it."""
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._effort_per_model = {}
+    provider._client = MagicMock()
+    provider._client.backend = backend
+    provider._client._work_dir = tmp_path
+
+    with patch(
+        "kiro_crew.providers.acp_model_effort._clear_cli_overlay_effort",
+        return_value=False,
+    ) as clear:
+        await _roll_back_effort_push(
+            provider,
+            "model-a",
+            "high",
+            None,
+            clears_cli_overlay=clears_cli_overlay,
+        )
+
+    assert clear.called is clears_cli_overlay
+    # A busy lock leaves the level the next spawn will adopt, rather than
+    # claiming an undo the file contradicts.
+    assert provider._effort_per_model == ({"model-a": "high"} if clears_cli_overlay else {})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("backend", sorted(BACKEND_CASES))
 async def test_set_model_delegates_then_reapplies_the_slot_level(backend: str) -> None:
     before, after, takes_effort = BACKEND_CASES[backend]
     applied: list[tuple[str, str]] = []
     provider = _provider(backend, before, applied)
-    provider._effort_per_model[before] = "high"
-
+    slot_level = "low" if backend == ACP_BACKEND_QODER else "high"
+    provider._effort_per_model[before] = slot_level
     await provider.set_model(after)
 
-    effort_write = (effort_config_option_id(backend), effort_config_option_value(backend, "high"))
+    effort_write = (
+        effort_config_option_id(backend),
+        effort_config_option_value(backend, slot_level),
+    )
     if takes_effort:
         # Slot-last: the model push lands first, the effort write after it.
         assert applied == [("model", after), effort_write]
     else:
         assert applied == [("model", after)]
-    # Pushed live only: the target model's stored state is untouched.
-    assert after not in provider._effort_per_model
+    # Pushed live only: a model change leaves the target model's stored state
+    # untouched. Qoder's measured case rewrites the same session-owned model id.
+    if before != after:
+        assert after not in provider._effort_per_model
 
 
 @pytest.mark.asyncio

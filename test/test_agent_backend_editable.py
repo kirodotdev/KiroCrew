@@ -24,6 +24,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -32,16 +33,10 @@ from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 
 FIELD = "agent.acp_backend"
 
-#: Known ids the public baseline deliberately does not offer, each entry carrying its
-#: reason in ``test_baseline_ships_every_known_backend``. An entry is a reasoned
-#: exclusion rather than a defect, and it earns its place by naming what the id fails.
-#: Empty today: no id is excluded. ``deepseek`` was the one member while it failed the
-#: ROUTING half of the selectability bar -- its sandbox decides its own tool calls and
-#: its ``session/request_permission`` carries only a model-initiated escalation, so
-#: Crew's PreToolUse gate never ran for what a session did. It left the set when Crew
-#: composed its own gate plugin into the harness and read the plugin's load marker
-#: back before the first prompt (``Routing.VERIFIED_GATE_EXTENSION``), which is the
-#: routing half met the way the exclusion said it had to be.
+#: Known ids the public baseline deliberately does not offer.  Qoder left this set
+#: when its inline ask rule was pinned on argv and the release, mode and unasked-call
+#: witnesses were added; the set is empty, and a future exclusion must name what the
+#: id fails rather than relying on a baseline/known inequality.
 NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
 
 
@@ -198,6 +193,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_PI,
             ACP_BACKEND_GOOSE,
             ACP_BACKEND_DEEPSEEK,
+            ACP_BACKEND_QODER,
         ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

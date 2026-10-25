@@ -68,8 +68,10 @@ __all__ = [
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
     "kiro_cli_resolves",
+    "model_registry_namespace",
     "narrowed_agent_permissions",
     "provider_error_client",
+    "refresh_exclusive_catalog",
     "provider_label",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
@@ -317,6 +319,36 @@ def model_is_unusable(model_id: str, advertised: object) -> bool:
     from kiro_crew.acp.client import model_is_unusable as _impl
 
     return _impl(model_id, advertised)  # type: ignore[arg-type]
+
+
+def model_registry_namespace(backend: str) -> str:
+    """The model-registry namespace key for *backend*.
+
+    Thin delegation to :func:`kiro_crew.acp.types.model_registry_namespace`, so the
+    dashboard's model-list owner reads the picker namespace through the SDK
+    surface instead of importing the ACP layer (the agent-sdk-boundary gate
+    refuses a new edge). Plain data in, a string out. Function-local import for
+    the same reason as :func:`refresh_exclusive_catalog`.
+    """
+    from kiro_crew.acp.types import model_registry_namespace as _impl
+
+    return _impl(backend)
+
+
+async def refresh_exclusive_catalog(
+    backend: str, *, timeout: float | None = None
+) -> list[dict[str, str]]:
+    """Refresh one exclusive advertised catalog without a live session.
+
+    Thin delegation to :func:`kiro_crew.acp.client.refresh_exclusive_catalog`, so
+    the dashboard's model-list read reaches the Qoder probe through the SDK
+    surface instead of importing the ACP layer (the agent-sdk-boundary gate
+    refuses a new edge). Plain data in, plain data out. Function-local import for
+    the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.client import refresh_exclusive_catalog as _impl
+
+    return await _impl(backend, timeout=timeout)
 
 
 async def resolve_kiro_bin_for_spawn() -> str | None:

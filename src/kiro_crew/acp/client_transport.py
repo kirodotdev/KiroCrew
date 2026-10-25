@@ -40,7 +40,12 @@ from kiro_crew.acp.runtime_models import (
     _is_model_substitution_advisory,
     _substitute_model_from_advisory,
 )
-from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
+from kiro_crew.acp.transport_errors import (
+    AcpAuthRequired,
+    AcpError,
+    AcpProcessDied,
+    AcpTimeoutError,
+)
 from kiro_crew.acp.transport_framing import (
     RequestWriteResult,
     _stall_window_phrase,
@@ -61,6 +66,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -498,6 +504,18 @@ async def _wait_for_response(
                         _payload_log,
                     )
                     return msg.result or {}
+                # qodercli answers a signed-out session/new or session/load with
+                # -32000. Crew never sends ``authenticate`` to clear it: that opens
+                # a browser sign-in each time. The remedy is the operator's own.
+                if (
+                    self._is_qoder
+                    and method in {METHOD_SESSION_NEW, METHOD_SESSION_LOAD}
+                    and self._is_qoder_signed_out_error(msg.error)
+                ):
+                    raise AcpAuthRequired(
+                        host_auth.signed_out_message(self.backend),
+                        backend=self.backend,
+                    )
                 # Dual-redact msg.error before interpolating into the AcpError.
                 # msg.error is the wire-derived JSON-RPC error frame from the ACP
                 # backend; AcpError propagates to the dashboard activity feed and

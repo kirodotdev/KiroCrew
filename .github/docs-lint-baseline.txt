@@ -103,7 +103,6 @@ dead-identifier	docs/system-specs/common/testing-conventions.md	LoadGroupSchedul
 dead-identifier	docs/system-specs/modules/acp-client.md	AgentExecutionUserMessageCleared
 dead-identifier	docs/system-specs/modules/acp-client.md	PermissionOption
 dead-identifier	docs/system-specs/modules/acp-client.md	node_binary
-dead-identifier	docs/system-specs/modules/agent-host-contract.md	permissionMode
 dead-identifier	docs/system-specs/modules/app-kit-platform.md	EditorialAssets
 dead-identifier	docs/system-specs/modules/artifacts.md	refresh_binding
 dead-identifier	docs/system-specs/modules/auto-improvement.md	mod_py_sym

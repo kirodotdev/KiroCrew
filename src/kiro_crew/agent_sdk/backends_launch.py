@@ -27,6 +27,8 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
+    QODER_SUPPORTED_VERSION,
 )
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -193,6 +195,18 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
             "this binary is the host that boots the profile it lives in."
         ),
     ),
+    ACP_BACKEND_QODER: SelfServedLaunch(
+        label="Qoder",
+        binary="qodercli",
+        acp_args=("--acp",),
+        bin_env_var="QODERCLI_BIN",
+        install_command=f"npm i -g @qoder-ai/qodercli@{QODER_SUPPORTED_VERSION}",
+        protocol_version=1,
+        missing_hint=(
+            "No adapter package is needed: this harness serves ACP itself, behind "
+            "a flag its --help does not list."
+        ),
+    ),
 }
 
 #: The harnesses whose whole launch is described by :data:`ACP_BACKEND_LAUNCH`.
@@ -217,8 +231,8 @@ ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
 #: process — so nothing later can find it. ``test_pid_lifecycle`` ratchets the
 #: coverage, so the omission is a red test rather than a leaked process.
 #:
-#: The three self-served harnesses read their own ``ACP_BACKEND_LAUNCH`` row so the
-#: two tables cannot disagree. The rest are spelled out because their launch is
+#: The self-served harnesses Crew spawns read their own ``ACP_BACKEND_LAUNCH`` row
+#: so the two tables cannot disagree. The rest are spelled out because their launch is
 #: bespoke: kiro-cli serves both the kiro and KAS backends (KAS is kiro-cli's relay),
 #: and the claude, codex and pi adapters are Node entry scripts whose basenames live
 #: with their resolvers in the ACP layer, which this module must not import.

@@ -67,6 +67,7 @@ from kiro_crew.acp import client_lifecycle as _client_lifecycle  # noqa: F401
 from kiro_crew.acp import client_mcp_array as _client_mcp_array  # noqa: F401
 from kiro_crew.acp import client_model_selection as _client_model_selection  # noqa: F401
 from kiro_crew.acp import client_permissions as _client_permissions  # noqa: F401
+from kiro_crew.acp import client_qoder as _client_qoder
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership  # noqa: F401
 from kiro_crew.acp import client_spawn_env as _client_spawn_env  # noqa: F401
 from kiro_crew.acp import client_start as _client_start
@@ -156,6 +157,10 @@ from kiro_crew.acp.client_permissions import PI_ACP_VERIFIED_VERSION  # noqa: F4
 from kiro_crew.acp.client_permissions import _goose_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _pi_adapter_versions_noted  # noqa: F401
 from kiro_crew.acp.client_permissions import _scrub_observed  # noqa: F401
+from kiro_crew.acp.client_qoder import _JSONRPC_AUTH_REQUIRED  # noqa: F401
+from kiro_crew.acp.client_qoder import _QODER_TOOL_CALL_ID_MAX_CHARS  # noqa: F401
+from kiro_crew.acp.client_qoder import _qoder_config_mode  # noqa: F401
+from kiro_crew.acp.client_qoder import refresh_exclusive_catalog  # noqa: F401
 from kiro_crew.acp.client_spawn_env import _CODEX_ACP_DEP_MARKER  # noqa: F401
 from kiro_crew.acp.client_spawn_env import _CODEX_ACP_PKG_ENTRY  # noqa: F401
 from kiro_crew.acp.client_spawn_env import _ENV_CODEX_ACP_BIN  # noqa: F401
@@ -302,7 +307,9 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
@@ -371,6 +378,9 @@ from kiro_crew.acp.types import (  # noqa: F401
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    QODER_ALLOW_ALWAYS_OPTION_ID,
+    QODER_REQUIRED_MODE,
+    QODER_SUPPORTED_VERSION,
     STEERING_ANSWER_WAIT_SECS,
     STEERING_INJECTED,
     STOP_REASON_COMPACTION_FAILED,
@@ -382,6 +392,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     UPDATE_CURRENT_MODE,
     UPDATE_SESSION_INFO,
     UPDATE_TOOL_CALL,
+    UPDATE_TOOL_CALL_UPDATE,
     UPDATE_USAGE,
     UPDATE_USER_MESSAGE_CHUNK,
     AcpEvent,
@@ -934,11 +945,16 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_usage",
     "kiro_crew.acp.client_transport",
     "kiro_crew.acp.client_lifecycle",
+    "kiro_crew.acp.client_qoder",
     "kiro_crew.acp.client_turn_control",
     "kiro_crew.acp.client_start",
     "kiro_crew.acp.client_turn",
     "kiro_crew.acp.client_class",
 )
+# The catalog owner cannot import the facade at run time (owner rule), so the
+# concrete class is handed to it after the class is complete and before the mirror
+# indexes the owners, so the mirror sees ``AcpClient`` bound in ``client_qoder``.
+setattr(_client_qoder, "AcpClient", AcpClient)  # mypy rejects a plain assignment here
 _MIRROR = _facade_mirror.install(
     sys.modules[__name__],
     _CLIENT_OWNERS,

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 __all__ = [
+    "CatalogProbePolicy",
     "HarnessAdapter",
     "LaunchAdapter",
     "NotificationAliases",
@@ -171,6 +172,19 @@ class ProcessSession(Protocol):
 
     async def _prepare_claude_side_read_denies(self) -> None:
         """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
+
+    _qoder_live_prompt_seen: bool
+    """Whether Crew has sent this Qoder session's first live prompt.
+
+    Written once, by the adapter's :meth:`ProcessAdapter.on_initialized`, which
+    disarms it before ``session/load`` can replay history. The turn-time tripwire
+    reads it, so a replayed tool frame is never judged as this session's execution."""
+
+    def _verify_qoder_version(self) -> None:
+        """Refuse a Qoder release the pinned ask rule was not measured on."""
+
+    def _verify_qoder_routing(self, resp: dict) -> None:
+        """Refuse a Qoder session whose reported response mode is not the pinned one."""
 
 
 @dataclass(frozen=True)
@@ -355,6 +369,34 @@ class ReclaimPolicy:
     max_rss_mb: float
 
 
+# ── Seam 10: runtime witnesses ──
+
+
+@dataclass(frozen=True)
+class CatalogProbePolicy:
+    """Whether and how a host's model catalog is read without a live session.
+
+    Two answers rather than one, because the two decisions belong to different
+    things. Whether a probe may run at all is a fact about the host (its catalog
+    is the account's own handshake answer, or it belongs to a session Crew has to
+    open first). How the session that answered ends is a fact about the host's
+    verbs -- and a host that leaves a record behind every time it is polled is
+    why this is asked here instead of assumed.
+    """
+
+    eligible: bool
+    """Whether a probe may be run for this host at all."""
+
+    teardown: TeardownPolicy | None
+    """The verb that ends the probe's session, or ``None`` when nothing is left.
+
+    ``None`` is the honest answer for a host whose probe session is not reported
+    back. It is never an invitation to fall back to another host's verb: a probe
+    that ends a session with a method its host does not answer costs the whole
+    teardown budget and logs a control-plane timeout for a routine eviction.
+    """
+
+
 # ── The contract ──
 
 
@@ -418,6 +460,51 @@ class ProcessAdapter(LaunchAdapter):
         that launcher. Most hosts need no hop at all, which is this default.
         """
         self.apply_spawn_env(env)
+
+    # ── Seam 10: runtime witnesses ──
+
+    def on_initialized(self, session: ProcessSession, init_resp: Mapping[str, Any]) -> None:
+        """Judge the ``initialize`` answer, before any session exists.
+
+        The place for a witness that has to be read off the handshake itself: a
+        host that exposes no resolved-permission read-back is pinned by its argv,
+        and the release the handshake reports is the only evidence left that argv
+        precedence still holds. Raising aborts the start exactly where this runs
+        -- before ``session/load`` or ``session/new`` -- so a host that fails its
+        own witness never opens a session.
+
+        A no-op by default, and it must stay one: every other host declares its
+        handshake answer in a table instead, and a default that inspected the
+        answer would be a second, silently divergent copy of that table.
+        """
+
+    def on_session_opened(
+        self,
+        session: ProcessSession,
+        resp: Mapping[str, Any],
+        *,
+        resumed: bool,
+    ) -> None:
+        """Judge the response that opened or restored this session.
+
+        *resp* is the ``session/new`` or ``session/load`` result itself rather than
+        a copy of its parts, because a host's witness is a fact about that response
+        (the mode it reports, the catalog it serves), and re-reading it through the
+        session's caches would judge something else. *resumed* says which of the two
+        it was, so a witness only a restore can fail never refuses a fresh session.
+
+        A no-op by default, for the same reason as :meth:`on_initialized`.
+        """
+
+    def catalog_probe(self) -> CatalogProbePolicy:
+        """Whether this host's catalog can be read without a live session, and how
+        the session that answers it ends.
+
+        Ineligible by default: a probe costs a process and, on a host that keeps
+        its sessions, a record. A harness that has not measured both halves of
+        that trade has not earned the probe.
+        """
+        return CatalogProbePolicy(eligible=False, teardown=None)
 
 
 class HarnessAdapter(LaunchAdapter):

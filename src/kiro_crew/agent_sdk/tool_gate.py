@@ -67,6 +67,10 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_PI,
+    QODER_GATE_ARGV,
+    QODER_MEASURED_VERSIONS,
+    QODER_REQUIRED_MODE,
+    QODER_SUPPORTED_VERSION,
     Readback,
     Routing,
     gate_probe_command_for,
@@ -77,6 +81,22 @@ from kiro_crew.agent_sdk.backends import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _qoder_version_refusal(reported_version: object) -> str:
+    """The precise remedy for a release outside Qoder's measured set."""
+    accepted = QODER_SUPPORTED_VERSION
+    install = f"npm i -g @qoder-ai/qodercli@{accepted}"
+    if isinstance(reported_version, str) and reported_version:
+        return (
+            "This copy of Qoder CLI is not the one Kiro Crew was tested with, so the "
+            f"chat was not started. Update it with {install}, then start a new chat."
+        )
+    return (
+        "Kiro Crew could not tell which version of Qoder CLI is installed, so the chat "
+        f"was not started. Update it with {install}, then start a new chat."
+    )
+
 
 #: Routing mechanisms whose non-ROUTED verdict actually refuses a session.
 #:
@@ -104,6 +124,7 @@ ENFORCED_ROUTINGS: frozenset = frozenset(
         Routing.SESSION_CONFIG,
         Routing.VERIFIED_SEEDED_SETTINGS,
         Routing.VERIFIED_GATE_EXTENSION,
+        Routing.PINNED_ASK_RULE,
     }
 )
 
@@ -531,7 +552,12 @@ def label_for(backend: str) -> str:
     return _LABELS.get(backend) or (backend or "Kiro CLI")
 
 
-def routing_verdict(backend: str) -> tuple:
+def routing_verdict(
+    backend: str,
+    *,
+    observed_version: object = "",
+    observed_mode: object = "",
+) -> tuple:
     """Report how *backend* routes tool calls, and why.
 
     Dispatches on the routing MECHANISM rather than the harness id, so a harness
@@ -625,6 +651,33 @@ def routing_verdict(backend: str) -> tuple:
             f"{where} before the first prompt",
         )
 
+    if routing is Routing.PINNED_ASK_RULE:
+        if not QODER_MEASURED_VERSIONS or not QODER_REQUIRED_MODE:
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares pinned-ask-rule routing but names no measured "
+                "version or required mode",
+            )
+        if not QODER_GATE_ARGV:
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares pinned-ask-rule routing but carries no pinned argv",
+            )
+        issue = pinned_ask_rule_issue(
+            backend, version=observed_version, observed_mode=observed_mode
+        )
+        if issue:
+            return Verdict.INDETERMINATE, issue
+        # ROUTED on the two witnesses this harness exposes. It still has no
+        # resolved-rule read-back; the execution tripwire is the third runtime
+        # half and runs on the session connection itself.
+        return (
+            Verdict.ROUTED,
+            "the client pins permissions ask=['*'] and defaultMode='default' and "
+            "disableAllHooks on argv, refuses any unmeasured release, and verifies the "
+            "default mode plus an asked toolCallId before execution",
+        )
+
     if routing is Routing.SEEDED_SETTINGS:
         # Declared, not enforced here -- and the gap is the READ-BACK, not a missing
         # writer. ``_write_claude_local_settings`` does seed the mode, but only into
@@ -651,7 +704,7 @@ def is_enforced(backend: str) -> bool:
     return routing_for(backend) in ENFORCED_ROUTINGS
 
 
-def remediation_for(backend: str) -> str:
+def remediation_for(backend: str, *, reported_version: object = None) -> str:
     """The concrete change an operator can make, or ``""`` when there is none."""
     routing = routing_for(backend)
     if routing is Routing.VERIFIED_SEEDED_SETTINGS:
@@ -696,6 +749,10 @@ def remediation_for(backend: str) -> str:
                 f"extension on its command line, and that nothing of your own "
                 f"{noun} named {probe!r}."
             )
+    if routing is Routing.PINNED_ASK_RULE:
+        if isinstance(reported_version, str) and reported_version in QODER_MEASURED_VERSIONS:
+            return "Start a new chat."
+        return _qoder_version_refusal(reported_version)
     return ""
 
 
@@ -764,6 +821,32 @@ def seeded_setting_issue(backend: str, observed: object) -> str:
         return (
             f"{setting_key!r} reads {observed!r} rather than the required {required!r}, "
             "so privileged tools would not ask"
+        )
+    return ""
+
+
+def pinned_ask_rule_issue(backend: str, *, version: object, observed_mode: object) -> str:
+    """Why *backend*'s pinned argv cannot be trusted, from the handshake observations.
+
+    ``""`` means the harness reported a measured release and the only mode read-back
+    it exposes names the required asking mode. Both facts are required: no
+    resolved-permission read-back exists, so the version bounds the wire contract
+    and the mode read-back is the sole session-level witness.
+    """
+    if routing_for(backend) is not Routing.PINNED_ASK_RULE:
+        return ""
+    observed_version = version if isinstance(version, str) else ""
+    if observed_version not in QODER_MEASURED_VERSIONS:
+        measured = ", ".join(sorted(QODER_MEASURED_VERSIONS))
+        return (
+            f"the harness reported version {observed_version or '<absent>'!r}; this "
+            f"route is measured only on {measured}."
+        )
+    observed = observed_mode if isinstance(observed_mode, str) else ""
+    if observed != QODER_REQUIRED_MODE:
+        return (
+            f"the session reported mode {observed or '<absent>'!r} rather than "
+            f"{QODER_REQUIRED_MODE!r}, so the asking posture is not in force"
         )
     return ""
 

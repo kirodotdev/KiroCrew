@@ -28,6 +28,7 @@ import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
+import { getModelLabel } from '../../lib/modelLabels'
 import { fmtCredits, fmtCurrency, fmtElapsed } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -42,9 +43,11 @@ export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: nu
  *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
  *  The full untrimmed id stays available in the footer tooltip, so this only
  *  affects the inline label. Unknown shapes pass through unchanged. Shares the
- *  one routing-prefix pattern with the registry fold (providers/modelRegistry.ts). */
+ *  one routing-prefix pattern with the registry fold (providers/modelRegistry.ts).
+ *  An id the backend's model list gave a display label for shows that label
+ *  instead (lib/modelLabels.ts). */
 export function fmtTurnModel(id: string): string {
-  return id.replace(ROUTING_PREFIX_RE, '')
+  return getModelLabel(id) ?? id.replace(ROUTING_PREFIX_RE, '')
 }
 
 /** "8.4s" under 10s, "42s" under a minute, "2m 34s" under an hour, "1h 7m 11s"

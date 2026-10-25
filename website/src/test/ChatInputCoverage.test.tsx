@@ -700,6 +700,21 @@ describe('ChatInput context-usage popover', () => {
     expect(screen.queryByLabelText('Context usage')).toBeNull()
   })
 
+  it('renders no context chip when the window size is 0 (unknown)', () => {
+    // A percentage against an unknown window is meaningless, so the whole control is withheld.
+    renderWithProviders(<ChatInput {...base} contextPct={42} contextWindowTokens={0} />)
+    expect(screen.queryByLabelText('Context usage')).toBeNull()
+  })
+
+  it('still renders the context chip when the window size is absent or known', () => {
+    // An absent window (Kiro Crew reports a percentage without a size) keeps the chip.
+    const { unmount } = renderWithProviders(<ChatInput {...base} contextPct={42} />)
+    expect(screen.getByLabelText('Context usage')).toBeInTheDocument()
+    unmount()
+    renderWithProviders(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    expect(screen.getByLabelText('Context usage')).toBeInTheDocument()
+  })
+
   // ── per-session auto-compact threshold (slider section) ──────────────────
   // The section fetches lazily on popover open, so each test mocks the GET
   // and wraps ChatInput in a SlotProvider to give it a slot to fetch for.

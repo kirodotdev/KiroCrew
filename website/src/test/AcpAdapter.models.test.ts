@@ -220,3 +220,25 @@ describe('model-list liveness (self-heal signal)', () => {
     expect(modelListRefetchInterval({ queryKey: ['available-models', 'other'] })).toBe(false)
   })
 })
+
+  it('maps a differing backend display name to label but preserves the id as name', async () => {
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'qfmodel', display_name: 'Qwen3.8-Flash', description: '0.00x Credit', advertised_models_exclusive: true },
+      { model_name: 'auto', display_name: 'Auto (default)', description: '0.50x Credit', advertised_models_exclusive: true },
+    ])
+    const models = await new AcpAdapter().fetchAvailableModels()
+
+    expect(models.map(m => ({ name: m.name, label: m.label }))).toEqual([
+      { name: 'qfmodel', label: 'Qwen3.8-Flash' },
+      { name: 'auto', label: 'Auto (default)' },
+    ])
+  })
+
+  it('omits label when the backend repeats the id', async () => {
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'plain-id', display_name: 'plain-id', description: '' },
+    ])
+    const models = await new AcpAdapter().fetchAvailableModels()
+    expect(models[0].name).toBe('plain-id')
+    expect(models[0].label).toBeUndefined()
+  })

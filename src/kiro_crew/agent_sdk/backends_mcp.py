@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
 )
 
 # ── Capability: where a harness gets its MCP servers ──
@@ -131,6 +132,10 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        # A live probe mounted a stdio server through session/new and saw its tool
+        # asked under the pinned ask rule. As with deepseek, this measures the
+        # pooled-broker channel, not a spec mirror or per-tool deny projection.
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -301,6 +306,12 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # and a tool pi does not have, each ended ``failed`` with nothing on disk, and a
 # session with no gate extension is refused before its first prompt by the routing.
 #
+# qoder (``Routing.PINNED_ASK_RULE``) is the second mirror-less member, on the same
+# terms as pi: its declared projection is ``ProjectionKind.BROKER_ONLY``, and the
+# argv-pinned ``ask: ["*"]`` rule sends every tool call -- native or MCP -- to
+# ``session/request_permission``, where ``_deny_zero_tools`` answers with the reject
+# option. A session whose pinned rule did not hold is refused or stopped before that.
+#
 # claude is NOT a member: its routing, ``Routing.SEEDED_SETTINGS``, is declared but
 # not enforced by this core (see ``Routing``'s docstring and
 # ``tool_gate.ENFORCED_ROUTINGS``) -- an operator's own ``~/.claude`` settings can
@@ -320,6 +331,7 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_QODER,
     }
 )
 

@@ -89,6 +89,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     EntitlementRevalidating,
     catalog_row_would_drop,
     is_auth_failure_output,
+    refresh_exclusive_catalog,
     resolve_kiro_bin_for_spawn,
     resolve_pin_spelling,
     resolve_ssh_auth_sock,
@@ -293,6 +294,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     run_config_write,
 )
 from kiro_crew.dashboard.conditional_get import conditional_response, strong_content_etag
+from kiro_crew.dashboard.handlers import agents_models as _agents_models
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     MAX_AGENT_SKILLS,
     SkillCatalogSnapshot,
@@ -313,6 +315,18 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     control_plane_declarations,
     read_only_reason_for_path,
     validate_definition_patch,
+)
+from kiro_crew.dashboard.handlers.agents_models import (
+    _LIST_MODELS_BACKGROUND_TIMEOUT_SECS,
+    _LIST_MODELS_CATALOG_TTL_SECS,
+    _LIST_MODELS_FAILURE_BACKOFF_SECS,
+    _LIST_MODELS_SUBPROCESS_TIMEOUT_SECS,
+    _QODER_CATALOG_REFRESH_STATE,
+    _QODER_CATALOG_RETRY_SECONDS,
+    _QODER_CATALOG_TTL_SECONDS,
+)
+from kiro_crew.dashboard.handlers.agents_models import (
+    consume_refresh_exception as _consume_refresh_exception,
 )
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
@@ -357,32 +371,6 @@ from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
-# How long one GET /api/models waits for a catalog before answering the degraded
-# 503. Unchanged: a remote hub still budgets its whole cold path against this
-# bound (see api_models), so raising it would move
-# DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS with it.
-_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS: float = 10.0
-# How long the SHARED background catalog fetch may run, decoupled from any one
-# request. On a host where a cold `kiro-cli --list-models` spawn always exceeds
-# the request bound, killing it at that bound meant no call ever finished, so
-# every 8s poll started another doomed cold spawn and the picker never left
-# `auto`. The fetch now outlives the request that started it: the request still
-# answers 503 after _LIST_MODELS_SUBPROCESS_TIMEOUT_SECS, but the spawn keeps
-# running under this ceiling and the next poll is served from its result.
-_LIST_MODELS_BACKGROUND_TIMEOUT_SECS: float = 90.0
-# A cached catalog younger than this is served straight away; an older one is
-# served straight away too and refreshed behind the reply (stale-while-
-# revalidate). The catalog changes rarely, so a few minutes stale costs nothing
-# the per-request entitlement narrowing does not already correct.
-_LIST_MODELS_CATALOG_TTL_SECS: float = 300.0
-# A fetch that spawned kiro-cli and failed (signed out, non-zero exit, timeout,
-# bad output) is remembered this long, and every poll inside the window gets the
-# same 503 without a new spawn or a new WARNING. The dashboard re-polls about
-# every 8s while the list is degraded, so a signed-out CLI cost one spawn and one
-# WARNING per poll (81 of each in 16 minutes on one gateway). 30s holds a failing
-# CLI to two spawns a minute, while a user who has just signed in waits at most
-# 30s for the picker to fill. A success clears the entry at once.
-_LIST_MODELS_FAILURE_BACKOFF_SECS: float = 30.0
 # The cache is the one place ``--list-models`` output is held past the request,
 # so retention is bounded before it is stored. Row count and identifying-field
 # length reuse the repo's ONE shared admission bound
@@ -875,18 +863,53 @@ def _advertised_backend_models(
     A live session wins over the cross-session cache. Both sources retain the
     adapter's exact model ids, which may be provider/model pairs for Pi. A cold
     cache offers ``auto`` and, when set, the configured default until the first
-    session advertises its choices.
+    session advertises its choices; an exclusive catalog does neither, because
+    Crew does not yet know any id it accepts and would otherwise offer an
+    unmeasured sentinel.
     """
     namespace = model_registry_namespace(backend)
     advertised = _advertised_cc_models(request, namespace)
+    if capabilities_for(backend).advertised_models_are_exclusive:
+        # An exclusive catalog's labels come from the service's own persisted rows;
+        # the ids (and a live session's list) are still decided above.
+        rows_by_id = {
+            row.get("modelId"): row
+            for row in model_registry.advertised_model_rows(namespace)
+            if row.get("modelId")
+        }
+        for entry in advertised:
+            row = rows_by_id.get(entry.get("model_name"))
+            if (
+                row
+                and entry.get("display_name") == entry.get("model_name")
+                and not entry.get("description")
+            ):
+                entry["display_name"] = row.get("name") or entry["model_name"]
+                entry["description"] = row.get("description", "")
 
-    rows: list[dict] = [
-        {"model_name": "auto", "display_name": "Auto", "description": "Backend default"}
-    ]
-    seen: set[str] = {"auto"}
+    exclusive = capabilities_for(backend).advertised_models_are_exclusive
+    offer_auto = not exclusive
+    rows: list[dict] = (
+        [
+            {
+                "model_name": "auto",
+                "display_name": "Auto",
+                "description": "Backend default",
+                "advertised_models_exclusive": exclusive,
+            }
+        ]
+        if offer_auto
+        else []
+    )
+    seen: set[str] = set()
     for entry in advertised:
         name = str(entry.get("model_name", "") or "").strip()
-        if not name or _normalize_model_key(name) == "auto" or name in seen:
+        if not name or name in seen:
+            continue
+        # Non-exclusive catalogs get the synthetic auto row first and therefore
+        # drop a duplicate. Qoder's auto is measured as an accepted id, so its
+        # advertised row is real and must survive.
+        if _normalize_model_key(name) == "auto" and offer_auto:
             continue
         seen.add(name)
         rows.append(
@@ -894,6 +917,7 @@ def _advertised_backend_models(
                 "model_name": name,
                 "display_name": entry.get("display_name") or name,
                 "description": entry.get("description", ""),
+                "advertised_models_exclusive": exclusive,
             }
         )
     default = (configured_default or "").strip()
@@ -902,11 +926,24 @@ def _advertised_backend_models(
         and _normalize_model_key(default) != "auto"
         and default not in seen
         and not advertised
+        and not capabilities_for(backend).advertised_models_are_exclusive
     ):
         rows.insert(
-            1, {"model_name": default, "display_name": default, "description": "Configured default"}
+            1,
+            {
+                "model_name": default,
+                "display_name": default,
+                "description": "Configured default",
+                "advertised_models_exclusive": exclusive,
+            },
         )
     for entry in rows:
+        if exclusive:
+            # An exclusive harness (Qoder) serves per-model windows that ACP does
+            # not expose, so the reference fallback would be a made-up number.
+            # None tells the frontend the window is unknown.
+            entry["context_window"] = None
+            continue
         entry["context_window"] = (
             model_registry.model_window(entry["model_name"])
             or model_registry.REFERENCE_WINDOW_TOKENS
@@ -1394,6 +1431,18 @@ def _consume_refresh_exception(task: "asyncio.Task[list[dict]]") -> None:
         logger.debug("api_models: background catalog refresh failed (serving cached)", exc_info=exc)
 
 
+async def _maybe_refresh_qoder_catalog(backend: str) -> None:
+    """Forward to the split Qoder refresh owner using the handler's policy state."""
+    await _agents_models.maybe_refresh_qoder_catalog(
+        backend,
+        state=_QODER_CATALOG_REFRESH_STATE,
+        ttl_seconds=_QODER_CATALOG_TTL_SECONDS,
+        retry_seconds=_QODER_CATALOG_RETRY_SECONDS,
+        request_timeout_secs=_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS,
+        refresh_catalog=refresh_exclusive_catalog,
+    )
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — the model list for the configured backend.
 
@@ -1408,6 +1457,8 @@ async def api_models(request: web.Request) -> web.Response:
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
         )
     if capabilities_for(backend).resolves_model_from_advertised_list:
+        if capabilities_for(backend).advertised_models_are_exclusive:
+            await _maybe_refresh_qoder_catalog(backend)
         return web.json_response(
             _advertised_backend_models(
                 request, backend, configured_default=_scoped_default(cfg, backend)
