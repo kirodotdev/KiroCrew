@@ -173,11 +173,9 @@ class TestInstall:
         result = install_app(src)
         assert result.ok
         assert result.name == "test-app"
-        # Verify files copied
         installed_dir = app_home / "apps" / "test-app"
         assert installed_dir.is_dir()
         assert (installed_dir / APP_MANIFEST_FILENAME).is_file()
-        # Verify installed.json
         meta = _read_installed("test-app")
         assert meta is not None
         assert meta.name == "test-app"
@@ -218,7 +216,6 @@ class TestInstall:
             agents=["agents/analyst.json"],
             skills=["skills/triage"],
         )
-        # Create the referenced files
         (src / "agents").mkdir()
         (src / "agents" / "analyst.json").write_text('{"name": "analyst"}')
         (src / "skills" / "triage").mkdir(parents=True)
@@ -226,7 +223,6 @@ class TestInstall:
 
         result = install_app(src)
         assert result.ok
-        # Verify files were copied
         installed = app_home / "apps" / "test-app"
         assert (installed / "agents" / "analyst.json").is_file()
         assert (installed / "skills" / "triage" / "SKILL.md").is_file()
@@ -658,15 +654,12 @@ class TestUninstall:
     def test_uninstall_keep_data(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write some data
         data_dir = app_home / "apps" / "test-app" / "data"
         (data_dir / "cache.json").write_text('{"key": "value"}')
 
         result = uninstall_app("test-app", keep_data=True)
         assert result.ok
-        # Data preserved
         assert (app_home / "apps" / "test-app" / "data" / "cache.json").is_file()
-        # App files removed
         assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_uninstall_keeps_data_when_the_app_dir_is_reached_through_a_link(
@@ -881,14 +874,12 @@ class TestUninstall:
         """Reinstall after default uninstall must preserve user data."""
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write user data
         data_dir = app_home / "apps" / "test-app" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "priorities.md").write_text("- item1\n- item2\n")
         (data_dir / "state").mkdir(exist_ok=True)
         (data_dir / "state" / "oncall.json").write_text('{"oncall": true}')
 
-        # Uninstall with keep_data
         result = uninstall_app("test-app", keep_data=True)
         assert result.ok
         assert (data_dir / "priorities.md").is_file()
@@ -898,7 +889,6 @@ class TestUninstall:
         result = install_app(src2)
         assert result.ok
 
-        # User data must survive
         assert (data_dir / "priorities.md").read_text(encoding="utf-8") == "- item1\n- item2\n"
         assert (data_dir / "state" / "oncall.json").read_text(
             encoding="utf-8"
@@ -908,14 +898,12 @@ class TestUninstall:
         """If copytree fails after data/ was preserved, rollback must restore data/."""
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write user data
         data_dir = app_home / "apps" / "test-app" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "config.yaml").write_text("oncall:\n  rotation: my-rotation\n")
         (data_dir / "state").mkdir(exist_ok=True)
         (data_dir / "state" / "oncall.json").write_text('{"oncall": true}')
 
-        # Uninstall with keep_data
         uninstall_app("test-app", keep_data=True)
         assert (data_dir / "config.yaml").is_file()
 
@@ -927,11 +915,9 @@ class TestUninstall:
         monkeypatch.setattr("shutil.copytree", failing_copytree)
         result = install_app(src2)
 
-        # Install must fail
         assert not result.ok
         assert "failed to copy app files" in result.error
 
-        # Rollback must have restored data/
         assert data_dir.is_dir(), "data/ directory must be restored after rollback"
         assert (data_dir / "config.yaml").read_text(
             encoding="utf-8"
@@ -959,11 +945,9 @@ class TestUninstall:
         result = install_app(src)
         assert not result.ok
         assert "unsafe app name" in result.error
-        # Verify SEL rejection event was emitted
         assert len(sel_calls) == 1
         assert sel_calls[0]["outcome"] == "rejected"
         assert sel_calls[0]["operation"] == "path_safety_check"
-        # Verify nothing was written to disk
         assert not (app_home / "apps" / "evil-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_install_reclaims_stale_tmp_when_data_absent(self, tmp_path, app_home):
@@ -1030,7 +1014,6 @@ class TestUninstall:
         src = _make_app_source(tmp_path)
         result = install_app(src)
         assert result.ok
-        # Must have emitted a success event
         success_events = [c for c in sel_calls if c.get("outcome") == "success"]
         assert len(success_events) == 1
         assert success_events[0]["operation"] == "install"

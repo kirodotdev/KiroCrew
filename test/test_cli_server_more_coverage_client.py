@@ -601,12 +601,27 @@ class TestOwnerVerifiedSecretTransport:
         )
         verify_peer(object())  # must not raise
 
-    def test_posix_tcp_fallback_refuses_a_resolved_foreign_peer(
-        self, monkeypatch, tmp_path
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            pytest.param(
+                "resolved foreign peer",
+                id="test_posix_tcp_fallback_refuses_a_resolved_foreign_peer",
+            ),
+            pytest.param(
+                "unresolvable peer",
+                id="test_posix_tcp_fallback_refuses_when_the_peer_is_unresolvable",
+            ),
+        ],
+    )
+    def test_posix_tcp_fallback_refuses_a_mismatched_peer(
+        self, scenario, monkeypatch, tmp_path
     ) -> None:
         # The co-resident-rival hole stays closed on the TCP fallback: a resolved
-        # foreign peer (MISMATCH) refuses the secret, exactly as the unix path
-        # refuses a non-self peer.
+        # foreign peer refuses the secret, exactly as the unix path refuses a
+        # non-self peer. A peer the host cannot resolve at all (lsof-less macOS)
+        # fails closed the same way: _connected_peer_verdict folds both into
+        # MISMATCH, which is why both scenarios drive that one verdict here.
         monkeypatch.setattr(
             cli_server, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock"
         )
@@ -627,34 +642,6 @@ class TestOwnerVerifiedSecretTransport:
         )
         with pytest.raises(cli_server._GatewayPeerRefused):
             verify_peer(object())
-
-    def test_posix_tcp_fallback_refuses_when_the_peer_is_unresolvable(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        # Fail closed: on a host that cannot resolve the connected peer at all
-        # (lsof-less macOS), the verdict is MISMATCH and the owner-minting secret
-        # must NOT be sent -- an unprovable peer is exactly where a foreign
-        # listener on a crash-freed port could be the far end.
-        monkeypatch.setattr(
-            cli_server, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock"
-        )
-        captured: dict = {}
-
-        def fake_tcp(req, timeout, *, verify_peer):
-            captured["verify_peer"] = verify_peer
-            return _Resp(b"{}")
-
-        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
-        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
-        cli_server._owner_verified_secret_urlopen(req, 5476, timeout=5, operation="gateway_logout")
-        verify_peer = captured["verify_peer"]
-        monkeypatch.setattr(
-            cli_server,
-            "_connected_peer_verdict",
-            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
-        )
-        with pytest.raises(cli_server._GatewayPeerRefused):
-            verify_peer(object())  # fail closed -- unprovable peer is refused
 
     def test_connection_bound_denial_emits_a_denied_sel_audit_event(
         self, monkeypatch, tmp_path, sel_rec

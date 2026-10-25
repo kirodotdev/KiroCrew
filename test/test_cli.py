@@ -70,7 +70,7 @@ class TestDoctor:
         """
         monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
 
-    def test_doctor_with_kiro(self, tmp_path, monkeypatch):
+    def test_doctor_with_kiro(self, tmp_path, capsys, monkeypatch):
         import kiro_crew.cli_doctor as _doc
 
         agent_file = tmp_path / "kirocrew.json"
@@ -93,6 +93,9 @@ class TestDoctor:
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
         ):
             _doctor()
+        out = capsys.readouterr().out
+        assert "kiro-cli 1.0.0" in out
+        assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @staticmethod
     def _stt_config(monkeypatch, **fields):
@@ -116,7 +119,9 @@ class TestDoctor:
 
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg()))
 
-    def test_doctor_windows_missing_stt_engine_and_ffmpeg_is_non_fatal(self, tmp_path, monkeypatch):
+    def test_doctor_windows_missing_stt_engine_and_ffmpeg_is_non_fatal(
+        self, tmp_path, capsys, monkeypatch
+    ):
         """On Windows, STT ships enabled-by-default but the recogniser extra and
         ffmpeg are not dependencies there. Reporting them as hard issues made
         `doctor` exit 1 on a healthy install and broke the guide's
@@ -155,6 +160,10 @@ class TestDoctor:
         ):
             # Must NOT raise SystemExit(1): both STT gaps are notes on Windows.
             _doctor()
+        out = capsys.readouterr().out
+        assert "  engine:      ⚠️  needs the voice extra" in out
+        assert "  ffmpeg:      ⚠️  not found" in out
+        assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @pytest.mark.parametrize(
         "is_windows, expected_mark",

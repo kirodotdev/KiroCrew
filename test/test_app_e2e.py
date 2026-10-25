@@ -58,18 +58,15 @@ def _make_full_app(tmp_path, name="e2e-app"):
     }
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
 
-    # Agents
     (src / "agents").mkdir()
     (src / "agents" / "analyst.json").write_text(json.dumps({"name": "analyst", "model": "auto"}))
     (src / "agents" / "fetcher.json").write_text(json.dumps({"name": "fetcher", "model": "auto"}))
 
-    # Skills
     for skill in ("triage", "diagnosis"):
         d = src / "skills" / skill
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(f"# {skill.title()}\nDomain knowledge for {skill}.")
 
-    # SOPs
     (src / "sops").mkdir()
     (src / "sops" / "runbook.sop.md").write_text("# Runbook\nStep 1: Check logs.")
 
@@ -113,7 +110,6 @@ class TestFullLifecycle:
         assert result.ok, result.error
         assert result.name == "e2e-app"
 
-        # Verify installed
         meta = _read_installed("e2e-app")
         assert meta is not None
         assert meta.version == "1.2.3"
@@ -134,7 +130,6 @@ class TestFullLifecycle:
         assert not (kiro / "e2e-app--analyst.json").is_symlink()
         assert (kiro / "e2e-app--fetcher.json").is_file()
 
-        # Verify skill symlinks
         skills_dir = app_env["home"] / "skills" / "e2e-app"
         assert (skills_dir / "triage" / "SKILL.md").is_file()
         assert (skills_dir / "diagnosis" / "SKILL.md").is_file()

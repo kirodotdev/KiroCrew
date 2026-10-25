@@ -200,9 +200,14 @@ class TestApprovalThreading:
             "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
         ):
             approve_fn = gateway._interactive_approval("subagent")
-            await approve_fn(_make_event(), "dashboard:main")
+            result = await approve_fn(_make_event(), "dashboard:main")
 
-        gateway.slack.open_dm.assert_awaited_once()
+        gateway.slack.open_dm.assert_awaited_once_with("U000")
+        call_args = gateway.slack.post_blocks.call_args
+        assert call_args.args[0] == "D_DM"
+        # "dashboard:main" is not a Slack ts, so the DM prompt is top-level.
+        assert call_args.args[3] is None
+        assert result is True
 
 
 # ── Tests: subagent passes parent_session_key to approval ──

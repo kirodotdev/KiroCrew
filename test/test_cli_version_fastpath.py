@@ -110,7 +110,8 @@ class TestVersionProvenance:
 
     def test_the_note_stays_ascii(self) -> None:
         # `_bootstrap` prints it before the console is switched to UTF-8.
-        SOURCE_CHECKOUT_NOTE.encode("ascii")
+        assert SOURCE_CHECKOUT_NOTE
+        assert SOURCE_CHECKOUT_NOTE.isascii()
 
     def test_argparse_entry_prints_the_same_line(self, tmp_path: Path) -> None:
         res = _run_probe(

@@ -192,8 +192,9 @@ class TestBuiltinServiceHelpers:
 
 
 class TestUnregisterNotificationChannels:
-    def test_noop_without_state_or_bus(self) -> None:
+    def test_noop_without_state_or_bus(self, caplog: pytest.LogCaptureFixture) -> None:
         # No state at all, and state without a bus, must both be silent.
+        caplog.set_level("INFO", logger="kiro_crew.apps.routes")
         _unregister_notification_channels(
             make_mocked_request("POST", "/x", app=web.Application()), APP
         )
@@ -202,8 +203,10 @@ class TestUnregisterNotificationChannels:
         _unregister_notification_channels(
             make_mocked_request("POST", "/x", app=app), APP
         )
+        assert [r for r in caplog.records if r.name == "kiro_crew.apps.routes"] == []
 
-    def test_unregisters_via_bus(self) -> None:
+    def test_unregisters_via_bus(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("INFO", logger="kiro_crew.apps.routes")
         bus = MagicMock()
         bus.unregister_app_channels.return_value = 2
         app = web.Application()
@@ -212,6 +215,8 @@ class TestUnregisterNotificationChannels:
             make_mocked_request("POST", "/x", app=app), APP
         )
         bus.unregister_app_channels.assert_called_once_with(APP)
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.apps.routes"]
+        assert messages == [f"Unregistered 2 notification channel(s) for app {APP}"]
 
 
 # ---------------------------------------------------------------------------

@@ -418,7 +418,7 @@ class TestRestart:
         audit = mock_sel.log_api_access.call_args.kwargs
         assert "reason=service_restart_unconfirmed" in audit["resources"]
 
-    def test_inactive_service_still_falls_through_after_refused_restart(self):
+    def test_inactive_service_still_falls_through_after_refused_restart(self, capsys):
         # ``restart_service()`` returning False because NO service is active
         # must keep taking the foreground path — the denied diagnostic is only
         # for a unit that is active right now yet refused the restart.
@@ -445,6 +445,9 @@ class TestRestart:
         ):
             cli_server._restart(None)
         mock_spawn.assert_called_once()
+        out = capsys.readouterr().out
+        assert "4321" in out
+        assert "NOT restarted" not in out
 
     @contextlib.contextmanager
     def _probe_missed_gateway(self, holder_pid: int, *, kirocrew: bool):
@@ -952,7 +955,7 @@ class TestRestart:
         assert "1234" in out
         assert "did not exit" in out
 
-    def test_unrelated_port_listener_is_not_waited_on(self):
+    def test_unrelated_port_listener_is_not_waited_on(self, capsys):
         """A non-KiroCrew listener must never gate the restart.
 
         ``find_listening_pids`` reports whatever holds the port. Blocking on a
@@ -994,6 +997,9 @@ class TestRestart:
         # ...but nothing is waited on, and the spawn proceeds.
         mock_exited.assert_not_called()
         mock_spawn.assert_called_once()
+        out = capsys.readouterr().out
+        assert "5678" in out
+        assert "did not exit" not in out
 
     def test_spawn_detached_gateway_binds_requested_port(self, tmp_path, monkeypatch):
         """The child must bind the port the parent resolved.
@@ -1224,9 +1230,7 @@ class TestRestart:
             ),
         ):
             _restart(8089)
-        # Service short-circuit must NOT have been called.
         mock_restart_service.assert_not_called()
-        # And we should have fallen through to the spawn path.
         mock_spawn.assert_called_once()
         assert "Started detached gateway" in capsys.readouterr().out
 

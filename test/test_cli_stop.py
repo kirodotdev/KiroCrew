@@ -613,7 +613,6 @@ class TestStop:
         ):
             with pytest.raises(SystemExit):
                 _stop(8089)
-        # Service short-circuit must NOT have been called.
         mock_stop_service.assert_not_called()
         # And we should have fallen through to the kill path
         # (which exits 1 here because no listener is found on 8089).

@@ -1,13 +1,11 @@
 """Importing a pack must not be able to lose art or write outside its directory.
 
-Two findings from review, both in the import/overwrite path:
+Overwriting a pack once ran `rmtree(target)` and THEN `os.replace(staging, target)`.
+Between those two calls the pack does not exist; a failed rename or a gateway exit
+there loses the user's custom art with nothing to restore from.
 
-  * `_safe_filename` rejected separators with a denylist, so `C:evil.json` passed —
-    no `/`, no `\\`, no `..` — and on Windows `Path("packs/x") / "C:evil.json"`
-    resolves to `C:evil.json`, outside the pack entirely.
-  * overwriting a pack ran `rmtree(target)` and THEN `os.replace(staging, target)`.
-    Between those two calls the pack does not exist; a failed rename or a gateway
-    exit there loses the user's custom art with nothing to restore from.
+Filename validation (a name that escapes the pack directory) is covered in
+`test_appearance_packs_windows_names.py`.
 """
 
 from __future__ import annotations
@@ -18,38 +16,6 @@ import os
 import pytest
 
 from kiro_crew.appearance_packs import store as ap
-
-
-class TestFilenameValidation:
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "C:evil.json",           # drive prefix — the reported escape
-            "C:/evil.json",
-            "manifest.json:stream",  # NTFS alternate data stream
-            "../evil.svg",
-            "/etc/passwd",
-            "sub\\dir.svg",
-            ".hidden",
-            "star*.svg",
-            "quest?.svg",
-            "pipe|.svg",
-            "nul\x00.svg",
-            "",
-            "   ",
-            "x" * 129,
-        ],
-    )
-    def test_a_name_that_could_escape_is_refused(self, name):
-        assert ap._safe_filename(name) is None, f"accepted {name!r}"
-
-    @pytest.mark.parametrize(
-        "name",
-        ["idle.svg", "manifest.json", "random-happy.png", "sleep_mask.svg", "a1.svg"],
-    )
-    def test_the_names_real_packs_use_are_accepted(self, name):
-        # The guard must not be so strict that a legitimate pack stops importing.
-        assert ap._safe_filename(name) == name
 
 
 def _manifest(pack_id: str) -> dict:

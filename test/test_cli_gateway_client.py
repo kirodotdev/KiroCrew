@@ -39,10 +39,8 @@ class TestLogout:
             lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
         )
 
-    def test_logout_success(self, tmp_path, monkeypatch):
-        """Successful logout prints success message."""
-        secret_file = tmp_path / ".local_secret"
-        secret_file.write_text("test-secret")
+    def test_logout_success(self, tmp_path, monkeypatch, capsys):
+        """Successful logout POSTs the secret to /api/logout and prints success."""
         monkeypatch.setattr(
             "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
         )
@@ -54,8 +52,13 @@ class TestLogout:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
-            _logout(5476)  # Should not raise
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp) as opener:
+            _logout(5476)
+        req = opener.call_args.args[0]
+        assert req.get_method() == "POST"
+        assert req.full_url == "http://127.0.0.1:5476/api/logout"
+        assert req.get_header("X-local-secret") == "test-secret"
+        assert capsys.readouterr().out == "✅ All dashboard sessions revoked.\n"
 
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
         """Missing secret file means gateway not running."""

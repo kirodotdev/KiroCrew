@@ -184,11 +184,9 @@ def test_the_payload_is_byte_identical_when_only_the_already_covered_keys_are_de
         assert absent not in payload
 
 
-def test_a_signature_issued_under_the_pre_change_payload_still_verifies(enforcing_fleet):
-    """A publisher's existing signature on a non-declaring manifest is admitted."""
-    manifest = _carrying_signature_of(PUBLISHED_PLAIN, PUBLISHED_PLAIN)
-    assert app_admission_denied(APP, manifest=manifest) is None
-    assert verified_signer(manifest) == SIGNER
+# A signature over ``PUBLISHED_PLAIN`` still verifying is checked once, in
+# ``test_app_signing_payload_executed_fields.py``: the manifest, signer, key and
+# fleet policy are the same there, byte for byte.
 
 
 def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing_fleet):

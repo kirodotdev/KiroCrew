@@ -189,8 +189,11 @@ async def test_raising_the_limit_wakes_a_waiter():
         acquire_worker_slot(state, "demo", "demo-2", project="/w", timeout=5)
     )
     await asyncio.sleep(0)
+    assert not waiter.done(), "the limit of one must hold the second acquire"
     set_worker_slot_limit("demo", 2)
     second = await await_until(waiter, what="the raised worker-slot limit")
+    assert second.key == "demo-2" and not second.released
+    assert set(worker_slots._registry.leases) == {"demo-1", "demo-2"}
     await second.release()
     await first.release()
 
@@ -301,13 +304,17 @@ async def test_trust_expiry_is_scheduled_at_the_ttl_and_withdraws(_env):
 
 
 @pytest.mark.asyncio
-async def test_short_ttl_really_fires_on_the_loop():
+async def test_short_ttl_really_fires_on_the_loop(_env):
     state = _State()
     lease = await acquire_worker_slot(
         state, "demo", "demo-1", project="/w", trust=True, trust_ttl_secs=0.01
     )
     slot = state.slots["demo-1"]
     await async_wait_until(lambda: slot._trust_scope == "", timeout=5)
+    scope = _env.override.calls[0][1]
+    assert _env.override.calls == [("activate", scope, "app:demo", 1), ("deactivate", scope)]
+    assert not lease.trust_granted
+    assert _env.record.call_args.kwargs["resources"] == "demo-1 reason=ttl expired"
     await lease.release()
 
 

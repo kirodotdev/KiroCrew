@@ -501,20 +501,16 @@ class TestMCPProperties:
         # Backend live → HTTP url servers register (dead-port skip only with no backend).
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9000)
 
-        # Register both apps
         _register_mcp_servers(app_a, AppManifest(name=app_a, mcpServers=servers_a))
         _register_mcp_servers(app_b, AppManifest(name=app_b, mcpServers=servers_b))
 
-        # Deregister app_a
         _deregister_mcp_servers(app_a)
 
         data = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else {}
         remaining = data.get("mcpServers", {})
 
-        # app_a entries gone
         for name in servers_a:
             assert f"{app_a}:{name}" not in remaining
-        # app_b entries preserved
         for name in servers_b:
             assert f"{app_b}:{name}" in remaining
 

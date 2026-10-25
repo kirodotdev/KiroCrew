@@ -177,12 +177,12 @@ class TestAppStorageKeyValidation:
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @given(key=_valid_key())
     def test_valid_keys_do_not_raise(self, key: str, tmp_path: Path) -> None:
-        """Valid keys (no traversal chars) do not raise."""
+        """Valid keys (no traversal chars) round-trip and delete cleanly."""
         storage = AppStorage("test-app", tmp_path)
-        # Should not raise
         storage.set(key, {"ok": True})
-        storage.get(key)
-        storage.delete(key)
+        assert storage.get(key) == {"ok": True}
+        assert storage.delete(key) is True
+        assert storage.get(key) is None
 
 
 # ---------------------------------------------------------------------------

@@ -84,7 +84,7 @@ class TestCronCli:
         job = build_job("j", "msg", every_secs=60)
         assert job.auto_pause_after_failures == _AUTO_PAUSE_THRESHOLD
 
-    def test_cron_add_with_channel(self, tmp_path):
+    def test_cron_add_with_channel(self, tmp_path, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel"),
@@ -115,8 +115,9 @@ class TestCronCli:
                 message="check",
                 **_add_job_kwargs(every_secs=300, channel="C0AP77JJSN6"),
             )
+        assert capsys.readouterr().out.startswith("Added job: abc (test) [")
 
-    def test_cron_add_with_cron_expr_and_channel(self, tmp_path):
+    def test_cron_add_with_cron_expr_and_channel(self, tmp_path, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel"),
@@ -147,6 +148,7 @@ class TestCronCli:
                 message="brief",
                 **_add_job_kwargs(cron_expr="0 9 * * 1-5", channel="C0APAPQ5GSY"),
             )
+        assert capsys.readouterr().out.startswith("Added job: def (daily) [")
 
     @pytest.mark.parametrize(
         "name, cron_expr, every, expected",
@@ -181,7 +183,7 @@ class TestCronCli:
         assert err.splitlines()[-1] == expected
         assert "Traceback" not in err
 
-    def test_cron_add_with_approval_mode(self, tmp_path):
+    def test_cron_add_with_approval_mode(self, tmp_path, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel") as mock_sel,
@@ -219,8 +221,9 @@ class TestCronCli:
                 source="cli",
                 resources="job_id=ghi kind=agent approval_mode=auto agent=default silent=False",
             )
+        assert capsys.readouterr().out.startswith("Added job: ghi (auto-job) [")
 
-    def test_cron_add_with_silent(self):
+    def test_cron_add_with_silent(self, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel"),
@@ -254,8 +257,9 @@ class TestCronCli:
                 **_add_job_kwargs(every_secs=300, silent=True),
             )
             mock_svc._save.assert_not_called()
+        assert capsys.readouterr().out.startswith("Added job: mno (quiet-job) [")
 
-    def test_cron_update_approval_mode(self, tmp_path):
+    def test_cron_update_approval_mode(self, tmp_path, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel") as mock_sel,
@@ -284,6 +288,7 @@ class TestCronCli:
                 source="cli",
                 resources="job_id=abc123 fields=approval_mode",
             )
+        assert capsys.readouterr().out == "Updated job: abc123 (existing)\n"
 
     def test_cron_update_whitespace_channel_skipped(self, tmp_path, capsys):
         with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
@@ -361,7 +366,7 @@ class TestCronCli:
         mock_job.agent_id = ""
         return mock_job
 
-    def test_cron_add_with_agent_every(self, tmp_path):
+    def test_cron_add_with_agent_every(self, tmp_path, capsys):
         """--agent on `cron add` with --every sets job.agent_id, persists, and audits."""
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
@@ -401,8 +406,9 @@ class TestCronCli:
                     "agent=customer360-code-agent silent=False"
                 ),
             )
+        assert capsys.readouterr().out.startswith("Added job: ag1 (test) [")
 
-    def test_cron_add_with_agent_cron_expr(self, tmp_path):
+    def test_cron_add_with_agent_cron_expr(self, tmp_path, capsys):
         """--agent on `cron add` with --cron sets job.agent_id and persists."""
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
@@ -430,6 +436,7 @@ class TestCronCli:
                 **_add_job_kwargs(cron_expr="0 9 * * 1-5", agent_id="ea-briefing"),
             )
             mock_svc._save.assert_not_called()
+        assert capsys.readouterr().out.startswith("Added job: ag2 (test) [")
 
     def test_cron_add_without_agent_does_not_save(self, tmp_path):
         """Empty/omitted --agent leaves job.agent_id untouched, no extra _save."""
@@ -477,7 +484,7 @@ class TestCronCli:
             assert mock_svc.add_job.call_args.kwargs["agent_id"] == ""
             mock_svc._save.assert_not_called()
 
-    def test_cron_update_with_agent(self, tmp_path):
+    def test_cron_update_with_agent(self, tmp_path, capsys):
         """--agent on `cron update` passes agent_id kwarg to update_job."""
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
@@ -508,12 +515,13 @@ class TestCronCli:
                 source="cli",
                 resources="job_id=abc123 fields=agent_id agent=oncall-agent",
             )
+        assert capsys.readouterr().out == "Updated job: abc123 (existing)\n"
 
-    def test_cron_update_agent_empty_resets(self, tmp_path):
+    def test_cron_update_agent_empty_resets(self, tmp_path, capsys):
         """--agent '' on update resets agent_id to default (mirrors MCP cron_update)."""
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
         ):
             mock_svc = mock_svc_cls.return_value
             mock_job = MagicMock()
@@ -533,6 +541,9 @@ class TestCronCli:
             )
             _cron(args)
             mock_svc.update_job.assert_called_once_with("abc123", agent_id="")
+            audit = mock_sel.return_value.log_api_access.call_args.kwargs
+            assert audit["resources"] == "job_id=abc123 fields=agent_id agent=default"
+        assert capsys.readouterr().out == "Updated job: abc123 (existing)\n"
 
     def test_cron_update_agent_omitted_skipped(self, tmp_path, capsys):
         """When --agent is omitted (None), agent_id is not in update_job kwargs."""
@@ -608,7 +619,7 @@ class TestCronCli:
             mock_svc.update_job.assert_not_called()
             assert "invalid agent name" in capsys.readouterr().err.lower()
 
-    def test_cron_update_agent_whitespace_stripped(self, tmp_path):
+    def test_cron_update_agent_whitespace_stripped(self, tmp_path, capsys):
         """Whitespace around --agent on update is stripped before forwarding to update_job."""
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
@@ -632,6 +643,7 @@ class TestCronCli:
             )
             _cron(args)
             mock_svc.update_job.assert_called_once_with("abc123", agent_id="oncall-agent")
+        assert capsys.readouterr().out == "Updated job: abc123 (existing)\n"
 
     def test_cli_argparse_cron_add_agent_flag(self) -> None:
         """`kirocrew cron add ... --agent NAME` parses into args.agent."""
@@ -718,10 +730,11 @@ class TestCronCli:
             ns = mock_cron.call_args[0][0]
             assert ns.agent is None
 
-    def test_cron_remove_emits_sel_audit(self):
+    def test_cron_remove_emits_sel_audit(self, capsys):
         # Single-job delete must be SEL-audited like cron.add/cron.update:
         # after the job vanishes from crons.json the audit trail is the only
-        # way to tell a deliberate delete from data loss.
+        # way to tell a deliberate delete from data loss. The audit is
+        # remove_job's (actor/source below), so the CLI must not write a second.
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel") as mock_sel,
@@ -732,6 +745,7 @@ class TestCronCli:
             _cron(args)
             mock_svc.remove_job.assert_called_once_with("abc123", actor="cli", source="cli")
             mock_sel.return_value.log_api_access.assert_not_called()
+        assert capsys.readouterr().out == "Removed job: abc123\n"
 
     def test_cron_remove_not_found_audits_not_found(self):
         with (

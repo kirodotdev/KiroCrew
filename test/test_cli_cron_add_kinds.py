@@ -654,9 +654,11 @@ class TestDenialAudit:
             patch("kiro_crew.cli_commands.sel") as sel,
         ):
             sel.return_value.log_api_access.side_effect = RuntimeError("sel unavailable")
-            _refused(_ns(message="", every=300, shell_command="echo $(id)"), capsys)
+            err = _refused(_ns(message="", every=300, shell_command="echo $(id)"), capsys)
             svc_cls.return_value.add_job.assert_not_called()
             sel.return_value.log_api_access.assert_called_once()
+        assert "command substitution" in err
+        assert "sel unavailable" not in err
 
     @pytest.mark.parametrize(
         "spec",
@@ -754,15 +756,19 @@ class TestDenialAudit:
         assert denial["resources"] == "kind=script"
         assert "must be a valid Python identifier" in denial["error"]
 
-    def test_valid_script_function_name_reaches_add_job(self, home):
+    def test_valid_script_function_name_reaches_add_job(self, home, capsys):
         script = _write_script()
         with (
             patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
+            patch("kiro_crew.cli_commands.sel") as sel,
         ):
             svc_cls.return_value.add_job.return_value = _mock_job()
             _cron(_ns(message="", every=300, script=f"{script}:run"))
             svc_cls.return_value.add_job.assert_called_once()
+        stored = svc_cls.return_value.add_job.call_args.kwargs["script"]
+        assert stored == f"{script.resolve()}:run"
+        assert self._denials(sel) == []
+        assert capsys.readouterr().out.startswith("Added job: j1 (job) [")
 
     def test_blocked_script_body_leaves_a_denied_sel_event(self, home, capsys):
         script = _write_script("import os\nopen(os.path.expanduser('~/.aws/credentials'))\n")
@@ -812,18 +818,20 @@ class TestDenialAudit:
         (denial,) = self._denials(sel)
         assert denial["resources"] == f"kind={kind}"
 
-    def test_permitted_capability_lets_the_create_through(self, home):
+    def test_permitted_capability_lets_the_create_through(self, home, capsys):
         with (
             patch("kiro_crew.cli_commands.CronService") as svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
+            patch("kiro_crew.cli_commands.sel") as sel,
             patch(
                 "kiro_crew.cli_commands._vet_cron_capability_governance", return_value=None
             ) as gate,
         ):
             svc_cls.return_value.add_job.return_value = _mock_job()
             _cron(_ns(every=300))
-            gate.assert_called_once()
+            gate.assert_called_once_with("cron:cli_add")
             svc_cls.return_value.add_job.assert_called_once()
+        assert self._denials(sel) == []
+        assert capsys.readouterr().out.startswith("Added job: j1 (job) [")
 
 
 # ---------------------------------------------------------------------------

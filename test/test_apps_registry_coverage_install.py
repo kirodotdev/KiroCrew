@@ -189,13 +189,25 @@ class TestUnpoisonRejectedCheckout:
         pkg = tmp_path / "demo"
         pkg.mkdir()
 
+        wrapped: list[list[str]] = []
+
         def _boom(cmd, mode=""):
+            wrapped.append(list(cmd))
             raise RuntimeError("sandbox unavailable")
 
         monkeypatch.setattr(registry, "wrap_argv", _boom)
+        log: list[str] = []
         await registry._unpoison_rejected_checkout(
-            "demo", pkg, [], checkout_preexisted=True, pre_pull_commit="d" * 40
-        )  # must not raise
+            "demo", pkg, log, checkout_preexisted=True, pre_pull_commit="d" * 40
+        )
+        # The failed reset does not skip the manifest restore: both git steps were
+        # attempted, neither claimed success, and the workspace is left in place.
+        assert wrapped == [
+            ["git", "reset", "--keep", "d" * 40],
+            ["git", "--literal-pathspecs", "checkout", "--", "app.json"],
+        ]
+        assert log == []
+        assert pkg.is_dir()
 
     @pytest.mark.asyncio
     async def test_custom_manifest_relpath_is_used(self, tmp_path, monkeypatch):

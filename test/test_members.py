@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import pytest
 
@@ -75,8 +76,11 @@ class TestSlugForName:
         assert member_dir(slug).parent == members_root().resolve()
 
     def test_result_always_satisfies_the_slug_pattern(self):
+        slug_shape = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
         for name in ("Code Review", "Café Crew", "!!!", "a" * 200, "-leading", "trailing-"):
-            validate_slug(slug_for_name(name))
+            slug = slug_for_name(name)
+            assert slug_shape.match(slug), f"{name!r} -> {slug!r}"
+            assert validate_slug(slug) == slug
 
     def test_long_name_is_truncated_without_trailing_hyphen(self):
         slug = slug_for_name("x" * 100)
@@ -326,16 +330,21 @@ class TestRecordActivity:
         record_activity("M", "s1", "persistent")
         assert set(read_activity("m")[0]) == {"ts", "member", "session"}
 
-    @pytest.mark.parametrize("mode", ["incognito", "temporary", "INCOGNITO", " temporary "])
-    def test_no_trace_modes_write_nothing(self, mode):
-        assert record_activity("M", "s1", mode) is False
-        assert read_activity("m") == []
-
-    @pytest.mark.parametrize("mode", ["", "   ", "unknown", "Persistent-ish", "PERSISTENT_v2"])
-    def test_unrecognized_mode_fails_closed(self, mode):
+    @pytest.mark.parametrize(
+        "mode",
         # Allowlist, not denylist: a brand-new session whose metadata has not
         # flushed yet reports an empty mode, and that must not be treated as
         # traceable just because it is not spelled "incognito".
+        [
+            pytest.param(m, id=f"test_no_trace_modes_write_nothing-{m!r}")
+            for m in ("incognito", "temporary", "INCOGNITO", " temporary ")
+        ]
+        + [
+            pytest.param(m, id=f"test_unrecognized_mode_fails_closed-{m!r}")
+            for m in ("", "   ", "unknown", "Persistent-ish", "PERSISTENT_v2")
+        ],
+    )
+    def test_a_mode_that_is_not_persistent_writes_nothing(self, mode):
         assert record_activity("M", "s1", mode) is False
         assert read_activity("m") == []
 

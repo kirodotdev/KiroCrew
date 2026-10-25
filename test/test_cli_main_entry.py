@@ -174,7 +174,7 @@ class TestMcpBuiltinDispatch:
             cli_mod.main()
 
         mock_import.assert_called_once_with(f"kiro_crew.apps.builtins.{builtin_name}.mcp_server")
-        mock_module.run_mcp_server.assert_called_once()
+        mock_module.run_mcp_server.assert_called_once_with()
 
 
 class TestProjectDirFile:
@@ -239,9 +239,16 @@ class TestSeedDispatch:
         line_buffer.assert_called_once_with()
         assert order == ["line-buffer", "gateway"]
 
-    def test_seed_calls_seed_cmd(self, monkeypatch):
-        """When --seed is provided, seed_cmd should be called before gateway."""
-        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo"])
+    @pytest.mark.parametrize(
+        "extra_argv, expect_replace",
+        [
+            pytest.param([], False, id="test_seed_calls_seed_cmd"),
+            pytest.param(["--seed-replace"], True, id="test_seed_with_replace_flag"),
+        ],
+    )
+    def test_seed_runs_before_gateway(self, monkeypatch, extra_argv, expect_replace):
+        """--seed (optionally with --seed-replace) hands the parsed flags to seed_cmd, then the gateway runs."""
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo", *extra_argv])
         mock_seed = MagicMock(return_value=0)
         gateway_call = object()
         mock_gateway = MagicMock(return_value=gateway_call)
@@ -254,6 +261,8 @@ class TestSeedDispatch:
 
             main()
         mock_seed.assert_called_once()
+        seed_args = mock_seed.call_args.args[0]
+        assert (seed_args.seed, seed_args.seed_replace) == ("demo", expect_replace)
         mock_gateway.assert_called_once()
         mock_run.assert_called_once_with(gateway_call)
 
@@ -283,28 +292,6 @@ class TestSeedDispatch:
 
             main()
         mock_seed.assert_not_called()
-        mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
-
-    def test_seed_with_replace_flag(self, monkeypatch):
-        """--seed with --seed-replace should call seed_cmd."""
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["kirocrew", "gateway", "--seed", "demo", "--seed-replace"],
-        )
-        mock_seed = MagicMock(return_value=0)
-        gateway_call = object()
-        mock_gateway = MagicMock(return_value=gateway_call)
-        with (
-            patch("kiro_crew.cli.seed_cmd", mock_seed),
-            patch("kiro_crew.cli_server._gateway", mock_gateway),
-            patch("kiro_crew.cli.asyncio.run") as mock_run,
-        ):
-            from kiro_crew.cli import main
-
-            main()
-        mock_seed.assert_called_once()
         mock_gateway.assert_called_once()
         mock_run.assert_called_once_with(gateway_call)
 

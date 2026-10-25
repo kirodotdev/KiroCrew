@@ -751,6 +751,10 @@ class TestSetupCliLoggingForeground:
         monkeypatch.setattr("kiro_crew.cli.install_log_redaction", redaction)
         _setup_cli_logging("gateway", 1)  # must not raise
         redaction.assert_called_once_with([])
+        assert cli_mod._LOG_QUEUE_LISTENER is None
+        assert not any(
+            isinstance(h, logging.FileHandler) for h in logging.getLogger("kiro_crew").handlers
+        )
 
 
 class TestRuntimeLevelReachesFileLog:
@@ -1053,7 +1057,10 @@ class TestDrainBeforeHardExit:
         _setup_cli_logging("gateway", 1)
         real_stop = cli_mod._stop_log_queue_listener
 
+        reached: list[bool] = []
+
         def exploding_stop(timeout=None):
+            reached.append(True)
             raise RuntimeError("interpreter teardown race")
 
         cli_mod._stop_log_queue_listener = exploding_stop  # type: ignore[assignment]
@@ -1061,6 +1068,7 @@ class TestDrainBeforeHardExit:
             await drain_log_queue_before_hard_exit()
         finally:
             cli_mod._stop_log_queue_listener = real_stop  # type: ignore[assignment]
+        assert reached == [True], "the drain never reached the raising stop"
 
 
 class TestEveryGatewayHardExitDrainsTheQueue:

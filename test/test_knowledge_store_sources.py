@@ -32,7 +32,6 @@ class TestKnowledgeStoreExtended:
         item_id = store.add_item("Original", "old content about cats", "doc")
         assert len(store.search_items_fts("cats")) == 1
         store.update_item(item_id, title="Updated", content="new content about dogs")
-        # After update, new content should be searchable
         assert len(store.search_items_fts("dogs")) == 1
         item = store.get_item(item_id)
         assert item["title"] == "Updated"
@@ -40,7 +39,10 @@ class TestKnowledgeStoreExtended:
 
     def test_update_item_no_fields(self, store):
         item_id = store.add_item("Doc", "content", "doc")
-        store.update_item(item_id)  # no-op, should not crash
+        before = dict(store.get_item(item_id))
+        store.update_item(item_id)
+        # A call with nothing to write must not even bump updated_at.
+        assert dict(store.get_item(item_id)) == before
 
     def test_update_item_non_fts_field(self, store):
         item_id = store.add_item("Doc", "content", "doc")
@@ -499,7 +501,10 @@ class TestKnowledgeStoreExtended:
 
     def test_update_source_no_fields(self, store):
         sid = store.add_source("f", "local_file", "/tmp/f2.md")
-        store.update_source(sid)  # no-op
+        query = "SELECT * FROM sources WHERE id = ?"
+        before = dict(store.db.execute(query, (sid,)).fetchone())
+        store.update_source(sid)
+        assert dict(store.db.execute(query, (sid,)).fetchone()) == before
 
     def test_add_source_location(self, store):
         sid = store.add_source("f", "local_file", "/tmp/loc.md")
@@ -517,10 +522,8 @@ class TestKnowledgeStoreExtended:
         e3 = store.add_entity("C", "svc")
         store.add_entity_relation(e1, e2, "calls")
         store.add_entity_relation(e2, e3, "calls")
-        # depth=1 should get B only
         n1 = store.get_neighbors(e1, depth=1)
         assert {n["id"] for n in n1} == {e2}
-        # depth=2 should get B and C
         n2 = store.get_neighbors(e1, depth=2)
         assert {n["id"] for n in n2} == {e2, e3}
 
@@ -1125,7 +1128,9 @@ class TestWatcherRunLoop:
         await asyncio.sleep(0)  # let the first sweep run and enter the wait
         await w.stop()
         await await_until(task, what="the stopped watcher loop returning")
-        w._scan.assert_awaited()
+        assert task.result() is None
+        # One sweep before the stop, and no second one after it.
+        assert w._scan.await_count == 1
 
 
 class TestScheduledDedupCadence:
@@ -1159,6 +1164,8 @@ class TestScheduledDedupCadence:
             cfg.load.return_value = self._cfg(0)
             await w._maybe_dedup_sweep()
         sweep.assert_not_called()
+        # A skipped pass must not consume the first-pass preview either.
+        assert w._dedup_applied_once is False
 
     @pytest.mark.asyncio
     async def test_it_only_runs_on_the_cadence(self, store):
@@ -1166,11 +1173,17 @@ class TestScheduledDedupCadence:
         w._sweep_count = 5  # 5 % 4 != 0
         with (
             patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as cfg,
-            patch("kiro_crew.knowledge.watcher.dedup_sweep") as sweep,
+            patch("kiro_crew.knowledge.watcher.dedup_sweep", return_value=[]) as sweep,
         ):
             cfg.load.return_value = self._cfg(4)
             await w._maybe_dedup_sweep()
-        sweep.assert_not_called()
+            assert sweep.call_count == 0
+            assert w._dedup_applied_once is False
+            # The next multiple of the cadence does run, so the gate is the cadence.
+            w._sweep_count = 8
+            await w._maybe_dedup_sweep()
+        assert sweep.call_count == 1
+        assert w._dedup_applied_once is True
 
     @pytest.mark.asyncio
     async def test_the_first_pass_previews_and_the_next_one_applies(self, store):
@@ -1232,6 +1245,7 @@ class TestScheduledDedupCadence:
             cfg.load.side_effect = RuntimeError("no config")
             await w._maybe_dedup_sweep()
         sweep.assert_not_called()
+        assert w._dedup_applied_once is False
 
 
 # ---------------------------------------------------------------------------

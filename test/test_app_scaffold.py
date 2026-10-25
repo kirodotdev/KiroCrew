@@ -642,7 +642,6 @@ class TestScaffold:
         assert (app_dir / "skills" / "sample-skill" / "SKILL.md").is_file()
         assert (app_dir / "README.md").is_file()
 
-        # Manifest should be valid
         m = AppManifest.from_json_file(app_dir / "app.json")
         assert m.name == "my-test-app"
         assert m.validate() == []

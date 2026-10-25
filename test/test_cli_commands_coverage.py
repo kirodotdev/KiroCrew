@@ -640,7 +640,9 @@ class TestAppCli:
         assert "next gateway start" in out
         assert "apply it live from the dashboard" in out
 
-    def test_missing_local_secret_keeps_enable_file_only_behavior(self) -> None:
+    def test_missing_local_secret_keeps_enable_file_only_behavior(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         with (
             patch(
                 "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
@@ -659,6 +661,9 @@ class TestAppCli:
         urlopen.assert_not_called()
         local_enable.assert_called_once_with("demo")
         local_register.assert_called_once_with("demo")
+        assert "✅ Recorded demo as enabled. No running gateway was reached" in (
+            capsys.readouterr().out
+        )
 
     def test_gateway_route_error_exits_without_file_edit(
         self, capsys: pytest.CaptureFixture[str]
@@ -812,7 +817,9 @@ class TestAppCli:
         assert "Agents: a" in out
         assert "kirocrew app enable demo" in out
 
-    def test_install_missing_local_secret_keeps_file_only_path(self) -> None:
+    def test_install_missing_local_secret_keeps_file_only_path(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         with (
             patch(
                 "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
@@ -828,6 +835,9 @@ class TestAppCli:
 
         urlopen.assert_not_called()
         local_install.assert_called_once_with("/pkg")
+        out = capsys.readouterr().out
+        assert out.startswith("✅ done\n")
+        assert "Run: kirocrew app enable demo" in out
 
     def test_install_gateway_route_error_exits_without_file_edit(
         self, capsys: pytest.CaptureFixture[str]
@@ -1168,7 +1178,7 @@ class TestAppCli:
         [(False, True), (True, False)],
     )
     def test_uninstall_maps_purge_flag_to_keep_data(
-        self, purge: bool, expect_keep_data: bool
+        self, purge: bool, expect_keep_data: bool, capsys: pytest.CaptureFixture[str]
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
@@ -1177,6 +1187,7 @@ class TestAppCli:
         ):
             cc._handle_app(_ns(app_action="uninstall", name="demo", purge_data=purge))
         uninstall.assert_called_once_with("demo", keep_data=expect_keep_data)
+        assert capsys.readouterr().out.startswith("✅ done\n")
 
     def test_uninstall_failure_exits_1(self) -> None:
         with (
@@ -1224,6 +1235,9 @@ class TestAppCli:
                 _ns(app_action="dev", name="demo", off=False, confirm_out_of_install_root=True)
             )
         setter.assert_called_once_with("demo", True, confirm_out_of_install_root=True)
+        captured = capsys.readouterr()
+        assert "✅ demo is now in dev mode" in captured.out
+        assert captured.err == ""
 
     def test_dev_confirm_flag_with_off_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
         """The flag only applies to enabling — an ignored flag must say so,
@@ -1293,10 +1307,14 @@ class TestAppCli:
             )
         assert "npm install" not in capsys.readouterr().out
 
-    def test_mcp_action_delegates_to_server_runner(self) -> None:
+    def test_mcp_action_delegates_to_server_runner(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         with patch("kiro_crew.cli_commands._run_app_mcp_server") as runner:
             cc._handle_app(_ns(app_action="mcp", name="demo"))
         runner.assert_called_once_with("demo")
+        # stdout is the MCP stdio channel: the dispatcher must add nothing to it.
+        assert capsys.readouterr().out == ""
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         cc._handle_app(_ns(app_action=None))

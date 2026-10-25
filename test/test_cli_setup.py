@@ -242,7 +242,6 @@ class TestSetupTimezone:
 
         _setup_timezone()
 
-        # File should be unchanged
         assert cfg_file.read_text(encoding="utf-8") == "not json {{{"
         output = capsys.readouterr().out
         assert "Could not read" in output
@@ -488,7 +487,7 @@ class TestConfigDirOverride:
 
         assert _detect_project_dir() == str(proj.resolve())
 
-    def test_logout_reads_secret_for_listener_port(self, monkeypatch):
+    def test_logout_reads_secret_for_listener_port(self, monkeypatch, capsys):
         """_logout resolves the secret paired with the requested listener."""
         read_secret = MagicMock(return_value="test-secret")
         monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
@@ -507,9 +506,12 @@ class TestConfigDirOverride:
                 "kiro_crew.cli_server", fromlist=["loopback_urlopen"]
             ).loopback_urlopen(req, timeout=timeout),
         )
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp) as opener:
             _logout(5476)
         read_secret.assert_called_once_with(5476, dial_host="127.0.0.1")
+        # The secret read for that listener is the one the request carries.
+        assert opener.call_args.args[0].get_header("X-local-secret") == "test-secret"
+        assert "All dashboard sessions revoked" in capsys.readouterr().out
 
     def test_setup_slack_tokens_writes_to_config_dir(self, tmp_path, monkeypatch):
         """_setup_slack_tokens writes .env to config_dir(), not ~/.kirocrew."""
@@ -517,7 +519,6 @@ class TestConfigDirOverride:
 
         from kiro_crew.cli_setup import _setup_slack_tokens
 
-        # Simulate user providing all tokens
         inputs = iter(["y", "xapp-test", "xoxb-test", "U12345"])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 

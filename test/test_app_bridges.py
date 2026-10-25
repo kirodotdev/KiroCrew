@@ -673,18 +673,14 @@ class TestTopLevel:
 
         result = register_app("test-app")
 
-        # Nothing registered — all skipped
         assert result.agents == []
         assert result.skills == []
         assert result.crons == []
         assert result.mcp_servers == []
         assert result.errors == []
 
-        # No agent symlinks created
         assert not any(f.name.startswith("test-app--") for f in app_env["kiro_agents"].iterdir())
-        # No skill symlinks created
         assert not (app_env["home"] / "skills" / "test-app").exists()
-        # No MCP entries written
         assert not mcp_path.exists()
 
     def test_deregister_app(self, tmp_path, app_env):
@@ -693,7 +689,6 @@ class TestTopLevel:
         register_app("test-app")
         result = deregister_app("test-app")
         assert result.errors == []
-        # Verify agents removed
         assert not any(f.name.startswith("test-app--") for f in app_env["kiro_agents"].iterdir())
 
     def test_register_deregister_cycle(self, tmp_path, app_env):
@@ -705,7 +700,6 @@ class TestTopLevel:
         assert len(r1.agents) == 1
 
         deregister_app("test-app")
-        # Verify clean
         assert not any(f.name.startswith("test-app--") for f in app_env["kiro_agents"].iterdir())
 
         r2 = register_app("test-app")

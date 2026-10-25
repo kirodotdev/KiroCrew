@@ -675,14 +675,22 @@ class TestStaleCheckoutSweep:
         assert not d.exists()
 
     @pytest.mark.asyncio
-    async def test_async_sweep_never_fails_the_install(self, tmp_path, monkeypatch):
+    async def test_async_sweep_never_fails_the_install(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(registry, "_app_sources_dir", lambda: tmp_path)
 
+        swept: list[Path] = []
+
         def _boom(sources_dir, now_ts):
+            swept.append(sources_dir)
             raise RuntimeError("sweep exploded")
 
         monkeypatch.setattr(registry, "_sweep_stale_checkouts_sync", _boom)
-        await registry._sweep_stale_checkouts()  # must not raise
+        caplog.set_level("DEBUG", logger="kiro_crew.apps.registry")
+        await registry._sweep_stale_checkouts()
+        assert swept == [tmp_path]
+        records = [r for r in caplog.records if r.name == "kiro_crew.apps.registry"]
+        assert [r.getMessage() for r in records] == ["Stale checkout sweep failed (best-effort)"]
+        assert records[0].exc_info is not None
 
     def test_is_stale_candidate(self, tmp_path):
         assert registry._is_stale_candidate(tmp_path / "a.stale-0123abcd") is True

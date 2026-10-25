@@ -147,7 +147,9 @@ class TestExpireCacheFile:
         assert registry._read_manifest_cache(self._DEMO) is None
 
     def test_missing_file_is_a_no_op(self, cache_dir):
-        registry._expire_cache_file(cache_dir / "absent.json")
+        absent = cache_dir / "absent.json"
+        registry._expire_cache_file(absent)
+        assert not absent.exists()
 
     def test_path_outside_the_cache_dir_is_refused(self, cache_dir, tmp_path):
         outside = tmp_path / "victim.json"
@@ -164,6 +166,8 @@ class TestExpireCacheFile:
 
         monkeypatch.setattr(registry.os, "utime", _boom)
         registry._expire_cache_file(registry._manifest_cache_path(self._DEMO))
+        # The failed backdate leaves the entry exactly as written: present and fresh.
+        assert registry._read_manifest_cache(self._DEMO) == {"name": "demo"}
 
 
 class TestManifestCacheGc:
@@ -229,7 +233,8 @@ class TestManifestCacheGc:
             raise OSError("no listdir for you")
 
         monkeypatch.setattr(registry.Path, "iterdir", _boom)
-        registry._write_manifest_cache(self._DEMO, {"name": "demo"})  # must not raise
+        assert registry._write_manifest_cache(self._DEMO, {"name": "demo", "v": 2}) is True
+        assert registry._read_manifest_cache(self._DEMO) == {"name": "demo", "v": 2}
 
 
 # ---------------------------------------------------------------------------

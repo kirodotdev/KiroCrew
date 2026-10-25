@@ -87,6 +87,11 @@ class TestWriteMemberManifestCopiesATemplate:
             mmh.write_member_manifest(tmp_path / "b" / "member-alice", "alice")
             mmh.write_member_manifest(tmp_path / "c" / "member-alice", "alice")
         spy.assert_not_called()
+        template_bytes = (first / memory_stores.MEMORY_DB_FILE).read_bytes()
+        for copy in ("b", "c"):
+            database = tmp_path / copy / "member-alice" / memory_stores.MEMORY_DB_FILE
+            assert database.read_bytes() == template_bytes
+            assert read_member_database_identity(database) == ("alice", "member-alice")
 
     def test_existing_database_is_never_overwritten(self, tmp_path):
         """Matching create_member_database: a present memory.db keeps its bytes."""

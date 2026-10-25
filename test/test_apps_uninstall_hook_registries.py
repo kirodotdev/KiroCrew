@@ -87,7 +87,9 @@ class TestForgetAppHooks:
 
     def test_it_is_safe_when_nothing_is_registered(self):
         """Uninstall runs for apps that never registered anything."""
+        _install_hooks([])
         teardown.forget_app_hooks("never-registered-app")
+        assert _registered() == {"disable": True, "close": True, "undo": True}
 
 
 @pytest.mark.asyncio

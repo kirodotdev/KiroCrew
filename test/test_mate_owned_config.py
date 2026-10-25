@@ -174,7 +174,6 @@ def test_write_mate_config_copies_payload_and_declares_the_crewmate_id(layout):
     written = json.loads(path.read_text(encoding="utf-8"))
     # Declares the crewmate id, not the source -- so it resolves under its own id.
     assert written["name"] == "zxc"
-    # Every payload field copied verbatim.
     assert written["tools"] == ["fs_read", "@kirocrew-core"]
     assert written["allowedTools"] == ["fs_read"]
     assert written["mcpServers"] == {"demo": {"command": "/bin/echo"}}

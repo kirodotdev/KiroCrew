@@ -669,12 +669,16 @@ class TestCredentialGrantIsAudited:
         assert events == ["install_from_registry_owner_tier"]
 
     def test_a_failing_audit_never_breaks_the_grant(self, monkeypatch):
+        attempted: list[tuple[str, str]] = []
+
         class _Sel:
             def log_api_access(self, **kw):
+                attempted.append((kw["operation"], kw["outcome"]))
                 raise RuntimeError("audit sink down")
 
         monkeypatch.setattr(reg_mod, "_sel_fn", lambda: _Sel())
         reg_mod._sel_credential_grant("install_from_registry", FORGE)
+        assert attempted == [("install_from_registry", "granted")]
 
 
 class TestCredentialRefusalIsAudited:

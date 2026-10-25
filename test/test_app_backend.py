@@ -916,7 +916,6 @@ class TestAppProcess:
 
 class TestBackendLifecycle:
     def test_no_backend_returns_none(self, tmp_path, app_env):
-        # App without backend section
         src = tmp_path / "source" / "no-backend"
         src.mkdir(parents=True)
         (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
@@ -935,11 +934,9 @@ class TestBackendLifecycle:
         assert ap is not None
         assert ap.port > 0
         assert ap.pid > 0
-        # Process should be in the list
         procs = list_app_processes()
         assert len(procs) == 1
         assert procs[0]["app_name"] == "backend-app"
-        # Stop it
         stopped = stop_app_backend("backend-app")
         assert stopped is True
         assert list_app_processes() == []

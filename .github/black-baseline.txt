@@ -284,7 +284,6 @@ test/test_app_routes.py
 test/test_app_scaffold.py
 test/test_app_storage.py
 test/test_appearance_packs_detail_categories.py
-test/test_appearance_packs_overwrite_safety.py
 test/test_appearance_packs_store.py
 test/test_appearance_packs_transfer.py
 test/test_approval_and_update_task.py

@@ -161,7 +161,11 @@ class TestQueuedAppendsSurviveShutdown:
         monkeypatch.setattr(
             eventlog_hooks, "io_executor", lambda: (_ for _ in ()).throw(RuntimeError("no pool"))
         )
-        eventlog_hooks.submit(lambda: None)  # must not raise
+        ran: list[str] = []
+        assert (
+            eventlog_hooks.submit(lambda: ran.append("ran")) is False
+        ), "a refused append must be reported so the caller does not advance its checkpoint"
+        assert ran == []
 
 
 def _gateway_source() -> str:
