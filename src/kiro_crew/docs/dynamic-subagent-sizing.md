@@ -343,7 +343,7 @@ not what a runtime holds once it is up.
 On macOS the floor also reads the kernel's memory-pressure level
 (`kern.memorystatus_vm_pressure_level`). While it is WARN or CRITICAL and a
 dedicated subagent of this gateway is running, a start waits even when the
-reclaimable figure clears the floor, for at most 30 minutes, after which it ends
+available figure clears the floor, for at most 30 minutes, after which it ends
 without starting; with none running
 it is judged on the figure alone. The level lags (it can read NORMAL on a Mac
 that is already swapping), so it backs the figure up rather than replacing it.
@@ -365,7 +365,10 @@ start that later fails to commit (an accepted gap, tracked as
   reads *available* memory in-process via the Mach `host_statistics64` syscall
   through `ctypes`/`libSystem` (free + inactive + speculative + purgeable
   pages × page size) — no subprocess, so it is safe on the gateway event loop
-  and passes the spawn-audit guard; Windows reads available memory via
+  and passes the spawn-audit guard. The spawn floor reads a tighter sum of the
+  same counters (free + purgeable + inactive file-backed pages, the figure
+  behind `platform_compat.host_available_mib`), so it does not count memory a
+  new process cannot take without swapping; Windows reads available memory via
   `GlobalMemoryStatusEx` (through `platform_compat.host_available_mib`) and has
   no cgroup clamp.
 - On a platform with no probe yet, or with no usable memory bound, the memory reader
