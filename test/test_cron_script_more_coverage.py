@@ -405,15 +405,24 @@ class TestKillProcGroup:
 
     def test_kill_failure_is_swallowed(self, monkeypatch):
         monkeypatch.setattr(cron_script.platform_compat, "IS_POSIX", False)
-        monkeypatch.setattr(
-            cron_script.platform_compat,
-            "kill_process_tree",
-            lambda pid, sig: (_ for _ in ()).throw(OSError()),
-        )
+        attempts: list[str] = []
+
+        def failing_tree_kill(pid, sig):
+            attempts.append("tree")
+            raise OSError()
+
+        def failing_kill():
+            attempts.append("kill")
+            raise RuntimeError("already reaped")
+
+        monkeypatch.setattr(cron_script.platform_compat, "kill_process_tree", failing_tree_kill)
         proc = _FakeProc(pid=4242, returncode=None)
-        proc.kill = lambda: (_ for _ in ()).throw(RuntimeError("already reaped"))
+        proc.kill = failing_kill
 
         _kill_proc_group(proc)  # must not raise
+
+        # A failed tree kill still falls through to the single-process kill.
+        assert attempts == ["tree", "kill"]
 
 
 # ── ScriptContext ──

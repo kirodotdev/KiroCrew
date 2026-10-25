@@ -256,11 +256,11 @@ async def test_the_hook_ignores_an_inactive_loop(svc, _nosleep):
 
 @pytest.mark.asyncio
 async def test_the_hook_is_silent_for_an_unknown_slot(svc, _nosleep):
-    await _armed(svc)
+    loop = await _armed(svc)
 
-    # Unknown loop id -> no match, must not raise.
     await svc.notify_cycle_failed("chat-9-nobody", loop_id="nope", expected_generation=0)
 
+    assert svc._loops[loop.id].consecutive_failed_cycles == 0
     await _stop_and_drain(svc)
 
 
@@ -580,7 +580,6 @@ async def test_the_gate_is_silent_when_no_service_is_published(monkeypatch):
 
     monkeypatch.setattr(_an, "_INSTANCE", None, raising=False)
 
-    # Must not raise.
     await chat_runner._note_cycle_failure(
         SLOT, RuntimeError("boom"), self_wake=True, loop_id=LOOP_ID, expected_generation=1
     )

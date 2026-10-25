@@ -983,7 +983,11 @@ class TestMovingTheTabAtTheSave:
 
     @pytest.mark.asyncio
     async def test_a_job_with_no_tab_at_all_is_a_no_op(self) -> None:
-        await move_cron_job_tab(_make_state(), _job(), FOLDER, "")
+        state = _make_state()
+        await move_cron_job_tab(state, _job(), FOLDER, "")
+        # No tab is conjured up for the job, and the sidebar is not told anything moved.
+        assert state._slots == {}
+        state.push_slots_update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_refused_write_restores_the_prior_folder(self, monkeypatch) -> None:
@@ -1315,7 +1319,7 @@ class TestRestUpdate:
     async def test_the_handler_makes_no_extra_read_of_its_own(self, monkeypatch) -> None:
         """The store reports the transition, so a second query would only re-open the
         race the sink exists to close."""
-        self._capture_unfile(monkeypatch)
+        calls = self._capture_unfile(monkeypatch)
         get_job = AsyncMock(return_value=_job(chat_folder_id=FOLDER))
         app = _app(
             api_cron_update,
@@ -1324,8 +1328,11 @@ class TestRestUpdate:
             get_job_async=get_job,
         )
         async with TestClient(TestServer(app)) as client:
-            await client.patch("/api/crons/job42", json={"chat_folder_id": ""})
+            resp = await client.patch("/api/crons/job42", json={"chat_folder_id": ""})
+            assert resp.status == 200
         get_job.assert_not_awaited()
+        # The move still runs, on the prior folder the store reported.
+        assert calls == [("job42", FOLDER, "")]
 
     async def test_the_handler_passes_a_sink_of_its_own(self, monkeypatch) -> None:
         """One sink per request is the property that makes concurrent folder edits

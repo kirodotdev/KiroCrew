@@ -138,6 +138,7 @@ class TestTickReadsTheFileOffLoop:
         await svc._process_heartbeat_file()
 
         on_task.assert_not_called()
+        assert not target.parent.exists(), "a missing file must not be created by the tick"
 
     @pytest.mark.asyncio
     async def test_the_read_happens_inside_the_file_lock(

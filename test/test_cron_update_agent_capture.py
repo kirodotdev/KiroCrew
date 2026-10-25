@@ -217,6 +217,7 @@ def test_an_unchanged_record_is_not_rewritten(tmp_path):
         rebind_cron_session_template(key, _capture(job), job.name)
 
     bind.assert_not_called()
+    assert read_session_execution(key) == _capture(job)
 
 
 @pytest.fixture

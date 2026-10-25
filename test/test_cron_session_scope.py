@@ -63,11 +63,9 @@ class TestCronRemoveAllScoped:
         monkeypatch.delenv("KIROCREW_CLI", raising=False)
         n1, n2 = _unique_name(), _unique_name()
 
-        # Create job as session A
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-A")
         _call_tool_inner("cron_add", {"name": n1, "message": "a", "every": 120})
 
-        # Create job as session B
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-B")
         _call_tool_inner("cron_add", {"name": n2, "message": "b", "every": 120})
 

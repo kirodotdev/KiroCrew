@@ -19,7 +19,7 @@ import threading
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from cron_script_helpers import (  # noqa: F401 -- the autouse fixtures register by import
@@ -247,6 +247,9 @@ class TestMcpToolClient:
         client._sandbox_cleanup = None
         client.close()
         client._proc.terminate.assert_called_once()
+        # An exited server answers the bounded wait at once, so no kill follows.
+        client._proc.wait.assert_called_once_with(timeout=5)
+        client._proc.kill.assert_not_called()
 
     def test_init_passes_spec_env_to_popen_and_scrubs_secrets(self, monkeypatch):
         """Regression: McpToolClient must hand the spawned MCP subprocess the
@@ -772,6 +775,8 @@ class TestScriptContextNotify:
                 ctx.notify("hello")
 
     def test_notify_redacts_credentials(self):
+        # Built from parts so secret scanners do not flag a literal key in the source.
+        fake_key = "AK" + "IA1234567890123456"
         job = SimpleNamespace(id="j1", message="test")
         ctx = ScriptContext(job=job)
         mock_response = MagicMock()
@@ -781,9 +786,11 @@ class TestScriptContextNotify:
         with patch(
             "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
         ) as mock_urlopen:
-            ctx.notify("secret AKIA1234567890123456 text")
-            # Verify the request was made (redaction happens internally)
+            ctx.notify(f"secret {fake_key} text")
             mock_urlopen.assert_called_once()
+        sent = json.loads(mock_urlopen.call_args.args[0].data)
+        assert fake_key not in sent["text"]
+        assert sent["text"].startswith("secret ")
 
 
 class TestScriptContextCallTool:
@@ -1013,7 +1020,6 @@ def run(ctx):
 import os
 from kiro_crew.cron_script import Done
 def run(ctx):
-    # Verify we can import standard library
     assert os.path.exists("/")
 """,
         )
@@ -1226,6 +1232,8 @@ class TestMcpToolClientProtocol:
         client._sandbox_cleanup = None
         client.close()
         client._proc.kill.assert_called_once()
+        # The kill is reaped with an unbounded wait after the bounded one expired.
+        assert client._proc.wait.call_args_list == [call(timeout=5), call()]
 
     def test_init_popen_failure_cleans_sandbox(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
@@ -1315,7 +1323,6 @@ class TestScriptContextCallToolSuccess:
             "kiro_crew.cron_script.sel"
         ) as mock_sel:
             mock_sel().log_tool_invocation.side_effect = Exception("SEL down")
-            # Should not raise despite SEL failure
             result = ctx.call_tool("server", "tool", {})
         assert result == ""
 
@@ -1384,7 +1391,6 @@ class TestMcpToolClientInitFailures:
         agents_dir.mkdir(parents=True)
         config = {"mcpServers": {"test": {"command": "node", "args": ["nonexistent.js"]}}}
         (agents_dir / "kirocrew.json").write_text(json.dumps(config))
-        # Mock wrap_argv to return a cleanup file
         cleanup = tmp_path / "cleanup_marker"
         cleanup.write_text("x")
         with patch("pathlib.Path.home", return_value=tmp_path), patch(
@@ -1408,13 +1414,16 @@ class TestMcpToolClientInitFailures:
         with pytest.raises(RuntimeError, match="did not respond"):
             client._rpc("tools/list")
 
-    def test_close_exception_swallowed(self):
-        """Lines 235-236: exception in terminate is swallowed."""
+    def test_close_exception_swallowed(self, tmp_path):
+        """An exception in terminate is swallowed and the sandbox file is still removed."""
         from kiro_crew.cron_script import McpToolClient
 
+        cleanup_file = tmp_path / "sandbox_cleanup"
+        cleanup_file.write_text("temp")
         client = object.__new__(McpToolClient)
         client._proc = MagicMock()
         client._proc.terminate = MagicMock(side_effect=ProcessLookupError("already dead"))
-        client._sandbox_cleanup = None
-        # Should not raise
+        client._sandbox_cleanup = str(cleanup_file)
         client.close()
+        assert not cleanup_file.exists()
+        client._proc.kill.assert_not_called()

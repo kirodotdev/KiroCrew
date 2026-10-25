@@ -96,7 +96,6 @@ class TestHeartbeatTaskTimeout:
 
         on_task = await _capture_task(orch)
 
-        # Should NOT raise — timeout is handled gracefully.
         result = await on_task("do a thing", "")
 
         # In-flight turn torn down via reset on the heartbeat key — once, in the
@@ -104,7 +103,6 @@ class TestHeartbeatTaskTimeout:
         # recycle belongs to SessionManager.recycle_heartbeat, invoked once after
         # asyncio.gather completes rather than per task.
         sessions.reset.assert_awaited_once_with(HEARTBEAT_KEY)
-        # finally still ran: session released.
         sessions.release.assert_called_once_with(HEARTBEAT_KEY)
         # Graceful incomplete result mentions the deadline; loop not wedged.
         assert str(HEARTBEAT_TASK_TIMEOUT_SECS) in result

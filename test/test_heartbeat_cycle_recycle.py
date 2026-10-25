@@ -167,14 +167,20 @@ class TestOnCycleEndCallback:
         assert failed == ["Heartbeat task failed: some task"]
 
     @pytest.mark.asyncio
-    async def test_callback_failure_does_not_crash_loop(self, heartbeat_file):
+    async def test_callback_failure_does_not_crash_loop(self, heartbeat_file, caplog):
         """A raising on_cycle_end must NOT propagate — the cycle is over,
         and the periodic loop must keep ticking."""
+        import logging
+
+        ran: list[str] = []
+        cycle_ends: list[bool] = []
 
         async def _on_task(text, deliver):
+            ran.append(text)
             return None
 
         async def _on_cycle_end():
+            cycle_ends.append(True)
             raise RuntimeError("recycle failed")
 
         heartbeat_file.write_text(
@@ -187,8 +193,13 @@ class TestOnCycleEndCallback:
             on_task=_on_task,
             on_cycle_end=_on_cycle_end,
         )
-        # Should NOT raise — the warning is logged and the loop continues.
-        await svc._process_heartbeat_file()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.heartbeat"):
+            await svc._process_heartbeat_file()
+
+        assert ran == ["some task"]
+        assert cycle_ends == [True]
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.heartbeat"]
+        assert warnings == ["Heartbeat: on_cycle_end callback failed"]
 
     @pytest.mark.asyncio
     async def test_no_callback_when_no_tasks(self, heartbeat_file):
@@ -230,9 +241,17 @@ class TestRecycleHeartbeat:
         must be cheap — no work, no errors."""
         from kiro_crew.session import SessionManager
 
-        mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
-        # Should not raise even with no provider, no session, no factory call.
+        factory = MagicMock()
+        mgr = SessionManager(cfg=_make_cfg(), provider_factory=factory)
+        generation = mgr.session_generation(HEARTBEAT_KEY)
+
         await mgr.recycle_heartbeat()
+
+        # The generation advances only on a registry publication or removal, and an
+        # absent session is neither, so a stale capture of it must still match.
+        assert mgr.session_generation(HEARTBEAT_KEY) == generation
+        assert HEARTBEAT_KEY not in mgr._sessions
+        assert factory.call_count == 0
 
     @pytest.mark.asyncio
     async def test_recycles_healthy_session(self):
@@ -421,7 +440,7 @@ class TestHeartbeatAgentInstall:
         assert config["mcpServers"] == {}
         # tools must be derived from mcpServers — never reference a
         # namespace without a matching mcpServers entry, otherwise kiro-cli
-        # fails to load the agent. (review-bot finding on rev 6.)
+        # fails to load the agent.
         assert config["tools"] == []
 
     def test_tools_derived_from_resolved_mcp_servers(self, tmp_path, monkeypatch):

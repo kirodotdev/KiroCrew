@@ -1536,4 +1536,5 @@ class TestATimerOutlivesItsEventLoop:
 
         svc._cancel_timer("L1")
 
+        assert "L1" not in svc._timers
         await self._await_cancelled(task)

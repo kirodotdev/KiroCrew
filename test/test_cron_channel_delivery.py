@@ -239,6 +239,12 @@ def _sent(transport: MagicMock) -> str:
     return "\n".join(call.args[1] for call in transport.send_message.await_args_list)
 
 
+def _assert_dashboard_heard(orch: Any, text: str) -> None:
+    """The failure still reaches the dashboard when the channel leg is skipped."""
+    bodies = [str(c.args) for c in orch.dashboard_state.notify.call_args_list]
+    assert any(text in b for b in bodies), bodies
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Origin resolution
 # ═══════════════════════════════════════════════════════════════════════════
@@ -453,6 +459,7 @@ class TestResultReachesOriginChannel:
         job = _job()
         await _run_result_leg(orch, job, result="no proactive")
         tr.send_message.assert_not_awaited()
+        assert job.last_posted_hash == ""
 
     @pytest.mark.asyncio
     async def test_credential_in_result_is_redacted_before_the_transport(self):
@@ -481,6 +488,7 @@ class TestResultReachesOriginChannel:
         job = _job(silent=True)
         await _run_result_leg(orch, job, result="quiet")
         tr.send_message.assert_not_awaited()
+        assert job.last_posted_hash == ""
 
     @pytest.mark.asyncio
     async def test_an_escaping_delivery_error_never_fails_the_run(self):
@@ -635,6 +643,7 @@ class TestRunFailureAlertChannelLeg:
         job = _job(script="raise SystemExit(1)", message="", silent=True)
         await _alert_run_failure(orch, job, "boom")
         tr.send_message.assert_not_awaited()
+        assert job.last_failure_hash == ""
 
     @pytest.mark.asyncio
     async def test_governance_denial_alerts_no_channel(self):
@@ -647,6 +656,7 @@ class TestRunFailureAlertChannelLeg:
                 ):
                     await on_job(job)
         tr.send_message.assert_not_awaited()
+        _assert_dashboard_heard(orch, "boom")
 
     @pytest.mark.asyncio
     async def test_an_escaping_channel_error_still_leaves_the_slack_alert(self):
@@ -710,8 +720,10 @@ class TestAgentCrashAlertChannelLeg:
     async def test_silent_job_crashes_quietly(self):
         orch, tr = _discord_orch()
         job = _job(silent=True)
+        # _crash still requires the run's ValueError to escape; only the alert is muted.
         await self._crash(orch, job)
         tr.send_message.assert_not_awaited()
+        assert orch.dashboard_state.notify.call_args_list == []
 
     @pytest.mark.asyncio
     async def test_governance_denial_sends_nothing(self):
@@ -719,6 +731,7 @@ class TestAgentCrashAlertChannelLeg:
         job = _job()
         await self._crash(orch, job, permitted=False)
         tr.send_message.assert_not_awaited()
+        _assert_dashboard_heard(orch, "context assembly exploded")
 
     @pytest.mark.asyncio
     async def test_an_escaping_channel_error_does_not_replace_the_run_error(self):
@@ -726,7 +739,9 @@ class TestAgentCrashAlertChannelLeg:
         orch, _tr = _discord_orch()
         orch._deliver_cron_to_channel = AsyncMock(side_effect=RuntimeError("transport imploded"))
         job = _job()
+        # _crash fails unless the run's ValueError (not the RuntimeError) escapes.
         await self._crash(orch, job)
+        orch._deliver_cron_to_channel.assert_awaited()
 
 
 class TestSlackStandsDownOnlyOnConfirmedDelivery:

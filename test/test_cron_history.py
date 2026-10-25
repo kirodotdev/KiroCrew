@@ -239,7 +239,9 @@ async def test_rotate_noop_under_limit(store: CronHistoryStore) -> None:
 
 @pytest.mark.asyncio
 async def test_rotate_nonexistent_job(store: CronHistoryStore) -> None:
-    await store.rotate("nope")  # should not raise
+    await store.rotate("nope")
+    # Rotating creates nothing for a job that never ran.
+    assert await store.get_job_history("nope") == ([], 0)
 
 
 # ── rotate_all ───────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from pathlib import Path
 
 import pytest
@@ -245,15 +246,21 @@ class TestLoopSafetyGuard:
 
     @pytest.mark.asyncio
     async def test_file_lock_warns_not_raises_by_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         monkeypatch.delenv(STRICT, raising=False)
+        # The warning is once per process; reset it so this test sees it
+        # whichever test on the worker tripped the guard first.
+        monkeypatch.setattr("kiro_crew.cron._loop_safety_warned", False)
         svc = CronService(base_dir=tmp_path)
         # Default (non-strict) degrades to a warning — must NOT raise, so the
         # many existing tests that seed jobs via sync mutators from an async
         # body keep working.
-        with svc._file_lock():
-            pass
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.cron"):
+            with svc._file_lock():
+                pass
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.cron"]
+        assert any("acquired on the event loop thread" in m for m in warnings), warnings
 
     @pytest.mark.asyncio
     async def test_async_mutator_does_not_trip_guard_under_strict(

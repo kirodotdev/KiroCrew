@@ -93,36 +93,33 @@ class TestPromptDashboardDeliver:
         assert call_args[1]["meta"]["slot"] == "chat-1"
 
     @pytest.mark.asyncio()
-    async def test_prompt_skips_notify_and_push_when_queued(
-        self, orchestrator, dashboard_state
+    @pytest.mark.parametrize(
+        "ran",
+        [
+            pytest.param(False, id="test_prompt_skips_notify_and_push_when_queued"),
+            pytest.param(True, id="test_prompt_fires_notify_and_push_when_run"),
+        ],
+    )
+    async def test_prompt_notifies_only_when_the_turn_started(
+        self, orchestrator, dashboard_state, ran
     ):
-        """Queued prompts (slot busy) must NOT fire notify() or push_slots_update() —
-        the prompt has no visible effect until it's dequeued, so notifying now would
-        send the user to an empty slot.
-        """
+        """A queued prompt (slot busy) has no visible effect until it is dequeued,
+        so notifying then would send the user to an empty slot. A prompt that ran
+        pushes the slot list and rings the bell for the new agent turn."""
         state, slot = dashboard_state
-        slot.enqueue_or_run_prompt.return_value = False  # simulate queued path
+        slot.enqueue_or_run_prompt.return_value = ran
         await orchestrator._deliver_result(
             "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
         )
         slot.enqueue_or_run_prompt.assert_called_once()
-        state.notify.assert_not_called()
-        state.push_slots_update.assert_not_called()
-
-    @pytest.mark.asyncio()
-    async def test_prompt_fires_notify_and_push_when_run(
-        self, orchestrator, dashboard_state
-    ):
-        """Counterpart to queued case: when slot is idle, both notify and
-        push_slots_update must fire so the UI reflects the new agent turn.
-        """
-        state, slot = dashboard_state
-        slot.enqueue_or_run_prompt.return_value = True  # default, but explicit
-        await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
-        )
-        state.notify.assert_called_once()
-        state.push_slots_update.assert_called_once()
+        assert "Fix these" in slot.enqueue_or_run_prompt.call_args.args[0]
+        assert state.push_slots_update.call_count == int(ran)
+        if ran:
+            state.notify.assert_called_once_with(
+                "heartbeat", "💓 Heartbeat", "CR check\n\nFix these", meta={"slot": "chat-1"}
+            )
+        else:
+            state.notify.assert_not_called()
 
     @pytest.mark.asyncio()
     async def test_prompt_noop_when_no_dashboard_state(self, orchestrator, caplog):
@@ -248,7 +245,10 @@ class TestDashboardSlotInjectDeliver:
         await orchestrator._deliver_result(
             "💓 Heartbeat", "test", "result", "dashboard:chat-1"
         )
-        slot.append.assert_called_once()
+        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nresult", "msg msg-a")
+        state.notify.assert_called_once_with(
+            "heartbeat", "💓 Heartbeat", "test\n\nresult", meta={"slot": "chat-1-1776476208"}
+        )
 
     @pytest.mark.asyncio()
     async def test_inject_no_notify_when_slot_missing(self, orchestrator, dashboard_state, monkeypatch):
@@ -285,7 +285,6 @@ class TestLogTaskException:
             await task
         except asyncio.CancelledError:
             pass
-        # Must not raise and must not log
         _log_task_exception(task)
         assert not any("Background task failed" in r.message for r in caplog.records)
 
@@ -518,6 +517,9 @@ class TestSlotPrefixMatch:
             "💓 Heartbeat", "test", "result", "prompt:dashboard:chat-1"
         )
         slot.enqueue_or_run_prompt.assert_called_once()
+        prompt, _, passed_state = slot.enqueue_or_run_prompt.call_args.args
+        assert prompt.endswith("result")
+        assert passed_state is state
 
 
 class TestEnqueueOrRunPrompt:
@@ -552,7 +554,6 @@ class TestEnqueueOrRunPrompt:
         from kiro_crew.dashboard.state import _ChatSlot
 
         slot = _ChatSlot(key="chat-1")
-        # Make slot appear busy
         slot.task = asyncio.create_task(asyncio.sleep(10))
         state = MagicMock()
         state._background_tasks = set()

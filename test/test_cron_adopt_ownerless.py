@@ -465,24 +465,24 @@ class TestAdoptIsDeniedFromBash:
             # A command separator ends the match: the words must belong to ONE
             # simple command, so an unrelated `adopt` in a LATER command does not
             # combine with an earlier harmless `kirocrew cron` read.
-            "kirocrew cron list; echo adopt",
-            "kirocrew cron list && git adopt-nothing",
-            "kirocrew cron list | grep adopt",
-        ],
-    )
-    def test_a_command_separator_ends_the_match(self, command):
-        import re
-
-        rule = self._rule()
-        assert not re.search(rule.pattern, command, re.IGNORECASE), command
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "kirocrew cron list",
-            "kirocrew cron add nightly 'sweep' --every 3600",
-            "kirocrew cron remove abc123",
-            "git commit -m 'adopt a cron convention'",
+            pytest.param(
+                "kirocrew cron list; echo adopt", id="a_command_separator_ends_the_match-semicolon"
+            ),
+            pytest.param(
+                "kirocrew cron list && git adopt-nothing",
+                id="a_command_separator_ends_the_match-and",
+            ),
+            pytest.param(
+                "kirocrew cron list | grep adopt", id="a_command_separator_ends_the_match-pipe"
+            ),
+            pytest.param("kirocrew cron list", id="read_and_sibling_verbs-list"),
+            pytest.param(
+                "kirocrew cron add nightly 'sweep' --every 3600", id="read_and_sibling_verbs-add"
+            ),
+            pytest.param("kirocrew cron remove abc123", id="read_and_sibling_verbs-remove"),
+            pytest.param(
+                "git commit -m 'adopt a cron convention'", id="read_and_sibling_verbs-git-commit"
+            ),
         ],
     )
     def test_the_pattern_does_not_catch_the_read_and_sibling_verbs(self, command):

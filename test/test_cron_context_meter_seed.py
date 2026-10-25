@@ -179,6 +179,8 @@ def test_inject_without_reading_records_nothing():
     _inject(state, _make_job(), "result")
 
     state.broadcast_context_usage.assert_not_called()
+    # The result itself is still delivered; only the meter frame is skipped.
+    assert any(c.args[1].endswith("result") for c in slot.append.call_args_list)
 
 
 # ── end to end: the reported bug ────────────────────────────────────────────
