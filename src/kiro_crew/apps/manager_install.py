@@ -635,7 +635,8 @@ def update_app(
         secret_link_refusal = (
             "`.app_secret` in the app directory is a link; moving it aside for "
             "the update places it outside its tree where a relative target does not "
-            "resolve and the secret is lost. Remove the link and retry the update."
+            "resolve and the secret is lost. Replace the link with a regular "
+            "`.app_secret` file holding the same secret, then retry the update."
         )
         sel().log_api_access(
             caller="app_update",

@@ -33,7 +33,8 @@ from kiro_crew.apps.manager import (
 _APP_SECRET_IS_A_LINK = (
     "`.app_secret` in the app directory is a link; moving it aside for "
     "the update places it outside its tree where a relative target does not "
-    "resolve and the secret is lost. Remove the link and retry the update."
+    "resolve and the secret is lost. Replace the link with a regular "
+    "`.app_secret` file holding the same secret, then retry the update."
 )
 
 # ---------------------------------------------------------------------------
@@ -757,8 +758,9 @@ class TestCopyAppTree:
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-secret-tmp").exists()
         # No retired tree: the transaction was never opened.
-        assert [p.name for p in dest.parent.iterdir()
-                if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
     def test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back(
         self, tmp_path, app_home
