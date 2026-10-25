@@ -780,6 +780,11 @@ class DashboardState:
         # read by the guards' lifecycle hooks, which withdraw the claim while the
         # address is not held and re-publish it once a rebind lands.
         self._listener_sidecars: dict[str, tuple[int, str, str]] = {}
+        # The TCP port the primary listener actually bound (the OS-assigned one
+        # under ``--port auto``), recorded once it listens; 0 before that. The
+        # gateway announces it to the MCP gateway daemon it owns, which binds
+        # pooled control-plane backends to it. Never read from os.environ.
+        self._listener_bound_port: int = 0
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.

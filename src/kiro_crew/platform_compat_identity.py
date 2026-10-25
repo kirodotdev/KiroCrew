@@ -189,7 +189,27 @@ def is_exec_supervisor_of_this_process(pid: int) -> bool:
     report (Windows, an unreadable process), and when the parent walk fails --
     each keeps the caller's pre-existing verdict.
     """
-    current = os.getppid()
+    return _exec_supervisor_walk(pid, os.getppid())
+
+
+def is_exec_supervisor_of(pid: int, descendant: int) -> bool:
+    """:func:`is_exec_supervisor_of_this_process`, asked about *descendant*.
+
+    For a process that is not itself the restarted gateway but has to tell
+    whether a live gateway *descendant* is the successor of the gateway that was
+    *pid* (the MCP gateway daemon, whose ``--owner-pid`` still names the
+    supervisor after an in-app restart). Same rules: every process from
+    *descendant*'s parent up to and including *pid* must be a readable,
+    non-Python image. False for *descendant* <= 1 and when its parent cannot be
+    read.
+    """
+    if type(descendant) is not int or descendant <= 1:
+        return False
+    # A failed read (-1) ends the walk at its first step, like the parent walk.
+    return _exec_supervisor_walk(pid, get_ppid(descendant))
+
+
+def _exec_supervisor_walk(pid: int, current: int) -> bool:
     seen: set[int] = set()
     for _ in range(_ANCESTRY_MAX_DEPTH):
         # Checked before the match, so pid 1 (and lower) is never accepted.

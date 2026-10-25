@@ -1,10 +1,12 @@
 """The one-shot control frames served on the uid-gated socket.
 
 ``ping`` (the pong the manager's adoption gate reads), ``stats``, ``claim``,
-``abort``, ``set-spawn-capacity``, ``stand-down``, ``session-mounts`` and
-``app-call`` each arrive as
+``abort``, ``set-spawn-capacity``, ``owner-port``, ``stand-down``,
+``session-mounts`` and ``app-call`` each arrive as
 the first frame of their own connection, get one reply, and end it. Trust basis
-for all of them is the owner-only endpoint that authenticates Register.
+for all of them is the owner-only endpoint that authenticates Register;
+``owner-port`` also checks the sender's pid, and on an unowned daemon that the
+sender listens on the port.
 """
 
 from __future__ import annotations
@@ -14,11 +16,17 @@ import math
 import os
 from typing import TYPE_CHECKING, Any, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
+from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
 from kiro_crew.mcp_gateway.daemon import logger
-from kiro_crew.mcp_gateway.daemon.audit import _audit_caller_claimed, _audit_stand_down
+from kiro_crew.mcp_gateway.daemon.audit import (
+    _audit_caller_claimed,
+    _audit_owner_port,
+    _audit_stand_down,
+)
 from kiro_crew.mcp_gateway.daemon.identity import (
     _CONN_INDEX,
     _bind_token,
@@ -27,7 +35,11 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _session_mounts,
     _session_mounts_complete,
 )
-from kiro_crew.mcp_gateway.daemon.launch import resolvable_target_stems
+from kiro_crew.mcp_gateway.daemon.launch import (
+    _is_port_number,
+    bound_to_owner_port,
+    resolvable_target_stems,
+)
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
 from kiro_crew.mcp_gateway.pool import BackendPool
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
@@ -45,7 +57,8 @@ def _pong_payload() -> dict[str, Any]:
     cover its stubs. ``fingerprint`` lets it detect a daemon running DIFFERENT
     CODE -- the case the target check cannot see, since two checkouts resolve
     the same stems while disagreeing about a wire shape. ``owner_pid`` lets it
-    tell whether anyone is still supervising this daemon; ``start_time`` is the
+    tell whether anyone is still supervising this daemon; ``owner_port`` lets the
+    owner tell whether its ``owner-port`` announce landed; ``start_time`` is the
     identity a pinned kill must match. Every field is
     additive: an older manager reads ``type`` and ``targets`` and ignores the
     rest, and an older daemon omits the new ones, which the manager treats as
@@ -56,6 +69,9 @@ def _pong_payload() -> dict[str, Any]:
         "targets": resolvable_target_stems(),
         "fingerprint": code_fingerprint(),
         "owner_pid": facade._OWNER_PID,
+        # The port the owner announced (0 = none yet), so the owner's watchdog can
+        # tell a daemon that needs the announce again from one that has it.
+        "owner_port": facade._OWNER_PORT,
         "pid": os.getpid(),
         # The daemon's own start-time identity, so a caller that decides to
         # signal this pid pins the signal on the process that ANSWERED, not on
@@ -478,6 +494,91 @@ async def _apply_abort(frame: dict[str, Any], pool: "BackendPool") -> dict[str, 
     return {"type": "aborted", "cancelled": total_cancelled, "stubs": len(affected_stubs)}
 
 
+async def _apply_owner_port(
+    frame: dict[str, Any], writer: asyncio.StreamWriter, pool: BackendPool
+) -> dict[str, Any]:
+    """Record the port the owning gateway's listener bound (the ``owner-port`` frame).
+
+    Pooled control-plane backends are bound to this port
+    (``launch.bind_control_plane_to_owner``), so the port decides which gateway
+    they authenticate against, and only the gateway that serves it may set it.
+    The frame is accepted only when ALL of these hold:
+
+    1. the kernel reports the sender's pid (``socketsec.get_peer_pid``). The
+       connection already passed the same-uid peer gate;
+    2. on an owned daemon (``_OWNER_PID > 0``), that pid is the owner, or the
+       owner is an exec supervisor of it
+       (``platform_compat.is_exec_supervisor_of``): the successor that an in-app
+       restart through a supervising launcher leaves running. That is the rule
+       ``GatewayManager._owned_by_a_live_other`` uses to adopt this daemon;
+    3. the port is an ``int`` in 1..65535 (a ``bool`` is not one);
+    4. on an unowned daemon, which a gateway adopts without being its owner, the
+       sender holds a listening socket that answers 127.0.0.1 on that port
+       (``platform_compat.process_owns_loopback_listener``). A host that cannot
+       tell refuses.
+
+    Any other frame gets ``owner-port-rejected`` with the reason, logged at
+    WARNING. A later accepted announce replaces the earlier one, and a change of
+    port retires every pooled control-plane backend bound to the old one to the
+    draining list (``BackendPool.drain_matching_to_bluegreen``): its calls in
+    flight finish, and the next acquisition spawns a backend bound to the new
+    port. Both outcomes are audited. Async because the ancestry walk and the
+    listener lookup read the process table, which runs off the loop.
+    """
+    raw_port = frame.get("port")
+    port = raw_port if _is_port_number(raw_port) else 0
+    owner = facade._OWNER_PID
+    peer_pid = socketsec.get_peer_pid(writer)
+    reason = ""
+    if peer_pid is None:
+        # On a host whose kernel reports no peer pid for a unix socket (neither
+        # SO_PEERCRED nor LOCAL_PEERPID), no announce can be accepted, so every
+        # pooled control-plane spawn is then refused: the log names that cause.
+        reason = (
+            "the sender's pid cannot be read (this host's socket layer reports no "
+            "peer pid), so no owner port can be accepted and pooled Kiro Crew "
+            "backends are refused"
+        )
+    elif (
+        owner > 0
+        and peer_pid != owner
+        and not await asyncio.to_thread(platform_compat.is_exec_supervisor_of, owner, peer_pid)
+    ):
+        reason = f"pid {peer_pid} is neither owner pid {owner} nor its exec successor"
+    elif port == 0:
+        reason = f"not a port number: {repr(raw_port)[:32]}"
+    elif owner <= 0:
+        listens = await asyncio.to_thread(
+            platform_compat.process_owns_loopback_listener, peer_pid, port
+        )
+        if listens is None:
+            reason = f"this host cannot tell whether pid {peer_pid} listens on port {port}"
+        elif not listens:
+            reason = f"pid {peer_pid} does not listen on port {port} (unowned daemon)"
+    if reason:
+        logger.warning("gatewayd: owner-port announce refused: %s", reason)
+        _audit_owner_port(peer_pid, raw_port, "denied", reason)
+        return {"type": "owner-port-rejected", "reason": reason}
+    previous = facade._set_owner_port(port)
+    if previous > 0 and previous != port:
+        # Before this, no control-plane backend can exist: one is spawned only
+        # with a port. Set first, so a spawn landing during the drain fails the
+        # pool's ``reusable`` check instead of being pooled on the old port.
+        retired = await pool.drain_matching_to_bluegreen(lambda b: not bound_to_owner_port(b))
+        logger.info(
+            "gatewayd: owner port changed from %d to %d (pid %s); %d control-plane "
+            "backend(s) bound to the old port moved to draining",
+            previous,
+            port,
+            peer_pid,
+            retired,
+        )
+    elif previous != port:
+        logger.info("gatewayd: owner port is %d (pid %s)", port, peer_pid)
+    _audit_owner_port(peer_pid, port, "allowed", "")
+    return {"type": "owner-port-set", "port": port}
+
+
 def _apply_set_spawn_capacity(
     frame: dict[str, Any], admission: Optional[Admission]
 ) -> dict[str, Any]:
@@ -590,6 +691,15 @@ async def _serve_control_frame(
 
     if register.get("type") == "set-spawn-capacity":
         await _write_json_line(writer, _apply_set_spawn_capacity(register, admission))
+        return True
+
+    # Owner-port announce (one-shot control connection from the gateway that
+    # owns or adopted this daemon, once its listener is bound): the port pooled
+    # control-plane backends are bound to. Only the owner or its exec successor
+    # may send it, or on an unowned daemon the listener of that port; the rules
+    # and the audit live in ``_apply_owner_port``.
+    if register.get("type") == "owner-port":
+        await _write_json_line(writer, await _apply_owner_port(register, writer, pool))
         return True
 
     # Stand-down short-circuit (one-shot control connection from a STARTING

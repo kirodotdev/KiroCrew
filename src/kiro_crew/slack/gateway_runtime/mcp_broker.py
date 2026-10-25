@@ -247,6 +247,13 @@ async def _init_mcp_gateway(
             host_budget_max_fds=cfg_gw.host_budget_max_fds,
         )
     )
+    # A broker (re)started after the bind takes the port from the listener's own
+    # record, never from os.environ: the variables this process inherited may
+    # name another gateway. At boot there is no record yet, and
+    # ``_wire_mcp_gateway_dashboard`` announces the port once the listener is up.
+    bound_port = getattr(self.dashboard_state, "_listener_bound_port", 0)
+    if type(bound_port) is int and bound_port > 0:
+        manager.set_owner_port(bound_port)
     # Pre-resolve npm-launcher targets in the background. An npx spec asks the
     # registry what it means on every launch; once resolved, the daemon execs
     # the installed tree instead, so session start does no resolution and
@@ -601,3 +608,13 @@ def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:
     # Read by the dashboard restart handler, which execs without running
     # ``_shutdown``: the broker this process owns must still die with it.
     self.dashboard_state._mcp_gateway_stop = self._stop_mcp_broker
+    # The broker started before the bind, so its daemon cannot know this
+    # gateway's port: tell it now, from the listener's own record of the bind.
+    # A broker started after this (``_init_mcp_gateway``) reads the same record.
+    # Detached: a socket round trip, and a miss is retried by the watchdog.
+    port = getattr(self.dashboard_state, "_listener_bound_port", 0)
+    manager = self._mcp_gateway_manager
+    if manager is not None and type(port) is int and port > 0:
+        task = asyncio.create_task(manager.announce_owner_port(port), name="mcp-gateway-owner-port")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)

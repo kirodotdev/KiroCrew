@@ -134,6 +134,16 @@ def _build_argparser() -> argparse.ArgumentParser:
         "a later gateway that may run different code. 0 (default) disables it.",
     )
     p.add_argument(
+        "--owner-port",
+        dest="owner_port",
+        type=int,
+        default=0,
+        help="Port the owning gateway's listener already bound, passed when that "
+        "gateway spawns this daemon after its bind. Pooled Kiro Crew control-plane "
+        "backends are bound to it. 0 (default) waits for the owner to announce it. "
+        "Ignored without --owner-pid.",
+    )
+    p.add_argument(
         "--spawn-concurrency",
         dest="spawn_concurrency",
         type=int,
@@ -284,6 +294,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             keep_alive_servers=frozenset(args.keep_alive_servers),
             credential_watch_paths=[Path(p) for p in args.credential_watch_paths],
             owner_pid=max(0, int(args.owner_pid or 0)),
+            owner_port=max(0, int(args.owner_port or 0)),
             spawn_concurrency=args.spawn_concurrency,
             spawn_concurrency_min=args.spawn_concurrency_min,
             spawn_concurrency_max=args.spawn_concurrency_max,

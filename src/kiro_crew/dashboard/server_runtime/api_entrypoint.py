@@ -421,6 +421,8 @@ async def start_api_server(
     # requested port at 0, and both the unix socket's name and the second family
     # must carry the port the sidecar will name.
     _bound_port = _resolved_bound_port(runner, port)
+    # Parity with start_dashboard: announced to the MCP gateway daemon.
+    state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (parity with
     # start_dashboard; POSIX only, degrades to TCP-only on any failure).
     _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)

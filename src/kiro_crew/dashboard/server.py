@@ -1304,6 +1304,8 @@ async def start_dashboard(
     # the sidecar is filed under the real one -- which would publish coverage for
     # an address nothing listens on and leave the real one free for anyone to take.
     _bound_port = _resolved_bound_port(runner, port)
+    # The gateway announces this to the MCP gateway daemon it owns.
+    state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)

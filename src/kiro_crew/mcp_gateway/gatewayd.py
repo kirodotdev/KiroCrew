@@ -136,6 +136,7 @@ from kiro_crew.mcp_gateway.daemon.audit import (  # noqa: F401
     _audit_caller_claimed,
     _audit_caller_rekey,
     _audit_disconnect_cancel,
+    _audit_owner_port,
     _audit_peer_allowed,
     _audit_peer_denied,
     _audit_peer_identity_denied,
@@ -163,6 +164,7 @@ from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
 from kiro_crew.mcp_gateway.daemon.control import (  # noqa: F401
     _apply_abort,
     _apply_claim,
+    _apply_owner_port,
     _apply_set_spawn_capacity,
     _apply_stand_down,
     _pong_payload,
@@ -224,8 +226,11 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _LAUNCH_APPROVAL_SNAPSHOT,
+    _OWNER_PORT_DECLINES_WARNED,
+    OwnerPortUnproven,
     TargetResolver,
     _approval_env_identity,
+    _await_owner_port,
     _call_with_approval_snapshot,
     _coherent_env_sidecars,
     _declared_env_for_private_backend,
@@ -234,12 +239,18 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _declared_env_to_forward,
     _declared_non_secret_env,
     _env_sidecar_dir_for_config,
+    _is_port_number,
     _launch_approved_from_snapshot,
     _load_env_sidecar,
+    _note_owner_port_unknown,
+    _owner_label,
+    _owner_port_pending,
     _read_declared_env_sidecar,
     _resolve_once_home,
     _resolve_target_off_loop,
     _TargetUnknown,
+    bind_control_plane_to_owner,
+    bound_to_owner_port,
     env_target_resolver,
     resolvable_target_stems,
     resolve_once_resolver,
@@ -365,6 +376,53 @@ _CONSENT_SWEEP_SECS = _CONSENT_RECHECK_SECS / 2
 #: daemon another live gateway still owns, and by the stand-down handler.
 _OWNER_PID: int = 0
 
+#: The port the owning gateway's listener bound, as that gateway announced it:
+#: the ``owner-port`` control frame (``control._apply_owner_port``), or
+#: ``--owner-port`` on an owned daemon spawned after the bind. On an unowned
+#: daemon only an announce from the listener of that port sets it. 0 until known.
+#: Pooled control-plane backends wait for it (:func:`_await_owner_port`), are
+#: bound to it (:func:`bind_control_plane_to_owner`), and are not reused after it
+#: changes (:func:`bound_to_owner_port`). Written only by :func:`_set_owner_port`.
+_OWNER_PORT: int = 0
+
+#: ``(loop, event)``: the event :func:`_set_owner_port` sets, made for the running
+#: loop on first use by :func:`_owner_port_event`. ``None`` until a wait asks.
+_OWNER_PORT_EVENT: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = None
+
+
+def _set_owner_port(port: int) -> int:
+    """Record the owner's port and wake every acquisition that waits for it.
+
+    Returns the previous value. A port of 0 clears it (a fresh ``run_gatewayd``).
+    """
+    global _OWNER_PORT, _OWNER_PORT_EVENT
+    previous = _OWNER_PORT
+    _OWNER_PORT = port
+    if port > 0 and _OWNER_PORT_EVENT is not None:
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if _OWNER_PORT_EVENT[0] is current:
+            _OWNER_PORT_EVENT[1].set()
+        else:
+            # Made on another loop, so nothing on this one waits on it.
+            _OWNER_PORT_EVENT = None
+    return previous
+
+
+def _owner_port_event() -> asyncio.Event:
+    """The event that is set once :data:`_OWNER_PORT` is known, for the running loop."""
+    global _OWNER_PORT_EVENT
+    loop = asyncio.get_running_loop()
+    if _OWNER_PORT_EVENT is None or _OWNER_PORT_EVENT[0] is not loop:
+        event = asyncio.Event()
+        if _OWNER_PORT > 0:
+            event.set()
+        _OWNER_PORT_EVENT = (loop, event)
+    return _OWNER_PORT_EVENT[1]
+
+
 #: This daemon's own ``process_start_time`` token, computed once at startup
 #: (off the loop) so the pong can publish it without a syscall or a ``ps``.
 _OWN_START_TIME: str = ""
@@ -431,6 +489,7 @@ async def run_gatewayd(
     prewarm_count: int = 0,
     credential_watch_paths: Optional[list[Path]] = None,
     owner_pid: int = 0,
+    owner_port: int = 0,
     spawn_concurrency: int = DEFAULT_CAPACITY,
     spawn_concurrency_min: int = DEFAULT_FLOOR,
     spawn_concurrency_max: int = DEFAULT_CEILING,
@@ -472,6 +531,10 @@ async def run_gatewayd(
             change drains ALL pooled backends via blue-green cutover so they
             respawn with the fresh credential, then re-warms. ``None`` or
             empty creates no watcher. The daemon never interprets the paths.
+        owner_port: The port the owner's listener already bound, when the
+            owner spawns this daemon after its bind (``--owner-port``). ``0``
+            (the boot spawn) leaves it to the ``owner-port`` announce. Kept only
+            on an owned daemon, and only when it is a port number.
         spawn_concurrency: Daemon-wide number of backend spawn+initialize
             windows allowed in flight at once (the :class:`SpawnGate`
             capacity); ``spawn_concurrency_min`` / ``_max`` clamp it and are
@@ -495,6 +558,9 @@ async def run_gatewayd(
     # Published for the ping reply before anything can connect.
     global _OWNER_PID
     _OWNER_PID = int(owner_pid) if owner_pid > 0 else 0
+    # Before anything can connect too: a stub that registers first must find the
+    # port a respawn after the bind was given, not wait for an announce.
+    _set_owner_port(owner_port if _OWNER_PID > 0 and _is_port_number(owner_port) else 0)
     # The fingerprint the pong and the stand-down handler read is computed
     # once, HERE, off the loop: its first computation runs git (or walks the
     # package tree), and the connection handler that reads it must not pay
@@ -1032,11 +1098,29 @@ async def _acquire_backend(
     permit settles at once (no one initialises a warm backend until a stub
     attaches).
 
+    A Kiro Crew control-plane backend first waits, inside the same
+    ``wait_deadline``, for the port its gateway announces
+    (:func:`_await_owner_port`); a prewarm does not wait for it. Its spawn is
+    bound to the port current after the gate's wait, records it as
+    ``Backend.owner_port``, and the pool hands out no control-plane backend
+    bound to another port (:func:`bound_to_owner_port`).
+
     Raises :class:`_TargetUnknown` when the resolver has no mapping for the
     server (a clean rejection, not a crash); :class:`HostBudgetExhausted`,
     :class:`SpawnGateTimeout`, :class:`SpawnGateClosed` and
-    :class:`PoolAtCapacity` from the three admission steps.
+    :class:`PoolAtCapacity` from the three admission steps;
+    :class:`OwnerPortUnproven` when the owner's port is still unknown at the
+    deadline, or at once for a prewarm.
     """
+    if prewarm and _owner_port_pending(pool_key.server_name):
+        # Nobody waits for a warm backend; a later pass warms it once the
+        # port is known (``_Prewarmer.run_pass`` skips such keys before this).
+        raise OwnerPortUnproven(
+            f"{pool_key.server_name!r}: not prewarmed before the owner announces its port"
+        )
+    await _await_owner_port(
+        pool_key, admission=admission, deadline=wait_deadline, on_queued=on_queued
+    )
     approval_snapshot = await asyncio.to_thread(launch_approval.load_approvals)
     target = await _resolve_target_off_loop(resolver, pool_key, approval_snapshot)
     if target is None:
@@ -1122,6 +1206,12 @@ async def _acquire_backend(
 
     async def _spawn_admitted() -> Backend:
         spawn_env = dict(env)
+        owner_port = 0
+        if pool_key.server_name in CONTROL_PLANE_BACKENDS:
+            # Bound again after the gate's wait: the owner may have announced a
+            # new port since resolution, and the respawn after a ``reusable``
+            # refusal must not repeat the old one.
+            owner_port = bind_control_plane_to_owner(spawn_env, pool_key.server_name)
         # Cold-spawn only (never per request), and entirely off the event loop:
         # the flag check reads config and the sidecar read touches the
         # filesystem, either of which would stall gateway traffic and heartbeat
@@ -1318,6 +1408,7 @@ async def _acquire_backend(
             spawn_env.pop(_sk, None)
         backend.control_plane = control_plane
         backend.control_plane_denial = denial[0] if not control_plane and denial else ""
+        backend.owner_port = owner_port
         # Start the stdout pump immediately so replies to the first
         # forwarded message can route back. The task is owned by the
         # Backend and cancelled at shutdown().
@@ -1331,7 +1422,7 @@ async def _acquire_backend(
         backend = await pool.acquire_exclusive(pool_key, exclusive_stub_uuid, _spawn)
         return backend, was_spawned
 
-    backend = await pool.get_or_create(pool_key, _spawn)
+    backend = await pool.get_or_create(pool_key, _spawn, reusable=bound_to_owner_port)
     return backend, was_spawned
 
 

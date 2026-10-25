@@ -154,6 +154,11 @@ class Backend:
     # so its ``identity_unattested`` refusal can say what the daemon saw; the
     # daemon's own log line is the only other place the reason exists.
     control_plane_denial: str = ""
+    # The owner port a Kiro Crew control-plane backend was spawned for (its
+    # ``KIROCREW_BOUND_PORT``); 0 for every other backend. After the owner
+    # announces a different port, the pool retires a backend whose value differs
+    # and never hands it out again (``launch.bound_to_owner_port``).
+    owner_port: int = 0
     _shutdown_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # --- Sharing boundary state (Milestone 2) -------------------------------
     # Each attached stub appears in ``_stub_inboxes`` keyed by stub_uuid; the

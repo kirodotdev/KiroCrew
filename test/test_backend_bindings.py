@@ -47,7 +47,7 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_backend_bindings")
 #: A dataclass field is "data" when it has a plain default (a class attribute) and
 #: "annotation" when it has none or a ``default_factory``.
 _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
-    "__init__": ("function", False, "5a1d3bbc33ff", "backend"),
+    "__init__": ("function", False, "b0b5bdb3423d", "backend"),
     "__post_init__": ("function", False, "b60c5fea256e", "backend"),
     "_apply_inflight_report": ("function", False, "44c5cabfd721", "backend_routing"),
     "_apps_declared_uris": ("annotation", False, "", ""),
@@ -143,6 +143,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "last_used_at": ("annotation", False, "", ""),
     "lifecycle_fields": ("function", False, "5e8e0b6328bb", "backend"),
     "outstanding_work": ("property", False, "fa6cfecd5574", "backend"),
+    "owner_port": ("data", False, "", ""),
     "pid": ("property", False, "fcad3a249a2d", "backend"),
     "pinned": ("data", False, "", ""),
     "pool_key": ("annotation", False, "", ""),

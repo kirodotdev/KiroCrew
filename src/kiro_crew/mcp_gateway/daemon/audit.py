@@ -359,6 +359,29 @@ def _audit_stand_down(reason: str, outcome: str) -> None:
         logger.debug("SEL audit emit for stand-down failed", exc_info=True)
 
 
+def _audit_owner_port(peer_pid: int | None, port: object, outcome: str, reason: str) -> None:
+    """Emit a SEL audit event for an ``owner-port`` announce.
+
+    The port it sets decides which gateway every pooled control-plane backend
+    authenticates against, so an accepted or refused announce is a permission
+    decision and belongs in the HMAC-chained SEL beside stand-down and claim.
+    The port is not a secret. Wrapped defensively: an audit-log failure must
+    never break connection handling.
+    """
+    try:
+        facade.SecurityEventLog().log_api_access(
+            caller=f"pid:{peer_pid}" if peer_pid is not None else "unknown",
+            operation="mcp-gateway.owner_port",
+            outcome=outcome,
+            source="gateway",
+            # Bounded: a refused frame's value is the sender's, of any size.
+            resources=f"owner_pid={facade._OWNER_PID} port={repr(port)[:32]}",
+            error=reason,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for owner-port failed", exc_info=True)
+
+
 def _audit_disconnect_cancel(stub_uuid: str, remaining: int, cancelled: int) -> None:
     """Emit a SEL audit event for in-flight calls cancelled on a stub disconnect.
 
