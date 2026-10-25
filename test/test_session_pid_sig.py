@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat, session_pid_sig
 
 SESSION_KEY = "dashboard:chat-7-123456"
@@ -458,10 +459,11 @@ class TestNoNofollowPlatform:
     plus a post-open ``(st_dev, st_ino)`` identity check. The identity check
     closes the lstat->open TOCTOU window: a path swapped to a symlink in
     that window opens the symlink's TARGET, whose identity can never match
-    the vetted regular file. Simulated on POSIX by removing ``O_NOFOLLOW``."""
+    the vetted regular file. Simulated on POSIX by removing ``O_NOFOLLOW``;
+    Windows has no such flag to remove, so there these run the native path."""
 
     def test_regular_file_still_reads(self, cfg, monkeypatch):
-        monkeypatch.delattr("os.O_NOFOLLOW")
+        monkeypatch.delattr("os.O_NOFOLLOW", raising=False)
         (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
         assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
 
@@ -472,7 +474,7 @@ class TestNoNofollowPlatform:
         handle's identity mismatches the vetted one."""
         import os as _os
 
-        monkeypatch.delattr("os.O_NOFOLLOW")
+        monkeypatch.delattr("os.O_NOFOLLOW", raising=False)
         target = cfg / "session_pid_4242.txt"
         target.write_text(SESSION_KEY, encoding="utf-8")
         decoy = tmp_path / "vetted-then-swapped"
@@ -481,9 +483,10 @@ class TestNoNofollowPlatform:
         monkeypatch.setattr("os.lstat", lambda p, *a, **k: real_lstat(decoy))
         assert session_pid_sig.read_session_pid_txt(4242) == ""
 
+    @requires_symlinks
     def test_symlink_present_at_lstat_refused(self, cfg, monkeypatch, tmp_path):
         """The pre-check itself still refuses a symlink already in place."""
-        monkeypatch.delattr("os.O_NOFOLLOW")
+        monkeypatch.delattr("os.O_NOFOLLOW", raising=False)
         secret = tmp_path / "victim-secret"
         secret.write_text("hunter2", encoding="utf-8")
         (cfg / "session_pid_4242.txt").symlink_to(secret)
