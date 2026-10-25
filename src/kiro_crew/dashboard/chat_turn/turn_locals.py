@@ -206,6 +206,7 @@ class _ChatTurn:
     _tcid_first_source: "dict[str, str]"
     _terminal_directive_applied: "bool"
     _terminal_directive_kind: "str"
+    _terminal_directive_text: "str"
     _terminal_directive_tcids: "set[str]"
     _terminal_synthetic: "bool"
     _thinkred: "StreamRedactor"

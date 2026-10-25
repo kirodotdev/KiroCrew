@@ -665,6 +665,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # match on the outcome prose.
     turn._terminal_directive_applied = False
     turn._terminal_directive_kind = ""
+    # The applied quiet end's outcome line (``Nothing new to report.`` plus the
+    # model's note). A linked Slack thread has no tool card to read it from, so
+    # the reply leg posts it there as the turn's answer.
+    turn._terminal_directive_text = ""
     # The tool_call_ids whose directive ENDED the turn. The matching tool rows
     # get ``meta.ends_turn = True`` (persisted and patched live), which is what
     # the interrupted-turn scan reads to tell an applied quiet end from a

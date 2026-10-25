@@ -1129,7 +1129,9 @@ against sweep completeness, and are torn down at `close_all`.
   such a turn: no notice card, no synthetic continuation, no recovery budget
   spent. The tool card's applied outcome (`QUIET_END_OUTCOME_PREFIX` plus the
   model's optional `note`) is the low-key, inspectable record that the turn
-  ended on purpose; nothing is rendered as an assistant bubble. A refused
+  ended on purpose; nothing is rendered as an assistant bubble. A linked Slack
+  thread has no tool card, so the reply leg posts that outcome line there as the
+  turn's reply (see [slack-gateway](slack-gateway.md), "Linked Thread Sync"). A refused
   directive leaves the flag unset so the model
   falls back to a plain-text reply. The turn-end contract the base prompt states
   — a closing text, or `nothing_to_do`, never a bare stop after an ordinary tool
