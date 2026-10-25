@@ -54,6 +54,12 @@ With ``--check-body`` it also reads the PR body the skill writes --
   for HEAD's tree; a line the proof contradicts, or that has no proof behind it, is exit
   25. A body with no such line never fails: the proof is optional.
 
+* **Pattern harvest.** On a ``fix``/``revert`` title the body needs a
+  ``## Pattern harvest`` heading and a ``Rule candidate:`` or ``Not generalizable:``
+  line, the rule CI's PR Hygiene step enforces inline in ``code-review.yml`` (so there is
+  no script to run from the base). A miss prints CI's message and is exit 26. The
+  three ``HARVEST_*`` patterns are that step's; a test fails if the workflow's change.
+
 All checks run and print before any exit; when several breach, the lowest code wins.
 
 Size and age signals are printed, never an exit code. ``! SIZE`` appears at
@@ -68,6 +74,7 @@ Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too l
         22 template sections missing | 23 Sibling sweep missing or malformed (when enforced) |
         24 Proof line missing, malformed or stale (when enforced) |
         25 a Gate proof: line the recorded proof contradicts |
+        26 Pattern harvest heading or line missing on a fix/revert |
         2 environment error
 """
 
@@ -130,6 +137,12 @@ SIBLING_CHECK = ".github/scripts/sibling_list_check.py"
 # prove.py writes for it to compare against (inside the git directory).
 PROOF_CHECK = ".github/scripts/proof_line_check.py"
 PROVE_RECORD = "prepare-pr-prove.json"
+
+# CI's Pattern harvest rule, copied from PR Hygiene in .github/workflows/code-review.yml
+# (grep -qiE there, re.IGNORECASE | re.MULTILINE here). A test pins each to the workflow.
+HARVEST_TITLE_RE = r"^(fix|revert)([(!:]|$)"
+HARVEST_HEADING_RE = r"^##+ *Pattern harvest"
+HARVEST_LINE_RE = r"^ *(Rule candidate|Not generalizable) *:"
 
 # Bare file names that appear in many places at once; naming one of these does
 # not tell the reader WHICH one changed, so it never satisfies the accounting.
@@ -445,6 +458,30 @@ def gate_proof_check(body, gitdir):
     return 0
 
 
+def harvest_problem(title, body):
+    """CI's Pattern harvest message for ``title``/``body``, or None when it passes."""
+    flags = re.IGNORECASE | re.MULTILINE
+    if not re.search(HARVEST_TITLE_RE, title, re.IGNORECASE):
+        return None
+    if not re.search(HARVEST_HEADING_RE, body, flags):
+        return "Fix/revert PRs must carry a '## Pattern harvest' section."
+    if not re.search(HARVEST_LINE_RE, body, flags):
+        return "The Pattern harvest section must contain a 'Rule candidate:' or 'Not generalizable:' line."
+    return None
+
+
+def harvest_check(body, base):
+    """Apply CI's Pattern harvest rule to ``body``; return 0 or 26."""
+    # The same title the Sibling check reads: the branch's first commit subject.
+    subjects = run(["git", "log", "--reverse", "--format=%s", "origin/{}..HEAD".format(base)])[1]
+    title = subjects.splitlines()[0].strip() if subjects.strip() else ""
+    problem = harvest_problem(title, body)
+    if problem:
+        print("PATTERN HARVEST: " + problem)
+        return 26
+    return 0
+
+
 def template_check(body, base):
     """Run the base ref's ``TEMPLATE_CHECK`` on ``body``; return 0 or 22.
 
@@ -671,7 +708,8 @@ def main(argv):
         sibling = sibling_check(body, base)
         proof = proof_check(body, base, gitdir)
         gate_proof = gate_proof_check(body, gitdir)
-        return rc or tpl or sibling or proof or gate_proof
+        harvest = harvest_check(body, base)
+        return rc or tpl or sibling or proof or gate_proof or harvest
     return 0
 
 

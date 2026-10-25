@@ -250,7 +250,7 @@ their module docstring instead.
 |---|---|---|---|
 | `preflight.py` | 0 | repo/branch/base/auth/permission/dirty/divergence/existing-PR blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
 | `resolve_profile.py [root] [base_ref]` | 0 | the project profile as JSON | 0 · 2 env/parse |
-| `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals; `--check-body` adds the two body checks and CI's template check on `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` · 22 template section · 23 sibling list · 24 proof line · 25 a `Gate proof:` line the recorded proof contradicts (all `--check-body` only) · 2 env / body file missing** |
+| `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals; `--check-body` adds the two body checks and CI's template check on `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` · 22 template section · 23 sibling list · 24 proof line · 25 a `Gate proof:` line the recorded proof contradicts · 26 Pattern harvest heading or line missing on a `fix`/`revert` (all `--check-body` only) · 2 env / body file missing** |
 | `push_guard.py` | 1 / 2 / 3 | builds every commit and guards every push; each mode is shown at the step that runs it, and each refusal names its fix | **0 safe · 40 refused · 41 stray staged paths / op mid-way · 2 env · 64 usage** |
 | `pre_push_gate.py` | 2 / 3 | **optional, advisory**: runs the cheap CI gates on the diff, prints every failure, records a proof for the tree; nothing refuses a push (`references/pre-push-gate.md`) | **0 proof written · 50 a gate failed · 51 a gate could not run, no skip, or a dirty tree · 52 `--verify` found no proof · 2 env** |
 | `pr_status.py [pr#]` | 3 | readiness, rollup, threads, current-head runs and reviewer stamps; `--reviewers` pins the fleet; `--json` appends a machine line | **0 clean · 10 running · 20 failing/findings · 2 env** |
@@ -627,7 +627,10 @@ finished body. Both stop the loop (why: `references/rationale.md`):
 The template check runs CI's `.github/scripts/pr-description-check.sh` from
 `origin/<base>`: a missing section is **exit 22**. A `fix:` body's `Proof:` line is
 judged by `proof_line_check.py` the same way, and a `PROVEN` line is compared with
-`prove.py`'s record: findings print, and are **exit 24** once CI enforces them. The
+`prove.py`'s record: findings print, and are **exit 24** once CI enforces them. On a
+`fix`/`revert` body a missing `## Pattern harvest` heading, or one with no line
+starting `Rule candidate:` or `Not generalizable:`, is **exit 26**: PR Hygiene fails
+the same body, and the colon right after those words is what it matches. The
 lowest code wins.
 
 ### Snapshot, not changelog
