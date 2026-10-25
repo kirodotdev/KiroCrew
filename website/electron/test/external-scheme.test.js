@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   EXTERNAL_URLS,
   classifyNavigation,
+  createNavigationGuard,
   createWindowOpenHandler,
   openExternalSafely,
 } = require("../external-scheme");
@@ -374,5 +375,42 @@ describe("openExternalSafely", () => {
       }),
     );
     await new Promise((r) => setImmediate(r));
+  });
+});
+
+// The guard must compare whole WHATWG origins, never string prefixes: each URL
+// below starts with the app origin's text yet belongs to a different origin.
+describe("createNavigationGuard pins the exact-origin compare", () => {
+  const APP = "http://localhost:5476";
+  const navigate = (url, appOrigin = APP) => {
+    let prevented = false;
+    createNavigationGuard({ getAppOrigin: () => appOrigin, log: () => {} })(
+      { preventDefault: () => { prevented = true; } },
+      url,
+    );
+    return prevented;
+  };
+
+  it("refuses a host that only extends the app host", () => {
+    // A remote gateway on a default port has no ":port" to end the host text.
+    assert.equal(navigate("https://crew.example.evil.test/", "https://crew.example"), true);
+  });
+
+  it("refuses userinfo that spells the app origin before another host", () => {
+    assert.equal(navigate("http://localhost:5476@evil.example/"), true);
+  });
+
+  it("refuses a longer port that starts with the app port", () => {
+    assert.equal(navigate("http://localhost:54760/"), true);
+  });
+
+  it("refuses a match on an opaque app origin", () => {
+    // A file: app origin is the opaque "null". The target starts with its text,
+    // yet the guard only lets http(s) through, so nothing can match it.
+    assert.equal(navigate("file:///app/index.html", "file:///app/"), true);
+  });
+
+  it("still allows the app's own origin", () => {
+    assert.equal(navigate("http://localhost:5476/chat?x=1"), false);
   });
 });
