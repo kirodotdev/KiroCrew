@@ -1264,7 +1264,7 @@ def _send_message_response(
 
     if outcome.channel_code:
         safe_detail = redact(outcome.channel_detail)
-        detail = f"{channel_target} delivery failed: {safe_detail}"
+        detail = f"{channel_target or channel_type} delivery failed: {safe_detail}"
         # Both responses are spelled out inline, with a literal status and a
         # literal body, rather than sharing a hoisted dict or computing the
         # status. `test_error_code_contract` ratchets BOTH of those shapes for the

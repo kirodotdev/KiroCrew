@@ -295,7 +295,7 @@ async def _deliver_to_channel(
     much they read as one message: under a single up-front decision an operator
     who revokes the binding, narrows the governance ceiling or drops the
     recipient mid-send still has the remaining parts delivered at an authority
-    that no longer exists. Each part re-polls the profile store, re-walks the
+    that has been withdrawn. Each part re-polls the profile store, re-walks the
     binding, re-resolves the ladder and re-decides the recipient with nothing
     awaited before the send, so a revocation stops the remainder. The parts
     already accepted cannot be recalled, which is the floor this leg reaches.
@@ -313,8 +313,8 @@ async def _deliver_to_channel(
     # _find_prompt), so a top-level import here would close the cycle.
     from kiro_crew.dashboard.chat_runner import (
         _authorize_recipient,
+        _recipient_principal,
         _resolve_channel_target,
-        _session_principal,
     )
     from kiro_crew.platform.context import current_context
     from kiro_crew.platform.governance_profiles import (
@@ -415,7 +415,8 @@ async def _deliver_to_channel(
             _audit("error", f"transport_unavailable{suffix}")
             return False, "", ""
         _audit("denied", f"not_permitted{suffix}")
-        return False, "channel_not_permitted", f"{link.channel_type} is not permitted"
+        why = f"{link.channel_type} is not permitted"
+        return False, "channel_not_permitted", why if index is None else _aborted(index, why)
 
     try:
         # Off-loop: the ladder's governance gate walks the profile directory,
@@ -563,6 +564,10 @@ async def _deliver_to_channel(
         live-config apply on the event loop can drop this recipient after it.
         Re-decided here with nothing awaited in between, through the one shared
         decision the ladder's own recipient leg runs so the two cannot drift.
+        The principal is derived the way the ladder derives it
+        (``_recipient_principal``): the key's peer, or for a key that names
+        nobody, the gateway-admitted peer on the link, so a dashboard session
+        mirrored into a Discord DM is judged against the same peer here as there.
         Denial-only auditing, as every per-send leg keeps: this runs per
         delivered part, and an allowed record would write a row per chunk.
         """
@@ -571,7 +576,7 @@ async def _deliver_to_channel(
             resolved.channel_type or link.channel_type,
             resolved.channel_id,
             resolved.thread_id,
-            principal=_session_principal(session_key),
+            principal=_recipient_principal(session_key, resolved, transport),
             session_key=session_key,
         ):
             _audit("denied", f"recipient_revoked_before_part_{index + 1}")
