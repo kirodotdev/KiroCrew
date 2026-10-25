@@ -56,6 +56,13 @@ mkdirSync(OUT, { recursive: true })
 // `--serve`: an in-process dev server rooted at website/, so the run needs no
 // second shell. With strictPort off, Vite moves past a taken port, and the URL it
 // reports is the one it bound.
+//
+// The file watcher is off. By default Vite watches all of website/ (about 8,200
+// inotify watches, one per file), and a busy CI host runs out of them (ENOSPC,
+// #23923). This run never edits a file, so it needs no watching. It is turned off
+// from a plugin's `config` hook because an inline `server.watch: null` is
+// dropped: Vite's config merge skips null values, so vite.config.ts's
+// `server.watch` object would win.
 let devServer = null
 let BASE = positional[0] || 'http://127.0.0.1:6817'
 if (SERVE) {
@@ -65,7 +72,17 @@ if (SERVE) {
     server: { host: '127.0.0.1', strictPort: false },
     clearScreen: false,
     logLevel: 'warn',
+    plugins: [{
+      name: 'capture-no-file-watch',
+      config(config) {
+        config.server ??= {}
+        config.server.watch = null
+      },
+    }],
   })
+  if (devServer.config.server.watch !== null) {
+    throw new Error('capture dev server: the file watcher is still on (server.watch was not cleared)')
+  }
   await devServer.listen()
   BASE = devServer.resolvedUrls.local[0].replace(/\/$/, '')
   console.log(`serving capture pages from ${BASE}`)
