@@ -300,7 +300,9 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
         _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
     if model:
-        if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
+        if len(model) > MAX_SHORT_STRING:
+            _cron_add_fail(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
+        if not _MODEL_NAME_RE.match(model):
             # Read here, not at module level: the facade mirrors every module-level
             # import of its owners, and its import inventory is frozen.
             from kiro_crew.validation import MODEL_NAME_HINT

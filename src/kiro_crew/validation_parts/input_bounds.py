@@ -281,7 +281,8 @@ _MODEL_NAME_RE = re.compile(
 #: refusal names the shape and never echoes the rejected value.
 MODEL_NAME_HINT = (
     "expected a model id of letters, digits, '.', '_' and '-' that starts with a "
-    "letter or digit (optionally with one [qualifier]), a provider/model id, or 'auto'"
+    "letter or digit (optionally with one [qualifier]), a provider/model id of at "
+    f"most {_QUALIFIED_MODEL_MAX_CHARS} characters, or 'auto'"
 )
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64

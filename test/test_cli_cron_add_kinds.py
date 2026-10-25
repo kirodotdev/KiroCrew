@@ -447,6 +447,10 @@ class TestRefusals:
             ),
             ({"every": 300, "channel": "not a channel"}, "invalid channel ID format"),
             ({"every": 300, "model": "bad model!"}, f"invalid model format ({MODEL_NAME_HINT})"),
+            (
+                {"every": 300, "model": "x" * 501},
+                "invalid model format (expected at most 500 characters)",
+            ),
         ],
         ids=[
             "no schedule",
@@ -461,6 +465,7 @@ class TestRefusals:
             "timeout exceeds default wake budget",
             "bad channel",
             "bad model",
+            "over-long model",
         ],
     )
     def test_validation_failures_exit_1_before_any_write(self, overrides, needle, home, capsys):
