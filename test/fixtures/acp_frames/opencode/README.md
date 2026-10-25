@@ -1,19 +1,26 @@
 # OpenCode frame corpus
 
-Seven files, all live. Read `../README.md` first for what a fixture is and what
-the corpus does and does not prove.
+Eight files on the v1 line plus five v2 captures, all live. Read `../README.md`
+first for what a fixture is and what the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
 |---|---|---|
-| `session-live.jsonl` | live | initialize response with `agentInfo.version`, `session/new` response with a `sessionId`, `agent_message_chunk`, `usage_update`, and the `session/prompt` result carrying `stopReason` |
+| `session-live.jsonl` | live, 1.18.30 | initialize response with `agentInfo.version`, `session/new` response with a `sessionId`, `agent_message_chunk`, `usage_update`, and the `session/prompt` result carrying `stopReason` |
 | `tool-call-live.jsonl` | live | `tool_call`, and two `tool_call_update` frames (`in_progress`, then a terminal `failed`) -- a call the harness rejected against its own argument schema |
 | `permission-request-live.jsonl` | live | `tool_call`, `session/request_permission`, and the `tool_call_update` frames through to `completed` with the command's real output |
 | `session-load-live.jsonl` | live | a `session/load` from a second process: the replayed `user_message_chunk` / `agent_message_chunk` updates and the load result, which carries `configOptions` and no `modes` |
 | `mcp-directive-call-live.jsonl` | live | a Crew MCP `tool_call`, its `in_progress` refinement and its terminal `tool_call_update` -- the single-underscore `kirocrew-core_<tool>` title, an empty-then-refined `rawInput`, and a result carrying a directive marker |
 | `compact-live.jsonl` | live | a MANUAL `/compact`: an ordinary turn's `usage_update` and `stopReason`, then the `/compact` turn's summary `agent_message_chunk`, its far smaller `usage_update`, and its `stopReason: end_turn` with NO compaction status frame |
 | `effort-live.jsonl` | live | `session/set_config_option` results for the per-model `effort` select (low, medium, high and default on a reasoning model, absent on a plain one), a `-32602` refusal of an unoffered level, and the reset to the first level after a model switch |
+| `session-v2-live.jsonl` | live, 2.0.29 | initialize response with `agentInfo.version`, `session/new` response with a `sessionId` and model `configOptions`, `agent_message_chunk`, `usage_update`, and the `session/prompt` result carrying `stopReason` |
+| `permission-request-v2-live.jsonl` | live, 2.0.29 | `tool_call` for `shell`, `session/request_permission` with once/always/reject options and complete `rawInput`, the client's allow, and the `tool_call_update` frames through to `completed` with the command's real output |
+| `compact-v2-live.jsonl` | live, 2.0.29 | filler turn, then a manual `/compact` turn emitting `session_info_update` markers with `_meta.opencode/compaction` `started`/`completed` (`reason: manual`) and the prompt result |
+| `load-v2-live.jsonl` | live, 2.0.29 | `session/load` of a just-completed session: replayed `user_message_chunk` / `agent_thought_chunk` / `agent_message_chunk` and the load result carrying `configOptions` |
+| `mcp-directive-v2-live.jsonl` | live, 2.0.29 | a Crew-style MCP stdio server (`kirocrew-core`, one tool) mounted on the `session/new` array and driven to a completion carrying the directive marker |
 
 Re-captured off `opencode acp` 1.19.1, the release the Real Adapter Contract lane pins, with each file's `initialize` frame kept so its version is read off the wire. Five drive a local Ollama model (llama3.2 3b, 16k context); `effort-live.jsonl` and `mcp-directive-call-live.jsonl` drive a local OpenAI-compatible stub instead. Every capture ran in a throwaway home and a scratch project, and was reduced at capture through `scripts/capture_acp_compaction.py`'s own reduction: the working directory reads `<cwd>`, the home directory `~`, session and message ids are synthetic, the local model id is the synthetic `local/model-1`, the command inventory is dropped and each `configOptions` select is cut to its current option -- except in `effort-live.jsonl`, whose selects ARE the evidence and keep their stub models and levels. `tool-call-live.jsonl` and `compact-live.jsonl` are **slices**, and each fixture's own `_meta.note` says what was omitted.
+
+The five `-v2-` files are captured off `opencode acp` 2.0.29 driving a subscription model through the Crew broker instead (same redaction, same verbatim rule); their `_meta.note` records the seed and the reply.
 
 ## What the permission capture establishes
 
@@ -34,6 +41,62 @@ The capture in `tool-call-live.jsonl` shows the other path: a call whose
 arguments fail OpenCode's own schema is rejected BEFORE any permission check, so no
 permission frame exists for it. Both fixtures are kept because they are different
 facts about the same harness.
+
+`permission-request-v2-live.jsonl` re-proves the same second half on 2.0.29
+under the v2 ask-all seed: the frame carries once/always/reject options
+(v1: allow_once-style ids, echoed back verbatim by the client either way),
+complete `rawInput`, and the turn completes after the allow. The v1 capture
+above stays the evidence for the v1 line; nothing here re-pins v1 behavior.
+
+## What the v2 MCP capture establishes -- and breaks
+
+`mcp-directive-v2-live.jsonl` is the same experiment as the v1 MCP capture --
+one Crew MCP directive tool, called once -- with a different outcome. On v2
+the tool is NOT flattened to a top-level `kirocrew-core_monitor_start`: the
+tool index advertises it as `tools["kirocrew-core"].monitor_start`, the model
+invokes it through Code Mode JS, and the permission frame arrives as action
+`execute` (kind `other`) with the JS source in `rawInput.code`. A literal
+fused-name call fails with "No tool named ... is currently available". The
+result still carries the directive marker intact.
+
+Three consequences, decided by the accompanying code change (all measured live on
+2.0.29/2.0.30):
+
+- Crew's per-tool MCP deny rules keyed on `<server>_<tool>` do not match v2
+  calls, which all arrive as `execute` (a `tool.use` rule with the fused id
+  matches nothing). Deny granularity for MCP tools is therefore reimplemented
+  as server withholding: narrowed servers are withheld whole via
+  `integration.use` `mcp:<server>` policy denies
+  (`_opencode_v2_routing_config(..., mcp_deny_servers=...)`), and
+  `_opencode_v2_unenforced_denies` marks the unenforceable per-tool rules so
+  settle reports them. Native-action denies (`shell`, `read`, ...) are honored
+  by the harness itself (a `shell` deny fails the call with "Blocked by
+  configuration policy", no prompt).
+- `directive_tool_from_call`'s exact server-qualified title match does not
+  fire (the title is `execute`). The out-of-band digest path lands the
+  directive off `rawInput.code`, which carries the full invocation:
+  `_extract_code_mode_invocation` parses the `tools["<server>"].<tool>()`
+  Code-Mode call (fail-closed), and the selector resolves only for
+  `kirocrew-core` directive tools. Forgery buys nothing: the code only selects
+  which parked record to claim, and the record was parked by the real tool
+  call's own digest.
+- The `execute` tool calls in this capture were framed for permission, but
+  sibling runs under the same seed showed Code-Mode calls completing with no
+  frame at all -- correlated with sessions whose default tool plane was not
+  pinned to `build` via `session/set_mode`. The agent pin (shipped in the
+  accompanying code change) is what makes the framed behavior the behavior;
+  unpinned sessions are not evidence of anything.
+
+`compact-v2-live.jsonl` differs from its v1 sibling in one load-bearing way:
+v2 DOES emit an explicit compaction signal -- `session_info_update` frames
+whose `_meta.opencode/compaction` runs `started` then `completed`
+(`reason: manual`) -- where the v1 capture's whole point is that no such
+frame follows and the terminal frame is the only done signal. No dedicated
+`session/compact`-style method exists on v2 (`session/compact`,
+`session/summarize` and `session/compaction` all answer `-32601`); the
+`/compact` prompt text is the only path on both generations. Whether the
+compaction waiter should key off the v2 marker instead of the terminal frame
+is open -- recorded here, not decided.
 
 ## What the MCP capture establishes
 
