@@ -21,18 +21,44 @@ from typing import TYPE_CHECKING
 from kiro_crew.discord.client import DiscordClient
 from kiro_crew.discord.commands import application_command_payload
 from kiro_crew.discord.transport import DiscordTransport
-from kiro_crew.discord.transport_dispatch import DiscordDispatcher
+from kiro_crew.discord.transport_dispatch import _CHANNEL, DiscordDispatcher
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.queue_drain import unregister_drain
 from kiro_crew.messaging.spawn_approval_delivery import (
+    SpawnApprovalDeliveryHook,
     register_channel_delivery,
     unregister_channel_delivery,
 )
 from kiro_crew.messaging.transport import InboundMessage
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _client_close_hook(
+    dispatcher: DiscordDispatcher, delivery_hook: SpawnApprovalDeliveryHook
+) -> "Callable[[], None]":
+    """What the client runs when it closes: retire this dispatcher's two registrations.
+
+    Its spawn-approval delivery, so the host spawn gate stops routing to it. And its
+    queue drain, so a drain waiting on a held lease
+    (``messaging.queue_drain.drain_when_free``), which looks the drain up when the
+    lease frees, finds none instead of answering on a channel the operator disabled.
+
+    Both are compare-and-drop against this dispatcher's own objects, so a restart
+    whose replacement already registered keeps its registrations.
+    """
+    drain_hook = dispatcher._drain_queue
+
+    def _on_close() -> None:
+        unregister_channel_delivery("discord", delivery_hook)
+        unregister_drain(_CHANNEL, drain_hook)
+
+    return _on_close
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -175,7 +201,7 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
         # the slot is not unregistered by this (older) client's close.
         delivery_hook = dispatcher.deliver_spawn_approval
         register_channel_delivery("discord", delivery_hook)
-        client.on_close = lambda: unregister_channel_delivery("discord", delivery_hook)
+        client.on_close = _client_close_hook(dispatcher, delivery_hook)
 
         await transport.connect()  # starts the Gateway WebSocket loop
         if orch.dashboard_state is not None:
