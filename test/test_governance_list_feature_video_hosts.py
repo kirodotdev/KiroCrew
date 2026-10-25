@@ -227,6 +227,29 @@ class TestUrlReadings:
         _install_policy(monkeypatch, doc)
         assert fvm.host_denied("https://%65vil.example/manifest.json") is True
 
+    @pytest.mark.parametrize("value", [["mirror.example.com"], "mirror.example.com", 1, None])
+    def test_a_host_list_in_the_wrong_shape_fails_to_load(self, value) -> None:
+        """A malformed host list must not load as no list, which permits every host."""
+        from kiro_crew.platform.context import PlatformCompositionError
+        from kiro_crew.platform.governance import parse_policy
+
+        with pytest.raises(PlatformCompositionError, match="scopes.hosts must be an object"):
+            parse_policy(_policy(self._SCOPE, {"scopes": {"hosts": value}}))
+
+    def test_an_odd_ascii_redirect_target_is_refused_by_a_deny_glob(
+        self, isolated_home, fake_sel, monkeypatch
+    ) -> None:
+        """A ``+`` is no DNS name character, but a resolver may still answer for it,
+        so the host is asked as read rather than dropped."""
+        from kiro_crew import feature_videos_manifest as fvm
+
+        doc = _policy(
+            self._SCOPE, {"scopes": {"hosts": {"mode": "deny", "deny": ["*.blocked.example"]}}}
+        )
+        _install_policy(monkeypatch, doc)
+        assert fvm.host_denied("https://clip+one.blocked.example/manifest.json") is True
+        assert fvm.host_denied("https://mirror.corp.example/manifest.json") is False
+
     def test_a_probe_error_logs_no_url(self, isolated_home, fake_sel, monkeypatch, caplog) -> None:
         import logging
 
