@@ -18,7 +18,12 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
-from kiro_crew.apps.registry_pipeline.caches import _read_manifest_cache, _write_manifest_cache
+from kiro_crew.apps.registry_pipeline.caches import (
+    _read_manifest_cache,
+    _read_manifest_negative_cache,
+    _write_manifest_cache,
+    _write_manifest_negative_cache,
+)
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
     _HOOKS_NEUTRALIZER_ARGV,
@@ -337,6 +342,17 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     if cached:
         return _merge_manifest(entry, cached)
 
+    # Negative cache: a recent fetch for these exact source coordinates failed,
+    # so return the bare entry WITHOUT re-cloning. Keyed identically to the
+    # success cache, so it can only suppress a re-fetch of the same source and
+    # a different branch/repo/subdirectory still fetches. It lapses after
+    # ``_MANIFEST_NEGATIVE_CACHE_TTL`` (~1h), after which the next listing
+    # retries and a fixed source is picked up. This lives in ``_resolve_manifest``
+    # ONLY: the install path calls ``_fetch_app_manifest`` directly and must not
+    # be short-circuited by a listing-time failure (#21964).
+    if await asyncio.to_thread(_read_manifest_negative_cache, entry):
+        return entry
+
     # The same switch that keeps the catalog documents off the network keeps
     # the listing's clone off it too: a seed row with no cached manifest
     # renders its minimal info, which is exactly the failed-fetch degradation
@@ -367,6 +383,11 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     # fetch attaches NOTHING: the source-scoped cache read above already
     # missed, and there is deliberately no name-only fallback that could
     # attach a manifest cached for another branch or repository.
+    #
+    # Record the failure in the negative cache so the next listing returns the
+    # bare entry without re-cloning until the TTL lapses — the install path is
+    # unaffected because it never reaches this function.
+    await asyncio.to_thread(_write_manifest_negative_cache, entry)
     logger.info("Could not fetch app.json for %s — showing minimal info", name)
     return entry
 

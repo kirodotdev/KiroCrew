@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import time
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,14 @@ def _manifest_cache_dir() -> Path:
 
 
 _MANIFEST_CACHE_TTL = 86400  # 24 hours
+
+#: TTL for the NEGATIVE manifest cache: a short-lived record that a listing-time
+#: ``app.json`` fetch FAILED, so the next listing returns the bare entry instead
+#: of re-cloning. Deliberately much shorter than the success TTL — a failure is
+#: usually transient (a slow/unreachable host, a repo not yet pushed), so an hour
+#: both stops the per-open retry storm (#21964) and lets a now-fixed source be
+#: picked up on the next listing after it lapses.
+_MANIFEST_NEGATIVE_CACHE_TTL = 3600  # 1 hour
 
 
 #: Subdirectory of :func:`_manifest_cache_dir` holding the source-keyed
@@ -473,6 +482,76 @@ def _write_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> bool:
     _gc_manifest_cache_dir()
     _gc_blob_cache_dir()
     return written
+
+
+def _manifest_negative_cache_path(entry: dict[str, Any]) -> Path:
+    """Negative-cache file for *entry*, keyed on the SAME source coordinates.
+
+    Derived from :func:`_manifest_cache_path` so the failure record shares the
+    success cache's identity exactly — normalized credential-free origin,
+    effective branch/pinned commit, repository subdirectory, and app name — and
+    changing any of them is a miss by construction, just as it is for the
+    success cache. A row configured for another branch/repo/subdirectory can
+    never read another entry's failure record.
+
+    The only difference from the success path is the ``.miss`` marker inserted
+    before the ``.json`` suffix, so a failure record and a successful manifest
+    for the same coordinates are distinct files that never overwrite each other.
+    It still ends in ``.json`` and lives in ``by-source/``, so
+    :func:`_gc_manifest_cache_dir` reclaims a stale failure record exactly like
+    a stale manifest — the GC boundary stays structural.
+    """
+    success_path = _manifest_cache_path(entry)
+    return success_path.with_name(success_path.name[: -len(".json")] + ".miss.json")
+
+
+def _read_manifest_negative_cache(entry: dict[str, Any]) -> bool:
+    """Whether a NON-expired failure is cached for *entry*'s source coordinates.
+
+    Returns ``True`` only when a failure record exists and is younger than
+    :data:`_MANIFEST_NEGATIVE_CACHE_TTL`; a missing, stale, or unreadable record
+    returns ``False`` so the caller falls through to a fresh fetch. The TTL is
+    read off the file mtime, so once it lapses the next listing retries — a
+    source that has since been fixed is picked up without any explicit
+    invalidation.
+    """
+    path = _manifest_negative_cache_path(entry)
+    if not path.is_file():
+        return False
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age <= _MANIFEST_NEGATIVE_CACHE_TTL
+
+
+def _write_manifest_negative_cache(entry: dict[str, Any]) -> None:
+    """Record (atomically) that *entry*'s listing-time manifest fetch failed.
+
+    Keyed on the entry's full source identity so it only ever suppresses a
+    re-fetch of the exact same coordinates. Best-effort: a write failure just
+    means the next listing retries, which is the pre-cache behaviour.
+    """
+    path = _manifest_negative_cache_path(entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        atomic_write(
+            path,
+            json.dumps(
+                {
+                    "status": "fetch_failed",
+                    "cached_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            + "\n",
+        )
+    except OSError as exc:
+        logger.warning(
+            "Failed to write negative manifest cache for %s: %s",
+            entry.get("name", ""),
+            exc,
+        )
+    _gc_manifest_cache_dir()
 
 
 _EXTERNAL_REGISTRY_CACHE_TTL = 3600  # 1 hour
