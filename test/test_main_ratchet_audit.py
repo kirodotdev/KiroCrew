@@ -324,6 +324,45 @@ class TestConvergenceStaysExempt:
         assert closed == ["issue close 4250 --repo o/r --reason not planned"], out
 
 
+# A pipe into a reader that may stop before its input ends. `head` exits after
+# the lines it wants and `grep -q` / `grep -m` after the first match; the writer's
+# next write then dies of SIGPIPE.
+_EARLY_EXIT_READER = re.compile(r"(?<!\|)\|\s*(?:head\b|grep\s+-[A-Za-z]*[qm])")
+
+
+class TestNoPipeCanCloseEarly:
+    """No step that runs under pipefail pipes into a reader that can quit early.
+
+    Under ``set -euo pipefail`` such a pipeline fails with 141 whenever the reader
+    exits before the writer's last write, and ``set -e`` then ends the step with
+    that code. The split-record run above died this way on a loaded CI runner:
+    bash's ``printf`` writes one line at a time, so ``printf | head -n 1`` over
+    two issue numbers loses the race when ``head`` is scheduled between the two
+    writes. A run cannot catch that on demand, because the race needs the writer
+    descheduled between them, so the shape itself is pinned here. A pipeline
+    that ends in ``|| true`` accepts a non-zero status on purpose and is allowed.
+    """
+
+    def test_no_unguarded_pipe_into_an_early_exit_reader(self) -> None:
+        workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+        offenders = []
+        for job_name, job in workflow["jobs"].items():
+            for step in job.get("steps", []):
+                script = step.get("run")
+                if not script or "pipefail" not in script:
+                    continue
+                # One logical line per command: a pipeline continued with a
+                # trailing backslash is one command, and its `|| true` may sit
+                # on the last physical line.
+                for line in script.replace("\\\n", " ").splitlines():
+                    if line.lstrip().startswith("#"):
+                        continue
+                    if _EARLY_EXIT_READER.search(line) and "|| true" not in line:
+                        offenders.append(f"{job_name} / {step.get('name')}: {line.strip()}")
+
+        assert offenders == [], offenders
+
+
 @_needs_posix_shell
 class TestIssueBodyRendering:
     """The durable artifact is the most-read output, so its Markdown must render."""

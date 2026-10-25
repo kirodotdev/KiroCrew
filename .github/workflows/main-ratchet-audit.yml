@@ -434,7 +434,12 @@ jobs:
             | jq -r --arg marker "$MARKER" \
               '[.[] | select((.body // "") | contains($marker))] | sort_by(.number) | .[].number' \
             || true)"
-          EXISTING="$(printf '%s\n' "$OPEN" | head -n 1)"
+          # The first line by parameter expansion, not `printf | head -n 1`: the
+          # printf writes one line at a time, `head` may exit after the first,
+          # and the next write then dies of SIGPIPE, which pipefail and set -e
+          # turn into an exit 141 for the whole step. `tail` below reads all of
+          # its input, so it cannot close the pipe early.
+          EXISTING="${OPEN%%$'\n'*}"
           for duplicate in $(printf '%s\n' "$OPEN" | tail -n +2); do
             gh issue comment "$duplicate" --repo "$REPO" \
               --body "Duplicate of #$EXISTING, this workflow's single tracking issue. Closing; the drift record lives there." \
