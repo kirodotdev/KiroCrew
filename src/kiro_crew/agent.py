@@ -98,6 +98,7 @@ from kiro_crew.agent_parts.shared_home import (
     _decline_shared_agent_home,
     _declined_home_warned,
     _existing_specs_are_mine,
+    _new_shared_spec_needs_owner_pin,
     _rebuild_spec_install_admitted,
     _warn_declined_home_once,
 )
