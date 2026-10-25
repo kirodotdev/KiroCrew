@@ -647,7 +647,7 @@ class TestCallerBudget:
     ) -> None:
         # An inline fork/exec on the first on-loop request after start-up, or the
         # first after a slot was emptied, is a loop freeze per empty slot for the
-        # resolver (found in review).  Only the reaper spawns; a caller waits for a
+        # resolver.  Only the reaper spawns; a caller waits for a
         # READY slot within its own budget.
         spawned_on: list[str] = []
         real_spawn = executor_mod._Child._spawn
@@ -673,11 +673,9 @@ class TestCallerBudget:
     def test_a_slot_retired_mid_tick_is_never_enqueued(self, tmp_path: pathlib.Path) -> None:
         # The reaper spawns from a snapshot of the roster.  A slot retired by
         # ``_replace_slot`` between that snapshot and its ``_enqueue`` would otherwise be
-        # leased as a child no slot owns, and its next deadline would then miss the
-        # roster (``list.index`` raising) -- an exception outside the resolver's
-        # classification, the one path that could leave a gate on the lexical forms
-        # (found in review).  The swap happens under the queue lock and ``_enqueue``
-        # checks membership under the same lock, killing the orphan child instead.
+        # leased as a child no slot owns.  The swap happens under the queue lock and
+        # ``_enqueue`` checks membership under the same lock, killing the orphan child
+        # instead.
         executor = SubprocessPoolExecutor(
             workers=1, script=self._hanging(tmp_path), ceiling_secs=600.0
         )
@@ -704,12 +702,30 @@ class TestCallerBudget:
         finally:
             executor.shutdown(wait=False)
 
+    def test_a_slot_already_on_the_ready_queue_is_not_enqueued_twice(self) -> None:
+        # A second entry for one slot would lease the same child to two callers.
+        executor = SubprocessPoolExecutor(workers=1)
+        try:
+            wait_until(
+                lambda: executor._free.qsize() >= 1,
+                timeout=30.0,
+                describe=lambda: "reaper never spawned the pool's child",
+            )
+            (child,) = executor._children
+            executor._enqueue(child)
+            assert executor._free.qsize() == 1, "a slot already on the queue went on again"
+            assert executor._lease(time.monotonic() + 10.0) is child
+            executor._enqueue(child)
+            assert executor._free.qsize() == 1, "a leased live slot did not go back on"
+        finally:
+            executor.shutdown(wait=False)
+
     def test_a_respawn_runs_the_source_captured_at_construction_not_the_file_on_disk(
         self, tmp_path: pathlib.Path
     ) -> None:
         # The child runs unsandboxed and the package tree is writable, so a respawn
         # that re-read the script would execute whatever an agent wrote there after
-        # killing a child it could see (found in review).  The program text is read
+        # killing a child it could see.  The program text is read
         # once and passed as ``-c``; the file is not consulted again.
         script = tmp_path / "child.py"
         script.write_text(
@@ -785,8 +801,8 @@ class TestExecutorContract:
             executor.shutdown(wait=False)
 
     def test_submit_still_runs_an_arbitrary_callable_on_a_thread(self, pool) -> None:
-        # The drop-in property: unrecognised work behaves exactly as it does on a
-        # ThreadPoolExecutor, including a local closure, which is what the
+        # The drop-in property: any callable ``submit`` is given behaves exactly as it
+        # does on a ThreadPoolExecutor, including a local closure, which is what the
         # resolver's caller submits and what ProcessPoolExecutor cannot pickle.
         def outer():
             def inner(value: str) -> str:
@@ -848,8 +864,9 @@ class TestShutdownRefillWindow:
         assert order.index("join") < order.index("kill"), order
         assert not executor._reaper.is_alive()
 
+    @pytest.mark.parametrize("on_queue", [True, False], ids=["slot_on_queue", "slot_leased"])
     def test_a_tick_that_spawned_after_shutdown_began_kills_its_own_child(
-        self, monkeypatch
+        self, monkeypatch, on_queue: bool
     ) -> None:
         executor = SubprocessPoolExecutor(workers=1)
         killed: list[object] = []
@@ -877,6 +894,10 @@ class TestShutdownRefillWindow:
 
         try:
             self._wait_spawned(executor, 1)
+            if not on_queue:
+                # Off the ready queue, the slot passes ``_enqueue``'s once-only check,
+                # so only the tick's own refusal keeps the killed child off the queue.
+                executor._lease(time.monotonic() + 10.0)
             leased_before = executor._free.qsize()
             monkeypatch.setattr(executor_mod._Child, "kill", kill)
             monkeypatch.setattr(executor_mod._Child, "ensure_spawned", ensure_spawned)
@@ -1086,8 +1107,8 @@ class TestChildRunsIsolated:
 
     This child is allowlisted to run OUTSIDE the agent sandbox precisely so it can
     read the paths the sensitive-path gate checks. That makes code execution inside
-    it worth having, and the interpreter imports four stdlib modules at startup that
-    a writable ``sys.path`` entry could shadow. ``-I`` is what closes it. The third
+    it worth having, and the child imports stdlib modules at startup that a
+    writable ``sys.path`` entry could shadow. ``-I`` is what closes it. The third
     test is a negative control: without it the second test would pass for free and
     prove nothing.
     """

@@ -160,9 +160,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # sandbox it would be denied exactly those reads, and a resolver answering
         # "cannot resolve" where the true answer is a credential symlink's target
         # would weaken the gate rather than harden it. ``-I`` drops ``PYTHONPATH``
-        # and the script directory from ``sys.path`` so nothing can be planted in
-        # front of its four stdlib imports; the cwd is inherited deliberately, so a
-        # path resolves in the child to what it resolves to in the parent.
+        # and the working directory ``-c`` would add from ``sys.path`` so nothing can
+        # be planted in front of the child's imports; the cwd is inherited
+        # deliberately, so a path resolves in the child to what it resolves to in the
+        # parent.
         "subprocess_pool/executor.py::_spawn",
         # The PDF extractor child: ONE fixed argv, ``sys.executable -P -m
         # kiro_crew.pdf_extract_child --max-chars=N --max-pages=M`` with both
