@@ -105,7 +105,9 @@ class TestFolderCreate:
     @pytest.mark.asyncio
     async def test_create_with_parent_path_mkdir_p(self, stores, patch_restricted) -> None:
         _store, fstore = stores
-        resp = await api_artifact_folder_create(_request(body={"name": "Q3", "parent": "A/B"}))
+        resp = await api_artifact_folder_create(
+            _request(body={"name": "Q3", "parent": "A/B"})
+        )
         assert resp.status == 201
         # A, B (auto-created) and Q3 now exist.
         assert len(fstore.list()) == 3
@@ -117,11 +119,15 @@ class TestFolderCreate:
         assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_parent_id_is_id_only_no_path_autocreate(self, stores, patch_restricted) -> None:
+    async def test_parent_id_is_id_only_no_path_autocreate(
+        self, stores, patch_restricted
+    ) -> None:
         """``parent_id`` must never be interpreted as a path (id-only contract):
         a path-looking value errors instead of mkdir-p'ing folders."""
         _store, fstore = stores
-        resp = await api_artifact_folder_create(_request(body={"name": "Q3", "parent_id": "A/B"}))
+        resp = await api_artifact_folder_create(
+            _request(body={"name": "Q3", "parent_id": "A/B"})
+        )
         assert resp.status == 400
         # Nothing was auto-created — not A, not B, not Q3.
         assert fstore.list() == []
@@ -138,7 +144,9 @@ class TestFolderCreate:
 
     @pytest.mark.asyncio
     async def test_restricted_denied(self, stores, patch_restricted) -> None:
-        resp = await api_artifact_folder_create(_request(body={"name": "X"}, restricted=True))
+        resp = await api_artifact_folder_create(
+            _request(body={"name": "X"}, restricted=True)
+        )
         assert resp.status == 403
 
 
@@ -179,7 +187,9 @@ class TestFolderUpdate:
 
     @pytest.mark.asyncio
     async def test_unknown_404(self, stores, patch_restricted) -> None:
-        resp = await api_artifact_folder_update(_request(body={"name": "x"}, match={"id": "nope"}))
+        resp = await api_artifact_folder_update(
+            _request(body={"name": "x"}, match={"id": "nope"})
+        )
         assert resp.status == 404
 
 
@@ -229,10 +239,7 @@ class TestFolderDelete:
         store.set_publication(
             art.slug,
             ArtifactPublication(
-                provider="default",
-                artifact_id="uuid-1",
-                view_url="https://d/a",
-                visibility="PUBLIC",
+                provider="default", artifact_id="uuid-1", view_url="https://d/a", visibility="PUBLIC"
             ),
         )
 
@@ -271,10 +278,7 @@ class TestFolderDelete:
         store.set_publication(
             art.slug,
             ArtifactPublication(
-                provider="default",
-                artifact_id="uuid-1",
-                view_url="https://d/a",
-                visibility="PUBLIC",
+                provider="default", artifact_id="uuid-1", view_url="https://d/a", visibility="PUBLIC"
             ),
         )
 
@@ -311,10 +315,7 @@ class TestFolderDelete:
         store.set_publication(
             early.slug,
             ArtifactPublication(
-                provider="default",
-                artifact_id="uuid-1",
-                view_url="https://d/1",
-                visibility="PUBLIC",
+                provider="default", artifact_id="uuid-1", view_url="https://d/1", visibility="PUBLIC"
             ),
         )
         late = store.create(name="late", content="x", folder_id="")
@@ -577,7 +578,9 @@ class TestFolderColorHandlers:
         )
         assert resp.status == 200
         assert _body(resp)["color"] == "#ef4444"
-        resp = await api_artifact_folder_update(_request(body={"color": ""}, match={"id": f["id"]}))
+        resp = await api_artifact_folder_update(
+            _request(body={"color": ""}, match={"id": f["id"]})
+        )
         assert resp.status == 200
         assert "color" not in _body(resp)
 

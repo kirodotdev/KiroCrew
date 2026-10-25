@@ -618,7 +618,7 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
             ):
                 assert (await client.post("/api/skills/-/discover", json=bad)).status == 400
             # JSON reads 1e999 as an infinite float: the paging 400, never a 500.
-            for field in ("limit", "capacity"):
+            for field in ("offset", "limit", "capacity"):
                 for raw in ("1e999", "-1e999"):
                     infinite = json.loads(f'{{"{field}": {raw}}}')
                     response = await client.post(

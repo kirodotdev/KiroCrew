@@ -285,7 +285,7 @@ async def api_skills(request: web.Request) -> web.Response:
                 status=400,
             )
         try:
-            offset = max(0, int(params.get("offset", "0")))
+            offset = max(0, body_int(params.get("offset", "0")))
             # A read pages in LINES and only when asked: the whole-or-refuse contract
             # holds for a call that names neither parameter, and ``limit`` here is
             # lines rather than the result count search and list bound at 50.

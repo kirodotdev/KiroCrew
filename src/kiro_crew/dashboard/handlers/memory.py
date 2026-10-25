@@ -1422,7 +1422,8 @@ async def api_memory_promote(request: web.Request) -> web.Response:
     try:
         min_count = body_int(body.get("min_count", 5))
         min_sim = float(body.get("min_sim", 0.75))
-    except (ValueError, TypeError):
+    # OverflowError: float() of a JSON integer beyond float range raises it.
+    except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "min_count/min_sim must be numeric"}, status=400)
     # Run in executor (can take 10+ seconds)
     loop = asyncio.get_running_loop()
