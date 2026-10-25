@@ -1,20 +1,10 @@
 """Snapshot's creation-side SQLite staging: read-only, descriptor-verified, WAL-complete.
 
-Two claims about `snapshot_main`'s database staging need opposite treatment, which
-is why they are tested separately here.
-
-The FIRST is real and these tests pin it: the core-file staging path opened the live
-database by name and READ-WRITE. That is not merely more authority than a backup needs --
-it mutates the operator's live data. With a `-wal` left unreplayed by a killed writer, the
-read-write open recovers the log into the main file and unlinks the log, so `kirocrew
-snapshot` rewrites the database it was asked to read.
-
-The SECOND -- "a WAL check races the copy" -- is a property of a check-then-copy-BYTES
-design, and the fix is not to build one. `TestTheBackupApiIsAlreadyWalConsistent` is the
-evidence for that: the backup API reads a snapshot that already includes rows living only
-in the log, so there is no check to race. Those are contract tests, not regression tests,
-and are labelled as such -- they pass on base too. Their job is to stop someone
-"fixing" the WAL race later by replacing `backup()` with a checkpoint and a byte copy.
+Staging must never write to the live database. A read-write open of a database whose
+`-wal` a killed writer left unreplayed recovers the log into the main file and unlinks
+it, so a backup would rewrite what it was asked to read. The backup API already reads
+rows that live only in the log, so there is no WAL check to race; these tests also stop
+anyone replacing `backup()` with a checkpoint and a byte copy.
 """
 
 from __future__ import annotations
@@ -100,10 +90,8 @@ def _leave_unreplayed_wal(db: Path, tmp_path: Path) -> None:
         c.execute("PRAGMA wal_checkpoint(TRUNCATE);")
     script = tmp_path / "dirty_writer.py"
     script.write_text(_DIRTY_WRITER, encoding="utf-8")
-    # `cwd=tmp_path`: the child inherits this process's directory otherwise, which under
-    # pytest is the repository checkout, so any relative artifact it created would land in
-    # the working tree. It only touches the absolute db path today; pinning the cwd keeps
-    # that true if the script grows. Review's finding.
+    # `cwd=tmp_path`: otherwise the child inherits the checkout as its cwd and any
+    # relative artifact it created would land in the working tree.
     subprocess.run([sys.executable, str(script), str(db)], check=True, cwd=tmp_path)
     assert (_fingerprint(Path(str(db) + "-wal")) or (0, ""))[
         0
@@ -134,10 +122,9 @@ class TestStagingDoesNotWriteToTheLiveDatabase:
     ) -> None:
         """A backup must not modify what it backs up.
 
-        This is the test that discriminates the fix. On base the core-file path connects
-        READ-WRITE, so opening a database whose -wal holds unreplayed frames recovers them
-        into the main file and unlinks the log: both fingerprints below change. Read-only
-        cannot perform that recovery, so both survive untouched.
+        A read-write open of a database whose -wal holds unreplayed frames recovers them
+        into the main file and unlinks the log, changing both fingerprints below. A
+        read-only open cannot, so both survive untouched.
         """
         db = home / "memory.db"
         _leave_unreplayed_wal(db, tmp_path)
@@ -190,16 +177,9 @@ class TestStagingDoesNotWriteToTheLiveDatabase:
     ) -> None:
         """The whole COMMAND is read-only, not just the staging copy.
 
-        This replaces a narrower test of the pre-staging WAL checkpoint, which review had
-        removed by then. That checkpoint was the only write `kirocrew snapshot` made to live
-        data, and it could not be made safe: a checkpoint cannot run read-only, and
-        verifying the name first does not help because SQLite re-resolves it, so a swap in
-        that window put the WRITE into whatever the name then pointed at.
-
-        Asserting through `snapshot_main` rather than `_build_snapshot` is the whole point
-        -- the checkpoint lived in the command, so a test that called the builder directly
-        could never have caught it. With it gone, both the main file and the `-wal` survive
-        a full snapshot untouched.
+        Driven through `snapshot_main`, not `_build_snapshot`: a pre-staging WAL
+        checkpoint would live in the command, and a checkpoint cannot run read-only, so
+        only a command-level test sees it.
         """
         db = home / "memory.db"
         _leave_unreplayed_wal(db, tmp_path)
@@ -218,29 +198,11 @@ class TestStagingDoesNotWriteToTheLiveDatabase:
     def test_a_symlinked_data_home_does_not_traceback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A relocated data home reaches a decision instead of dying on a traceback.
+        """A symlinked data home reaches a decision instead of dying on a traceback.
 
-        History worth keeping, because it is the reason this test is shaped the way it is.
-        An intermediate revision verified the checkpoint's path with `_chain_is_link_free`,
-        which then called `open_dir_pinned` outside its own try and resolves only the PARENT
-        chain -- so a data home that is itself a symlink raised `PinnedPathRefusal` from a
-        call site above `snapshot_main`'s try, and the command exited on a traceback.
-
-        That root open is now wrapped, but it catches `OSError` only and still lets
-        `PinnedPathRefusal` through on purpose, so a symlinked home remains a refusal
-        `snapshot_main` handles and audits rather than something this helper swallows.
-        `test_a_source_root_that_disappears_is_named_not_a_traceback` pins the `OSError` half.
-
-        The reachability argument is what makes this test real. `_valid_override_home()`
-        ends in `.resolve()`, so a `KIROCREW_HOME` override can never present a symlinked
-        home -- a first version of this test used it and passed against the broken code,
-        proving nothing. The DEFAULT route does not resolve: `_default_home()` returns
-        `Path.home() / ".kiro" / "crew"` verbatim. Patching `_mc_dir` reproduces that shape.
-
-        Stated plainly: with no checkpoint there is no guard above the
-        try for this to discriminate, so this is a behavioural contract test, not a
-        line-specific one. It is kept because a symlinked data home
-        must not crash the command however the internals are arranged.
+        `PinnedPathRefusal` from the root open is left for `snapshot_main` to handle and
+        audit. A `KIROCREW_HOME` override is `.resolve()`d and can never present a
+        symlink; the default `_default_home()` is not, so the test patches `_mc_dir`.
         """
         if not pinned_fs.supports_pinned_walk():
             pytest.skip("the refusal only arises where descriptor pinning is available")
@@ -260,12 +222,8 @@ class TestStagingDoesNotWriteToTheLiveDatabase:
 
 class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     def test_a_corrupt_core_database_fails_the_snapshot(self, home: Path, tmp_path: Path) -> None:
-        """A declared component file that is not SQLite fails the snapshot.
-
-        An earlier revision of this change degraded it to a byte copy, "matching" the tree
-        pass. That is backwards, and review caught the consequence -- see the sibling test
-        below for the chain it opens.
-        """
+        """A declared component file that is not SQLite fails the snapshot, rather than
+        riding as bytes the way an incidental tree file does (see the sibling below)."""
         (home / "memory.db").write_bytes(b"this is not a database\n")
         with pytest.raises(snap.DatabaseCopyFailed) as excinfo:
             snap._build_snapshot(
@@ -278,11 +236,9 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """Why it raises: `--keep` pruning must never run for an unrestorable archive.
 
-        Degrading made the snapshot SUCCEED, so `--keep N` counted the new archive as the
-        newest backup and pruned a real one, while restore refuses that archive at its
-        strict database validation -- leaving nothing restorable after a command that
-        printed success. Asserted through the command rather than on the exception type,
-        because the ORDERING is what protects the operator's data.
+        A succeeding snapshot would let `--keep N` prune a real backup in favour of an
+        archive restore refuses. Asserted through the command, because the ORDERING is
+        what protects the operator's data.
         """
         out = tmp_path / "out"
         out.mkdir()
@@ -303,16 +259,10 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """The other half of the asymmetry, asserted so nobody "fixes" it into symmetry.
 
-        A `.db` under a tree that is NOT in `PRODUCT_TREE_DATABASES` is incidental -- a file
-        the operator happens to keep in their workspace -- and refusing the whole snapshot
-        over it would be an outage rather than a safeguard. `_setup_fake_kirocrew` leaves a
-        stub `kb.sqlite3` under workspace/knowledge that is not a real database; it must ride
-        as bytes.
-
-        Set membership is what draws the line, not tree-versus-core: the sibling test
-        `test_a_corrupt_product_tree_database_fails_the_snapshot` pins that a corrupt
-        `knowledge.db` in the same directory FAILS the snapshot, because that path is one of
-        ours and restore validates it as strictly as `memory.db`.
+        A `.db` under a tree that is NOT in `PRODUCT_TREE_DATABASES` is incidental, and
+        refusing the whole snapshot over it would be an outage. `_setup_fake_kirocrew`
+        leaves a stub `kb.sqlite3` that must ride as bytes; a corrupt `knowledge.db` (in
+        the set) fails instead, pinned below.
         """
         archive = snap._build_snapshot(
             home, tmp_path / "out", "tree-degrade", selected=["memory"], **UNPINNED_OK
@@ -327,19 +277,10 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A source lost between the probe and the copy is reported by name.
 
-        The two `sqlite3.connect` calls must sit INSIDE the try that translates errors
-        into `DatabaseCopyFailed`. `snapshot_main` handles `PinnedPathRefusal`,
-        `UnsafeComponentRoot`, `DatabaseCopyFailed` and `_ArchiveTooLarge` -- not a bare
-        `sqlite3.OperationalError` -- so the command exited on a traceback instead of naming
-        the database. Review's finding.
-
-        Worth stating that `mode=ro` WIDENED this window rather than narrowing it: a
-        read-write open would have silently created an empty database where a read-only one
-        fails outright. The fix belongs with the change that made it matter.
-
-        The vanish is injected for real -- the file is unlinked between the probe's connect
-        and the copy's -- rather than by raising a synthetic error, so the exception is the
-        one SQLite actually produces.
+        Both `sqlite3.connect` calls must sit inside the try that translates errors into
+        `DatabaseCopyFailed`; `snapshot_main` does not handle a bare
+        `sqlite3.OperationalError`. The file is really unlinked between the two connects,
+        so the exception is the one SQLite produces.
         """
         calls = {"n": 0}
         real_connect = sqlite3.connect
@@ -371,26 +312,13 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A component root removed under the copy reaches a decision, not a traceback.
 
-        `_chain_is_link_free` calls `open_dir_pinned` OUTSIDE its own try, and
-        `open_dir_pinned` translates only `ELOOP`/`ENOTDIR` into `PinnedPathRefusal` and
-        re-raises every other `OSError`. So a root lost to a concurrent rename or removal
-        left `ENOENT` escaping as `FileNotFoundError`.
+        `open_dir_pinned` re-raises every `OSError` but `ELOOP`/`ENOTDIR`, and
+        `snapshot_main`'s handlers around `_build_snapshot` do not catch `OSError`, so a
+        root lost to a concurrent removal must not escape as `FileNotFoundError`. The root
+        is removed for real, so the exception is the one the OS produces.
 
-        The reachability argument is what makes this a regression test rather than a
-        contract one. `snapshot_main` wraps `_build_snapshot` in a try whose handlers are
-        `PinnedPathRefusal`, `UnsafeComponentRoot` and `DatabaseCopyFailed`; its
-        `except (tarfile.TarError, OSError, EOFError)` belongs to a LATER, separate try that
-        does not cover `_build_snapshot`. This change is what routes the helper at the live
-        data home -- the sibling tree pass passes a staging directory the command itself
-        just created -- so the operator-facing trigger arrives with this diff and the
-        containment belongs with it. Review's finding.
-
-        The root is removed for real rather than by raising a synthetic error, so the
-        exception is the one the OS actually produces.
-
-        Both outcomes are asserted because they must stay OPPOSITE: a DECLARED database is
-        a hard failure, while one the tree walk merely found is recorded and rides as bytes.
-        Collapsing them is what let `--keep` prune an operator's last complete archive.
+        Both outcomes must stay OPPOSITE: a DECLARED database is a hard failure, while one
+        the tree walk merely found is recorded and rides as bytes.
         """
         gone = tmp_path / "gone"
         gone.mkdir()
@@ -429,21 +357,10 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A corrupt `knowledge.db` fails the snapshot instead of riding as bytes.
 
-        `PRODUCT_TREE_DATABASES` says of itself that everything in it is "validated as
-        strictly as `memory.db`", and the restore side already enforces that --
-        `_refuse_unless_sound(src, rel, strict=rel in PRODUCT_TREE_DATABASES)`, asserted by
-        `test_an_unopenable_knowledge_database_is_refused`. The creation path staged those
-        same files leniently, so a corrupt `workspace/knowledge/knowledge.db` produced an
-        archive that reported success and that restore is GUARANTEED to refuse.
-
-        That combination is worse than either half. `--keep N` counts the new archive as the
-        newest backup and prunes a real one, so the operator loses their last restorable
-        copy to a command that said it worked. Review's finding.
-
-        This is the boundary of the tree/core asymmetry, not a repeal of it: the sibling
-        test above pins that an incidental `kb.sqlite3` still rides as bytes. The set
-        membership is what separates the two, which is why this asserts the path in the set
-        rather than any `.db` under a tree.
+        Restore validates every `PRODUCT_TREE_DATABASES` path as strictly as `memory.db`,
+        so creation must too: an archive restore is guaranteed to refuse would otherwise
+        let `--keep N` prune the last restorable backup. Set membership, not tree-vs-core,
+        draws the line; an incidental `kb.sqlite3` still rides as bytes (sibling above).
         """
         kdir = home / "workspace" / "knowledge"
         kdir.mkdir(parents=True, exist_ok=True)
@@ -460,15 +377,10 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A database that PARSES but is page-corrupt fails, instead of shipping.
 
-        `PRAGMA schema_version` only proves the file parses. Measured with the interior
-        pages overwritten and the header left intact: `schema_version` answered normally,
-        `backup()` succeeded and staged all bytes, and `integrity_check` reported "database
-        disk image is malformed" on both source and copy. So the archive reported success
-        and restore was guaranteed to refuse it -- `--keep N` then prunes a real backup in
-        favour of one that cannot be restored. Review's finding.
-
-        The check runs on the STAGED COPY with restore's own predicate, so this asserts the
-        two ends of the invariant now agree rather than merely that creation got stricter.
+        `PRAGMA schema_version` only proves the file parses: with interior pages
+        overwritten it still answers and `backup()` succeeds, while `integrity_check`
+        reports the image malformed. The check runs on the STAGED COPY with restore's own
+        predicate, so creation and restore agree on what is sound.
         """
         live = home / "memory.db"
         with closing(sqlite3.connect(live)) as db:
@@ -484,8 +396,8 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
             raw[start : start + 200] = b"\xde\xad\xbe\xef" * 50
         live.write_bytes(bytes(raw))
 
-        # Precondition: the weaker probe this replaces still passes, so the test is
-        # asserting the new check and not some earlier guard.
+        # Precondition: the parse-only probe still passes, so only integrity_check
+        # can be what refuses.
         with closing(sqlite3.connect(f"{live.absolute().as_uri()}?mode=ro", uri=True)) as probe:
             assert probe.execute("PRAGMA schema_version").fetchone() is not None
 
@@ -500,16 +412,10 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """Zero bytes is the unsoundness neither `integrity_check` nor restore can see.
 
-        Measured, and worse than "restore would refuse it": SQLite opens a zero-byte file as
-        a valid EMPTY database, `PRAGMA schema_version` answers `(0,)`, and `backup()` does
-        not preserve the emptiness -- it produced a 4096-byte staged copy that
-        `integrity_check` called `ok`. Restore's own zero-byte guard reads the size of the
-        ARCHIVED file, so it sees 4096 and ACCEPTS, then installs an empty database over
-        live data and reports success.
-
-        So this one is not a pruning hazard, it is silent data loss on restore, and the
-        source is the only end where the condition is visible -- which is why the check sits
-        there rather than on the copy.
+        SQLite opens a zero-byte file as a valid EMPTY database and `backup()` stages a
+        4096-byte copy that `integrity_check` calls `ok`, so restore would accept it and
+        install an empty database over live data. Only the source shows the condition,
+        which is why the check sits there.
         """
         (home / "memory.db").write_bytes(b"")
 
@@ -587,9 +493,8 @@ class TestASourceThatCannotBeVerifiedIsRefusedAndRecorded:
                 (home / "memory.db").symlink_to(victim)
             return result
 
-        # Probed on a name of its own. Probing `home/memory.db` -- which the fixture
-        # already created -- raised FileExistsError, was caught by the same handler, and
-        # skipped the test with "needs privilege": a green run that asserted nothing.
+        # Probed on a name of its own: `home/memory.db` already exists, and the
+        # FileExistsError would be caught here and skip the test silently.
         probe = tmp_path / "symlink-support-probe"
         try:
             probe.symlink_to(victim)
@@ -608,11 +513,8 @@ class TestASourceThatCannotBeVerifiedIsRefusedAndRecorded:
     ) -> None:
         """Why the swap RAISES instead of being recorded as an omission.
 
-        An intermediate revision recorded it in `MANIFEST.json` and let the snapshot
-        succeed, on the issue's own reasoning that "an absent database with a recorded
-        reason is recoverable information". Review showed the flaw: it is recoverable
-        information only while the operator still HAS the archive it could be recovered
-        from, and a successful snapshot with `--keep 1` prunes exactly that.
+        A recorded omission is recoverable only while the operator still has an older
+        archive, and a successful snapshot with `--keep 1` prunes exactly that.
         """
         victim = tmp_path / "someone-elses.db"
         with closing(sqlite3.connect(str(victim))) as c:
@@ -656,14 +558,11 @@ class TestASourceThatCannotBeVerifiedIsRefusedAndRecorded:
     ) -> None:
         """The tree pass keeps its byte copy, but the archive stops claiming consistency.
 
-        Deleting the byte copy would be data loss, so it stays -- and that is exactly why
-        the degradation has to be on the record. Before this, `_restage_databases` had no
-        reporter at all and the outcome existed only as a `continue`.
+        Deleting the byte copy would be data loss, so it stays, and the degradation has
+        to be on the record.
         """
-        # Scoped to the TREE entry. A blanket `lambda: False` also trips the core path,
-        # which now raises for an unverifiable required database, so the snapshot would die
-        # on `memory.db` before the tree pass ran and this test would assert nothing about
-        # the manifest.
+        # Scoped to the TREE entry: a blanket `lambda: False` also trips the core path,
+        # which raises on `memory.db` before the tree pass runs.
         real_chain_is_link_free = snap._chain_is_link_free
 
         def only_the_tree_db_is_unverifiable(root: Path, rel_parts: tuple[str, ...]) -> bool:

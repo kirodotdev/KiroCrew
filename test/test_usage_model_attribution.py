@@ -1,24 +1,12 @@
-"""A billed turn's model must survive any number of wrapper layers.
+"""Tests for model attribution in kiro_crew.dashboard.handlers.usage.
 
-``persist_token_record`` / ``_async`` fill a blank caller-side ``model`` from
-``model_source`` by walking the provider/client/handle nesting with
-``_wrapper_chain``. The model state sits at the BOTTOM of the ``_handle``
-chain, and every wrapper layer above it — a fallback wrapper, session sharing,
-a subagent companion, a channel-linked session — carries up to four holders,
-three of them siblings that hold nothing. A walk that spends a fixed node
-budget breadth-first exhausts it on those siblings a few layers down, both
-accessors return empty, ``_resolve_model`` persists ``""``, and read time mints
-the ``unknown`` bucket — on the reporting install, a third of all credits,
-larger than any real model.
-
-The walk is depth-first along the documented holders with an identity-based
-visited set, bounded only by a runaway guard for attribute-synthesizing sources
-(mocks). And a billed row that still has no model is not silent: the write
-site logs the attribution failure.
+Covers the wrapper walk that finds a session's model and the warning a billed
+row with no model raises. The rest of the module's tests live in test_usage.py.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from datetime import datetime
@@ -27,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew.dashboard.handlers import usage as usage_mod
+import kiro_crew.dashboard.handlers.usage as usage_mod
 from kiro_crew.dashboard.handlers.usage import (
     _resolve_model,
     _wrapper_chain,
@@ -36,6 +24,16 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+
+# ── model attribution through wrapper layers ────────────────────────────
+#
+# ``persist_token_record`` fills a blank caller-side model from ``model_source``
+# by walking the provider/client/handle nesting with ``_wrapper_chain``. The
+# model sits at the bottom of the ``_handle`` chain under wrapper layers whose
+# sibling holders hold nothing, so the walk is depth-first with a visited set and
+# only a runaway guard; a blank model on a billed row would otherwise land the
+# turn's credits in the ``unknown`` bucket. A billed row that still has no model
+# is logged at the write site.
 
 
 class _Node:
@@ -56,8 +54,8 @@ def _documented_shape(extra_layers: int, *, model: str = "auto") -> tuple[object
     ``AcpProvider`` -> ``client``/``_client`` -> ``AcpSessionProvider`` ->
     ``_handle`` -> ``AcpSessionHandle`` (holds ``_model``) -> ``_runtime``, then
     ``extra_layers`` wrappers stacked on top, each carrying the same four holders
-    the walk follows — three of them siblings that hold nothing, exactly the
-    shape from the issue's own reproduction. Returns ``(outermost, handle)``.
+    the walk follows, three of them siblings that hold nothing. Returns
+    ``(outermost, handle)``.
     """
     runtime = _Node("runtime")
     handle = _Node("handle", _runtime=runtime)
@@ -80,7 +78,6 @@ class TestWalkReachesTheModelRegardlessOfDepth:
 
     @pytest.mark.parametrize("extra_layers", [0, 1, 2, 3, 4])
     def test_documented_shape_resolves_auto_through_every_layer_count(self, extra_layers):
-        # The reporting install's shape: a handful of layers, all must resolve.
         source, handle = _documented_shape(extra_layers)
         assert any(
             node is handle for node in _wrapper_chain(source)
@@ -117,9 +114,8 @@ class TestWalkReachesTheModelRegardlessOfDepth:
         assert read_effective_model(source) == "claude-opus-5"
 
     def test_runtime_reached_from_a_shallow_wrapper_does_not_preempt_the_handle(self):
-        # The breadth-first order had a second hole: a wrapper holding both a
-        # runtime and a deeper session provider visited the runtime BEFORE the
-        # provider's handle. Depth-first follows _handle to the bottom first.
+        # A wrapper holding both a runtime and a deeper session provider must
+        # follow _handle to the bottom before it reads the runtime.
         runtime = _Node("runtime")
         runtime._model = "process-level-arg"
         handle = _Node("handle", _runtime=runtime)
@@ -250,8 +246,6 @@ class TestBlankModelBilledRowIsLoud:
 
     @staticmethod
     def _rows(shard_dir):
-        import json
-
         return [
             json.loads(line)
             for shard in sorted(shard_dir.glob("*.jsonl"))
@@ -264,7 +258,9 @@ class TestBlankModelBilledRowIsLoud:
         return [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING and "model attribution failed" in r.getMessage()
+            if r.name == usage_mod.__name__
+            and r.levelno == logging.WARNING
+            and "model attribution failed" in r.getMessage()
         ]
 
     def test_billed_row_with_blank_model_is_persisted_and_logged(
@@ -324,8 +320,7 @@ class TestBlankModelBilledRowIsLoud:
         # `_record_is_billed` is a copy of `usage_has_billing` spelled in record
         # field names. This pins the copy to the original across EVERY TurnUsage
         # field: a dimension the original bills in must bill here too, and one
-        # it ignores (num_turns, duration_ms) must stay free here. Adding a
-        # dimension to either side without the other fails this test.
+        # it ignores (num_turns, duration_ms) must stay free here.
         from dataclasses import fields
 
         from kiro_crew.acp.types import TurnUsage
@@ -348,20 +343,20 @@ class TestBlankModelBilledRowIsLoud:
             )
         assert self._attribution_warnings(caplog) == []
 
-    def test_free_row_with_blank_model_is_quiet(self, tmp_path, monkeypatch, caplog):
-        # No charge, nothing to attribute: a timeout that billed nothing is not
-        # an attribution failure.
+    @pytest.mark.parametrize(
+        "credits",
+        [
+            # A timeout that billed nothing is not an attribution failure.
+            pytest.param(0.0, id="test_free_row_with_blank_model_is_quiet"),
+            # A NaN credit is a corrupt measurement (the sanitizer's warning
+            # names it), not a charge to attribute.
+            pytest.param(math.nan, id="test_non_finite_charge_is_not_treated_as_billing"),
+        ],
+    )
+    def test_unbilled_row_with_blank_model_is_quiet(self, tmp_path, monkeypatch, caplog, credits):
         self._shard_dir(monkeypatch, tmp_path)
         with caplog.at_level(logging.WARNING, logger=usage_mod.__name__):
-            persist_token_record("slot", "", SimpleNamespace(credits=0.0), provider="acp")
-        assert self._attribution_warnings(caplog) == []
-
-    def test_non_finite_charge_is_not_treated_as_billing(self, tmp_path, monkeypatch, caplog):
-        # A NaN credit is a corrupt measurement (the sanitizer's warning names
-        # it), not a charge to attribute.
-        self._shard_dir(monkeypatch, tmp_path)
-        with caplog.at_level(logging.WARNING, logger=usage_mod.__name__):
-            persist_token_record("slot", "", SimpleNamespace(credits=math.nan), provider="acp")
+            persist_token_record("slot", "", SimpleNamespace(credits=credits), provider="acp")
         assert self._attribution_warnings(caplog) == []
 
     def test_write_site_covers_every_persist_path(self, tmp_path, monkeypatch, caplog):
@@ -376,8 +371,8 @@ class TestBlankModelBilledRowIsLoud:
         assert len(self._attribution_warnings(caplog)) == 1
 
     def test_deep_wrapping_end_to_end_names_the_model(self, tmp_path, monkeypatch):
-        # The issue's failing rows, end to end: model "" from the caller, four
-        # extra wrapper layers on model_source, a real charge.
+        # Model "" from the caller, four extra wrapper layers on model_source,
+        # a real charge: the row names the model.
         shard_dir = self._shard_dir(monkeypatch, tmp_path)
         source, _handle = _documented_shape(4, model="gpt-5.6-luna")
         persist_token_record(

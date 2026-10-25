@@ -249,9 +249,10 @@ def _reset_channel_turn_ceiling():
     runs more gated channel turns under one key than the ceiling allows latches
     that conversation for the rest of the worker: every LATER test on the same key
     gets a refused turn instead of the behaviour it asserts, in files that never
-    mention the ceiling. A wide shard reaches the default of 90 and reds
-    ``test_slack_success_after_delivery_10050.py``, whose native-route tests then
-    book neither success nor failure because the handler returns at the gate.
+    mention the ceiling. A wide shard reaches the default of 90 and reds the
+    native-route turn-verdict tests in ``test_slack_handler_turn_outcomes.py``,
+    which then book neither success nor failure because the handler returns at
+    the gate.
 
     The notification sink is module-global for the same reason and is cleared with
     it, so a test that registers an observer cannot be heard by the next one.

@@ -1,24 +1,12 @@
-"""A spawn approval nobody can answer is refused up front, not held until the
-reaper.
+"""A spawn approval nobody can answer is refused up front, not held until the reaper.
 
-The reported shape: a turn that originated on a channel (Telegram) calls
-``spawn_run`` on a headless install. None of the four auto-approve rungs in
-``subagent_manager/admission.py`` match, so the gate raises an interactive
-prompt — and the only two surfaces that can render one are a Slack owner DM and
-an attached dashboard client. With neither, the prompt is broadcast to nobody,
-the run sits registered at ``turn 0`` with ``pid: null``, and the caller learns
-nothing for ~30 minutes until the reaper kills it.
-
-What this change fixes is only the *hang*. The approval callback now reports
-"there is no surface here" by raising ``SpawnApprovalUnreachable`` at the exact
-point it would have parked, and the spawn gate turns that into an immediate,
-actionable refusal naming the rungs that would have let the spawn through.
-
-Deliberately NOT covered, because the change does not make them: delivering the
-prompt to the originating channel's own inline keyboard (the ideal fix, and much
-larger — every channel renderer plus its approval decider), the per-agent
-``auto_approve_spawn`` rung proposed on the issue, and any new tombstone field.
-Both of the latter are open maintainer decisions.
+When none of the auto-approve rungs in ``subagent_manager/admission.py`` match,
+the gate raises an interactive prompt, and the host's own surfaces for it are a
+Slack owner DM and an attached dashboard user. With neither, the approval
+callback raises ``SpawnApprovalUnreachable`` where it would have parked, and the
+spawn gate turns that into an immediate refusal; otherwise the run would sit at
+``turn 0`` until the reaper killed it. Channel-side delivery is covered in
+``test_spawn_approval_delivery.py``.
 """
 
 from __future__ import annotations
@@ -41,7 +29,7 @@ def _close_subagent_managers(close_subagent_managers):
 
 
 # --------------------------------------------------------------------------
-# Manager-level doubles (same posture as test_subagent_spawn_approval_parked_6484)
+# Manager-level doubles (same posture as test_subagent_spawn_approval_parked)
 # --------------------------------------------------------------------------
 
 
@@ -120,18 +108,11 @@ class _ParkedApproval:
 
 
 class TestUnansweredablePromptIsRefusedNow:
-    """The bug: the gate waited out the reaper on a prompt nobody received."""
+    """A prompt nobody received ends the spawn now instead of waiting for the reaper."""
 
     @pytest.mark.asyncio
     async def test_refusal_is_immediate_and_actionable(self) -> None:
-        """The whole report, in one assertion set.
-
-        Red before this change: the raise fell into the gate's generic
-        ``except Exception`` and became the same ``"spawn rejected"`` a human
-        decline produces, so a caller could neither tell the two apart nor learn
-        what to do. (On main the prompt does not raise at all: it parks, which is
-        the hang itself.)
-        """
+        """The refusal is terminal and distinct from a human decline's ``"spawn rejected"``."""
         mgr = _manager(_unreachable)
         info = mgr.spawn("Return only the result of 1+1", parent_session_key="telegram:1")
         assert info is not None
@@ -417,9 +398,9 @@ class TestDashboardClientProbe:
         """The probe's one call site is reached only AFTER Slack has had its turn.
 
         A Slack term here reports a surface that demonstrably did not receive the
-        prompt — either it was never configured, or posting to it raised — which
-        is the park this whole change removes. Both a configured and an absent
-        Slack must therefore read the same.
+        prompt (never configured, or posting to it raised), which would park the
+        spawn on a prompt nobody sees. Both a configured and an absent Slack must
+        therefore read the same.
         """
         state = MagicMock()
         state.dashboard_user_ws_count = MagicMock(return_value=0)
@@ -512,8 +493,7 @@ class TestOnlyTheSpawnGateRaises:
 
         The Slack branch is wrapped in its own
         ``except`` and falls through to the dashboard-only fallback, so a Slack
-        outage on a channel install would land right back in the park this
-        change exists to remove.
+        outage on a channel install must still refuse rather than park.
         """
         slack = MagicMock()
         slack.open_dm = AsyncMock(return_value="D123")

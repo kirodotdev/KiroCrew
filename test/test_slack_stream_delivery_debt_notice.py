@@ -4,8 +4,8 @@ An append Slack refuses is retried once on a fresh message. When both the append
 and that retry fail, those characters are on no message at all, and the reader is
 looking at an answer with a hole in it that nothing marks.
 
-Both stream paths now carry a per-turn delivery-debt flag and disclose the loss
-at finalize. These tests pin the disclosure on each path, pin that a turn which
+Both stream paths carry a per-turn delivery-debt flag and disclose the loss at
+finalize. These tests pin the disclosure on each path, pin that a turn which
 lost nothing stays silent, and pin that the notice is not answer text: it must
 not make a stream that delivered no answer look like a delivered one.
 

@@ -1,17 +1,15 @@
-"""A turn that ends without EVENT_COMPLETE still records its usage row.
+"""A turn that ends without EVENT_COMPLETE still records its usage row and footer.
 
-The dashboard's only ``persist_token_record_async`` call lives in the
-``EVENT_COMPLETE`` branch, so a turn torn down through ``_persist_partial_reply``
--- the 6-hour turn ceiling, the Stop button, a signed-out CLI mid-turn, and the
-other recovery paths that share that seam -- wrote no usage row and no
-``meta.turn_stats``, leaving its credits unrecorded however much it billed (the
-ceiling path recorded zero credits for a six-hour, 91-tool-call turn).
+A turn torn down through ``_persist_partial_reply`` (the turn ceiling, the Stop
+button, a signed-out CLI mid-turn and the other recovery paths sharing that seam)
+never reaches the ``EVENT_COMPLETE`` persist, so ``_persist_abnormal_turn_usage``
+is what records its credits.
 
-These drive the extracted ``_persist_abnormal_turn_usage`` seam helper over the
-REAL row store, asserting the row lands with the turn's recovered credits and a
-terminal stop reason, that a turn which billed nothing writes none, that a
-cost-only claude-seam turn records too, and that a turn dying before it installs
-fresh billing stats does NOT re-bill the previous turn (the ``since=`` guard).
+These drive that helper over the REAL row store, asserting the row lands with the
+turn's recovered credits and a terminal stop reason, that a turn which billed
+nothing writes none, that a cost-only claude-seam turn records too, and that a
+turn dying before it installs fresh billing stats does NOT re-bill the previous
+turn (the ``since=`` guard).
 
 The riskiest invariant is the claim/seam guard itself: ``EVENT_COMPLETE`` claims
 the turn's single row BEFORE its awaited (thread-offloaded) persist, so a
@@ -68,8 +66,7 @@ def _stub_accessors(monkeypatch, *, usage):
     The helper reads the turn's billing and attribution through named imports on
     the chat_runner module; stubbing them there exercises the helper's own logic
     (billing gate, argument wiring, the ``since=`` identity guard) without
-    reconstructing a live ACP provider. ``provider_last_turn_usage`` accepts the
-    ``since`` keyword the helper now threads through for the prior-turn guard.
+    reconstructing a live ACP provider.
     """
     monkeypatch.setattr(chat_runner, "provider_last_turn_usage", lambda c, *, since=None: usage)
     monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
@@ -115,10 +112,7 @@ async def test_a_turn_that_billed_nothing_writes_no_row(_isolated_shards, monkey
         elapsed_ms=5000,
         stop_reason=chat_runner.STOP_REASON_CANCELLED,
     )
-    # Scope is the credits defect alone: a turn that billed nothing writes no
-    # row (and the seam adds no histogram emit — that is the complete path's
-    # concern), so the helper reports it did not record and leaves the
-    # once-per-turn guard unclaimed.
+    # Reporting False leaves the once-per-turn guard unclaimed.
     assert wrote is False
     assert _rows(_isolated_shards) == []
 
@@ -127,12 +121,9 @@ async def test_a_turn_that_billed_nothing_writes_no_row(_isolated_shards, monkey
 async def test_a_turn_dying_before_fresh_stats_does_not_rebill_the_prior_turn(
     _isolated_shards, monkeypatch
 ):
-    # The real guard: provider_last_turn_usage(..., since=<stats0>) reports an
-    # empty TurnUsage when the live stats object is still the one observed
-    # before the turn — a dispatch that died before installing fresh stats. The
-    # helper must then write NO row, even though the prior turn's object still
-    # carries credits. Modelled by a stub that returns empty when since is the
-    # same sentinel the helper was handed.
+    # provider_last_turn_usage(..., since=<stats0>) reports an empty TurnUsage
+    # while the live stats object is still the pre-turn one, so the prior
+    # turn's credits must not be written again.
     _prior_stats = object()
 
     def _guarded(c, *, since=None):
@@ -300,7 +291,7 @@ class TestCancelDuringCompletePersist:
     async def test_a_cancel_before_the_executor_runs_still_lands_the_row(
         self, tmp_path, monkeypatch
     ) -> None:
-        """GPT 6.1 F1: the complete-path persist is SHIELDED from the turn's cancel.
+        """The complete-path persist is SHIELDED from the turn's cancel.
 
         ``persist_token_record_async`` offloads the append with
         ``asyncio.to_thread``. A cancellation delivered to the turn BEFORE the
@@ -771,7 +762,6 @@ class TestAbnormalEndFooter:
         stats = self._footer(rows[0])
         assert stats is not None
         assert stats["credits"] == pytest.approx(2.5)
-        # The usage row the arm never wrote before.
         (usage_row,) = _rows(tmp_path)
         assert usage_row["credits"] == pytest.approx(2.5)
 

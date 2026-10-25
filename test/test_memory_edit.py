@@ -768,3 +768,104 @@ def test_restore_applies_to_exactly_one_record(store):
             b"secret",
             body(operation={"type": "restore", "revision_id": 1}),
         )
+
+
+# ── legacy rows with a NULL or empty identity ─────────────────────────────
+#
+# The store opens over episode rows with a NULL/empty ``id`` and semantic rows
+# with a NULL/empty ``key``. The memory list and recall tolerate them through
+# ``record_identity_or_none`` and leave them on disk (the ``reconcile`` skip
+# contract); bulk edits exclude them, because ``_write`` looks a record up by that
+# identity and ``WHERE id = NULL`` matches nothing.
+
+_NULL_ID_SECRET = b"test-secret-key-for-memory-edit-preview-signing"
+_NULL_ID_STORE_NAME = "test-store"
+
+
+def _store_with_null_id_rows(tmp_path):
+    """A store that opens over a good row, an ineligible row and three bad rows."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    tier.write_episodic("a good memory", source="user_explicit")
+    assert tier.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None
+    # One ineligible record makes _ineligible_ids() non-empty, the branch in
+    # _eligible_rows that calls record_id_for for every row.
+    tier.db.execute(
+        "UPDATE memory_record_meta SET status = 'superseded' WHERE record_id = 'key:user.city'"
+    )
+    tier.db.execute(
+        "INSERT INTO episodic_memories (id, text, created_at) VALUES (NULL, 'x', '2026-01-01')"
+    )
+    tier.db.execute(
+        "INSERT INTO episodic_memories (id, text, created_at) VALUES ('', 'y', '2026-01-01')"
+    )
+    tier.db.execute(
+        "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at) "
+        "VALUES (NULL, '1', 'user_explicit', '2026-01-01', '2026-01-01')"
+    )
+    tier.db.commit()
+    return tier
+
+
+def test_memory_list_and_recall_tolerate_null_id_legacy_rows(tmp_path):
+    tier = _store_with_null_id_rows(tmp_path)
+    try:
+        listed = memory_edit.list_records(tier, {"q": "", "kind": "all"})
+        # Every row stays visible in the list, the identityless ones included.
+        assert listed["total"] == 5
+        recalled = tier.recall("good", cap=3000)
+        assert [e["text"] for e in recalled["retrieval"]["episodes"]] == ["a good memory"]
+        # The bad rows are left on disk, untouched.
+        assert tier.db.execute("SELECT COUNT(*) FROM episodic_memories").fetchone()[0] == 3
+        assert tier.db.execute("SELECT COUNT(*) FROM semantic_memory").fetchone()[0] == 2
+    finally:
+        tier.close()
+
+
+def test_recall_tolerates_null_id_episode_with_empty_blocked_set(tmp_path):
+    """With no ineligible rows the eligibility filter takes its empty-``blocked``
+    fast path; a NULL-id episode the query matches must be dropped there too, or
+    the payload builder raises ``KeyError`` on ``row["id"]``."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        tier.write_episodic("a good memory about cats", source="user_explicit")
+        tier.db.execute(
+            "INSERT INTO episodic_memories (id, text, created_at) "
+            "VALUES (NULL, 'a legacy memory', '2026-01-01')"
+        )
+        tier.db.commit()
+        recalled = tier.recall("legacy", cap=3000)
+        assert recalled["retrieval"]["episodes"] == []
+        assert recalled["episodic_context"] == ""
+        assert tier.db.execute("SELECT COUNT(*) FROM episodic_memories").fetchone()[0] == 2
+    finally:
+        tier.close()
+
+
+def test_query_forget_excludes_null_id_rows_and_applies_cleanly(tmp_path):
+    """A query-selected forget over every memory excludes the NULL-id rows instead
+    of failing the whole batch on ``dict(None)``."""
+    tier = _store_with_null_id_rows(tmp_path)
+    try:
+        selection = {
+            "selection": {"query": {"q": "", "kind": "all"}},
+            "operation": {"type": "forget"},
+        }
+        preview = memory_edit.preview_edit(tier, _NULL_ID_STORE_NAME, _NULL_ID_SECRET, selection)
+        # Only the two real records (the good episode and the fact) are in the batch.
+        assert preview["changed_count"] == 2
+        result = memory_edit.apply_edit(
+            tier, _NULL_ID_STORE_NAME, _NULL_ID_SECRET, preview["preview_id"]
+        )
+        assert result["ok"] is True
+        bad_epi = tier.db.execute(
+            "SELECT COUNT(*) FROM episodic_memories WHERE id IS NULL OR id = ''"
+        ).fetchone()[0]
+        assert bad_epi == 2
+        bad_sem = tier.db.execute(
+            "SELECT COUNT(*) FROM semantic_memory WHERE key IS NULL OR key = ''"
+        ).fetchone()[0]
+        assert bad_sem == 1
+    finally:
+        tier.close()

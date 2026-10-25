@@ -12,7 +12,7 @@ streamed), so on Windows it runs off the loop on a worker thread via
 ``popen_limited`` + a bounded drain. POSIX keeps the async path: a fork is cheap
 there and the loop was never held.
 
-This host is Linux, so the Windows path is driven with the platform seam patched.
+Off Windows, the Windows path is driven with the platform seam patched.
 ``time.sleep`` stands in for the synchronous ``CreateProcess``: an ``await`` there
 would let the caller's loop advance even with the defect present.
 """

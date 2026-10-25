@@ -17,7 +17,7 @@ the store observe independently of where each rule lives:
   it through the owner module, so one patch of the owner reaches every caller;
 * the read-only source guards that scan ``vector_memory.py`` by name
   (``test_memory_lineage_drift``, ``test_memory_v2_schema``,
-  ``test_core_path_redact_before_bound``, ``test_cse_2026_08_05_fixes`` and the
+  ``test_core_path_redact_before_bound``, ``test_security_source_scan_invariants`` and the
   redaction-sink registry) are re-applied to the runtime modules with their own
   helpers, each with a planted violation proving the re-applied check can fail;
 * the optional FAISS accelerator's lifecycle and search tier, driven through a

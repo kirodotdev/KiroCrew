@@ -9,9 +9,8 @@ main-agent tool ladder already uses here.
 
 What is pinned:
 
-* the SAFETY BOUNDARY — a channel with no registered hook still fails fast, and
-  the host gate's behaviour there is byte-for-byte what it was without any of
-  this: the seam answers ``None`` and ``SpawnApprovalUnreachable`` is raised;
+* the SAFETY BOUNDARY — a channel with no registered hook still fails fast:
+  the seam answers ``None`` and ``SpawnApprovalUnreachable`` is raised;
 * FALL THROUGH, NEVER DENY, whenever the prompt did not reach anyone: a send
   that raises, a send this client refuses by returning no message id, a
   destination whose authorization was withdrawn, and a channel the operator's
@@ -126,12 +125,11 @@ def _pressed_ids(components: Any) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_a_channel_with_no_hook_still_falls_through_to_the_host_gate() -> None:
-    """The unchanged path. With nothing registered the seam answers ``None``.
+    """With nothing registered the seam answers ``None``.
 
-    This is the whole safety argument for the change: a channel that has not
-    opted in behaves exactly as it does with no delivery seam at all, so the
-    host gate reaches its own Slack-DM/dashboard surfaces and, with neither
-    attached, refuses fast.
+    A channel that has not opted in behaves as if there were no delivery seam,
+    so the host gate reaches its own Slack-DM/dashboard surfaces and, with
+    neither attached, refuses fast.
     """
     decision = await seam.deliver_spawn_approval(
         "spawn:a1", "spawn_run(task)", "discord:kc:direct:u1"
@@ -458,7 +456,7 @@ async def test_a_credential_split_by_invisible_characters_is_not_displayed() -> 
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "AKIA" + "IOSFODNN7EXAMPLE"
     split = secret[:6] + "\u200b" + secret[6:]
 
     task = asyncio.ensure_future(

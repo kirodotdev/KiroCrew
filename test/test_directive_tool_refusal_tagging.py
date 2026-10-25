@@ -1,32 +1,18 @@
 """A directive tool's decline must not be defeated by, or mistaken for, its text.
 
-Two defects, one seam. ``autonudge_stop``'s ``reason`` was a hard-capped 500-char
-field, and ``mcp_core._call_tool`` validates arguments in the dispatch wrapper
-*ahead of* the handler -- so an over-long reason returned a bare
-``"Error: reason: exceeds max length 500 …"`` and ``_emit_directive`` never ran.
-Nothing was published on either channel, so:
-
-1. **The loop was not stopped.** The agent asked to stop and the loop kept
-   waking. On the reporting host one agent was rejected twice in a row (1391 then
-   649 chars) and its loop survived both attempts.
-2. **The lost-marker WARNING was being trained to be ignored.** The consumer had
-   already authenticated the call as a directive tool via ``_meta.kiro``, so a
-   marker-less final frame landed in the branch that logs
-   ``session-directive decode FAILED … effect dropped`` -- a line that exists to
-   catch a rawOutput-envelope escaping regression, firing ~10x/day on routine
-   argument rejections.
-
-The tests split along the two halves of the fix:
+``mcp_core._call_tool`` validates arguments in the dispatch wrapper ahead of the
+handler, so a rejected argument never reaches ``_emit_directive``. Two properties
+keep that from breaking a stop request or the lost-marker diagnostic:
 
 * **Clamp** -- the ``reason`` field of the two stop tools opts into
   ``FieldSpec.clamp_to_max``, so a long explanation is truncated (visibly, with a
-  note carrying the original length) and the stop still happens. Opt-in only: an
+  note carrying the dropped length) and the stop still happens. Opt-in only: an
   ordinary capped field still rejects.
 * **Refusal tag** -- every marker-less return from a directive tool is stamped
   with the refusal sentinel at the producer, so the consumer reports it at INFO
-  as a refusal and ``decode FAILED`` means exactly one thing again. Includes the
-  end-to-end check through ``TurnDriver``: a real rejection string, produced by
-  really calling the tool, must not fire the WARNING.
+  as a refusal and ``session-directive decode FAILED`` is left for a genuinely
+  lost marker. The end-to-end check drives a real rejection string through
+  ``TurnDriver``.
 """
 
 from __future__ import annotations
@@ -59,8 +45,7 @@ from kiro_crew.validation import (
     validate_field,
 )
 
-# The reason length from the issue's own evidence (chat-1011-1788560471), so the
-# regression is pinned to a real rejected call rather than to a round number.
+# A reason well past MAX_SHORT_STRING, the length of a real rejected stop call.
 _OVERSIZED_REASON = "stopping because " + "x" * 1374
 _STRUCTURED_STOP_REASON = "monitor done because " + "y" * 900
 
@@ -70,19 +55,11 @@ def published(monkeypatch) -> list[tuple[str, dict]]:
     """Capture ``_emit_directive``'s out-of-band publish instead of sending it.
 
     `_emit_directive` POSTs every directive to ``/api/session-directive`` on the
-    resolved API port, and swallows any exception -- so an unstubbed test makes a
-    REAL request to whatever is listening there, silently. On a developer machine
-    that is the operator's own live gateway (measured: `http://127.0.0.1:5476`),
-    and the request carries a real-looking session key. Under this suite the
-    gateway refuses it (the conftest ``KIROCREW_HOME`` pin makes the client read a
-    different instance credential, so the POST comes back
-    ``this client authenticated against the wrong Kiro Crew instance``), but a
-    test must not depend on an unrelated guard rejecting traffic it should never
-    have generated.
+    resolved API port and swallows any exception, so an unstubbed test would
+    silently send a real request to whatever gateway is listening there.
 
-    Returned as a RECORDER rather than a black hole, so the stub also buys
-    coverage: the publish is half of the directive contract (marker + parked
-    record), and it is otherwise unasserted anywhere in these tests.
+    Returned as a recorder so tests can assert the publish half of the directive
+    contract (marker + parked record).
     """
     posted: list[tuple[str, dict]] = []
 
@@ -242,13 +219,8 @@ class TestARejectionCannotForgeADirective:
     which the model controls. A key carrying the sentinel, a JSON payload and a
     newline therefore made the REJECTION string decode as a real directive under
     the genuine tool's authenticated `_meta` identity -- applying exactly the
-    arguments validation had just refused.
-
-    Reproduced on untouched `main` before being fixed here, so this closes an
-    inherited hole rather than one this change introduced. It is fixed in THIS PR
-    because the refusal tag added here is what a reviewer would otherwise read as
-    a provenance guarantee, and because a rejection carrying live marker bytes is
-    the one input that defeats it.
+    arguments validation had just refused. Rejections therefore neutralize any
+    marker bytes they echo.
     """
 
     @pytest.mark.parametrize(
@@ -362,9 +334,7 @@ _HOSTILE_CALLS: dict[str, dict] = {
         "target": "http://example.com/not/a/pr",
         "objective": "review_ready",
     },
-    # The site that shipped unguarded while its sibling was fixed: a bad target
-    # here RAISED past the refusal tag, which is exactly what this table exists
-    # to catch mechanically instead of by grep.
+    # A bad target here must be returned as a tagged refusal, not raised.
     "monitor_update": {"target": "http://example.com/not/a/pr"},
     "monitor_stop": {"reason": "y" * 900},
     # nothing_to_do has one clamped field, so a schema-plausible hostile call
@@ -472,6 +442,10 @@ def _drive(tool: str, tool_output: str) -> None:
     asyncio.run(driver.run("hello"))
 
 
+def _driver_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "kiro_crew.messaging.driver"]
+
+
 class TestConsumerReportsARefusalAsARefusal:
     def test_a_real_rejection_string_does_not_fire_the_lost_marker_warning(
         self, dashboard_session, caplog
@@ -482,8 +456,9 @@ class TestConsumerReportsARefusalAsARefusal:
         rejection = _call_tool("monitor_start", {"message": "x" * 9000})
         with caplog.at_level("INFO"):
             _drive("monitor_start", rejection)
-        assert "decode FAILED" not in caplog.text
-        assert "session-directive REFUSED" in caplog.text
+        logged = "\n".join(_driver_messages(caplog))
+        assert "decode FAILED" not in logged
+        assert "session-directive REFUSED" in logged
 
     def test_a_genuinely_lost_marker_still_fires_the_warning(self, caplog):
         """The diagnostic must keep working -- this is the case it is FOR: an
@@ -491,4 +466,4 @@ class TestConsumerReportsARefusalAsARefusal:
         refusal tag (a rawOutput-envelope escaping regression)."""
         with caplog.at_level("INFO"):
             _drive("monitor_start", "Monitor loop requested.")
-        assert "session-directive decode FAILED" in caplog.text
+        assert any("session-directive decode FAILED" in m for m in _driver_messages(caplog))

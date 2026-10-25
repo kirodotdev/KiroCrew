@@ -1017,7 +1017,7 @@ _FACADE_PINNED = {
     "the auto-title pin": "test_messaging_auto_title: pin_record, try_claim, is_titled",
     "a name-grant check": "test_name_grant_surfaces: name_grant",
     "the forgeable spawn title": 'test_name_grant_surfaces: title == "spawn_run"',
-    "the reservation sweep": "test_early_approval_press_13578: discard_session",
+    "the reservation sweep": "test_approval_early_press: discard_session",
     "a receipt flip": "test_queue_receipt: every flip call names its owner",
     "the queue drain": "test_queue_drain_wake: async def _drain_queue",
     "an agent-SDK import": "check_agent_sdk_boundary: kiro_crew.acp / kiro_crew.providers",

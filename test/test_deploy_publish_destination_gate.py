@@ -17,6 +17,7 @@ Plus one wiring test that goes through the REAL decision (no stubbed gate) via t
 operator's ``publish.allowed_destinations`` config, because every mock-level test
 above would still pass if the handler called a function that always permitted.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,12 +33,8 @@ def _run(coro):
 
     ``asyncio.run`` and not a hand-rolled ``new_event_loop()``: the handlers under
     test call ``asyncio.to_thread``, which binds a default ThreadPoolExecutor to
-    the RUNNING loop. A loop that is never closed leaves that executor attached to
-    a dead loop, and the threads surface later as "Event loop is closed" — which
-    is what turned Backend Tests shard 3 red on 5ff7c2fe7 while every assertion
-    passed. ``asyncio.run`` closes the loop and awaits
-    ``shutdown_default_executor()`` on the way out. This mirrors
-    ``deploy_web_handlers_helpers._run``.
+    the running loop, and ``asyncio.run`` closes the loop and shuts that executor
+    down so its threads cannot later raise "Event loop is closed".
     """
     return asyncio.run(coro)
 
@@ -66,11 +63,10 @@ class _Req:
 
 # ── /api/deploy/deploy ──────────────────────────────────────────────────────
 
+
 def test_deploy_denied_when_destination_closed(monkeypatch):
     """A denied destination returns 403 and never reaches the deploy engine."""
-    monkeypatch.setattr(
-        handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy"
-    )
+    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
 
     async def _must_not_run(_params):  # pragma: no cover - reached only on regression
         raise AssertionError("_do_deploy ran despite a denied destination")
@@ -113,9 +109,7 @@ def test_denials_carry_a_machine_readable_code(monkeypatch):
     denial is the only translatable one — and this denial is the message a whole
     team sees after an operator closes the destination.
     """
-    monkeypatch.setattr(
-        handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy"
-    )
+    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
     deploy = _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     pending = _run(handlers._handle_pending_confirm(_Req(match_info={"id": "p1"})))
     for resp in (deploy, pending):
@@ -137,9 +131,9 @@ def test_the_gate_never_runs_on_the_event_loop():
     for fn in (handlers._handle_deploy, handlers._handle_pending_confirm):
         src = inspect.getsource(fn)
         assert "publish_denied_reason" in src, f"{fn.__name__} lost the gate entirely"
-        assert "asyncio.to_thread(" in src, (
-            f"{fn.__name__} calls publish_denied_reason on the event loop"
-        )
+        assert (
+            "asyncio.to_thread(" in src
+        ), f"{fn.__name__} calls publish_denied_reason on the event loop"
 
     from kiro_crew.apps import routes
 
@@ -153,15 +147,14 @@ def test_internal_secret_preview_is_denied_too(monkeypatch):
     The preview is the surface that tells an agent the destination exists; a closed
     destination must not advertise one.
     """
-    monkeypatch.setattr(
-        handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy"
-    )
+    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
     req = _Req({"site_id": "x"}, headers={"X-Internal-Secret": "s"})
     resp = _run(handlers._handle_deploy(req))
     assert resp.status == 403
 
 
 # ── /api/deploy/pending/{id}/confirm ────────────────────────────────────────
+
 
 def test_pending_confirm_denied_without_consuming_the_entry(monkeypatch):
     """403 lands BEFORE claim_pending, so the entry survives the refusal.
@@ -170,9 +163,7 @@ def test_pending_confirm_denied_without_consuming_the_entry(monkeypatch):
     confirms cannot double-deploy), so gating after the claim would turn every
     denied confirm into a silently discarded pending deploy.
     """
-    monkeypatch.setattr(
-        handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy"
-    )
+    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
     from kiro_crew.deploy import pending as pending_mod
 
     def _must_not_claim(_entry_id):  # pragma: no cover - reached only on regression
@@ -186,13 +177,12 @@ def test_pending_confirm_denied_without_consuming_the_entry(monkeypatch):
 
 # ── GET /api/publish-providers ──────────────────────────────────────────────
 
+
 def test_provider_registry_omits_closed_destination(monkeypatch):
     from kiro_crew.apps import routes
 
     monkeypatch.setattr(routes, "list_apps", lambda: [])
-    monkeypatch.setattr(
-        routes, "publish_denied_reason", lambda _req, _pid: "closed by policy"
-    )
+    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: "closed by policy")
     resp = _run(routes.handle_publish_providers(_Req()))
     ids = [p["id"] for p in json.loads(resp.text)["providers"]]
     assert "deploy-web-aws" not in ids
@@ -213,23 +203,28 @@ def test_provider_registry_lists_open_destination(monkeypatch):
 
 # ── the destination id is reserved ──────────────────────────────────────────
 
+
 def _squatter_app():
     """An enabled app whose manifest claims the CORE deploy destination id.
 
     ``collect_publish_providers`` validates the declared *endpoint* (it must sit
-    under the app's own namespace) but never the declared *id*, so this manifest
-    is accepted today.
+    under the app's own namespace) but not the declared *id*, so this manifest
+    is accepted.
     """
-    return [{
-        "name": "squatter",
-        "enabled": True,
-        "manifest": {"publishProvider": {
-            "id": "deploy-web-aws",
-            "label": "Publish (totally the real one)",
-            "endpoint": "/api/apps/squatter/publish",
-            "setupRoute": "/apps/squatter",
-        }},
-    }]
+    return [
+        {
+            "name": "squatter",
+            "enabled": True,
+            "manifest": {
+                "publishProvider": {
+                    "id": "deploy-web-aws",
+                    "label": "Publish (totally the real one)",
+                    "endpoint": "/api/apps/squatter/publish",
+                    "setupRoute": "/apps/squatter",
+                }
+            },
+        }
+    ]
 
 
 def test_an_app_cannot_squat_the_core_destination_id_when_denied(monkeypatch):
@@ -243,9 +238,7 @@ def test_an_app_cannot_squat_the_core_destination_id_when_denied(monkeypatch):
 
     monkeypatch.setattr(routes, "list_apps", _squatter_app)
     monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
-    monkeypatch.setattr(
-        routes, "publish_denied_reason", lambda _req, _pid: "closed by policy"
-    )
+    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: "closed by policy")
     resp = _run(routes.handle_publish_providers(_Req()))
     rows = json.loads(resp.text)["providers"]
     assert [p["id"] for p in rows] == []
@@ -302,30 +295,37 @@ def test_an_app_declaring_a_different_id_is_untouched(monkeypatch):
     """The filter is scoped to the reserved id, not to app providers generally."""
     from kiro_crew.apps import routes
 
-    monkeypatch.setattr(routes, "list_apps", lambda: [{
-        "name": "notes",
-        "enabled": True,
-        "manifest": {"publishProvider": {
-            "id": "notes-publish",
-            "endpoint": "/api/apps/notes/publish",
-        }},
-    }])
-    monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
     monkeypatch.setattr(
-        routes, "publish_denied_reason", lambda _req, _pid: "closed by policy"
+        routes,
+        "list_apps",
+        lambda: [
+            {
+                "name": "notes",
+                "enabled": True,
+                "manifest": {
+                    "publishProvider": {
+                        "id": "notes-publish",
+                        "endpoint": "/api/apps/notes/publish",
+                    }
+                },
+            }
+        ],
     )
+    monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
+    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: "closed by policy")
     resp = _run(routes.handle_publish_providers(_Req()))
     assert [p["id"] for p in json.loads(resp.text)["providers"]] == ["notes-publish"]
 
 
 # ── the real decision, not a stub ───────────────────────────────────────────
 
+
 @pytest.fixture()
 def narrowed_allowlist(tmp_path, monkeypatch):
     """Operator config permits only the internal registry — deploy is excluded.
 
     Written as real bytes to a real config.json rather than by mocking
-    ``KiroCrewConfig.load()``. The gate now reads the FILE, and a mock here would
+    ``KiroCrewConfig.load()``. The gate reads the FILE, and a mock here would
     make the test agree with the reader instead of with what an operator typed —
     which is exactly how a malformed section that reopens the allowlist can go
     unnoticed.
@@ -370,6 +370,7 @@ def test_deploy_permitted_when_allowlist_names_it(monkeypatch):
 
 # ── one decision, not two ───────────────────────────────────────────────────
 
+
 def test_artifact_publish_and_deploy_share_one_decision():
     """The artifact-publish alias must stay the shared helper, never a fork.
 
@@ -391,13 +392,13 @@ def test_artifact_publish_and_deploy_share_one_decision():
 
 # ── both denial layers are audited ──────────────────────────────────────────
 
+
 def test_the_config_allowlist_denial_is_audited(narrowed_allowlist, monkeypatch):
     """A config-allowlist refusal reaches SEL, exactly like a ceiling refusal.
 
     There are TWO denial layers and they produce the same user-visible 403, so an
     operator reconstructing "why was this publish refused" must find either one on
-    the record. The ceiling deny was always audited; this pins the config deny,
-    which returned its reason silently and left the trail half-written.
+    the record.
     """
     import kiro_crew.publish_governance as pg
 
@@ -482,9 +483,7 @@ def _quiet_sel(monkeypatch):
     return events
 
 
-def test_a_malformed_config_denies_instead_of_reopening_the_path(
-    tmp_path, monkeypatch, _quiet_sel
-):
+def test_a_malformed_config_denies_instead_of_reopening_the_path(tmp_path, monkeypatch, _quiet_sel):
     """A corrupt ``config.json`` must not present as an empty (allow-all) allowlist.
 
     ``KiroCrewConfig.load()`` catches ``JSONDecodeError``/``OSError``, warns, and
@@ -496,6 +495,7 @@ def test_a_malformed_config_denies_instead_of_reopening_the_path(
     """
     import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
+
     bad = tmp_path / "config.json"
     bad.write_text('{"publish": {"allowed_destinations": ["internal-registry"]')  # truncated
     monkeypatch.setattr(loader, "config_path", lambda: bad)
@@ -516,6 +516,7 @@ def test_a_malformed_overlay_denies_too(tmp_path, monkeypatch, _quiet_sel):
     """
     import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
+
     good = tmp_path / "config.json"
     good.write_text("{}")
     bad_overlay = tmp_path / "config.local.json"
@@ -533,6 +534,7 @@ def test_a_non_object_config_denies(tmp_path, monkeypatch, _quiet_sel):
     """Valid JSON that is not an object also degrades to defaults in the loader."""
     import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
+
     weird = tmp_path / "config.json"
     weird.write_text('["not", "an", "object"]')
     monkeypatch.setattr(loader, "config_path", lambda: weird)
@@ -542,12 +544,10 @@ def test_a_non_object_config_denies(tmp_path, monkeypatch, _quiet_sel):
 
 
 def test_a_config_read_failure_is_audited_too(tmp_path, monkeypatch, _quiet_sel):
-    """The LAST denial path that returned silently now audits like the rest.
+    """A config-read failure denies through `_audit_deny` like every other layer.
 
-    `_audit_deny` claims every layer that can refuse routes through it, and that
-    claim was false for the config branch. A refusal an operator cannot find in
-    the audit log is indistinguishable, to them, from the publish never having
-    been attempted.
+    A refusal an operator cannot find in the audit log is indistinguishable, to
+    them, from the publish never having been attempted.
     """
     import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
@@ -572,9 +572,9 @@ def test_a_config_read_failure_is_audited_too(tmp_path, monkeypatch, _quiet_sel)
 
     assert reason is not None, "a config that cannot be read must DENY"
     assert "could not be loaded" in reason
-    assert [e["outcome"] for e in _quiet_sel] == ["denied"], (
-        f"the config-read refusal must be audited exactly once, got {_quiet_sel}"
-    )
+    assert [e["outcome"] for e in _quiet_sel] == [
+        "denied"
+    ], f"the config-read refusal must be audited exactly once, got {_quiet_sel}"
 
 
 def test_an_absent_config_still_permits(tmp_path, monkeypatch, _quiet_sel):
@@ -586,6 +586,7 @@ def test_an_absent_config_still_permits(tmp_path, monkeypatch, _quiet_sel):
     """
     import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
+
     monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "absent.json")
     monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "absent.local.json")
 
@@ -602,8 +603,7 @@ def test_an_absent_config_still_permits(tmp_path, monkeypatch, _quiet_sel):
 # not read as "no restriction".
 #
 # Written as real bytes to a real config.json. Mocking KiroCrewConfig.load()
-# makes the test agree with the reader instead of with the file, which is what
-# let this class of widening ship unnoticed.
+# makes the test agree with the reader instead of with the file.
 
 
 def _config_on_disk(tmp_path, monkeypatch, base: str, overlay: str | None = None):
@@ -621,7 +621,7 @@ def _config_on_disk(tmp_path, monkeypatch, base: str, overlay: str | None = None
 @pytest.mark.parametrize(
     "body",
     [
-        '{"publish": []}',                       # the issue's exact repro
+        '{"publish": []}',
         '{"publish": "internal-registry"}',
         '{"publish": 0}',
         '{"publish": null}',
@@ -645,7 +645,8 @@ def test_a_malformed_publish_section_in_the_OVERLAY_denies(tmp_path, monkeypatch
     import kiro_crew.publish_governance as pg
 
     _config_on_disk(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         '{"publish": {"allowed_destinations": ["internal-registry"]}}',
         overlay='{"publish": []}',
     )
@@ -653,7 +654,7 @@ def test_a_malformed_publish_section_in_the_OVERLAY_denies(tmp_path, monkeypatch
     assert pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID) is not None
 
 
-@pytest.mark.parametrize("dests", ['"deploy-web"', '5', '{"a": 1}'])
+@pytest.mark.parametrize("dests", ['"deploy-web"', "5", '{"a": 1}'])
 def test_a_non_list_allowed_destinations_denies(tmp_path, monkeypatch, _quiet_sel, dests):
     """One level down, the same shape: the loader's comprehension filters
     non-strings out silently, so a scalar here yielded [] -- a narrowing turned
@@ -689,7 +690,8 @@ def test_a_partially_invalid_allowlist_fails_closed(tmp_path, monkeypatch, _quie
     import kiro_crew.publish_governance as pg
 
     _config_on_disk(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         '{"publish": {"allowed_destinations": ["deploy-web", 5]}}',
     )
 
@@ -716,8 +718,8 @@ def test_the_malformed_bytes_survive_the_writeback_migration(tmp_path, monkeypat
     on-disk evidence, so the next process (the restart the denial reason
     prescribes) would see a clean default-open file and silently allow-all.
 
-    The issue's exact repro doubles as the migration trigger: {"publish": []}
-    has no agents key, so the default-agent migration fires on first load."""
+    {"publish": []} has no agents key, so the default-agent migration fires on
+    first load."""
     import json
 
     from kiro_crew.config.loader import KiroCrewConfig
@@ -741,22 +743,22 @@ def test_a_well_formed_narrowing_still_denies_the_excluded_destination(
     import kiro_crew.publish_governance as pg
 
     _config_on_disk(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         '{"publish": {"allowed_destinations": ["internal-registry"]}}',
     )
 
     assert pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID) is not None
 
 
-def test_a_well_formed_allowlist_naming_the_destination_permits(
-    tmp_path, monkeypatch, _quiet_sel
-):
+def test_a_well_formed_allowlist_naming_the_destination_permits(tmp_path, monkeypatch, _quiet_sel):
     """Control the other way: a valid narrowing that INCLUDES the destination
     must not be refused by the new validation."""
     import kiro_crew.publish_governance as pg
 
     _config_on_disk(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         '{"publish": {"allowed_destinations": ["%s"]}}' % pg.DEPLOY_WEB_PROVIDER_ID,
     )
 

@@ -29,6 +29,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
     clear_nonces,
 )
 
+import kiro_crew.dashboard.token_auth as token_auth_mod
 from kiro_crew.dashboard.token_auth import (
     MAX_CONCURRENT_NONCES,
     MAX_SESSION_TTL_SECS,
@@ -1223,6 +1224,117 @@ async def test_strict_path_non_loopback_still_hard_denied() -> None:
     )
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
+
+
+# -- Property 9c: one api_access row per mixed-internal cookie poll --
+#
+# A browser cookie request on a mixed-internal path writes only the dashboard-layer
+# ``_log_auth`` audit row, not a redundant ``internal_auth``/``granted`` token-auth row.
+# Every distinct decision (denial, app-token grant) still logs its own row.
+
+
+def _capture_sel(monkeypatch):
+    calls: list[dict] = []
+
+    class _FakeSel:
+        def log_api_access(self, **kw):
+            calls.append(kw)
+
+    monkeypatch.setattr(token_auth_mod, "_sel_fn", lambda: _FakeSel())
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote", ["127.0.0.1", "10.0.0.1"])
+async def test_mixed_internal_cookie_poll_emits_one_api_access_row(monkeypatch, remote):
+    """A cookie poll of a mixed-internal path writes exactly ONE api_access row.
+
+    Both the loopback and the DCV/SSH-forwarded cookie-auth success branches
+    collapse to the single dashboard-layer ``_log_auth`` row.
+    """
+    calls = _capture_sel(monkeypatch)
+    token = generate_token("owner", ttl_seconds=300)
+    bind_token_ip(token, remote)
+    mark_consumed(token)
+
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/workflows"}),
+        internal_secret="s",
+        local_only=False,
+    )
+    req = _make_request("/api/workflows/runs", cookies={"mc_token_5476": token}, remote=remote)
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+
+    rows = [c for c in calls if c.get("resources") == "/api/workflows/runs"]
+    assert len(rows) == 1, f"one request must write one api_access row; got {rows}"
+    assert rows[0]["operation"] == "dashboard.token_auth"
+    assert rows[0].get("source") != "token_auth"
+    # The surviving row names the resolved caller (the token subject), so it is
+    # a superset of the suppressed row rather than the ``"internal"`` literal.
+    assert rows[0]["caller"] == "owner", rows[0]
+    assert not [
+        c
+        for c in calls
+        if c.get("source") == "token_auth" and c.get("operation") == "internal_auth"
+    ], "the redundant internal_auth/granted token_auth row must be gone"
+
+
+@pytest.mark.asyncio
+async def test_mixed_internal_cookie_denial_still_logs(monkeypatch):
+    """A failed cookie on a mixed-internal path still writes a denial api_access row."""
+    calls = _capture_sel(monkeypatch)
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/workflows"}),
+        internal_secret="s",
+        local_only=False,
+    )
+    req = _make_request("/api/workflows/runs", cookies={"mc_token_5476": "garbage"})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    denials = [
+        c
+        for c in calls
+        if c.get("outcome") == "denied"
+        and c.get("source") == "token_auth"
+        and c.get("operation") == "internal_auth"
+    ]
+    assert len(denials) == 1, calls
+    assert denials[0]["resources"] == "/api/workflows/runs"
+    assert denials[0]["error"].startswith("cookie auth failed"), denials[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote", ["127.0.0.1", "10.0.0.1"])
+async def test_mixed_internal_app_token_keeps_layer_row(monkeypatch, remote):
+    """An app token's scoped grant on a mixed path keeps its token_auth row.
+
+    The dedup narrows to the dashboard user: an app token reaching a mixed
+    route is a distinct security decision, so its per-layer
+    ``source=token_auth`` row survives.
+    """
+    monkeypatch.setattr(token_auth_mod, "app_token_path_allowed", lambda app_name, path: True)
+    calls = _capture_sel(monkeypatch)
+    token = generate_token("someapp", ttl_seconds=300, app="someapp")
+    bind_token_ip(token, remote)
+    mark_consumed(token)
+
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/workflows"}),
+        internal_secret="s",
+        local_only=False,
+    )
+    req = _make_request("/api/workflows/runs", cookies={"mc_token_5476": token}, remote=remote)
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+    layer_rows = [
+        c
+        for c in calls
+        if c.get("source") == "token_auth" and c.get("operation") == "internal_auth"
+    ]
+    assert len(layer_rows) == 1, calls
+    assert layer_rows[0]["outcome"] == "granted"
+    assert layer_rows[0]["resources"] == "/api/workflows/runs"
 
 
 # -- Property 10: Nonce-based token invalidation --

@@ -221,3 +221,37 @@ class TestSearchForContext:
             ).status == 200
         assert seen["embedder"] is None
         assert seen["embed_sig"] is None
+
+
+class TestSearchForContextLimitCap:
+    """The caller's ``limit`` is clamped server-side to [1, 100] before it
+    reaches the retriever, so a query cannot ask for an unbounded result set."""
+
+    @staticmethod
+    async def _searched_limit(store, monkeypatch, tmp_path, limit: str) -> int:
+        monkeypatch.setattr(f"{MODULE}.data_home", lambda: tmp_path)
+        captured = {}
+
+        async def _direct(fn, *args, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(f"{MODULE}.run_in_embed_pool", _direct)
+        monkeypatch.setattr(
+            f"{MODULE}.HybridRetriever",
+            lambda *a, **kw: MagicMock(search=MagicMock(return_value=[])),
+        )
+        async with _client(_make_app(store)) as client:
+            resp = await client.get(
+                "/api/knowledge/search-for-context", params={"q": "z", "limit": limit}
+            )
+            assert resp.status == 200
+        return captured["limit"]
+
+    @pytest.mark.asyncio
+    async def test_limit_has_server_side_upper_bound(self, store, monkeypatch, tmp_path):
+        assert await self._searched_limit(store, monkeypatch, tmp_path, "100000") == 100
+
+    @pytest.mark.asyncio
+    async def test_limit_has_positive_lower_bound(self, store, monkeypatch, tmp_path):
+        assert await self._searched_limit(store, monkeypatch, tmp_path, "-5") == 1

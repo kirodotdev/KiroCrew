@@ -1,34 +1,25 @@
-"""A `channels` deny landing MID-WAIT falls through instead of voting for the operator.
+"""The `channels` ceiling and the conversation's own authority gate spawn-approval delivery.
 
-The seam consults the operator's `channels` ceiling before a hook posts its
-spawn-approval prompt, so a channel already denied is never prompted. That covers
-only half the window: the host gate holds a spawn for as long as its approval
-takes, so a deny can land while the prompt is still pending. From that moment the
-channel's callback path drops the answering press -- every press except an explicit
-reject -- so the prompt is unanswerable, the deny-by-default wait elapses, and a
-bare ``False`` reaches the host gate, which returns it as the decision. The spawn
-is refused on a prompt the operator has no way to answer, and is never re-offered
-on the still-permitted Slack DM or dashboard surface.
-
-Five cases are pinned, which together are the whole window:
+A spawn parented on a channel conversation is offered its Approve/Deny prompt
+there by that channel's registered delivery hook. The press that answers it
+arrives INBOUND on the same channel, and a denied channel drops every press
+except an explicit reject. A prompt nobody can answer elapses into a ``False``
+the host gate would read as the user's refusal, so the seam must answer ``None``
+(fall through to the Slack DM or dashboard) whenever the channel stops being
+answerable:
 
 * PRE-POST deny -- denied before the hook runs: no hook, no prompt, ``None``;
 * MID-WAIT deny -- permitted at post, denied when the unpressed wait elapses:
-  ``None`` (fall through), NOT ``False``;
-* EXPLICIT REJECT -- a Deny press, which a denied channel's drop exempts, stays
-  ``False`` even when the channel was denied while the prompt was pending;
-* TIMEOUT STILL PERMITTED -- an unpressed wait on a channel the operator never
-  denied is a real deny-by-default and keeps answering ``False``;
-* FALLBACK -- a hook that cannot surface the prompt, or one that raises, still
-  answers ``None``, so a delivery fault degrades to Slack/dashboard.
+  ``None``, not ``False``;
+* EXPLICIT REJECT -- a Deny press stays ``False`` even if the channel is denied
+  afterwards;
+* TIMEOUT STILL PERMITTED -- an unpressed wait on a permitted channel is a real
+  deny-by-default and stays ``False``;
+* FALLBACK -- a hook that cannot surface the prompt, or raises, answers ``None``.
 
-Answerability can also end by the conversation's OWN authorization rather than the
-`channels` ceiling. `on_callback` checks that FIRST, for every press, with no reject
-exemption: the peer roster gates every press, and a Topic passes the shared
-`forum_gate_outcome` predicate as well. A peer dropped from the roster, or a Topic
-dropped from the allow-list, therefore silences even a reject while the ceiling still
-permits, so that authority is re-read when the wait elapses too -- for a Topic, whose
-route names no single peer, by asking whether the roster admits anybody at all.
+`on_callback` checks the conversation's own authorization (peer roster, and for a
+Topic the shared `forum_gate_outcome` predicate) before every press with no reject
+exemption, so a roster or Topic withdrawal is re-read when the wait elapses too.
 
 All Telegram client I/O is faked; nothing touches the network, and the ceiling
 predicate is substituted rather than driven through a real profile store.
@@ -72,8 +63,8 @@ def _clean_registries():
 def _short_prompt_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink the deny-by-default wait, which several cases here run to the end.
 
-    The real window is minutes, so without this every elapsed-wait assertion below
-    would park the suite on it rather than failing.
+    The real window is minutes, so without this an elapsed-wait assertion, or a
+    regression that posts under a deny, would park the suite instead of failing.
     """
     import kiro_crew.telegram.renderer as renderer_mod
 
@@ -109,7 +100,7 @@ def _ceiling(monkeypatch: pytest.MonkeyPatch):
 
     ``state["permitted"]`` is read on every call rather than captured, which is
     what lets a test flip the answer BETWEEN the pre-post consult and the one
-    behind the elapsed wait -- the mid-wait deny this file is about.
+    behind the elapsed wait.
     """
 
     calls: list[str] = []
@@ -149,13 +140,89 @@ async def _press(dispatcher, session_key: str, flag: str) -> None:
     )
 
 
+class TestTheGovernanceCeilingGatesChannelDelivery:
+    """A denied channel reaches no hook, and the spawn stays answerable elsewhere."""
+
+    def test_a_denied_channel_invokes_no_hook_and_falls_through(self, _ceiling) -> None:
+        invoked: list[str] = []
+
+        async def _hook(rid: str, _desc: str, _parent: str) -> bool:
+            invoked.append(rid)
+            return True
+
+        seam.register_channel_delivery("telegram", _hook)
+        _ceiling.state["permitted"] = False
+
+        result = asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, "telegram:k:direct:7"))
+
+        # None, not False: nothing was surfaced, so there is no decision to report
+        # and the gate re-offers the prompt on Slack/dashboard.
+        assert result is None
+        assert result is not False
+        assert invoked == []
+        assert _ceiling.calls == ["telegram"]
+
+    def test_the_ceiling_is_asked_about_the_channel_that_owns_the_session(self, _ceiling) -> None:
+        # The channel the prompt would be posted to is the one whose permission
+        # decides it, so the question carries that channel's own name.
+        async def _hook(_rid: str, _desc: str, _parent: str) -> bool:
+            return True
+
+        seam.register_channel_delivery("discord", _hook)
+        _ceiling.state["permitted"] = False
+
+        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, "discord:k:direct:9")) is None
+        assert _ceiling.calls == ["discord"]
+
+    def test_a_key_with_no_hook_never_asks_about_its_channel_type(self, _ceiling) -> None:
+        # Hook resolution runs first, so a non-channel namespace and a channel
+        # nobody registered both fall through without a governance question about
+        # a channel type the policy has no opinion on.
+        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, "dashboard:chat-1-2")) is None
+        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, "unified:kirocrew")) is None
+        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, "telegram:k:direct:7")) is None
+        assert _ceiling.calls == []
+
+    def test_a_denied_channel_leaves_the_telegram_hook_arming_nothing(self, _ceiling) -> None:
+        # Through the REAL dispatcher hook: a refused delivery arms no approval
+        # nonce and opens no wait, because the hook is never entered.
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
+        _ceiling.state["permitted"] = False
+
+        result = asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key))
+
+        assert result is None
+        assert cli.sent == []
+        key = TelegramApprovalDecider.key(session_key, _RID)
+        assert key not in TelegramApprovalDecider._NONCES
+        assert key not in TelegramApprovalDecider._REGISTRY
+
+    @pytest.mark.usefixtures("_press_lands_inside_the_window")
+    def test_a_permitted_channel_still_prompts_and_resolves_the_press(self, _ceiling) -> None:
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
+
+        async def _go() -> bool | None:
+            task = asyncio.ensure_future(seam.deliver_spawn_approval(_RID, _TASK, session_key))
+            await asyncio.sleep(0)
+            await _press(d, session_key, "1")
+            return await task
+
+        assert asyncio.run(_go()) is True
+        assert len(cli.sent) == 1
+        assert _ceiling.calls == ["telegram"]
+
+
 class TestAMidWaitDenyFallsThrough:
     """A deny that lands while the prompt is pending withholds the channel."""
 
     def test_a_deny_landing_mid_wait_answers_none_not_false(self, _ceiling) -> None:
-        # The whole issue. Permitted when the prompt posts, denied by the time the
-        # unpressed wait elapses: the operator has no way to answer here, so the
-        # elapsed wait is not their refusal.
+        # Permitted when the prompt posts, denied by the time the unpressed wait
+        # elapses: the operator has no way to answer here, so the elapsed wait is
+        # not their refusal.
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
@@ -169,18 +236,17 @@ class TestAMidWaitDenyFallsThrough:
         result = asyncio.run(_go())
 
         assert result is None
-        # Spelled separately because ``False`` is the bug's value and ``None is
-        # False`` would not distinguish it from a falsey answer.
+        # Spelled separately: ``False`` is the wrong answer, and a falsey check
+        # alone would not tell it from ``None``.
         assert result is not False
         assert len(cli.sent) == 1  # it WAS surfaced; the answer is what changed
-        # Asked twice about the same channel: once before the post, once behind the
-        # elapsed wait. The second consult is the fix.
+        # Asked twice about the same channel: once before the post, once behind
+        # the elapsed wait.
         assert _ceiling.calls == ["telegram", "telegram"]
 
     def test_the_host_gate_falls_through_on_that_none(self, _ceiling) -> None:
         # The gate returns a non-None channel answer VERBATIM, so None is the only
-        # value that reaches its Slack/dashboard path. Pin the contract this fix
-        # depends on rather than assuming it.
+        # value that reaches its Slack/dashboard path.
         fell_through: list[str] = []
 
         async def _host_gate(rid: str, desc: str, parent: str) -> bool:
@@ -225,8 +291,8 @@ class TestAMidWaitDenyFallsThrough:
         assert _ceiling.calls == ["telegram"]
 
     def test_a_timeout_on_a_still_permitted_channel_still_answers_false(self, _ceiling) -> None:
-        # The scope line of the issue. An unpressed wait on a channel the operator
-        # never denied is a real deny-by-default and is NOT part of this gap.
+        # An unpressed wait on a channel the operator never denied is a real
+        # deny-by-default.
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
@@ -239,8 +305,8 @@ class TestAMidWaitDenyFallsThrough:
         assert _ceiling.calls == ["telegram", "telegram"]
 
     def test_a_pre_post_deny_still_invokes_no_hook(self, _ceiling) -> None:
-        # The other half of the window, unchanged: denied before the prompt posts,
-        # so nothing is surfaced and no nonce is armed.
+        # Denied before the prompt posts, so nothing is surfaced and no nonce is
+        # armed.
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
@@ -257,9 +323,8 @@ class TestAMidWaitDenyFallsThrough:
 
     @pytest.mark.usefixtures("_press_lands_inside_the_window")
     def test_an_approve_press_is_unaffected(self, _ceiling) -> None:
-        # The permitted path is untouched: a press still resolves, and the ceiling
-        # is asked once (before the post) and never behind a wait that never
-        # elapsed.
+        # A press still resolves, and the ceiling is asked once (before the post)
+        # and never behind a wait that never elapsed.
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
@@ -278,8 +343,7 @@ class TestTheSeamOwnsTheReading:
     """The hook reports an unpressed wait; the seam decides what it means."""
 
     def test_the_helper_answers_false_while_permitted_and_none_once_denied(self, _ceiling) -> None:
-        # The decision in isolation, both directions, so a regression names which
-        # half broke rather than only failing an end-to-end case.
+        # Both directions in isolation, so a regression names which half broke.
         assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) is False
 
         _ceiling.state["permitted"] = False
@@ -293,8 +357,7 @@ class TestTheSeamOwnsTheReading:
         assert _ceiling.calls == ["discord"]
 
     def test_a_hook_answering_a_bare_false_is_passed_through(self, _ceiling) -> None:
-        # A hook that never calls the helper keeps today's behaviour, even under a
-        # deny. The seam cannot tell such a False from a press, and reading it as
+        # The seam cannot tell a hook's bare False from a press, and reading it as
         # unpressed would convert an explicit reject into a fall-through.
         async def _hook(_rid: str, _desc: str, _parent: str) -> bool:
             _ceiling.state["permitted"] = False
@@ -337,8 +400,8 @@ class TestTheSeamOwnsTheReading:
 
     def test_the_deny_cause_the_branch_reads_is_the_timeout_one(self) -> None:
         # The hook's branch compares against this constant, and the decider sets
-        # exactly it on an elapsed wait. Pin the pairing so a rename of either side
-        # cannot silently turn the branch off and restore the bug.
+        # exactly it on an elapsed wait. A rename of either side would silently
+        # turn the branch off.
         from kiro_crew.telegram import renderer_approval as renderer_mod
 
         src = renderer_mod.__loader__.get_source("kiro_crew.telegram.renderer_approval")
@@ -374,8 +437,8 @@ class TestTheConversationAuthorityAlsoEndsAnswerability:
         assert _ceiling.state["permitted"] is True
 
     def test_that_withdrawal_is_invisible_to_the_channels_ceiling(self, _ceiling) -> None:
-        # Spelled separately: the seam's answer for a permitted channel is False, so
-        # a fix that asked only the ceiling would refuse this spawn.
+        # The seam's answer for a permitted channel is False, so asking only the
+        # ceiling would refuse this spawn.
         assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) is False
 
     def test_a_press_before_the_withdrawal_still_reports_its_decision(self, _ceiling) -> None:
@@ -394,8 +457,8 @@ class TestTheConversationAuthorityAlsoEndsAnswerability:
         assert asyncio.run(_go()) is False
 
     def test_an_authorized_conversation_on_a_permitted_channel_still_denies(self, _ceiling) -> None:
-        # The new check must not over-trigger: nothing was withdrawn, so an
-        # unpressed wait is still the operator declining to answer.
+        # Nothing was withdrawn, so an unpressed wait is still the operator
+        # declining to answer.
         d, _cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
@@ -476,8 +539,8 @@ class TestTheTopicRouteReadsTheRosterToo:
         assert asyncio.run(_go()) is None
 
     def test_an_authorized_topic_on_a_permitted_channel_still_denies(self, _ceiling) -> None:
-        # The Topic branch must not over-trigger either: nothing was withdrawn, so
-        # an unpressed wait stays the operator declining to answer.
+        # Nothing was withdrawn, so an unpressed wait stays the operator declining
+        # to answer.
         _d, cli, _sess, session_key = self._forum_dispatcher()
 
         assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key)) is False

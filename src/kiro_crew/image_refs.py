@@ -32,7 +32,7 @@ exactly such a path: its ``__init__`` pulls ``driver`` -> ``acp.types`` ->
 ``acp/__init__`` -> ``acp.client`` -> ``prompt_blocks`` -> back into this module
 half-built, raising ``ImportError`` on ``_PATH_RE``. So the two scanners that
 live under ``kiro_crew.messaging`` are imported where they are USED, and
-``test_replay_image_refs`` pins a cold ``import kiro_crew.image_refs`` in a
+``test_image_refs_replay_strip`` pins a cold ``import kiro_crew.image_refs`` in a
 subprocess so the rule cannot regress unnoticed. ``kiro_crew.widget_parse``
 reaches no ACP module and stays at module scope.
 """

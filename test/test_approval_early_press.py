@@ -4,15 +4,15 @@
 the decider, and the renderer suspends in between -- a thread hop for the
 display-safety scan on Telegram, then the send on all three channels. A press
 that arrives in that gap has a prompt on screen and a nonce armed, so it is a
-genuine answer and must decide the request. A decider that minted its waiter's
-future inside ``__call__`` has nothing to resolve at that moment, reports the
-press to the user as an approval that already expired, and then denies the
-request when the decision window elapses.
+genuine answer and must decide the request, not be reported as expired and then
+denied when the window elapses.
 
-Each channel opens the window where the prompt is prepared and adopts it in
-``__call__``. These tests drive the REAL sequence -- renderer posts, press lands
-during the send, decider runs afterwards -- because that ordering is the defect;
-a test that pressed after the wait started would pass either way.
+This file covers the Slack, Telegram and Teams deciders together (Discord's is in
+``test_discord_renderer.py``) because they share one contract. Each channel opens
+the window where the prompt is prepared and adopts it in ``__call__``. These
+tests drive the REAL sequence -- renderer posts, press lands during the send,
+decider runs afterwards -- because a test that pressed after the wait started
+would pass either way.
 
 The waits below ride on ``await_until`` with its lost-run bound rather than the
 production window, so a regression fails by name in well under the suite
@@ -152,7 +152,7 @@ def _telegram_renderer(client: Any) -> TelegramRenderer:
 class TestTelegramEarlyPress:
     @pytest.mark.asyncio
     async def test_a_press_during_the_send_is_applied_not_reported_expired(self) -> None:
-        """The defect: the press arrives before the wait and must still decide."""
+        """A press that arrives before the wait still decides the request."""
         client = _PressingTelegramClient(approved=True)
         renderer = _telegram_renderer(client)
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
@@ -530,7 +530,7 @@ class _PressingSlackClient:
 class TestSlackEarlyPress:
     @pytest.mark.asyncio
     async def test_a_click_during_the_post_is_applied_not_reported_expired(self) -> None:
-        """The defect: nothing was in the registry until the wait started."""
+        """The window is in the registry before the wait starts, so the click decides."""
         decider = SlackApprovalDecider(session_key=_SESSION)
         client = _PressingSlackClient(approved=True)
         renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, decider=decider)
@@ -724,7 +724,7 @@ class TestTheSlackButtonCarriesAPerPromptNonce:
 
     @pytest.mark.asyncio
     async def test_a_button_from_the_previous_prompt_cannot_decide_this_one(self) -> None:
-        """The reported defect: a stale button plus a replayed request id."""
+        """A stale button plus a replayed request id must not decide the new prompt."""
         first = SlackApprovalDecider(session_key=_SESSION)
         stale_nonce = first.reserve(_RID)
         SlackApprovalDecider.discard_session(_SESSION)
@@ -801,7 +801,7 @@ class TestTheSlackButtonCarriesAPerPromptNonce:
         assert nonce == "nonce-abc"
 
     def test_a_token_minted_without_a_nonce_yields_an_empty_one(self) -> None:
-        """A button predating this change carries no separator; it must not be
+        """A button minted without a nonce carries no separator; it must not be
         read as carrying a nonce that happens to match."""
         token = build_approval_token("slack:C1:t1", "7", "")
         assert "|" not in token
@@ -860,7 +860,7 @@ def _teams_renderer(client: Any, decider: TeamsApprovalDecider) -> TeamsRenderer
 class TestTeamsEarlyPress:
     @pytest.mark.asyncio
     async def test_a_click_during_the_card_post_is_applied(self) -> None:
-        """The defect: the registry held no decider until the wait started."""
+        """The registry holds the window before the wait starts, so the click decides."""
         decider = TeamsApprovalDecider(session_key=_SESSION)
         client = _PressingTeamsClient(approved=True)
         await _teams_renderer(client, decider).on_prompt_choice([], _RID, tool_title="bash")

@@ -3,9 +3,11 @@ of partial text in ``_run_chat``.
 
 ``TestRunChatTransientRetry`` keeps its thinking-only retry tests and the shared stream
 harness (``_make_state``, ``_wire_sessions``, ``_client``, ``_drain_bg``) that the
-``test_dashboard_chat_transient_*`` siblings, ``test_fallback_row_attribution_8560.py``
+``test_dashboard_chat_transient_*`` siblings, ``TestFallbackServedTurnAttribution``
 and ``test_turn_stats.py`` reuse; ``TestAcpProcessDiedRecovery`` keeps its two redaction
 tests and the harness ``test_dashboard_chat_provider_recovery.py`` reuses.
+``TestFallbackServedTurnAttribution`` pins the model a fallback-served turn's usage row
+names.
 
 The other dashboard chat tests live in the sibling ``test_dashboard_chat_*.py``
 files, one topic each; shared fakes are in ``dashboard_chat_helpers.py``.
@@ -14,6 +16,7 @@ files, one topic each; shared fakes are in ``dashboard_chat_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -931,3 +934,316 @@ class TestRunChatModelFallback:
         # candidate. (The unknown-primary probe clears the sticky state — the
         # pin staying empty is the property under test.)
         assert slot.model == ""
+
+
+# ── A fallback-served turn's usage row names the model that ran ──
+#
+# The served id is on the slot as ``_active_fallback_model``, written only after
+# ``advance_fallback_candidate`` witnessed the ``set_model``. Passing it as the
+# caller-side model makes the row correct by construction, rather than relying on
+# ``model_source``'s wrapper-chain walk reaching a deeply wrapped provider.
+
+
+def _deep_chain_client(stream, *, primary="primary-model", advertised=("fallback-model",)):
+    """A provider whose model state sits six wrapper layers below the surface.
+
+    Mirrors the nesting ``_wrapper_chain``'s docstring documents (``AcpProvider``
+    -> ``client`` -> ``AcpSessionProvider`` -> ``_handle`` -> ``AcpSessionHandle``
+    -> ``_runtime``) with the extra wrapper layers a long-lived shared session
+    accumulates. ``set_model`` writes the handle's ``_model``/``_resolved_model_id``
+    exactly as ``AcpSessionHandle.set_model`` does. The depth-first walk reaches
+    them, so this shape exercises the caller-side path with the walk as an
+    independent second witness rather than as the row's only source.
+    """
+
+    class _Runtime:
+        def __init__(self):
+            self._model = "process-level-arg"
+
+    class _Handle:
+        def __init__(self):
+            self._model = primary
+            self._resolved_model_id = primary
+            self._runtime = _Runtime()
+
+    class _SessionProvider:
+        def __init__(self, handle):
+            self._handle = handle
+            self._runtime = handle._runtime
+
+    class _Wrapper:
+        def __init__(self, inner):
+            self._client = inner
+            self.client = inner
+
+    handle = _Handle()
+    node = _SessionProvider(handle)
+    for _ in range(6):
+        node = _Wrapper(node)
+
+    class _Provider:
+        def __init__(self, inner):
+            self._client = inner
+            self.client = inner
+            self.stream = stream
+            self.stream_command = stream
+            # This deliberately non-ABC wrapper still models a provider seam;
+            # capabilities it does not implement must take the ABC-safe default.
+            self.is_kiro_backend = False
+            # The public served_model seam the poisoned-conversation canary and
+            # the fallback witness read; delegates to the handle like the real
+            # AcpProvider.served_model property does.
+            self._handle_ref = handle
+
+        @property
+        def served_model(self):
+            return self._handle_ref._model or self._handle_ref._resolved_model_id
+
+        def available_models(self):
+            return [{"modelId": m} for m in advertised]
+
+        def context_usage_pct(self):
+            return 0.0
+
+        def context_used_tokens(self):
+            return 0
+
+        def context_window_tokens(self):
+            return 0
+
+        async def set_model(self, model_id):
+            handle._model = model_id
+            handle._resolved_model_id = model_id
+
+    return _Provider(node), handle
+
+
+class TestFallbackServedTurnAttribution:
+    _TRANSIENT = TestRunChatModelFallback._TRANSIENT
+    _make_state = staticmethod(TestRunChatTransientRetry._make_state)
+    _wire_sessions = staticmethod(TestRunChatTransientRetry._wire_sessions)
+    _drain_bg = staticmethod(TestRunChatTransientRetry._drain_bg)
+
+    @staticmethod
+    def _rows(shard_dir):
+        if not shard_dir.exists():
+            return []
+        return [
+            json.loads(line)
+            for shard in sorted(shard_dir.glob("*.jsonl"))
+            for line in shard.read_text().splitlines()
+            if line.strip()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_row_names_the_fallback_that_served_when_the_chain_is_capped(
+        self, tmp_path, monkeypatch
+    ):
+        """A fallback-served turn on a deeply-wrapped provider still attributes
+        its credits to the model that ran, instead of landing in ``unknown``."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._agent_fallback_chain",
+            lambda: ("fallback-model",),
+        )
+
+        calls = 0
+
+        async def _stream(msg):
+            nonlocal calls
+            calls += 1
+            if calls <= TRANSIENT_RETRIES + 1:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fb-result")
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=12.5))
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client, handle = _deep_chain_client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        # The depth-first walk reaches this handle on its own, so left live it
+        # would name the same model and the row would be right for TWO reasons.
+        # Blind it for the run: the row's value must then come from the
+        # caller-side model alone (`_resolve_model` short-circuits on a
+        # non-blank caller-side model and never consults `model_source`). The
+        # real walk is asserted separately below as the independent second witness.
+        real_read_turn_model = usage_mod.read_turn_model
+        monkeypatch.setattr(usage_mod, "read_turn_model", lambda source: "")
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):  # flake-ok: drain sleeps
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        # Preconditions: the fallback really served the turn, the blinded walk
+        # really reports nothing, and the real walk reaches the deep handle.
+        assert slot._active_fallback_model == "fallback-model"
+        assert handle._model == "fallback-model"
+        assert usage_mod.read_turn_model(client) == "", (
+            "precondition: the wrapper-chain walk must be blind for this run, "
+            "otherwise the row is not exercising the caller-side path alone"
+        )
+        assert real_read_turn_model(client) == "fallback-model", (
+            "the depth-first wrapper-chain walk must reach the deep handle here; "
+            "a blank means a wrapper stack of this depth hides the model again"
+        )
+
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["credits"] == 12.5
+        assert rows[0]["model"] == "fallback-model", (
+            "a fallback-served turn's credits must name the model that ran; "
+            f"got {rows[0]['model']!r} (read time renders a blank as 'unknown')"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_fallback_turn_still_records_the_slot_model(self, tmp_path, monkeypatch):
+        """With no fallback active the row keeps recording the slot's own model."""
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=4.0))
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client, _handle = _deep_chain_client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot.model = "pinned-model"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):  # flake-ok: drain sleeps
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert slot._active_fallback_model == ""
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "pinned-model", rows[0]
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_mid_turn_pick_is_not_billed_to_the_running_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """A model pick taken WHILE this turn streams lands on slot.model at once
+        (api_chat_slot_model's deferred branch), but the live session was never
+        switched, so the turn ran on what the provider serves. The row must name
+        the served model, and the committed pick must survive — the backfill must
+        not overwrite an Auto pick's "" with the served id."""
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        state = self._make_state(tmp_path, monkeypatch)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="served by the primary")
+            # The user picks "" (Auto) WHILE the turn streams: the deferred
+            # branch commits it to slot.model and marks the boundary. The live
+            # session is NOT switched, so the turn still runs on primary-model.
+            slot.model = ""
+            slot._deferred_model_switch_key = "s1"
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=9.0))
+
+        # The live session serves primary-model (the deep handle's _model).
+        client, handle = _deep_chain_client(_stream, primary="primary-model")
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot.model = "primary-model"
+
+        # The tail runs apply_deferred_model_switch, which on this non-ACP fake
+        # arms a reset; stub the consume so the fake harness is not asked to
+        # tear down and rebuild a session it does not model. The completion's
+        # attribution (the behaviour under test) has already run by then.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._consume_pending_reset",
+            AsyncMock(return_value=False),
+        )
+
+        # Suppresses the background drain's real sleeps like the three sibling
+        # tests; the test waits on _drain_bg, never on a clock.
+        with patch("asyncio.sleep", new_callable=AsyncMock):  # flake-ok: drain sleeps
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "primary-model", (
+            "a turn running while a deferred pick waits must bill the served "
+            f"model, not the pending pin; got {rows[0]['model']!r}"
+        )
+        # The Auto pick survives: the backfill must not write the served id over
+        # the committed "" while the boundary marker is set.
+        assert slot.model == "", (
+            "the deferred pick must not be overwritten by the completion backfill; "
+            f"slot.model is {slot.model!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_sticky_fallback_is_not_billed_after_a_resume(self, tmp_path, monkeypatch):
+        """The sticky candidate can OUTLIVE the swap it records.
+
+        It deliberately survives a landed turn (the session stays on the fallback
+        until the start-of-turn restore probe succeeds), that probe is skipped for
+        a synthetic recovery message (`_turn_dispatch_gates`), and a reset resumes
+        the session by re-sending `slot.model` as a set_model override
+        (`model_fallback`). So a recovery turn can run on the PRIMARY with
+        `_active_fallback_model` still set. The row must name what the live
+        provider is serving, not the stale candidate.
+        """
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered")
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=7.0))
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client, handle = _deep_chain_client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot.model = "primary-model"
+        # The post-resume state: the live session is back on the primary while
+        # the sticky candidate still names the fallback, and the restore probe
+        # has not run to clear it.
+        slot._active_fallback_model = "fallback-model"
+        slot._fallback_primary_model = "primary-model"
+        slot._fallback_candidate_idx = 1  # non-zero: keeps the restore probe off
+        assert handle._model == "primary-model", "precondition: session is on the primary"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):  # flake-ok: drain sleeps
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "primary-model", (
+            "a stale sticky fallback must not be billed: the live provider is "
+            f"serving 'primary-model', got {rows[0]['model']!r}"
+        )

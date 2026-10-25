@@ -1016,3 +1016,37 @@ class TestFolderPersistence:
         state = _make_state(tmp_path)
         state.load_folders()
         assert state._folders == []
+
+
+class TestChatFolderOrderIsNotA500:
+    """A caller-supplied order never reaches int() unguarded: no middleware maps
+    handler exceptions, so it would surface as HTTP 500. A bad order is skipped."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_order", ["abc", None, [], {}, "1.5", 1e309, -1e309, "nan"])
+    async def test_bad_order_does_not_500(self, tmp_path, monkeypatch, bad_order):
+        """1e309 parses to float('inf'), which body_int turns into a ValueError
+        where int(inf) would raise OverflowError."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            created = await (await client.post("/api/chat/folders", json={"name": "Oncall"})).json()
+            resp = await client.patch(
+                f"/api/chat/folders/{created['id']}", json={"order": bad_order}
+            )
+            assert resp.status == 200, f"order={bad_order!r} produced {resp.status}"
+            # The bad field is skipped, not coerced into some other order.
+            assert (await resp.json())["order"] == created["order"]
+
+    @pytest.mark.asyncio
+    async def test_valid_order_is_still_applied(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            created = await client.post("/api/chat/folders", json={"name": "Oncall"})
+            folder_id = (await created.json())["id"]
+            resp = await client.patch(f"/api/chat/folders/{folder_id}", json={"order": 7})
+            assert resp.status == 200
+            assert (await resp.json())["order"] == 7

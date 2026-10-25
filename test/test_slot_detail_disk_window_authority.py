@@ -1,10 +1,9 @@
-"""POSITIVE CONTROL — must be RED against unpatched main.
+"""``GET /api/chat/slots/{slot}``: the in-memory window, not disk, owns its region.
 
-Builds the disk-vs-window disagreement the issue describes and asserts the
-bounded branch returns the WINDOW's answer. Both branches read the SAME corpus
-here, stubbed on BOTH readers (the bounded branch calls
-``read_messages_chained_full``, the unbounded one ``read_messages_chained``), so
-a pass cannot come from one of them silently reading an empty tmp history.
+Builds a disk-vs-window disagreement and asserts the bounded branch returns the
+WINDOW's answer. Both disk readers (``read_messages_chained_full`` for the bounded
+branch, ``read_messages_chained`` for the unbounded one) are stubbed with ONE
+corpus, so a pass cannot come from either silently reading an empty history.
 """
 
 from __future__ import annotations
@@ -21,11 +20,8 @@ SETTLED = 12
 OLDER = 4  # rows above the live window -> _disk_older_count
 LIMIT = 4
 
-#: These four are RED on current main and stay red until the authority contract for
-#: the bounded branch is ruled on. ``strict`` on purpose: whoever lands the fix
-#: gets a failure here telling them to delete the marker, so the reproduction
-#: cannot rot into a silently-passing test. Stubs of ``read_messages_chained``
-#: are vacuous here, because the bounded branch does not call it.
+#: Known-red until the bounded branch's authority contract is decided. ``strict``
+#: so the fix fails here and the marker gets removed instead of rotting.
 DISAGREEMENT = pytest.mark.xfail(
     strict=True,
     reason="#7526: the bounded branch is disk-authoritative for the window region",

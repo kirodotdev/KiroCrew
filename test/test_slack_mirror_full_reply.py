@@ -162,8 +162,7 @@ class TestMirrorReplySurvivesFileChangeFlush:
     async def test_full_answer_reaches_thread_on_a_turn_that_wrote_a_file(self, tmp_path) -> None:
         # _flush_file_changes clears slot._turn_reply_mids before the mirror leg
         # runs on a file-writing turn. Without the pre-flush snapshot the mirror
-        # falls back to the trailing fragment and the body is lost. This fails
-        # on a build that reads the cleared live list.
+        # falls back to the trailing fragment and the body is lost.
         slack = await _run_linked_turn_that_wrote_a_file(tmp_path)
         posted = slack.thread_text()
         assert "full analysis" in posted

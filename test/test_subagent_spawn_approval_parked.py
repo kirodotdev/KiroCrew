@@ -8,21 +8,13 @@ that is actually executing:
 
   * ``subagents`` (status API) counts it, ``subagents_spawned`` does not
   * no child ACP process exists
-  * nothing in the run's state, the ``/api/spawn`` payload or the log names
-    the approval gate as the reason
 
-That combination is the whole content of the bug report: the reporter's only
-lead was that no log line and no field mentioned the run. These tests pin the
-observable state so the parked run is distinguishable from a running one.
-
-Two adjacent halves of the report are covered elsewhere, NOT here: the reap of
-such a run does not blame an execution deadline it never reached (which is what
-put ``_awaiting_approval`` on the spawn gate), and a chat tab does not render an
-owned parked run as executing (that cue derives from the WS ``approval`` event,
-not from this payload). What is left, and what this file covers, is
-every reader that goes through ``/api/spawn`` — the two HTTP shapes, the CLI's
-``spawn list`` and blocking poll, and MCP ``spawn_list`` — including the
-unowned CLI spawn that reaches no chat tab at all.
+These tests pin the log line and the ``awaiting_approval`` field that make the
+parked run distinguishable from a running one on every reader of ``/api/spawn``:
+the two HTTP shapes, the CLI's ``spawn list`` and blocking poll, and MCP
+``spawn_list``, including the unowned CLI spawn that reaches no chat tab. The
+reap message lives in ``subagent_manager/terminal.py`` and the chat-tab cue in
+the frontend (from the WS ``approval`` event), so neither is covered here.
 """
 
 from __future__ import annotations
@@ -80,8 +72,7 @@ def _mock_ctx_builder() -> MagicMock:
 class _ParkedApproval:
     """Spawn-approval callback that parks until the test releases it.
 
-    Models the reported environment: the prompt is raised on a surface nobody
-    is watching (an unowned CLI spawn carries ``slot=""`` and is surfaced only
+    Models a prompt raised on a surface nobody is watching (an unowned CLI spawn carries ``slot=""`` and is surfaced only
     on the global approvals feed), so it is never answered.
     """
 
@@ -184,13 +175,9 @@ class TestSpawnParkedOnApprovalIsObservable:
     async def test_parked_run_logs_under_its_run_id(self, caplog) -> None:  # type: ignore[no-untyped-def]
         """An operator grepping the logs for a stuck run id finds the reason.
 
-        The report's dead-end was "``kirocrew logs`` contained no error or
-        warning keyed by the affected run ID". A machine-state mark for the
-        reaper is not a message, so without this log line nothing is WRITTEN when
-        a spawn parks and the single most useful diagnostic (which run is
-        waiting, and for what) does not exist. This is the only assertion in this
-        file that covers a change to ``admission.py``; everything else covers a
-        reader of the state.
+        The reaper's state mark is not a message, so without this log line
+        nothing is written when a spawn parks, and nothing says which run is
+        waiting or for what.
         """
         approval = _ParkedApproval()
         mgr = _manager(approval)
@@ -231,10 +218,8 @@ class TestParkedRunIsVisibleOnBothReadPaths:
     """Both /api/spawn shapes must carry the wait, not just the list one.
 
     A blocking ``kirocrew spawn run`` polls the SINGLE-run status endpoint
-    (``/api/spawn/<id>``) every 2s, not the list. Reporting the wait only on the
-    list left the CLI reproduction of the bug exactly as silent as before: the
-    caller sat on "waiting for result..." while the reason was discoverable only
-    from a separate ``spawn list`` or a log grep.
+    (``/api/spawn/<id>``) every 2s, not the list, so a wait reported only on the
+    list would leave that caller on "waiting for result..." with no reason.
     """
 
     def _payload_flag(self, *, awaiting: bool, exec_started: float | None) -> bool:
@@ -348,7 +333,7 @@ class TestParkedRunIsVisibleOnBothReadPaths:
         assert "[running]" not in out, f"parked run still reported as running: {out!r}"
 
     def test_mcp_spawn_list_still_says_running_for_a_live_run(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        """The new status must not swallow the ordinary one."""
+        """The awaiting-approval status must not swallow the ordinary one."""
         from kiro_crew.mcp_tools import spawn as spawn_tools
 
         monkeypatch.setattr(
@@ -363,20 +348,3 @@ class TestParkedRunIsVisibleOnBothReadPaths:
         out = spawn_tools.spawn_list("spawn_list", {})
         assert "[running]" in out
         assert "awaiting-approval" not in out
-
-
-# NOTE on the two halves of this bug that are NOT covered here, because they
-# live elsewhere in the tree.
-#
-# The terminal message ("Reaped after Ns (exceeded Ns deadline)" on a run that
-# never executed) is handled in `subagent_manager/terminal.py`, which reads
-# `_awaiting_approval and _exec_started is None` — the same pair as the wire
-# predicate above. That is also where the spawn gate's own
-# `info._awaiting_approval = True` comes from, so this file's change does not
-# set the flag; it names the wait (the log line) and reports it (the field).
-#
-# The chat-tab rendering is frontend-only: it derives
-# its cue from the WS `approval` event routed into `sseSubagentPending`, i.e.
-# `status === 'pending' && approval_id`, NOT from this payload. It is therefore
-# scoped to a slot, and an unowned spawn (`slot=""`) still reaches no chat tab —
-# which is precisely the run the CLI and MCP surfaces above are for.

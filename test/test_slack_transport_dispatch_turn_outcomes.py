@@ -16,8 +16,10 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
 from slack_transport_dispatch_helpers import (
     _MSG_TS,
+    FakeSessions,
     RecordingSlackClient,
     ScriptedProvider,
     _CapturingCtxBuilder,
@@ -704,3 +706,214 @@ class TestTransportPartialProgressRescue:
         assistant = [r for r in rows if r.get("role") == "assistant"]
         assert len(assistant) == 1
         assert assistant[0].get("source_user") == "U_OWNER"
+
+
+# ── Turn verdict after delivery ──
+# A turn is booked a success only once its answer-carrying send has landed: a
+# failed final send means the reader got no answer, so the turn is a failure.
+
+
+class _VerdictSessions(FakeSessions):
+    """Counts the successes and failures the turn books."""
+
+    def __init__(self, provider):
+        super().__init__(provider)
+        self.calls = {"success": 0, "failure": 0}
+
+    def record_success(self, session_key):
+        self.calls["success"] += 1
+
+    async def record_failure(self, session_key):
+        self.calls["failure"] += 1
+
+
+def _run_verdict_turn(monkeypatch, slack, sessions):
+    monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+    monkeypatch.setattr(
+        transport_dispatch, "_hydrate_thread_overrides", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+    monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+    asyncio.run(
+        transport_dispatch.handle_message_transport(
+            slack=slack,
+            sessions=sessions,
+            channel="C1",
+            text="hello",
+            thread_ts=None,
+            msg_ts=_MSG_TS,
+            user_id="U_OWNER",
+            context_builder=None,
+            conversation_log=None,
+        )
+    )
+
+
+def _answer_events(text: str = "the answer") -> list:
+    return [
+        make_event(EVENT_TEXT_CHUNK, text=text),
+        make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+    ]
+
+
+class _DeliveryFailsSlackClient(RecordingSlackClient):
+    """No-stream client: ``start_stream`` returns None, so the renderer finalizes
+    a ``_THINKING`` placeholder via ``update_message``, which is the answer's
+    delivery on this path. That update fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_disabled = True
+
+    async def update_message(self, channel, ts, text="", blocks=None) -> None:
+        self._rec("update_message", channel=channel, ts=ts, text=text)
+        raise RuntimeError("slack chat.update failed — answer never delivered")
+
+
+def test_transport_failed_answer_delivery_records_failure_not_success(monkeypatch):
+    slack = _DeliveryFailsSlackClient()
+    sessions = _VerdictSessions(ScriptedProvider(_answer_events()))
+
+    _run_verdict_turn(monkeypatch, slack, sessions)
+
+    assert sessions.calls["success"] == 0, "booked a success for an undelivered answer"
+    assert sessions.calls["failure"] == 1
+
+
+def test_transport_successful_delivery_still_records_success(monkeypatch):
+    slack = RecordingSlackClient()  # streaming enabled, all sends succeed
+    sessions = _VerdictSessions(ScriptedProvider(_answer_events()))
+
+    _run_verdict_turn(monkeypatch, slack, sessions)
+
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+class _FooterFailsSlackClient(RecordingSlackClient):
+    """Streaming delivers the answer, but the final footer post_blocks fails."""
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        self._rec("post_blocks", channel=channel, text=text)
+        raise RuntimeError("slack post_blocks failed at footer")
+
+
+def test_transport_footer_failure_keeps_delivered_turn_a_success(monkeypatch):
+    # The footer is decoration after finalization; its failure must not turn a
+    # received answer into a failed turn.
+    slack = _FooterFailsSlackClient()
+    sessions = _VerdictSessions(ScriptedProvider(_answer_events("the answer [OPTIONS: a | b]")))
+
+    _run_verdict_turn(monkeypatch, slack, sessions)
+
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+class _TransportOptionsBothFailSlack(RecordingSlackClient):
+    """Answer streams fine, but the footer post_blocks and the options fallback
+    post_message both fail, so the choices never reach the reader."""
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        self._rec("post_blocks", channel=channel, text=text)
+        raise RuntimeError("footer post_blocks failed")
+
+    async def post_message(self, channel, text, thread_ts=None):
+        self._rec("post_message", channel=channel, text=text)
+        if text.startswith("*Options:*"):
+            raise RuntimeError("options fallback failed too")
+        return self._next_ts()
+
+
+def test_transport_options_footer_and_fallback_both_fail_records_failure(monkeypatch):
+    slack = _TransportOptionsBothFailSlack()
+    sessions = _VerdictSessions(
+        ScriptedProvider(_answer_events("pick one [OPTIONS: Apple | Banana]"))
+    )
+
+    _run_verdict_turn(monkeypatch, slack, sessions)
+
+    # The OPTIONS choices are answer-carrying; both deliveries failed.
+    assert sessions.calls["success"] == 0, "booked success though the OPTIONS choices never landed"
+    assert sessions.calls["failure"] == 1
+
+
+class _TransportAllAppendsRefusedSlack(RecordingSlackClient):
+    """The stream stays live (``start_stream`` keeps succeeding, so a rotation
+    never demotes it) but every append is refused, and the fallback
+    ``update_message`` fails too: the answer reaches the reader on no sub-path."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_disabled = False
+
+    async def append_stream(self, channel, ts, text) -> bool:
+        self._rec("append_stream", channel=channel, ts=ts, text=text)
+        return False
+
+    async def update_message(self, channel, ts, text="", blocks=None) -> None:
+        # The renderer routes the undelivered answer here; this is the
+        # answer-carrying send on the recovery path, so its failure propagates.
+        self._rec("update_message", channel=channel, ts=ts, text=text)
+        raise RuntimeError("slack chat.update failed — answer never delivered")
+
+
+def test_transport_stream_all_appends_refused_books_failure(monkeypatch):
+    # The renderer's ``on_done`` seal is best-effort, so without the guard the
+    # turn would finalize and book success for an answer nobody saw.
+    slack = _TransportAllAppendsRefusedSlack()
+    sessions = _VerdictSessions(ScriptedProvider(_answer_events("the answer is 42")))
+
+    _run_verdict_turn(monkeypatch, slack, sessions)
+
+    assert sessions.calls["success"] == 0, "booked success for a stream that delivered no answer"
+    assert sessions.calls["failure"] == 1
+
+
+class _TransportAppendsRefusedFallbackRecoversSlack(RecordingSlackClient):
+    """Every append is refused, but the fallback ``update_message`` (inherited
+    recording default) succeeds and delivers the answer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_disabled = False
+
+    async def append_stream(self, channel, ts, text) -> bool:
+        self._rec("append_stream", channel=channel, ts=ts, text=text)
+        return False
+
+
+def test_transport_stream_all_appends_refused_but_fallback_delivers_stays_success(monkeypatch):
+    slack = _TransportAppendsRefusedFallbackRecoversSlack()
+    sessions = _VerdictSessions(ScriptedProvider(_answer_events("the answer is 42")))
+
+    _run_verdict_turn(monkeypatch, slack, sessions)
+
+    assert sessions.calls == {"success": 1, "failure": 0}
+    fallback_texts = [p.get("text", "") for m, p in slack.transcript if m == "update_message"]
+    assert any(
+        "the answer is 42" in t for t in fallback_texts
+    ), f"fallback update never carried the answer: {fallback_texts}"
+
+
+class _OptionsFooterCancelsSlackClient(RecordingSlackClient):
+    """The answer body streams, but the OPTIONS footer ``post_blocks`` raises
+    CancelledError."""
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        raise asyncio.CancelledError()
+
+
+def test_transport_options_footer_cancellation_books_failure(monkeypatch):
+    # CancelledError skips ``except Exception``; the dispatcher still books a
+    # failure, matching the native handler's teardown, so the turn has a verdict.
+    slack = _OptionsFooterCancelsSlackClient()
+    sessions = _VerdictSessions(
+        ScriptedProvider(_answer_events("pick one [OPTIONS: alpha | beta]"))
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        _run_verdict_turn(monkeypatch, slack, sessions)
+
+    assert (
+        sessions.calls["success"] == 0
+    ), "booked success for an OPTIONS turn whose choices never delivered"
+    assert sessions.calls["failure"] == 1

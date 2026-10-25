@@ -2,13 +2,10 @@
 
 ``pkill``/``killall`` take an ERE, so in ``'zz|kiro'${x:-crew}`` bash passes
 ``zz|kirocrew`` and the second alternative selects protected processes.  The
-leg searched each argument raw (de-bracketed) and through
-``_normalize_operand``; the operand view truncates at the de-quoted pattern's
-own ``|``, and the raw view cannot resolve the parameter default or the empty
-substitution, so a name needing both quote removal and a construct rewrite
-slipped both members.  The leg now also searches each argument through
-``_resolved_word_view`` -- construct-span rewrites only, never a boundary at
-the pattern's own characters -- as an ADDITIVE third member.
+raw view cannot resolve the parameter default or the empty substitution, and
+the operand view truncates at the pattern's own ``|``, so the leg also searches
+each argument through ``_resolved_word_view`` (construct-span rewrites only)
+to catch a name that needs both quote removal and a construct rewrite.
 
 The protected verb and name are assembled at runtime so an agent shell can
 read and grep this file without tripping the very rule under test.
@@ -38,7 +35,7 @@ def _floor(cmd: str) -> bool:
 @pytest.mark.parametrize(
     "arg",
     [
-        # the two spellings the report measured
+        # quote removal plus a parameter default / an empty substitution
         "'zz|" + _HEAD + "'${x:-" + _TAIL + "}",
         "'zz|" + _HEAD + "'$()" + _TAIL,
         # the backtick spelling of the empty substitution

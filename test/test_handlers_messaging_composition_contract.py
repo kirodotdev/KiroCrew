@@ -1428,7 +1428,7 @@ def _facade_in(root: Path) -> str:
 def test_the_parked_run_ratchet_reads_the_owners(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import test_subagent_spawn_approval_parked_6484 as guard
+    import test_subagent_spawn_approval_parked as guard
 
     root = _mirror(tmp_path)
     monkeypatch.setattr(msg, "__file__", _facade_in(root))

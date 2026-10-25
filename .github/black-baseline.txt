@@ -398,8 +398,6 @@ test/test_cron_skip_dates.py
 test/test_cron_slack_delivery.py
 test/test_cron_thread_routing.py
 test/test_cron_timezone_display.py
-test/test_cse_2026_08_05_fixes.py
-test/test_cse_2026_08_07_fixes.py
 test/test_dashboard.py
 test/test_dashboard_branding.py
 test/test_dashboard_config_gitlab_hosts.py
@@ -430,7 +428,6 @@ test/test_deploy_cwe770_throttle_waf.py
 test/test_deploy_followup.py
 test/test_deploy_handlers_coverage.py
 test/test_deploy_profiles_cov80.py
-test/test_deploy_public_gate_3599.py
 test/test_deploy_round14_fixes.py
 test/test_deploy_round16_fixes.py
 test/test_deploy_round17_fixes.py
