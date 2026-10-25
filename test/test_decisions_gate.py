@@ -1607,6 +1607,18 @@ class TestDecisionLists:
         assert {f"points:{POINT}", f"models:{gate_mod._DEFAULT_MODEL}"} <= set(items)
         assert "endpoints:api.typesafe.ai" in items
 
+    def test_a_credential_shaped_model_never_reaches_the_audit(
+        self, install_impl, log_home, monkeypatch
+    ):
+        """The scrub refuses the model id before the list check writes it to SEL."""
+        model = "sk-" + "0123456789abcdef" * 2
+        self._policy(monkeypatch, self._allow(models=["other-model"]))
+        oracle = install_impl(_ExplodingOracle())
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config(model=model))) is None
+        assert oracle.entered is False
+        for call in self.sel.mock_calls:
+            assert model not in repr(call)
+
     def test_a_gate_pinned_off_sends_nothing(self, install_impl, log_home, monkeypatch):
         self._policy(monkeypatch, {"enabled": False})
         oracle = install_impl(_ExplodingOracle())

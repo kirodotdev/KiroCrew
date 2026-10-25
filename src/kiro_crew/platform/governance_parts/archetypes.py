@@ -394,21 +394,23 @@ class OrdinalControl:
 def _unmatchable_glob(glob: str) -> str:
     """Why a host glob can match no reading, or ``""`` when it might.
 
-    A character check only: a reading is a lower-case ASCII name or a canonical IP
-    literal, so a glob holding a ``[`` class, ``%``, ``@``, ``/``, a zone, or a
-    ``:`` outside a hex IPv6 glob can never match. How an IP glob spells its
+    A character check only: a reading holds only a URL host's characters
+    (``matching._PLAIN_HOST_RE``), so a glob holding a ``[`` class, ``@``, ``/``,
+    ``\\``, whitespace, a zone, or a ``:`` outside a hex IPv6 glob can never match. How an IP glob spells its
     numbers is not checked: it matches canonical readings as written (an
     alternate numeric spelling is tracked in the deferral issue for these lists).
     """
     import re
+
+    from kiro_crew.platform.governance_parts.matching import _PLAIN_HOST_RE
 
     if "[" in glob:
         return "uses a [ ] character class; host lists take * and ? only"
     body = glob.replace("*", "").replace("?", "")
     if ":" in body and not re.fullmatch(r"[0-9a-f:]*", body):
         return "is not an IPv6 glob in canonical form (hex groups only, no zone or port)"
-    if not re.fullmatch(r"[a-z0-9._:-]*", body):
-        return "has a character no host is asked with ('%', '@', '/' or similar)"
+    if body and not _PLAIN_HOST_RE.fullmatch(body):
+        return "has a character no host reading holds ('@', '/', a backslash or a space)"
     return ""
 
 
@@ -417,9 +419,11 @@ def _refuse_unmatchable_host_entries(scope_name: str, ruleset: "ScopedRuleset") 
 
     A capability's ``host`` lists are asked about hosts as clients send them
     (``matching.url_policy_hosts``): ASCII, no root dot, an IP literal in canonical
-    form. An entry in another spelling would match nothing, so a deny would refuse
-    nothing and an allow would admit nothing, silently. It fails to load instead,
-    and the message says which form to write. Top-level ``network.egress`` keeps its
+    form. An exact entry in another spelling would match nothing, so a deny would
+    refuse nothing and an allow would admit nothing, silently. It fails to load
+    instead, and the message says which form to write. A glob gets a character
+    check only (``_unmatchable_glob``); how it spells IP numbers is not checked.
+    Top-level ``network.egress`` keeps its
     own parsing; this applies only to lists inside a capability.
     """
     from kiro_crew.platform.governance_parts.matching import _PLAIN_HOST_RE, _canonical_ip
@@ -447,7 +451,7 @@ def _refuse_unmatchable_host_entries(scope_name: str, ruleset: "ScopedRuleset") 
                 elif ":" in spelled or not _PLAIN_HOST_RE.fullmatch(spelled):
                     why = (
                         "is not a host as clients send it "
-                        "(brackets, a zone, a port, '%', '/' or '@')"
+                        "(brackets, a zone, a port, '/', '@', a backslash or a space)"
                     )
             if why:
                 # The position, never the value: an entry can be a pasted URL.
@@ -483,6 +487,15 @@ class CapabilityGate:
         if not isinstance(raw_scopes, dict):
             raise PlatformCompositionError("CapabilityGate.scopes must be an object")
         matchers = scope_matchers or {}
+        for k, v in raw_scopes.items():
+            # A declared list in the wrong shape would otherwise be dropped below,
+            # leaving the capability with no bound on that list at all.
+            if str(k) in matchers and not isinstance(v, dict):
+                raise PlatformCompositionError(
+                    f"CapabilityGate.scopes.{k} must be an object such as "
+                    '{"mode": "allow", "allow": [...]}, '
+                    f"got {type(v).__name__}"
+                )
         scopes: Dict[str, RulesetLike] = {
             str(k): ScopedRuleset.from_dict(v, matcher=matchers.get(str(k), _DEFAULT_MATCHER))
             for k, v in raw_scopes.items()

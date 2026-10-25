@@ -92,3 +92,37 @@ class TestListKeys:
         assert resolve(None, None, scope, f"{key}:{no}").permitted is True
         ceiling = parse_policy(_policy(scope, {"enabled": True}))
         assert resolve(ceiling, None, scope, f"{key}:{no}").permitted is True
+
+
+class TestHostReadings:
+    """An ASCII host with a character a DNS name does not use is still asked as
+    read, so a deny glob over its domain refuses it."""
+
+    def test_an_odd_ascii_host_is_asked_as_read(self) -> None:
+        from kiro_crew.platform.governance import url_policy_hosts
+
+        hosts = url_policy_hosts("https://clip+one.blocked.example/v1")
+        assert "clip+one.blocked.example" in hosts
+        assert "" not in hosts
+
+    def test_a_deny_glob_refuses_an_odd_ascii_host(self) -> None:
+        from kiro_crew.platform.governance import url_policy_hosts
+
+        scope = "capabilities.decisions"
+        doc = _policy(
+            scope, {"scopes": {"endpoints": {"mode": "deny", "deny": ["*.blocked.example"]}}}
+        )
+        ceiling = parse_policy(doc)
+        hosts = url_policy_hosts("https://clip+one.blocked.example/v1")
+        assert any(not resolve(ceiling, None, scope, f"endpoints:{h}").permitted for h in hosts)
+
+
+class TestWrongShape:
+    @pytest.mark.parametrize("key", ["models", "points", "endpoints"])
+    @pytest.mark.parametrize("value", [["jev-1"], "jev-1", 1, None])
+    def test_a_list_in_the_wrong_shape_fails_to_load(self, key, value) -> None:
+        """A malformed list must not load as no list, which permits every item."""
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(PlatformCompositionError, match=f"scopes.{key} must be an object"):
+            parse_policy(_policy("capabilities.decisions", {"scopes": {key: value}}))

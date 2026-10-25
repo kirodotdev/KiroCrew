@@ -1163,15 +1163,17 @@ async def decide(
     # For every lane but the judge's LLM one this is ``provider.model`` with the
     # same fallback ``JevOracle`` applies, unchanged.
     model = lane_model(cfg, lane=lane)
+    # The scrub runs first: the list check below writes the model id to the SEL,
+    # so an id the scrub refuses (a pasted credential) never reaches that row.
+    refusal = scrub_reason(state, questions, model=model)
+    if refusal is not None:
+        await _write(latency_ms=0, answers=None, error=refusal)
+        return None
     # The fleet's lists: which points, models and endpoints the seam may use. Like
     # the capability row in ``_consented_for``, a refusal here writes no decision
     # row (its audit is the SEL ``governance_decision`` row) and costs nothing on
     # an unconsented install, which never reaches this line.
     if await asyncio.to_thread(_targets_denied, cfg, session_key, point, model, lane):
-        return None
-    refusal = scrub_reason(state, questions, model=model)
-    if refusal is not None:
-        await _write(latency_ms=0, answers=None, error=refusal)
         return None
 
     started = time.monotonic()
