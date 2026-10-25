@@ -443,6 +443,138 @@ interpolated into the LLM prompt so the model is told the same numbers):
 `_MAX_BACKFILLS_PER_CALL = 5` lazy backfills), so an uncapped LLM array could
 occupy a worker thread for minutes.
 
+One consolidation semantic value holds at most
+`_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS = 2_000` characters
+(`vector_memory_constants.py`), inclusive, counted as the per-turn facts block
+renders the value (`get_semantic_context`, on both store versions): `len()` of a
+string, of the JSON text of a dict or list with every non-ASCII character as
+written (`ensure_ascii=False`, as that block renders it), and of `str()` of any
+other value, so a Cyrillic letter inside a list counts as the one character the
+block shows. It is measured apart from the byte ceiling
+in `validate_semantic`. The prompt states the
+bound in the `semantic` rules and asks the model to split a long fact into
+separate keys itself. `_refuse_oversized_semantic`
+(`history_consolidation_memory.py`) enforces it in each write path at the same
+point: on the answer kind routing returned (`route_consolidation_by_kind`, which
+runs right after the unseen-delete fence) and before the path's first write --
+inside `_write_structured_memory`, and in `_consolidate`'s member-store branch
+before `apply_consolidation`. Both run after the write-boundary transcript
+recheck, so a discarded result refuses nothing. Kind routing therefore reads the
+model's answer as it would without the bound, in every `memory.kind_routing`
+mode: every item it routes keeps its decision, counted and, under `shadow`,
+sampled, and a `state` item `enforce` keeps out is refused as `work_state`,
+never for size, because routing has already taken it out of the list the screen
+reads. It screens only the window its writer reads: the first
+`_MAX_SEMANTIC_PER_CONSOLIDATION` items of that list, which the fence and routing
+have already shaped. An item past the window is never written, so it is not
+measured or logged. An item over
+the bound is refused whole, never split or shortened: no split point made in
+code keeps each piece a true fact under its own key, and a cut value would read
+as the fact itself. A refused item keeps its place in the array as `None`, which
+the member store skips like any item that is not an object; the V1 writer gives
+the refused value its turn at that place, found by the place the screen returns
+with it rather than by reading the `None`, so a refusal never moves a later item
+into the window. A
+value is refused for size only when every check its writer applies to the item
+alone would let it through, so the size code takes the place of none of them: not
+`validate_semantic`'s refusal, not the writer's confidence or metadata check, not
+the writer's skip rules, and not kind routing. An item over the bound that no
+skip rule covers meets, in its writer's order, that writer's confidence reader,
+then the store's own `validate_semantic` with the writers' `consolidation:<session>`
+source and that confidence: `_v1_consolidation_confidence`
+(`history_consolidation_memory.py`) for `_write_structured_memory`, and
+`_member_consolidation_confidence` (`vector_memory_member.py`) for
+`apply_consolidation`; then the writer's metadata check,
+`_member_consolidation_metadata` (`vector_memory_member.py`), on which the member
+store skips an item and counts it in its receipt's `metadata_rejected`, and
+`_v1_consolidation_metadata`, the metadata the V1 writer hands `set_semantic`,
+which refuses the item as `conflict_skip` when `normalize_metadata` raises (only a
+member store takes metadata on that path). Each writer calls those functions
+itself, so the screen and its writer cannot disagree on skipping an item for its
+confidence, on the member store's metadata check or on which metadata the V1
+writer hands over. Both skip a
+confidence `float()` cannot read or that is not finite; only the V1 reader also
+skips one outside 0..1, which the member store validates. An integer too large
+for a float raises `OverflowError` from both readers, and neither writer catches
+it; the screen leaves that item to its writer. What is copied rather than shared
+must be kept in step by hand: the V1 check itself, `normalize_metadata`, which
+`set_semantic` calls rather than a function the screen shares; the screen's skip
+rules (an item that is not an object, a key that is not a string, a delete, an
+item with no value), which copy the writers' own tests; and its `lesson.*` rule,
+which copies the `lesson.*` reroute's. A test drives an item under each skip
+rule, its value over the bound where it has one, through both writers in a whole
+pass. In a pass the reroute has already moved or dropped every `lesson.*`
+create, so a `lesson.*` item reaches the screen only as a delete. An item
+those checks refuse or skip -- a malformed or unallowed key, a low confidence, a
+value over the byte ceiling or one the injection check flags, metadata that is not
+an object or holds an invalid field -- is left untouched, and its writer refuses or
+skips it under its own code and counts (`key_format`, `allowlist_reject`,
+`low_confidence`, `value_size`, `injection_blocked`, the member receipt's
+`metadata_rejected`, the V1 `conflict_skip` line), exactly as without the bound,
+so no key that fails `_validate_key` is refused for size. Every one of these
+checks only reads, so the screen writes no row and counts nothing for an item it
+leaves. The writers' checks that read stored rows are not consulted, so the size
+code does take their place, and that is known: an over-bound overwrite of a `user_explicit` row, which the V1
+store refuses as `conflict_skip`, is refused as `consolidation_value_size`
+instead (no fact is stored either way, but the report differs: the log line,
+and the `memory_events` row `conflict_skip` writes; and so does the run's commit:
+that write commits nothing, and the refused value's turn commits the run, the
+exception stated below), and a value the store would
+save as a review proposal rather than write (a member-store update of an
+existing key, a V1 write to a deleted key) is refused for size too, so that
+proposal (a `memory_revisions` row the owner would review) is never made and no
+proposal asks the owner to approve a value over the bound. A refused value is
+never written, so a later item in the same pass that names its key (or, on a
+member store, the same fact identity) meets the stored row without it, and can
+be written where, after the refused write, the store would have refused it as
+`conflict_skip` or saved it as a proposal. Nothing else that write would do in
+the store happens either: no `create` or `update` row for the value is logged in
+`memory_events`, the value is not embedded, so it spends none of the V1
+pass's inline embedding budget, and the store retires no episode that asserted
+the value it would have replaced. The size code reads no stored row, so a value
+over the bound is refused even when the store already holds the same value. A
+refused value still takes its write's turn: the V1 writer reaches it where it
+would write it, takes the publication hold that write takes and marks the run
+committed as a write the store accepts does, writing nothing; the member store
+writes the whole answer in one `apply_consolidation` call under one hold, which
+commits the run whatever the answer holds. So the pass takes the holds it takes
+without the bound, and whether a later write passes the hold, and whether a
+restricted or locked transcript later in the pass refuses the pass or marks its
+span consolidated, are decided as they are without the bound whenever the store
+would accept the refused write. Where a stored row would make the V1 store refuse
+that write with a reject code (a `conflict_skip`), the write would have
+committed nothing, and the refused value's turn still commits the run.
+Unknown metadata field names are judged as each writer judges them: the member
+store's `apply_consolidation` drops them and writes the fact, so on that path an
+over-bound item whose metadata holds only those is refused for size, and its
+receipt counts no `metadata_fields_dropped` for it; the V1 writer hands a member
+store's `set_semantic` the metadata whole, and `normalize_metadata` refuses an
+unknown name, so there the item keeps `conflict_skip`; a V1 store is handed no
+metadata, so on it any metadata is no refusal and the item is refused for size.
+Each refused value
+logs one WARNING naming its key, the `consolidation_value_size` reject code
+(`SemanticRejectCode.CONSOLIDATION_VALUE_SIZE`), the length and the bound, never
+the value, and the pass logs one INFO count. A key can lose one value to the
+bound and be written with another in the same pass, so the line reports a
+refused value, not a refused key. Deletes, `lesson.*` keys and items without a
+value pass through to the writers. A pass that completes moves its kind's marker
+past the messages it read (the history marker, or the preference-only offset), so
+a later pass of the same kind does not re-prompt a refused fact; a pass refused or
+failed before it completes leaves that marker where it was, as any such pass does
+without the bound, and the pass that retries the span prompts the fact again.
+The one exception is the same without the bound: a history pass that fails on
+its span's last allowed attempt (`_CONSOLIDATION_MAX_ATTEMPTS`) writes the
+history marker anyway and abandons the span, so, unless that marker write itself
+fails (it is reported, and new messages or a rotation later release the span for
+a new pass), no later pass prompts that fact again.
+The number: one value plus the longest key fits the per-turn task-facts
+block on its own (`caps.semantic`, from `_SEMANTIC_MEMORY_CAP` in
+`context_assembly/budget.py`, the budget for all facts together; a test pins the
+bound under it), it matches the episodic `text` maximum the same prompt states,
+and it refuses only the long tail of values. Only consolidation is bound: owner
+edits, imports, the dashboard and lessons keep the byte ceiling alone
+([Semantic Memory](#semantic-memory)).
+
 The prompt's `## Current Semantic Memory` block is bounded too, on BOTH passes
 (the preference-only pass builds the same block): the active table is read
 whole, in key-ordered pages of 500 (`_semantic_snapshot_in_pages`, keyset
@@ -1215,7 +1347,7 @@ alone does not enable V2; canonical admission must supply the stable member/stor
 
 SQLite table `semantic_memory` — structured key-value store with:
 - **Allowed keys**: `_BUILTIN_PREFIXES` is `pref.*`, `project.*`, `user.*`, `lesson.*` (+ user-configurable `extra_prefixes`). The first three are the fact prefixes the consolidation prompt offers the LLM; `lesson.*` is the lessons tier writing into the same table.
-- **Key format**: `^[a-z][a-z0-9_.]*[a-z0-9]$`, max 100 chars; value JSON max 4,096 bytes. The lower bound is a decoded one: a value that is null, empty, or only whitespace is refused as `VALUE_EMPTY`, so no row can hold a value that reads as absent.
+- **Key format**: `^[a-z][a-z0-9_.]*[a-z0-9]$`, max 100 chars; value JSON max 4,096 bytes. The lower bound is a decoded one: a value that is null, empty, or only whitespace is refused as `VALUE_EMPTY`, so no row can hold a value that reads as absent. An automated consolidation write is also held to 2,000 characters per value as the facts block renders it (`_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS`; a dict or list counts as its JSON text, non-ASCII as written), refused as `consolidation_value_size` in each write path, after kind routing, only when `validate_semantic` and the writer's metadata check would accept it, so a value the checks here refuse keeps their code and the conflict resolution below is not consulted; owner edits, imports, the dashboard and lessons keep the 4,096-byte ceiling alone.
 - **Confidence gating**: writes whose source is not `user_explicit` require confidence ≥ `_DEFAULT_CONFIDENCE_THRESHOLD` (0.8); `user_explicit` bypasses the threshold
 - **V1 conflict resolution**: `user_explicit` replaces an existing value; an automated source cannot replace an active user-explicit fact, unless the stored value is itself degenerate (null, empty, or only whitespace) — that row holds nothing for precedence to protect, and only an automated writer would ever repair it, so such a write is allowed and logged. Otherwise higher confidence wins, or the newer value wins when the confidence difference is less than 0.1. A tombstone (deleted row) is not recreated by an automated source: the write is routed to the review queue as a conflict proposal and the row stays hidden; only a `user_explicit` write revives it. V1 consolidation retains direct stale-key deletion and its semantic prompt, while extracted lessons keep their automatic consolidation source. An LLM confidence claim is not user evidence. Reaffirmation still refreshes confidence/source and reaches the original embedding and retirement paths. Owner edits retain shared revision checks. A rejected write logs a best-effort `conflict_skip` event; an unavailable event log does not prevent a V1 data write.
 - **Injection detection**: the `_INJECTION_PATTERNS` regex set (`vector_memory_constants.py`) is scanned on every value write
@@ -3098,7 +3230,7 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 
 `HistoryConsolidator._consolidate()` extracts structured data alongside existing fields:
 - A `"semantic"` item whose key is `lesson.*` is moved to the `"lessons"` array first (`_reroute_lesson_semantic_keys`, once on the shared result before it branches to either write path), so a misfiled lesson gets the lessons path's dedup, volatile-fact screen and extraction-enabled gate instead of a plain `set_semantic`/`_write_semantic` write that stores a duplicate under each model-chosen key. Only a create is rerouted (a `delete` of a `lesson.*` key stays in `"semantic"`, where the delete site already tier-protects standing lessons); the rule is the item's `value`, so a non-text or empty value is not a lesson and is dropped rather than written as a plain semantic row.
-- **Kind routing** (`memory_kind_routing.py`, setting `memory.kind_routing`, default `off`; `shadow` and `enforce` are opt-in). Under `off` the prompt and every write are today's, word for word. Otherwise the prompt asks for a `kind` on every semantic item: `fact` (still true in a month and not looked up elsewhere), `event` (something that happened, worth a dated record) or `state` (the status of a PR, issue, CI run, branch, round or SHA that GitHub, git or the work ledger already holds). Only under `enforce` does it also ask to name keys by topic, never by PR, issue or round number, so the keys written in `shadow` stay the ones the log is measuring. A missing or unknown `kind` reads as `fact`, so an older answer routes as before. The class comes from the model rather than a key/value pattern because, on a 300-row hand-graded sample, a key-or-value regex that caught 79% of work state also flagged half the durable facts. `route_consolidation_by_kind` runs right after `_withhold_unseen_deletes` on BOTH write paths (`_write_structured_memory`, and the pass's member branch before `apply_consolidation`), on the first 20 items, and reads only `project.*` creates and updates under a well-formed key (`_KEY_PATTERN`, at most `_MAX_KEY_LEN` characters, so every key the log keeps is bounded; a malformed key is not routed and the writer refuses it as before): `pref.*`, `user.*`, `lesson.*`, deletes and `user_explicit` writes (which never come through consolidation) are not routed. `off` asks for no tag and ignores any tag sent. `shadow` hands back the answer object itself, so the writes are byte-identical to `off`, and logs what `enforce` would do. `enforce` drops a `state` item and records it as a `work_state` `memory_events` row (`SemanticRejectCode.WORK_STATE`, in `_AUDITABLE_REJECT_CODES` and `get_rejection_stats`). A `fact` and an `event` are both written as facts, as before; an `event` is still counted and sampled as one. Turning an `event` into a dated episode is deferred to a follow-up that reads the shadow samples first, because each attempt to convert it hit a store-side refusal (episodic capacity, dedup, the injection screen) that could lose or double the event. No stored row is changed or deleted by any mode.
+- **Kind routing** (`memory_kind_routing.py`, setting `memory.kind_routing`, default `off`; `shadow` and `enforce` are opt-in). Under `off` the prompt and every write are today's, word for word. Otherwise the prompt asks for a `kind` on every semantic item: `fact` (still true in a month and not looked up elsewhere), `event` (something that happened, worth a dated record) or `state` (the status of a PR, issue, CI run, branch, round or SHA that GitHub, git or the work ledger already holds). Only under `enforce` does it also ask to name keys by topic, never by PR, issue or round number, so the keys written in `shadow` stay the ones the log is measuring. A missing or unknown `kind` reads as `fact`, so an older answer routes as before. The class comes from the model rather than a key/value pattern because, on a 300-row hand-graded sample, a key-or-value regex that caught 79% of work state also flagged half the durable facts. `route_consolidation_by_kind` runs right after `_withhold_unseen_deletes` on BOTH write paths (`_write_structured_memory`, and the pass's member branch before `apply_consolidation`), on the first 20 items, and reads only `project.*` creates and updates under a well-formed key (`_KEY_PATTERN`, at most `_MAX_KEY_LEN` characters, so every key the log keeps is bounded; a malformed key is not routed and the writer refuses it as before): `pref.*`, `user.*`, `lesson.*`, deletes and `user_explicit` writes (which never come through consolidation) are not routed. `off` asks for no tag and ignores any tag sent. `shadow` hands back the answer object itself, so the writes are byte-identical to `off`, and logs what `enforce` would do. `enforce` drops a `state` item and records it as a `work_state` `memory_events` row (`SemanticRejectCode.WORK_STATE`, in `_AUDITABLE_REJECT_CODES` and `get_rejection_stats`). A `fact` and an `event` are both written as facts, as before; an `event` is still counted and sampled as one. Turning an `event` into a dated episode is deferred to a follow-up that reads the shadow samples first, because each attempt to convert it hit a store-side refusal (episodic capacity, dedup, the injection screen) that could lose or double the event. No stored row is changed or deleted by any mode. The consolidation value bound (`_refuse_oversized_semantic`) runs after routing on both paths, so routing counts and samples every item as it would without the bound, and an over-bound `state` item `enforce` drops is reported as `work_state`, not as `consolidation_value_size`.
   - **The log is bounded by construction.** It lives in the store's own `memory_meta` table, which every lineage has, so it needs no schema change, no migration on the frozen V1 list or the no-upgrade member format, and no second file per store. One counter row per UTC day (`memory_kind_log:counts:<day>`, counts by mode and kind), pruned past 400 days. Shadow samples (`memory_kind_log:samples:<day>`: key, kind, value cut to 200 characters, store name, timestamp) are capped at 50 a day and 2,000 in all, oldest dropped first, and never more than 1,000,000 bytes together. They stop 7 days after shadow first logged in that store (`memory_kind_log:shadow_started_at`); counters keep going. With the defaults the 7-day stop alone bounds samples at 350, so the ring and byte caps are backstops. `memory_events` gets no per-item row in shadow mode. The V1 writer logs in its own transaction after its semantic writes, inside `_publication_hold_checked` like every other write of the pass (a switch turned off or a lease lost before the first commit refuses the log too); the member store logs inside the span's transaction under a savepoint, so a replayed span logs nothing twice. A log that cannot be written is a warning, never a failed pass. The samples are kept so a small local classifier can be trained on them later; none is built.
 - `"semantic"` array → `_write_semantic()` for each (max 20 per consolidation), always under `source="consolidation:<key>"`. An LLM confidence claim never grants `user_explicit` authority, so the conflict rule protects genuine user-stated facts. Extracted lesson writes likewise retain their automatic consolidation source in both versions.
 - `"episodic"` array → `write_episodic()` for each (max 10 per consolidation)
