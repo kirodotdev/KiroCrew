@@ -106,7 +106,6 @@ test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_stder
 test/test_mcp_discovery_probe_stdio.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
 # (Alias.md -> One.md); a junction is directory-only and cannot model it.
-test/test_memory_selfheal.py::TestFtsSelfHealGating::test_genuine_corruption_still_self_heals
 test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_declared
 # Needs symlink-creation privilege: plants a FILE symlink at the output path to
 # prove the writer replaces it rather than writing through. atomic_write already

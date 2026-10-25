@@ -1193,15 +1193,23 @@ class MemoryStore:
             # the same once-per-store latch as the restrict itself.
             prepare_owner_only_sqlite(self._index_db)
         conn = sqlite3.connect(str(self._index_db), timeout=_DB_BUSY_TIMEOUT_SECS)
-        # Wait out transient 'database is locked' contention instead of letting
-        # it surface (where the self-heal would misread it as corruption).
-        conn.execute(f"PRAGMA busy_timeout={int(_DB_BUSY_TIMEOUT_SECS * 1000)}")
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
-            "path, content, tokenize='porter unicode61')"
-        )
-        if restrict:  # and cover whatever SQLite just created; retry next open on failure
-            self._index_owner_only = self._restrict_index_files()
+        try:
+            # Wait out transient 'database is locked' contention instead of letting
+            # it surface (where the self-heal would misread it as corruption).
+            conn.execute(f"PRAGMA busy_timeout={int(_DB_BUSY_TIMEOUT_SECS * 1000)}")
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
+                "path, content, tokenize='porter unicode61')"
+            )
+            if restrict:  # and cover whatever SQLite just created; retry next open on failure
+                self._index_owner_only = self._restrict_index_files()
+        except BaseException:
+            # The connection is never handed out, but the raised error's traceback
+            # keeps it open while _get_db's self-heal deletes the index -- and on
+            # Windows an open handle makes that delete fail, so the index is never
+            # rebuilt.
+            conn.close()
+            raise
         return conn
 
     def _restrict_index_files(self) -> bool:
