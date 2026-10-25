@@ -67,6 +67,7 @@ def add_job(
     timeout: int = 0,
     timeout_secs: int = 0,
     auto_pause_after_failures: int | None = None,
+    alert_after_failures: int | None = None,
 ) -> CronJob:
     """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -129,6 +130,7 @@ def add_job(
         timeout=timeout,
         timeout_secs=timeout_secs,
         auto_pause_after_failures=auto_pause_after_failures,
+        alert_after_failures=alert_after_failures,
     )
     self._persist_add_locked(job)
     self._arm_timer()
@@ -366,6 +368,7 @@ async def add_job_async(
     timeout: int = 0,
     timeout_secs: int = 0,
     auto_pause_after_failures: int | None = None,
+    alert_after_failures: int | None = None,
     source_preset: str = "",
     source_template_prompt: str = "",
 ) -> CronJob:
@@ -418,6 +421,7 @@ async def add_job_async(
         timeout=timeout,
         timeout_secs=timeout_secs,
         auto_pause_after_failures=auto_pause_after_failures,
+        alert_after_failures=alert_after_failures,
     )
     # Dashboard-only template provenance. Set on the freshly-built job
     # BEFORE the off-loop persist -- the object has no other reference yet,
@@ -441,7 +445,8 @@ def update_job(self: CronService, job_id: str, **kwargs: Any) -> CronJob | None:
     Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
     approval_mode, silent, skip_dates, timezone, thread_ts, model,
     timeout_secs (per-wake execution budget, 1..86400),
-    auto_pause_after_failures (0..10000; 0 = never auto-pause).
+    auto_pause_after_failures (0..10000; 0 = never auto-pause),
+    alert_after_failures (1..10000; failures in a row before the alert is sent).
 
     Raises :class:`CronStoreBusy` if the store lock is contended past the
     timeout; see :meth:`update_job_async` for the event-loop-safe variant.

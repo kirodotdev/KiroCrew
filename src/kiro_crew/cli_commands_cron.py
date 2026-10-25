@@ -416,6 +416,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
             auto_pause_after_failures=getattr(args, "auto_pause_after_failures", None),
+            alert_after_failures=getattr(args, "alert_after_failures", None),
         )
         # ``member_id`` rides in the call ONLY when ``--agent`` resolved to a
         # crew member; a non-member (template or default) agent keeps the exact
@@ -646,6 +647,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             "channel",
             "timeout_secs",
             "auto_pause_after_failures",
+            "alert_after_failures",
         ):
             val = getattr(args, field, None)
             if val is not None:

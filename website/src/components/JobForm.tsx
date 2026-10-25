@@ -73,7 +73,7 @@ export function jobKindOf(job?: CronJob): JobKind {
   return 'message'
 }
 
-/** Highest auto-pause limit the backend accepts (`_AUTO_PAUSE_MAX`). */
+/** Highest auto-pause and alert-after limit the backend accepts (`_AUTO_PAUSE_MAX`). */
 const AUTO_PAUSE_MAX = 10000
 
 /** A run's time limit when the job sets none: the cron service's own
@@ -395,6 +395,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // stopped the save. Kept apart from `error` so it is never shown through
   // ErrorNotice (errors-use-error-notice).
   const [autoPauseHint, setAutoPauseHint] = useState('')
+  const showAlertAfter = !!job && typeof job.alert_after_failures === 'number'
+  const [initialAlertAfter] = useState(() => (showAlertAfter ? String(job?.alert_after_failures) : ''))
+  const [alertAfter, setAlertAfter] = useState(initialAlertAfter)
+  const [alertAfterHint, setAlertAfterHint] = useState('')
   // The limit the field was seeded from, held in state rather than read off
   // `defaults`: `job` is re-fetched while the form is open (another tab's save,
   // a window refocus), and comparing the stale field against the NEW stored
@@ -611,6 +615,15 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         return
       }
       if (limit !== job?.auto_pause_after_failures) body.auto_pause_after_failures = limit
+    }
+    if (showAlertAfter && alertAfter.trim() !== initialAlertAfter) {
+      const limit = Number(alertAfter.trim())
+      if (alertAfter.trim() === '' || !Number.isInteger(limit) || limit < 1 || limit > AUTO_PAUSE_MAX) {
+        setAlertAfterHint(i18nT('components.jobForm.alert_after_failures_invalid'))
+        setSaving(false)
+        return
+      }
+      if (limit !== job?.alert_after_failures) body.alert_after_failures = limit
     }
     if (privateMember && !isLlmless) {
       // Keyed on `privateMember`, not on `boundMember`, and BOTH lines depend on
@@ -1070,6 +1083,28 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             {/* Plain text, not an ErrorNotice: see `autoPauseHint`. */}
             {autoPauseHint && (
               <span id="jobform-auto-pause-hint" className="text-[11px] text-text">{autoPauseHint}</span>
+            )}
+          </div>
+        )}
+        {showAlertAfter && (
+          <div className="flex flex-col gap-1">
+            <label htmlFor="jobform-alert-after" className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.alert_after_failures')}</label>
+            <span id="jobform-alert-after-help" className="text-[11px] text-muted/70">{i18nT('components.jobForm.alert_after_failures_description')}</span>
+            <Input
+              id="jobform-alert-after"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={AUTO_PAUSE_MAX}
+              step={1}
+              aria-describedby={alertAfterHint ? 'jobform-alert-after-help jobform-alert-after-hint' : 'jobform-alert-after-help'}
+              aria-invalid={alertAfterHint ? true : undefined}
+              className="w-full sm:w-32 flex-none"
+              value={alertAfter}
+              onChange={e => { setAlertAfter(e.target.value); setAlertAfterHint('') }}
+            />
+            {alertAfterHint && (
+              <span id="jobform-alert-after-hint" className="text-[11px] text-text">{alertAfterHint}</span>
             )}
           </div>
         )}

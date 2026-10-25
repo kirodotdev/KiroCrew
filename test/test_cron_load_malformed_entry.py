@@ -615,6 +615,7 @@ _NUMERIC_FIELD_DEFAULTS = {
     "last_retry_count": 0,
     "timeout_secs": 1800,  # _JOB_TIMEOUT_SECS
     "auto_pause_after_failures": 5,  # _AUTO_PAUSE_THRESHOLD
+    "alert_after_failures": 1,  # _ALERT_AFTER_DEFAULT
     "timeout": 0,
 }
 

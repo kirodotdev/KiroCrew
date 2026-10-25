@@ -22,7 +22,10 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone, parse_time_string
-from kiro_crew.cron_service.model import validate_auto_pause_after_failures
+from kiro_crew.cron_service.model import (
+    validate_alert_after_failures,
+    validate_auto_pause_after_failures,
+)
 from kiro_crew.dashboard.cron_inject import (
     chat_folder_exists,
     chat_folder_move_refuses_store,
@@ -1007,6 +1010,15 @@ async def api_cron_update(request: web.Request) -> web.Response:
 
         app = _app_caller(request)
         kwargs["audit_actor"] = f"app:{app}" if app else audit_actor(request, "dashboard")
+    if "alert_after_failures" in body:
+        try:
+            kwargs["alert_after_failures"] = validate_alert_after_failures(
+                body["alert_after_failures"]
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_alert_after_failures"}, status=400
+            )
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:

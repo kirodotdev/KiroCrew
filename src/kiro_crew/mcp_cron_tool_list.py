@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
+from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
+    _AUTO_PAUSE_MAX,
+    _AUTO_PAUSE_THRESHOLD,
+)
 from kiro_crew.mcp_tool_titles import with_titles
 
 # ``auto_pause_after_failures`` description for the ``cron_add`` and ``cron_update``
@@ -22,6 +26,12 @@ _AUTO_PAUSE_AFTER_DESCRIPTION = (
     f"With 0 or a limit above {_AUTO_PAUSE_THRESHOLD}, retries from the "
     f"{_AUTO_PAUSE_THRESHOLD}th consecutive failure start 5 minutes apart and double "
     "after each further failure, up to one hour apart."
+)
+_ALERT_AFTER_DESCRIPTION = (
+    "Send the failure message only after this many consecutive failed runs "
+    f"(1..{_AUTO_PAUSE_MAX}, default {_ALERT_AFTER_DEFAULT}). The dashboard bell still "
+    "records every failure; policy denials and the run that auto-pauses the job "
+    "always alert."
 )
 
 
@@ -266,6 +276,10 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "integer",
                         "description": _AUTO_PAUSE_AFTER_DESCRIPTION,
                     },
+                    "alert_after_failures": {
+                        "type": "integer",
+                        "description": _ALERT_AFTER_DESCRIPTION,
+                    },
                 },
                 "required": ["name"],
             },
@@ -298,6 +312,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     "auto_pause_after_failures": {
                         "type": "integer",
                         "description": _AUTO_PAUSE_AFTER_DESCRIPTION,
+                    },
+                    "alert_after_failures": {
+                        "type": "integer",
+                        "description": _ALERT_AFTER_DESCRIPTION,
                     },
                     "agent": {"type": "string", "description": "New agent name"},
                     "channel": {"type": "string", "description": "New channel ID"},
