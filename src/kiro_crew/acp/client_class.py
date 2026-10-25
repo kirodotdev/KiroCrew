@@ -520,6 +520,10 @@ class AcpClient:
         self._native_child_rows: dict[str, dict[str, Any]] = {}
         self._native_child_by_tool_use: dict[str, str] = {}
         self._native_child_turn: dict[str, None] = {}
+        # One ``StreamRedactor`` per native child whose text is streaming, keyed by
+        # its tracked id (so bounded by the same cap), flushed and dropped when the
+        # roster reports the child done or failed (``client_turn``).
+        self._native_child_redactors: dict[str, Any] = {}
         self.last_prompt_stats = AcpPromptStats()
         # Credits kiro reported while no turn was running (a compaction waited
         # on between turns), held for the next turn's bill; see _track_metadata.
@@ -1351,12 +1355,15 @@ class AcpClient:
     # Read Claude Code's native subagents on this session: ``kiro_crew.acp.client_native_children``.
     _native_children_declared = _client_native_children._native_children_declared
     _reset_native_child_turn = _client_native_children._reset_native_child_turn
-    _admit_native_child = _client_native_children._admit_native_child
     _native_child_roster = _client_native_children._native_child_roster
     _note_subagent_update = _client_native_children._note_subagent_update
     _note_session_message = _client_native_children._note_session_message
     _native_child_of = _client_native_children._native_child_of
     _native_child_events = _client_native_children._native_child_events
+    # Their redaction before the turn yields them, and the flush of the text it
+    # holds for a turn cut short: ``kiro_crew.acp.client_turn``.
+    _redact_native_child_events = _client_turn._redact_native_child_events
+    flush_native_child_text = _client_turn.flush_native_child_text
 
     # Control an ``AcpClient`` turn from outside it: ``kiro_crew.acp.client_turn_control``.
     command_result = _client_turn_control.command_result

@@ -149,6 +149,7 @@ class _ChatTurn:
     _msg: "str"
     _native_card_output: "dict[str, list[str]]"
     _native_card_output_len: "dict[str, int]"
+    _native_child_tc: "set[str]"
     _native_result_seen: "set[str]"
     _native_tc_card: "dict[str, str]"
     _native_tracker: "dict[str, dict[Any, Any]]"

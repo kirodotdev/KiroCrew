@@ -17,26 +17,33 @@ text never becomes the parent's text; a child's tool frames still continue to th
 ordinary tool path after their activity prefix, which is how a kiro-cli child's tool
 calls render too.
 
+The activity events leave here unredacted. ``client_turn._redact_native_child_events``
+redacts them before the turn yields them, a child's text through that child's own
+``StreamRedactor``: a chunk redacted alone would let a credential split across two
+chunks through. The roster's display strings are redacted whole by the cards that
+show them, so a bound applied here never cuts inside a token (``_label``).
+
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_native_child_by_tool_use``, ``_native_child_overflow``,
-``_native_child_rows``, ``_native_child_sids``, ``_native_child_turn``,
-``_prompt_or_tool_seen``.
+``_native_child_rows``, ``_native_child_turn``, ``_prompt_or_tool_seen``.
 
-Instance fields read: ``_session_id``.
+Instance fields read: ``_native_child_sids``, ``_session_id``.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp._dispatch import parse_text_chunk, redact_text
+from kiro_crew.acp._dispatch import parse_text_chunk
 from kiro_crew.acp.session_handle_native_children import (
     NATIVE_CHILD_LABEL_CAP,
     NATIVE_CHILD_ROSTER_CAP,
+    _note_native_child,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -83,6 +90,9 @@ CLIENT_CAPABILITIES_BY_BACKEND: dict[str, dict] = {
 #: The ``idle`` stop reasons that mean the child finished its work.
 _IDLE_FINISHED = frozenset({"end_turn", "max_tokens", "max_turn_requests", ""})
 
+#: The run of non-space characters a cut string ends with.
+_TRAILING_TOKEN = re.compile(r"\S+\Z")
+
 
 def client_capabilities_for(backend: str) -> dict:
     """The ``clientCapabilities`` an ``AcpClient`` on *backend* declares."""
@@ -90,8 +100,19 @@ def client_capabilities_for(backend: str) -> dict:
 
 
 def _label(value: object) -> str:
-    """One backend-authored display string, bounded for storage."""
-    return str(value or "")[:NATIVE_CHILD_LABEL_CAP]
+    """One backend-authored display string, bounded for storage.
+
+    The cards redact the whole string they receive, so the cut must not leave part
+    of a credential: a URL cut before its ``@`` does not read as one and would
+    reach the card unredacted. A token the bound splits is dropped whole.
+    """
+    text = str(value or "")
+    if len(text) <= NATIVE_CHILD_LABEL_CAP:
+        return text
+    cut = text[:NATIVE_CHILD_LABEL_CAP]
+    if text[NATIVE_CHILD_LABEL_CAP].isspace():
+        return cut
+    return _TRAILING_TOKEN.sub("", cut)
 
 
 def _standard_state_status(state: object) -> dict[str, str] | None:
@@ -155,28 +176,6 @@ def _reset_native_child_turn(self: AcpClient) -> None:
         self._native_child_overflow = 0
 
 
-def _admit_native_child(self: AcpClient, child_sid: object) -> bool:
-    """Remember one child id (bounded, type-checked); the client twin of the handle's
-    ``_note_native_child``.
-
-    Returns whether the id is tracked after the call. Past
-    :data:`NATIVE_CHILD_ROSTER_CAP` the id is counted in ``_native_child_overflow``
-    (said at the next turn's start) and gets no row: its text and side frames are
-    dropped, and its tool frames render as the parent's ordinary rows.
-    """
-    if not isinstance(child_sid, str) or not child_sid or len(child_sid) > MAX_ACP_SESSION_ID_LEN:
-        return False
-    if child_sid == self._session_id:
-        return False
-    if child_sid in self._native_child_sids:
-        return True
-    if len(self._native_child_sids) >= NATIVE_CHILD_ROSTER_CAP:
-        self._native_child_overflow += 1
-        return False
-    self._native_child_sids.add(child_sid)
-    return True
-
-
 def _native_child_roster(self: AcpClient) -> list[AcpEvent]:
     """The roster of this turn's children that have a task.
 
@@ -196,9 +195,17 @@ def _native_child_roster(self: AcpClient) -> list[AcpEvent]:
 
 
 def _note_subagent_update(self: AcpClient, update: dict[str, Any]) -> list[AcpEvent]:
-    """Merge one ``subagent_update`` into its row and return the roster."""
+    """Merge one ``subagent_update`` into its row and return the roster.
+
+    The child id is admitted by the handle's own ``_note_native_child``, so the
+    client and the handle share one cap and one answer for a child past it: the id is
+    counted in ``_native_child_overflow`` (said at the next turn's start) and gets no
+    row, its text and side frames are dropped, and its tool frames render as the
+    parent's ordinary rows, each call still marked as a child's
+    (``_untracked_child_call``).
+    """
     child_sid = update.get("sessionId")
-    if not isinstance(child_sid, str) or not self._admit_native_child(child_sid):
+    if not isinstance(child_sid, str) or not _note_native_child(self, child_sid):
         return []
     row = self._native_child_rows.setdefault(
         child_sid,
@@ -246,6 +253,18 @@ def _note_session_message(
     return self._native_child_roster()
 
 
+def _parent_tool_use(update: dict[str, Any]) -> str:
+    """The Agent call a frame is stamped with, or ``""`` for an unstamped frame.
+
+    The adapter stamps ``parentToolUseId`` as a string only on a subagent's frames;
+    the parent's own frames carry none, or carry it as null.
+    """
+    meta = update.get("_meta")
+    claude_meta = meta.get("claudeCode") if isinstance(meta, dict) else None
+    value = claude_meta.get("parentToolUseId") if isinstance(claude_meta, dict) else None
+    return value if isinstance(value, str) else ""
+
+
 def _native_child_of(self: AcpClient, session_id: object, update: dict[str, Any]) -> str:
     """The known child a frame belongs to, or ``""`` for the parent's own frame.
 
@@ -255,12 +274,29 @@ def _native_child_of(self: AcpClient, session_id: object, update: dict[str, Any]
     """
     if isinstance(session_id, str) and session_id in self._native_child_sids:
         return session_id
-    meta = update.get("_meta")
-    claude_meta = meta.get("claudeCode") if isinstance(meta, dict) else None
-    parent_tool_use = claude_meta.get("parentToolUseId") if isinstance(claude_meta, dict) else None
-    if isinstance(parent_tool_use, str):
+    parent_tool_use = _parent_tool_use(update)
+    if parent_tool_use:
         return self._native_child_by_tool_use.get(parent_tool_use, "")
     return ""
+
+
+def _untracked_child_call(child_key: str, update: dict[str, Any]) -> list[AcpEvent]:
+    """Mark a tool call of a child this session does not track as a child's call.
+
+    A child past the cap, or one whose Agent-call link was refused, gets no card, but
+    its tool calls still arrive here. The consumers refuse a session directive only
+    from a call an activity event names, so without this event the call would read as
+    the parent's own, and its directive would act on the parent's chat. The event
+    carries no title and nothing is stored, so the bounds still hold. *child_key* is
+    the child's sessionId, or the Agent call it serves when the frame names the
+    parent's session.
+    """
+    tool_call_id = str(update.get("toolCallId") or "")
+    if not child_key or not tool_call_id:
+        return []
+    return [
+        AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_key, tool_call_id=tool_call_id)
+    ]
 
 
 def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[AcpEvent], bool]:
@@ -286,14 +322,19 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
         # a child, so an id this session does not track is a child past the cap. It
         # gets no card. Its tool frames keep the ordinary path, as before the
         # declaration: the provenance caches its permission requests are judged by
-        # fill from them. Its text and side frames are dropped, never the parent's.
+        # fill from them. A tool call is still marked as a child's, and so is one on
+        # the parent's session stamped with an Agent call this session has no link
+        # for. Its text and side frames are dropped, never the parent's.
         foreign = (
             isinstance(session_id, str)
             and bool(session_id)
             and bool(self._session_id)
             and session_id != self._session_id
         )
-        return [], foreign and kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE)
+        if kind == UPDATE_TOOL_CALL:
+            child_key = session_id if foreign else _parent_tool_use(update)
+            return _untracked_child_call(str(child_key), update), False
+        return [], foreign and kind != UPDATE_TOOL_CALL_UPDATE
     events: list[AcpEvent] = []
     if child_sid not in self._native_child_turn and child_sid in self._native_child_rows:
         # A background child started in an earlier turn: list it again here.
@@ -310,7 +351,7 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
                     kind=EVENT_SUBAGENT_ACTIVITY,
                     sub_session_id=child_sid,
                     tool_call_id=tool_call_id,
-                    title=redact_text(str(update.get("title") or "")),
+                    title=str(update.get("title") or ""),
                 )
             )
         return events, False
@@ -321,9 +362,7 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
         if text and not is_thinking:
             self._prompt_or_tool_seen = True
             events.append(
-                AcpEvent(
-                    kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=redact_text(text)
-                )
+                AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=text)
             )
     # Anything else a child sends (its plan, its commands, its session info)
     # describes the child, never the parent.

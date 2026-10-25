@@ -42,6 +42,8 @@ if TYPE_CHECKING:
         _matches_trusted_pattern,
         _name_grant_refusal_off_loop,
         _validate_tool_name,
+        capabilities_of,
+        is_claude_backend_name,
         logger,
         read_effective_agent,
         redact_credentials,
@@ -756,7 +758,15 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # parent turn. Deny-by-default (CWE-1188): with no active crew this
     # predicate is False no matter the trust flags, so the tool falls
     # through to the normal trust gate below, then _on_permission_prompt's card.
-    if _native_crew_should_auto_approve(_native_tracker, state, slot) and _child_grant_eligible:
+    # The claude backend never takes this path. Its permission requests do
+    # not say which session sent them, so an open child card cannot tell a
+    # child's request from the parent's, and the parent's own tool calls
+    # would be approved with no card.
+    if (
+        not is_claude_backend_name(capabilities_of(client).backend)
+        and _native_crew_should_auto_approve(_native_tracker, state, slot)
+        and _child_grant_eligible
+    ):
         logger.debug(
             "Native crew auto-approve: %r (request_id=%s)",
             _safe_native_crew_debug_title(event.title),

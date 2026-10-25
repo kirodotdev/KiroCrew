@@ -2,7 +2,8 @@
 
 The kiro prompt loop, ``send_message`` and ``send_message_stream``, ``stream_events`` and
 ``stream_unsolicited``, the frame classifier and dispatcher, the prompt response reader, the
-opencode shell-permission deferral and the liveness consult.
+opencode shell-permission deferral, the liveness consult and the redaction of a Claude native
+child's events, with the flush of their held text for a turn cut short.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -11,7 +12,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_turn_credits``, ``_cancelled``,
 ``_claude_compaction_pending``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
-``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
+``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
 ``_prompt_or_tool_seen``, ``_skill_reads``, ``_stale_eligible``,
 ``_steers_awaiting_echo``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
@@ -87,6 +88,7 @@ from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_UPDATE,
     METHOD_SUBAGENT_LIST_UPDATE,
+    STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
     TERMINAL_TOOL_STATUSES,
@@ -94,7 +96,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -117,6 +119,64 @@ _TOOL_INTERRUPTED_MARKER = "Tool uses were interrupted, waiting for the next use
 def _is_tool_interrupted_marker(chunk: str) -> bool:
     """Exact match against the kiro-cli security-filter interrupt marker."""
     return chunk.strip() == _TOOL_INTERRUPTED_MARKER
+
+
+def _redact_native_child_events(self: AcpClient, events: list[AcpEvent]) -> list[AcpEvent]:
+    """Redact a Claude native child's events (``client_native_children``) before the yield.
+
+    A child's text streams through that child's own ``StreamRedactor``, as the
+    parent's answer does at its sink: a chunk redacted alone would let a credential
+    split across two chunks through. When a roster reports a child done or
+    failed, the tail its redactor held back is flushed into one more activity event
+    placed before that roster, so the card's text is whole when the card closes. A
+    tool title is redacted whole, as a kiro-cli child's is below.
+    """
+    out: list[AcpEvent] = []
+    for event in events:
+        if event.kind == EVENT_SUBAGENT_LIST:
+            for row in event.subagents or []:
+                sid = row.get("sessionId")
+                if sid not in self._native_child_redactors or row["status"]["type"] == "working":
+                    continue
+                tail = self._native_child_redactors.pop(sid).flush()
+                if tail:
+                    out.append(
+                        AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=sid, text=tail)
+                    )
+        elif event.kind == EVENT_SUBAGENT_ACTIVITY:
+            if event.title:
+                event.title, _ = redact_exfiltration_urls(event.title)
+                event.title, _ = redact_credentials(event.title)
+            if event.text:
+                sid = event.sub_session_id
+                if sid not in self._native_child_redactors:
+                    self._native_child_redactors[sid] = StreamRedactor()
+                event.text = self._native_child_redactors[sid].feed(event.text)
+                if not event.text and not event.tool_call_id:
+                    continue
+        out.append(event)
+    return out
+
+
+def flush_native_child_text(self: AcpClient) -> list[AcpEvent]:
+    """The text every Claude child's redactor still holds, flushed as activity events.
+
+    For a turn cut short: the roster that flushes a child's tail never arrives, and
+    the cards close. ``_dispatch_events`` calls this before a Stop's ``cancelled``
+    completion and before a compaction-failed one, since a completion closes every
+    card; the dashboard's release calls it for a turn that gets no completion (a
+    cancelled task, a timeout, a provider error). Claude Code stops its subagents at
+    an interrupt, so nothing will complete the held text. Every redactor is flushed
+    and dropped. A turn that ends normally does not call this: a background child
+    keeps running into the next turn, and its redactor must keep the held text.
+    """
+    out = [
+        AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=sid, text=tail)
+        for sid, redactor in self._native_child_redactors.items()
+        if (tail := redactor.flush())
+    ]
+    self._native_child_redactors.clear()
+    return out
 
 
 # ── Prompt Loop Helpers ──
@@ -924,6 +984,13 @@ async def _dispatch_events(
             self._turn_done.set()
             for _injected in _consumed:
                 yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_injected)
+            if reason == STOP_REASON_CANCELLED:
+                # A Stop: Claude Code stops its subagents at the interrupt, and
+                # the completion closes every card, so the text a child's
+                # redactor holds goes on its card first. The flush already
+                # redacted it.
+                for _held in self.flush_native_child_text():
+                    yield _held
             yield AcpEvent(
                 kind=EVENT_COMPLETE,
                 stop_reason=reason,
@@ -1001,7 +1068,7 @@ async def _dispatch_events(
             # frame continues below after its activity prefix, while its
             # lifecycle, text and side frames are never this turn's own.
             _child_events, _child_consumed = self._native_child_events(msg)
-            for _child_event in _child_events:
+            for _child_event in self._redact_native_child_events(_child_events):
                 yield _child_event
             if _child_consumed:
                 continue
@@ -1301,6 +1368,10 @@ async def _dispatch_events(
             # compaction-status path; this only ends the turn.
             self._compaction_failed_turn = False
             self._last_stop_reason = STOP_REASON_COMPACTION_FAILED
+            # The abandoned turn's completion closes every card, so the text a
+            # child's redactor holds goes on its card first, as for a Stop.
+            for _held in self.flush_native_child_text():
+                yield _held
             yield AcpEvent(
                 kind=EVENT_COMPLETE,
                 stop_reason=STOP_REASON_COMPACTION_FAILED,

@@ -14,7 +14,7 @@ Three landed fixes are pinned here:
    ``event.mcp_server_name`` is set AND ``session_directive.match_tool`` resolves
    a directive tool; the ``EVENT_TOOL_RESULT`` gate applies a directive only for
    a recorded id and REFUSES a native-sub-agent call
-   (``id in _native_tc_card``). A forged shell result (no ``mcp_server_name``,
+   (``id in _native_child_tc``). A forged shell result (no ``mcp_server_name``,
    an LLM-authored title, and a marker in stdout) is therefore never honoured.
 
 The ``_meta.kiro`` fixture shape mirrors ``test_todo_list_surface.py``.
@@ -195,7 +195,7 @@ class TestClientToolCallEventIdentityProvenance:
 #
 # These drive the real ``dashboard.chat_runner._run_chat`` turn loop with a fake
 # ACP client that streams ``AcpEvent``s (``LLMEvent`` is an alias of
-# ``AcpEvent``), exercising the actual ``_pending_dir_tool`` / ``_native_tc_card``
+# ``AcpEvent``), exercising the actual ``_pending_dir_tool`` / ``_native_child_tc``
 # gate — not a reimplementation. The harness mirrors
 # ``test_dashboard_chat_history.TestKiroReadinessQueueHandoff``.
 
@@ -509,30 +509,34 @@ class TestChatRunnerDirectiveSeam:
         spy = await _drive(state, slot, events, monkeypatch)
         spy.assert_not_called()
 
+    @pytest.mark.parametrize("carded", [True, False], ids=["with-card", "no-card"])
     @pytest.mark.asyncio
-    async def test_native_subagent_directive_is_refused(self, tmp_path, monkeypatch):
+    async def test_native_subagent_directive_is_refused(self, tmp_path, monkeypatch, carded):
         """A GENUINE MCP directive tool call whose tool_call_id belongs to a
-        native sub-agent (id in _native_tc_card) is refused: the applier is not
-        called and the result carries the not-applied sub-agent note."""
+        native sub-agent (id in _native_child_tc) is refused: the applier is not
+        called and the result carries the not-applied sub-agent note. A child
+        with no card (past a bound, or not listed yet) is refused the same way:
+        the activity event alone marks its call."""
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("nativesub")
         slot._titled = True
         marker = session_directive.encode(
             "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
         )
-        events = [
-            # 1. Register a native sub-agent card in the tracker.
-            AcpEvent(
-                kind=EVENT_SUBAGENT_LIST,
-                subagents=[
-                    {
-                        "sessionId": "sub-1",
-                        "role": "tester",
-                        "initialQuery": "do the work",
-                        "status": {"type": "working"},
-                    }
-                ],
-            ),
+        # 1. Register a native sub-agent card in the tracker, or leave it out.
+        roster = AcpEvent(
+            kind=EVENT_SUBAGENT_LIST,
+            subagents=[
+                {
+                    "sessionId": "sub-1",
+                    "role": "tester",
+                    "initialQuery": "do the work",
+                    "status": {"type": "working"},
+                }
+            ],
+        )
+        events = [roster] if carded else []
+        events += [
             # 2. Tag tool_call_id 'tc-nat' as belonging to that sub-agent.
             AcpEvent(
                 kind=EVENT_SUBAGENT_ACTIVITY,

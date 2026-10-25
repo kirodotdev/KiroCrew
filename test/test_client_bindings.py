@@ -44,7 +44,6 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_client_bindings")
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "0da0e673600b", "client_class"),
     "_add_orphan_steers": ("function", False, "b3c41cdccc27", "client_turn_control"),
-    "_admit_native_child": ("function", False, "09a8133eda4c", "client_native_children"),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "client_model_selection"),
     "_agent_env_for_spawn": ("function", False, "8cab7a4db01b", "client_spawn_env"),
     "_agent_turn_gate": ("data", False, "", ""),
@@ -212,6 +211,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "client_model_selection",
     ),
+    "_redact_native_child_events": ("function", False, "4ae22451457c", "client_turn"),
     "_refuse_identity_drift": ("function", True, "2dfacffa6279", "client_permissions"),
     "_registration_throttle_line": ("function", True, "f21e39ec5ffb", "client_lifecycle"),
     "_reject_unknown_server_request": ("function", True, "87459833bc5c", "client_permissions"),
@@ -314,6 +314,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "effective_spec_declares_zero_tools": ("function", False, "b70ef8096bd5", "client_mcp_array"),
     "ensure_ready": ("function", True, "b60c5fea256e", "client_start"),
     "exit_code": ("property", False, "8dc15be1dfda", "client_class"),
+    "flush_native_child_text": ("function", False, "58ee5ea89856", "client_turn"),
     "get_valid_effort_levels": ("function", False, "6806e867af4e", "client_model_selection"),
     "has_active_turn": ("function", False, "a6632a57e602", "client_turn_control"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "client_turn_control"),

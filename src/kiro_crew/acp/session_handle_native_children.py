@@ -15,7 +15,7 @@ Instance fields read: ``_session_id``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import parse_text_chunk, redact_text
@@ -49,6 +49,17 @@ NATIVE_CHILD_ROSTER_CAP = 4096
 #: Far above any real sub-agent name, so a clipped label means a hostile or
 #: broken payload rather than a long one.
 NATIVE_CHILD_LABEL_CAP = 512
+
+
+class NativeChildIds(Protocol):
+    """The child-id store :func:`_note_native_child` admits into: an ``AcpSessionHandle``'s,
+    or an ``AcpClient``'s on the claude backend (``client_native_children``)."""
+
+    @property
+    def _session_id(self) -> str | None: ...
+
+    _native_child_sids: set[str]
+    _native_child_overflow: int
 
 
 def _bounded_label(value: object) -> str:
@@ -224,8 +235,11 @@ def _build_child_tool_activity_prefix(self: AcpSessionHandle, update: dict) -> l
     ]
 
 
-def _note_native_child(self: AcpSessionHandle, child_sid: object) -> bool:
+def _note_native_child(self: NativeChildIds, child_sid: object) -> bool:
     """Count one native child id on this handle (bounded, type-checked).
+
+    ``AcpClient`` admits a Claude child through this same function on its own store
+    (``client_native_children._note_subagent_update``), so both keep one cap.
 
     Ids are backend-controlled: non-strings, empties, over-long values and
     this handle's own id are ignored; past the roster cap the id is

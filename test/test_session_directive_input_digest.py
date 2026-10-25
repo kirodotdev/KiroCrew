@@ -1154,14 +1154,10 @@ class TestClaudeBackendResolvesTheTool:
             == ""
         )
 
-    @pytest.mark.asyncio
-    async def test_a_claude_shaped_turn_arms(self, tmp_path, monkeypatch):
-        """End to end through the real consumer with the frames the legacy parser
-        produces for Claude: raw mcp__ title on the refinement, no identity."""
-        state = _stub_state(tmp_path)
-        slot = state.get_or_create_slot("claude-turn")
-        slot._titled = True
-        events = [
+    @staticmethod
+    def _claude_turn() -> list[AcpEvent]:
+        """The frames the legacy parser produces for one Claude directive call."""
+        return [
             AcpEvent(
                 kind=EVENT_TOOL_CALL,
                 tool_call_id="tc-cl",
@@ -1188,9 +1184,39 @@ class TestClaudeBackendResolvesTheTool:
             AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
             AcpEvent(kind=EVENT_COMPLETE),
         ]
-        spy = await _drive(state, slot, events, monkeypatch)
+
+    @pytest.mark.asyncio
+    async def test_a_claude_shaped_turn_arms(self, tmp_path, monkeypatch):
+        """End to end through the real consumer with the frames the legacy parser
+        produces for Claude: raw mcp__ title on the refinement, no identity."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("claude-turn")
+        slot._titled = True
+        spy = await _drive(state, slot, self._claude_turn(), monkeypatch)
         spy.assert_called_once()
         assert spy.call_args.args[3] == "monitor_start"
+
+    @pytest.mark.asyncio
+    async def test_a_claude_childs_call_with_no_card_is_refused(self, tmp_path, monkeypatch):
+        """The same call from a Claude child that has no card, for example one past
+        the client's child cap. The activity event alone marks the call as a child's,
+        so the parked record is retired instead of acting on the parent's chat."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("claude-child")
+        slot._titled = True
+        calls = _sel_spy(monkeypatch)
+        mark = AcpEvent(
+            kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="child-late", tool_call_id="tc-cl"
+        )
+        spy = await _drive(state, slot, [mark, *self._claude_turn()], monkeypatch)
+        spy.assert_not_called()
+        denied = [c for c in calls if c.get("source") == "mcp-directive"]
+        assert [c["outcome"] for c in denied] == ["denied"]
+        notes = [o for o in _tool_result_outputs(state) if "[Not applied:" in o]
+        assert len(notes) == 1 and "sub-agent" in notes[0]
+        assert directive_queue.depth(effective_session_key(slot)) == 0
+        sent = [c.args[0] for c in state.broadcast_ws.call_args_list if c.args]
+        assert "subagent_spawn" not in sent
 
 
 class TestKasWireTitleCarriesTheBackendPrefix:

@@ -654,17 +654,45 @@ and SEL record are unchanged. The child's other frames are dropped. A child call
 adapter left on the parent session is still attributed through the Agent call it
 serves.
 
+A child's text is redacted as a stream, as the parent's answer is at its sink:
+`client_turn._redact_native_child_events` feeds each child's chunks through that
+child's own `StreamRedactor` before the turn yields them, so a credential split
+across two chunks is still caught. The tail a redactor holds back is flushed into
+one more activity event just before the roster that reports the child done or
+failed, so the card's text is whole when the card closes. A turn cut short gets no
+such roster, and Claude Code stops its subagents at an interrupt, so nothing would
+complete that text: every held tail goes on its card before the cards close
+(`AcpClient.flush_native_child_text`). The client yields it just before a Stop's
+`cancelled` completion and a compaction-failed one, because the dashboard closes
+every card on a completion; the dashboard's release flushes a turn that gets no
+completion (a cancelled task, a timeout, a provider error;
+`native_cards._native_flush_cut_short`). Any other completion keeps the tail held,
+because a background child keeps running into the next turn. A child tool's title is redacted whole. The roster's display strings are cut to `NATIVE_CHILD_LABEL_CAP`
+for storage and redacted whole by the cards, so the cut drops a token it would
+split rather than leave part of a credential the card's redactor does not
+recognize. `client_native_children` itself calls no redactor.
+
 The child ids and the Agent-call links are bounded by `NATIVE_CHILD_ROSTER_CAP`,
 each link by its length too (parity row H16). A child past the cap gets no card: its
 text and side frames are dropped, and its tool calls render as ordinary rows, so the
 provenance its approvals are judged by still fills. The next turn's start logs how
-many ids or links were refused. The ids outlive
+many ids or links were refused. Each such call, and each call on the parent session
+stamped with an Agent call that has no link, still yields an activity event that names
+it as a child's, with no title and nothing stored. A session directive is refused
+from any call an activity event names, with or without a card (`_native_child_tc` on
+the dashboard, as the messaging driver's own set), so no child can act on the
+parent's chat. The ids outlive
 the turn, because a background child keeps running after the turn that started it;
 a later turn that reads one of its frames lists it again. Not wired: the per-child
 `capabilities.cancel` the adapter offers (a card's Stop still only closes the card),
 a resume naming a child id (it misses as an unknown conversation), and reporting the
 children as uncharged residency. A child's permission request is answered like any
-other request on the session. Contract tests: `test_claude_native_subagent_cards.py`.
+other request on the session. The cards do not change the approval gate: the
+native-crew auto-approve rung (`hooks.auto_approve_subagent_tools` while a crew card
+is open, `tool_approval.py`) skips the claude backend, because a claude request does
+not name the session that sent it, and the rung cannot tell the parent's request
+from a child's. Every request takes the gate it takes with no child running.
+Contract tests: `test_claude_native_subagent_cards.py`.
 
 ### A Side Chat session
 
