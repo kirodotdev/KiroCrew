@@ -3366,6 +3366,17 @@ pass `--profile`.
   on the session cwd and on every key, then compares them component by component.
   The deepest containing key wins. `/a/proj` never matches `/a/project2`, and a
   symlink is judged by its target.
+- **Crewmate worktrees.** A cwd in a crewmate's worktree is matched as the same
+  path in the repository's own checkout (`crewmate_worktree.source_path`):
+  `<workspace>/worktrees/<slug>/app-<hash>/src` matches as `/repos/app/src`, so
+  a worker keeps the binding on `/repos/app` and never takes one on its
+  workspace. It is asked of git each time, through the sandboxed runner, with
+  nothing remembered, so it holds after a restart. It applies only when git's
+  work-tree top sits at `worktrees/<slug>/`, carries the name `path_for` gives
+  that repository, and is registered by that repository as a worktree. Anything
+  else, a repository cloned inside the worktree included, matches as itself. A
+  path with no `worktrees` folder in it runs no git, and a git failure leaves the
+  path as it is.
 - **Injection.** `SessionAllocation._get_or_create_impl` resolves the binding
   against the final `effective_cwd`. This happens after capability preparation and
   before the warm-pool decision. `bound_profile_env` sets both `AWS_PROFILE` and

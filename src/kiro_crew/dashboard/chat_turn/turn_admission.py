@@ -656,6 +656,15 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         from kiro_crew.dashboard.crewmate_approval import seed_for_turn
 
         seed_for_turn(state, slot, loaded_cfg, execution_context)
+        # A crewmate's worker runs in the crewmate's own git worktree of the
+        # repository this turn is about, never in the shared checkout.
+        from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
+
+        if await scope_worker_turn(state, slot, loaded_cfg, execution_context, message):
+            # The project is part of the captured binding; this turn now
+            # runs on the worktree, under the dispatch lock it still holds.
+            selected_binding = _current_binding(turn)
+            turn.selected_binding = selected_binding
 
     # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
     # self-heal must NOT run the default agent — that generic-substitution is
