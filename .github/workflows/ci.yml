@@ -485,7 +485,7 @@ jobs:
             platforms+=(--platform "manylinux_2_${minor}_$MACHINE")
           done
           python -m pip download --only-binary=:all: \
-            "${platforms[@]}" \
+            ${platforms[@]+"${platforms[@]}"} \
             --python-version 3.12 --implementation cp --abi cp312 --abi abi3 --abi none \
             -d "$RUNNER_TEMP/closure" -r "$RUNNER_TEMP/install_requires.txt"
 
