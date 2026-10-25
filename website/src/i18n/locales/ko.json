@@ -12496,6 +12496,7 @@
         "choose": "선택…",
         "date_time_format": "형식: 2026-01-31T09:30:00Z",
         "decline": "거절",
+        "dismiss": "답하지 않고 닫기",
         "done": "끝냈어요",
         "integer_not_whole": "{{field}}은(는) 정수여야 해요.",
         "integer_too_large": "{{field}}이(가) 너무 커서 정확히 보낼 수 없어요. 15자리 이하로 입력해 주세요.",

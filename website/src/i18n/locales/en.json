@@ -7084,6 +7084,7 @@
         "choose": "Choose…",
         "date_time_format": "Format: 2026-01-31T09:30:00Z",
         "decline": "Decline",
+        "dismiss": "Close without answering",
         "done": "I've finished",
         "integer_not_whole": "{{field}} must be a whole number.",
         "integer_too_large": "{{field}} is too large to send exactly; use at most 15 digits.",
