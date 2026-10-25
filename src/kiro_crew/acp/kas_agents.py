@@ -69,7 +69,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.acp import kas_env_launch
+from kiro_crew.acp import kas_env_launch, session_label
 from kiro_crew.acp.kas_app_identity import TOKENED_ENV_KEYS_KEPT as _TOKENED_ENV_KEYS_KEPT
 from kiro_crew.acp.kas_app_identity import (
     gateway_bound_port,
@@ -657,7 +657,7 @@ def _project_mcp_servers(
       reason managed env is projected at all: without it the shims read a
       different data home than the gateway. A managed entry still lives in a
       user-editable agent file, so a hand-added literal under a managed name is
-      withheld like any other.
+      withheld like any other. An opted-in entry gains only the session label.
 
     * **a muted server** — an entry carrying ``disabled: true`` is not declared at
       all. KAS's wire schema accepts the field and its mapper then drops it
@@ -792,6 +792,7 @@ def _project_mcp_servers(
             continue
         projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
         projected.pop("autoApprove", None)
+        labelled, relay_env = session_label.take_kas_marker(projected, entry.get("env"), managed)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function
@@ -822,7 +823,7 @@ def _project_mcp_servers(
             # The withheld env values stay on this machine: the engine is handed
             # Crew's launcher and a reference, never the values (kas_env_launch).
             projected, _launched, complete = kas_env_launch.relay_withheld_env(
-                projected, entry.get("env"), session_key=session_key, agent_id=agent_id, server=name
+                projected, relay_env, session_key=session_key, agent_id=agent_id, server=name
             )
             if complete:
                 withheld = [w for w in withheld if not w.startswith("env")]
@@ -844,7 +845,7 @@ def _project_mcp_servers(
                 "/".join(withheld),
                 name,
             )
-        out[name] = projected
+        out[name] = session_label.with_kas_label(projected, session_key if labelled else None)
     return out
 
 

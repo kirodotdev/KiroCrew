@@ -86,6 +86,7 @@ from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
+from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
 from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
@@ -1429,8 +1430,11 @@ _NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"ti
 # at deserialization -- so neither restricts the server, and an element that
 # omits them expresses everything the declaration says. Judging them as "a key
 # the element cannot carry" would refuse the default agent for Crew's own stamp,
-# with a message telling the user to remove it.
-_NATIVE_INERT_KEYS = frozenset({mcp_provenance.MARKER_KEY, mcp_provenance.DERIVED_KEY})
+# with a message telling the user to remove it. The session-label opt-in
+# (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does.
+_NATIVE_INERT_KEYS = frozenset(
+    {mcp_provenance.MARKER_KEY, mcp_provenance.DERIVED_KEY, SESSION_LABEL_MARKER}
+)
 
 # How the three places a managed server is declared are named to a user. These
 # land in the message that refuses a projected search agent, so they name the
