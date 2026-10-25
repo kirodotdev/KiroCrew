@@ -436,14 +436,49 @@ class TestNonObjectJsonBodies:
         assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_absent_body_still_uses_defaults(self, wired):
-        """default_empty must keep the no-body case working, unlike a bad shape."""
+    async def test_absent_body_still_uses_defaults(self, wired, monkeypatch):
+        """default_empty must keep the no-body case working, unlike a bad shape.
+
+        The probe's loopback client is stubbed, as in ``TestWebhookTest``, so
+        the test never sends a real request to whatever listens on 127.0.0.1.
+        """
+        posted: list[str] = []
+
+        class _Resp:
+            status = 200
+
+            async def text(self):
+                return ""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Session:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def post(self, url, data=None, headers=None):
+                posted.append(url)
+                return _Resp()
+
+        monkeypatch.setattr("aiohttp.ClientSession", _Session)
         req = _req("POST", "/api/webhooks/test", None)
         req.json = AsyncMock(side_effect=ValueError("no body"))
         with patch.object(H, "_json_object", wraps=H._json_object):
             resp = await H.api_webhook_test(req)
         # Reaches the probe path rather than being rejected as malformed.
         assert resp.status != 400
+        # The probe went to the stub, not the network.
+        assert posted == ["http://127.0.0.1:6776/api/hooks/agent"]
 
 
 class TestJsonContentTypeGate:
