@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import { SCHEDULE_PRESETS, PRESET_CATEGORIES } from '../utils/schedulePresets'
@@ -157,7 +157,10 @@ describe('SchedulePage delete button state machine', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByRole('button', { name: 'Delete?' })).toBeInTheDocument()
 
-    await vi.advanceTimersByTimeAsync(3100)
+    // Inside act: the revert's setState fires from a fake timer, and outside act
+    // React renders it on a real scheduler task that can land after the advance
+    // returns. act flushes that render before the assertions read the DOM.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
 
     // Back to the disarmed state: plain "Delete" label, armed label gone.
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
