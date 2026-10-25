@@ -772,13 +772,16 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
         )
     elif rstatus.memory_pressure_held:
         # The posture is figure-based and can read AMPLE while the macOS kernel
-        # reports pressure; "heavy work is fine" would then contradict the gate.
+        # reports pressure; the AMPLE guidance would then contradict the gate.
         # The queue note itself is on the "Kernel memory pressure" line above.
         out.append(
             f"\nGuidance: {MEMORY_PRESSURE_PHRASE} — prefer the lighter path for heavy work."
         )
     elif rstatus.posture == "ample":
-        out.append("\nGuidance: ample headroom — heavy work is fine.")
+        out.append(
+            "\nGuidance: ample headroom right now — nothing is reserved, "
+            "so it can change before you act."
+        )
     else:
         out.append(
             "\nGuidance: headroom could not be measured on this host — "
