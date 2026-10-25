@@ -294,8 +294,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     #   * Above the branch, because every record created since the
     #     execution-context migration carries `execution_context` and so
     #     takes the other arm. Resolving inside `else:` reaches only
-    #     pre-migration jobs and leaves the reported symptom in place for
-    #     everything created since.
+    #     pre-migration jobs and leaves every newer job on the floor.
     #   * Not into the capture, because `cron_execution` is what
     #     `bind_session_execution` publishes under the session key, and a
     #     persistent_session job (the default) reuses the stable key
@@ -400,7 +399,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # of which any durable record compares.
     #
     # Gated on the resolved agent still being the bare "kirocrew" floor,
-    # which is the whole of what this change replaces. A record whose
+    # the only value the default may replace. A record whose
     # captured template_id names a REAL template keeps it: a schedule
     # created from a template chat with no `agent` argument names its
     # template ONLY there, `agent_id` staying empty: bind_cron_memory
@@ -411,11 +410,11 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # captured execution and memory store stayed the original template's,
     # and dispatched_agents_from_disk -- the delete guard's ONE walk of
     # the dispatch-mirroring rule -- still reported the old agent: guard
-    # and dispatch would drift, which is the same silent wrong-agent class
-    # this change removes, reintroduced on the other arm. Compared after
+    # and dispatch would drift into a silent wrong-agent dispatch.
+    # Compared after
     # .strip() so a whitespace-only capture counts as the floor, which is
-    # where whitespace agent_id handling lives now that the capture itself
-    # is left byte-for-byte alone.
+    # where whitespace agent_id handling lives: the capture itself is
+    # left byte-for-byte alone.
     # Also gated on the capture carrying no member_id. A cron created
     # from a crew member's chat is captured by resolve_member_execution
     # as a MEMBER execution whose template_id is
@@ -438,7 +437,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # the namespace is the authoritative answer to "did this capture
     # select a member?" and member_id is only its persisted form.
     # Requiring BOTH keeps a legacy member on an unmigrated store out of
-    # the override, which a member_id-only gate admitted.
+    # the override; a member_id-only gate would admit it.
     #
     # And BOTH capture gates together are still not enough, because on
     # the `job.execution_context is None` arm cron_execution is
@@ -455,7 +454,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     # with nothing backfilling execution_context on load. So the JOB is
     # asked as well: on that arm it is the only surviving evidence of the
     # selection. A truthy non-str also declines, which is the safe
-    # direction -- declining leaves the pre-change floor behaviour.
+    # direction -- declining keeps the floor agent.
     if (
         _default_agent
         and (cron_agent or "").strip() in ("", "kirocrew")
@@ -477,21 +476,17 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         # the substituted template is never consulted and a child it
         # forbids starts.
         #
-        # Honouring it properly means a NON-DURABLE parent execution the
-        # spawn gate reads, in two files this change does not touch and
-        # whose reviewers are scoped to spawn admission, not cron. So
-        # this change narrows itself instead: a default that declares an
-        # allowlist is not substituted, and the job keeps the floor it
-        # already had before this change. Nothing an operator has today
-        # regresses; the capability simply waits for that CR.
+        # Honouring it would need a NON-DURABLE parent execution the
+        # spawn gate reads. Until that exists, a default that declares an
+        # allowlist is not substituted, and the job keeps the floor.
         #
         # DENY BY DEFAULT. A non-empty tuple declines, and so does the
         # reader's `None`. Only `()` -- "no readable spec declares this
         # name, and every spec file parsed" -- permits the substitution.
         #
-        # An earlier revision substituted on `None`, arguing the spawn
-        # gate would refuse anyway because it asks about the CAPTURE's
-        # floor spelling. That premise is false: `agent.py` generates and
+        # `None` must not substitute on the theory that the spawn gate
+        # refuses anyway because it asks about the CAPTURE's floor
+        # spelling. That premise is false: `agent.py` generates and
         # installs `kirocrew.json` into the agents directory and
         # `config/defaults.json` declares `"name": "kirocrew"`, so a
         # readable spec DOES declare the floor name -- and

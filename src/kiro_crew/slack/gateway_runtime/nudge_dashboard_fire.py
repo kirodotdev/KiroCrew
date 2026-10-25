@@ -64,27 +64,24 @@ async def _fire_dashboard_nudge(
     # session — the in-memory registry is empty for any tab the user has
     # navigated away from, and it is empty for EVERY slot immediately
     # after a gateway restart (AutoNudgeService.start() re-arms timers
-    # before the dashboard has restored its slots). Removing the loop here
-    # deleted a live babysit loop on nothing more than a cold cache, which
-    # silently abandoned the PR it was watching.
+    # before the dashboard has restored its slots). Removing the loop on a
+    # cold cache would silently abandon a live babysit loop.
     #
     # Rehydration deliberately does NOT resurrect a session the user
     # dismissed with ✕ — that is the documented "respect the close" rule.
-    # It is now enforced where the user acts: api_chat_slot_delete removes
+    # It is enforced where the user acts: api_chat_slot_delete removes
     # this loop as part of the close, so a loop that is still armed was
     # never user-dismissed. Only a genuinely unreachable session retires
     # the loop.
     #
-    # FIX 3: hence adopt_closed=True. ``closed`` in the metadata is written
+    # Hence adopt_closed=True. ``closed`` in the metadata is written
     # by TWO producers, and only one of them is the user: idle archival
     # (POST /api/chat/slots/cleanup, default 3 days) also marks a slot
-    # closed. An unattended worker is idle by nature between cycles, so it
-    # was archived, became unreachable to this exact call, and the loop was
-    # REMOVED below — terminally, with no way back. Adopting the closed
-    # session is what makes archival survivable; the companion change in
-    # api_chat_slots_cleanup exempts loop-owning slots so it should not
-    # happen in the first place, and this is the backstop for a slot
-    # archived before that landed (or by any other automatic closer).
+    # closed. An unattended worker is idle by nature between cycles, so
+    # archival would make it unreachable here and the loop would be
+    # REMOVED below — terminally, with no way back. api_chat_slots_cleanup
+    # exempts loop-owning slots; adopting the closed session is the
+    # backstop for an older archive or any other automatic closer.
     slot = self.dashboard_state.get_slot(loop.slot_key)
     if slot is None:
         # Rehydration reads the session's persisted transcript and replays
@@ -126,8 +123,7 @@ async def _fire_dashboard_nudge(
     # delivered turn ended on a malformed-request rejection, the backend
     # refused the payload's SHAPE, deterministically -- re-injecting the same
     # nudge context can only reproduce it. Firing again would spend cycle
-    # after cycle (the reported cycles 13, 14, ...) on an identical doomed
-    # turn, so STOP the loop instead. The verdict is scoped to the loop id
+    # after cycle on an identical doomed turn, so STOP the loop instead. The verdict is scoped to the loop id
     # (``_last_turn_structural_terminal_loop_id``) AND applied under an ATOMIC
     # (id, generation) fence in AutoNudgeService.update(expected_generation=):
     # the loop's config generation captured at fire time
@@ -385,7 +381,7 @@ async def _fire_dashboard_nudge(
 
     if completion_hook is None:
         _append_nudge()
-    # FIX 2: an unattended app-owned nudge turn runs under the background
+    # An unattended app-owned nudge turn runs under the background
     # concurrency cap. This is the fleet's hot path — N armed loops fire
     # independently and would otherwise put N turns on the runtime at once.
     # An attended slot (any user session with a monitor loop) is passed
@@ -493,14 +489,14 @@ async def _fire_dashboard_nudge(
         # provider entry to cover revocation during that setup.
         if completion_hook is not None and not await completion_hook.authorize():
             return
-        # NO AUDIENCE FENCE for the work-ledger wake, and its absence is now
-        # structural rather than a choice: the wake carries ``wake_brief`` lines
+        # NO AUDIENCE FENCE for the work-ledger wake, by construction: the
+        # wake carries ``wake_brief`` lines
         # and a ``work_ledger_read`` pointer, so there is no worker-authored
         # ledger prose in it for a fence to withhold. The conductor's own read,
         # which is what the pointer sends it to, goes through
         # ``_caller_key`` -- which judges the containment and records the
-        # admission itself, inside this very turn. So the gate did not move; it
-        # moved to the one place that reads the board.
+        # admission itself, inside this very turn. The gate sits at the one
+        # place that reads the board.
         await _run_chat(
             dashboard_state,
             turn_slot,

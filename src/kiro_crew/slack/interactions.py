@@ -706,7 +706,6 @@ async def _handle_resume_choice(
         if tab_closed:
             label = f"\u25b6\ufe0f *{title}*: {_RESUME_TAB_CLOSED_MSG}"
 
-        # Link session
         _orch.sessions.set_slack_link(session_key, link_ts, link_channel)
         sel().log_api_access(
             caller=user_id,

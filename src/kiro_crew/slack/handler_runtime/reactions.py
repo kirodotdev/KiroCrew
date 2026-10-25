@@ -228,7 +228,6 @@ class StatusReactionController:
         if not self._enabled:
             return
         self._cancel_stall_timers()
-        # Remove existing stall emoji
         if self._stall_emoji:
             emoji_to_remove = self._stall_emoji
             self._stall_emoji = None
@@ -253,7 +252,6 @@ class StatusReactionController:
     async def _add_stall_emoji(self, emoji: str) -> None:
         if self._finalized:
             return
-        # Remove previous stall emoji if upgrading
         if self._stall_emoji and self._stall_emoji != emoji:
             try:
                 await self._slack.remove_reaction(self._channel, self._ts, self._stall_emoji)

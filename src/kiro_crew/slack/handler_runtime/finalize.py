@@ -48,11 +48,9 @@ def _review_drafts_get(key: str) -> tuple[str, str]:
 def _review_drafts_set(key: str, draft: str, requester_user_id: str) -> None:
     """Store a draft with TTL + requester id, evicting oldest if at capacity."""
     now = time.monotonic()
-    # Evict expired entries
     expired = [k for k, (_, _, ts) in _review_drafts.items() if now - ts > _REVIEW_DRAFT_TTL]
     for k in expired:
         _review_drafts.pop(k, None)
-    # Evict oldest if still at capacity
     if len(_review_drafts) >= _REVIEW_DRAFT_MAX:
         oldest_key = min(_review_drafts, key=lambda k: _review_drafts[k][2])
         _review_drafts.pop(oldest_key, None)

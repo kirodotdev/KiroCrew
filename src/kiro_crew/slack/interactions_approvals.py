@@ -360,7 +360,6 @@ async def _handle_review_edit_submit(payload: dict) -> None:
     logger.info("Review edited and posted by %s in %s", caller, channel)
 
 
-# Register the edit modal submission handler
 register_view_handler("mc_review_edit_submit", _handle_review_edit_submit)
 
 

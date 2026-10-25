@@ -318,15 +318,12 @@ async def _init_services(self: GatewayOrchestrator) -> None:
         bot_name=self._cfg.agent.bot_name,
     )
 
-    # Conversation history
     self.conv_log = ConversationLog()
     self.conv_log.init()
     self.ctx_builder.conversation_log = self.conv_log
 
-    # Session manager
     self.sessions = SessionManager(self._cfg, provider_factory=factory)  # type: ignore[arg-type]
 
-    # History consolidator
     self.consolidator = HistoryConsolidator(
         log=self.conv_log,
         memory=memory,
@@ -1416,7 +1413,6 @@ async def run(self: GatewayOrchestrator) -> None:
         _scope_task.add_done_callback(self._background_tasks.discard)
         _scope_task.add_done_callback(log_probe_failure)
 
-    # Block until shutdown
     await shutdown_event.wait()
     await self._shutdown_and_exit(_watchdog)
 

@@ -135,7 +135,6 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # does not carry over.
         git_bin: str = _git
 
-        # Detect current branch
         branch_proc = await asyncio.create_subprocess_exec(
             _git,
             "rev-parse",

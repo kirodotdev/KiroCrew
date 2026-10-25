@@ -175,7 +175,6 @@ async def _route_action_to_session(
         resources=action_id_value,
     )
 
-    # Build context entry for the agent
     action_context = (
         "--- CONTEXT ENTRY BEGIN ---\n"
         f"[{context_tag}: {payload_str}]\n"
@@ -387,7 +386,6 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         await _refuse_stale_options(channel, msg_ts, payload)
         return
 
-    # Read checkbox state from the payload's state.values
     state_values = payload.get("state", {}).get("values", {})
     selected: list[str] = []
     for block_vals in state_values.values():
@@ -555,8 +553,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         # The control is spent only once the original is actually gone — either
         # rewritten in place, or posted-and-deleted. When the delete failed those
         # buttons are still sitting in the channel, so the record has to stay:
-        # dropping it is exactly what leaves a permanently clickable control, the
-        # defect this PR exists to remove.
+        # dropping it is exactly what leaves a permanently clickable control.
         #
         # Inside the lock with the edit above: an expiry that observed a
         # still-tracked record between the two would edit straight over the

@@ -797,7 +797,6 @@ async def _route_message(
 
     # Bail out if we still have no text after attempting transcription
     if not text:
-        # Clean up any downloaded attachment temp files
         for p in _attachment_temp_paths:
             try:
                 os.unlink(p)
@@ -1128,7 +1127,6 @@ async def _route_message(
         await _handle_restart(orch, sender_id, "", _restart_respond)
         return
 
-    # Per-channel agent override
     agent_override = ch_cfg.agent or None
 
     # ── Trusted-bot turn ledger (loop guard bookkeeping) ──

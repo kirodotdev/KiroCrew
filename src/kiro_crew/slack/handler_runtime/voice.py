@@ -65,7 +65,6 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     restores persisted voice settings — every restart silently resets TTS to
     disabled while the dashboard's settings PUT keeps reporting success.
     """
-    # Load voice_reply defaults from config
     _vr: dict = cfg.raw.get("voice_reply", {}) if (cfg is not None and hasattr(cfg, "raw")) else {}
     if not _vr:
         try:

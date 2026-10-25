@@ -412,8 +412,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 # append counts as answer-reached. But a stream on which EVERY
                 # append was refused (a Slack outage for the whole turn) delivered
                 # nothing to the reader, and booking that as a success would count
-                # an answer that never arrived -- exactly the before-delivery
-                # accounting this change exists to remove. ``answer.delivered``
+                # an answer that never arrived. ``answer.delivered``
                 # rises only on a confirmed real-text append, so it separates the
                 # two: used stream -> reached, wholly-refused stream -> failure.
                 # A turn with no answer text to send (``_answer_text_to_send``

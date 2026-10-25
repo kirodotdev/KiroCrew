@@ -627,7 +627,6 @@ async def _bang_link_to_dashboard(
             channel, "Use this command inside a thread to import it.", reply_ts
         )
         return ""
-    # Fetch thread history and import to dashboard
     from kiro_crew.slack.interactions import _import_thread_to_slot
 
     slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
@@ -818,7 +817,7 @@ async def _bang_thread_agent(
 # ── !project <path> / !project off — thread-scoped agent-discovery dir ──
 # NOTE: this only scopes which project-local .kiro agents are discoverable
 # for !ta in this thread; it does NOT change the agent's working directory
-# (cwd). Provider cwd plumbing is out of scope for this CR.
+# (cwd).
 async def _bang_project(
     cmd_text: str,
     slack: SlackClientOps,

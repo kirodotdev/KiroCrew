@@ -687,7 +687,6 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             # streak is a LIFETIME total, so after enough deaths the bound is
             # permanently tripped and the exemption silently stops applying.
             runtime_death.clear_shared_deaths(f"cron:{job.id}")
-            # Deliver Done message and remove job
             await self._deliver_script_result(job, script_msg, remove=True)
             try:
                 sel().log_tool_invocation(
