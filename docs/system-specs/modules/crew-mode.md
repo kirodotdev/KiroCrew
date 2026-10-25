@@ -3715,12 +3715,20 @@ chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
   key, on every read before an allocation and at an explicit selection's commit
   (`slot_guards._record_explicit_agent_selection`), so a session switched off the
   worker template leaves the crewmate's backend too. The pin is that record, so the worker
-  follows its crewmate's backend for its whole life. Only a backend in
-  `ACP_BACKENDS_MATE_WORKER_KIT` carries the per-session spec (harness-parity.md);
-  today that is KAS. `session_create` refuses a worker anywhere else
-  (`worker_kit_harness_unsupported`), and so does the allocation for a provider
-  that does not answer `mate_worker_kit_supported`, so a worker never runs the
-  bare base. The worker's model pin is judged against the same backend
+  follows its crewmate's backend for its whole life. It runs on a backend in
+  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude; harness-parity.md),
+  its spec carried the way a member chat's
+  saved spec is -- KAS through its per-session projection, the mirrored hosts
+  through the session MCP projection, which reads the worker's own spec by the
+  session (`acp.session_mcp._crewmate_worker_spec`). kiro-cli reads `--agent` off
+  disk and cannot find the worker spec, so it is not in the set. `session_create` refuses a
+  hand-off whose worker would run anywhere else (`capability_harness_unsupported`,
+  naming the backends that carry it), and the allocation refuses the same before
+  spawn, plus a crewmate whose file turns off single tools (`disabledTools`, or
+  a server or native tool its own `excludedTools` names) on a backend outside
+  `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS` (`capability_tool_limits_unsupported`;
+  KAS honours the limits as the worker spec's `excludedTools`, so only claude
+  refuses them). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
 **A stale worker is released, not capped.** A crewmate opens as many workers as

@@ -95,6 +95,12 @@ with no row here.
    * - ``ACP_BACKENDS_MATE_WORKER_KIT``
      - pre-session registry query (whether a crewmate's worker runs with its kit,
        or is refused before spawn)
+   * - ``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``
+     - context assembly (whether a crewmate worker's principles and its crewmate's
+       prompt ride the ``[AGENT SYSTEM PROMPT]`` block)
+   * - ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
+     - pre-session registry query (whether a crewmate worker's single-tool limits
+       are honoured, or a worker with limits is refused before spawn)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
      - driver-internal (whether a per-session tool set can be mounted)
    * - ``ACP_BACKENDS_MEMBER_PANEL``
@@ -849,6 +855,8 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
 )
 from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_MATE_WORKER_KIT,
+    ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
+    ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,

@@ -61,6 +61,28 @@ def _slot_part(session_key: str) -> str:
 _CREWMATE_WORKER_SLOTS: set[str] = set()
 
 
+#: The crewmate worker sessions whose live provider takes the worker's prompt only
+#: from the ``[AGENT SYSTEM PROMPT]`` block. Written at allocation from the provider
+#: itself (``mate_worker_prompt_in_context``), so a later config change cannot move
+#: a running worker's prompt to the other channel.
+_CREWMATE_WORKER_PROMPT_IN_CONTEXT: set[str] = set()
+
+
+def note_crewmate_worker_prompt_channel(session_key: str, in_context: bool) -> None:
+    """Record whether worker *session_key*'s live provider reads its prompt in context."""
+    if not session_key:
+        return
+    if in_context:
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT.add(_slot_part(session_key))
+    else:
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT.discard(_slot_part(session_key))
+
+
+def crewmate_worker_prompt_in_context(session_key: str | None) -> bool:
+    """Whether worker *session_key*'s live provider reads its prompt in context."""
+    return bool(session_key) and _slot_part(str(session_key)) in _CREWMATE_WORKER_PROMPT_IN_CONTEXT
+
+
 def note_crewmate_worker_session(session_key: str) -> None:
     """Record *session_key* as a crewmate's own worker session (any key spelling)."""
     if session_key:
@@ -75,6 +97,7 @@ def forget_crewmate_worker_session(session_key: str) -> None:
     """
     if session_key:
         _CREWMATE_WORKER_SLOTS.discard(_slot_part(session_key))
+        _CREWMATE_WORKER_PROMPT_IN_CONTEXT.discard(_slot_part(session_key))
 
 
 def is_crewmate_worker_session(session_key: str | None) -> bool:

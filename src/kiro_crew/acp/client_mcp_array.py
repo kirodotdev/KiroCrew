@@ -45,6 +45,7 @@ from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
@@ -359,7 +360,11 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         from kiro_crew.acp.session_mcp import session_mcp_projection
 
         projection = session_mcp_projection(
-            self._agent, stub_server_names=stubbed, work_dir=self._work_dir
+            self._agent,
+            stub_server_names=stubbed,
+            work_dir=self._work_dir,
+            session_key=self._session_key or "",
+            worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
         )
     except Exception:
         logger.warning(
