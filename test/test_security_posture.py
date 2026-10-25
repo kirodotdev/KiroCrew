@@ -1098,7 +1098,13 @@ class TestRedactionSinkRegistry:
         assert _sink_module_calls_a_redactor(tmp_path, "calls.py")
 
     def test_a_facade_counts_only_through_the_owners_it_declares(self, tmp_path):
-        """A split module's facade keeps its sink row; its declared owners must call."""
+        """A facade's sink row counts only through the owners it declares.
+
+        An owner listed in ``_OWNERS`` or imported as ``_owner_<name>`` that calls a
+        redactor makes the row pass; a plain import does not. This covers rows
+        already keyed to a facade. A new split re-keys its ``_REDACTION_SINKS`` row
+        to the owner module that makes the call, instead of leaving it on the facade.
+        """
         pkg = tmp_path / "kiro_crew"
         (pkg / "fam").mkdir(parents=True)
         (pkg / "fam" / "owner.py").write_text(
