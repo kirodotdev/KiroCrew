@@ -950,6 +950,50 @@ def _terminate_process_group(
     return _end_escaped_descendants(escaped)
 
 
+def _sigkill_if_identity_matches(pid: int, token: str) -> None:
+    """SIGKILL *pid* only if its creation identity still equals *token*.
+
+    On POSIX ``kill_pid_pinned`` is a plain ``os.kill`` that leaves the identity
+    check to its caller, so the check is made here. Where Linux offers a pidfd,
+    the process is pinned BEFORE its identity is read: a pid reissued after the
+    pin cannot retarget the fd, and one reissued before it reads a different
+    start time. Without a pidfd (macOS) the identity is re-read just before the
+    kill, which narrows the window but cannot close it. Errors from the signal
+    propagate; the caller treats them as nothing left to end.
+    """
+    if not platform_compat.IS_WINDOWS and _pidfd_sigkill_if_identity_matches(pid, token):
+        return
+    # Windows: the primitive itself holds the verified handle across the
+    # terminate. POSIX without a usable pidfd: the re-read is the only check.
+    if platform_compat.IS_WINDOWS or platform_compat.process_start_time(pid) == token:
+        platform_compat.kill_pid_pinned(pid, token, platform_compat.SIGKILL)
+
+
+def _pidfd_sigkill_if_identity_matches(pid: int, token: str) -> bool:
+    """Pinned half of :func:`_sigkill_if_identity_matches`; False if no pidfd.
+
+    False means this host cannot pin (no wrapper, an old kernel answering
+    ENOSYS, a sandbox answering EPERM) and the caller falls back. True means the
+    pid was handled here: signalled, spared on a mismatch, or already gone.
+    """
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+    if pidfd_open is None or pidfd_send_signal is None:
+        return False
+    try:
+        fd = pidfd_open(pid)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    try:
+        if platform_compat.process_start_time(pid) == token:
+            pidfd_send_signal(fd, platform_compat.SIGKILL)
+    finally:
+        os.close(fd)
+    return True
+
+
 def _end_escaped_descendants(escaped: dict[int, str]) -> bool:
     """SIGKILL saved descendants by pinned identity; return True once gone.
 
@@ -960,7 +1004,7 @@ def _end_escaped_descendants(escaped: dict[int, str]) -> bool:
     """
     for child, token in escaped.items():
         with contextlib.suppress(OSError):
-            platform_compat.kill_pid_pinned(child, token, platform_compat.SIGKILL)
+            _sigkill_if_identity_matches(child, token)
     deadline = time.monotonic() + GROUP_EXIT_WAIT_SECONDS
     while True:
         alive = [
