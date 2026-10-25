@@ -446,7 +446,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             # binary the resolver stub hands the launch, and a version child is not
             # one of the four launch answers the golden records.
             patch.object(
-                opencode_mod, "_opencode_version_refusal", new=AsyncMock(return_value=("", ""))
+                opencode_mod, "_opencode_checked_major", new=AsyncMock(return_value=(1, "", ""))
             ),
             patch.object(launch_mod, "_unlink_readback_launcher", return_value=None),
             patch.object(

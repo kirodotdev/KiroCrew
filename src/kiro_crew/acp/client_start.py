@@ -96,7 +96,12 @@ from kiro_crew.agent import (
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_LAUNCH, launch_for
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_LAUNCH,
+    OPENCODE_ACP_V2_MAJOR,
+    launch_for,
+    opencode_major_version,
+)
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.executors import subprocess_executor
@@ -759,6 +764,27 @@ async def _fork_session(
     return forked_sid
 
 
+def _opencode_v2_set_mode_params(
+    backend: str, agent: str, agent_version: str, session_id: str | None
+) -> dict | None:
+    """``session/set_mode`` params pinning the agent on opencode v2, else ``None``.
+
+    Pure so the generation matrix is unit-testable without a session: v2
+    without an explicit mode varies its default tool plane run to run
+    (native shell vs Code-Mode JS, measured live on 2.0.29), and only the
+    native plane carries the permission behavior the gate depends on. v1
+    keeps its stable default, and other backends never reach here.
+    """
+    if (
+        backend == ACP_BACKEND_OPENCODE
+        and agent
+        and session_id is not None
+        and (opencode_major_version(agent_version) or 0) >= OPENCODE_ACP_V2_MAJOR
+    ):
+        return {"sessionId": session_id, "modeId": agent}
+    return None
+
+
 async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
     # 1. Initialize
@@ -1120,6 +1146,22 @@ async def _initialize_session(self: AcpClient) -> None:
             finally:
                 self._reset_state()
             raise
+
+        # 4b. Pin the agent on opencode v2. The v2 default tool plane varies
+        #    run to run without an explicit mode (native shell vs Code-Mode JS,
+        #    measured live on 2.0.29) -- and only the native plane carries the
+        #    permission behavior the gate depends on. v1 keeps its stable
+        #    default: nothing there showed this variance, so nothing changes.
+        #    Awaited, unlike kiro's fire-and-forget activation above: a prompt
+        #    issued before the mode lands would run on the unpinned plane.
+        #    A failure refuses the session rather than running it unpinned.
+        mode_params = _opencode_v2_set_mode_params(
+            self.backend, self._agent, self._agent_version, self._session_id
+        )
+        if mode_params is not None:
+            mode_id = await self._send_request(METHOD_SET_MODE, mode_params)
+            await self._wait_for_response(mode_id, timeout=10.0)
+            logger.info("ACP agent pinned: %s", self._agent)
 
     # 5. Set model — override if Kiro Crew config specifies non-default.
     await self._apply_startup_model()
