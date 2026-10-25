@@ -28,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -501,6 +502,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # other harness spells, so a shared bucket would offer the picker ids that only
     # one backend can accept.
     ACP_BACKEND_DEEPSEEK: "deepseek",
+    # vibe gets a fresh namespace even while dormant: its ids are Mistral model
+    # aliases drawn from vibe's own catalog, and the cost of the fresh key is one
+    # row -- while reusing ``acp`` would mix its alias vocabulary into the
+    # kiro-cli bucket the moment routing lands and it becomes selectable.
+    ACP_BACKEND_VIBE: "vibe",
 }
 
 

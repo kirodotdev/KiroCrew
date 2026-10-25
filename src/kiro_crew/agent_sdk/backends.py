@@ -324,6 +324,17 @@ ACP_BACKEND_GOOSE = "goose"
 # closure -- so one global install is the whole precondition, with no workspace
 # checkout and no per-profile dependency step.
 ACP_BACKEND_DEEPSEEK = "deepseek"
+# Mistral's Vibe coding agent, served ACP by its own binary (``vibe-acp``), no
+# adapter package and no Node floor -- the opencode/goose launch shape. KNOWN but
+# deliberately NOT selectable yet: its routing is
+# :data:`Routing.UNVERIFIED`, because the mode pin (the ``mode`` config option /
+# ``session/set_mode`` route to ``ask``) could not be captured live before this
+# landed, and ``register_selectable_backend`` refuses an UNVERIFIED backend.
+# Landing dormant registers the vocabulary, the launch row and the auth
+# declaration so the selectability PR is a routing change, not a fleet-wide
+# rename. See the worked example in
+# ``docs/system-specs/modules/harness-onboarding.md``.
+ACP_BACKEND_VIBE = "vibe"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -353,6 +364,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_VIBE,
     }
 )
 
@@ -498,6 +510,10 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_PI: ACP_BACKEND_PI,
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
+    # Known but dormant: every KNOWN id needs an entry so a policy author can
+    # name and deny it, which is exactly the state a dormant harness should be
+    # governable in.
+    ACP_BACKEND_VIBE: ACP_BACKEND_VIBE,
 }
 
 #: The backend a deployment policy may never deny.

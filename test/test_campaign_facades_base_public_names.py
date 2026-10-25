@@ -106,7 +106,7 @@ _REBOUND: dict[str, dict[str, str]] = {
 #: own file. A split that changes one of these inventories updates that facade's row. A blank
 #: line between rows lets two splits of neighbouring facades each change their own row.
 _MOVE_DIGESTS: dict[str, str] = dict(row.split() for row in """
-    kiro_crew.acp.client                                        b0bc1c4a2f46693d
+    kiro_crew.acp.client                                        29529c354c6397d0
 
     kiro_crew.apps.builtins.issue_radar.backend.routes          e42a59c7e96875b3
 
@@ -120,7 +120,7 @@ _MOVE_DIGESTS: dict[str, str] = dict(row.split() for row in """
 
     kiro_crew.mcp_gateway.gatewayd                              290c22d9c2d9df84
 
-    kiro_crew.providers.acp                                     f3d54671b53ceb28
+    kiro_crew.providers.acp                                     f57490e508bb80df
 
     kiro_crew.sandbox                                           c9e1858832fcd0e4
 
