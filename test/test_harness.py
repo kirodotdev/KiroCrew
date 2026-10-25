@@ -1571,6 +1571,39 @@ class TestTeardownDoesNotTrustTheRootsExit:
             "and must name it rather than leave it to be looked up"
         )
 
+    @pytest.mark.parametrize("escaped_ended", [True, False])
+    def test_a_live_roots_verdict_waits_on_its_escaped_descendants(
+        self, monkeypatch, escaped_ended: bool
+    ) -> None:
+        """With the group gone, a saved child outside it still decides the verdict.
+
+        A descendant in another process group is out of the group kill's reach, so
+        after the group is gone it is handed to ``_end_escaped_descendants`` with its
+        recorded token. One still alive there keeps the HOME, because it can still be
+        writing into it.
+        """
+        from kiro_crew.testing import harness as h
+
+        ended: list[dict[int, str]] = []
+        monkeypatch.setattr(h.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(h.platform_compat, "process_descendants", lambda pid: [])
+        monkeypatch.setattr(h.platform_compat, "pgroup_of", lambda pid: 7)
+        monkeypatch.setattr(h, "terminate_pgid", lambda pid, grace=None, pgid=None, wait=None: True)
+        monkeypatch.setattr(h, "_await_group_gone", lambda pgid: True)
+        monkeypatch.setattr(
+            h,
+            "_end_escaped_descendants",
+            lambda escaped: (ended.append(dict(escaped)), escaped_ended)[1],
+        )
+
+        verdict = h._terminate_process_group(self._LiveProc(), {5151: "token"})
+
+        assert ended == [{5151: "token"}], (
+            "the saved child in group 7 must be handed to _end_escaped_descendants "
+            "with its recorded token"
+        )
+        assert verdict is escaped_ended
+
 
 @_POSIX_ONLY
 def test_dead_root_ends_saved_in_group_child() -> None:

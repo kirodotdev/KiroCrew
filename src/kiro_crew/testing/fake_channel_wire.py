@@ -240,8 +240,9 @@ class _FakeResponseCM(HeadersMixin):
       would not.
 
     Only the attributes those methods read are supplied: a bytes ``_body``,
-    ``_headers``, ``status``, ``reason``, ``request_info``, ``history`` and a
-    no-op ``release``. That surface is narrow and stable, unlike
+    ``_headers``, ``headers``, ``status``, ``reason``, ``request_info``,
+    ``history``, ``_in_context``, ``_resolve_charset`` and a no-op
+    ``release``. That surface is narrow and stable, unlike
     ``ClientResponse.__init__`` -- constructing a real response is what ties a
     fake to aiohttp's private constructor and breaks it on a minor upgrade.
     """
@@ -261,7 +262,6 @@ class _FakeResponseCM(HeadersMixin):
     ``fallback_charset_resolver`` here; nothing in this harness overrides it."""
 
     def __init__(self, resp: WireResponse, rec: Optional[RecordedRequest] = None) -> None:
-        self._resp = resp
         self.status = resp.status
         self.reason = _reason_for(resp.status)
         self._body = resp.raw()

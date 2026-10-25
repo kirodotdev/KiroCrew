@@ -695,7 +695,8 @@ The rule that removes it: **the response read side is `aiohttp`'s own code.**
 `_FakeResponseCM` binds `ClientResponse.json`, `.text`, `.get_encoding`,
 `.raise_for_status` and `.ok` onto itself and inherits `HeadersMixin` for
 `content_type` / `charset`, supplying only the attributes those methods read
-(`_body`, `_headers`, `status`, `reason`, `request_info`, `history`, `release`).
+(`_body`, `_headers`, `headers`, `status`, `reason`, `request_info`, `history`,
+`_in_context`, `_resolve_charset`, `release`).
 Content-type enforcement, the `+json` suffix match, the `content_type=None` bypass,
 empty-body-reads-as-`None`, charset decoding and the `status < 400` rule are then
 decided by the library, not by this repo. `test_fake_channel_wire.py` asserts that
