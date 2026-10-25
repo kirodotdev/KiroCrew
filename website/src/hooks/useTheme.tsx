@@ -376,10 +376,10 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
  * - `High Contrast` names a rendering PROPERTY (the accessibility palette)
  *   rather than a palette identity, so it is copy in the same sense as every
  *   other settings label and each locale translates it.
- * - A proper-noun theme added after the strict i18n gate (Nu Disco). The gate
- *   refuses a new literal display string, so the name goes through the catalog
- *   and is pinned verbatim in every locale by its `glossary.json` do-not-translate
- *   entry, which `glossary.test.ts` enforces.
+ * - A proper-noun theme added after the strict i18n gate (Nu Disco, Amethyst
+ *   OLED). The gate refuses a new literal display string, so the name goes
+ *   through the catalog and is pinned verbatim in every locale by its
+ *   `glossary.json` do-not-translate entry, which `glossary.test.ts` enforces.
  *
  * Keys, not strings: `THEMES` is evaluated at module load, so an `i18nT()` call
  * there would freeze whatever language was active at boot. The lookup happens in
@@ -390,6 +390,7 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
 export const THEME_LABEL_KEY: Record<string, string> = {
   highcontrast: 'hooks.theme.high_contrast',
   'nu-disco': 'hooks.theme.nu_disco',
+  'amethyst-oled': 'hooks.theme.amethyst_oled',
 }
 
 export const THEMES: ThemeEntry[] = [
@@ -419,6 +420,8 @@ export const THEMES: ThemeEntry[] = [
   // Catalog-keyed like `highcontrast`: glyph-only fallback, full name in
   // `hooks.theme.nu_disco`.
   { value: 'nu-disco', label: '🪩' },
+  // Catalog-keyed: full name in `hooks.theme.amethyst_oled`.
+  { value: 'amethyst-oled', label: '💜' },
 ]
 
 /**

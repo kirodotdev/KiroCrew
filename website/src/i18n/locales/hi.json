@@ -10212,7 +10212,8 @@
     },
     "theme": {
       "high_contrast": "🔆 हाई कॉन्ट्रास्ट",
-      "nu_disco": "🪩 Nu Disco"
+      "nu_disco": "🪩 Nu Disco",
+      "amethyst_oled": "💜 Amethyst OLED"
     },
     "useCronActions": {
       "failed_to_cancel_job": "जॉब रद्द करने में विफल",

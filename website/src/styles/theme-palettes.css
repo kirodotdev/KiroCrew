@@ -921,3 +921,60 @@
   color-scheme:light;
 }
 
+/* ── Amethyst OLED ── */
+/* Every resting dark surface is #000000, so the violet borders (3:1 or more on black) carry the
+   layout. Body text stops near 15.6:1 rather than 21:1, which limits halation on an OLED panel
+   in a dark room; muted, accent, status, diff and syntax colours stay at 7:1 or more. */
+[data-theme="amethyst-oled-dark"]{
+  --bg:#000000;--bg-accent:#0b041b;--bg-elevated:#000000;--bg-hover:#18102a;
+  --card:#000000;--card-fg:#dfdcea;--card-hl:rgba(192,154,255,.09);
+  --panel:#000000;--panel-strong:#000000;
+  --chrome:rgba(0,0,0,.96);
+  --text:#dfdcea;--text-strong:#efedf6;--muted:#b5b1c6;--muted-fg:#110a22;--muted-strong:#cbc8da;
+  --border:#655493;--border-strong:#7d68b4;--border-hover:#9d8ad5;
+  --accent:#c09aff;--accent-fg:#110a22;--accent-hover:#ceb5ff;--accent-subtle:rgba(192,154,255,.18);
+  --accent-glow:rgba(192,154,255,.35);--ring:#dcbfff;
+  --ok:#60e0a8;--ok-fg:#110a22;--ok-subtle:rgba(96,224,168,.16);
+  --warn:#f5c25f;--warn-fg:#110a22;--warn-subtle:rgba(245,194,95,.16);
+  --danger:#fe838a;--danger-fg:#110a22;--danger-subtle:rgba(254,131,138,.16);
+  --info:#7ac8f5;--info-fg:#110a22;
+  --aim:#f190dd;--aim-fg:#110a22;--aim-subtle:rgba(241,144,221,.18);
+  --clarify:#ebd652;--clarify-subtle:rgba(235,214,82,.1);
+  --diff-add:rgba(96,224,168,.15);--diff-add-text:#6beab2;
+  --diff-del:rgba(254,131,138,.17);--diff-del-text:#ffa4a7;
+  --diff-hunk:rgba(192,154,255,.14);--diff-hunk-text:#c09aff;
+  --diff-meta-text:#cbc8da;
+  --json-key:#c9acff;--json-str:#86dea4;--json-num:#fcb67c;--json-bool:#f592c8;
+  --term-magenta:#f190dd;--term-cyan:#6fdae6;
+  --shadow-sm:none;
+  --shadow-md:0 0 0 1px rgba(101,84,147,.7);
+  --shadow-lg:0 0 0 1px rgba(125,104,180,.8),0 16px 40px rgba(0,0,0,.55);
+  color-scheme:dark;
+}
+[data-theme="amethyst-oled-light"]{
+  --search-highlight:rgba(255,167,38,.35);--search-highlight-current:rgba(255,120,0,.7);--search-highlight-current-border:rgba(0,0,0,.8);
+  --bg:#faf9ff;--bg-accent:#f4f2fb;--bg-elevated:#ffffff;--bg-hover:#eae7f5;
+  --card:#ffffff;--card-fg:#171322;--card-hl:rgba(23,19,34,.05);
+  --panel:#f7f6fd;--panel-strong:#f0eef9;
+  --chrome:rgba(250,249,255,.96);
+  --text:#171322;--text-strong:#060410;--muted:#433f51;--muted-fg:#ffffff;--muted-strong:#2f2b3b;
+  --border:#7b778b;--border-strong:#565265;--border-hover:#343041;
+  --accent:#6928b0;--accent-fg:#ffffff;--accent-hover:#581598;--accent-subtle:rgba(105,40,176,.12);
+  --accent-glow:rgba(105,40,176,.22);--ring:#832bc3;
+  --ok:#005d33;--ok-fg:#ffffff;--ok-subtle:rgba(0,93,51,.12);
+  --warn:#6f4000;--warn-fg:#ffffff;--warn-subtle:rgba(111,64,0,.12);
+  --danger:#9b0f1b;--danger-fg:#ffffff;--danger-subtle:rgba(155,15,27,.12);
+  --info:#00518f;--info-fg:#ffffff;
+  --aim:#8f0272;--aim-fg:#ffffff;--aim-subtle:rgba(143,2,114,.12);
+  --clarify:#5c4c00;--clarify-subtle:rgba(92,76,0,.1);
+  --diff-add:rgba(0,93,51,.13);--diff-add-text:#00502b;
+  --diff-del:rgba(155,15,27,.13);--diff-del-text:#8a0012;
+  --diff-hunk:rgba(105,40,176,.12);--diff-hunk-text:#5b199c;
+  --diff-meta-text:#060410;
+  --json-key:#6928b0;--json-str:#005d33;--json-num:#7f3900;--json-bool:#991451;
+  --term-magenta:#8f0272;--term-cyan:#006770;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.10);
+  --shadow-md:0 4px 12px rgba(0,0,0,.12),0 0 0 1px rgba(86,82,101,.25);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.18);
+  color-scheme:light;
+}
