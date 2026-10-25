@@ -129,8 +129,9 @@ Six shapes escape the env var:
 - **Import-time from `config_dir()`** (`subagent_persistence._SUBAGENTS_DIR`): the var
   is read after the module captured the path. Each has its own autouse pin. A
   **collection-time probe** is the same shape one step earlier: a module-level
-  `_can_spawn()` used by a `skipif` runs before any pin and read the REAL
-  `config.json`; run such probes under an empty `KIROCREW_HOME`.
+  probe used by a `skipif` (`_sandbox_can_spawn()` in `test/test_app_backend.py`)
+  runs before any pin and would read the REAL `config.json`; run such probes under
+  an empty `KIROCREW_HOME`.
 - **Import-time from `Path.home()`**: `~/.kiro` is *kiro-cli's* home, machine-wide and
   shared with the real installed agent — `~/.kiro/settings/mcp.json` is the live
   agent's MCP server list. `_isolate_shared_kiro_paths` redirects these from a table,
