@@ -25,7 +25,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from kiro_crew.dashboard.side_segment_redactor import _open_credential_start, _SegmentRedactor
+from kiro_crew.dashboard.handlers.side_redaction import _open_credential_start, _SegmentRedactor
 from kiro_crew.security import StreamRedactor, redact
 
 # Split spelling of the key header, as the repo's other tests spell it: the
@@ -405,8 +405,18 @@ def _dropped_cuts(text: str, secrets: tuple[str, ...]) -> list[int]:
     return sorted(cuts)
 
 
-@pytest.mark.parametrize("name,text,secrets", DROPPED_SHAPES, ids=[s[0] for s in DROPPED_SHAPES])
-def test_a_value_the_stream_redactor_drops_is_in_no_frame(name, text, secrets):
+#: Each shape's cuts run as this many test cases. One cut feeds the 4k-char reply
+#: a character at a time (about half a second locally), so one case holding all
+#: of a shape's cuts ran past CI's 120 s per-test timeout under coverage.
+_DROPPED_CUT_PARTS = 4
+
+
+@pytest.mark.parametrize(
+    "name,text,secrets,part",
+    [(*shape, part) for shape in DROPPED_SHAPES for part in range(_DROPPED_CUT_PARTS)],
+    ids=[f"{s[0]}-part{p}" for s in DROPPED_SHAPES for p in range(_DROPPED_CUT_PARTS)],
+)
+def test_a_value_the_stream_redactor_drops_is_in_no_frame(name, text, secrets, part):
     """The pass runs over the reply as written except for a value the stream
     redactor dropped, which it sees as the tag. So every window of the value
     the main chat's stream withholds for a chunking is in no frame and not in
@@ -414,9 +424,10 @@ def test_a_value_the_stream_redactor_drops_is_in_no_frame(name, text, secrets):
     hold (``_assert_clean``: the other planted values too). (``_chunks``
     delivers the long middle of the text in one piece: a value whose terminator
     arrives in that piece is judged by the batch patterns alone, on this surface
-    as on the main chat's, and parity is what holds then.)"""
-    dropped_somewhere = False
-    for cut in _dropped_cuts(text, secrets):
+    as on the main chat's, and parity is what holds then.) Every
+    ``_DROPPED_CUT_PARTS``-th cut belongs to one case; together they run all of
+    them."""
+    for cut in _dropped_cuts(text, secrets)[part::_DROPPED_CUT_PARTS]:
         fed: list[str] = []
         frames, reply = _drive(text, (cut,), True, fed)
         shown_main = _main_chat_shows(fed)
@@ -424,12 +435,23 @@ def test_a_value_the_stream_redactor_drops_is_in_no_frame(name, text, secrets):
             for window in _windows(secret):
                 if window in shown_main:
                     continue
-                dropped_somewhere = True
                 for frame in frames:
                     assert window not in frame["content"], (name, cut, window, frame)
                 assert window not in reply, (name, cut, window)
         _assert_clean(name, text, secrets, frames, f"cut={cut}", fed, reply)
-    assert dropped_somewhere, name  # the shape exercises a drop for some cut
+
+
+@pytest.mark.parametrize("name,text,secrets", DROPPED_SHAPES, ids=[s[0] for s in DROPPED_SHAPES])
+def test_each_dropped_shape_exercises_a_drop(name, text, secrets):
+    """The sweep above proves something only if the main chat's stream withholds
+    a window of a planted value for some cut; stops at the first such cut."""
+    for cut in reversed(_dropped_cuts(text, secrets)):
+        fed: list[str] = []
+        _drive(text, (cut,), True, fed)
+        shown_main = _main_chat_shows(fed)
+        if any(w not in shown_main for s in secrets for w in _windows(s)):
+            return
+    pytest.fail(f"{name}: no cut has the stream redactor withhold a planted value")
 
 
 @pytest.mark.parametrize("name,text,secrets", DROPPED_SHAPES, ids=[s[0] for s in DROPPED_SHAPES])
@@ -473,7 +495,7 @@ def test_a_pass_that_rewrites_a_drawn_row_is_fixed_by_the_frame_that_settles_it(
     No pattern of the real redactor does this once the open key block and URL
     are held, so the mechanism is pinned with a redactor whose judgment of
     ``alpha`` waits for ``omega``."""
-    from kiro_crew.dashboard import side_segment_redactor as side_module
+    from kiro_crew.dashboard.handlers import side_redaction as side_module
 
     real_redact = side_module.redact
 
@@ -537,7 +559,7 @@ def test_a_long_reply_bounds_its_live_passes(monkeypatch):
     """Past ``_PASS_EVERY_COMMIT_BELOW`` committed characters a live pass waits
     for a step of new text, so the cost of the whole-text pass stays bounded; a
     delta that waited is drawn with the next pass, and nothing is lost."""
-    from kiro_crew.dashboard import side_segment_redactor as side_module
+    from kiro_crew.dashboard.handlers import side_redaction as side_module
 
     real_redact = side_module.redact
     passes = 0

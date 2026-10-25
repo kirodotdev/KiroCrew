@@ -1,7 +1,8 @@
-"""Redaction for a Side Chat reply that tool rows split into text rows.
+"""Redaction of a Side Chat reply that tool rows split into text rows.
 
-Owned by ``dashboard/handlers/side.py``, which draws the rows; see
-``docs/system-specs/modules/side.md`` for the wire and the mechanism.
+``_SegmentRedactor`` decides every text row of a side reply from one
+whole-reply pass, and ``_open_credential_start`` names the text that must wait
+for a later byte before that pass may run (see the class docstring).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import re
 from kiro_crew.security import StreamRedactor
 from kiro_crew.security import redact
 from kiro_crew.security import redact as _batch_redact
+from kiro_crew.security.redaction import _AWS_LABEL_RULES
 
 # The stream redactor holds back one trailing credential-class run, plus the
 # shapes its own anchors know (a Bearer header, a ``token=`` parameter, a JWT).
@@ -31,9 +33,15 @@ from kiro_crew.security import redact as _batch_redact
 _KEY_BLOCK_HEADER_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _KEY_BLOCK_FOOTER_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _OPEN_URL_RE = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://\S*\Z")
+# The AWS field names are the batch pass's own (``redaction._AWS_LABEL_RULES``,
+# each rule led by its ``(?:name|alias)`` group), so a name it learns is held here
+# too; only the separator after the name is optional, since the label is open.
+_AWS_LABEL_NAMES = "|".join(
+    re.match(r"\(\?:([^)]*)\)", pattern.pattern).group(1)  # type: ignore[union-attr]
+    for pattern, _rule in _AWS_LABEL_RULES
+)
 _OPEN_LABEL_RE = re.compile(
-    r"(?:(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token"
-    r"|AccessKeyId|aws_access_key_id)[\"']?\s*(?:[:=]\s*[\"']?)?"
+    rf"(?:(?:{_AWS_LABEL_NAMES})[\"']?\s*(?:[:=]\s*[\"']?)?"
     r"|(?i:Authorization)[\"']?\s*(?:[:=]\s*[\"']?(?:(?i:Bearer)\s*)?)?)\Z"
 )
 

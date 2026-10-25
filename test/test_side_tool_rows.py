@@ -129,6 +129,59 @@ async def test_side_turn_draws_tool_rows_where_they_happened(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_a_tool_call_update_refines_its_row_in_place(tmp_path, monkeypatch):
+    """claude announces a call with an empty input and a generic title; its
+    update names the file. The update is one ``update`` frame for the same
+    ``tool_call_id``: no new row, no text row closed, and an update for a call
+    no row was drawn for, or one that changes nothing, sends nothing."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "kirocrew"
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+
+    async def _fake_get_or_create(key, **kwargs):
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+
+    async def _fake_stream(
+        provider, message, *, on_chunk=None, on_tool_call=None, on_tool_call_update=None, **kwargs
+    ):
+        on_chunk("Reading. ")
+        on_tool_call(_tool_event(title="Read File", tool_input="", tool_kind="read"), True)
+        update = dict(
+            kind="tool_call_update", title="Read note.txt", tool_input="note.txt", tool_kind="read"
+        )
+        on_tool_call_update(_tool_event(**update))
+        on_tool_call_update(_tool_event(**update))  # nothing changed: no frame
+        on_tool_call_update(_tool_event(tool_call_id="call-9", **update))  # no row: no frame
+        on_chunk("It says hi.")
+        return "Reading. It says hi."
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    frames = [d for t, d in events if t == "chat.side_result"]
+    tools = [d for d in frames if d["role"] == "tool"]
+    assert [d["content"] for d in tools] == ["🔧 Read File", "🔧 Read note.txt\nnote.txt"]
+    assert tools[1]["meta"] == {
+        "tool_call_id": "call-1",
+        "update": "1",
+        "input_preview": "note.txt",
+        "kind": "read",
+    }
+    # The update closed no text row: no settle frame between the two tool frames.
+    first, second = frames.index(tools[0]), frames.index(tools[1])
+    assert not any(d.get("settle") for d in frames[first + 1 : second])
+
+
+@pytest.mark.asyncio
 async def test_side_turn_with_no_tool_row_sends_no_reply_field(tmp_path, monkeypatch):
     """With no tool row the terminal frame's ``content`` is already the whole
     answer, so it carries no separate ``reply``."""
@@ -216,6 +269,63 @@ async def test_side_turn_marks_a_refused_tool_and_redacts_its_fields(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_side_turn_keeps_a_bearer_token_in_a_refused_title_out_of_every_frame(
+    tmp_path, monkeypatch
+):
+    """A refused call's title is built by ACP (``build_permission_event``) and
+    scrubbed there. The URL and credential passes must find their spans on the
+    same text: run one after the other, the URL pass swallows the
+    ``Authorization:`` label inside the query, and the ``Bearer <token>`` left
+    behind matches nothing in the frame redaction either."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "kirocrew"
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+
+    async def _fake_get_or_create(key, **kwargs):
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    token = "opaque" + "x7Qz" * 10  # no known prefix: only the label can catch it
+    title = "curl https://example.invalid/c?d=" + "a" * 64 + f"&Authorization: Bearer {token}"
+    msg = JsonRpcMessage(
+        id=7,
+        method="session/request_permission",
+        params={
+            "sessionId": "side-1",
+            "toolCall": {"toolCallId": "call-7", "title": title},
+            "options": [{"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}],
+        },
+    )
+    event, _ = build_permission_event(msg)
+    assert token not in (event.title or "")
+
+    async def _fake_stream(provider, message, *, on_chunk=None, on_tool_call=None, **kwargs):
+        on_tool_call(event, False)
+        on_chunk("I can't run that here.")
+        return "I can't run that here."
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    frames = [d for t, d in events if t == "chat.side_result"]
+    tool_frames = [d for d in frames if d["role"] == "tool"]
+    assert [d["content"][:1] for d in tool_frames] == ["🔧", "🚫"]
+    for frame in frames:
+        assert token not in frame["content"], frame
+        assert all(token not in v for v in (frame.get("meta") or {}).values())
+
+
+@pytest.mark.asyncio
 async def test_side_turn_carries_the_withheld_tail_below_the_tool_row(tmp_path, monkeypatch):
     """The stream redactor withholds a trailing credential-shaped run until more
     text proves it safe. A tool call ends the row, but the frame that settles the
@@ -280,8 +390,8 @@ async def test_side_turn_redacts_a_credential_the_model_split_around_a_tool_call
     stream redactor's held run (the header name) is kept across the tool row
     rather than flushed, and the token reaches no frame -- not a delta, not the
     frames that settle the rows on either side of the call. The header name goes
-    where the pass over the whole reply puts it: under the tool row, folded into
-    the tag with its value."""
+    where the pass over the whole reply puts it: under the tool row, beside the
+    tag that replaced its value."""
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
@@ -317,7 +427,7 @@ async def test_side_turn_redacts_a_credential_the_model_split_around_a_tool_call
     assert _client_rows(frames) == [
         ("assistant", "Set the header "),
         ("tool", "🔧 Read token.txt\ntoken.txt"),
-        ("assistant", "[REDACTED: credential] and retry."),
+        ("assistant", "Authorization: Bearer [REDACTED: credential] and retry."),
     ]
     stored = [m for m in parent._side.messages if m["role"] == "assistant"]
     assert token not in stored[-1]["content"]
@@ -824,7 +934,7 @@ async def test_side_turn_settles_a_row_whose_drawn_text_a_later_pass_rewrote(tmp
     redactor does this once the open key block and URL are held, so the
     mechanism is pinned with a redactor whose judgment of ``alpha`` waits for
     ``omega``."""
-    from kiro_crew.dashboard import side_segment_redactor as side_module
+    from kiro_crew.dashboard.handlers import side_redaction as side_module
 
     real_redact = side_module.redact
 

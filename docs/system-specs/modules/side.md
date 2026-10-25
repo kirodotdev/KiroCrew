@@ -1256,6 +1256,10 @@ action types stay `chat/<name>` and every consumer keeps importing them from
   frame after a tool row ends the turn without adding a row; an empty `settle`
   or terminal frame landing on a streamed row removes that row. A run waiting on
   its final frame drops its `tool` and `settle` frames too, and draws `reply`.
+  A terminal frame with `reply` that this tab's rows for the run plus the
+  frame's own text do not add up to (frames missed while the socket was down)
+  drops the run's partial rows and draws `reply` as its one answer row. An
+  empty terminal frame puts its `message_id` on the run's last answer row.
 - `sideRestore` reducer: merges `GET .../side` into the slot once per page (see
   **Reload** above). The gateway stores a run's answer as one row and never
   stores tool rows, so a run this tab drew with tool rows keeps this tab's rows

@@ -1188,6 +1188,39 @@ async def test_on_tool_call_reports_each_attempt_live_in_stream_order():
 
 
 @pytest.mark.asyncio
+async def test_on_tool_call_update_reports_each_refinement_live():
+    """claude's ``tool_call`` carries an empty input; its ``tool_call_update``
+    names the file. ``on_tool_call_update`` sees that update in stream order."""
+    from kiro_crew.providers.base import EVENT_TOOL_CALL_UPDATE
+
+    provider = _ScriptedProvider(
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title="Read File", tool_call_id="t1"),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="Read note.txt",
+                tool_call_id="t1",
+                tool_input="note.txt",
+            ),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+            LLMEvent(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
+    seen: list[tuple[str, object]] = []
+
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
+        retry_transient=False,
+        on_tool_call=lambda ev, approved: seen.append(("call", ev.title)),
+        on_tool_call_update=lambda ev: seen.append(("update", (ev.title, ev.tool_input))),
+    )
+
+    assert seen == [("call", "Read File"), ("update", ("Read note.txt", "note.txt"))]
+
+
+@pytest.mark.asyncio
 async def test_on_tool_call_is_not_fired_for_an_approved_permission_request():
     """An approved request is followed by its own ``EVENT_TOOL_CALL``; reporting
     the request too would draw the same attempt twice."""
