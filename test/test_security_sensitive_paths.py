@@ -51,7 +51,7 @@ class TestIsSensitivePath:
         assert is_sensitive_path(f"{home}/.kirocrew/playwright-storage-state.json") is True
 
     def test_sel_hmac_key(self) -> None:
-        # security-review finding cdf82704: the SEL HMAC signing key is the trust root of
+        # The SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
         # The key lives at trust/sel_hmac.key (whole-dir gate); the bare leaf
@@ -64,7 +64,7 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kirocrew/trust/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
-        # security-review finding cdf82704: the SEL audit log itself must not be
+        # The SEL audit log itself must not be
         # readable/rewritable by the audited agent (tamper of the evidence trail).
         assert is_sensitive_path("~/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True

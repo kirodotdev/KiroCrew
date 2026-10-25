@@ -395,7 +395,6 @@ def test_on_loop_kicks_background_warm_that_populates_cache(monkeypatch):
     # Probe ran on background thread, not on event loop
     assert len(probe_thread_names) >= 1
     assert all("sandbox-probe-warm" in n for n in probe_thread_names)
-    # Cache is now populated
     assert sb._backend == "namespace"
 
 
@@ -409,7 +408,6 @@ def test_warm_dedupe_two_rapid_calls_start_at_most_one_thread(monkeypatch):
 
     monkeypatch.setattr(sb, "_probe_unshare_once", slow_probe)
 
-    # Patch Thread to track starts
     real_thread = threading.Thread
     thread_starts: list[int] = []
 
@@ -426,7 +424,6 @@ def test_warm_dedupe_two_rapid_calls_start_at_most_one_thread(monkeypatch):
 
     try:
         asyncio.run(_run())
-        # At most 1 thread started despite 2 calls
         assert len(thread_starts) <= 1
     finally:
         gate.set()  # unblock so thread can finish
@@ -440,7 +437,6 @@ def test_prewarm_backend_populates_cache(monkeypatch):
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
 
     sb.prewarm_backend()
-    # Wait for thread
     if sb._warm_thread is not None:
         sb._warm_thread.join(timeout=5.0)
     assert sb._backend == "namespace"
@@ -589,9 +585,8 @@ def test_probe_unshare_fast_path_on_loop_when_backend_set(monkeypatch):
     """When _backend == 'namespace', _probe_unshare() returns True immediately
     without calling _probe_unshare_once — even on a running event loop.
 
-    Regression test for review-bot finding post 36: userns_available() was
-    bypassing the warm cache and deferring on-loop, returning False even
-    though the host is known-good.
+    Bypassing the warm cache and deferring on-loop would make
+    userns_available() return False even though the host is known-good.
     """
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))  # hermetic: gate precedes the mocked probe
     import asyncio

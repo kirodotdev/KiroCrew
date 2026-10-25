@@ -1277,7 +1277,7 @@ def test_extends_missing_parent_still_denies_its_surface(profiles_dir):
     # resolves to deny-all (fail-closed), not None (which would fall through to
     # the policy ceiling alone, bypassing operator narrowing). Mirrors
     # test_invalid_profile_with_valid_bind_still_denies_its_surface for the
-    # Pass-2 (extends) path. (security-review blocking finding.)
+    # Pass-2 (extends) path.
     _write(
         profiles_dir,
         "cron",

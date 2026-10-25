@@ -1,10 +1,10 @@
 """``capabilities.telemetry`` ``otlp_hosts``: which OTLP collectors metrics may reach.
 
-RFC crew-enterprise-edition, appendix row "Diagnostic telemetry target". The key
-parses with the catalog's matcher; a list that names X permits X and denies Y; a
-gate pinned off denies every host; no policy, or no list, permits as before. Then
-the call sites: the reader build (audited), the per-export gate, the local-only
-enable gate (unfiltered on purpose) and the context-less MCP gateway daemon.
+RFC crew-enterprise-edition, appendix row "Diagnostic telemetry target". The key's
+parse and evaluator contract is in ``test_governance_list_keys.py``; this file
+covers host globs and the call sites: the reader build (audited), the per-export
+gate, the local-only enable gate (unfiltered on purpose) and the context-less MCP
+gateway daemon.
 """
 
 from __future__ import annotations
@@ -14,19 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew.platform.governance import CapabilityGate, parse_policy, resolve
-
-#: (scope, inner key, matcher, an item the list allows, an item it does not)
-_CASES = (
-    (
-        "capabilities.telemetry",
-        "otlp_hosts",
-        "host",
-        "otel.corp.example",
-        "evil.example",
-    ),
-)
-_IDS = [f"{scope}.{key}" for scope, key, *_ in _CASES]
+from kiro_crew.platform.governance import parse_policy, resolve
 
 
 def _policy(scope: str, body: dict) -> dict:
@@ -71,32 +59,6 @@ def _install_policy(monkeypatch, doc: dict | None) -> None:
 
 
 class TestListKeys:
-    @pytest.mark.parametrize(("scope", "key", "matcher", "yes", "no"), _CASES, ids=_IDS)
-    def test_each_key_parses_with_its_catalog_matcher(self, scope, key, matcher, yes, no) -> None:
-        gate = parse_policy(_allow(scope, key, yes)).get(scope)
-        assert isinstance(gate, CapabilityGate)
-        assert gate.enabled is True  # every one of these rows defaults on
-        assert gate.scopes[key].matcher == matcher
-
-    @pytest.mark.parametrize(("scope", "key", "matcher", "yes", "no"), _CASES, ids=_IDS)
-    def test_the_list_permits_what_it_names_and_denies_the_rest(
-        self, scope, key, matcher, yes, no
-    ) -> None:
-        ceiling = parse_policy(_allow(scope, key, yes))
-        assert resolve(ceiling, None, scope, f"{key}:{yes}").permitted is True
-        assert resolve(ceiling, None, scope, f"{key}:{no}").permitted is False
-
-    @pytest.mark.parametrize(("scope", "key", "matcher", "yes", "no"), _CASES, ids=_IDS)
-    def test_a_gate_pinned_off_denies_every_item(self, scope, key, matcher, yes, no) -> None:
-        ceiling = parse_policy(_policy(scope, {"enabled": False}))
-        assert resolve(ceiling, None, scope, f"{key}:{yes}").permitted is False
-
-    @pytest.mark.parametrize(("scope", "key", "matcher", "yes", "no"), _CASES, ids=_IDS)
-    def test_no_policy_or_no_list_permits_as_before(self, scope, key, matcher, yes, no) -> None:
-        assert resolve(None, None, scope, f"{key}:{no}").permitted is True
-        ceiling = parse_policy(_policy(scope, {"enabled": True}))
-        assert resolve(ceiling, None, scope, f"{key}:{no}").permitted is True
-
     def test_a_host_glob_binds_subdomains(self) -> None:
         ceiling = parse_policy(_allow("capabilities.telemetry", "otlp_hosts", "*.corp.example"))
         scope = "capabilities.telemetry"

@@ -62,7 +62,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         # patched directly.
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        # round-33: tests run at steady state — the kernel address table has
+        # tests run at steady state — the kernel address table has
         # published, so IP-literal allow rows resolve on their own merits.
         # The pending-window tests set this back to False themselves.
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
@@ -98,7 +98,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert not spawned, "the DNS-enrichment daemon thread was spawned during the floor scan"
 
     def test_resolver_strips_ipv6_zone_id(self, monkeypatch):
-        # round-8 (Fix B), cache side: ``getaddrinfo`` can return a scoped
+        # Cache side of the zone strip: ``getaddrinfo`` can return a scoped
         # spelling (``fe80::1%eth0``) for a link-local address, so the resolver
         # strips the zone before caching -- otherwise the cached address would
         # never match the bare ``fe80::1`` a command names.
@@ -167,7 +167,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _argv_floor._windows_interface_addresses() == set()
 
     def test_netlink_dump_parse_covers_secondary_addresses(self):
-        # round-32: SIOCGIFADDR returns only the PRIMARY IPv4 per interface,
+        # SIOCGIFADDR returns only the PRIMARY IPv4 per interface,
         # so a secondary address (cloud multi-IP, VIP) never reached the
         # own-name seed.  The netlink RTM_GETADDR dump lists every assigned
         # address; this pins the parser on a synthetic two-message dump.
@@ -189,7 +189,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _argv_floor._parse_netlink_addr_dump(done) == set()
 
     def test_secondary_addresses_deny_after_netlink_publish(self, monkeypatch):
-        # round-33: the netlink dump runs OFF the event loop in the DNS
+        # the netlink dump runs OFF the event loop in the DNS
         # enrichment worker (a blocking recv is barred from the synchronous
         # seed).  Once published, a secondary IPv4 the ioctl sweep cannot
         # see denies from the cache like any own address, and a far IP is
@@ -203,7 +203,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _denied_by("ssh 198.51.100.9 id") is None
 
     def test_ip_literals_fail_closed_until_netlink_publishes(self, monkeypatch):
-        # round-33: while the kernel address table is UNREAD, a non-own IP
+        # while the kernel address table is UNREAD, a non-own IP
         # literal in host position could be an unlisted secondary of this
         # very machine -- so the window denies every one (the same
         # fail-closed contract dotted first-contact hostnames carry).
@@ -219,7 +219,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _denied_by("ssh 198.51.100.9 id") is None
 
     def test_enrichment_worker_merges_netlink_addresses(self, monkeypatch):
-        # round-33: the worker pass carries the netlink layer -- its output
+        # the worker pass carries the netlink layer -- its output
         # lands in the resolved set and a non-empty pass publishes the flag
         # that closes the IP-literal window.  DNS is stubbed inert so the
         # test stays packet-less.
@@ -520,7 +520,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert len(started) == 1, "resolution scheduling must be single-flight"
 
     def test_negative_dns_verdict_is_revalidated_after_ttl(self, monkeypatch):
-        # round-18: a cached ALLOW verdict is not reused unbounded -- a name
+        # a cached ALLOW verdict is not reused unbounded -- a name
         # that later rebinds to loopback is caught at the next revalidation.
         # Deny verdicts stay permanent (over-blocking is the safe direction).
         assert _REAL_RESOLVED_HOST_VERDICT is not None
@@ -587,7 +587,7 @@ class TestSandboxEscapeSshSelfOwnHost:
             _argv_floor._resolve_host_verdict_into_cache("alias.example")
             assert cache.get("alias.example") is expected, (addr, expected)
             assert "alias.example" not in _argv_floor._HOST_VERDICT_PENDING
-        # round-25: a resolution FAILURE caches nothing -- a transient DNS
+        # a resolution FAILURE caches nothing -- a transient DNS
         # error latched as a 300s allow would let a recovered loopback alias
         # bypass the floor.  Pending clears so the next decision can retry.
         cache = {}
@@ -690,7 +690,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert complete is False
 
     def test_stale_complete_own_set_rekicks_the_worker_while_serving(self, monkeypatch):
-        # round-27: a COMPLETE resolve must go stale after the refresh window,
+        # a COMPLETE resolve must go stale after the refresh window,
         # or a long-lived gateway that gains an interface address later (VPN
         # attach, DHCP renewal) admits ``ssh <new-address>`` forever.  The
         # stale set keeps being served (never blocks, never shrinks) while a
@@ -892,9 +892,9 @@ class TestSandboxEscapeSshSelfOwnHost:
             assert addrs, "Linux loopback should always enumerate at least one address"
 
     def test_dotless_hostname_first_contact_is_not_refused(self, monkeypatch, tmp_path):
-        # round-21 CI regression: ``ssh dev-dsk '<cmd>'`` -- the allow pin in
-        # test_security_denied_commands.py -- was refused at first contact once round-18 sent
-        # dotless names to the fail-closed DNS layer.  A dotless name ABSENT
+        # ``ssh dev-dsk '<cmd>'`` -- the allow pin in
+        # test_security_denied_commands.py -- must not be refused at first contact
+        # by the fail-closed DNS layer.  A dotless name ABSENT
         # from the hosts file answers OPEN while one async worker revalidates
         # through DNS; only DOTTED names keep the fail-closed first contact.
         hosts = tmp_path / "hosts"
@@ -922,7 +922,7 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert started, "the open answer must still schedule a revalidation worker"
 
     def test_dotless_hosts_file_alias_denies_same_call(self, monkeypatch, tmp_path):
-        # round-18's attack vector -- an /etc/hosts loopback alias -- now gets
+        # The dotless attack vector -- an /etc/hosts loopback alias -- gets
         # a SAME-CALL verdict from the hosts file (a local read, no DNS, no
         # first-contact refusal), in both the plain and the ``--``-terminated
         # spellings; a hosts entry naming a remote address answers allowed.

@@ -470,7 +470,7 @@ class TestGluedShellCommandPayloadExtraction:
 
         Folding the glued spelling into the shared stop table would let a glued
         decoy consume the stop through which a later spaced ``-c``'s payload was
-        found, turning the fix itself into a bypass.
+        found, turning the independent scan itself into a bypass.
         """
         from kiro_crew.security import _nested_shell_payloads, _shell_tokens
 
@@ -604,8 +604,7 @@ class TestGluedShellCommandPayloadExtraction:
 
         Extracting at the stop index per shell token copies the same length-N
         substring N times -- O(N^2) time and memory for an O(N)-sized input,
-        inside the synchronous permission gate (found by the GPT 5.6 review
-        lane).  The payload is extracted once per TOKEN up front and later
+        inside the synchronous permission gate.  The payload is extracted once per TOKEN up front and later
         appends reuse the cached string, so the walk stays linear.  Measured
         across an 8x size gap with a 20x bound, the same methodology the
         eval-join linearity test above documents.

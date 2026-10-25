@@ -525,7 +525,7 @@ class TestSanitizedOAuthEndpoint:
     def test_userinfo_authority_returns_none(self) -> None:
         """A userinfo-bearing authority is never named — raw or percent-encoded
         (user%3Apass%40host hides inside what urlparse reports as the
-        hostname), mirroring the rejection gate's own check (GPT review)."""
+        hostname), mirroring the rejection gate's own check."""
         assert (
             sanitized_oauth_endpoint(f"https://{self.GITHUB_TOKEN}@idp.example/authorize") is None
         )
@@ -593,7 +593,7 @@ class TestSanitizedOAuthEndpoint:
     def test_double_percent_encoded_credential_in_path_is_redacted(self) -> None:
         """The rejection gate decodes up to _MAX_URL_DECODE_PASSES, so it
         rejects a DOUBLE-encoded credential on a deeper pass — the sanitizer
-        must not echo bytes the gate refused (Opus review, worked case)."""
+        must not echo bytes the gate refused."""
         double_encoded = "%2567%2568%2570%255F" + self.GITHUB_TOKEN.removeprefix("ghp_")
         result = sanitized_oauth_endpoint(f"https://idp.example/{double_encoded}/authorize")
         assert result is not None
@@ -614,7 +614,7 @@ class TestSanitizedOAuthEndpoint:
     def test_plus_delimited_private_key_in_path_is_redacted(self) -> None:
         """Form-encoded material delimits with "+"; the scan must fold it to
         spaces (unquote_plus) or a plus-separated private-key header slips
-        through every decode layer unmatched (GPT review)."""
+        through every decode layer unmatched."""
         result = sanitized_oauth_endpoint("https://idp.example/BEGIN+RSA+PRIVATE+KEY/authorize")
         assert result is not None
         _, path = result
@@ -623,7 +623,7 @@ class TestSanitizedOAuthEndpoint:
     def test_credential_in_hostname_returns_none(self) -> None:
         """A credential smuggled into a DNS label (hyphens are DNS-legal, so a
         Slack-token-shaped label parses as a hostname) must not be echoed —
-        a host is an identity, so the whole helper bails (GPT review)."""
+        a host is an identity, so the whole helper bails."""
         url = "https://xoxb-1234567890-AbCdEfGhIjKl.evil.example/authorize?state=x"
         assert sanitized_oauth_endpoint(url) is None
 
@@ -641,8 +641,7 @@ class TestSanitizedOAuthEndpoint:
     def test_fullwidth_host_normalizing_into_a_credential_returns_none(self) -> None:
         """IDNA nameprep folds fullwidth characters to ASCII, so a token-shaped
         fullwidth host can NORMALIZE INTO a credential the pre-IDNA scan could
-        not match — the surfaced form must be re-scanned after every transform
-        (GPT review)."""
+        not match — the surfaced form must be re-scanned after every transform."""
         fullwidth = "ｘｏｘｂ－１２３４５６７８９０－ａｂｃｄｅｆｇｈｉｊｋｌ"
         assert sanitized_oauth_endpoint(f"https://{fullwidth}.evil.example/authorize") is None
 

@@ -63,7 +63,7 @@ class TestRedactCredentials:
         assert "BEGIN OPENSSH PRIVATE KEY" not in result
 
     def test_redacts_full_private_key_body(self) -> None:
-        """security-review 05687e60: the base64 BODY (not just the header) must be redacted."""
+        """The base64 BODY (not just the header) must be redacted."""
         body_a = "MIIEpAIBAAKCAQEA1234567890abcdefghijklmnopqrstuvwxyzABCDEF"
         body_b = "GHIJKLMNOPQRSTUVWXYZ0987654321zyxwvutsrqponmlkjihgfedcba"
         text = (
@@ -139,7 +139,7 @@ class TestRedactCredentials:
     def test_pem_header_in_prose_without_end_keeps_trailing_lines(self) -> None:
         """A PEM BEGIN header mentioned inline in prose (no body, no END marker)
         must not swallow trailing lines to end-of-string. Guards the `$`
-        end-of-string over-redaction regression (security-review 05687e60)."""
+        end-of-string over-redaction regression."""
         text = (
             "For example, a PEM key starts with "
             "-----BEGIN RSA PRIVATE KEY----- and contains base64 data.\n"
@@ -154,7 +154,7 @@ class TestRedactCredentials:
     def test_redacts_encrypted_private_key_across_dek_info_blank_line(self) -> None:
         """RFC 1421 ENCRYPTED PEM (no END): the mandatory blank line between the
         DEK-Info header and the base64 body must NOT terminate the run — the
-        whole body is redacted. Guards the round-3 leak where a
+        whole body is redacted. Guards the leak where a
         single blank line ended the continuation and emitted the body verbatim."""
         body_line1 = "MIIEpQIBAAKCAQEAencryptedbodybytesABCDEF1234567890zyxwv"
         body_line2 = "secondencryptedbodylineGHIJKL0987654321mnopqrABCDEF"
@@ -475,7 +475,7 @@ class TestRedactCredentials:
         assert "TOKEN2" not in result
         assert '"region":"x"' in result
 
-    # ── JWT / Authorization: Bearer tokens (security-review cc1d6bdd) ──
+    # ── JWT / Authorization: Bearer tokens ──
     # JWTs and OAuth bearer tokens can leak in tool output / logs. They are
     # redacted here. `eyJ` is the base64url of every JWT header's `{"` prefix.
 
@@ -849,7 +849,7 @@ class TestRedactCredentialsBase64:
 
 
 class TestBareSecretKeyRedaction:
-    """Label-independent 40-char AWS secret-key redaction (security-review bf7b1baf).
+    """Label-independent 40-char AWS secret-key redaction.
 
     A bare 40-char base64 secret (the value paired with an AKIA/ASIA access key
     ID) carries no distinctive prefix and no ``key=`` label, so the labelled

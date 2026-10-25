@@ -20,6 +20,11 @@ from kiro_crew.security import perm_verb_mention as _perm_verb_mention
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
 
+def _named(origin, *cases):
+    """Lead each case with the test name it came from, so the old name stays in its id."""
+    return [(origin, *c) if isinstance(c, tuple) else (origin, c) for c in cases]
+
+
 class TestNameAsDataIsNotAnInvocation:
     """The product name in a DATA command's argv is a mention, not an invocation.
 
@@ -36,26 +41,24 @@ class TestNameAsDataIsNotAnInvocation:
     """
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            f"echo {_NAME} {_TOK}",
-            f"echo 'the {_NAME} {_TOK} command mints a credential'",
-            f"printf '%s' {_NAME} {_TOK}",
-            f"cat notes.md | grep {_NAME} {_TOK}",
-            f"git commit -m 'note: {_NAME} {_TOK} rule'",
+            *_named(
+                "test_name_and_verb_as_data_allowed",
+                f"echo {_NAME} {_TOK}",
+                f"echo 'the {_NAME} {_TOK} command mints a credential'",
+                f"printf '%s' {_NAME} {_TOK}",
+                f"cat notes.md | grep {_NAME} {_TOK}",
+                f"git commit -m 'note: {_NAME} {_TOK} rule'",
+            ),
+            *_named(
+                "test_kill_verb_as_data_allowed",
+                f"echo {_PK} {_NAME}",
+                f"echo 'run {_PK} {_NAME} to stop it'",
+            ),
         ],
     )
-    def test_name_and_verb_as_data_allowed(self, cmd):
-        assert _denied_by(cmd) is None
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"echo {_PK} {_NAME}",
-            f"echo 'run {_PK} {_NAME} to stop it'",
-        ],
-    )
-    def test_kill_verb_as_data_allowed(self, cmd):
+    def test_names_as_data_allowed(self, origin, cmd):
         assert _denied_by(cmd) is None
 
     @pytest.mark.parametrize(
@@ -222,212 +225,210 @@ class TestPermissionVerbMentionNarrowing:
         assert _denied_by(cmd) is not None
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            # The audit spellings this exclusion COSTS.  All four were allowed
-            # before the exec-capable programs were excluded and are refused now.
-            # Kept as assertions so the cost is recorded in code, not only in the
-            # PR description: an option allow-list would recover them but fails
-            # OPEN on an option nobody enumerated, which is the wrong direction
-            # for a deny rule.  ``grep``/``egrep``/``fgrep`` remain exempt and do
-            # the same job.
-            f"rg -n '{_CM}|{_CO}' /etc/profile.d",
-            f"sed -n '/{_CM}/p' /etc/passwd",
-            f"awk '/{_CM}/ {{print $1}}' /etc/passwd",
-            # The two option-named sinks cost their piped spellings as well.
-            # ``jq`` (no in-place flag), ``xxd`` and ``strings`` do the same job.
-            f"grep -rn '{_CM}|/etc/' src/ | base64",
-            f"grep -rn '{_CM}|/etc/' src/ | yq",
-            # ``sort`` here is a later PIPELINE STAGE with no verb in its own
-            # argv.  The walk asks its question of the whole command, so one
-            # non-exempt frame refuses all of it -- the same pre-existing
-            # behaviour ``| tee`` already had.
-            f"grep -rn '{_CM}|/etc/' src/ | sort | uniq | head -20",
+            *_named(
+                "test_exec_capable_exclusion_costs_these_audit_spellings",
+                # The audit spellings this exclusion COSTS.  All four were allowed
+                # before the exec-capable programs were excluded and are refused now.
+                # Kept as assertions so the cost is recorded in code, not only in the
+                # PR description: an option allow-list would recover them but fails
+                # OPEN on an option nobody enumerated, which is the wrong direction
+                # for a deny rule.  ``grep``/``egrep``/``fgrep`` remain exempt and do
+                # the same job.
+                f"rg -n '{_CM}|{_CO}' /etc/profile.d",
+                f"sed -n '/{_CM}/p' /etc/passwd",
+                f"awk '/{_CM}/ {{print $1}}' /etc/passwd",
+                # The two option-named sinks cost their piped spellings as well.
+                # ``jq`` (no in-place flag), ``xxd`` and ``strings`` do the same job.
+                f"grep -rn '{_CM}|/etc/' src/ | base64",
+                f"grep -rn '{_CM}|/etc/' src/ | yq",
+                # ``sort`` here is a later PIPELINE STAGE with no verb in its own
+                # argv.  The walk asks its question of the whole command, so one
+                # non-exempt frame refuses all of it -- the same pre-existing
+                # behaviour ``| tee`` already had.
+                f"grep -rn '{_CM}|/etc/' src/ | sort | uniq | head -20",
+            ),
+            *_named(
+                "test_real_invocation_still_denied",
+                # Passthrough wrappers: ``_argv_programs`` names the WRAPPER as the
+                # program, and no wrapper is a data consumer, so the verb is reachable.
+                f"sudo {_CM} 600 /etc/shadow",
+                f"env X=1 {_CM} 600 /etc/shadow",
+                f"timeout 5 {_CO} root /etc/passwd",
+                f"nice -n 5 {_CO} root /etc/passwd",
+                f"nohup {_CO} root /etc/passwd",
+                f"runuser -u root -- {_CM} 600 /etc/shadow",
+                f"chroot / {_CM} 600 /etc/shadow",
+                f"pkexec {_CM} 600 /etc/shadow",
+                f"systemd-run {_CM} 600 /etc/shadow",
+                f"doas {_CM} 600 /etc/shadow",
+                f"su -c '{_CM} 600 /etc/shadow'",
+                f"echo x | xargs {_CM} 600 /etc/shadow",
+                f"find . -name x -exec {_CM} 600 /etc/shadow ;",
+                # A LEADING assignment is skipped by ``_argv_programs``, so the verb
+                # becomes its own command's program — and ``chmod`` IS listed in
+                # ``_DATA_CONSUMER_PROGRAMS`` (as a mover whose arguments are paths),
+                # so without ``_PERM_VERB_MENTION_EXCLUDED_PROGRAMS`` the verb would
+                # exonerate itself.  This was a real bypass during development.
+                f"X=1 {_CM} 600 /etc/shadow",
+                f"A=1 B=2 {_CM} 600 /etc/shadow",
+                # Nested shell payloads, reached by the frame walk.
+                f"bash -c '{_CM} 000 /etc/shadow'",
+                f'sh -c "{_CM} 000 /etc/shadow"',
+                f"eval '{_CM} 600 /etc/shadow'",
+                f"echo $({_CM} 600 /etc/shadow)",
+                f"cat <({_CM} 600 /etc/shadow)",
+                f"echo `{_CM} 600 /etc/shadow`",
+                # Frame 0 reads as pure data here (the argument opens with a quote, not
+                # with the substitution), so only the NESTED frame catches it.
+                f"echo \"$(bash -c '{_CM} 600 /etc/shadow')\"",
+                f"sh <<EOF\n{_CM} 600 /etc/shadow\nEOF",
+                # A GLUED control operator.  ``_ends_argv`` cuts an argv on a glued
+                # ``|`` or ``;`` but on ``&`` only as a token of its own (so ``2>&1``
+                # stays a redirection), and bash really does start a new command at
+                # ``d&``.  Without the uncut-operator refusal every token after it is
+                # attributed to ``ls`` and the real invocation reads as inert data --
+                # measured ALLOWED on the pre-fix commit for all four spellings.
+                f"ls /etc/profile.d& {_CM} -R g+w /etc/profile.d",
+                f"ls /etc/profile.d&& {_CM} -R g+w /etc/profile.d",
+                f"cat /tmp/f& {_CO} root:root /etc/profile.d",
+                f"ls /tmp& {_CM} 777 ~",
+                f"grep -rn {_CM} src/& sudo {_CM} 600 /etc/shadow",
+                # ... and the same glue inside a nested payload.
+                f"bash -c 'ls /etc/profile.d& {_CM} -R g+w /etc/profile.d'",
+                # A glued ``|`` or ``;`` hides the program that FOLLOWS it, and the
+                # first fix asked the wrong function about it.  ``_ends_argv``
+                # answers True for ANY token carrying ``|``, so
+                # ``not _ends_argv(token)`` never refused ``f|bash`` -- while
+                # ``_argv_programs`` still never records ``bash`` as a program,
+                # because it opens a new frame only BETWEEN whole tokens.  The
+                # spaced spelling ``f | bash`` was denied throughout, so deleting
+                # two spaces was the entire bypass.  Measured ALLOWED on the
+                # pre-fix commit for every spelling here.
+                f"grep -h '{_CM} 600 /etc/shadow' f|bash|wc",
+                f"grep -h '{_CM} 600 /etc/shadow' f|sh",
+                f"grep -h '{_CM} 777 /etc/x' f|python3",
+                f"grep -h '{_CM} 600 /etc/shadow' f;bash",
+                f"bash -c \"grep -h '{_CM} 600 /etc/shadow' f|bash\"",
+                # A data consumer handed BOTH an input and a sink is mutating its
+                # second operand, whatever its first one is named.  ``xxd in out``
+                # and ``uniq in out`` truncate ``out``, so the protected path in
+                # each of these is written even though no verb sits in program
+                # position -- the verb is the INPUT file's name, which is exactly
+                # why every position gate reads the command as inert.  Measured
+                # ALLOWED on the pre-fix commit.
+                f"xxd {_CM} /usr/local/bin/git",
+                f"xxd {_CO} /usr/local/bin/git",
+                f"uniq {_CM} /usr/local/bin/git",
+                f"uniq -c {_CM} /usr/local/bin/git",
+                # A bare ``-`` names stdin as the INPUT, so the next word is still
+                # the sink and must count as an operand.
+                f"xxd - {_CM}/etc/shadow",
+                # ... and the writer is equally reachable as a later pipeline stage
+                # or from inside a nested payload.
+                f"grep -h '{_CM} 600 /etc/shadow' f | xxd a b",
+                f"bash -c 'xxd {_CM} /usr/local/bin/git'",
+                # A verb RE-SPELLED so no ``{_CM}`` WORD appears runs all the same,
+                # and Pass 2 matches the deny on the quote-normalized view.  With an
+                # inert mention placed AFTER it, every per-token gate looked at the
+                # mention and the downstream sweep started past it, so the real
+                # invocation upstream was never examined -- measured ALLOWED, and the
+                # key really went to mode 777.  The mirrored order was already denied,
+                # which is what made the asymmetry the tell.
+                f"ch\"\"mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"ch''mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"ch'mod' 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"\"ch\"mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"ch\\mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"ch$()mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"/bin/ch\"\"mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
+                f"ch\"\"own root /etc/passwd ; grep -h '{_CM} 777 /etc/x' f",
+                f"ch\"\"mod 777 ~/.ssh/id_rsa && grep -h '{_CM} 777 /etc/x' f",
+                # Widening the mask to double quotes must not reach a token whose
+                # quotes do NOT suppress expansion: a substitution inside ``"..."``
+                # runs, so its operators are live.
+                f'grep "$(ls /etc/x& {_CM} -R g+w /etc/x)" f',
+                f'grep "`{_CM} 600 /etc/shadow`" f',
+                # Two double-quoted literals glued around a REAL pipe must not read
+                # as one literal -- the trap the no-inner-quote condition guards.
+                f'grep "a"|"b" {_CM} 600 /etc/shadow',
+                # A bare ``&`` survives the redirect strip, so a duplication sitting
+                # beside it does not buy the frame an exemption.
+                f"ls /etc/x&2>&1 {_CM} -R g+w /etc/x",
+                f"ls /etc/x& {_CM} -R g+w /etc/x 2>&1",
+                # A real sink is judged on its own token, so admitting ``2>&1`` does
+                # not admit the file beside it.
+                f"grep -rn x src/ > /tmp/s.sh 2>&1; {_CM} 600 /etc/shadow",
+                # Chaining: the embedded invocation leads its own argv.
+                f"grep -rn {_CM} src/ ; {_CM} 600 /etc/shadow",
+                f"grep -rn {_CM} src/ && {_CM} 600 /etc/shadow",
+                f"grep -rn {_CM} src/ || sudo {_CO} root /etc/passwd",
+                f"grep -rn x src/;{_CM} 600 /etc/shadow",
+                f"grep x f && ({_CM} 600 /etc/shadow)",
+                f"grep x f && {{ {_CM} 600 /etc/shadow; }}",
+                # A newline is a separator ``shlex`` consumes as whitespace, so the
+                # joined text is refused outright and Pass 2 judges it line by line.
+                f"grep -rn {_CM} src/\n{_CM} 600 /etc/shadow",
+                f"{_CM} 600 \\\n/etc/shadow",
+                # Unbalanced quotes: the argv would be a guess.
+                f"grep -nE '{_CM} /etc/shadow",
+                # UNQUOTED, so the ``|`` really is a pipe and ``chown /etc/passwd``
+                # really runs.  Indistinguishable from the quoted form after POSIX
+                # quote removal, which is why the walk tokenizes quotes-retained and
+                # masks operators only inside a proven single-quoted literal.
+                f"grep -nE {_CM}|{_CO} /etc/passwd",
+                f"grep 'x'|'{_CM}' /etc/shadow",
+                # A double-quoted token still expands, so it gets no mask.
+                f'grep "x|$({_CM} 600 /etc/shadow)" f',
+                # Emitters would turn the mention into a script on disk, and ``>`` is
+                # not a segment separator — the case ``_INERT_SEARCH_VERBS`` declined
+                # to open.  Any redirect but ``/dev/null`` refuses.
+                f"echo '{_CM} 600 /etc/shadow' > /tmp/s.sh",
+                f"printf '{_CM} 600 /etc/shadow' >> /tmp/s.sh",
+                f"grep -h '{_CM} 600 /etc/shadow' f > /tmp/s.sh",
+                f"tee /etc/x <<< '{_CM} 600 /etc/shadow'",
+                # A downstream stage can EXECUTE what the search emitted.
+                f"grep -h '{_CM} 600 /etc/shadow' f | sh",
+                f"grep -h '{_CM} 600 /etc/shadow' f | python",
+                f"echo '{_CM} 600 /etc/shadow' | bash",
+                # A "data consumer" that can execute is not one for this command.
+                f"awk 'begin{{system(\"{_CM} 600 /etc/shadow\")}}'",
+                f"awk '{{print | \"{_CM} 600 /etc/shadow\"}}' f",
+                # Filesystem mutators are excluded: their arguments are destinations.
+                f"cp {_CM} /etc/shadow",
+                f"mv {_CM} /etc/shadow",
+                # Plain and re-spelled invocations.
+                f"{_CM} 600 /etc/shadow",
+                f"/bin/{_CM} 600 /etc/shadow",
+                f"'{_CM}' 600 /etc/shadow",
+                f"$'{_CM}' 600 /etc/shadow",
+                f'ch""{_CM[2:]} 600 /etc/shadow',
+                f"{_CM} --reference=/etc/passwd f",
+                f"{_CM} -R g-w /etc/ssl",
+                f"{_CO} 0:0 /etc/sudoers",
+                # Every one of the six protected roots, on both verbs.
+                f"sudo {_CM} 755 /usr/bin/ls",
+                f"sudo {_CM} 600 /boot/vmlinuz",
+                f"sudo {_CM} 640 /sbin/init",
+                f"sudo {_CM} 644 /lib/libc.so",
+                f"sudo {_CM} 644 /lib64/ld.so",
+                f"sudo {_CO} root /usr/bin/ls",
+                f"sudo {_CO} root /boot/vmlinuz",
+                f"sudo {_CO} root /sbin/init",
+                f"sudo {_CO} root /lib/libc.so",
+                f"sudo {_CO} root /lib64/ld.so",
+                # The mode row, whose exposure needs no system path at all.  It is in
+                # the carve-out too, so its real spellings need their own cover.
+                f"{_CM} 777 ~",
+                f"sudo {_CM} 777 ~",
+                f"bash -c '{_CM} 777 ~'",
+                f"echo '{_CM} 777 ~' > /tmp/s.sh",
+                f"grep -rn {_CM} src/ && {_CM} 777 ~",
+            ),
         ],
     )
-    def test_exec_capable_exclusion_costs_these_audit_spellings(self, cmd):
-        assert _denied_by(cmd) is not None
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # Passthrough wrappers: ``_argv_programs`` names the WRAPPER as the
-            # program, and no wrapper is a data consumer, so the verb is reachable.
-            f"sudo {_CM} 600 /etc/shadow",
-            f"env X=1 {_CM} 600 /etc/shadow",
-            f"timeout 5 {_CO} root /etc/passwd",
-            f"nice -n 5 {_CO} root /etc/passwd",
-            f"nohup {_CO} root /etc/passwd",
-            f"runuser -u root -- {_CM} 600 /etc/shadow",
-            f"chroot / {_CM} 600 /etc/shadow",
-            f"pkexec {_CM} 600 /etc/shadow",
-            f"systemd-run {_CM} 600 /etc/shadow",
-            f"doas {_CM} 600 /etc/shadow",
-            f"su -c '{_CM} 600 /etc/shadow'",
-            f"echo x | xargs {_CM} 600 /etc/shadow",
-            f"find . -name x -exec {_CM} 600 /etc/shadow ;",
-            # A LEADING assignment is skipped by ``_argv_programs``, so the verb
-            # becomes its own command's program — and ``chmod`` IS listed in
-            # ``_DATA_CONSUMER_PROGRAMS`` (as a mover whose arguments are paths),
-            # so without ``_PERM_VERB_MENTION_EXCLUDED_PROGRAMS`` the verb would
-            # exonerate itself.  This was a real bypass during development.
-            f"X=1 {_CM} 600 /etc/shadow",
-            f"A=1 B=2 {_CM} 600 /etc/shadow",
-            # Nested shell payloads, reached by the frame walk.
-            f"bash -c '{_CM} 000 /etc/shadow'",
-            f'sh -c "{_CM} 000 /etc/shadow"',
-            f"eval '{_CM} 600 /etc/shadow'",
-            f"echo $({_CM} 600 /etc/shadow)",
-            f"cat <({_CM} 600 /etc/shadow)",
-            f"echo `{_CM} 600 /etc/shadow`",
-            # Frame 0 reads as pure data here (the argument opens with a quote, not
-            # with the substitution), so only the NESTED frame catches it.
-            f"echo \"$(bash -c '{_CM} 600 /etc/shadow')\"",
-            f"sh <<EOF\n{_CM} 600 /etc/shadow\nEOF",
-            # A GLUED control operator.  ``_ends_argv`` cuts an argv on a glued
-            # ``|`` or ``;`` but on ``&`` only as a token of its own (so ``2>&1``
-            # stays a redirection), and bash really does start a new command at
-            # ``d&``.  Without the uncut-operator refusal every token after it is
-            # attributed to ``ls`` and the real invocation reads as inert data --
-            # measured ALLOWED on the pre-fix commit for all four spellings.
-            f"ls /etc/profile.d& {_CM} -R g+w /etc/profile.d",
-            f"ls /etc/profile.d&& {_CM} -R g+w /etc/profile.d",
-            f"cat /tmp/f& {_CO} root:root /etc/profile.d",
-            f"ls /tmp& {_CM} 777 ~",
-            f"grep -rn {_CM} src/& sudo {_CM} 600 /etc/shadow",
-            # ... and the same glue inside a nested payload.
-            f"bash -c 'ls /etc/profile.d& {_CM} -R g+w /etc/profile.d'",
-            # A glued ``|`` or ``;`` hides the program that FOLLOWS it, and the
-            # first fix asked the wrong function about it.  ``_ends_argv``
-            # answers True for ANY token carrying ``|``, so
-            # ``not _ends_argv(token)`` never refused ``f|bash`` -- while
-            # ``_argv_programs`` still never records ``bash`` as a program,
-            # because it opens a new frame only BETWEEN whole tokens.  The
-            # spaced spelling ``f | bash`` was denied throughout, so deleting
-            # two spaces was the entire bypass.  Measured ALLOWED on the
-            # pre-fix commit for every spelling here.
-            f"grep -h '{_CM} 600 /etc/shadow' f|bash|wc",
-            f"grep -h '{_CM} 600 /etc/shadow' f|sh",
-            f"grep -h '{_CM} 777 /etc/x' f|python3",
-            f"grep -h '{_CM} 600 /etc/shadow' f;bash",
-            f"bash -c \"grep -h '{_CM} 600 /etc/shadow' f|bash\"",
-            # A data consumer handed BOTH an input and a sink is mutating its
-            # second operand, whatever its first one is named.  ``xxd in out``
-            # and ``uniq in out`` truncate ``out``, so the protected path in
-            # each of these is written even though no verb sits in program
-            # position -- the verb is the INPUT file's name, which is exactly
-            # why every position gate reads the command as inert.  Measured
-            # ALLOWED on the pre-fix commit.
-            f"xxd {_CM} /usr/local/bin/git",
-            f"xxd {_CO} /usr/local/bin/git",
-            f"uniq {_CM} /usr/local/bin/git",
-            f"uniq -c {_CM} /usr/local/bin/git",
-            # A bare ``-`` names stdin as the INPUT, so the next word is still
-            # the sink and must count as an operand.
-            f"xxd - {_CM}/etc/shadow",
-            # ... and the writer is equally reachable as a later pipeline stage
-            # or from inside a nested payload.
-            f"grep -h '{_CM} 600 /etc/shadow' f | xxd a b",
-            f"bash -c 'xxd {_CM} /usr/local/bin/git'",
-            # A verb RE-SPELLED so no ``{_CM}`` WORD appears runs all the same,
-            # and Pass 2 matches the deny on the quote-normalized view.  With an
-            # inert mention placed AFTER it, every per-token gate looked at the
-            # mention and the downstream sweep started past it, so the real
-            # invocation upstream was never examined -- measured ALLOWED, and the
-            # key really went to mode 777.  The mirrored order was already denied,
-            # which is what made the asymmetry the tell.
-            f"ch\"\"mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"ch''mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"ch'mod' 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"\"ch\"mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"ch\\mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"ch$()mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"/bin/ch\"\"mod 777 ~/.ssh/id_rsa ; grep -h '{_CM} 777 /etc/x' f",
-            f"ch\"\"own root /etc/passwd ; grep -h '{_CM} 777 /etc/x' f",
-            f"ch\"\"mod 777 ~/.ssh/id_rsa && grep -h '{_CM} 777 /etc/x' f",
-            # Widening the mask to double quotes must not reach a token whose
-            # quotes do NOT suppress expansion: a substitution inside ``"..."``
-            # runs, so its operators are live.
-            f'grep "$(ls /etc/x& {_CM} -R g+w /etc/x)" f',
-            f'grep "`{_CM} 600 /etc/shadow`" f',
-            # Two double-quoted literals glued around a REAL pipe must not read
-            # as one literal -- the trap the no-inner-quote condition guards.
-            f'grep "a"|"b" {_CM} 600 /etc/shadow',
-            # A bare ``&`` survives the redirect strip, so a duplication sitting
-            # beside it does not buy the frame an exemption.
-            f"ls /etc/x&2>&1 {_CM} -R g+w /etc/x",
-            f"ls /etc/x& {_CM} -R g+w /etc/x 2>&1",
-            # A real sink is judged on its own token, so admitting ``2>&1`` does
-            # not admit the file beside it.
-            f"grep -rn x src/ > /tmp/s.sh 2>&1; {_CM} 600 /etc/shadow",
-            # Chaining: the embedded invocation leads its own argv.
-            f"grep -rn {_CM} src/ ; {_CM} 600 /etc/shadow",
-            f"grep -rn {_CM} src/ && {_CM} 600 /etc/shadow",
-            f"grep -rn {_CM} src/ || sudo {_CO} root /etc/passwd",
-            f"grep -rn x src/;{_CM} 600 /etc/shadow",
-            f"grep x f && ({_CM} 600 /etc/shadow)",
-            f"grep x f && {{ {_CM} 600 /etc/shadow; }}",
-            # A newline is a separator ``shlex`` consumes as whitespace, so the
-            # joined text is refused outright and Pass 2 judges it line by line.
-            f"grep -rn {_CM} src/\n{_CM} 600 /etc/shadow",
-            f"{_CM} 600 \\\n/etc/shadow",
-            # Unbalanced quotes: the argv would be a guess.
-            f"grep -nE '{_CM} /etc/shadow",
-            # UNQUOTED, so the ``|`` really is a pipe and ``chown /etc/passwd``
-            # really runs.  Indistinguishable from the quoted form after POSIX
-            # quote removal, which is why the walk tokenizes quotes-retained and
-            # masks operators only inside a proven single-quoted literal.
-            f"grep -nE {_CM}|{_CO} /etc/passwd",
-            f"grep 'x'|'{_CM}' /etc/shadow",
-            # A double-quoted token still expands, so it gets no mask.
-            f'grep "x|$({_CM} 600 /etc/shadow)" f',
-            # Emitters would turn the mention into a script on disk, and ``>`` is
-            # not a segment separator — the case ``_INERT_SEARCH_VERBS`` declined
-            # to open.  Any redirect but ``/dev/null`` refuses.
-            f"echo '{_CM} 600 /etc/shadow' > /tmp/s.sh",
-            f"printf '{_CM} 600 /etc/shadow' >> /tmp/s.sh",
-            f"grep -h '{_CM} 600 /etc/shadow' f > /tmp/s.sh",
-            f"tee /etc/x <<< '{_CM} 600 /etc/shadow'",
-            # A downstream stage can EXECUTE what the search emitted.
-            f"grep -h '{_CM} 600 /etc/shadow' f | sh",
-            f"grep -h '{_CM} 600 /etc/shadow' f | python",
-            f"echo '{_CM} 600 /etc/shadow' | bash",
-            # A "data consumer" that can execute is not one for this command.
-            f"awk 'begin{{system(\"{_CM} 600 /etc/shadow\")}}'",
-            f"awk '{{print | \"{_CM} 600 /etc/shadow\"}}' f",
-            # Filesystem mutators are excluded: their arguments are destinations.
-            f"cp {_CM} /etc/shadow",
-            f"mv {_CM} /etc/shadow",
-            # Plain and re-spelled invocations.
-            f"{_CM} 600 /etc/shadow",
-            f"/bin/{_CM} 600 /etc/shadow",
-            f"'{_CM}' 600 /etc/shadow",
-            f"$'{_CM}' 600 /etc/shadow",
-            f'ch""{_CM[2:]} 600 /etc/shadow',
-            f"{_CM} --reference=/etc/passwd f",
-            f"{_CM} -R g-w /etc/ssl",
-            f"{_CO} 0:0 /etc/sudoers",
-            # Every one of the six protected roots, on both verbs.
-            f"sudo {_CM} 755 /usr/bin/ls",
-            f"sudo {_CM} 600 /boot/vmlinuz",
-            f"sudo {_CM} 640 /sbin/init",
-            f"sudo {_CM} 644 /lib/libc.so",
-            f"sudo {_CM} 644 /lib64/ld.so",
-            f"sudo {_CO} root /usr/bin/ls",
-            f"sudo {_CO} root /boot/vmlinuz",
-            f"sudo {_CO} root /sbin/init",
-            f"sudo {_CO} root /lib/libc.so",
-            f"sudo {_CO} root /lib64/ld.so",
-            # The mode row, whose exposure needs no system path at all.  It is in
-            # the carve-out too, so its real spellings need their own cover.
-            f"{_CM} 777 ~",
-            f"sudo {_CM} 777 ~",
-            f"bash -c '{_CM} 777 ~'",
-            f"echo '{_CM} 777 ~' > /tmp/s.sh",
-            f"grep -rn {_CM} src/ && {_CM} 777 ~",
-        ],
-    )
-    def test_real_invocation_still_denied(self, cmd):
+    def test_exec_capable_spellings_still_denied(self, origin, cmd):
         assert _denied_by(cmd) is not None
 
     def test_permission_verb_mention_program_membership_is_pinned(self):

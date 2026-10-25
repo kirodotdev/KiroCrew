@@ -36,8 +36,7 @@ systemd_run_resolvable = sandbox_argv_helpers.systemd_run_resolvable
 
 class TestResourceLimitPreexec:
     """resource_limit_preexec() is the cached companion to sandboxed_spawn_argv:
-    it hands every agent-influenced spawn the kernel resource ceiling
-    (security-review bdf0d7e5)."""
+    it hands every agent-influenced spawn the kernel resource ceiling."""
 
     def _reset_cache(self):
         import kiro_crew.sandbox as sb
@@ -74,7 +73,7 @@ class TestResourceLimitPreexec:
     def test_non_posix_returns_none(self):
         """On non-POSIX (os.name != 'posix'), returns None — create_subprocess_exec
         rejects any non-None preexec_fn on Windows with ValueError, so the
-        contract must be None there (review-bot)."""
+        contract must be None there."""
         import kiro_crew.sandbox as sb
 
         self._reset_cache()
@@ -153,7 +152,7 @@ class TestSessionHostPreexec:
 class TestCgroupScopeArgv:
     """cgroup_scope_argv() wraps agent spawns in a transient systemd --user
     --scope with pids.max + memory.max — the default-on fork-bomb / memory-DoS
-    ceiling the finding's headline threats require (security-review bdf0d7e5)."""
+    ceiling the finding's headline threats require."""
 
     def _reset_probe(self):
         import kiro_crew.sandbox as sb

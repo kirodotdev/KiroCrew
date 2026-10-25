@@ -69,16 +69,14 @@ class TestDetectBackend:
 
     @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_caches_result(self, mock_ns):
-        detect_backend(config_mode="auto")
-        detect_backend(config_mode="auto")
-        # Only probed once due to caching
+        assert detect_backend(config_mode="auto") == "namespace"
+        assert detect_backend(config_mode="auto") == "namespace"
         assert mock_ns.call_count == 1
 
     @patch("kiro_crew.sandbox._probe_unshare", return_value=True)
     def test_invalidates_on_mode_change(self, mock_ns):
-        detect_backend(config_mode="auto")
-        detect_backend(config_mode="off")
-        # Second call with different mode should re-evaluate
+        assert detect_backend(config_mode="auto") == "namespace"
+        assert detect_backend(config_mode="off") == "none"
         assert mock_ns.call_count == 1  # off doesn't probe
 
 
@@ -112,6 +110,8 @@ class TestWrapArgv:
         mock_ns_argv.assert_called_once_with(
             ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
         )
+        assert result == mock_ns_argv.return_value
+        assert cleanup == "/tmp/launcher.py"
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     @patch("kiro_crew.sandbox.sandbox_exec_argv")
@@ -121,6 +121,7 @@ class TestWrapArgv:
         mock_sb_argv.assert_called_once_with(
             ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
         )
+        assert (result, cleanup) == mock_sb_argv.return_value
 
     @patch("kiro_crew.sandbox.detect_backend")
     def test_inside_sandbox_passes_through(self, mock_detect, monkeypatch):
@@ -174,6 +175,8 @@ class TestWrapArgv:
             result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         # Falls through to normal backend detection rather than passing through.
         mock_detect.assert_called_once()
+        assert mock_detect.call_args.kwargs == {"config_mode": "strict"}
+        assert (result, cleanup) == (["kiro-cli"], None)
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
     def test_outside_sandbox_does_not_pass_through(self, mock_detect, monkeypatch):
@@ -184,6 +187,8 @@ class TestWrapArgv:
         with patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True):
             result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_detect.assert_called_once()
+        assert mock_detect.call_args.kwargs == {"config_mode": "strict"}
+        assert (result, cleanup) == (["kiro-cli"], None)
 
 
 class TestBuildSeatbeltProfile:

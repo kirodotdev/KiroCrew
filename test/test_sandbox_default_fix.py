@@ -151,10 +151,9 @@ class TestFix3LoudDegradation:
 class TestDelegationDoesNotBlockEventLoop:
     """The delegation path must not spawn subprocesses or perform blocking I/O.
 
-    The version probe (Fix #5 in the original PR) was removed after review:
-    it introduced a synchronous subprocess.run call on the asyncio event loop.
-    The delegation relies on kiro_internal_sandbox_enabled() which does a single
-    small-file read — acceptable for the hot path.
+    A version probe here would put a synchronous subprocess.run call on the
+    asyncio event loop. The delegation relies on kiro_internal_sandbox_enabled()
+    which does a single small-file read — acceptable for the hot path.
     """
 
     def test_delegation_path_has_no_subprocess_call(self, monkeypatch):

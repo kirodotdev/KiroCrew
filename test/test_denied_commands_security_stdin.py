@@ -229,7 +229,7 @@ class TestStdinProgramTextScoping:
         # ... and when that text names the mint surface the command is denied.
         assert security.is_denied("grep kiro_crew.cli src | head; python3 -") is not None
         # A left side that only MENTIONS the package is not a reach, so the same
-        # over-yield now costs nothing: the payload gate asks for the mint surface,
+        # over-yield costs nothing: the payload gate asks for the mint surface,
         # not for the package name.
         assert security.is_denied("grep kiro_crew src | head; python3 -") is None
 
@@ -296,8 +296,8 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
         ["12>&1", "<<<", "prog"],
         ["2>&-", "<<<", "prog"],
         ["2>&1-", "<<<", "prog"],
-        # The noclobber override and the {name} automatic descriptor (bash 4.1+), both
-        # raised in review. Measured in bash 5.2: every one runs the here-string.
+        # The noclobber override and the {name} automatic descriptor (bash 4.1+).
+        # Measured in bash 5.2: every one runs the here-string.
         ["2>|", "/dev/null", "<<<", "prog"],
         ["2>|/dev/null", "<<<", "prog"],
         [">|", "f", "<<<", "prog"],
@@ -496,7 +496,7 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
         Asserted DETERMINISTICALLY, not by timing: a doubling ratio false-reds on a
         starved shared runner whose scheduler noise exceeds the ratio's slack (see
         ``test_the_scan_is_linear_not_quadratic`` for the observed case), so what
-        makes the walk linear is asserted structurally instead. The fix's contract is
+        makes the walk linear is asserted structurally instead. The contract is
         that a chain word is walked ONCE, IN PLACE: ``_output_redirect_scan`` returns
         an index precisely so the caller can advance through the same string rather
         than re-slice it. A regression has to break one of these:
@@ -598,7 +598,7 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
             f"python <<< '{payload}' 2>&1",
             f"echo '{payload}' | python 2>&1",
             f"python 2>&1 << 'PY'\n{payload}\nPY",
-            # Raised in review, measured in bash 5.2.
+            # Measured in bash 5.2.
             f"python 2>| /dev/null <<< '{payload}'",
             f"python >| out <<< '{payload}'",
             f"python {{fd}}>&1 <<< '{payload}'",
@@ -654,7 +654,7 @@ class TestOutputRedirectScanQuoting:
     it: at depth zero only a ``$``-prefixed opener starts a substitution span.
     Quote characters that reach the scan are DATA (the tokenizer already
     resolved quoting), so the walk must not read them as grammar either --
-    the review-found inverse defect.
+    the inverse defect.
     """
 
     def test_the_quoted_paren_bypass_is_denied_end_to_end(self):
@@ -695,10 +695,10 @@ class TestOutputRedirectScanQuoting:
         it."""
         from kiro_crew import security
 
-        # The issue's measured case: end was 19 (past the `<<<`), now 8.
+        # The measured case: the end stops at 8, before the `<<<` at 9.
         assert security._output_redirect_scan("> 'a(b' <<< payload") == (" 'a(b' ", 8)
         assert security._output_redirect_scan('> "a{b" <<< payload') == (' "a{b" ', 8)
-        # Glued heredoc after a quoted opener: end was 12 (marker absorbed), now 7.
+        # Glued heredoc after a quoted opener: the end stops at 7, before the marker.
         assert security._output_redirect_scan("2>'a(b'<<EOF") == ("'a(b'", 7)
         assert security._output_redirect_scan('2>"a{b"<<EOF') == ('"a{b"', 7)
         # An ESCAPED delimiter is one filename character too (`a\(b` is `a(b`).
@@ -711,7 +711,7 @@ class TestOutputRedirectScanQuoting:
         assert security._output_redirect_scan("2>$'a\\')'<<<x") == ("$'a\\')'", 9)
 
     def test_a_data_quote_is_not_read_as_grammar(self):
-        """The inverse direction, found in review (First Principles lane): the
+        """The inverse direction: the
         tokenizer resolves quoting, so a quote character that SURVIVES it is
         literal filename text (``2>"a'b"`` tokenizes to ``2>a'b``). A quoting
         state opened on that data quote consumed the ``<<<`` to the end of the
@@ -728,7 +728,7 @@ class TestOutputRedirectScanQuoting:
         assert security._output_redirect_scan("2>`'`a<<<X") == ("`'`a", 6)
 
     def test_the_unmoved_boundaries_do_not_move(self):
-        """Inverse controls, byte-identical before and after the fix: a real
+        """Inverse controls whose boundaries the quote handling must not move: a real
         substitution span still holds the walk open, a real backtick region
         still toggles, and an unterminated quote or trailing backslash is
         ordinary data to the end of the text."""

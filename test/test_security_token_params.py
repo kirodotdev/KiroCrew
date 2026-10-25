@@ -606,38 +606,41 @@ class TestTokenParamExemptUrlPrefixes:
         assert redact_credentials(rendered) == (rendered, [])
 
     @pytest.mark.parametrize(
-        "text",
+        ("origin", "text"),
         [
-            "[Approve](https://evil.example/?next=({u}))",
-            "[Approve](//evil.example/?next=[x]({u}))",
-            "[Approve](/redirect?next=[x]({u}))",
-            "https://evil.example/?next=({u})",
-            "https://evil.example/?next=[{u}]",
-            "https://evil.example/?next=<{u}>",
-            'https://evil.example/?next="{u}"',
-            "https://evil.example/?next='{u}'",
-            "https://evil.example/?next=`{u}`",
-            "https://evil.example/?next=*{u}*",
+            *(
+                ("test_prefix_nested_in_another_url_is_not_exempt", text)
+                for text in (
+                    "[Approve](https://evil.example/?next=({u}))",
+                    "[Approve](//evil.example/?next=[x]({u}))",
+                    "[Approve](/redirect?next=[x]({u}))",
+                    "https://evil.example/?next=({u})",
+                    "https://evil.example/?next=[{u}]",
+                    "https://evil.example/?next=<{u}>",
+                    'https://evil.example/?next="{u}"',
+                    "https://evil.example/?next='{u}'",
+                    "https://evil.example/?next=`{u}`",
+                    "https://evil.example/?next=*{u}*",
+                )
+            ),
+            *(
+                ("test_browser_destination_embedding_is_not_exempt", text)
+                for text in (
+                    '<a href="https://evil.example/?next=\t{u}">Approve</a>',
+                    '<a href="https://evil.example/?next=\n{u}">Approve</a>',
+                    '<a href="https://evil.example/?next=\r{u}">Approve</a>',
+                    '<a href="https://evil.example/?next= {u}">Approve</a>',
+                    "<https://evil.example/?next= {u}>",
+                    'href="//evil.example/?next=\t{u}"',
+                    'href="https:\\evil.example/?next=\t{u}"',
+                    'href="https:evil.example/?next=\t{u}"',
+                )
+            ),
         ],
     )
-    def test_prefix_nested_in_another_url_is_not_exempt(self, text: str) -> None:
-        self._install(frozenset({self._PREFIX}))
-        assert self._TOKEN not in redact_credentials(text.format(u=self._url))[0]
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            '<a href="https://evil.example/?next=\t{u}">Approve</a>',
-            '<a href="https://evil.example/?next=\n{u}">Approve</a>',
-            '<a href="https://evil.example/?next=\r{u}">Approve</a>',
-            '<a href="https://evil.example/?next= {u}">Approve</a>',
-            "<https://evil.example/?next= {u}>",
-            'href="//evil.example/?next=\t{u}"',
-            'href="https:\\evil.example/?next=\t{u}"',
-            'href="https:evil.example/?next=\t{u}"',
-        ],
-    )
-    def test_browser_destination_embedding_is_not_exempt(self, text: str) -> None:
+    def test_prefix_embedded_in_another_destination_is_not_exempt(
+        self, origin: str, text: str
+    ) -> None:
         self._install(frozenset({self._PREFIX}))
         assert self._TOKEN not in redact_credentials(text.format(u=self._url))[0]
 

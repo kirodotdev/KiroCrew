@@ -68,7 +68,7 @@ class TestSandboxEscapeSshSelf:
         # patched directly.
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        # round-33: tests run at steady state — the kernel address table has
+        # tests run at steady state — the kernel address table has
         # published, so IP-literal allow rows resolve on their own merits.
         # The pending-window tests in ``TestSandboxEscapeSshSelfOwnHost`` set this back
         # to False themselves.
@@ -93,7 +93,7 @@ class TestSandboxEscapeSshSelf:
         assert is_safe_user_regex(_rule_pattern(self._RULE))
 
     def test_refusal_note_is_actionable(self):
-        """The note carries the three facts a refused caller needs (review 5161362765).
+        """The note carries the three facts a refused caller needs.
 
         A first-contact refusal is a PENDING classification, so the note must
         say so and tell the caller the action that resolves it (retry the same
@@ -107,7 +107,7 @@ class TestSandboxEscapeSshSelf:
         address list cannot be read, or this machine).  The cases are labelled
         so an agent can find its own without parsing a conditional sentence.
         Content-pinned here because the note is the whole UX of this floor: a
-        reword that drops the retry hint reverts the review fix.
+        reword that drops the retry hint leaves the caller with no way forward.
         """
         note = security._SELF_PROTECTION_FLOOR_NOTES[self._RULE]
         assert note.startswith("Matched structurally on the command's argv")
@@ -177,25 +177,25 @@ class TestSandboxEscapeSshSelf:
             'ssh -o "Hostname localhost" far-alias id',
             'ssh -o "ProxyJump localhost" far-host id',
             "ssh -Jlocalhost far-host id",
-            # round-28: getopt BUNDLES valueless short flags in front of the
+            # getopt BUNDLES valueless short flags in front of the
             # option letter, so ``-voHostname=…`` is ``-v`` + ``-o Hostname=…``
             # and ``-vJhost`` is ``-v`` + ``-J host``.
             "ssh -voHostname=localhost 192.0.2.1",
             "ssh -4voHostname=localhost far-host id",
             "ssh -Aohostname=localhost far-alias id",
             "ssh -vJlocalhost far-host id",
-            # round-31: a v-led bundle still carries the glued remote-forward
+            # a v-led bundle still carries the glued remote-forward
             # spec, and folded ``-C`` must not swallow its neighbor unchecked.
             "ssh -vR2222:localhost:22 far.example.com",
             "ssh -C localhost id",
-            # round-31: POSIX export-first idiom — ``export NAME`` before the
+            # POSIX export-first idiom — ``export NAME`` before the
             # assignment still exports the later value in real bash.
             "export RSYNC_RSH; RSYNC_RSH='ssh localhost'; rsync remote-host:/x .",
             "export RSYNC_CONNECT_PROG; RSYNC_CONNECT_PROG='ssh localhost'; rsync rsync://far.example.com/module /tmp/x",
             # URI authority and @-in-path parsing.
             "rsync rsync://localhost/module/x .",
             "scp -v localhost:/tmp/a@b .",
-            # round-28: userinfo may CONTAIN a colon (``user:pass@host``) — the
+            # userinfo may CONTAIN a colon (``user:pass@host``) — the
             # destination is after the LAST ``@`` in both the URI authority and
             # OpenSSH's plain ``[user@]host`` form.
             "ssh ssh://user:pass@localhost id",
@@ -222,57 +222,56 @@ class TestSandboxEscapeSshSelf:
             # host anywhere in it is a self dial (``-o`` and attached ``-J``).
             "ssh -o proxyjump=localhost,far.example.com far.example.com",
             "ssh -Jlocalhost,far.example.com far.example.com",
-            # round-17: the DETACHED ``-J value`` spelling (the standard form)
+            # the DETACHED ``-J value`` spelling (the standard form)
             # must comma-split the hop chain exactly like the attached form --
             # the first hop is dialed from HERE.  A flag bundle ending in the
             # jump letter takes the next token as its value too.
             "ssh -J localhost,far.example.com far.example.com",
             "ssh -4J localhost,far.example.com far.example.com",
-            # round-17: a same-line literal assignment splices the verb or the
+            # a same-line literal assignment splices the verb or the
             # operand back together before exec -- resolve what is statically
             # known (``a=s; ${a}sh`` -> ``ssh``; ``h=localhost; ssh $h``).
             "a=s; ${a}sh localhost id",
             "h=localhost; ssh $h id",
-            # round-17: a one-level function definition whose body dials
+            # a one-level function definition whose body dials
             # ``$1`` binds the call's literal argument (``f localhost``).
             'f(){ ssh "$1" id; }; f localhost',
-            # round-18: bash equally accepts the parenthesis-free keyword
+            # bash equally accepts the parenthesis-free keyword
             # form -- same binding.
             'function f { ssh "$1" id; }; f localhost',
-            # round-24: the ``${N}`` spelling nests a brace pair inside the
+            # the ``${N}`` spelling nests a brace pair inside the
             # body, so the def regex must capture BALANCED bodies (one level)
             # instead of stopping at the first ``}``.
             "f(){ ssh ${1} id; }; f localhost",
-            # round-24: a call still invokes the function behind leading
+            # a call still invokes the function behind leading
             # assignment words or invocation keywords -- the binder must skip
             # them instead of requiring the name in word 0.
             'f(){ ssh "$1" id; }; x=1 f localhost',
             'f(){ ssh "$1" id; }; time f localhost',
             'f(){ ssh "$1" id; }; if f localhost; then :; fi',
-            # round-17: arithmetic EXPRESSIONS stay statically unresolvable, so
+            # arithmetic EXPRESSIONS stay statically unresolvable, so
             # in a connection-target position they fail closed (the shell
             # would glue ``$((0+1))`` into ``127.0.0.1``).
             "ssh 127.0.0.$((0+1)) id",
             "scp 127.0.0.$((0+1)):/etc/passwd /tmp/x",
-            # round-19: sftp's UPPERCASE ``-R num_requests`` takes a value; the
+            # sftp's UPPERCASE ``-R num_requests`` takes a value; the
             # case-folded classifier must treat a collided letter as
             # VALUE-TAKING, or the value consumes the positional slot and the
             # real host is never checked.  ``ssh -c cipher`` is the same class.
             "sftp -R 64 localhost",
-            # round-36 (Opus): uppercase ``-X sftp_option`` (OpenSSH >=9.0)
+            # uppercase ``-X sftp_option`` (OpenSSH >=9.0)
             # takes a value too; without the table entry the value consumes
             # the positional slot and the self host after it is never checked.
             "sftp -X num_requests=64 localhost",
             "ssh -c aes128-ctr localhost id",
-            # ...which reverses the earlier allow ruling for arithmetic in a
-            # TARGET position: any unresolved expression there fails closed
-            # now, remote-looking spellings included.
+            # ...so any unresolved arithmetic expression in a TARGET position
+            # fails closed, remote-looking spellings included.
             "ssh host$((i)) id",
             # ProxyCommand/LocalCommand values are command lines run LOCALLY, so
             # a self ssh inside one reaches the local sshd; scp forwards ``-o``.
             'ssh -o proxycommand="ssh localhost sh" far.example.com',
             'scp -o proxycommand="ssh localhost x" far.example.com:/a /tmp/b',
-            # round-26: the value's TRANSPORT ENDPOINT decides where the outer
+            # the value's TRANSPORT ENDPOINT decides where the outer
             # session lands even when no ssh-family verb appears in it -- a
             # raw-TCP relay to loopback hands the whole session to the local
             # sshd, so a literal self endpoint anywhere in the value is a self
@@ -280,7 +279,7 @@ class TestSandboxEscapeSshSelf:
             "ssh -o proxycommand='nc 127.0.0.1 22' ignored.example.com",
             "ssh -o proxycommand='socat - TCP:localhost:22' far.example.com id",
             "ssh -o proxycommand='openssl s_client -connect [::1]:22 -quiet' far.example.com",
-            # round-27: a REMOTE forward's destination is dialed FROM HERE --
+            # a REMOTE forward's destination is dialed FROM HERE --
             # the far sshd hands each accepted connection back for this client
             # to connect locally, so a self host in the ``-R`` spec (or the
             # spec-less reverse-SOCKS form, where the REMOTE picks every local
@@ -303,23 +302,23 @@ class TestSandboxEscapeSshSelf:
             "RSYNC_RSH='ssh localhost' rsync /tmp/f far:/f",
             "env RSYNC_RSH='ssh localhost' rsync /tmp/f far:/f",
             "RSYNC_RSH='ssh localhost' OTHER=1 rsync /tmp/f far:/f",
-            # round-29: ``RSYNC_CONNECT_PROG`` is the DAEMON-mode twin — rsync
+            # ``RSYNC_CONNECT_PROG`` is the DAEMON-mode twin — rsync
             # execs its value FROM HERE to reach an rsync:// / host::module
             # destination, exactly as it execs ``RSYNC_RSH``.
             "RSYNC_CONNECT_PROG='ssh localhost nc %H 873' rsync rsync://far.example.com/module /tmp/x",
             "RSYNC_CONNECT_PROG='ssh localhost nc %H 873' rsync far.example.com::module /tmp/x",
             "export RSYNC_CONNECT_PROG='ssh localhost'; rsync rsync://far.example.com/module /tmp/x",
-            # round-30: the two rsync env vars are INDEPENDENT — a later far
+            # the two rsync env vars are INDEPENDENT — a later far
             # assignment must not overwrite an earlier self value, and a bare
             # ``export NAME`` promotes THAT name's value.
             "RSYNC_RSH='ssh localhost' RSYNC_CONNECT_PROG='ssh proxy.example.com nc %H 873' rsync rsync://far.example.com/module /tmp/x",
             "RSYNC_RSH='ssh localhost'; RSYNC_CONNECT_PROG='ssh proxy.example.com'; export RSYNC_RSH; rsync remote-host:/x .",
-            # round-30: the function binder fails CLOSED at its caps — the 9th
+            # the function binder fails CLOSED at its caps — the 9th
             # definition or the 9th same-name call is not resolvable, so it is
             # denied rather than skipped.
             "a1(){ :;}; a2(){ :;}; a3(){ :;}; a4(){ :;}; a5(){ :;}; a6(){ :;}; a7(){ :;}; a8(){ :;}; go(){ ssh $1; }; go localhost",
             "go(){ ssh $1; }; go h1; go h2; go h3; go h4; go h5; go h6; go h7; go h8; go localhost",
-            # round-33: braced positionals have no single-digit ceiling in
+            # braced positionals have no single-digit ceiling in
             # bash -- ${10} and up must bind like $1..$9 do.
             'f(){ ssh "${10}"; }; f a b c d e f g h i localhost',
             'f(){ ssh "${12}" uptime; }; f a b c d e f g h i j k localhost',
@@ -348,7 +347,7 @@ class TestSandboxEscapeSshSelf:
             "export RSYNC_RSH='ssh localhost' ; rsync remote-host:/x .",
             # Regression: the base leading-assignment form stays denied.
             "RSYNC_RSH='ssh localhost' rsync remote-host:/x .",
-            # round-8 (Fix A): a leading ``RSYNC_RSH`` is inherited into a NESTED
+            # a leading ``RSYNC_RSH`` is inherited into a NESTED
             # ``sh -c``/``bash -c`` payload frame, where rsync execs it FROM HERE.
             # The per-frame pending/export walk re-initialises inside each frame,
             # so a function-scope latch carries the self-targeting value forward.
@@ -367,12 +366,12 @@ class TestSandboxEscapeSshSelf:
             # A separator that was QUOTED (or backslash-escaped) in the source
             # is DATA, not a command boundary -- shlex dequotes it, so the walk
             # must not stop at the token carrying it and miss the real self
-            # target that follows.  (Opus round-6 bypass: masked before the
-            # walk, restored only at the faithful operand/routing checks.)
+            # target that follows.  (Masked before the walk, restored only at
+            # the faithful operand/routing checks.)
             "scp 'a;b' localhost:/tmp/x",
             "ssh -o 'remotecommand=id;' localhost",
             # A backslash-escaped double quote inside a double-quoted operand is
-            # a LITERAL quote, not a close (round-8): the masker must not exit
+            # a LITERAL quote, not a close: the masker must not exit
             # the quote at ``\"`` and then read the following ``;`` as a real
             # separator, which would end the operand walk before the self-host
             # target.
@@ -380,7 +379,7 @@ class TestSandboxEscapeSshSelf:
             # A quoted separator INSIDE the rsync remote-shell value still
             # denies: the value recurses the floor and finds ssh-to-self.
             "rsync -e 'ssh localhost; true' remote-host:/x .",
-            # round-10: a parameter-default GLUED to literal text reconstructs
+            # a parameter-default GLUED to literal text reconstructs
             # the self host -- bash substitutes the default INTO the surrounding
             # word (``local${KC_UNSET:-host}`` -> ``localhost``), so the WHOLE
             # operand is resolved via ``_resolve_param_defaults`` and re-checked,
@@ -392,7 +391,7 @@ class TestSandboxEscapeSshSelf:
             "ssh local${U:+host} id",
             "ssh local${U-host} id",
             "ssh ${A:-local${B:-host}} id",
-            # round-10: brace expansion splices each alternative into the
+            # brace expansion splices each alternative into the
             # surrounding word before any other expansion, so an operand
             # carrying ``{a,b}``/``{n..m}`` is checked against EACH choice.
             "ssh local{h,}ost id",
@@ -401,7 +400,7 @@ class TestSandboxEscapeSshSelf:
             "ssh 127.0.0.{1..3} id",
             "ssh 0x7f00000{1..2} id",
             "ssh -o proxyjump=local{h,}ost far.example.com",
-            # round-10: a single integer literal inside arithmetic expansion is
+            # a single integer literal inside arithmetic expansion is
             # printed decimally by bash (hex/octal spellings normalize), gluing
             # into the surrounding word (``$((0x7f)).0.0.1`` -> ``127.0.0.1``).
             "ssh $((0x7f)).0.0.1 id",
@@ -425,33 +424,33 @@ class TestSandboxEscapeSshSelf:
             "rsync -av src/ far-host:/dst/",
             "sftp far-host",
             "ssh -o proxycommand='nc %h %p' far-host id",
-            # round-26 guards: a transport whose endpoint is FAR stays allowed
+            # a transport whose endpoint is FAR stays allowed
             # -- only a literal self endpoint in the value is a self dial.
             "ssh -o proxycommand='nc proxy.example.com 22' far-host id",
             "ssh -o proxycommand='ssh -W %h:%p jump.example.com' far-host id",
-            # round-27 guards: only ``-R`` dials its destination from here.
+            # only ``-R`` dials its destination from here.
             # A far -R destination, an ``-L`` destination (dialed from the FAR
             # side, so ``localhost`` is the far machine), and dynamic ``-D``
             # all stay allowed.
             "ssh -R 2222:far-db.example.com:5432 far.example.com",
             "ssh -L 2222:localhost:22 far.example.com id",
             "ssh -D 1080 far.example.com",
-            # round-29 guard: a CONNECT_PROG whose endpoint is FAR is not a
+            # a CONNECT_PROG whose endpoint is FAR is not a
             # self dial.
             "RSYNC_CONNECT_PROG='ssh proxy.example.com nc %H 873' rsync rsync://far.example.com/module /tmp/x",
-            # round-30 guard: WITHIN the binder cap (8 definitions) a far call
+            # WITHIN the binder cap (8 definitions) a far call
             # still resolves and stays allowed.
             "a1(){ :;}; a2(){ :;}; a3(){ :;}; a4(){ :;}; a5(){ :;}; a6(){ :;}; a7(){ :;}; go(){ ssh $1; }; go far-host.example.com",
-            # round-33 guard: a FAR target in braced position ten binds and
+            # a FAR target in braced position ten binds and
             # resolves as allowed.
             'f(){ ssh "${10}"; }; f a b c d e f g h i far-host.example.com',
             "ssh -l ubuntu far-host id",
-            # round-28 guards: ``-l`` CONSUMES the rest of its token (a login,
+            # ``-l`` CONSUMES the rest of its token (a login,
             # not a glued option), an ``@`` inside a far path is data, and a
             # far URI with a colon in its userinfo still routes FAR.
             "ssh -loHostname far-host id",
             "ssh -l ohostname far-host id",
-            # round-31 guards: folded ``-C`` with a FAR neighbor stays allowed,
+            # folded ``-C`` with a FAR neighbor stays allowed,
             # and a real ``-c`` cipher value neither denies nor eats the far
             # destination.
             "ssh -C far-host.example.com id",
@@ -463,7 +462,7 @@ class TestSandboxEscapeSshSelf:
             "echo ssh localhost",
             "curl http://localhost:8080/api",
             "man ssh",
-            # Subset/false-positive guards from review: a REMOTE host that
+            # Subset/false-positive guards: a REMOTE host that
             # merely starts with "localhost", an IPv6 that merely starts with
             # "::1", an unrelated program name, an unrelated variable, and a
             # data-naming opt=value.
@@ -477,8 +476,8 @@ class TestSandboxEscapeSshSelf:
             "ssh far-host 'hostname localhost'",
             # Forward/bind specs name listen addresses and far-side hops, not
             # a destination this process connects to from here -- EXCEPT the
-            # remote-forward destination, which round-27 moved to the deny
-            # side: ``-R``'s host field is dialed FROM here.
+            # remote-forward destination, which is on the deny side:
+            # ``-R``'s host field is dialed FROM here.
             "ssh -L 127.0.0.1:8080:db:5432 far-host",
             "ssh -D localhost:1080 far-host",
             "ssh -W localhost:22 far-host",
@@ -488,7 +487,7 @@ class TestSandboxEscapeSshSelf:
             # embedded word is checked, and a bare $VAR is the documented
             # run-time residual.
             "ssh ${TARGET:-far-host} id",
-            # round-10: the whole-operand resolutions only WIDEN the self
+            # the whole-operand resolutions only WIDEN the self
             # check -- defaults, braces, and arithmetic naming remote hosts or
             # plain files stay allowed.
             "ssh web${N:-01}.example.com id",
@@ -501,23 +500,23 @@ class TestSandboxEscapeSshSelf:
             # detached ``-J`` alike).
             "ssh -o proxyjump=far1.example.com,far2.example.com target.example.com",
             "ssh -J far1.example.com,far2.example.com target.example.com",
-            # round-19: the value after ``-R`` is consumed as a value; the
+            # the value after ``-R`` is consumed as a value; the
             # remote destination after it stays allowed.
             "sftp -R 64 far.example.com",
             "sftp -X num_requests=64 far.example.com",
-            # round-17: assignment/function binding that resolves to a REMOTE
+            # assignment/function binding that resolves to a REMOTE
             # host stays allowed -- the resolution only widens the deny.
             "a=far.example.com; ssh $a uptime",
             'f(){ ssh "$1" uptime; }; f far.example.com',
-            # round-24: the prefix-skipping call scan binds INVOCATIONS only --
+            # the prefix-skipping call scan binds INVOCATIONS only --
             # the function name as another command's argument is data, and a
             # prefixed call bound to a REMOTE host stays allowed.
             'f(){ ssh "$1" uptime; }; echo f localhost',
             'f(){ ssh "$1" uptime; }; x=1 f far.example.com',
-            # round-17: an arithmetic expression in a NON-target position (a
+            # an arithmetic expression in a NON-target position (a
             # local scp source file) is not a connection target.
             "scp release$((2*3)).tar far.example.com:/dst",
-            # round-25: arithmetic in the remote PATH (after the colon) glues
+            # arithmetic in the remote PATH (after the colon) glues
             # into a filename, never into the host -- only the pre-colon host
             # part can name this machine.
             "scp backup.tar far.example.com:/backups/part$((i)).tar",
@@ -553,7 +552,7 @@ class TestSandboxEscapeSshSelf:
             # A leading ``RSYNC_RSH`` naming a REMOTE shell through a wrapper is
             # the ordinary selector, not a self dial.
             "RSYNC_RSH='ssh far-host' timeout 5 rsync remote-host:/x .",
-            # round-8 (Fix A): a NON-self ``RSYNC_RSH`` inherited into a nested
+            # a NON-self ``RSYNC_RSH`` inherited into a nested
             # payload stays allowed, and a self value inherited into a payload
             # that runs NO rsync verb connects to nothing.
             "RSYNC_RSH='ssh buildhost22' sh -c 'rsync h:/x .'",
@@ -591,7 +590,7 @@ class TestSandboxEscapeSshSelf:
         # The mask rewrites only QUOTED / backslash-escaped ``;``/``|`` to
         # sentinels and leaves a real operator alone; unmask is its exact
         # inverse.  This is the mechanism that keeps a shlex-dequoted separator
-        # from ending the operand walk early (Opus round-6 bypass).
+        # from ending the operand walk early, which would skip the self target.
         mask = security._mask_quoted_separators
         unmask = security._unmask_separators
         semi = security._QUOTED_SEP_SENTINELS[";"]
@@ -620,11 +619,11 @@ class TestSandboxEscapeSshSelf:
             assert unmask(mask(s)) == s
 
     def test_ipv6_zone_id_is_stripped_before_match(self, monkeypatch):
-        # round-8 (Fix B): a link-local address carries a ``%zone`` suffix that
+        # a link-local address carries a ``%zone`` suffix that
         # never equals the bare cached address, so the operand chokepoint
         # (``_host_is_self``) strips it before the own-address compare -- bare
         # and bracketed spellings alike.  An address NOT in the cache stays
-        # allowed after stripping, so the fix does not over-block.
+        # allowed after stripping, so the strip does not over-block.
         own = security.socket.gethostname().strip().lower()
         pinned = frozenset({"fe80::1"} | {n for n in {own, own.split(".", 1)[0]} if n})
         monkeypatch.setattr(security.argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
@@ -677,7 +676,7 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh $(printf remote.example.com) id") is None
 
     def test_here_string_fed_xargs_is_judged_as_the_rebuilt_command(self):
-        # round-35 (GPT): bash strips ``<<< word`` from argv and delivers the
+        # bash strips ``<<< word`` from argv and delivers the
         # word on stdin, and xargs turns stdin into ARGUMENTS for the verb it
         # launches -- so ``xargs ssh <<< localhost`` reaches ``ssh localhost``.
         # The floor rebuilds that command from the statically-known pieces and
@@ -720,7 +719,7 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh remo?e.example.com id") is None
 
     def test_fold_ambiguous_flag_does_not_hide_the_destination(self, monkeypatch):
-        # round-31: ``-C`` (compression, valueless) folds onto value-taking
+        # ``-C`` (compression, valueless) folds onto value-taking
         # ``-c`` (cipher).  After folding the letter is AMBIGUOUS, so the
         # swallowed token keeps FULL host-position checks (DNS included) and
         # the positional slot stays pending — both candidate destinations are
@@ -736,7 +735,7 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh -C far.example.com id") is None
 
     def test_dns_verdict_is_consulted_only_in_host_position(self, monkeypatch):
-        # round-17: the fail-closed DNS verdict applies to HOSTS -- the
+        # the fail-closed DNS verdict applies to HOSTS -- the
         # ssh/sftp positional, a ``host:path`` prefix, or a routing option
         # value -- never to a dotted LOCAL FILE operand of scp/rsync.  A
         # verdict stub that denies everything proves the layer is not even
@@ -766,30 +765,29 @@ class TestSandboxEscapeSshSelf:
         consulted.clear()
         assert _denied_by("ssh unseen.example.com uptime") == self._RULE
         assert any(h == "unseen.example.com" for h in consulted)
-        # round-18: a VALUELESS flag (``-v``) does not swallow the host slot
+        # a VALUELESS flag (``-v``) does not swallow the host slot
         # -- the next token is the destination and must be DNS-checked.
         consulted.clear()
         assert _denied_by("ssh -v self.example id") == self._RULE
         assert any(h == "self.example" for h in consulted)
-        # round-18: the consumed positional ends host position -- a dotted
+        # the consumed positional ends host position -- a dotted
         # remote-command argument after the host is data, not a destination.
         consulted.clear()
         assert _denied_by("ssh -v far.example.com hostname.txt") == self._RULE
         assert consulted and all(h == "far.example.com" for h in consulted)
-        # round-18: a DOTLESS name in host position may still be a loopback
+        # a DOTLESS name in host position may still be a loopback
         # alias (/etc/hosts) -- it is resolved like any other hostname.
         consulted.clear()
         assert _denied_by("ssh localalias uptime") == self._RULE
         assert any(h == "localalias" for h in consulted)
 
     def test_arith_overflow_denies_instead_of_crashing(self):
-        # round-18: ``int(lit, 16)`` uses a power-of-two base and is exempt
+        # ``int(lit, 16)`` uses a power-of-two base and is exempt
         # from the interpreter's int<->str digit cap, so a huge hex literal
-        # converts -- but the decimal ``str()`` of it is capped and raised an
-        # uncaught ValueError THROUGH ``is_denied``, aborting the tool-call
-        # evaluation instead of answering.  The conversion now fails closed:
-        # the unresolved spelling stays, and the round-17 target-position
-        # rule denies it.
+        # converts -- but the decimal ``str()`` of it is capped and would raise
+        # an uncaught ValueError THROUGH ``is_denied``, aborting the tool-call
+        # evaluation instead of answering.  The conversion fails closed: the
+        # unresolved spelling stays, and the target-position rule denies it.
         huge = "ssh 127.0.0.$((0x" + "f" * 3700 + ")) id"
         assert _denied_by(huge) == self._RULE
         # 5000 octal digits ~= 4515 decimal digits -- past the str() cap
@@ -823,7 +821,7 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by(f"ssh h{{1..2..{big}}} id") == self._RULE
 
     def test_userinfo_colon_does_not_hide_own_host(self, monkeypatch):
-        # round-28: userinfo may CONTAIN a colon.  OpenSSH resolves the
+        # userinfo may CONTAIN a colon.  OpenSSH resolves the
         # destination AFTER the LAST ``@`` (URI authority and the plain
         # ``[user@]host`` form alike), so ``user:pass@myhost`` routes to
         # myhost while a colon-first split reads the host as ``user``.
@@ -836,7 +834,7 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh user:pass@myhost id") == self._RULE
         assert _denied_by("sftp user:pass@myhost.example.com") == self._RULE
         # Far destinations with the same shape stay allowed, and an ``@``
-        # inside a far PATH is data, not userinfo (round-17 ordering).
+        # inside a far PATH is data, not userinfo.
         assert _denied_by("ssh ssh://user:pass@otherhost.example.com id") is None
         assert _denied_by("scp f otherhost.example.com:/backup/a@myhost") is None
 
@@ -896,10 +894,10 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh localhost id") == self._RULE
 
     def test_ansi_c_quoted_verb_is_decoded_before_the_gate(self):
-        # round-20 (Opus): bash decodes ANSI-C quoting before exec, and the
-        # operand walk's tokenizer resolves it too -- but the raw-substring
-        # verb gate probed the UNDECODED text, so $'\x73\x73\x68' (ssh) never
-        # reached the walk that would have denied it.  The probe now decodes.
+        # bash decodes ANSI-C quoting before exec, and the
+        # operand walk's tokenizer resolves it too -- so the raw-substring
+        # verb gate must probe the DECODED text, or $'\x73\x73\x68' (ssh) never
+        # reaches the walk that would deny it.
         assert _denied_by("$'\\x73\\x73\\x68' localhost id") == self._RULE
         assert _denied_by("$'\\x73\\x63\\x70' /etc/hostname localhost:/tmp/") == self._RULE
         # A remote target through the decoded verb stays allowed, and a
@@ -908,7 +906,7 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("$'\\x6c\\x73' /tmp") is None
 
     def test_same_line_copied_ssh_binary_is_bound(self):
-        # round-20 (GPT): a same-line copy/rename of an ssh-family binary
+        # a same-line copy/rename of an ssh-family binary
         # (cp/mv/ln/install) binds the DESTINATION as that verb for the rest
         # of the line -- shedding the basename must not shed the floor.  A
         # copy staged in an EARLIER command line is the documented residual
@@ -923,10 +921,10 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("cp notes.txt /tmp/x && /tmp/x localhost") is None
 
     def test_double_dash_is_an_option_terminator(self, monkeypatch):
-        # round-20 (GPT): exact ``--`` is the POSIX option terminator; the
-        # token after it is the OPERAND.  Classifying it as a long option let
-        # ``value_shadow`` swallow the next token out of host position, so a
-        # DNS-classified self alias after ``--`` was never checked.
+        # exact ``--`` is the POSIX option terminator; the
+        # token after it is the OPERAND.  Classifying it as a long option would
+        # let ``value_shadow`` swallow the next token out of host position, so a
+        # DNS-classified self alias after ``--`` would never be checked.
         consulted: "list[str]" = []
 
         def _deny_all(host, **_kw):

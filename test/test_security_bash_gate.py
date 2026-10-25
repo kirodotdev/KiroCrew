@@ -856,7 +856,7 @@ class TestAuditBashCommand:
 
 class TestAuditBashExfiltration:
     """Tests for audit_bash_exfiltration() — the enforced (deny-at-gate) subset
-    of suspicious commands: data egress + reverse shells (security-review 5682f92b)."""
+    of suspicious commands: data egress + reverse shells."""
 
     def test_curl_post_file_body_blocked(self) -> None:
         # curl -d @<file> reads a local file as the POST body — the classic

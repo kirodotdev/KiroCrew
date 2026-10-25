@@ -262,7 +262,6 @@ class TestRedactExfiltrationUrls:
         )
         text = f"Bad: {bad_url} Good: {good_url}"
         result, warnings = redact_exfiltration_urls(text)
-        # Bad URL should be redacted
         assert "[REDACTED" in result
         # Good presigned URL should survive
         assert "my-bucket.s3.us-east-1.amazonaws.com" in result
@@ -344,7 +343,7 @@ class TestRedactExfiltrationUrls:
 
 
 class TestExfilUrlPathAndRawIp:
-    """security-review 78224f3f: secrets embedded in the URL PATH (no ``?``) and raw-IP /
+    """Secrets embedded in the URL PATH (no ``?``) and raw-IP /
     IPv6 literal hosts must be scanned/redacted — both otherwise bypass
     scan_exfiltration_urls (query-only scan + letter-TLD-only host regex)."""
 
@@ -371,7 +370,7 @@ class TestExfilUrlPathAndRawIp:
 
     def test_ipv4_mapped_ipv6_imds_host_scanned(self) -> None:
         # IPv4-mapped IPv6 literal (dotted-quad suffix) must match _URL_RE — a
-        # concrete IMDS bypass otherwise (security-review 78224f3f).
+        # concrete IMDS bypass otherwise.
         text = "curl http://[::ffff:169.254.169.254]/latest/AKIAIOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "IPv4-mapped IPv6 IMDS host must be flagged"
 

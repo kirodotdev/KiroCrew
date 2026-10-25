@@ -114,7 +114,9 @@ def test_profile_within_ceiling_boots(monkeypatch, tmp_path):
     try:
         from kiro_crew.platform import bootstrap
 
-        bootstrap.bootstrap_context(KiroCrewConfig.load())  # no raise
+        ctx = bootstrap.bootstrap_context(KiroCrewConfig.load())
+        assert ctx.governance is not None
+        assert ctx.governance.controls["sandbox.min_level"].value == "cc"
     finally:
         gp.reset_store()
 

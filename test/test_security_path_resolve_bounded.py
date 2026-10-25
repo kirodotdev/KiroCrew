@@ -419,7 +419,7 @@ def test_the_stall_prefix_never_ends_on_a_container_of_homes(monkeypatch) -> Non
     monkeypatch.setattr(security.paths.os, "path", posixpath)
     monkeypatch.setattr(security.paths.os, "sep", posixpath.sep)
 
-    # The issue's reproduction, inverted: two users, two keys.
+    # The shared-mount shape, inverted: two users, two keys.
     alice = security._stall_prefix("/local/home/alice/.aws/credentials")
     bob = security._stall_prefix("/local/home/bob/project/file.py")
     assert alice == "/local/home/alice"
@@ -885,13 +885,13 @@ def test_a_long_run_of_fast_successes_below_the_floor_never_exhausts_the_allowan
 
 
 def test_a_run_of_slow_but_completing_waits_still_exhausts_the_allowance(monkeypatch) -> None:
-    """The reviewer's slow-but-completing scenario: waits that each finish just under budget.
+    """The slow-but-completing scenario: waits that each finish just under budget.
 
     13 waits at ~2s apiece is ~25s of loop block -- far above any sane floor -- so the floor must
     not be implemented as "only count timeouts": every one of these clears 100ms by a wide margin
     and must still count, or this exact shape reopens the unbounded-loop-block case the PR closes.
     Uses the PRODUCTION allowance (12s), not the pool fixture's scaled-down test cap, so the
-    exhaustion point matches the reviewer's own arithmetic (six waits at 1.9s spend 11.4s of the
+    exhaustion point matches the production arithmetic (six waits at 1.9s spend 11.4s of the
     12s cap; the seventh's remaining allowance of 0.6s is below what a 1.9s-long resolution needs,
     so its budget is clamped and it times out on the allowance, not the mount -- still a refusal,
     still driven entirely by real filesystem-latency waits, never by the sub-floor exclusion).
@@ -925,8 +925,8 @@ def test_a_run_of_slow_but_completing_waits_still_exhausts_the_allowance(monkeyp
 #
 # INVARIANT under test: the gate only compares against anchors resolved fresh,
 # canonically, within the budget; anything else refuses.  Three weaker
-# fallbacks were each found open in review -- lexical spellings, a UNC skip,
-# and serving the previous canonical resolution -- and are pinned shut below.
+# fallbacks each leave the fence open -- lexical spellings, a UNC skip, and
+# serving the previous canonical resolution -- and are pinned shut below.
 # ---------------------------------------------------------------------------
 
 
@@ -1046,8 +1046,8 @@ def test_a_stalled_prefix_is_not_reprobed_on_the_pools_last_child(monkeypatch) -
     """The re-probe after a cooldown is expected to wedge again, and a wedged child is
     replaced only while the pool's bounded list of killed-but-unexited children has
     room.  Spending the LAST live child on a known-bad prefix would therefore leave
-    every other prefix refused, uncharged, for as long as that mount stays wedged
-    (found in review).  With one child left the re-probe is refused without reaching
+    every other prefix refused, uncharged, for as long as that mount stays wedged.
+    With one child left the re-probe is refused without reaching
     the resolver and the prefix's own cooldown is extended; with two, it proceeds."""
     clock = [1_000.0]
     monkeypatch.setattr(security, "_path_resolve_clock", lambda: clock[0])
@@ -1167,7 +1167,7 @@ def test_the_rebuild_is_one_pool_job(monkeypatch, tmp_path) -> None:
 def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
     monkeypatch, tmp_path
 ) -> None:
-    # The review scenario, round three: KIROCREW_HOME is a symlink, the anchors
+    # The repointed-home scenario: KIROCREW_HOME is a symlink, the anchors
     # were resolved while it pointed at A, then it is repointed at B while the
     # home stalls.  A gate that served the previous canonical roots would still
     # anchor on A and let the canonical B credential through; refusing does not.
@@ -1194,7 +1194,7 @@ def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
     monkeypatch.setattr(security.paths, "_realpaths_or_none", stalled)  # ...under a stall
     try:
         # Only the anchors stall; the candidate resolves through the real
-        # resolver on its own healthy prefix, exactly as in the review scenario.
+        # resolver on its own healthy prefix.
         assert security.is_sensitive_path(str(real_b / "security_policy.json")) is True
         assert security.is_sensitive_path(str(link / "security_policy.json")) is True
     finally:
@@ -1210,7 +1210,7 @@ def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
 
 
 def test_a_unc_home_still_has_its_anchors_resolved(monkeypatch) -> None:
-    # The review scenario, round two: a UNC home (a roaming profile on
+    # The UNC-home scenario: a UNC home (a roaming profile on
     # ``\\server\share``) with a junction inside KIROCREW_HOME.  The UNC
     # shortcut is a stance about agent-supplied CANDIDATE tokens -- a share
     # spelling is how an agent names a share, and the fence holds no UNC
@@ -1251,7 +1251,7 @@ def test_a_unc_home_still_has_its_anchors_resolved(monkeypatch) -> None:
 def test_sandbox_mask_resolves_inline_and_never_sees_a_stall(monkeypatch, tmp_path) -> None:
     # ``sandbox_credential_targets`` already runs off the loop (the spawn
     # preflight wraps it in asyncio.to_thread), and its caller's exception
-    # ladder does not know PathResolutionStalled (found in review).  It
+    # ladder does not know PathResolutionStalled.  It
     # therefore resolves the roots inline and simply waits: an open cooldown on
     # the home's prefix must neither raise nor degrade the mask.
     _clear_override_roots(monkeypatch)

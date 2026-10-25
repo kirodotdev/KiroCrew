@@ -19,6 +19,8 @@ import pytest
 
 from kiro_crew.security.exfil import audit_bash_exfiltration as audit
 
+_EXFIL_DENIAL = "Blocked: command matches data-exfiltration pattern"
+
 
 class TestOutboundSendsAreNotRefused:
     """A send to a remote host is an ordinary command — never refused."""
@@ -54,7 +56,7 @@ class TestAtFileReadsStillRefused:
         ],
     )
     def test_refused(self, command: str) -> None:
-        assert audit(command) is not None, command
+        assert (audit(command) or "").startswith(_EXFIL_DENIAL), command
 
 
 class TestOrdinaryCommandsNeverRefused:
