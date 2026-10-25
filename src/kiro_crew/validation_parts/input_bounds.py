@@ -220,6 +220,11 @@ ALLOWED_HOOK_EVENTS = frozenset(
 _AGENT_NAME_RE: re.Pattern[str] = re.compile(
     r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]|[a-zA-Z0-9])\Z"
 )
+#: The shape ``_AGENT_NAME_RE`` (and ``WORKSPACE_NAME_RE``) admits, in words, for a
+#: CLI refusal.
+AGENT_NAME_HINT = (
+    "expected 1-64 letters, digits, '-' or '_', starting and ending with a letter or digit"
+)
 
 TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])\Z")
 #: The shape ``TEMPLATE_NAME_RE`` admits, in words, for a CLI refusal.

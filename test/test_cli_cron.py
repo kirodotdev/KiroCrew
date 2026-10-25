@@ -575,14 +575,17 @@ class TestCronCli:
                 cron_expr=None,
                 channel=None,
                 approval_mode="",
-                agent="bad name!",
+                # Every character is an admitted one; only the trailing '-' is refused.
+                agent="research-",
             )
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
             assert exc.value.code == 1
             mock_svc.add_job.assert_not_called()
             mock_svc._save.assert_not_called()
-            assert "invalid agent name" in capsys.readouterr().err.lower()
+            err = capsys.readouterr().err
+            assert "invalid agent name (expected 1-64 letters" in err
+            assert "starting and ending with a letter or digit" in err
 
     def test_cron_update_invalid_agent_name_rejected(self, tmp_path, capsys):
         """Bad-format --agent on update is rejected with sys.exit(1) before any update_job call."""
@@ -600,13 +603,16 @@ class TestCronCli:
                 cron_expr=None,
                 channel=None,
                 approval_mode=None,
-                agent="bad name!",
+                # Every character is an admitted one; only the trailing '-' is refused.
+                agent="research-",
             )
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
             assert exc.value.code == 1
             mock_svc.update_job.assert_not_called()
-            assert "invalid agent name" in capsys.readouterr().err.lower()
+            err = capsys.readouterr().err
+            assert "invalid agent name (expected 1-64 letters" in err
+            assert "starting and ending with a letter or digit" in err
 
     def test_cron_update_agent_whitespace_stripped(self, tmp_path):
         """Whitespace around --agent on update is stripped before forwarding to update_job."""

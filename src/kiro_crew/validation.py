@@ -372,6 +372,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MODEL_NAME_RE,
         _MODEL_SEGMENT,
         _QUALIFIED_MODEL_MAX_CHARS,
+        AGENT_NAME_HINT,
         ALLOWED_HOOK_EVENTS,
         ALLOWED_LESSON_APPLIES,
         ALLOWED_LESSON_CATEGORIES,

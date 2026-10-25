@@ -203,10 +203,11 @@ def _handle_workspace(args: argparse.Namespace) -> None:
 
     elif action == "create":
         if not WORKSPACE_NAME_RE.match(args.name):
-            print(
-                "Error: invalid workspace name (use alphanumeric, hyphens, underscores)",
-                file=sys.stderr,
-            )
+            # Read here, not at module level: the facade mirrors every module-level
+            # import of its owners, and its import inventory is frozen.
+            from kiro_crew.validation import AGENT_NAME_HINT
+
+            print(f"Error: invalid workspace name ({AGENT_NAME_HINT})", file=sys.stderr)
             sys.exit(1)
         if args.name in cfg.workspaces:
             print(f"Error: workspace '{args.name}' already exists", file=sys.stderr)

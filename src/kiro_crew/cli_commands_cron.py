@@ -213,7 +213,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     if not message and not zero_token:
         _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
     if agent and not _AGENT_NAME_RE.match(agent):
-        _cron_add_fail("invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)")
+        # Read here, not at module level: the facade mirrors every module-level
+        # import of its owners, and its import inventory is frozen.
+        from kiro_crew.validation import AGENT_NAME_HINT
+
+        _cron_add_fail(f"invalid agent name ({AGENT_NAME_HINT})")
     # ``--agent`` is the CLI's only field for naming either a provider template or
     # a crew member. Resolve the split the same way every create surface does, so
     # a member name is captured as a member selection (``member_id``) instead of a
@@ -637,10 +641,11 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if getattr(args, "agent", None) is not None:
             agent_val = args.agent.strip()
             if agent_val and not _AGENT_NAME_RE.match(agent_val):
-                print(
-                    "Error: invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)",
-                    file=sys.stderr,
-                )
+                # Read here, not at module level: the facade mirrors every
+                # module-level import of its owners, and its inventory is frozen.
+                from kiro_crew.validation import AGENT_NAME_HINT
+
+                print(f"Error: invalid agent name ({AGENT_NAME_HINT})", file=sys.stderr)
                 sys.exit(1)
             kwargs["agent_id"] = agent_val
         if getattr(args, "approval_mode", None) is not None:
