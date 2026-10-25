@@ -1550,12 +1550,12 @@ the OSS baseline. Because a companion can remove a token no base warning names,
 `ScrubResult.redacted` is set by the SDK from the base warnings OR the policy's
 delta — it can be True with both lists empty, and is never False when something was
 removed. `ScrubSDK.outbound` is its ONLY method and it holds no redaction knowledge
-of its own: the sequencing lives in `redact_with_findings`, which
-sits beside `redact` and is the single home of the URLs-then-credentials order —
-redacting a credential first leaves a placeholder inside a URL that the
-exfiltration matcher then fails to recognise, so that sequencing is a security
-property and belongs in one place rather than re-spelled per caller (several
-existing callers hand-sequence the reverse order; migrating them is separate).
+of its own: `redact_with_findings`, beside `redact`, hands the text to
+`security/pass_compose.py`, which finds the URL-pass and credential-pass spans of
+both orders on the original text, merges them and rewrites it once, so it removes
+what either order removes. Neither fixed order is safe on its own, so the
+composition is a security property and lives in one place (several existing
+callers still hand-sequence the two passes; migrating them is separate).
 Two further properties are deliberate: the seam is populated for EVERY app with no
 permission gating it (it only removes data, and an app refused the seam ships its
 own regexes instead — a control that looks present and is not), and it carries no
