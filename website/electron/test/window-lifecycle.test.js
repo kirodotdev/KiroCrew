@@ -1144,6 +1144,7 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "view.setWindowOpenHandler",
       "view.on:will-navigate",
+      "view.on:will-redirect",
       "view.on:did-create-window",
       "view.session.onBeforeSendHeaders",
       "view.session.on:will-download",
@@ -1234,6 +1235,30 @@ describe("dashboard window wiring order", () => {
       assert.equal(navigate(contents, "http://localhost:5476/?token=t"), false);
     }
     assert.deepEqual(openedExternally, [], "a refused navigation opens nothing");
+  });
+
+  it("refuses a main-frame redirect off the app origin, in the dashboard and its pop-outs", async (t) => {
+    const { viewContents } = await wireDashboardWindow(t, { platform: "darwin" });
+    const popout = { webContents: { ...recordingEmitter("child", []), setWindowOpenHandler() {} } };
+    viewContents.emit("did-create-window", popout);
+    const redirect = (contents, url, isMainFrame = true) => {
+      let prevented = false;
+      contents.emit("will-redirect", { url, isMainFrame, preventDefault: () => { prevented = true; } });
+      return prevented;
+    };
+    for (const contents of [viewContents, popout.webContents]) {
+      assert.equal(redirect(contents, "https://sso.example/login"), true);
+      assert.equal(redirect(contents, "http://127.0.0.1:5476/"), true);
+      assert.equal(redirect(contents, "http://localhost:54760/"), true);
+      assert.equal(redirect(contents, "http://localhost:5476.evil.test/"), true);
+      // A pane iframe redirecting inside its own origin is not the dashboard's.
+      assert.equal(redirect(contents, "http://kirocrew.localhost:6000/x", false), false);
+      assert.equal(redirect(contents, "http://localhost:5476/chat?token=t"), false);
+      // No isMainFrame on the event: an unknown frame counts as main, so refused.
+      let unknownFrameRefused = false;
+      contents.emit("will-redirect", { url: "https://sso.example/login", preventDefault: () => { unknownFrameRefused = true; } });
+      assert.equal(unknownFrameRefused, true);
+    }
   });
 
   it("a framed window injects neither the drag band nor caption controls", async (t) => {

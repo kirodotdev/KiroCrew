@@ -252,12 +252,24 @@ function createNavigationGuard(deps) {
   };
 }
 
+// The `will-redirect` listener: the same exact-origin refusal for a main-frame
+// server redirect, including main-process loads (which `will-navigate` never
+// sees). Iframe (pane) redirects are left alone; an unknown frame counts as main.
+function createRedirectGuard(deps) {
+  const guard = createNavigationGuard(deps);
+  return function guardRedirect(details) {
+    if (details && details.isMainFrame === false) return;
+    guard(details, details && details.url);
+  };
+}
+
 module.exports = {
   EXTERNAL_URLS,
   ORIGIN_INHERITING_SCHEMES,
   WEB_SCHEMES,
   classifyNavigation,
   createNavigationGuard,
+  createRedirectGuard,
   createWindowOpenHandler,
   openExternalSafely,
 };
