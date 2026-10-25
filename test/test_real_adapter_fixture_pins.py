@@ -52,9 +52,25 @@ MEASURED_NOT_INSTALLED: dict[str, str] = {
 }
 
 
-def _pin(package: str) -> str:
-    """The release *package*'s live fixtures must carry."""
-    return MEASURED_NOT_INSTALLED.get(package) or pinned_version(package)
+#: A LATER major line held to the release it was measured on, while the lane still
+#: installs the earlier one. The opencode ``-v2-`` captures were taken on 2.0.29 as
+#: the evidence for the version-aware v2 seed; live sessions and the lane still run
+#: the 1.x line, so those fixtures are held to the 2.x release they were taken on.
+#: The entry retires when the lane pins that major (the check below reds on it).
+MEASURED_MAJOR_NOT_INSTALLED: dict[tuple[str, int], str] = {
+    (OPENCODE_PACKAGE, 2): "2.0.29",
+}
+
+
+def _major(version: str) -> int | None:
+    match = re.match(r"(\d+)\.", version)
+    return int(match.group(1)) if match else None
+
+
+def _pin(package: str, version: str = "") -> str:
+    """The release *package*'s live fixtures -- of *version*'s major -- must carry."""
+    held = MEASURED_MAJOR_NOT_INSTALLED.get((package, _major(version) or -1))
+    return held or MEASURED_NOT_INSTALLED.get(package) or pinned_version(package)
 
 
 _RECAPTURE = "stale, re-capture pending"
@@ -82,11 +98,11 @@ def _pinned_live_fixtures() -> list[tuple[str, str, str]]:
     """``(key, fixture version, pin)`` for every live fixture of a pinned adapter."""
     found = []
     for directory, (package, agent_name) in sorted(PINNED_FIXTURE_ADAPTERS.items()):
-        pin = _pin(package)
         for path in sorted((CORPUS / directory).glob("*.jsonl")):
             meta, _frames = read_fixture(path)
             if meta.get("recorded") != "live":
                 continue
+            pin = _pin(package, str(meta.get("agent_version")))
             assert meta.get("agent_name") == agent_name, (
                 f"{directory}/{path.name}: _meta.agent_name is {meta.get('agent_name')!r}, "
                 f"but {package} answers initialize as {agent_name!r}"
@@ -200,3 +216,13 @@ def test_a_measured_only_pin_is_not_also_in_the_lane_manifest() -> None:
         "move the pin into test/real_adapters/package.json and drop it from "
         "MEASURED_NOT_INSTALLED"
     )
+
+
+def test_a_measured_major_is_not_also_the_lane_pins_major() -> None:
+    """One pin per major: once the lane installs that line, its fixtures follow the
+    lane pin and the held release retires."""
+    for (package, major), _held in MEASURED_MAJOR_NOT_INSTALLED.items():
+        assert _major(pinned_version(package)) != major, (
+            f"the lane now pins {package} major {major}: drop it from "
+            "MEASURED_MAJOR_NOT_INSTALLED and re-capture against the lane pin"
+        )

@@ -662,8 +662,8 @@ class _OpencodeLaunchRig:
             cleanup = self.CLEANUP_VERSION if name == "wrap_version" else self.CLEANUP
             return [*self.SANDBOX, *argv], cleanup
 
-        def _verify(session, backend, argv, config_content):
-            _record("verify", list(argv), config_content, session, backend)
+        def _verify(session, backend, argv, config_content, major):
+            _record("verify", list(argv), config_content, session, backend, major)
             return routing
 
         def _unlink(path):
@@ -801,6 +801,19 @@ def test_the_read_back_vouches_for_the_seed_the_session_carries(monkeypatch, tmp
     assert env == {_ENV_CONFIG: seed}
     # And the session's MCP array is warmed before any child of this harness starts.
     assert rig.names().index("session_mcp") < rig.names().index("wrap_readback")
+    # The read-back is told the generation the version gate read.
+    assert rig.args_of("verify")[4] == 1
+
+
+def test_a_v2_binary_is_seeded_and_read_back_as_v2(monkeypatch, tmp_path) -> None:
+    """The major the version gate reads picks the seed shape: a 2.x binary passes
+    the gate and gets the ``permissions[]`` seed, never the v1 map it would ignore."""
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, probe_stdout="opencode v2.0.29")
+    rig.run()
+    seed = json.loads(rig.args_of("verify")[1])
+    assert "permission" not in seed
+    assert seed["permissions"][-1] == {"action": "*", "resource": "*", "effect": "ask"}
+    assert rig.args_of("verify")[4] == 2
 
 
 def test_a_routing_refusal_is_translated_to_the_acp_layer_type(monkeypatch, tmp_path) -> None:
@@ -1093,11 +1106,11 @@ def test_the_gate_is_probed_fresh_on_every_launch(tmp_path, monkeypatch) -> None
 def test_an_untested_newer_major_refuses_and_names_both_lines(tmp_path, monkeypatch) -> None:
     """A PATH refresh onto the untested line is the exact hazard: the refusal says
     which major moved, and the remedy is a tested release or the override."""
-    calls = _version_gate(monkeypatch, stdout="opencode 2.0.27")
+    calls = _version_gate(monkeypatch, stdout="opencode 3.0.0")
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
     issue, remedy = _version_refusal(client, "/opt/bin/opencode")
-    assert "major 2" in issue
-    assert "major 1" in issue
+    assert "major 3" in issue
+    assert "major 1 or 2" in issue
     assert OPENCODE_INSTALL_COMMAND in remedy
     assert _ENV_BIN in remedy
     # And the answer is re-read next launch, so a retry wears nothing down.
@@ -1106,7 +1119,7 @@ def test_an_untested_newer_major_refuses_and_names_both_lines(tmp_path, monkeypa
 
 
 def test_an_older_major_refuses_too(tmp_path, monkeypatch) -> None:
-    """The pin is one measured line, not a ceiling: 0.x is as unmeasured as 2.x."""
+    """The pin is a set of measured lines, not a ceiling: 0.x is as unmeasured as 3.x."""
     _version_gate(monkeypatch, stdout="0.104.0")
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
     issue, _remedy = _version_refusal(client, "/opt/bin/opencode")
@@ -1175,10 +1188,10 @@ def test_an_out_of_range_major_refuses_before_the_read_back(monkeypatch, tmp_pat
     """A binary outside the tested line must not reach the read-back whose parsed
     shapes were never measured against it. The refusal names the line that moved,
     the probe's launcher artifact is reclaimed, and no read-back child starts."""
-    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, probe_stdout="opencode 2.0.27")
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, probe_stdout="opencode 3.0.0")
     with pytest.raises(acp_client.AcpToolGateUnroutable) as excinfo:
         rig.run()
-    assert "major 2" in str(excinfo.value)
+    assert "major 3" in str(excinfo.value)
     assert rig.plan is None
     names = rig.names()
     assert "wrap_readback" not in names, "the read-back child started behind a refused gate"

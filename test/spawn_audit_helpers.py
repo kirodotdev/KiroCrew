@@ -102,6 +102,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_version_child_is_wrapped_like_the_read_back`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/harness/opencode.py::_opencode_reported_major",
+        # The opencode v2 routing read-back, the same shape as the v1 one above.
+        # ONE fixed argv -- the resolved harness binary plus ``debug config`` --
+        # SANDBOX-WRAPPED by the same caller as the v1 read-back, with no shell, a
+        # 30s timeout, a cwd that is the session work dir, and the caller-built
+        # scrubbed environment. The agent supplies nothing to it; stdout lists
+        # config sources (never effective values on v2), and the seed-document
+        # assertions above it are pure Python. Listed rather than routed for the
+        # same reason: nothing about the argv comes from a turn.
+        "acp/harness/opencode.py::_verify_opencode_v2_routing",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three

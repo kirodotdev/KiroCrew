@@ -18,6 +18,7 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import FrozenSet
 
@@ -503,6 +504,31 @@ def permission_config_for(backend: str) -> tuple:
 def permission_setting_for(backend: str) -> tuple:
     """The ``(setting_key, value)`` *backend* seeds, or ``("", "")`` when it seeds none."""
     return ACP_BACKEND_PERMISSION_SETTING.get(backend, ("", ""))
+
+
+#: First OpenCode major version with the v2 contract: ``permissions[]`` seed
+#: rules instead of the ``permission`` map, array ``session/prompt`` parts,
+#: ``session/set_config_option`` as the only model selection (``session/set_model``
+#: is gone), and ``once``/``always``/``reject`` permission option ids. Measured
+#: live against 2.0.29; the v1 line (1.18.x-1.19.x) keeps the old shapes.
+#: (Model selection needs no branch: opencode was already in
+#: ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`` on both generations.)
+OPENCODE_ACP_V2_MAJOR = 2
+
+
+def opencode_major_version(version: str) -> int | None:
+    """Major version in an adapter-reported *version*, or ``None`` when unparseable.
+
+    Accepts the ``X.Y.Z`` the v1 binary prints and the ``opencode vX.Y.Z`` the
+    v2 binary prints. Bounded digit runs: the version is adapter-reported, and
+    ``int()`` refuses a run past the interpreter's digit limit with
+    ``ValueError``. Unknown reads ``None`` rather than raising -- callers fail
+    closed on it.
+    """
+    match = re.match(r"[^\d]*(\d{1,9})\.\d{1,9}\.\d{1,9}(?!\d)", version or "")
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def gate_probe_command_for(backend: str) -> str:
