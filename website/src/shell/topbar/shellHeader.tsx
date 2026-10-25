@@ -149,7 +149,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
-    requestFeature, toggleNav, mobileSingle,
+    requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
   } = shell
   return (
     <>
@@ -387,8 +387,28 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             the header still needs its third in-flow child so the actions group
             is not auto-placed into the `auto` centre track (where, as a size
             container, it would collapse to its padding). */}
+        {/* The Crewmates page puts its header here once a crewmate is open.
+            Until then (`pending`, still reading) the page has no drawer bound,
+            so the slot holds a nav-drawer toggle and the bar never sits empty.
+            It wears the logo row's `Menu` glyph, not the roster drawer's panel
+            glyph, so one icon never opens two different drawers. */}
         {isMobile && (mobileSingle
-          ? <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full" />
+          ? (
+            <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full">
+              {membersBarPending && (
+                <button
+                  type="button"
+                  className="mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0"
+                  onClick={toggleNav}
+                  aria-label={i18nT('app.open_menu')}
+                  aria-expanded={mobileNavOpen}
+                  data-testid="mobile-topbar-nav-toggle"
+                >
+                  <Menu size={18} />
+                </button>
+              )}
+            </div>
+          )
           : <span aria-hidden="true" data-testid="topbar-centre-spacer" className="w-0" />
         )}
         {/* Theme decoration: the active theme's center top-bar element (e.g. a
@@ -619,6 +639,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             leading cell. */}
         {mobileSingle && (
           <div className="tb-trail relative h-full flex items-center gap-1.5 shrink-0">
+            {/* The Crewmates page has no overflow menu to carry the update,
+                and this cell holds only the bell there, so the pill itself
+                goes first: still two controls. It keeps its text on the
+                phone, since a bare download glyph does not say "update". */}
+            {membersRoute && updateAvailable && (
+              <Suspense fallback={null}>
+                <UpdatePill showLabel />
+              </Suspense>
+            )}
             <NotificationsBellButton />
             <div id="mobile-topbar-trail-slot" data-testid="mobile-topbar-trail-slot" className="flex items-center empty:hidden" />
           </div>
