@@ -726,10 +726,13 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
     # double-stream output or re-run a side-effecting tool. Auth/validation
     # errors are excluded by the classifier and fall through to the bare
     # error in `_on_acp_error_card` (fail-fast). On budget exhaustion the
-    # elif for this arm goes false and `_on_acp_error_card` surfaces a clean
-    # ❌ on a still-resumable session — unless CONSECUTIVE cycles exhaust
-    # this way, in which case it escalates to a session destroy (poisoned
-    # persisted conversation; see its escalation block).
+    # elif for this arm goes false and the next arm in chat_runner tries a
+    # fallback-model swap first (`_fallback_swap_for_turn` ->
+    # `_on_acp_transient_exhausted`). Only when no fallback applies does
+    # `_on_acp_error_card` surface a clean ❌ on a still-resumable session —
+    # unless CONSECUTIVE cycles exhaust this way, in which case it escalates
+    # to a session destroy (poisoned persisted conversation; see its
+    # escalation block).
     #
     # A connection failure (the network path dropped, no provider
     # answer) may run past TRANSIENT_RETRIES while the recovery window
