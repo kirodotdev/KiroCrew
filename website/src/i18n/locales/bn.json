@@ -10272,7 +10272,8 @@
       "subagents": "সাবএজেন্ট",
       "summary": "সারসংক্ষেপ",
       "workflows": "ওয়ার্কফ্লো",
-      "crewlog": "সেশন লগ"
+      "crewlog": "সেশন লগ",
+      "sessions": "সেশন"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "সব স্লট ভর্তি",
@@ -11625,7 +11626,9 @@
         "this_app_render_is_no_longer_available": "এই অ্যাপ রেন্ডার আর উপলব্ধ নেই। এটি দেখতে টুলটি আবার চালান।",
         "turn_diff": "টার্ন ডিফ",
         "menu_crewlog": "সেশন লগ",
-        "menu_crewlog_desc": "এই সেশন কী করেছে এবং কত খরচ হয়েছে: স্টেটাস, ব্যবহার, টাইমলাইন, টুল, অনুমোদন, সাবএজেন্ট"
+        "menu_crewlog_desc": "এই সেশন কী করেছে এবং কত খরচ হয়েছে: স্টেটাস, ব্যবহার, টাইমলাইন, টুল, অনুমোদন, সাবএজেন্ট",
+        "menu_sessions": "সেশন",
+        "menu_sessions_desc": "প্রতিটি সেশন, তার চালক, মডেল ও অবস্থা"
       },
       "stopEventCard": {
         "stop_declined_compacting": "স্টপ প্রত্যাখ্যান: কনটেক্সট কম্প্যাক্ট হচ্ছিল",
@@ -19085,6 +19088,24 @@
     "layoutEditorHarness": {
       "title": "লেআউট এডিটর হারনেস",
       "reset": "লেআউট রিসেট করো"
+    },
+    "panelSessions": {
+      "filter_label": "অবস্থা অনুযায়ী সেশন ছাঁকুন",
+      "filter_all": "সব",
+      "status_active": "সক্রিয়",
+      "status_blocked": "অবরুদ্ধ",
+      "status_complete": "সম্পূর্ণ",
+      "col_drive": "চালক",
+      "col_model": "মডেল",
+      "col_template": "টেমপ্লেট",
+      "action_jump": "খুলুন",
+      "action_close": "বন্ধ করো",
+      "action_stop_run": "রান থামাও",
+      "close_slot_confirm": "সেশন “{{title}}” বন্ধ করবে? এর ট্রানসক্রিপ্ট ইতিহাসে থাকবে।",
+      "close_run_confirm": "এই রান থামাবে? এটি আর চালু করা যাবে না।",
+      "close_failed": "সেশন বন্ধ করা যায়নি।",
+      "empty_title": "কোনো সেশন নেই",
+      "empty_hint": "এখানে দেখতে একটি চ্যাট বা সাবএজেন্ট শুরু করো।"
     }
   },
   "privacyDisclosure": {

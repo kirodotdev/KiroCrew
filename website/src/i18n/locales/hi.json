@@ -10272,7 +10272,8 @@
       "subagents": "सब-एजेंट",
       "summary": "सारांश",
       "workflows": "वर्कफ़्लो",
-      "crewlog": "सत्र लॉग"
+      "crewlog": "सत्र लॉग",
+      "sessions": "सत्र"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "सभी स्लॉट भरे हुए हैं",
@@ -11625,7 +11626,9 @@
         "this_app_render_is_no_longer_available": "यह ऐप रेंडर अब उपलब्ध नहीं है। इसे देखने के लिए टूल फिर से चलाएँ।",
         "turn_diff": "टर्न डिफ़",
         "menu_crewlog": "सत्र लॉग",
-        "menu_crewlog_desc": "इस सत्र ने क्या किया और कितना खर्च हुआ: स्थिति, उपयोग, समयरेखा, टूल, अनुमोदन, सबएजेंट"
+        "menu_crewlog_desc": "इस सत्र ने क्या किया और कितना खर्च हुआ: स्थिति, उपयोग, समयरेखा, टूल, अनुमोदन, सबएजेंट",
+        "menu_sessions": "सत्र",
+        "menu_sessions_desc": "प्रत्येक सत्र, उसका चालक, मॉडल और स्थिति"
       },
       "stopEventCard": {
         "stop_declined_compacting": "स्टॉप अस्वीकार: कॉन्टेक्स्ट कॉम्पैक्ट हो रहा था",
@@ -19085,6 +19088,24 @@
     "layoutEditorHarness": {
       "title": "लेआउट एडिटर हार्नेस",
       "reset": "लेआउट रीसेट करो"
+    },
+    "panelSessions": {
+      "filter_label": "स्थिति के अनुसार सत्र छाँटें",
+      "filter_all": "सभी",
+      "status_active": "सक्रिय",
+      "status_blocked": "अवरुद्ध",
+      "status_complete": "पूर्ण",
+      "col_drive": "चालक",
+      "col_model": "मॉडल",
+      "col_template": "टेम्प्लेट",
+      "action_jump": "खोलो",
+      "action_close": "बंद करो",
+      "action_stop_run": "रन रोको",
+      "close_slot_confirm": "सत्र “{{title}}” बंद करो? इसका ट्रांसक्रिप्ट इतिहास में रहेगा।",
+      "close_run_confirm": "यह रन रोको? इसे फिर से शुरू नहीं किया जा सकेगा।",
+      "close_failed": "सत्र बंद नहीं किया जा सका।",
+      "empty_title": "कोई सत्र नहीं",
+      "empty_hint": "यहाँ देखने के लिए कोई चैट या सबएजेंट शुरू करो।"
     }
   },
   "privacyDisclosure": {

@@ -10418,7 +10418,8 @@
       "subagents": "Subagentes",
       "summary": "Resumen",
       "workflows": "Flujos de trabajo",
-      "crewlog": "Registro de sesión"
+      "crewlog": "Registro de sesión",
+      "sessions": "Sesiones"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos los slots están ocupados",
@@ -11792,7 +11793,9 @@
         "this_app_render_is_no_longer_available": "Esta representación de la app ya no está disponible. Ejecuta la herramienta de nuevo para verla.",
         "turn_diff": "Diff del turno",
         "menu_crewlog": "Registro de sesión",
-        "menu_crewlog_desc": "Qué hizo esta sesión y cuánto costó: estado, consumo, cronología, herramientas, aprobaciones, subagentes"
+        "menu_crewlog_desc": "Qué hizo esta sesión y cuánto costó: estado, consumo, cronología, herramientas, aprobaciones, subagentes",
+        "menu_sessions": "Sesiones",
+        "menu_sessions_desc": "Cada sesión con su responsable, modelo y estado"
       },
       "stopEventCard": {
         "stop_declined_compacting": "Detención rechazada: el contexto se estaba compactando",
@@ -19379,6 +19382,24 @@
     "layoutEditorHarness": {
       "title": "Banco de pruebas del editor de diseño",
       "reset": "Restablecer diseño"
+    },
+    "panelSessions": {
+      "filter_label": "Filtrar sesiones por estado",
+      "filter_all": "Todas",
+      "status_active": "Activa",
+      "status_blocked": "Bloqueada",
+      "status_complete": "Completada",
+      "col_drive": "Responsable",
+      "col_model": "Modelo",
+      "col_template": "Plantilla",
+      "action_jump": "Abrir",
+      "action_close": "Cerrar",
+      "action_stop_run": "Detener ejecución",
+      "close_slot_confirm": "¿Cerrar la sesión “{{title}}”? Su transcripción queda en el historial.",
+      "close_run_confirm": "¿Detener esta ejecución? No se puede reanudar.",
+      "close_failed": "No se pudo cerrar la sesión.",
+      "empty_title": "No hay sesiones",
+      "empty_hint": "Inicia un chat o un subagente para verlo aquí."
     }
   },
   "privacyDisclosure": {

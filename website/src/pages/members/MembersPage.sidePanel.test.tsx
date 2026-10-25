@@ -1045,7 +1045,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
     )
     const menu = await screen.findByRole('menu')
-    for (const name of ['Side Chat', 'Terminal', 'Browser', 'Git', 'Subagents', 'Workflows']) {
+    for (const name of ['Side Chat', 'Terminal', 'Browser', 'Git', 'Subagents', 'Sessions', 'Workflows']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
     for (const name of ['Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center']) {

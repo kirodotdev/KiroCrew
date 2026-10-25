@@ -10126,7 +10126,8 @@
       "subagents": "サブエージェント",
       "summary": "サマリー",
       "workflows": "ワークフロー",
-      "crewlog": "セッション記録"
+      "crewlog": "セッション記録",
+      "sessions": "セッション"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "すべてのスロットが使用中です",
@@ -11458,7 +11459,9 @@
         "this_app_render_is_no_longer_available": "このアプリの表示は利用できなくなりました。もう一度ツールを実行して表示してください。",
         "turn_diff": "ターンの差分",
         "menu_crewlog": "セッション記録",
-        "menu_crewlog_desc": "このセッションの作業と消費: 状態、使用量、時系列、ツール、承認、サブエージェント"
+        "menu_crewlog_desc": "このセッションの作業と消費: 状態、使用量、時系列、ツール、承認、サブエージェント",
+        "menu_sessions": "セッション",
+        "menu_sessions_desc": "すべてのセッションと担当者、モデル、ステータス"
       },
       "stopEventCard": {
         "stop_declined_compacting": "停止は拒否されました：コンテキストの圧縮中でした",
@@ -18791,6 +18794,24 @@
     "layoutEditorHarness": {
       "title": "レイアウトエディタのハーネス",
       "reset": "レイアウトをリセット"
+    },
+    "panelSessions": {
+      "filter_label": "ステータスでセッションを絞り込む",
+      "filter_all": "すべて",
+      "status_active": "アクティブ",
+      "status_blocked": "ブロック中",
+      "status_complete": "完了",
+      "col_drive": "担当者",
+      "col_model": "モデル",
+      "col_template": "テンプレート",
+      "action_jump": "開く",
+      "action_close": "閉じる",
+      "action_stop_run": "停止",
+      "close_slot_confirm": "セッション「{{title}}」を閉じますか？トランスクリプトは履歴に残ります。",
+      "close_run_confirm": "この実行を停止しますか？再開できません。",
+      "close_failed": "セッションを閉じられませんでした。",
+      "empty_title": "セッションはありません",
+      "empty_hint": "チャットまたはサブエージェントを開始するとここに表示されます。"
     }
   },
   "privacyDisclosure": {
