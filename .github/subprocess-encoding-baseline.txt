@@ -28,8 +28,6 @@
 1 src/kiro_crew/cron_script.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/handlers_system.py
-1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/attach_backend.py
-1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py
 1 src/kiro_crew/diagnostics.py
 1 src/kiro_crew/env.py
 1 src/kiro_crew/pod/launchd.py

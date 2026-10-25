@@ -24,6 +24,7 @@ def aws(profile, region, *args):
     try:
         from kiro_crew.deploy.engine import resolve_aws_bin
         from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
+        from kiro_crew.subprocess_utf8 import UTF8_TEXT
     except ImportError:
         sys.stderr.write(
             "error: kiro_crew package not importable — refusing to spawn AWS "
@@ -44,9 +45,12 @@ def aws(profile, region, *args):
     # delivers it after exec via the spawn shim rather than in a fork child.
     # The timeout bounds an otherwise-unbounded synchronous AWS CLI call so a
     # stalled endpoint cannot hang the cleanup indefinitely.
+    # The CLI writes UTF-8 because it inherits the PYTHONUTF8=1 that
+    # ensure_utf8_console publishes; a locale decode would read that as the
+    # Windows ANSI code page.
     try:
         r = run_limited(  # noqa: S603
-            wrapped_argv, capture_output=True, text=True, env=env, timeout=300
+            wrapped_argv, capture_output=True, env=env, timeout=300, **UTF8_TEXT
         )
     except subprocess.TimeoutExpired:
         sys.stderr.write(f"error: aws command timed out after 300s: {' '.join(cmd)}\n")
