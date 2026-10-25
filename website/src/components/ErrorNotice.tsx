@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react'
+import type { AriaAttributes, ComponentType, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
@@ -9,9 +9,12 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { withOriginLink } from './withOriginLink'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
+  offline?: boolean
   title?: string
   disabled?: boolean
   'aria-describedby'?: string
+  'aria-disabled'?: AriaAttributes['aria-disabled']
+  'aria-label'?: string
   onSelect?: (event: Event) => void
   children?: ReactNode
 }>
@@ -37,6 +40,7 @@ export function ErrorNoticeMenuItem({
   describedBy,
   outcome,
   report,
+  Separator,
 }: {
   Item: ErrorNoticeMenuItemComponent
   message?: string | null
@@ -45,6 +49,11 @@ export function ErrorNoticeMenuItem({
   /** The structured report, for a host whose `message` is its own rewording
    *  and so differs from the journal entry `findReport` looks up. */
   report?: ErrorReport
+  /** A host that detaches this row from the item above it passes its menu
+   *  family's separator HERE rather than rendering one alongside: both are then
+   *  governed by the one gate below, so a gateway that drops while the menu is
+   *  open cannot leave a divider behind under a row it no longer follows. */
+  Separator?: ComponentType<{ className?: string }>
 }) {
   // Same gate as AskAgentButton, for the same reason: while the gateway is
   // unreachable the hand-off delivers the error to a composer that cannot send.
@@ -52,6 +61,8 @@ export function ErrorNoticeMenuItem({
   if (!message || !gatewayConnected) return null
 
   return (
+    <>
+    {Separator && <Separator />}
     <Item
       title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
       aria-describedby={describedBy}
@@ -69,6 +80,7 @@ export function ErrorNoticeMenuItem({
         i18nT('components.askAgent.ask_the_agent')
       )}
     </Item>
+    </>
   )
 }
 

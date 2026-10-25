@@ -37,15 +37,35 @@ const folders: ChatFolder[] = [
 
 describe('FolderMoveSubmenu', () => {
   it('mounts its trigger with the given label inside an open menu', () => {
+    store.dispatch(sseConnected())
     render(
-      <DropdownMenu open>
-        <DropdownMenuContent forceMount>
-          <FolderMoveSubmenu variant="dropdown" folders={folders} onPick={vi.fn()} label="Move to folder…" />
-        </DropdownMenuContent>
-      </DropdownMenu>,
+      <Provider store={store}>
+        <DropdownMenu open>
+          <DropdownMenuContent forceMount>
+            <FolderMoveSubmenu variant="dropdown" folders={folders} onPick={vi.fn()} label="Move to folder…" />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Provider>,
     )
     // Content is portaled to document.body — query the whole document via screen.
     expect(screen.getByText('Move to folder…')).toBeTruthy()
+  })
+
+  it('gates its trigger offline even when the caller passes no gate at all', () => {
+    // The artifacts folder menu never opted in, so gating had to stop being
+    // opt-in for that surface to be covered.
+    store.dispatch(sseDisconnected())
+    render(
+      <Provider store={store}>
+        <DropdownMenu open>
+          <DropdownMenuContent forceMount>
+            <FolderMoveSubmenu variant="dropdown" folders={folders} onPick={vi.fn()} label="Move to folder…" />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Provider>,
+    )
+    const trigger = screen.getByText('Move to folder…').closest('[role="menuitem"]') as HTMLElement
+    expect(trigger.getAttribute('aria-disabled')).toBe('true')
   })
 })
 
@@ -55,6 +75,7 @@ describe('FolderMoveSubmenu', () => {
 // the SAME store, so the test wraps renderHook in a Provider over that very
 // singleton (matching how the real app is wired) and seeds it per test.
 import { store } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 
