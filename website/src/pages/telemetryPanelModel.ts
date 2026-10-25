@@ -105,24 +105,14 @@ export type CostRow = {
   /** Present on folder rows only: folder names are not unique, the id is. */
   folder_id?: string
   /**
-   * Unfiled folder row only: how much of it comes from sessions past the
-   * backend's per-session tracking limit, counted there but not sorted by
-   * folder. Credits and turns travel together and are absent when nothing was
-   * capped; either can be 0 (a token-only provider bills turns, no credits).
+   * Unfiled folder row only: how much of it comes from sessions the backend
+   * does not track one by one (past its per-session limit, or with an ID too
+   * long to keep), counted there but not sorted by folder. Credits and turns
+   * travel together and are absent when there are none; either can be 0 (a
+   * token-only provider bills turns, no credits).
    */
-  capped_credits?: number
-  capped_turns?: number
-  /**
-   * Sent with `capped_credits`: the backend's per-session tracking limit those
-   * credits were cut at, so the note names the real number.
-   */
-  capped_limit?: number
-  /**
-   * Unfiled folder row only: how much of it comes from sessions whose ID is too
-   * long for the backend to track, whatever the session count. Absent when none.
-   */
-  long_key_credits?: number
-  long_key_turns?: number
+  unsorted_credits?: number
+  unsorted_turns?: number
   credits: number
   turns: number
   per_turn: number

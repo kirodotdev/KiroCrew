@@ -607,8 +607,8 @@ export function SpendTab({ c }: { c: Cost }) {
   // causes: neither is something the user can act on, so the line says what
   // happened and the Folder tip says why.
   const unfiled = folderRows.find(r => r.folder_id === '')
-  const unsortedCredits = (unfiled?.capped_credits ?? 0) + (unfiled?.long_key_credits ?? 0)
-  const unsortedTurns = (unfiled?.capped_turns ?? 0) + (unfiled?.long_key_turns ?? 0)
+  const unsortedCredits = unfiled?.unsorted_credits ?? 0
+  const unsortedTurns = unfiled?.unsorted_turns ?? 0
   // One line per sentence. The direct-filing rule is the one that changes how
   // the bars read, so it keeps body colour rather than the muted caption face.
   const folderNote = (

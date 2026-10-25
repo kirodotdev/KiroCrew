@@ -264,34 +264,13 @@ def test_cost_breakdown_reports_every_sessions_spend_for_both_periods(tmp_path, 
     assert spend["prior"] == {"chat-1-1": 2.0, "chat-2-2": 3.0}
 
 
-def _two_pass(rows: list[tuple[str, float, bool]]) -> dict:
-    """Run *rows* ``(key, credits, prior)`` through both passes, as cost_breakdown does."""
-    chooser = usage_mod._SlotSpend()
-    for key, credits, prior in rows:
-        chooser.add(key, credits, prior=prior)
-    exact = usage_mod._ExactSlotSpend(chooser.kept())
-    for key, credits, prior in rows:
-        exact.add(key, credits, prior=prior)
-    return exact.result()
-
-
 def _spend(current: dict, prior: dict | None = None) -> dict:
-    """Feed whole-session totals through both passes, current period first.
-
-    A session's turns arrive as that many rows: the first carries its credits,
-    the rest carry none, so the sums stay exact in binary floating point.
-    """
-    rows: list[tuple[str, float, bool]] = []
-    for key, v in current.items():
-        for i in range(int(v["turns"])):
-            rows.append((key, float(v["credits"]) if i == 0 else 0.0, False))
-    for key, credits in (prior or {}).items():
-        rows.append((key, float(credits), True))
-    return _two_pass(rows)
+    """Cut whole-session totals down the way ``cost_breakdown`` does."""
+    return usage_mod._slot_spend({k: dict(v) for k, v in current.items()}, dict(prior or {}))
 
 
 def test_slot_spend_is_capped_and_the_tail_is_summed(monkeypatch):
-    # The map rides the memoised payload, so it needs a count bound; the folded
+    # The map rides the memoised payload, so it needs a count bound; the cut
     # tail must still be counted so the folder rows add up to the total.
     monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 2)
     out = _spend(
@@ -305,36 +284,26 @@ def test_slot_spend_is_capped_and_the_tail_is_summed(monkeypatch):
     )
     assert set(out["current"]) == {"a", "b"}
     assert set(out["prior"]) == {"a", "b"}
-    # No session count: with eviction a key can leave and come back, so a count
-    # could name one session twice. The credits are exact either way.
-    assert out["overflow"] == {"credits": 3.0, "turns": 7, "prior_credits": 2.0}
+    assert out["unsorted"] == {"credits": 3.0, "turns": 7, "prior_credits": 2.0}
 
 
-def test_the_accumulator_never_holds_more_than_twice_the_cap(monkeypatch):
-    # The bound applies while the shards are read, not after: a store with a
-    # million distinct session keys must not build a million-entry map first.
-    monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 3)
-    acc = usage_mod._SlotSpend()
-    peak = 0
-    for i in range(500):
-        acc.add(f"chat-{i}-1", float(i % 17), prior=bool(i % 3 == 0))
-        peak = max(peak, len(acc))
-    assert peak <= 6
-    assert len(acc.kept()) <= 3
+def test_the_no_slot_row_is_kept_outside_the_cap(monkeypatch):
+    # Spend with no slot is Unfiled whatever happens, so it never takes one of
+    # the capped places or lands in the "could not sort" remainder.
+    monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 1)
+    out = _spend(
+        {"": {"credits": 1.0, "turns": 1}, "a": {"credits": 9.0, "turns": 1}},
+        {"": 2.0},
+    )
+    assert set(out["current"]) == {"", "a"}
+    assert out["prior"] == {"": 2.0}
+    assert out["unsorted"] == {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
 
 
-def test_cost_breakdown_bounds_the_slot_map_while_reading(tmp_path, monkeypatch):
-    # The production path, not only the class: every row of a 200-session shard
-    # goes through one accumulator whose size never passes twice the cap.
+def test_cost_breakdown_caps_the_slot_map_and_sums_the_rest(tmp_path, monkeypatch):
+    # The production path: 200 sessions, a cap of 4, and kept plus the
+    # remainder is every credit in both periods.
     monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 4)
-    peaks: list[int] = []
-
-    class Watched(usage_mod._SlotSpend):
-        def add(self, key: str, credits: float, *, prior: bool = False) -> None:
-            super().add(key, credits, prior=prior)
-            peaks.append(len(self))
-
-    monkeypatch.setattr(usage_mod, "_SlotSpend", Watched)
     now = datetime.now(timezone.utc)
     shard = tmp_path / "shard.jsonl"
     shard.write_text(
@@ -357,44 +326,29 @@ def test_cost_breakdown_bounds_the_slot_map_while_reading(tmp_path, monkeypatch)
     monkeypatch.setattr(usage_mod, "_COST_CACHE", None)
     monkeypatch.setattr(usage_mod, "_COST_CACHE_KEY", None)
     cost = usage_mod.cost_breakdown(7)
-    assert peaks and max(peaks) <= 8
     spend = cost["slot_spend"]
-    assert "sessions" not in spend["overflow"]
+    assert len({*spend["current"], *spend["prior"]}) <= 4
+    assert "sessions" not in spend["unsorted"]
     kept_cur = sum(v["credits"] for v in spend["current"].values())
     kept_prior = sum(spend["prior"].values())
-    assert kept_cur + spend["overflow"]["credits"] == pytest.approx(cost["credits"])
-    assert kept_prior + spend["overflow"]["prior_credits"] == pytest.approx(cost["prior_credits"])
+    assert kept_cur + spend["unsorted"]["credits"] == pytest.approx(cost["credits"])
+    assert kept_prior + spend["unsorted"]["prior_credits"] == pytest.approx(cost["prior_credits"])
 
 
-def test_totals_stay_exact_across_eviction_and_returning_keys(monkeypatch):
-    # Evicted keys come back later in the stream (the same session in a later
-    # shard). The first pass keeps them by their partial rank, the second sums
-    # every row exactly, so kept + overflow is every credit and every turn.
-    monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 2)
-    chooser = usage_mod._SlotSpend()
-    rows: list[tuple[str, float, bool]] = []
-    cur_total = prior_total = 0.0
-    turns = 0
-    for i in range(300):
-        key = f"k{(i * 7) % 23}"
-        credits = float((i * 13) % 11)
-        prior = i % 4 == 0
-        rows.append((key, credits, prior))
-        chooser.add(key, credits, prior=prior)
-        if prior:
-            prior_total += credits
-        else:
-            cur_total += credits
-            turns += 1
-        assert len(chooser) <= 4
-    out = _two_pass(rows)
-    assert sum(v["credits"] for v in out["current"].values()) + out["overflow"][
-        "credits"
-    ] == pytest.approx(cur_total)
-    assert sum(int(v["turns"]) for v in out["current"].values()) + out["overflow"]["turns"] == turns
-    assert sum(out["prior"].values()) + out["overflow"]["prior_credits"] == pytest.approx(
-        prior_total
-    )
+def test_cost_breakdown_sums_each_shard_in_one_pass(tmp_path, monkeypatch):
+    # The billing-unit probe opens the shard first; the per-session spend then
+    # comes from the same pass as every other figure, with no read of its own.
+    shard = _write_shard(tmp_path, [_token_row("chat-1-1", 1.0, 0)], monkeypatch)
+    opened: list[Any] = []
+    real = usage_mod.bounded_records
+
+    def counting(fh, path, **kw):
+        opened.append(path)
+        return real(fh, path, **kw)
+
+    monkeypatch.setattr(usage_mod, "bounded_records", counting)
+    usage_mod.cost_breakdown(7)
+    assert opened == [shard, shard]
 
 
 def test_slot_spend_keeps_the_transcript_each_kept_session_recorded(tmp_path, monkeypatch):
@@ -417,62 +371,75 @@ def test_slot_spend_keeps_the_transcript_each_kept_session_recorded(tmp_path, mo
     }
 
 
-def test_kept_set_is_the_top_cap_when_no_evicted_key_returns(monkeypatch):
-    # Each key's spend arrives in one row, so an evicted key never returns, and
-    # the kept set must be exactly what ranking the whole population would keep.
+def test_kept_set_is_the_exact_top_cap(monkeypatch):
     monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 5)
-    rows = [(f"s{i:03d}", float((i * 37) % 101), i % 5 == 0) for i in range(120)]
-    out = _two_pass(rows)
+    current = {f"s{i:03d}": {"credits": float((i * 37) % 101), "turns": 1} for i in range(120)}
+    prior = {f"p{i:03d}": float(i) for i in range(30)}
+    out = _spend(current, prior)
 
-    def rank(row: tuple[str, float, bool]) -> tuple[float, float, str]:
-        key, credits, prior = row
-        return (0.0 if prior else -credits, -credits if prior else 0.0, key)
+    def rank(key: str) -> tuple[float, float, str]:
+        return (-current[key]["credits"] if key in current else 0.0, -prior.get(key, 0.0), key)
 
-    want = {key for key, _, _ in sorted(rows, key=rank)[:5]}
+    want = set(sorted({*current, *prior}, key=rank)[:5])
     assert {*out["current"], *out["prior"]} == want
 
 
 @pytest.mark.asyncio
-async def test_capped_spend_lands_in_unfiled_with_its_credits():
+async def test_unsorted_spend_lands_in_unfiled_with_its_credits():
     slots = {"chat-1-1": SimpleNamespace(folder_id="f-dev")}
     payload = _cost({"chat-1-1": {"credits": 10.0, "turns": 1}}, {"chat-1-1": 5.0})
-    payload["slot_spend"]["overflow"] = {"credits": 4.0, "turns": 2, "prior_credits": 1.0}
+    payload["slot_spend"]["unsorted"] = {"credits": 4.0, "turns": 2, "prior_credits": 1.0}
     out = await _with_folder_spend(_request(slots), payload)
     rows = _by_id(out)
     assert rows[""]["credits"] == 4.0
     assert rows[""]["turns"] == 2
     assert rows[""]["delta_pct"] == 300.0
-    # The Unfiled row says how many of its credits are the capped tail, which
-    # the panel renders; a filed row never carries it, and no session count
-    # rides along any more.
-    assert rows[""]["capped_credits"] == 4.0
-    assert "capped_credits" not in rows["f-dev"]
-    assert "capped_sessions" not in rows[""]
+    # The Unfiled row says how much of it is the unsorted tail, which the panel
+    # renders; a filed row never carries it, nor a session count or the cap.
+    assert (rows[""]["unsorted_credits"], rows[""]["unsorted_turns"]) == (4.0, 2)
+    assert "unsorted_credits" not in rows["f-dev"]
+    assert "capped_limit" not in rows[""]
     assert sum(r["credits"] for r in out["by_folder"]) == 14.0
 
 
 @pytest.mark.asyncio
-async def test_zero_credit_capped_sessions_keep_their_turns():
-    # A token- or cost-only provider bills no credits, so a capped tail can be
-    # all turns and no credits. Its turns must still reach Unfiled, and the
-    # disclosure names them (see test_zero_credit_capped_turns_are_disclosed).
+async def test_dollar_amounts_keep_their_cents():
+    # A dollar-billed harness (``unit: usd``) rounds to four places, as
+    # ``cost_breakdown`` does; one decimal would show $0.0123 as $0.0.
+    slots = {"chat-1-1": SimpleNamespace(folder_id="f-dev")}
+    payload = _cost({"chat-1-1": {"credits": 0.0123, "turns": 1}}, {"chat-1-1": 0.0061})
+    payload["unit"] = "usd"
+    payload["slot_spend"]["unsorted"] = {"credits": 0.0042, "turns": 1, "prior_credits": 0.0}
+    rows = _by_id(await _with_folder_spend(_request(slots), payload))
+    assert rows["f-dev"]["credits"] == 0.0123
+    assert rows["f-dev"]["per_turn"] == 0.0123
+    assert rows[""]["unsorted_credits"] == 0.0042
+    # Credits keep one decimal.
+    payload["unit"] = "credits"
+    assert _by_id(await _with_folder_spend(_request(slots), payload))["f-dev"]["credits"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_zero_credit_unsorted_turns_are_disclosed():
+    # A token- or cost-only provider bills no credits, so the tail can be all
+    # turns. Its turns must still reach Unfiled, and the disclosure names them.
     slots = {"chat-1-1": SimpleNamespace(folder_id="f-dev")}
     payload = _cost({"chat-1-1": {"credits": 10.0, "turns": 1}})
-    payload["slot_spend"]["overflow"] = {"credits": 0.0, "turns": 5, "prior_credits": 0.0}
+    payload["slot_spend"]["unsorted"] = {"credits": 0.0, "turns": 5, "prior_credits": 0.0}
     out = await _with_folder_spend(_request(slots), payload)
     rows = _by_id(out)
     assert rows[""]["turns"] == 5
     assert rows[""]["credits"] == 0.0
-    assert rows[""]["capped_turns"] == 5
+    assert (rows[""]["unsorted_credits"], rows[""]["unsorted_turns"]) == (0.0, 5)
 
 
 @pytest.mark.asyncio
-async def test_an_uncapped_window_carries_no_capped_credits():
+async def test_an_uncapped_window_carries_no_unsorted_figures():
     slots = {"chat-1-1": SimpleNamespace(folder_id="")}
     payload = _cost({"chat-1-1": {"credits": 10.0, "turns": 1}})
-    payload["slot_spend"]["overflow"] = {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
+    payload["slot_spend"]["unsorted"] = {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
     out = await _with_folder_spend(_request(slots), payload)
-    assert "capped_credits" not in _by_id(out)[""]
+    assert "unsorted_credits" not in _by_id(out)[""]
     assert [r["folder_id"] for r in out["by_folder"]] == [""]
 
 
@@ -763,22 +730,17 @@ def test_both_periods_are_capped_on_one_key_set(monkeypatch):
     )
     assert set(out["current"]) == {"a", "b"}
     assert out["prior"] == {"a": 1.0}
-    assert out["overflow"]["prior_credits"] == 150.0
-    assert out["overflow"]["credits"] == 0.0
-    assert "sessions" not in out["overflow"]
+    assert out["unsorted"] == {"credits": 0.0, "turns": 0, "prior_credits": 150.0}
 
 
 def test_over_long_session_keys_are_counted_not_retained():
-    # The count cap bounds memory only if every retained key is bounded too: an
-    # API-supplied slot name of any length would otherwise ride the memoised
-    # payload. An over-long key is never admitted, not even transiently: its
-    # spend is summed on its own (``over_long``), in both periods.
+    # The count cap bounds the cache only if every retained key is bounded too:
+    # an API-supplied slot name of any length would otherwise ride the memoised
+    # payload. An over-long key is never kept: its spend is summed into
+    # ``unsorted``, in both periods.
     limit = usage_mod._COST_SLOT_KEY_MAX_CHARS
     huge = "chat-" + "x" * (limit * 4)
     edge = "c" * limit
-    acc = usage_mod._SlotSpend()
-    acc.add(huge, 7.0)
-    assert len(acc) == 0
     out = _spend(
         {
             huge: {"credits": 7.0, "turns": 3},
@@ -790,7 +752,7 @@ def test_over_long_session_keys_are_counted_not_retained():
     assert set(out["current"]) == {edge, "chat-1-1"}
     assert out["prior"] == {"chat-1-1": 1.5}
     assert all(len(k) <= limit for k in (*out["current"], *out["prior"]))
-    assert out["over_long"] == {"credits": 7.0, "turns": 3, "prior_credits": 4.0}
+    assert out["unsorted"] == {"credits": 7.0, "turns": 3, "prior_credits": 4.0}
 
 
 def test_prior_only_sessions_rank_after_current_spenders(monkeypatch):
@@ -801,7 +763,7 @@ def test_prior_only_sessions_rank_after_current_spenders(monkeypatch):
     )
     assert set(out["current"]) == {"a"}
     assert out["prior"] == {"d": 50.0, "c": 2.0}
-    assert out["overflow"]["prior_credits"] == 0.5
+    assert out["unsorted"]["prior_credits"] == 0.5
 
 
 # ── Closed-transcript reads are memoised per cost payload ──────────────────
@@ -833,7 +795,7 @@ async def test_closed_transcript_reads_once_per_cost_payload(tmp_path):
     assert len(calls) == 2
 
 
-# ── Kept keys are chosen first, then aggregated exactly ────────────────────
+# ── Per-session spend from the single pass ─────────────────────────────────
 
 
 def _token_row(slot: str, credits: float, age_days: float) -> dict:
@@ -855,13 +817,13 @@ def _write_shard(tmp_path, rows: list[dict], monkeypatch):
     return shard
 
 
-def test_a_returning_sessions_prior_spend_survives_eviction(tmp_path, monkeypatch):
-    # The session's prior row is read first, then 10,001 other keys force a
-    # fold that evicts it (it has no current spend yet), then its current rows
-    # arrive and it ends among the kept. Its prior credits must come with it,
-    # or its folder shows this week's spend as "new" while last week's sits in
-    # Unfiled. Real cap, so the fold happens exactly where production's does.
-    others = 2 * usage_mod._COST_SLOT_SPEND_CAP + 1
+def test_a_kept_sessions_prior_spend_comes_with_it(tmp_path, monkeypatch):
+    # The session's prior row is read first, then many other sessions, then
+    # its current rows, and it ends among the kept. Its prior credits must come
+    # with it, or its folder shows this week's spend as "new" while last week's
+    # sits in Unfiled.
+    monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 3)
+    others = 20
     rows = [_token_row("chat-x-1", 3.0, 9)]
     rows += [_token_row(f"chat-{i}-1", 1.0, 0) for i in range(others)]
     rows += [_token_row("chat-x-1", 50.0, 0), _token_row("chat-x-1", 0.0, 0)]
@@ -871,162 +833,14 @@ def test_a_returning_sessions_prior_spend_survives_eviction(tmp_path, monkeypatc
     spend = cost["slot_spend"]
     assert spend["current"]["chat-x-1"] == {"credits": 50.0, "turns": 2}
     assert spend["prior"] == {"chat-x-1": 3.0}
-    assert len({*spend["current"], *spend["prior"]}) == usage_mod._COST_SLOT_SPEND_CAP
-    # The overflow holds only the other sessions past the cap, none of X's.
-    assert spend["overflow"]["prior_credits"] == 0.0
-    kept_others = len(spend["current"]) - 1
-    assert spend["overflow"]["credits"] == pytest.approx(float(others - kept_others))
-    assert spend["overflow"]["turns"] == others - kept_others
-    assert sum(v["credits"] for v in spend["current"].values()) + spend["overflow"][
+    assert len({*spend["current"], *spend["prior"]}) == 3
+    # The remainder holds only the other sessions past the cap, none of X's.
+    assert spend["unsorted"]["prior_credits"] == 0.0
+    assert spend["unsorted"]["credits"] == pytest.approx(float(others - 2))
+    assert spend["unsorted"]["turns"] == others - 2
+    assert sum(v["credits"] for v in spend["current"].values()) + spend["unsorted"][
         "credits"
     ] == pytest.approx(cost["credits"])
-
-
-def test_the_exact_pass_holds_only_the_kept_keys(tmp_path, monkeypatch):
-    # Pass 2 accumulates exact spend for the kept keys only; every other row
-    # goes straight to the overflow, so its map is bounded by the kept set.
-    monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 4)
-    seen: dict[str, int] = {"kept": 0, "peak": 0}
-
-    class Watched(usage_mod._ExactSlotSpend):
-        def __init__(self, kept) -> None:
-            super().__init__(kept)
-            seen["kept"] = len(kept)
-
-        def add(self, key: str, credits: float, *, prior: bool = False) -> None:
-            super().add(key, credits, prior=prior)
-            seen["peak"] = max(seen["peak"], len(self))
-
-    monkeypatch.setattr(usage_mod, "_ExactSlotSpend", Watched)
-    _write_shard(
-        tmp_path,
-        [_token_row(f"chat-{i}-1", 1.0 + i, 0 if i % 2 else 9) for i in range(200)],
-        monkeypatch,
-    )
-    usage_mod.cost_breakdown(7)
-    assert 0 < seen["kept"] <= 4
-    assert seen["peak"] <= seen["kept"]
-
-
-def test_rows_appended_between_the_passes_are_not_counted(tmp_path, monkeypatch):
-    # The exact pass re-reads only the bytes the first pass read, so a turn
-    # persisted in between cannot reach the kept spend or the overflow without
-    # also being in the totals.
-    monkeypatch.setattr(usage_mod, "_COST_SLOT_SPEND_CAP", 2)
-    shard = _write_shard(
-        tmp_path, [_token_row(f"chat-{i}-1", 1.0 + i, 0) for i in range(6)], monkeypatch
-    )
-    real = usage_mod._ExactSlotSpend
-
-    class Appending(real):  # type: ignore[misc, valid-type]
-        def __init__(self, kept) -> None:
-            super().__init__(kept)
-            with shard.open("a", encoding="utf-8") as fh:
-                for key in (*kept, "chat-99-1"):
-                    fh.write(json.dumps(_token_row(key, 100.0, 0)) + "\n")
-
-    monkeypatch.setattr(usage_mod, "_ExactSlotSpend", Appending)
-    cost = usage_mod.cost_breakdown(7)
-    spend = cost["slot_spend"]
-    assert sum(v["credits"] for v in spend["current"].values()) + spend["overflow"][
-        "credits"
-    ] == pytest.approx(cost["credits"])
-    assert cost["credits"] == pytest.approx(21.0)
-
-
-@pytest.mark.asyncio
-async def test_the_unfiled_row_carries_the_cap_it_was_capped_at():
-    # The panel names the limit; the backend owns it, so it rides the payload
-    # next to the capped credits rather than being baked into the copy.
-    payload = _cost({"chat-1-1": {"credits": 10.0, "turns": 1}})
-    payload["slot_spend"]["overflow"] = {"credits": 4.0, "turns": 2, "prior_credits": 0.0}
-    out = await _with_folder_spend(_request({}), payload)
-    assert _by_id(out)[""]["capped_limit"] == usage_mod._COST_SLOT_SPEND_CAP
-    payload["slot_spend"]["overflow"] = {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
-    out = await _with_folder_spend(_request({}), payload)
-    assert "capped_limit" not in _by_id(out)[""]
-
-
-# ── What Unfiled absorbs from overflow is disclosed whole, per cause ────────
-#
-# One disclosure model: every row Unfiled takes in from outside the kept set is
-# reported on the Unfiled row by cause, credits AND turns, whenever either is
-# non-zero. The two causes are the count cap (``capped_*``, with the cap as
-# ``capped_limit``) and a session key too long to retain (``long_key_*``).
-
-
-def _with_overflow(capped=None, long_key=None) -> dict:
-    payload = _cost({"chat-1-1": {"credits": 10.0, "turns": 1}})
-    zero = {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
-    payload["slot_spend"]["overflow"] = capped or dict(zero)
-    payload["slot_spend"]["over_long"] = long_key or dict(zero)
-    return payload
-
-
-@pytest.mark.asyncio
-async def test_zero_credit_capped_turns_are_disclosed():
-    # A token- or cost-only provider bills turns with no credits. Those turns
-    # are in Unfiled, so the disclosure must name them even with 0 credits.
-    payload = _with_overflow(capped={"credits": 0.0, "turns": 5, "prior_credits": 0.0})
-    row = _by_id(await _with_folder_spend(_request({}), payload))[""]
-    assert row["capped_turns"] == 5
-    assert row["capped_credits"] == 0.0
-    assert row["capped_limit"] == usage_mod._COST_SLOT_SPEND_CAP
-
-
-@pytest.mark.asyncio
-async def test_the_capped_disclosure_carries_credits_and_turns():
-    # Only the overflow's own turns: the Unfiled sessions that are simply in no
-    # folder are not part of the capped figure.
-    payload = _with_overflow(capped={"credits": 4.0, "turns": 2, "prior_credits": 0.0})
-    row = _by_id(await _with_folder_spend(_request({}), payload))[""]
-    assert row["turns"] == 3
-    assert (row["capped_credits"], row["capped_turns"]) == (4.0, 2)
-    assert "long_key_credits" not in row and "long_key_turns" not in row
-
-
-def test_over_long_keys_are_kept_apart_from_the_count_cap():
-    # An over-long key is not "beyond the cap": the window can hold one session
-    # and still meet one. Its spend is summed on its own, never in the overflow.
-    huge = "chat-" + "x" * (usage_mod._COST_SLOT_KEY_MAX_CHARS * 2)
-    out = _spend(
-        {huge: {"credits": 7.0, "turns": 3}, "chat-1-1": {"credits": 2.0, "turns": 1}},
-        {huge: 4.0},
-    )
-    assert out["overflow"] == {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
-    assert out["over_long"] == {"credits": 7.0, "turns": 3, "prior_credits": 4.0}
-
-
-@pytest.mark.asyncio
-async def test_over_long_key_spend_is_disclosed_without_the_cap():
-    payload = _with_overflow(long_key={"credits": 2.0, "turns": 3, "prior_credits": 1.0})
-    rows = _by_id(await _with_folder_spend(_request({}), payload))
-    row = rows[""]
-    assert (row["long_key_credits"], row["long_key_turns"]) == (2.0, 3)
-    for key in ("capped_credits", "capped_turns", "capped_limit"):
-        assert key not in row
-    # Counted in Unfiled in both periods, so the rows still add up.
-    assert row["credits"] == 12.0 and row["turns"] == 4
-    assert row["delta_pct"] == 1100.0
-
-
-@pytest.mark.asyncio
-async def test_zero_credit_over_long_turns_are_disclosed():
-    payload = _with_overflow(long_key={"credits": 0.0, "turns": 2, "prior_credits": 0.0})
-    row = _by_id(await _with_folder_spend(_request({}), payload))[""]
-    assert (row["long_key_credits"], row["long_key_turns"]) == (0.0, 2)
-
-
-@pytest.mark.asyncio
-async def test_both_overflow_causes_are_disclosed_separately():
-    payload = _with_overflow(
-        capped={"credits": 4.0, "turns": 2, "prior_credits": 0.0},
-        long_key={"credits": 1.0, "turns": 1, "prior_credits": 0.0},
-    )
-    row = _by_id(await _with_folder_spend(_request({}), payload))[""]
-    assert (row["capped_credits"], row["capped_turns"]) == (4.0, 2)
-    assert (row["long_key_credits"], row["long_key_turns"]) == (1.0, 1)
-    assert row["credits"] == 15.0
 
 
 def test_a_dollar_billed_window_hands_its_dollars_to_the_folder_roll_up(tmp_path, monkeypatch):
@@ -1053,7 +867,7 @@ def test_a_dollar_billed_window_hands_its_dollars_to_the_folder_roll_up(tmp_path
     assert spend["prior"] == {"chat-a-1": 0.5}
 
 
-def test_cost_breakdown_reports_over_long_spend_apart(tmp_path, monkeypatch):
+def test_cost_breakdown_counts_over_long_spend_as_unsorted(tmp_path, monkeypatch):
     huge = "chat-" + "y" * (usage_mod._COST_SLOT_KEY_MAX_CHARS * 2)
     _write_shard(
         tmp_path,
@@ -1062,8 +876,7 @@ def test_cost_breakdown_reports_over_long_spend_apart(tmp_path, monkeypatch):
     )
     cost = usage_mod.cost_breakdown(7)
     spend = cost["slot_spend"]
-    assert spend["over_long"] == {"credits": 5.0, "turns": 1, "prior_credits": 2.0}
-    assert spend["overflow"] == {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
+    assert spend["unsorted"] == {"credits": 5.0, "turns": 1, "prior_credits": 2.0}
     assert spend["current"] == {"chat-1-1": {"credits": 1.0, "turns": 1}}
 
 

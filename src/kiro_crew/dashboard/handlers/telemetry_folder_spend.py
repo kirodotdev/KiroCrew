@@ -18,11 +18,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key, usage_transcript_keys
 from kiro_crew.dashboard.folder_repository import FolderRepository
-from kiro_crew.dashboard.handlers.usage import (
-    _COST_SLOT_SPEND_CAP,
-    rank_spend,
-    spend_key_for_slot,
-)
+from kiro_crew.dashboard.handlers.usage import rank_spend, spend_key_for_slot
 
 logger = logging.getLogger(__name__)
 
@@ -257,9 +253,8 @@ async def _with_folder_spend(request: web.Request, cost: dict[str, Any]) -> dict
     rows add up to the window total.
     Sessions past ``cost_breakdown``'s per-session cap, or with a key longer
     than its key bound, also land in Unfiled. The Unfiled row says how much of
-    it came from each, credits and turns: ``capped_credits`` / ``capped_turns``
-    (with ``capped_limit``, the cap) and ``long_key_credits`` /
-    ``long_key_turns``, each pair present only when that cause has any.
+    it came from those, as ``unsorted_credits`` / ``unsorted_turns``, present
+    only when there is any.
     A live slot is found by its name, by the live session registry
     (``spend_slot_by_session``) or by the tab that displays the key. For a
     per-run cron key, these lookups first exclude the job tab. The run's own
@@ -346,30 +341,25 @@ async def _with_folder_spend(request: web.Request, cost: dict[str, Any]) -> dict
     for slot_key, credits in prior.items():
         fid = _folder(slot_key)
         deltas[fid] = deltas.get(fid, 0.0) + float(credits or 0.0)
-    # What Unfiled takes in from outside the kept set, by cause: sessions past
-    # ``cost_breakdown``'s per-session cap (``overflow``) and sessions whose key
-    # is too long to retain (``over_long``). Counted in Unfiled, not attributed.
-    # One disclosure model for both: the Unfiled row carries each cause's exact
-    # credits AND turns whenever either is non-zero, so a token- or cost-only
-    # provider's zero-credit turns are named too, and the panel names each
-    # cause only when it is present. No session count: the accumulator evicts
-    # while it reads, and a session evicted and seen again would count twice.
-    for source, prefix in (("overflow", "capped"), ("over_long", "long_key")):
-        tail = slot_spend.get(source) or {}
-        tail_credits = float(tail.get("credits") or 0.0)
-        tail_turns = int(tail.get("turns") or 0)
-        if tail_credits > 0 or tail_turns:
-            row = bucket.setdefault("", {"name": "", "folder_id": "", "credits": 0.0, "turns": 0})
-            row["credits"] = float(row["credits"]) + tail_credits
-            row["turns"] = int(row["turns"]) + tail_turns
-            row[f"{prefix}_credits"] = round(tail_credits, 1)
-            row[f"{prefix}_turns"] = tail_turns
-            if prefix == "capped":
-                # The cap the tail was cut at, so the panel names the real
-                # limit instead of a number baked into its copy.
-                row["capped_limit"] = _COST_SLOT_SPEND_CAP
-        if float(tail.get("prior_credits") or 0.0) > 0:
-            deltas[""] = deltas.get("", 0.0) + float(tail["prior_credits"])
+    # What Unfiled takes in from outside the kept set (``unsorted``): sessions
+    # past ``cost_breakdown``'s per-session cap, or whose key is too long to
+    # retain. Counted in Unfiled, not attributed. The Unfiled row carries its
+    # exact credits AND turns whenever either is non-zero, so a token- or
+    # cost-only provider's zero-credit turns are named too.
+    tail = slot_spend.get("unsorted") or {}
+    tail_credits = float(tail.get("credits") or 0.0)
+    tail_turns = int(tail.get("turns") or 0)
+    # Amounts round as ``cost_breakdown`` rounds its own: credits to one
+    # decimal, dollars (``unit: usd``) to four.
+    places = 4 if cost.get("unit") == "usd" else 1
+    if tail_credits > 0 or tail_turns:
+        row = bucket.setdefault("", {"name": "", "folder_id": "", "credits": 0.0, "turns": 0})
+        row["credits"] = float(row["credits"]) + tail_credits
+        row["turns"] = int(row["turns"]) + tail_turns
+        row["unsorted_credits"] = round(tail_credits, places)
+        row["unsorted_turns"] = tail_turns
+    if float(tail.get("prior_credits") or 0.0) > 0:
+        deltas[""] = deltas.get("", 0.0) + float(tail["prior_credits"])
     total = sum(float(e["credits"]) for e in bucket.values())
     out["by_folder"] = rank_spend(bucket, deltas, total, places)
     return out
