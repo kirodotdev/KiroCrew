@@ -4497,6 +4497,27 @@ declares. A user app, a shadowed builtin, or a builtin app that ships its own
 binary is not Kiro Crew's code and gets no element. gatewayd's set stays the
 managed servers: a pooled app server is not handed the token.
 
+A server that is NOT Kiro Crew's code can opt into a much smaller grant: a session
+LABEL, never the token (`acp/session_label.py`). Its `mcpServers` entry carries
+`"x-kirocrew-session-label": true` (an app manifest's entry reaches the spec
+verbatim, so an app declares it there), and the server receives
+`KIROCREW_SESSION_LABEL` set to the session key, which the dashboard already shows
+in its URL. The name is deliberately not `KIROCREW_SESSION_KEY`, a rung of
+`mcp_caller.resolve_own_identity`, so the label is readable as a name and as
+nothing else. On kiro the label rides a per-session element built by
+`kiro_session_label_elements` and appended by `AcpRuntime._session_label_elements`
+AFTER `_own_stub_session`, because that method stamps the token onto every element
+it is handed; the element re-declares the entry's own `command`, `args` and `env`,
+and a declaration it cannot reproduce (anything `native_mount_withholding` names,
+an `autoApprove`, an env value holding `${NAME}` or `secret://`) stays native and
+unlabelled. On KAS `_project_mcp_servers` adds the one value to the projected entry
+after the credential strip and drops the marker from the wire. A session with no
+key yet (a warm-pool session) and a broker-pooled server get no label: a value
+baked into a process at start cannot follow a rekey, so absent is the only answer
+that is never wrong. Publishing the pid mapping earlier would not do it either: on
+the shared runtime one pid hosts several sessions, and the resolver refuses a
+mapping with more than one tenant.
+
 `register_hook` resolves through `require_strict_session_key`. Member hooks
 capture their originating execution record before provider allocation; Global
 hooks retain their existing no-conversation behavior. Hook context and display
