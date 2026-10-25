@@ -22,6 +22,7 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     AcpError,
     LLMEvent,
@@ -121,6 +122,7 @@ async def stream_and_collect(
     on_compaction: Callable[[LLMEvent], None] | None = None,
     on_tool_gate: Callable[[str, bool, bool, str], None] | None = None,
     on_tool_call: Callable[[LLMEvent, bool], None] | None = None,
+    on_tool_call_update: Callable[[LLMEvent], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -205,6 +207,11 @@ async def stream_and_collect(
             callback sees at most the refusals of such an attempt twice. Every
             text field on the event is LLM-authored: redact before display.
             Raising from the callback is swallowed.
+        on_tool_call_update: Optional callback invoked LIVE with each
+            ``EVENT_TOOL_CALL_UPDATE``: a refinement of a call already reported,
+            keyed by its ``tool_call_id`` (claude announces a call with an empty
+            input and a generic title, and the update fills them in). LLM-authored
+            like the above; raising from the callback is swallowed.
         retry_transient: When True (default), transient backend errors are
             retried in-place with bounded backoff. Set False from callers that
             already own an outer transient-retry loop, so the inner arm doesn't
@@ -438,6 +445,12 @@ async def stream_and_collect(
                         event.title,
                         event.tool_input,
                     )
+                elif event.kind == EVENT_TOOL_CALL_UPDATE:
+                    if on_tool_call_update:
+                        try:
+                            on_tool_call_update(event)
+                        except Exception:
+                            logger.debug("on_tool_call_update callback failed", exc_info=True)
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")
                 elif event.kind == CONTEXT_EVENT_COMPACTION:

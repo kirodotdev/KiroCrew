@@ -857,6 +857,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The side-chat and reply-thread frames split out of dashboard/ws.py, which
         # re-exports them: same classification as the module they came from.
         "dashboard/ws_side_frames.py",
+        # The side reply's row redactor, split out of dashboard/handlers/side.py:
+        # it returns redacted text to that handler, whose "Side-panel stream" sink
+        # is the egress.
+        "dashboard/handlers/side_redaction.py",
         # The gateway bootstrap's owner DM and workflow-result turn (owners that
         # dashboard/server.py composes).
         "dashboard/server_runtime/owner_notices.py",

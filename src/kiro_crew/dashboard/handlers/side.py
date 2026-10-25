@@ -38,10 +38,19 @@ from kiro_crew.config.loader import (
     refresh_materialized_agents,
     resolve_agent_bindings,
 )
+from kiro_crew.dashboard.handlers.side_redaction import _SegmentRedactor
+from kiro_crew.dashboard.handlers.side_support import (  # noqa: F401 -- re-exported
+    _MAX_QUESTION_BYTES,
+    _check_slot_ownership,
+    _read_side_queue_body,
+    _requeue_unconsumed_side_steers,
+    _resolve_side_queue_slot,
+    _side_session_key,
+    _try_side_steer,
+)
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
-from kiro_crew.dashboard.side_segment_redactor import _SegmentRedactor
 from kiro_crew.dashboard.side_state import (
     MAX_SIDE_QUEUE,
     STEER_CONSUMED,
@@ -49,7 +58,7 @@ from kiro_crew.dashboard.side_state import (
     STEER_REQUEUED,
     SideState,
 )
-from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
+from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.ws import (
     broadcast_side_closed,
@@ -79,7 +88,11 @@ logger = logging.getLogger(__name__)
 #: kind, written by ``stream_and_collect``), never the panel.
 _SIDE_TOOL_PREVIEW_CHARS = 2_000
 
-_MAX_QUESTION_BYTES = 32_768
+
+def _tool_row_content(title: str, preview: str) -> str:
+    """A side tool row's text: ``🔧 <title>``, and the input preview under it."""
+    return f"🔧 {title}\n{preview}" if preview and preview != title else f"🔧 {title}"
+
 
 # How long the stop handler waits for a cancelled side turn's cleanup (session
 # release, queue hold, is_complete flip) to run before settling the client
@@ -89,18 +102,6 @@ _STOP_CLEANUP_TIMEOUT = 5.0
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _side_session_key(slot_key: str, gen: str = "") -> str:
-    """Return the isolated ACP session key for a side turn.
-
-    ``side:<slot>:<gen>`` when the sidecar's generation is known (every live
-    path), so a sidecar that was closed and reopened never shares a session with
-    a turn still finishing on its predecessor: the old task can only destroy,
-    acquire or release ITS generation's key. The bare ``side:<slot>`` form is the
-    legacy spelling, kept for a caller with no sidecar in hand.
-    """
-    return f"side:{slot_key}:{gen}" if gen else f"side:{slot_key}"
 
 
 def _dispatch_side_turn(
@@ -174,69 +175,6 @@ def _dispatch_side_turn(
     return run_id
 
 
-def _requeue_unconsumed_side_steers(
-    state: DashboardState, slot, run_id: str, side_at_start: Any = None
-) -> None:
-    """Degrade steers the backend never confirmed into visible queue cards.
-
-    A steer is a fire-and-forget write, so ``steer()`` returning True only proves
-    the bytes left; the ``steering_consumed`` echo is the authoritative signal.
-    Anything still pending when the turn ends reached no generation and would
-    otherwise vanish having been reported as delivered.
-
-    Requeued at the HEAD, preserving relative order — a steer was meant to be
-    injected before anything the user queued after it. Each becomes an ordinary
-    card, so a user who no longer wants it cancels it with one click.
-
-    Gated on ``side_at_start`` identity as well as ``run_id``: the run id alone
-    would let a superseded turn write onto a sidecar a close+reopen replaced.
-    """
-    side = slot._side
-    if side is None or not side.open or side.last_run_id != run_id:
-        return
-    if side_at_start is not None and side is not side_at_start:
-        return
-    orphaned = side.steer_pending()
-    if not orphaned:
-        return
-    for entry in orphaned:
-        side.steer_mark(entry["id"], STEER_REQUEUED)
-    for entry in reversed(orphaned):
-        message = entry["text"]
-        qid = side.queue_insert_front(message, steer_id=entry["id"], budget=entry.get("budget", ""))
-        if qid is None:
-            # Acceptance reserves a slot per in-flight steer, so this should be
-            # unreachable. Log loudly rather than broadcasting a null id: a
-            # phantom card the user can neither cancel nor run is worse than a
-            # recorded gap.
-            logger.error(
-                "Side steer requeue found no room: slot=%s depth=%d",
-                slot.key,
-                len(side.queue),
-            )
-            continue
-        broadcast_side_queue(
-            state,
-            slot_key=slot.key,
-            action="push",
-            queue_id=qid,
-            content=message,
-            depth=len(side.queue),
-            front=True,
-            # Name the steer this card came from. The card's id is brand new, so a
-            # client holding the raw text of its own steer has no other way to
-            # recognise it — and the content on the wire is redacted, which is a
-            # permanently corrupted restore for a credential-bearing question.
-            steer_id=entry["id"],
-        )
-    logger.info(
-        "Requeued %d unconsumed side steer(s): slot=%s run_id=%s",
-        len(orphaned),
-        slot.key,
-        run_id,
-    )
-
-
 def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
     """Promote the oldest queued message to the next side turn.
 
@@ -304,68 +242,6 @@ def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
         )
 
 
-async def _try_side_steer(
-    state: DashboardState, slot, question: str, *, budget: str = ""
-) -> str | None:
-    """Inject *question* into the side turn already streaming on this slot.
-
-    Returns the ledger id the attempt was recorded under, or None when it was
-    never attempted (no session, no steer support, no live turn) or the write
-    failed — every one of which must fall through to the queue rather than drop
-    the user's text.
-
-    The entry is registered BEFORE the RPC suspends. ``steer()`` returning True
-    only proves the bytes left; the ``steering_consumed`` echo is what proves
-    injection. Registering first is what makes the ordering safe: if the turn's
-    ``finally`` runs while this is suspended, it already sees the entry and
-    requeues it. The caller then reads its OWN entry's state, so it never has to
-    infer an outcome from an absence.
-    """
-    side = slot._side
-    if side is None:
-        return None
-    provider = state.sessions.get_provider(_side_session_key(slot.key, side.gen))
-    if provider is None or not getattr(provider, "supports_steer", False):
-        return None
-    steer = getattr(provider, "steer", None)
-    if steer is None:
-        return None
-    # ``has_active_turn`` gates on a GENUINELY live prompt: the provider stays
-    # registered through post-turn bookkeeping, and kiro-cli silently swallows a
-    # steer for a prompt that already ended. Absent the probe, attempt the steer
-    # and let its boolean decide.
-    has_active = getattr(provider, "has_active_turn", None)
-    if has_active is not None and not has_active():
-        return None
-    side = slot._side
-    if side is None:
-        return None
-    if not side.steer_can_accept():
-        # No room to requeue this steer if the turn ends without consuming it, and
-        # a requeue that cannot land would drop a question already reported as
-        # delivered. Decline here instead: the caller falls through to the queue,
-        # which either takes it or answers 429 — both visible, both recoverable.
-        return None
-    steer_id = side.steer_register(question, budget=budget)
-    if steer_id is None:
-        # Every ledger slot is an in-flight steer. Fall through to the queue
-        # rather than accept a steer whose outcome we could not record.
-        return None
-    try:
-        delivered = bool(await steer(question))
-    except Exception as exc:
-        logger.warning("Side steer failed for slot %s: %s", slot.key, exc)
-        delivered = False
-    if not delivered:
-        # The write did not land. If the entry is still pending it is ours to
-        # discard; if the echo or the finally already resolved it, leave their
-        # outcome alone and let the caller read it.
-        if side.steer_state(steer_id) == STEER_PENDING:
-            side.steers[:] = [e for e in side.steers if e["id"] != steer_id]
-            return None
-    return steer_id
-
-
 async def _side_read_only_tools(side_backend: str | None) -> bool:
     """Whether a side turn on *side_backend* runs read-only tools.
 
@@ -422,6 +298,8 @@ async def _run_side_turn(
     # redacted with the whole reply as its context.
     _redactor = _SegmentRedactor()
     drawn_tool_ids: set[str] = set()
+    # The text each drawn row shows, by call id, so an update that changes it is sent.
+    drawn_tool_rows: dict[str, str] = {}
 
     def _emit(text: str) -> None:
         """Broadcast a live delta."""
@@ -500,9 +378,9 @@ async def _run_side_turn(
             "purpose": redact_and_truncate(event.tool_purpose or "", _SIDE_TOOL_PREVIEW_CHARS),
             "input_preview": preview,
         }
-        content = f"🔧 {title}"
-        if preview and preview != title:
-            content += f"\n{preview}"
+        content = _tool_row_content(title, preview)
+        if call_id:
+            drawn_tool_rows[call_id] = content
         _broadcast(role="tool", content=content, meta=meta)
         if not approved:
             _broadcast(
@@ -510,6 +388,31 @@ async def _run_side_turn(
                 content=f"🚫 {title}",
                 meta={"tool_call_id": call_id},
             )
+
+    def _on_tool_call_update(event: Any) -> None:
+        """Refine a drawn tool row in place when its call's update arrives.
+
+        claude announces a call with an empty input and a generic title, and
+        its ``tool_call_update`` names what the call reads. The frame carries
+        ``update`` and the row's ``tool_call_id``; the client replaces that row
+        and opens no new text row, so the server closes none either. A call no
+        row was drawn for, or an update that changes nothing, sends nothing.
+        """
+        if slot._side is not side_at_start:
+            return
+        call_id = event.tool_call_id or ""
+        if call_id not in drawn_tool_rows:
+            return
+        title = event.title or event.tool_name or "tool"
+        preview = redact_and_truncate(event.tool_input or "", _SIDE_TOOL_PREVIEW_CHARS)
+        content = _tool_row_content(title, preview)
+        if content == drawn_tool_rows[call_id] or not (event.title or preview):
+            return
+        drawn_tool_rows[call_id] = content
+        meta = {"tool_call_id": call_id, "update": "1", "input_preview": preview}
+        if event.tool_kind:
+            meta["kind"] = event.tool_kind
+        _broadcast(role="tool", content=content, meta=meta)
 
     def _on_steer_consumed(snapshot: str) -> None:
         """Settle the steers this echo proves the backend injected.
@@ -856,6 +759,7 @@ async def _run_side_turn(
                 on_chunk=_on_chunk,
                 on_steer_consumed=_on_steer_consumed,
                 on_tool_call=_on_tool_call,
+                on_tool_call_update=_on_tool_call_update,
             )
             # The reply as stored and as the terminal frame carries it (that
             # frame replaces the streamed deltas) is the redactor's pass over
@@ -1074,21 +978,6 @@ async def _run_side_turn(
         # Only the DISPATCH is withheld, so nothing is lost, merely paused.
         if not auth_required and not cancelled:
             _drain_side_queue(state, slot, run_id)
-
-
-def _check_slot_ownership(
-    request: web.Request,
-    slot,
-    operation: str,
-) -> web.Response | None:
-    """The uniform app-isolation 404 if the request app can't access ``slot``, else None.
-
-    App Kit §5.2: dashboard users (empty ``request_app``) can access everything.
-    The auth gate is upstream in ``token_auth_middleware`` and the per-slot
-    checkpoint (``slot_ownership_middleware``) has already made this decision for
-    every /side route; this re-applies the same shared decision at the handler.
-    """
-    return deny_app_slot_access(request.get("app", ""), slot, slot.key, operation)
 
 
 async def api_side_open(request: web.Request) -> web.Response:
@@ -1790,65 +1679,6 @@ async def _cancel_and_settle_side_turn(
     # audit; the frontend ignores the response body (fires the mutation,
     # wires only ``onError``), so the success body is the minimal ``{ok}``.
     return web.json_response({"ok": True})
-
-
-async def _read_side_queue_body(request: web.Request) -> str | web.Response:
-    """Parse ``{"content": str}`` from a side-queue edit. Returns the trimmed
-    content, or the error response to send."""
-    if not request.body_exists:
-        return web.json_response({"error": "missing JSON body", "code": "missing_body"}, status=400)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body", "code": "invalid_body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"},
-            status=400,
-        )
-    content = body.get("content")
-    if not isinstance(content, str):
-        return web.json_response(
-            {"error": "content must be a string", "code": "invalid_content"},
-            status=400,
-        )
-    content = content.strip()
-    if not content:
-        return web.json_response(
-            {"error": "content must not be empty", "code": "empty_content"},
-            status=400,
-        )
-    if len(content.encode("utf-8")) > _MAX_QUESTION_BYTES:
-        return web.json_response(
-            {
-                "error": f"content too long (max {_MAX_QUESTION_BYTES} bytes)",
-                "code": "content_too_long",
-            },
-            status=400,
-        )
-    return content
-
-
-def _resolve_side_queue_slot(
-    request: web.Request, operation: str
-) -> tuple[Any, web.Response | None]:
-    """Shared lookup for the side-queue mutation endpoints.
-
-    Returns ``(slot, None)`` on success or ``(None, response)`` to send.
-    """
-    state: DashboardState = request.app["state"]
-    slot = state._slots.get(request.match_info["slot"])
-    if not slot:
-        return None, slot_not_found()
-    own = _check_slot_ownership(request, slot, operation)
-    if own is not None:
-        return None, own
-    if slot._side is None or not slot._side.open:
-        return None, web.json_response(
-            {"error": "side conversation is not open", "code": "side_not_open"},
-            status=409,
-        )
-    return slot, None
 
 
 async def api_side_queue_cancel(request: web.Request) -> web.Response:

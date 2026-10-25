@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -103,14 +103,12 @@ def broadcast_side_result(
     if settle:
         payload["settle"] = True
     if reply:
-        payload["reply"] = redact_credentials(redact_exfiltration_urls(reply)[0])[0]
+        payload["reply"] = redact(reply)
     if meta:
         # A ``tool`` row's per-call fields (``tool_call_id``, ``kind``,
         # ``purpose``, ``input_preview``). Every value is LLM-authored or
         # LLM-derived, so each goes through the same two passes as ``content``.
-        payload["meta"] = {
-            k: redact_credentials(redact_exfiltration_urls(str(v))[0])[0] for k, v in meta.items()
-        }
+        payload["meta"] = {k: redact(str(v)) for k, v in meta.items()}
     # Owner-only, matching the queue frame and `_check_slot_ownership`: side answers and
     # steer echoes are the owner's own conversation, and an app that asks the HTTP API
     # about a slot it does not own gets a 404.
