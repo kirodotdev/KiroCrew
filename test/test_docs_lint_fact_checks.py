@@ -408,6 +408,13 @@ class TestDeadIdentifier:
         )
         assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
 
+    def test_silent_for_a_desktop_shell_symbol(self, tree: Path) -> None:
+        # website/electron/ is the desktop shell; a doc naming one of its symbols
+        # cites something real, not a renamed symbol.
+        _write(tree, "website/electron/auto-update.js", "function checkForUpdates() {}\n")
+        _write(tree, "docs/ok.md", "# Ok\n\nIt drives `checkForUpdates`.\n")
+        assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
     @pytest.mark.parametrize("prefix", sorted(gate._IDENT_PLACEHOLDER_PREFIXES))
     def test_silent_for_a_documentation_placeholder(self, tree: Path, prefix: str) -> None:
         _write(tree, "src/kiro_crew/real.py", "a = 1\n")
