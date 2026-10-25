@@ -49,6 +49,7 @@ from kiro_crew.config.loader import (  # noqa: F401
 )
 from kiro_crew.constants import CHANNEL_SEND_NAMESPACES, SUBAGENT_COMPLETION_META_KEY  # noqa: F401
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable  # noqa: F401
+from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.channel_folders import (  # noqa: F401
     CHANNEL_CONFIG_SECTIONS,
     channel_restart_required,

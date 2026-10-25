@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         VALID_MEMORY_MODES,
         _body_err_code,
         _sel,
+        body_int,
         bytes_to_mb_figure,
         default_session_folder_choosable,
         knowledge_ceiling_bytes,
@@ -208,7 +209,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         try:
             if "restore_window_minutes" in body:
                 updates["restore_window_minutes"] = max(
-                    0, min(1440, int(body["restore_window_minutes"]))
+                    0, min(1440, body_int(body["restore_window_minutes"]))
                 )
         except (TypeError, ValueError):
             _sel().log_tool_invocation(

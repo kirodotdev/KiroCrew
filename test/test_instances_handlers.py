@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from instances_helpers import _body, _ConnectedMgr, _enable, _fake_reconfigure, _FakeReq, _State
@@ -735,6 +736,19 @@ class TestHandlers:
             handlers.api_instances_add(_FakeReq(state, body={"name": "", "ssh_host": ""}))
         )
         assert rejected.status == 400 and _body(rejected)["code"] == "instance_invalid"
+
+    @pytest.mark.parametrize("field", ["remote_port", "via_remote_port"])
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    def test_add_infinite_port_is_an_invalid_field(self, tmp_path, monkeypatch, field, raw):
+        """JSON reads ``1e999`` as an infinite float: the invalid_field 400, never a 500."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        state = _State(reg)
+        body = json.loads(f'{{"name": "Bad", "ssh_host": "h", "{field}": {raw}}}')
+        resp = asyncio.run(handlers.api_instances_add(_FakeReq(state, body=body)))
+        assert resp.status == 400 and _body(resp)["code"] == "invalid_field"
 
     def test_update_paths(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers

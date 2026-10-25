@@ -81,6 +81,7 @@ from kiro_crew.config.sections import (  # noqa: F401
 )
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches  # noqa: F401
 from kiro_crew.dashboard import part_stream, upload_destination  # noqa: F401
+from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     dashboard_slot_key,
@@ -397,13 +398,16 @@ from kiro_crew.zip_vet import (  # noqa: F401
 # Content-Type header correct for the most common Word/Excel/PowerPoint
 # downloads.
 mimetypes.add_type(
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docx",
 )
 mimetypes.add_type(
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsx",
 )
 mimetypes.add_type(
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptx",
 )
 
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
@@ -484,6 +488,7 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
 def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
+
     return _pkg.sel()
 
 
@@ -698,9 +703,7 @@ _ALLOWED_VIDEO_EXT = {".mp4", ".m4v", ".mov", ".webm"}
 #: only: naming the video set to an audio upload (``.m4a``) would tell its
 #: sender to re-encode audio into a video container, which is worse than the
 #: bare refusal.
-_VIDEO_HINT_EXT = frozenset(
-    {".mkv", ".ogv", ".avi", ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
-)
+_VIDEO_HINT_EXT = frozenset({".mkv", ".ogv", ".avi", ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"})
 #: Media type :func:`_sniff_media_type` must report for the claimed video
 #: extension. The MP4 family (mp4/m4v/mov) all carry a ``ftyp`` box at offset 4
 #: and sniff as ``video/mp4``; QuickTime's brand differs but the box does not.
@@ -859,12 +862,45 @@ _FILE_READ_SNIFF_BYTES = 8192
 #: ``test_dashboard_file_io.py`` fails if the two sets ever diverge.
 _FILE_READ_BINARY_EXTS = frozenset(
     {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff", ".pdf",
-        ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
-        ".so", ".dylib", ".dll", ".exe", ".class", ".jar", ".war", ".o", ".a",
-        ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv", ".webm",
-        ".sqlite", ".db", ".duckdb",
-        ".ttf", ".otf", ".woff", ".woff2", ".eot",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".tiff",
+        ".pdf",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".7z",
+        ".rar",
+        ".so",
+        ".dylib",
+        ".dll",
+        ".exe",
+        ".class",
+        ".jar",
+        ".war",
+        ".o",
+        ".a",
+        ".mp3",
+        ".mp4",
+        ".wav",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".webm",
+        ".sqlite",
+        ".db",
+        ".duckdb",
+        ".ttf",
+        ".otf",
+        ".woff",
+        ".woff2",
+        ".eot",
     }
 )
 
@@ -927,12 +963,12 @@ _STREAM_TEXT_PROBE_BYTES = 64 * 1024
 # mime). MP4-family uses the ftyp box at offset 4 (bytes 0-3 are the box
 # size); WebM and Matroska share the EBML magic and both play in <video>.
 _MEDIA_MAGIC: tuple[tuple[int, bytes, str], ...] = (
-    (4, b"ftyp", "video/mp4"),          # mp4 / m4v / m4a / mov (BMFF family)
+    (4, b"ftyp", "video/mp4"),  # mp4 / m4v / m4a / mov (BMFF family)
     (0, b"\x1a\x45\xdf\xa3", "video/webm"),  # webm / mkv (EBML)
-    (0, b"OggS", "audio/ogg"),          # ogg audio or video; <audio>/<video> both accept
+    (0, b"OggS", "audio/ogg"),  # ogg audio or video; <audio>/<video> both accept
     (0, b"fLaC", "audio/flac"),
-    (0, b"ID3", "audio/mpeg"),          # mp3 with ID3v2 tag
-    (0, b"\xff\xfb", "audio/mpeg"),     # bare mp3 frame sync (MPEG1 layer3)
+    (0, b"ID3", "audio/mpeg"),  # mp3 with ID3v2 tag
+    (0, b"\xff\xfb", "audio/mpeg"),  # bare mp3 frame sync (MPEG1 layer3)
     (0, b"\xff\xf3", "audio/mpeg"),
     (0, b"\xff\xf2", "audio/mpeg"),
 )
@@ -1085,12 +1121,20 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
     caller = request.get("user", "dashboard")
     if request.query.get("drives") == "1":
         if not platform_compat.IS_WINDOWS:
-            return web.json_response({"error": "Drive listing is only available on Windows", "code": "drives_windows_only"}, status=400)
+            return web.json_response(
+                {
+                    "error": "Drive listing is only available on Windows",
+                    "code": "drives_windows_only",
+                },
+                status=400,
+            )
         try:
             drives = await _run_path_probe(_browse_drives_sync, transfer=True)
         except _PathProbeBusy:
             return _probe_busy_response(resource="drives", operation="browse_dirs", caller=caller)
-        _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="allowed", resources="drives")
+        _sel().log_api_access(
+            caller=caller, operation="browse_dirs", outcome="allowed", resources="drives"
+        )
         return web.json_response({"path": "", "parent": "", "dirs": drives})
     raw = request.query.get("path", "").strip()
     # Off-loop: realpath then the isdir probe, on a caller-supplied root (the
@@ -1109,9 +1153,26 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
             status=400,
         )
     if is_sensitive_path(base):
-        _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="denied", resources=base, error="sensitive path")
+        _sel().log_api_access(
+            caller=caller,
+            operation="browse_dirs",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
         return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
-    skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim"}
+    skip = {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".cache",
+        ".venv",
+        "venv",
+        "env",
+        ".kirocrew",
+        ".kiro",
+        ".aim",
+    }
     skip |= _HIDDEN_TOOL_DIRS
     try:
         dirs = await _run_path_probe(_browse_dirs_sync, base, skip, transfer=True)
@@ -1158,16 +1219,40 @@ async def api_browse_files(request: web.Request) -> web.Response:
             status=400,
         )
     if is_sensitive_path(base):
-        _sel().log_api_access(caller=caller, operation="browse_files", outcome="denied", resources=base, error="sensitive path")
+        _sel().log_api_access(
+            caller=caller,
+            operation="browse_files",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
         return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
-    skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
+    skip = {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".cache",
+        ".venv",
+        "venv",
+        "env",
+        ".kirocrew",
+        ".kiro",
+        ".aim",
+        "build",
+        "dist",
+        ".next",
+    }
     skip |= _HIDDEN_TOOL_DIRS
     try:
         dirs, files = await _run_path_probe(_browse_files_sync, base, skip, transfer=True)
     except _PathProbeBusy:
         return _probe_busy_response(resource=base, operation="browse_files", caller=caller)
-    _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)
-    return web.json_response({"path": base, "parent": _browse_parent(base), "dirs": dirs, "files": files})
+    _sel().log_api_access(
+        caller=caller, operation="browse_files", outcome="allowed", resources=base
+    )
+    return web.json_response(
+        {"path": base, "parent": _browse_parent(base), "dirs": dirs, "files": files}
+    )
 
 
 # ── /api/file-sheet: xlsx → JSON cell grid (file_api/sheet.py) ───────────────
@@ -1216,9 +1301,7 @@ _GIT_PROBE_STDERR_CAP = 4096
 # refuses under its own ``"unreadable"`` cause rather than borrowing this one.
 # Refusing both is correct, since neither can be proven safe, but telling the
 # reader a program ran is not, and neither is handing them both causes at once.
-_GIT_FILTER_KEY_RE = re.compile(
-    r"^filter\..+\.(process|smudge|clean)$", re.IGNORECASE
-)
+_GIT_FILTER_KEY_RE = re.compile(r"^filter\..+\.(process|smudge|clean)$", re.IGNORECASE)
 
 
 # Cap on the ROWS api_project_tree returns -- files and directory rows
