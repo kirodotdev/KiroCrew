@@ -393,6 +393,10 @@ def readers_of(stems: set[str], root: Path) -> list[str]:
     when a test the list names was renamed, and nothing in its source names that
     module.
 
+    Only a name spelled out in a source or a list is found. A test that builds the
+    name at run time (`f"{stem}.py"`, `path.with_name(var)`) is not, so the readers
+    returned are not every test that can read the module.
+
     A reader is looked up per diff rather than gated on every leaf run: each one
     depends only on the modules it names, and much of what this spelling finds is a
     fixture string that reads nothing (a path in a routing table, a sample argv).
