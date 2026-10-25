@@ -676,13 +676,16 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh local$(printf host) id") == self._RULE
         assert _denied_by("ssh $(printf remote.example.com) id") is None
 
-    def test_here_string_fed_xargs_is_judged_as_the_rebuilt_command(self):
-        # round-35 (GPT): bash strips ``<<< word`` from argv and delivers the
-        # word on stdin, and xargs turns stdin into ARGUMENTS for the verb it
-        # launches -- so ``xargs ssh <<< localhost`` reaches ``ssh localhost``.
-        # The floor rebuilds that command from the statically-known pieces and
-        # judges it; a far host stays allowed, and stdin that only exists at
-        # run time (a pipe) stays the documented run-time residual.
+    def test_here_string_fed_xargs_fails_closed(self):
+        # An ``xargs`` fed by a here-string launches an ssh-family verb whose
+        # argv it builds from that stdin at run time.  WHICH record of the
+        # stdin reaches the verb is decided by quoting, redirection provenance
+        # and xargs's own record-splitting options -- more than a text check
+        # can model with certainty -- so the destination is unknown and the
+        # floor fails closed on the mere PRESENCE of a here-string alongside an
+        # ``xargs`` and an ssh-family verb, far host or self alike, WHATEVER the
+        # separators, operators or position.  (A PIPE-fed xargs is a separate
+        # path, judged as before; see the far-host pipe case below.)
         assert _denied_by("xargs ssh <<< localhost") == self._RULE
         assert _denied_by("xargs ssh <<<localhost") == self._RULE
         assert _denied_by("xargs -I{} ssh {} <<< localhost") == self._RULE
@@ -691,9 +694,107 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("<<< localhost xargs ssh") == self._RULE
         assert _denied_by("<<< localhost sudo xargs ssh") == self._RULE
         assert _denied_by("xargs -I{} ssh user@{} <<< localhost") == self._RULE
-        assert _denied_by("<<< far.example.com xargs ssh") is None
-        assert _denied_by("xargs -I{} ssh user@{} <<< far.example.com") is None
-        assert _denied_by("xargs ssh <<< remote.example.com") is None
+        # A far host fed by a here-string fails closed too: the launcher could
+        # still assemble a self dial from the same text, so a per-record model
+        # of the destination is not trusted.
+        assert _denied_by("<<< far.example.com xargs ssh") == self._RULE
+        assert _denied_by("xargs -I{} ssh user@{} <<< far.example.com") == self._RULE
+        assert _denied_by("xargs ssh <<< remote.example.com") == self._RULE
+        # The floor keys off PRESENCE alone: it does not model which simple
+        # command the here-string belongs to, nor whether the ``xargs`` is a
+        # launcher or an operand.  A position model springs a leak on the next
+        # shell shape, so these shapes -- which a launcher-position check with a
+        # back-scan to the fronting program lets slip -- all fail closed on
+        # PRESENCE:
+        #   * a ``find`` whose ``xargs`` is a plain name/path operand with no
+        #     ``-exec`` -- an ACCEPTED over-refusal, since the floor does not
+        #     prove the operand inert (``find``'s own ``-exec`` self dial, which
+        #     base already refuses, fails closed too).
+        assert (
+            _denied_by("find . -name xargs -exec ssh far.example.com cat {} + <<< data")
+            == self._RULE
+        )
+        assert _denied_by("find . -name xargs -exec ssh localhost cat {} + <<< data") == self._RULE
+        #   * a glued separator before the ``xargs`` (``x&``/``x&&``/a glued
+        #     redirect ``x>/dev/null&``) that a position back-scan reads as part
+        #     of the ``find`` word, so it walks PAST the boundary to a benign
+        #     ``find`` and fails open on a self dial base refuses.  PRESENCE
+        #     refuses it.
+        assert _denied_by("find . -name x& xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("find . -name x&& xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("find .& xargs -I{} ssh {} id <<< 127.0.0.1") == self._RULE
+        assert _denied_by("find . -name x>/dev/null& xargs ssh <<< localhost") == self._RULE
+        #   * an inert launched program (``echo``) with ssh only a printed
+        #     operand -- an ACCEPTED over-refusal.  ``echo ssh -V`` on its own
+        #     stays allowed; base already refuses the here-string-free
+        #     ``xargs echo ssh localhost``, so this extends that refusal.
+        assert _denied_by("xargs echo ssh <<< -V") == self._RULE
+        # The refusal does not depend on the fronting program at all: a bare
+        # ``xargs``, a transparent exec-wrapper (``sudo``/``timeout``/``nice``),
+        # and ANY other fronting program -- known or not -- all fail closed,
+        # because the check is the mere PRESENCE of a here-string, not a name
+        # match that a new wrapper could slip.
+        assert _denied_by("sudo xargs ssh <<< far.example.com") == self._RULE
+        assert _denied_by("timeout 5 xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("nice -n 5 xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("flock /tmp/l xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("strace -f xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("torsocks xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("firejail xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("faketime xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("! xargs ssh <<< localhost") == self._RULE
+        assert _denied_by("> /dev/null xargs -I{} ssh {} <<< localhost") == self._RULE
+        # ``find`` running ``xargs`` as its ``-exec`` command fails closed too.
+        assert (
+            _denied_by("find . -maxdepth 0 -exec xargs -I{} ssh {} \\; <<< localhost") == self._RULE
+        )
+        # The ``<<<`` operator GLUED to the preceding word (``ssh<<<localhost``)
+        # arrives as one token whose stdin is still a here-string, so PRESENCE is
+        # the ``<<<`` substring, not a token prefix.  (A rebuild that only read a
+        # token STARTING with ``<<<`` left this self dial open; it is caught now.)
+        assert _denied_by("xargs ssh<<<localhost") == self._RULE
+        assert _denied_by("xargs ssh<<<'localhost id'") == self._RULE
+        assert _denied_by("xargs ssh<<<far.example.com") == self._RULE
+        # A heredoc (``<<``, two angle brackets) is NOT a here-string and is not
+        # matched by the ``<<<`` presence substring.
+        assert _denied_by("xargs ssh << EOF") is None
+
+    def test_here_string_fed_xargs_with_overriding_stdin_fails_closed(self):
+        # Modelling which here-string becomes stdin is not attempted: a later
+        # redirection (``0<<<``) overrides an earlier one, and a quoted ``<<<``
+        # is DATA, not a redirect, so bash still delivers ``localhost`` where a
+        # per-record rebuild had picked a trailing ``far-host``.  Failing closed
+        # on the mere PRESENCE of a here-string refuses all of them without
+        # parsing provenance.
+        assert _denied_by("xargs -i ssh {} id <<< localhost '<<<far-host'") == self._RULE
+        assert (
+            _denied_by("xargs -i ssh {} id <<< localhost <<< far-host 0<<< localhost") == self._RULE
+        )
+        assert _denied_by("xargs -i ssh {} id <<< localhost <<< far-host") == self._RULE
+        # A here-string may carry a leading file descriptor (``0<<<``): it still
+        # delivers the word on stdin, so an fd-prefixed spelling fails closed
+        # even with no plain ``<<<`` alongside it -- whether it feeds the verb
+        # directly or sits in front of the launcher (a bare ``0<<<`` carries its
+        # word in the next token, exactly like ``<<<``).
+        assert _denied_by("xargs ssh 0<<<localhost") == self._RULE
+        assert _denied_by("xargs ssh 0<<< localhost") == self._RULE
+        assert _denied_by("xargs -i ssh {} id 0<<<localhost") == self._RULE
+        assert _denied_by("0<<< localhost xargs ssh") == self._RULE
+        assert _denied_by("0<<<localhost xargs ssh") == self._RULE
+        # Record-splitting options give no way to smuggle a self record past a
+        # single-record reading either -- the whole shape fails closed.
+        assert _denied_by("xargs -d, -I{} ssh {} <<< '-V,localhost,'") == self._RULE
+        assert _denied_by("xargs -0 -I{} ssh {} <<< localhost") == self._RULE
+        assert _denied_by("xargs -L1 ssh <<< 'far-host localhost'") == self._RULE
+
+    def test_pipe_fed_xargs_is_the_documented_residual(self):
+        # The here-string fail-closed does not change the PIPE path: a pipe's
+        # stdin is not in the source text, so a far-host pipe stays allowed (the
+        # documented run-time residual an OS-level network fence closes), while a
+        # self-host pipe is refused by the existing pipe rebuild.
+        assert _denied_by("echo far.example.com | xargs ssh") is None
+        assert _denied_by("echo remote.example.com | xargs ssh") is None
+        assert _denied_by("echo localhost | xargs ssh") == self._RULE
 
     def test_plain_redirects_still_consume_their_filename(self):
         # The here-string handling must not widen the redirect branch: a

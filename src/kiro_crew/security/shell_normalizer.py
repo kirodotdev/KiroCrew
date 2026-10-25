@@ -66,7 +66,7 @@ from .shell_normalizer_redirects import (  # noqa: F401  (also re-exported for i
     _shell_c_carrier_glued,
     _shell_c_carrier_payloads,
     _stdin_program_text,
-    _xargs_here_string_rebuild,
+    _xargs_here_string_feeds,
 )
 from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for importers)
     _AMBIGUOUS_EXPANSION_RE,
