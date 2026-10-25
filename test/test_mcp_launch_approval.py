@@ -631,6 +631,34 @@ async def test_status_reports_stored_refusal_without_resolving_again(toggle_home
 
 
 @pytest.mark.asyncio
+async def test_status_names_a_refused_share_by_its_configured_name(tmp_path, monkeypatch):
+    """A slash-named share whose refusal is stored under its alias is still named."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config import loader
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    mod = _approval_module()
+    assert mod is not None
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    approvals = mod.LaunchApprovals()
+    approvals.stored_refused = {
+        "PLAYWRIGHT-MCP": {"name": "playwright-mcp", "reason": mod.REFUSED_UNAPPROVED},
+        "GONE-MCP": {"name": "gone-mcp", "reason": mod.REFUSED_UNAPPROVED},
+    }
+    mod._write(mod.approvals_path(), mod._document(approvals, approvals.stored_refused))
+    cfg = SimpleNamespace(
+        mcp_gateway=SimpleNamespace(enabled=True, stub_servers=["npm:@playwright/mcp", "beta-mcp"])
+    )
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+
+    response = await mcp_mod.api_mcp_gateway_status(_stub_request({}))
+    body = json.loads(response.body)
+
+    assert body["share_refused"] == {"npm:@playwright/mcp": mod.REFUSED_UNAPPROVED}
+
+
+@pytest.mark.asyncio
 async def test_refused_display_argv_is_redacted_in_storage_and_status(tmp_path, monkeypatch):
     from kiro_crew.dashboard.handlers import mcp as mcp_mod
 

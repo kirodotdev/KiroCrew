@@ -308,6 +308,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _STRICT_IDENTITY_SERVERS,
         _doctor_backend_ability_cards,
         _doctor_mcp_gateway_daemon,
+        _doctor_mcp_share_refused,
         _doctor_selected_backend_projection,
         _doctor_strict_identity,
         _doctor_unresolved_mcp_refs,
@@ -652,6 +653,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     access._doctor_name_grant_platform_scope()
     mcp._doctor_strict_identity(cfg)
     mcp._doctor_mcp_gateway_daemon(issues)
+    mcp._doctor_mcp_share_refused(cfg, issues)
     mcp._doctor_unresolved_mcp_refs()
     mcp._doctor_backend_ability_cards(cfg)
     mcp._doctor_selected_backend_projection(cfg)
@@ -894,6 +896,7 @@ _EXPORTS: dict[str, str] = {
             "_STRICT_IDENTITY_SERVERS",
             "_doctor_backend_ability_cards",
             "_doctor_mcp_gateway_daemon",
+            "_doctor_mcp_share_refused",
             "_doctor_selected_backend_projection",
             "_doctor_strict_identity",
             "_doctor_unresolved_mcp_refs",
