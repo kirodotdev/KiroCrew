@@ -1232,6 +1232,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PLACEHOLDER_BODIES,
         _SEMANTIC_OMISSION_NOTICE,
         _SEMANTIC_SNAPSHOT_PAGE,
+        _audit_oversized_semantic,
         _bounded_semantic_table,
         _BoundedTable,
         _EmbedBudget,

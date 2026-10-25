@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -139,13 +140,22 @@ def _member_consolidator(monkeypatch: pytest.MonkeyPatch, vector_store) -> Histo
 
 
 async def _run(
-    c: HistoryConsolidator, *items: object, include_history: bool = False
+    c: HistoryConsolidator,
+    *items: object,
+    include_history: bool = False,
+    while_thinking: Callable[[], None] | None = None,
 ) -> tuple[object, list[str]]:
-    """Run one pass whose model answers with *items*; return its outcome and prompts."""
+    """Run one pass whose model answers with *items*; return its outcome and prompts.
+
+    *while_thinking* runs inside the model turn, for a change that lands while the
+    model is working (a switch turned off, the lease taken by a peer).
+    """
     prompts: list[str] = []
 
     async def fake_llm(prompt: str, *, memory_store: str = "", session_key: str = "") -> dict:
         prompts.append(prompt)
+        if while_thinking is not None:
+            while_thinking()
         return {"semantic": list(items)}
 
     with patch.object(c, "_call_llm", side_effect=fake_llm):
@@ -693,6 +703,7 @@ async def test_discarded_result_logs_no_refusal(caplog: pytest.LogCaptureFixture
     assert [r for r in caplog.records if _CODE in r.getMessage()] == []
     assert any("conversation changed during extraction" in r.getMessage() for r in caplog.records)
     vector_store.set_semantic.assert_not_called()
+    vector_store.log_reject_event.assert_not_called()
 
 
 def _store_for(path: str, tmp_path, monkeypatch: pytest.MonkeyPatch, opened):
@@ -721,6 +732,10 @@ def _unvalidated_event_keys(store: VectorMemoryStore) -> list[str]:
         for e in store.get_events(limit=500)
         if e["memory_key"] is not None and store._validate_key(e["memory_key"]) is not None
     ]
+
+
+def _audited(store: VectorMemoryStore) -> list[dict]:
+    return [e for e in store.get_events(limit=500) if e["event_type"] == _CODE]
 
 
 @pytest.mark.parametrize(
@@ -767,6 +782,8 @@ async def test_values_past_the_writers_window_are_never_screened(
     assert outcome is None
     assert _stored(store, shorts + longs) == [item["key"] for item in shorts]
     assert _size_refusals(caplog) == [], "no writer reads a value past the window"
+    assert _audited(store) == []
+    assert _CODE not in store.get_rejection_stats()
 
 
 @pytest.mark.asyncio
@@ -786,6 +803,7 @@ async def test_a_refused_value_does_not_move_a_later_item_into_the_window(
     assert _stored(store, items) == [_short(i)["key"] for i in range(1, _WINDOW)]
     assert _refusal_codes(caplog, "project.long0") == [_CODE]
     assert len(_size_refusals(caplog)) == 1
+    assert [r["memory_key"] for r in _audited(store)] == ["project.long0"]
 
 
 @pytest.mark.asyncio
@@ -805,6 +823,7 @@ async def test_a_withheld_delete_still_frees_its_place_in_the_window(
     assert any("not in the rendered table" in r.getMessage() for r in caplog.records)
     assert _stored(store, items) == [_short(i)["key"] for i in range(1, _WINDOW)]
     assert _refusal_codes(caplog, f"project.long{_WINDOW}") == [_CODE]
+    assert [r["memory_key"] for r in _audited(store)] == [f"project.long{_WINDOW}"]
 
 
 @pytest.mark.asyncio
@@ -826,6 +845,10 @@ async def test_a_key_refused_one_value_and_written_another_reports_the_value(
         f"characters, over the {_BOUND}-character consolidation bound"
     ]
     assert _refusal_codes(caplog, "project.a") == [_CODE], "only the value was refused"
+    # The row records the value that was refused, never the one that was written.
+    assert [(r["memory_key"], r["new_value"]) for r in _audited(store)] == [
+        ("project.a", json.dumps(over)[:200])
+    ]
 
 
 @pytest.mark.asyncio
@@ -1167,6 +1190,7 @@ async def test_enforce_refuses_a_state_item_over_the_bound_as_work_state(
     # Routing took it out before the bound read the answer: routing's code, never the size
     # code, and its decision is counted as on a pass without the bound.
     assert _size_refusals(caplog) == []
+    assert _audited(store) == []
     assert _rows_of(store, "work_state") == [(_STATE_KEY, "x" * 200)]
     assert store.get_rejection_stats() == {"work_state": 1}
     assert _kind_log(store) == {"counts": {"enforce": {"fact": 1, "state": 1}}}
@@ -1223,6 +1247,7 @@ async def test_routing_counts_and_samples_every_item_the_bound_refuses(
     for key in over:
         assert _refusal_codes(caplog, key) == ([] if key in kept_out else [_CODE]), key
     assert [k for k, _ in _rows_of(store, "work_state")] == sorted(kept_out)
+    assert [k for k, _ in _rows_of(store, _CODE)] == sorted(k for k in over if k not in kept_out)
 
 
 @pytest.mark.asyncio
@@ -1328,8 +1353,11 @@ async def test_the_bound_refuses_only_what_the_store_would_accept(
     assert _unvalidated_event_keys(store) == [], "no event may carry a key the store refuses"
     if code is None:
         assert _refusal_codes(caplog, key) == [_CODE]
+        assert [r["memory_key"] for r in _audited(store)] == [key]
+        assert store.get_rejection_stats() == {_CODE: 1}
         return
     assert _size_refusals(caplog) == [], f"{code.value} is the store's refusal, not the bound's"
+    assert _audited(store) == []
     if path == "v1":
         assert _refusal_codes(caplog, key) == [code.value]
         audited_by_the_store = code in (
@@ -1377,12 +1405,14 @@ async def test_a_non_ascii_list_is_measured_as_the_facts_block_shows_it(
         row = store.get_semantic("project.note")
         assert row is not None and json.loads(row["value_json"]) == value
         assert _size_refusals(caplog) == []
+        assert _audited(store) == []
         return
     assert store.get_semantic("project.note") is None
     assert _size_refusals(caplog) == [
         f"Semantic consolidation refused a value for 'project.note': {_CODE}: {chars} "
         f"characters, over the {_BOUND}-character consolidation bound"
     ]
+    assert [r["memory_key"] for r in _audited(store)] == ["project.note"]
 
 
 @pytest.mark.asyncio
@@ -1408,6 +1438,7 @@ async def test_a_confidence_is_read_the_way_its_writer_reads_it(
     refused = ["project.over_one"] if path == "member" else []
     assert [item["key"] for item in items if _refusal_codes(caplog, item["key"])] == refused
     assert len(_size_refusals(caplog)) == len(refused)
+    assert [r["memory_key"] for r in _audited(store)] == refused
     assert _unvalidated_event_keys(store) == []
 
 
@@ -1689,11 +1720,13 @@ async def test_an_item_the_member_store_skips_for_its_metadata_is_not_refused_fo
         assert _receipts(store) == [
             {"semantic": 1, "episodic": 0, "lessons": 0, "metadata_rejected": 1}
         ]
+        assert _audited(store) == []
     else:
         # The writer would write it, so the bound refuses it, and nothing reaches the
         # writer to drop or count.
         assert _refusal_codes(caplog, _LARGE_KEY) == [_CODE]
         assert _receipts(store) == [{"semantic": 1, "episodic": 0, "lessons": 0}]
+        assert [r["memory_key"] for r in _audited(store)] == [_LARGE_KEY]
 
 
 @pytest.mark.parametrize("held_by", ["member-store", "v1-store"])
@@ -1729,9 +1762,11 @@ def test_an_item_the_v1_writer_refuses_for_its_metadata_is_not_refused_for_size(
         refusal = f"Semantic consolidation refused {_LARGE_KEY!r}: conflict_skip: {reason.value}"
         assert refusal in lines
         assert _v1_summary(written=1, refused=1) in lines
+        assert _audited(store) == []
     else:
         assert _refusal_codes(caplog, _LARGE_KEY) == [_CODE]
         assert _v1_summary(written=1) in lines
+        assert [r["memory_key"] for r in _audited(store)] == [_LARGE_KEY]
 
 
 @pytest.mark.parametrize("path", ["v1", "member"])
@@ -1791,6 +1826,7 @@ def test_a_v1_pass_whose_only_routed_item_is_over_the_bound_is_committed_as_with
     assert [(s["key"], s["kind"]) for s in log["samples"]] == [("project.long_fact", "fact")]
     assert commit_state.committed
     assert _refusal_codes(caplog, "project.long_fact") == [_CODE]
+    assert [r["memory_key"] for r in _audited(store)] == ["project.long_fact"]
     assert store.get_semantic("project.long_fact") is None
 
 

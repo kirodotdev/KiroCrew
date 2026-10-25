@@ -413,9 +413,10 @@ def _refuse_oversized_semantic(
     and an item with no value pass through untouched for the writers to judge.
 
     Returns the result (a shallow copy when anything was refused) and every refused
-    value in window order. Each is logged once, naming its key, the reject code, the
-    length and the bound; the value itself is never logged. The same key may be
-    refused one value and written another in one pass, so a line reports a refused
+    value in window order, for its write path to audit in ``memory_events``
+    (:func:`_audit_oversized_semantic`). Each is logged once, naming its key, the reject
+    code, the length and the bound; the value itself is never logged. The same key may
+    be refused one value and written another in one pass, so a line reports a refused
     value, not a refused key.
     """
     items = result.get("semantic")
@@ -487,6 +488,36 @@ def _refuse_oversized_semantic(
         _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     )
     return {**result, "semantic": screened}, tuple(refused)
+
+
+def _audit_oversized_semantic(
+    vector_store: VectorMemoryStore,
+    oversized: tuple[_OversizedItem, ...],
+    key: str,
+) -> None:
+    """Write one ``memory_events`` row for each value :func:`_refuse_oversized_semantic` refused.
+
+    It takes no publication hold of its own: each caller writes the rows inside a hold
+    the pass takes without the bound too, so the rows land exactly when that hold lets
+    the pass write. :func:`_write_structured_memory` writes a refused value's row in
+    that value's own turn, under the hold its write would take, on the pool thread it
+    runs on; ``_consolidate``'s member-store branch writes them under the hold
+    ``apply_consolidation`` runs under, on the background pool, before that call opens
+    its transaction. So writes turned off before the run's first commit, or a lost
+    lease, write no row, and writes turned off after it (an earlier write, or on the V1
+    path the history entry ``append_history`` appends before the writer runs) do not
+    stop one, as they do not stop that write without the bound.
+    """
+    from kiro_crew.vector_memory import SemanticRejectCode
+
+    for oversized_item in oversized:
+        vector_store.log_reject_event(
+            SemanticRejectCode.CONSOLIDATION_VALUE_SIZE,
+            oversized_item.key,
+            oversized_item.value,
+            f"consolidation:{key}",
+            value_json=json.dumps(oversized_item.value, ensure_ascii=False),
+        )
 
 
 #: The keys a rerouted ``lesson.*`` semantic item may carry into a lesson, mapped
@@ -1036,6 +1067,7 @@ def _write_structured_memory(
                 # write takes, and the commit it makes when the store accepts it, so the
                 # rest of the pass meets the run as it would without the bound.
                 with self._publication_hold_checked(key, commit_state) as publication:
+                    _audit_oversized_semantic(vector_store, (refused_at[index],), key)
                     publication.mark_committed()
                 continue
             if not isinstance(item, dict) or not isinstance(item.get("key"), str):

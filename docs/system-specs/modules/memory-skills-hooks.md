@@ -556,8 +556,23 @@ logs one WARNING naming its key, the `consolidation_value_size` reject code
 (`SemanticRejectCode.CONSOLIDATION_VALUE_SIZE`), the length and the bound, never
 the value, and the pass logs one INFO count. A key can lose one value to the
 bound and be written with another in the same pass, so the line reports a
-refused value, not a refused key. Deletes, `lesson.*` keys and items without a
-value pass through to the writers. A pass that completes moves its kind's marker
+refused value, not a refused key. Each refused value is also audited as one
+`memory_events` row (`event_type` `consolidation_value_size`, `memory_type`
+`semantic`, source `consolidation:<session>`, the refused value cut to 200
+characters like every audited reject), which `get_rejection_stats()` counts, so
+a pass audits at most `_MAX_SEMANTIC_PER_CONSOLIDATION` rows however long the
+model's answer. The rows are written by `_audit_oversized_semantic`, which takes
+no publication hold of its own: each row is written inside a hold the pass takes
+without the bound too, on the V1 path the hold of the refused value's own turn,
+where its write would have been, and on the member path the hold
+`apply_consolidation` runs under, before that call opens its transaction. So a
+row lands exactly when that hold lets the pass write: writes turned off before
+the run's first commit, or a lost lease, write none, and after the run's first
+commit (an earlier write, or on the V1 path the history entry a pass appends
+with `append_history` before `_write_structured_memory` runs) writes turned off
+still let it land, as they let that write land without the bound. Deletes,
+`lesson.*` keys and items without a value pass through to the writers. A pass
+that completes moves its kind's marker
 past the messages it read (the history marker, or the preference-only offset), so
 a later pass of the same kind does not re-prompt a refused fact; a pass refused or
 failed before it completes leaves that marker where it was, as any such pass does

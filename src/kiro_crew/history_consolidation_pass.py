@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.history_consolidation_memory import (
     _SEMANTIC_OMISSION_NOTICE,
+    _audit_oversized_semantic,
     _bounded_semantic_table,
     _is_plausible_memory_file,
     _refuse_oversized_semantic,
@@ -941,7 +942,7 @@ async def _consolidate(
             # The consolidation size bound, on the answer routing returned, as the V1
             # writer applies it: routing reads and logs every item as it would without
             # the bound (_refuse_oversized_semantic).
-            consolidation, _ = _refuse_oversized_semantic(
+            consolidation, oversized = _refuse_oversized_semantic(
                 consolidation,
                 self._logger,
                 vector_store=store,
@@ -982,6 +983,9 @@ async def _consolidate(
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
+                    # One memory_events row per refused value, under this hold and
+                    # before apply_consolidation opens its transaction.
+                    _audit_oversized_semantic(store, oversized, key)
                     applied = store.apply_consolidation(
                         source_id=source_id,
                         session_key=key,

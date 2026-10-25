@@ -244,6 +244,7 @@ _FAISS_FILE = "memory.faiss"
 _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.ALLOWLIST,
     SemanticRejectCode.CONFIDENCE,
+    SemanticRejectCode.CONSOLIDATION_VALUE_SIZE,
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
     SemanticRejectCode.VALUE_EMPTY,
