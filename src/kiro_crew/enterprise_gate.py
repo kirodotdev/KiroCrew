@@ -2,8 +2,10 @@
 
 Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
 "Enterprise gate". In an enterprise build (``edition.is_enterprise()``) the
-gateway starts with the gate CLOSED and opens it only once a probe has seen a
-valid kiro login. While it is closed, the gateway middleware in
+gateway does not start at all without a kiro login (``kiro_crew.enterprise_boot``
+exits before the bind), so the gate starts OPEN. It closes when that login is
+lost or expires while the gateway runs, and reopens once a probe sees a valid
+login again. While it is closed, the gateway middleware in
 ``dashboard/enterprise_gate_middleware.py`` denies every route except the few a
 login screen needs. An ``oss`` build never builds a gate.
 
@@ -72,9 +74,10 @@ GateListener = Callable[[GateStatus], None]
 class EnterpriseGate:
     """Open or closed, plus why. Safe to call from any thread.
 
-    Starts closed for every reason in *closed_for*. ``close`` and ``clear`` return
-    whether the open/closed state changed, and call each listener with the new
-    status when it did. Listeners run on the caller's thread, outside the lock;
+    Starts closed for every reason in *closed_for*, open when it is empty (the
+    gateway passes it empty: its boot login check already passed). ``close`` and
+    ``clear`` return whether the open/closed state changed, and call each
+    listener with the new status when it did. Listeners run on the caller's thread, outside the lock;
     one that raises is logged and does not stop the others.
     """
 

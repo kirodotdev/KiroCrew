@@ -338,9 +338,23 @@ async def _ws(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+def _install(app: web.Application, login: FakeLogin) -> None:
+    """Install the gate as boot does (after a seen login), then apply *login*.
+
+    A boot with no login exits before this (``test_enterprise_boot.py``), so a
+    closed gate here is always a login lost while the gateway runs.
+    """
+    wanted = login.signed_in
+    login.signed_in = True
+    gate_mw.install_enterprise_gate(app, login)
+    login.signed_in = wanted
+    if not wanted:
+        app[gate_mw.GATE_APP_KEY].close(REASON_LOGIN_REQUIRED)
+
+
 def _gated_app(login: FakeLogin) -> web.Application:
     app = web.Application()
-    gate_mw.install_enterprise_gate(app, login)
+    _install(app, login)
     middleware = gate_mw.enterprise_gate_middleware_for(app, spa_shell_handler=_shell)
     assert middleware is not None
     app.middlewares.append(middleware)
@@ -554,7 +568,7 @@ def _status_app(
         return await handler(request)
 
     app = web.Application(middlewares=[as_dashboard_user])
-    gate_mw.install_enterprise_gate(app, login)
+    _install(app, login)
     middleware = gate_mw.enterprise_gate_middleware_for(app, spa_shell_handler=None)
     assert middleware is not None
     app.middlewares.append(middleware)
@@ -654,7 +668,7 @@ def test_enterprise_chain_puts_the_gate_right_after_token_auth(enterprise: None)
     token_auth._is_token_auth = True  # type: ignore[attr-defined]
     before, after = object(), object()
     app = web.Application()
-    gate_mw.install_enterprise_gate(app, FakeLogin())
+    gate_mw.install_enterprise_gate(app, FakeLogin(signed_in=True))
     app.middlewares.extend([before, token_auth, after])  # type: ignore[list-item]
     server._insert_enterprise_gate(app, spa_shell_handler=None)
     chain = list(app.middlewares)

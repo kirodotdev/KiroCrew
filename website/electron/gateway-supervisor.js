@@ -49,6 +49,10 @@ const {
   tailLines,
   isPortInUse,
 } = require("./gateway-wait");
+const { readBakedEdition } = require("./edition");
+
+// Read once: the edition is part of the build, not of any one launch.
+const BAKED_EDITION = readBakedEdition();
 const { createLivenessMonitor, createBackendProbe } = require("./gateway-liveness");
 const {
   chooseRecoveryStrategy,
@@ -932,6 +936,7 @@ function createGatewaySupervisor({
       maxWaitMs: gatewayWaitTimeoutMs({
         platform: processObj.platform,
         watchSpawn: watchSpawn && gatewayOwnership === "spawned",
+        edition: BAKED_EDITION,
       }),
       pollIntervalMs: POLL_INTERVAL_MS,
     });

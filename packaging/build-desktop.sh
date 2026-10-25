@@ -943,7 +943,7 @@ fi
 # ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
 # stale declaration behind for a hand-run electron-builder to pack. The baked
 # auth allowlist (step 3b2) is cleared the same way.
-rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
+rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
   log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
@@ -1028,10 +1028,31 @@ if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
     process.stdout.write(v);
   ' "$ELECTRON_DIR/auth-allowlist.js" "$KIROCREW_AUTH_SERVER_ALLOWLIST")" \
     || { echo "❌ KIROCREW_AUTH_SERVER_ALLOWLIST rejected: $KIROCREW_AUTH_SERVER_ALLOWLIST" >&2; exit 1; }
-  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"' EXIT
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"' EXIT
   printf '%s\n' "$AUTH_ALLOWLIST" > "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
   log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
+
+# --- 3b3. Baked EDITION (enterprise only) ------------------------------------
+# The same stamp the backend's kiro_crew/edition.py gets from setup.py:
+# KIROCREW_BUILD_EDITION (`make desktop EDITION=enterprise`). An enterprise build
+# stages $ELECTRON_DIR/EDITION, packed into app.asar by package.json's `files`
+# list and read by website/electron/edition.js, so the app gives its local
+# gateway time for the login and policy checks it runs before binding. An oss
+# build stages nothing, so its app is unchanged. Any other value fails the
+# build, as setup.py refuses it. Removed on exit with the other baked inputs.
+case "${KIROCREW_BUILD_EDITION:-oss}" in
+  oss) ;;
+  enterprise)
+    trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"' EXIT
+    printf 'enterprise\n' > "$ELECTRON_DIR/EDITION"
+    log "Baking EDITION=enterprise into the app"
+    ;;
+  *)
+    echo "❌ KIROCREW_BUILD_EDITION must be oss or enterprise, not: ${KIROCREW_BUILD_EDITION}" >&2
+    exit 1
+    ;;
+esac
 
 # --- 3c. Bundle kiro-cli into the app resources (opt-in) ----------------------
 # OFF by default. The shipped app detects the kiro-cli the user installed, and

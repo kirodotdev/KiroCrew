@@ -627,6 +627,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.discord.client import DiscordClient
     from kiro_crew.imessage.client import IMessageClient
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
     from kiro_crew.memory_startup import MemoryStartup
     from kiro_crew.messaging.registry import ChannelDescriptor
     from kiro_crew.providers.base import LLMProvider
@@ -695,6 +696,7 @@ class GatewayOrchestrator:
     _json_ready: bool
     _approval_mode: str | None
     _test_mode: bool
+    _boot_kiro_service: KiroPrerequisiteService | None
     _app_token: str
     _bot_token: str
     _owner_id: str

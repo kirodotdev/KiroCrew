@@ -127,7 +127,11 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_mark_setup_complete": ("function", False, "(self) -> 'None'"),
     "_maybe_latch_interim_identity": ("function", False, "(self, fingerprint: 'str') -> 'None'"),
     "_missing_agent_specs": ("staticmethod", False, "() -> 'list[str]'"),
-    "_probe": ("function", True, "(self, *, force: 'bool' = False) -> 'PrerequisiteStatus'"),
+    "_probe": (
+        "function",
+        True,
+        "(self, *, force: 'bool' = False, login_only: 'bool' = False) -> 'PrerequisiteStatus'",
+    ),
     "_probe_acp_support": ("function", True, "(self, executable: 'str') -> 'bool'"),
     "_probe_kas_spec_loading": ("function", True, "(self) -> 'tuple[list[str], str]'"),
     "_probe_spec_acceptance": (
@@ -150,6 +154,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_snapshot_dict": ("function", False, "(self) -> 'dict[str, Any]'"),
     "_stamp_probe": ("function", False, "(self, identity: 'str') -> 'None'"),
     "authenticated": ("property", False, "(self) -> 'bool'"),
+    "boot_login_status": ("function", True, "(self) -> 'PrerequisiteStatus'"),
     "close": ("function", True, "(self) -> 'None'"),
     "current_identity_fingerprint": (
         "function",

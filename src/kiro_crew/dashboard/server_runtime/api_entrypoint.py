@@ -99,6 +99,8 @@ async def start_api_server(
     local_only: bool = True,
     configured_host: str = "",
     assume_kiro_ready: bool = False,
+    # The KiroPrerequisiteService whose enterprise boot probe saw the login.
+    kiro_prerequisite_service: Any = None,
     conversation_log: Any = None,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
     context_builder: ContextBuilder | None = None,
@@ -181,15 +183,23 @@ async def start_api_server(
     from kiro_crew.slack.handler import load_voice_reply_config
 
     await asyncio.to_thread(load_voice_reply_config)
+    # Enterprise build only: no kiro login, no Crew. The gateway hands in the
+    # service whose boot probe saw the login; a caller that did not run that
+    # check gets it here, still before the bind. A failure exits non-zero.
+    from kiro_crew.enterprise_boot import require_kiro_login
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
-    app["kiro_prerequisite_service"] = await asyncio.to_thread(
-        KiroPrerequisiteService,
-        assume_ready=assume_kiro_ready,
-    )
+    if kiro_prerequisite_service is None:
+        kiro_prerequisite_service = await require_kiro_login(assume_ready=assume_kiro_ready)
+    if kiro_prerequisite_service is None:
+        kiro_prerequisite_service = await asyncio.to_thread(
+            KiroPrerequisiteService,
+            assume_ready=assume_kiro_ready,
+        )
+    app["kiro_prerequisite_service"] = kiro_prerequisite_service
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
-    # Enterprise build only: start CLOSED until a probe sees a kiro login. The
-    # middleware chain installed below reads the gate this puts on the app.
+    # Enterprise build only: the gate starts open on that verified login and
+    # closes if it expires. The middleware chain installed below reads it.
     from kiro_crew.dashboard.enterprise_gate_middleware import install_enterprise_gate
 
     install_enterprise_gate(app, app["kiro_prerequisite_service"])

@@ -365,7 +365,14 @@ async def run_gateway(
     # Idempotent: a no-op when ``cli.main`` already booted in this process.
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
-    boot_platform(cfg)
+    try:
+        boot_platform(cfg)
+    except Exception as exc:
+        # Enterprise build: failed governance rules exit with the fix named.
+        from kiro_crew.enterprise_boot import refuse_policy_boot
+
+        refuse_policy_boot(exc)
+        raise
 
     # ── KAS kiro-cli floor ──
     # A configured KAS on a kiro-cli that cannot select the KAS engine falls back

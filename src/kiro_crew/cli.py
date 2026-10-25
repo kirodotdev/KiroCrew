@@ -674,6 +674,12 @@ def main() -> None:
         # mcp-core/mcp-cron/etc. with no security overlay or credential
         # redaction. PluginAdmissionError subclasses PlatformCompositionError.
         if isinstance(exc, PlatformCompositionError):
+            if args.command != "doctor":
+                # Enterprise build: governance rules that did not load stop Crew
+                # here, before any server binds, with what failed and the fix.
+                from kiro_crew.enterprise_boot import refuse_policy_boot
+
+                refuse_policy_boot(exc)
             if args.command == "doctor":
                 logging.getLogger("kiro_crew").debug(
                     "platform composition failed; doctor will report it", exc_info=True

@@ -172,6 +172,7 @@
       "data-home.js",
       "auto-update.js",
       "auth-allowlist.js",
+      "edition.js",
       "runtime/update/state-reporter.js",
       "runtime/update/managed-lane.js",
       "runtime/update/freshness-gate.js",
@@ -270,7 +271,8 @@
       "trayTemplate.png",
       "trayTemplate@2x.png",
       "EXTERNALLY-MANAGED",
-      "AUTH-SERVER-ALLOWLIST"
+      "AUTH-SERVER-ALLOWLIST",
+      "EDITION"
     ],
     "extraResources": [
       {

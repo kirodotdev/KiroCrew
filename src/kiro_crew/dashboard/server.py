@@ -469,6 +469,7 @@ if TYPE_CHECKING:
         SubagentManager,
         TaskRunner,
     )
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 # aiohttp's static file handler uses its own ``mimetypes.MimeTypes()`` instance
 # (``aiohttp.web_fileresponse.CONTENT_TYPES``) which does NOT load the system
@@ -711,6 +712,7 @@ async def start_dashboard(
     slack_client: Any = None,
     owner_id: str = "",
     assume_kiro_ready: bool = False,
+    kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
 ) -> tuple[web.AppRunner, DashboardState]:
@@ -810,15 +812,23 @@ async def start_dashboard(
     # ``setup_tunnel`` assigns it further below, and this is still well before
     # ``runner.setup()`` freezes the signal lists. See ``_wire_tunnel_shutdown``.
     _wire_tunnel_shutdown(app, state)
+    # Enterprise build only: no kiro login, no Crew. The gateway hands in the
+    # service whose boot probe saw the login; a caller that did not run that
+    # check gets it here, still before the bind. A failure exits non-zero.
+    from kiro_crew.enterprise_boot import require_kiro_login
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
-    app["kiro_prerequisite_service"] = await asyncio.to_thread(
-        KiroPrerequisiteService,
-        assume_ready=assume_kiro_ready,
-    )
+    if kiro_prerequisite_service is None:
+        kiro_prerequisite_service = await require_kiro_login(assume_ready=assume_kiro_ready)
+    if kiro_prerequisite_service is None:
+        kiro_prerequisite_service = await asyncio.to_thread(
+            KiroPrerequisiteService,
+            assume_ready=assume_kiro_ready,
+        )
+    app["kiro_prerequisite_service"] = kiro_prerequisite_service
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
-    # Enterprise build only: start CLOSED until a probe sees a kiro login. The
-    # middleware chain installed below reads the gate this puts on the app.
+    # Enterprise build only: the gate starts open on that verified login and
+    # closes if it expires. The middleware chain installed below reads it.
     from kiro_crew.dashboard.enterprise_gate_middleware import install_enterprise_gate
 
     install_enterprise_gate(app, app["kiro_prerequisite_service"])

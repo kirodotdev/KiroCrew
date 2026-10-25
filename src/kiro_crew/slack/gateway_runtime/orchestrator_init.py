@@ -190,6 +190,9 @@ def __init__(
     # write-after-clear race without any event-loop dependency.
     self._marker_clear_pending = threading.Event()
     self._dashboard_runner = None
+    # Enterprise build: the service whose boot probe saw the kiro login, handed
+    # to the dashboard so its gate starts open on that verdict. None in oss.
+    self._boot_kiro_service = None
     self._handler_tasks = set()  # type: ignore[type-arg]
     self._session_tasks = {}  # type: ignore[type-arg]
     self._pending_queue = {}

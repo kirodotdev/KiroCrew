@@ -775,6 +775,17 @@ class KiroPrerequisiteService:
             return False
         return bool(self._status.authenticated)
 
+    async def boot_login_status(self) -> PrerequisiteStatus:
+        """Probe ``--version`` and ``whoami`` only, and return the latched status.
+
+        For the enterprise boot check, which runs before the gateway binds: the
+        spec and ``acp`` checks of a full probe run after the bind instead (a
+        probe that reached ``whoami`` is left not done, so the next read runs the
+        full one). ``authenticated`` is the verdict; it fails closed.
+        """
+
+        return await self._probe(force=True, login_only=True)
+
     async def session_ready(self) -> bool:
         """Return the latched readiness. Never probes; never blocks a turn.
 

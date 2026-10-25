@@ -264,7 +264,43 @@ def _stamp_probe(self: KiroPrerequisiteService, identity: str) -> None:
     self._probe_identity = identity
 
 
-async def _probe(self: KiroPrerequisiteService, *, force: bool = False) -> PrerequisiteStatus:
+def _latch_login_only(
+    self: KiroPrerequisiteService, whoami: ProcessResult, probe_identity: str
+) -> PrerequisiteStatus:
+    """Latch the sign-in verdict alone, for the enterprise boot check.
+
+    Readiness stays False and the probe is NOT marked done, so the next read
+    (the post-bind warm-up, the login watch) runs the full probe with the spec
+    and ``acp`` checks this skipped. A ``whoami`` that did not clearly answer
+    signed out carries its failure in ``probe_error``, so it is not reported
+    as a missing sign-in.
+    """
+    login_cmd, sso_cmd, bundled = login_commands_for(self._viable_binary, self._environ)
+    unclear = not whoami.ok and not _whoami_says_signed_out(whoami)
+    if unclear and whoami.timed_out:
+        error = f"kiro-cli whoami timed out after {_IDENTITY_PROBE_TIMEOUT_SECS}s"
+    elif unclear:
+        error = _probe_failure_text(whoami) or "kiro-cli whoami failed"
+    else:
+        error = ""
+    self._status = PrerequisiteStatus(
+        platform=_platform_label(self._platform),
+        installed=True,
+        authenticated=whoami.ok,
+        ready=False,
+        initial_setup_complete=self._initial_setup_complete,
+        login_command=login_cmd,
+        sso_login_command=sso_cmd,
+        bundled_cli=bundled,
+        probe_error=error,
+    )
+    self._probe_identity = probe_identity
+    return self._status
+
+
+async def _probe(
+    self: KiroPrerequisiteService, *, force: bool = False, login_only: bool = False
+) -> PrerequisiteStatus:
     async with self._probe_lock:
         # Read the identity BEFORE running whoami, and stamp that value on
         # whatever verdict this probe reaches. The order matters: if the store
@@ -474,6 +510,8 @@ async def _probe(self: KiroPrerequisiteService, *, force: bool = False) -> Prere
         whoami = await self._audited_identity_probe(self._viable_binary, isolate_home=False)
         if whoami.ok:
             await asyncio.to_thread(self._mark_setup_complete)
+        if login_only:
+            return _latch_login_only(self, whoami, probe_identity)
         # Kiro CLI acceptance is checked here, on the probe path, because it
         # costs a spawn per spec — the every-read overlay stays stat-only. It
         # needs a successful identity probe: ``agent validate`` refuses to run

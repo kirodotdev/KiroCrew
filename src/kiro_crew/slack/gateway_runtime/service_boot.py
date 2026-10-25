@@ -653,6 +653,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         slack_client=self.slack,
         owner_id=self._owner_id,
         assume_kiro_ready=self._test_mode,
+        kiro_prerequisite_service=self._boot_kiro_service,
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
     )
@@ -697,6 +698,7 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
         local_only=self._local_only,
         configured_host=configured_host,
         assume_kiro_ready=self._test_mode,
+        kiro_prerequisite_service=self._boot_kiro_service,
         conversation_log=self.conv_log,
         schedule_memory_preparation=self._schedule_memory_preparation,
     )
@@ -846,6 +848,13 @@ async def run(self: GatewayOrchestrator) -> None:
         await asyncio.to_thread(warm_backend)
     except RuntimeError:
         logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
+
+    # Enterprise build only: no kiro login, no Crew. Checked before any service
+    # starts and long before the HTTP server binds; a failure exits non-zero.
+    # After the sandbox warm-up because the probe runs kiro-cli in the sandbox.
+    from kiro_crew.enterprise_boot import require_kiro_login
+
+    self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)
 
     # ── Initialise all services ──
     from kiro_crew.slack.events import SeenCache, init_socket_mode
