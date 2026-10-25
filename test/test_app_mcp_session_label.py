@@ -25,19 +25,19 @@ LABEL = "KIROCREW_SESSION_LABEL"
 KEY = "dashboard:chat-label-1"
 
 APP = {
-    "command": "/opt/app/bin/memory-mcp",
+    "command": "/opt/app/bin/notes-mcp",
     "args": ["serve", "--stdio"],
     "env": {"APP_MODE": "chat"},
     MARKER: True,
 }
 
 
-def _spec(entry=None, *, tools=("@kirocrew-core", "@memory:memory")):
+def _spec(entry=None, *, tools=("@kirocrew-core", "@notes:notes")):
     return {
         "tools": list(tools),
         "mcpServers": {
             "kirocrew-core": {"command": "test-crew", "args": ["mcp-core"]},
-            "memory:memory": dict(APP if entry is None else entry),
+            "notes:notes": dict(APP if entry is None else entry),
         },
     }
 
@@ -62,7 +62,7 @@ def _label_elements(spec, tmp_path, session_key=KEY, existing=()):
     from kiro_crew.acp.session_label import kiro_session_label_elements
 
     return kiro_session_label_elements(
-        "memory--agent",
+        "notes--agent",
         work_dir=tmp_path,
         session_key=session_key,
         existing_names=existing,
@@ -76,7 +76,7 @@ class TestKiroLabelElements:
     ):
         (element,) = _label_elements(_spec(), tmp_path)
 
-        assert element["name"] == "memory:memory"
+        assert element["name"] == "notes:notes"
         assert (element["command"], element["args"]) == (APP["command"], APP["args"])
         assert element["type"] == "stdio"
         assert _env(element) == {"APP_MODE": "chat", LABEL: KEY}
@@ -111,19 +111,19 @@ class TestKiroLabelElements:
 
     def test_a_name_already_in_the_array_is_not_redeclared(self, quiet_sources, tmp_path):
         """A broker stub (shared across sessions) or Crew's own element keeps its slot."""
-        assert _label_elements(_spec(), tmp_path, existing={"memory:memory"}) == []
+        assert _label_elements(_spec(), tmp_path, existing={"notes:notes"}) == []
 
     def test_crews_own_servers_never_take_the_label_path(self, quiet_sources, tmp_path):
         spec = _spec()
         spec["mcpServers"]["kirocrew-core"][MARKER] = True
         names = [e["name"] for e in _label_elements(spec, tmp_path)]
-        assert names == ["memory:memory"]
+        assert names == ["notes:notes"]
 
     def test_a_builtin_app_server_keeps_its_token_element(
         self, quiet_sources, tmp_path, monkeypatch
     ):
         monkeypatch.setattr(
-            quiet_sources, "builtin_app_identity_launches", lambda: {"memory:memory": {}}
+            quiet_sources, "builtin_app_identity_launches", lambda: {"notes:notes": {}}
         )
         assert _label_elements(_spec(), tmp_path) == []
 
@@ -139,8 +139,8 @@ class TestKiroLabelElements:
             {"timeout": 120000},
             {"cwd": "/somewhere"},
             {"autoApprove": ["recall"]},
-            {"env": {"TOKEN": "${MEMORY_TOKEN}"}},
-            {"env": {"TOKEN": "secret://memory"}},
+            {"env": {"TOKEN": "${NOTES_TOKEN}"}},
+            {"env": {"TOKEN": "secret://notes"}},
             {"url": "http://127.0.0.1:9100/mcp", "type": "http"},
         ],
         ids=[
@@ -211,7 +211,7 @@ async def test_the_shared_kiro_runtime_sends_the_label_on_the_sessions_own_eleme
         await runtime.create_session(session_key=KEY)
 
     servers = {item["name"]: item for item in sent[0]["mcpServers"]}
-    assert _env(servers["memory:memory"]) == {"APP_MODE": "chat", LABEL: KEY}
+    assert _env(servers["notes:notes"]) == {"APP_MODE": "chat", LABEL: KEY}
     assert STUB_SESSION_TOKEN_ENV in _env(servers["kirocrew-core"])
     assert LABEL not in _env(servers["kirocrew-core"])
 
@@ -249,7 +249,7 @@ async def test_a_pool_session_with_no_owner_yet_starts_its_servers_unlabelled(
     monkeypatch.setattr(runtime, "_send_and_await", send)
     await runtime.create_session(session_key="")
     names = {item["name"] for item in sent[0]["mcpServers"]}
-    assert "memory:memory" not in names
+    assert "notes:notes" not in names
 
 
 class TestKasProjection:
@@ -261,26 +261,26 @@ class TestKasProjection:
         from kiro_crew.acp.kas_agents import to_client_custom_agent
 
         spec = kas_spec(
-            tools=["@kirocrew-core", "@memory:memory"],
-            mcpServers={"kirocrew-core": {"command": "x"}, "memory:memory": entry},
+            tools=["@kirocrew-core", "@notes:notes"],
+            mcpServers={"kirocrew-core": {"command": "x"}, "notes:notes": entry},
         )
         return to_client_custom_agent("a", spec, "p", session_key=session_key)["mcpServers"]
 
     def test_an_opted_in_server_gains_the_label_and_nothing_else(self):
         out = self._project({**APP, "env": {"API_TOKEN": "s3cr3t"}})
-        memory = out["memory:memory"]
-        assert memory["env"] == {LABEL: KEY}
-        assert MARKER not in memory
+        notes = out["notes:notes"]
+        assert notes["env"] == {LABEL: KEY}
+        assert MARKER not in notes
         assert "s3cr3t" not in str(out)
 
     def test_an_unmarked_server_is_unchanged(self):
         entry = {k: v for k, v in APP.items() if k != MARKER}
-        assert "env" not in self._project(entry)["memory:memory"]
+        assert "env" not in self._project(entry)["notes:notes"]
 
     def test_no_session_key_means_no_label(self):
         out = self._project(dict(APP), session_key="")
-        assert LABEL not in out["memory:memory"].get("env", {})
-        assert MARKER not in out["memory:memory"]
+        assert LABEL not in out["notes:notes"].get("env", {})
+        assert MARKER not in out["notes:notes"]
 
     def test_a_managed_server_keeps_its_own_identity_not_a_label(self):
         out = self._project(dict(APP))
