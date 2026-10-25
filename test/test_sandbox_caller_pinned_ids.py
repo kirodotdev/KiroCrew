@@ -755,3 +755,18 @@ class TestThePrivateWindowGate:
         """The spellings differ by a separator the comparison has to normalise."""
         apps, leaf, _contains, _ordinary = self._paths(tmp_path)
         assert sandbox_plan.private_windows((leaf,), [apps, leaf + os.sep])[0] == []
+
+    @pytest.mark.skipif(os.name != "nt", reason="mixed separators are a Windows spelling")
+    def test_windows_private_window_matches_mixed_default_home_path(self, tmp_path):
+        """The default Crew home contains a forward-slash config path segment."""
+        base = str(tmp_path).rstrip("\\/")
+        mixed_scratch = (base + "\\.kiro/crew/scratch").upper()
+        runtime = str(tmp_path / ".kiro" / "crew" / "scratch" / "runtime-probe")
+        assert sandbox_plan.private_windows((runtime,), [mixed_scratch])[0] == [runtime]
+
+    @pytest.mark.skipif(os.name != "nt", reason="mixed separators are a Windows spelling")
+    def test_windows_private_window_still_refuses_mixed_nested_mask(self, tmp_path):
+        base = str(tmp_path).rstrip("\\/")
+        runtime = str(tmp_path / ".kiro" / "crew" / "scratch" / "runtime-probe")
+        nested_hidden = (base + "\\.kiro/crew/scratch/runtime-probe/credentials").upper()
+        assert sandbox_plan.private_windows((runtime,), [nested_hidden])[0] == []

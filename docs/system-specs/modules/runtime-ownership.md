@@ -1,5 +1,21 @@
 # Runtime Ownership — Design Document
 
+## Native Windows settings retirement
+
+A confirmed routing change claims the existing physical-start admission fence
+before requesting session shutdown. Cleanup reservations remain available, so
+retirement can continue while new processes refuse admission. The gateway manager
+keeps the original Windows process/receipt until whole-tree teardown succeeds,
+including roots which have already exited. Pending receipts are advanced by the
+existing retry mechanism; no PID-only termination or second process registry is
+introduced. Broker shutdown must succeed before the protected-document commit.
+
+The settings writer then obtains an exclusive OS lease against native launchers'
+lifetime read leases and preflights legacy file pins. Save, rebuild and broker
+activation use the existing restart and boot owners. Unconfirmed retirement or
+activation leaves admission closed with a terminal, attributable status and an
+explicit owner recovery action. Linux/macOS process ownership is unchanged.
+
 ## Overview
 
 One agent runtime is one operating-system process, and one process can serve

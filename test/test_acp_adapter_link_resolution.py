@@ -30,6 +30,7 @@ from typing import Callable
 import pytest
 
 import kiro_crew.acp.client as acp_client
+import kiro_crew.acp.launch as acp_launch
 from conftest import cap_node_module_walk, make_dir_link
 from kiro_crew.agent_sdk.backends import NODE_ADAPTER_ENTRY_SEGMENTS
 
@@ -83,6 +84,52 @@ _ADAPTERS = [
 # The override env vars of the three adapters: a host that sets one would bypass the
 # rung under test, so every case clears them all.
 _OVERRIDE_ENV_VARS = ("CLAUDE_AGENT_ACP_BIN", "CODEX_ACP_BIN", "PI_ACP_BIN")
+
+
+class TestConfiguredNodeAdapterInterpreter:
+    """A Node ACP adapter must use Crew's selected Node ahead of inherited PATH."""
+
+    @pytest.mark.parametrize("adapter", _ADAPTERS)
+    def test_crew_node_bin_dir_precedes_old_system_node(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter: _Adapter
+    ) -> None:
+        root = tmp_path / "global" / "node_modules"
+        entry = _hoisted_layout(root, adapter)
+        selected_dir = tmp_path / "selected-node"
+        selected_dir.mkdir()
+        selected_node = selected_dir / (
+            "node.exe" if acp_client.platform_compat.IS_WINDOWS else "node"
+        )
+        selected_node.write_bytes(b"selected Node")
+        inherited_node = tmp_path / "old-system-node"
+        inherited_node.write_bytes(b"old system Node")
+
+        for var in _OVERRIDE_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(acp_client, "_vendored_acp_roots", lambda *_a, **_kw: [root])
+        monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: None)
+        monkeypatch.setattr(acp_client, "_mise_node_installs_dir", lambda: tmp_path / "no-mise")
+        monkeypatch.setattr(acp_client, "_resolve_node_for_script", lambda _script: None)
+        monkeypatch.setattr(acp_launch, "node_bin_dirs", lambda: (str(selected_dir),))
+        searched_node_paths: list[str] = []
+
+        def which(name: str, mode: int = os.F_OK | os.X_OK, path: str | None = None) -> str | None:
+            if name == adapter.bin_name:
+                return None
+            if name == "node":
+                searched_node_paths.append(path or "")
+                if str(selected_dir) in (path or "").split(os.pathsep):
+                    return str(selected_node)
+                return str(inherited_node)
+            return None
+
+        monkeypatch.setattr(acp_client.shutil, "which", which)
+
+        argv, _searched = adapter.resolve()
+
+        assert argv == [str(selected_node), str(entry.resolve())]
+        assert searched_node_paths
+        assert str(selected_dir) in searched_node_paths[0].split(os.pathsep)
 
 
 def _hoisted_layout(root: Path, adapter: _Adapter) -> Path:

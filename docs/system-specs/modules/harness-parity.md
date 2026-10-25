@@ -1,5 +1,11 @@
 # Harness parity: Kiro first, everything else adapted
 
+The experimental native Windows MXC runner changes confinement, not harness
+membership: Codex remains enforced and is never added to the internal-sandbox
+or first-party bypass sets. Its two resident wrapper generations are included in
+Codex's bounded core RSS depth. A passing capability probe does not establish ACP
+or approval parity; those require a native integration run before release.
+
 A *harness* is the agent process Kiro Crew drives over ACP. Kiro Crew has one
 first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`

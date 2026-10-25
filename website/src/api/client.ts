@@ -179,6 +179,8 @@ export type {
   McpMeasureProgress,
   McpGatewayFootprint,
   McpManagedServer,
+  NativeSettingsConsent,
+  NativeRoutingStatus,
 } from './client/mcp'
 export type {
   CrewmateExportChoices,
