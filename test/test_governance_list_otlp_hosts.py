@@ -152,7 +152,12 @@ class TestTelemetryDestinations:
         provider = _provider_with(monkeypatch, self._DESTS)
         _install_policy(monkeypatch, None)
         assert provider._otlp_destinations(_CFG) == self._DESTS
-        assert fake_sel.log_governance_decision.call_count == 0
+        # A no-policy grant is still an egress grant, so the build audits it.
+        rows = [c[1] for c in fake_sel.log_governance_decision.call_args_list]
+        assert [(r["item"], r["outcome"]) for r in rows] == [
+            ("otlp_hosts:otel.corp.example", "allowed"),
+            ("otlp_hosts:evil.example", "allowed"),
+        ]
 
     def test_the_enable_gate_still_reports_egress_for_a_refused_host(
         self, fake_sel, monkeypatch
@@ -319,6 +324,9 @@ class TestEndpointReadings:
             ("https://b\u00fccher.example/v1/metrics", "xn--bcher-*"),  # sent as xn--
             ("https://stra\u00dfe.example/v1/metrics", "strasse.example"),  # urllib's idna
             ("https://fa%C3%9F.example/v1/metrics", "fass.example"),  # decoded, then idna
+            ("https://clip+one.blocked.example/v1/metrics", "*.blocked.example"),  # odd ASCII
+            ("https://clip+one.blocked.example/v1/metrics", "clip+*.blocked.example"),
+            ("https://clip+one.blocked.example/v1/metrics", "clip+one.blocked.example"),
         ],
         ids=[
             "decimal",
@@ -329,6 +337,9 @@ class TestEndpointReadings:
             "unicode",
             "sharp-s",
             "pct-sharp-s",
+            "odd-ascii",
+            "odd-ascii-glob",
+            "odd-ascii-exact",
         ],
     )
     def test_a_deny_names_every_spelling_of_its_host(
@@ -385,6 +396,39 @@ class TestUnevaluableCeiling:
         assert "fail-closed" in rows[0]["reason"]
 
 
+class TestWrongShape:
+    @pytest.mark.parametrize("value", [["otel.corp.example"], "otel.corp.example", 1, None])
+    def test_a_host_list_in_the_wrong_shape_fails_to_load(self, value) -> None:
+        """A malformed host list must not load as no list, which permits every host."""
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(PlatformCompositionError, match="scopes.otlp_hosts must be an object"):
+            parse_policy(_policy("capabilities.telemetry", {"scopes": {"otlp_hosts": value}}))
+
+
+class TestNoCeilingAsksTheEvaluator:
+    def test_no_ceiling_follows_what_resolve_answers(self, fake_sel, monkeypatch) -> None:
+        """With no policy, the build and each export take ``resolve``'s answer."""
+        from types import SimpleNamespace
+
+        from kiro_crew.metrics import otlp_governance as og
+
+        dest = SimpleNamespace(name="d", endpoint="https://otel.corp.example/v1/metrics")
+        assert og.governed_destinations([dest], None) == (dest,)
+
+        def _deny(*_a, **_k):
+            return SimpleNamespace(permitted=False, rule="baseline", reason="denied")
+
+        monkeypatch.setattr("kiro_crew.platform.governance.resolve", _deny)
+        assert og.governed_destinations([dest], None) == ()
+
+        sent = []
+        exporter = SimpleNamespace(export=lambda data, *a, **k: sent.append(data) or "OK")
+        og.gate_exporter(exporter, dest.endpoint, lambda: None)
+        exporter.export("batch")
+        assert sent == []
+
+
 class TestUnmatchableEntriesAreRefused:
     """An entry no host reading can match fails the policy load, instead of a
     deny that refuses nothing or an allow that admits nothing."""
@@ -402,15 +446,14 @@ class TestUnmatchableEntriesAreRefused:
             "010.0.0.5",
             "fe80::1%eth0",
             "[2001:db8::1]",
-            "ev%69l.example",
             "otel.corp.example:4318",
-            "ev%69l*",
-            "*.ev%69l.example",
             "fe80::1%eth*",
             "evil.example:*",
             "*@evil.example",
             "evil.example/*",
             "[ab]vil.example",
+            "ev il.example",
+            "ev\\il*",
         ],
         ids=[
             "unicode",
@@ -420,15 +463,14 @@ class TestUnmatchableEntriesAreRefused:
             "octal-ipv4",
             "zoned-ipv6",
             "bracketed-ipv6",
-            "percent",
             "port",
-            "glob-percent",
-            "glob-percent-label",
             "glob-zone",
             "glob-port",
             "glob-userinfo",
             "glob-path",
             "glob-class",
+            "space",
+            "glob-backslash",
         ],
     )
     def test_the_policy_fails_to_load(self, mode, entry) -> None:
@@ -457,6 +499,11 @@ class TestUnmatchableEntriesAreRefused:
             "*",
             "10*",
             "*:1:0:0:1",
+            "clip+one.blocked.example",
+            "clip+*.blocked.example",
+            "ev%69l.example",
+            "*.ev%69l.example",
+            "a!*.blocked.example",
         ],
     )
     def test_a_matchable_entry_loads(self, entry) -> None:

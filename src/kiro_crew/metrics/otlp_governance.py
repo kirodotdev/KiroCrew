@@ -14,8 +14,9 @@ hold metrics to it:
   until it restarts.
 
 Policy layer only, like the beacon probe: both run process-wide with no session,
-so a per-surface profile is not asked. No ceiling, or a ceiling without the row or
-the ruleset, permits every host. An evaluation error denies (egress fails closed;
+so a per-surface profile is not asked. No ceiling is still asked through
+``resolve``, so the answer it gives with no policy holds; a ceiling without the row
+or the ruleset permits every host. An evaluation error denies (egress fails closed;
 local collection carries on). Enforcement decisions are SEL-audited: each build
 decision, and each change of a running reader's answer -- not every export, which
 would write a row per export interval.
@@ -112,11 +113,10 @@ def governed_destinations(
 
     *audit* is for the build that acts on the answer.
     """
-    kept = list(supplied)
-    if ceiling is None:
-        return tuple(kept)
     allowed = []
-    for dest in kept:
+    for dest in supplied:
+        # No ceiling is still asked through ``resolve``, so whatever the evaluator
+        # answers with no policy holds here too, and is audited like any other.
         permitted, host, rule, reason = _decide(ceiling, hosts_of(getattr(dest, "endpoint", "")))
         if audit:
             _audit(host, permitted, rule, reason, redact)
@@ -153,12 +153,7 @@ def gate_exporter(
     last = {"permitted": True}
 
     def export(metrics_data: Any, *args: Any, **kwargs: Any) -> Any:
-        current = ceiling()
-        permitted, host, rule, reason = (
-            (True, hosts[0] if hosts else "", "", "")
-            if current is None
-            else _decide(current, hosts)
-        )
+        permitted, host, rule, reason = _decide(ceiling(), hosts)
         if permitted != last["permitted"]:
             last["permitted"] = permitted
             _audit(host, permitted, rule, reason, redact)
