@@ -19326,6 +19326,8 @@
       "switch_sessions": "सेशन बदलने"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "डेस्कटॉप ऐप में रिमोट क्रू के अंदर पॉप-आउट विंडो काम नहीं करती। इसी क्रू में यहीं काम करते रहो।",
+      "desktop_app_could_not_open_pop_out_window": "डेस्कटॉप ऐप पॉप-आउट विंडो नहीं खोल सका। इसी विंडो में काम करते रहो।",
       "your_browser_blocked_the_pop_out_window_allow_po": "तुम्हारे ब्राउज़र ने पॉप-आउट विंडो ब्लॉक कर दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर कोशिश करें।"
     },
     "sanitize": {

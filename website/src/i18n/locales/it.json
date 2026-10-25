@@ -19620,6 +19620,8 @@
       "switch_sessions": "cambiare sessione"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "Nell'app desktop le finestre pop-out non funzionano dentro una crew remota. Continua a lavorare in questa crew qui.",
+      "desktop_app_could_not_open_pop_out_window": "L'app desktop non è riuscita ad aprire la finestra pop-out. Continua a lavorare in questa finestra.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Il browser ha bloccato la finestra pop-out. Consenti i pop-up per questo sito e riprova."
     },
     "sanitize": {

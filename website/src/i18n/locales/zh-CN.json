@@ -19032,6 +19032,8 @@
       "switch_sessions": "切换会话"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "在桌面应用中，远程 Crew 内无法使用弹出窗口。请继续在这里使用这个 Crew。",
+      "desktop_app_could_not_open_pop_out_window": "桌面应用无法打开弹出窗口。请继续在此窗口中工作。",
       "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"
     },
     "sanitize": {

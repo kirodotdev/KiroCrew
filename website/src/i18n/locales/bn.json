@@ -19326,6 +19326,8 @@
       "switch_sessions": "সেশন পরিবর্তন"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "ডেস্কটপ অ্যাপে রিমোট ক্রু-এর ভেতরে পপ-আউট উইন্ডো কাজ করে না। এই ক্রু-তে এখানেই কাজ করতে থাকো।",
+      "desktop_app_could_not_open_pop_out_window": "ডেস্কটপ অ্যাপ পপ-আউট উইন্ডো খুলতে পারেনি। এই উইন্ডোতেই কাজ করতে থাকো।",
       "your_browser_blocked_the_pop_out_window_allow_po": "তোমার ব্রাউজার পপ-আউট উইন্ডো ব্লক করেছে। এই সাইটের জন্য পপ-আপ চালু করো, তারপর আবার চেষ্টা করো।"
     },
     "sanitize": {

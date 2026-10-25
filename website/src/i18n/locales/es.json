@@ -19620,6 +19620,8 @@
       "switch_sessions": "cambiar de sesión"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "En la app de escritorio, las ventanas desacopladas no funcionan dentro de un crew remoto. Sigue trabajando en este crew aquí.",
+      "desktop_app_could_not_open_pop_out_window": "La app de escritorio no pudo abrir la ventana desacoplada. Sigue trabajando en esta ventana.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."
     },
     "sanitize": {

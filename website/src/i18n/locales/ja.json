@@ -19032,6 +19032,8 @@
       "switch_sessions": "セッションを変更"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "デスクトップアプリでは、リモートクルー内でポップアウトウィンドウを使えません。このクルーでここで作業を続けてください。",
+      "desktop_app_could_not_open_pop_out_window": "デスクトップアプリでポップアウトウィンドウを開けませんでした。このウィンドウで作業を続けてください。",
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"
     },
     "sanitize": {

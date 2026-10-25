@@ -19620,6 +19620,8 @@
       "switch_sessions": "alternar sessões"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "No app de desktop, janelas destacadas não funcionam dentro de uma crew remota. Continue trabalhando nesta crew aqui.",
+      "desktop_app_could_not_open_pop_out_window": "O app de desktop não conseguiu abrir a janela destacada. Continue trabalhando nesta janela.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Seu navegador bloqueou a janela destacada. Permita pop-ups para este site e tente novamente."
     },
     "sanitize": {

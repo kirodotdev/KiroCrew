@@ -19032,6 +19032,8 @@
       "switch_sessions": "세션을 전환"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "데스크톱 앱에서는 원격 크루 안에서 팝아웃 창을 쓸 수 없습니다. 이 크루에서 여기서 계속 작업하세요.",
+      "desktop_app_could_not_open_pop_out_window": "데스크톱 앱에서 팝아웃 창을 열 수 없습니다. 이 창에서 계속 작업하세요.",
       "your_browser_blocked_the_pop_out_window_allow_po": "브라우저가 팝아웃 창을 차단했습니다. 이 사이트의 팝업을 허용한 다음 다시 시도하세요."
     },
     "sanitize": {

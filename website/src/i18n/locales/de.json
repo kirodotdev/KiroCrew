@@ -19326,6 +19326,8 @@
       "switch_sessions": "das Wechseln von Sitzungen"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "In der Desktop-App funktionieren Pop-out-Fenster in einer Remote-Crew nicht. Arbeite in dieser Crew hier weiter.",
+      "desktop_app_could_not_open_pop_out_window": "Die Desktop-App konnte das Pop-out-Fenster nicht öffnen. Arbeite in diesem Fenster weiter.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Dein Browser hat das Pop-out-Fenster blockiert. Erlaube Pop-ups für diese Seite und versuche es erneut."
     },
     "sanitize": {

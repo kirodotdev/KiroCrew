@@ -19620,6 +19620,8 @@
       "switch_sessions": "changer de session"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "Dans l'app de bureau, les fenêtres détachées ne fonctionnent pas dans une crew distante. Continue à travailler dans cette crew ici.",
+      "desktop_app_could_not_open_pop_out_window": "L'app de bureau n'a pas pu ouvrir la fenêtre détachée. Continue à travailler dans cette fenêtre.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Votre navigateur a bloqué la fenêtre détachée. Autorisez les fenêtres pop-up pour ce site et réessayez."
     },
     "sanitize": {
