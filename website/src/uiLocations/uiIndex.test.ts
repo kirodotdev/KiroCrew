@@ -1212,7 +1212,7 @@ describe('gen:ui --out', () => {
   it('refuses to write the build-time auto tier next to the committed index, or with no file', () => {
     const r = run('--auto-out', path.join(path.dirname(COMMITTED), 'ui-index.auto.json'))
     expect(r.status).toBe(2)
-    expect(r.stderr).toMatch(/--auto-out must not be in src\/kiro_crew\/docs/)
+    expect(r.stderr).toMatch(/--auto-out must not be in src[\\/]kiro_crew[\\/]docs/)
     expect(fs.existsSync(path.join(path.dirname(COMMITTED), 'ui-index.auto.json'))).toBe(false)
     expect(run('--auto-out').stderr).toMatch(/--auto-out needs a file path/)
   })
