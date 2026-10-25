@@ -127,7 +127,7 @@ recorded in `.github/black-baseline.txt` and exempted; every other file must be
 clean, and a file that *becomes* clean must be pruned from the list, so it only
 ever shrinks. Prune with `python3 scripts/check_black_formatting.py
 --update-baseline`; it refuses unless the installed black equals the
-`pyproject.toml` pin (`black==26.3.1`). The read-only check does not need the pin. Format what you touched with
+`pyproject.toml` pin (`black==26.10.1`). The read-only check does not need the pin. Format what you touched with
 `black --target-version py310 <paths>`, never the whole tree.
 
 **On macOS, run `mypy --platform linux src/kiro_crew`.** CI type-checks on Linux, and
