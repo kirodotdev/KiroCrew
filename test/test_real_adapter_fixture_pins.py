@@ -25,11 +25,18 @@ well as in the lane, which is the point.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
 from acp_frame_replay_harness import CORPUS, read_fixture
-from real_adapter_gate import CODEX_ACP_PACKAGE, OPENCODE_PACKAGE, pinned_version
+from real_adapter_gate import (
+    CODEX_ACP_PACKAGE,
+    OPENCODE_PACKAGE,
+    PI_ACP_PACKAGE,
+    PI_PACKAGE,
+    pinned_version,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,6 +48,7 @@ PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
     "codex": (CODEX_ACP_PACKAGE, "@agentclientprotocol/codex-acp"),
     "opencode": (OPENCODE_PACKAGE, "OpenCode"),
     "claude": ("@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
+    "pi": (PI_ACP_PACKAGE, "pi-acp"),
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
@@ -53,7 +61,13 @@ MEASURED_NOT_INSTALLED: dict[str, str] = {
 
 
 def _pin(package: str) -> str:
-    """The release *package*'s live fixtures must carry."""
+    """The release *package*'s live fixtures must carry.
+
+    pi is two pinned packages, and either can move the wire on its own, so a pi
+    capture's header names both, ``<pi-acp> (pi <pi>)``, and a bump of either reds.
+    """
+    if package == PI_ACP_PACKAGE:
+        return f"{pinned_version(PI_ACP_PACKAGE)} (pi {pinned_version(PI_PACKAGE)})"
     return MEASURED_NOT_INSTALLED.get(package) or pinned_version(package)
 
 
@@ -168,6 +182,23 @@ def test_the_stale_list_only_shrinks() -> None:
 def test_the_gate_reds_on_each_drift(fixture, stale, expected) -> None:
     problems = stale_against_pin([fixture], stale)
     assert (expected in problems[0]) if expected else not problems
+
+
+@pytest.mark.parametrize("bumped", [PI_ACP_PACKAGE, PI_PACKAGE])
+def test_a_pi_bump_of_either_half_reds(monkeypatch, bumped) -> None:
+    """The pi pin is both halves: a capture at the old pi under a new pi-acp is stale too."""
+    import real_adapter_gate
+
+    pinned = real_adapter_gate.pinned_version
+    at_pin = [key for key, version, pin in _pinned_live_fixtures() if key.startswith("pi/")]
+    assert at_pin, "no live pi fixture is held to the pin"
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "pinned_version",
+        lambda package: pinned(package) + ("-next" if package == bumped else ""),
+    )
+    problems = stale_against_pin(_pinned_live_fixtures(), _STALE)
+    assert {p.split(" ", 1)[0] for p in problems if "re-capture it" in p} >= set(at_pin)
 
 
 def test_the_gate_runs_in_the_real_adapter_lane() -> None:

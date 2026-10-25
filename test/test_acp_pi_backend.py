@@ -584,9 +584,9 @@ class TestAdapterVersionIsNamedAtHandshake:
     def test_a_release_is_named_once_per_process(self, tmp_path, caplog):
         """A gateway on a newer adapter is told once, not on every session."""
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
-            self._client(tmp_path, "0.0.34")._note_pi_adapter_version()
-            self._client(tmp_path, "0.0.34")._note_pi_adapter_version()
             self._client(tmp_path, "0.0.35")._note_pi_adapter_version()
+            self._client(tmp_path, "0.0.35")._note_pi_adapter_version()
+            self._client(tmp_path, "0.0.36")._note_pi_adapter_version()
         hits = [r for r in caplog.records if "gate extension contract" in r.getMessage()]
         assert len(hits) == 2
 
@@ -595,7 +595,7 @@ class TestAdapterVersionIsNamedAtHandshake:
             self._client(tmp_path, acp_client.PI_ACP_VERIFIED_VERSION)._note_pi_adapter_version()
         assert not [r for r in caplog.records if "gate extension contract" in r.getMessage()]
 
-    @pytest.mark.parametrize("version", ["0.0.34", ""])
+    @pytest.mark.parametrize("version", ["0.0.35", ""])
     def test_another_or_unknown_release_is_logged_with_both_versions(
         self, tmp_path, caplog, version
     ):
@@ -623,6 +623,12 @@ class TestAdapterVersionIsNamedAtHandshake:
             encoding="utf-8"
         )
         assert acp_client.PI_ACP_VERIFIED_VERSION in readme
+
+    def test_the_verified_version_is_the_lane_pin(self):
+        """The corpus is captured at the lane's pin, so the constant tracks it."""
+        from real_adapter_gate import MEASURED_PI_ACP_VERSION
+
+        assert acp_client.PI_ACP_VERIFIED_VERSION == MEASURED_PI_ACP_VERSION
 
 
 class TestGateTripwire:

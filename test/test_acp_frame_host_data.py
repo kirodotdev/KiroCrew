@@ -77,15 +77,6 @@ BASELINE_DEBTS = frozenset(
         ("kas/session.jsonl", "a run or request uuid"),
         ("kiro/session.expected.json", "a run or request uuid"),
         ("kiro/session.jsonl", "a run or request uuid"),
-        ("pi/permission-request-live.expected.json", "a run or request uuid"),
-        ("pi/permission-request-live.jsonl", "a run or request uuid"),
-        ("pi/permission-request-live.jsonl", "the harness's own command inventory"),
-        ("pi/permission-request-live.jsonl", "an absolute scratch path"),
-        ("pi/session-live.expected.json", "a run or request uuid"),
-        ("pi/session-live.jsonl", "a run or request uuid"),
-        ("pi/session-live.jsonl", "the harness's own command inventory"),
-        ("pi/session-load-live.jsonl", "a run or request uuid"),
-        ("pi/session-load-live.jsonl", "the harness's own command inventory"),
     }
 )
 

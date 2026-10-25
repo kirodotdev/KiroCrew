@@ -25,30 +25,30 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "fake/fake-model",
+        "currentValue": "stub/stub-model",
         "description": "Select the model for this session",
         "id": "model",
         "name": "Model",
         "options": [
           {
             "description": null,
-            "name": "fake/fake-model",
-            "value": "fake/fake-model"
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
           }
         ],
         "type": "select"
       },
       {
         "category": "thought_level",
-        "currentValue": "off",
+        "currentValue": "medium",
         "description": "Set the reasoning effort for this session",
         "id": "thought_level",
         "name": "Thinking",
         "options": [
           {
             "description": null,
-            "name": "Thinking: off",
-            "value": "off"
+            "name": "Thinking: medium",
+            "value": "medium"
           }
         ],
         "type": "select"
@@ -58,27 +58,17 @@
     "id": 2,
     "modes": {
       "advertised": true,
-      "current": "off",
+      "current": "medium",
       "ids": [
-        "off"
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ]
     },
     "session_id": "pi-session-1"
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "pi v1.2.0\n---\n\n---\nNew version available: v1.3.0 (installed v1.2.0). Run: `npm i -g @earendil-works/pi-coding-agent`\n"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "pi v1.2.0\n---\n\n---\nNew version available: v1.3.0 (installed v1.2.0). Run: `npm i -g @earendil-works/pi-coding-agent`\n",
-      "thinking": false
-    }
   },
   {
     "action": "update",
@@ -93,22 +83,16 @@
   },
   {
     "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
-  },
-  {
-    "action": "update",
     "events": [
       {
         "kind": "tool_call",
         "raw_tool_params": {
-          "content": "written by the model\n",
-          "path": "/work/proj/zero-write.txt"
+          "content": "should not exist",
+          "path": "zt-written.txt"
         },
         "title": "write",
-        "tool_call_id": "call_1",
-        "tool_input": "{\n  \"content\": \"written by the model\\n\",\n  \"path\": \"/work/proj/zero-write.txt\"\n}",
+        "tool_call_id": "call_write_2",
+        "tool_input": "{\n  \"content\": \"should not exist\",\n  \"path\": \"zt-written.txt\"\n}",
         "tool_kind": "edit",
         "wire_title": "write"
       }
@@ -122,11 +106,11 @@
       {
         "kind": "tool_call_update",
         "raw_tool_params": {
-          "content": "written by the model\n",
-          "path": "/work/proj/zero-write.txt"
+          "content": "should not exist",
+          "path": "zt-written.txt"
         },
-        "tool_call_id": "call_1",
-        "tool_input": "{\n  \"content\": \"written by the model\\n\",\n  \"path\": \"/work/proj/zero-write.txt\"\n}"
+        "tool_call_id": "call_write_2",
+        "tool_input": "{\n  \"content\": \"should not exist\",\n  \"path\": \"zt-written.txt\"\n}"
       }
     ],
     "frame": "session/update",
@@ -150,13 +134,13 @@
         ],
         "raw_params_trusted": true,
         "raw_tool_params": {
-          "content": "written by the model\n",
-          "path": "/work/proj/zero-write.txt"
+          "content": "should not exist",
+          "path": "zt-written.txt"
         },
         "shell_classified": true,
         "title": "write",
-        "tool_call_id": "call_1",
-        "tool_input": "{\n  \"content\": \"written by the model\\n\",\n  \"path\": \"/work/proj/zero-write.txt\"\n}",
+        "tool_call_id": "call_write_2",
+        "tool_input": "{\n  \"content\": \"should not exist\",\n  \"path\": \"zt-written.txt\"\n}",
         "tool_kind": "edit"
       }
     ],
@@ -172,7 +156,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_write_2",
         "tool_output": "Denied by the Kiro Crew tool gate",
         "tool_output_bytes": 33,
         "tool_output_digest": "46d4ecb0b0613d69fadbca561b56cea2cbb18829888c60babf0928b0c53927bf",
@@ -187,13 +171,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Step finished."
+        "text": "Tool result: Denied by the Kiro Crew tool gate"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Step finished.",
+      "text": "Tool result: Denied by the Kiro Crew tool gate",
       "thinking": false
     }
   },
@@ -203,16 +187,10 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      110,
+      1643,
       128000
     ],
     "usage_cost": null
-  },
-  {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
   },
   {
     "frame": "response",
@@ -221,20 +199,14 @@
   },
   {
     "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
-  },
-  {
-    "action": "update",
     "events": [
       {
         "is_shell": true,
         "kind": "tool_call",
-        "title": "touch /work/proj/zero-bash.txt",
-        "tool_call_id": "call_3",
+        "title": "touch zt-touched.txt",
+        "tool_call_id": "call_bash_6",
         "tool_kind": "execute",
-        "wire_title": "touch /work/proj/zero-bash.txt"
+        "wire_title": "touch zt-touched.txt"
       }
     ],
     "frame": "session/update",
@@ -246,10 +218,10 @@
       {
         "is_shell": true,
         "kind": "tool_call_update",
-        "title": "touch /work/proj/zero-bash.txt",
-        "tool_call_id": "call_3",
+        "title": "touch zt-touched.txt",
+        "tool_call_id": "call_bash_6",
         "tool_kind": "execute",
-        "wire_title": "touch /work/proj/zero-bash.txt"
+        "wire_title": "touch zt-touched.txt"
       }
     ],
     "frame": "session/update",
@@ -274,13 +246,13 @@
         ],
         "raw_params_trusted": true,
         "raw_tool_params": {
-          "command": "touch /work/proj/zero-bash.txt"
+          "command": "touch zt-touched.txt"
         },
         "request_id": 1,
         "shell_classified": true,
         "title": "bash",
-        "tool_call_id": "call_3",
-        "tool_input": "{\n  \"command\": \"touch /work/proj/zero-bash.txt\"\n}",
+        "tool_call_id": "call_bash_6",
+        "tool_input": "{\n  \"command\": \"touch zt-touched.txt\"\n}",
         "tool_kind": "execute"
       }
     ],
@@ -296,7 +268,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_3",
+        "tool_call_id": "call_bash_6",
         "tool_status": "failed"
       }
     ],
@@ -308,13 +280,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Step finished."
+        "text": "Tool result: Denied by the Kiro Crew tool gate"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Step finished.",
+      "text": "Tool result: Denied by the Kiro Crew tool gate",
       "thinking": false
     }
   },
@@ -324,27 +296,15 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      110,
+      1748,
       128000
     ],
     "usage_cost": null
   },
   {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
-  },
-  {
     "frame": "response",
     "id": 4,
     "stop_reason": "end_turn"
-  },
-  {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
   },
   {
     "action": "update",
@@ -355,7 +315,7 @@
           "text": "ping"
         },
         "title": "mcp__probe_server__echo",
-        "tool_call_id": "call_5",
+        "tool_call_id": "call_mcp__probe_server__echo_10",
         "tool_input": "{\n  \"text\": \"ping\"\n}",
         "tool_kind": "other",
         "wire_title": "mcp__probe_server__echo"
@@ -372,7 +332,7 @@
         "raw_tool_params": {
           "text": "ping"
         },
-        "tool_call_id": "call_5",
+        "tool_call_id": "call_mcp__probe_server__echo_10",
         "tool_input": "{\n  \"text\": \"ping\"\n}"
       }
     ],
@@ -402,7 +362,7 @@
         "request_id": 2,
         "shell_classified": true,
         "title": "mcp__probe_server__echo",
-        "tool_call_id": "call_5",
+        "tool_call_id": "call_mcp__probe_server__echo_10",
         "tool_input": "{\n  \"text\": \"ping\"\n}",
         "tool_kind": "other"
       }
@@ -419,7 +379,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_5",
+        "tool_call_id": "call_mcp__probe_server__echo_10",
         "tool_output": "Denied by the Kiro Crew tool gate",
         "tool_output_bytes": 33,
         "tool_output_digest": "46d4ecb0b0613d69fadbca561b56cea2cbb18829888c60babf0928b0c53927bf",
@@ -434,13 +394,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Step finished."
+        "text": "Tool result: Denied by the Kiro Crew tool gate"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Step finished.",
+      "text": "Tool result: Denied by the Kiro Crew tool gate",
       "thinking": false
     }
   },
@@ -450,16 +410,10 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      110,
+      1862,
       128000
     ],
     "usage_cost": null
-  },
-  {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
   },
   {
     "frame": "response",
@@ -468,21 +422,11 @@
   },
   {
     "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
-  },
-  {
-    "action": "update",
     "events": [
       {
         "kind": "tool_call",
-        "raw_tool_params": {
-          "target": "/work/proj/zero-unknown.txt"
-        },
         "title": "frobnicate",
-        "tool_call_id": "call_7",
-        "tool_input": "{\n  \"target\": \"/work/proj/zero-unknown.txt\"\n}",
+        "tool_call_id": "call_frobnicate_14",
         "tool_kind": "other",
         "wire_title": "frobnicate"
       }
@@ -492,16 +436,7 @@
   },
   {
     "action": "update",
-    "events": [
-      {
-        "kind": "tool_call_update",
-        "raw_tool_params": {
-          "target": "/work/proj/zero-unknown.txt"
-        },
-        "tool_call_id": "call_7",
-        "tool_input": "{\n  \"target\": \"/work/proj/zero-unknown.txt\"\n}"
-      }
-    ],
+    "events": [],
     "frame": "session/update",
     "session_update": "tool_call_update"
   },
@@ -510,7 +445,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_7",
+        "tool_call_id": "call_frobnicate_14",
         "tool_output": "Tool frobnicate not found",
         "tool_output_bytes": 25,
         "tool_output_digest": "c79f7f4d15d7df1e3b2d7196d94e6689e469afb6ff698366f085b821bb0bbddb",
@@ -525,13 +460,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Step finished."
+        "text": "Tool result: Tool frobnicate not found"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Step finished.",
+      "text": "Tool result: Tool frobnicate not found",
       "thinking": false
     }
   },
@@ -541,16 +476,10 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      110,
+      1960,
       128000
     ],
     "usage_cost": null
-  },
-  {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
   },
   {
     "frame": "response",

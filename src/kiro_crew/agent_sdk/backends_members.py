@@ -381,7 +381,7 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 #
 # The mount is driven, not inferred:
 # ``test/fixtures/acp_frames/pi/member-panel-mount-live.jsonl`` is a member DM session
-# key on pi-acp 0.0.34 over pi 1.2.0, in which the client's own resolver composed the
+# key on pi-acp 0.0.34 over pi 1.3.0, in which the client's own resolver composed the
 # panel element, pi registered ``kirocrew-panel`` from the handoff and listed its
 # tools, the model's ``panel_publish`` call asked ``session/request_permission``
 # through the gate first, and the panel server's own answer reached the turn: the

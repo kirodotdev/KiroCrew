@@ -39,7 +39,7 @@ give you is a harness that can reach a model.
 **A locally served model is the cheapest way to satisfy that, and it needs no
 credential at all.** Both existing corpora were captured that way: the goose fixtures
 were driven against a model served locally with no provider key involved, and the pi
-fixtures against an Ollama model named in pi's own `models.json`. A local model also
+fixtures against a scripted OpenAI-compatible endpoint on the loopback interface named in pi's own `models.json`. A local model also
 keeps a provider catalog out of the frames, which is one of the marker classes a
 fixture is refused for.
 

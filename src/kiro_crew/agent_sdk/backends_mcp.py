@@ -83,7 +83,7 @@ from kiro_crew.agent_sdk.backends import (
 # entry with pi's built-in MCP support (``pi.registerMcpServer``; the release that
 # carries it is ``PI_MIN_VERSION``). The array still travels on the wire because
 # the session report reads its roster from it. Captured as a ROUND TRIP against
-# pi-acp 0.0.34 over pi 1.2.0: ``test/fixtures/acp_frames/pi/mcp-stdio-mount-live.jsonl``
+# pi-acp 0.0.34 over pi 1.3.0: ``test/fixtures/acp_frames/pi/mcp-stdio-mount-live.jsonl``
 # -- the server is asked ``initialize``, ``tools/list`` and ``tools/call``, the call
 # raises ``session/request_permission`` through the gate first, and the tool's own
 # result reaches the turn. A same-named server in pi's own ``mcp.json`` (user-level,
@@ -297,7 +297,7 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # spec's ``tools`` is read beside the member mounts and ``_deny_zero_tools`` answers
 # every request with the reject option. Measured end to end on a zero-tool spec:
 # ``test/fixtures/acp_frames/pi/zero-tools-refused-live.jsonl`` (pi-acp 0.0.34 over
-# pi 1.2.0, driven through ``AcpClient``) holds a ``write``, a ``bash``, an MCP call
+# pi 1.3.0, driven through ``AcpClient``) holds a ``write``, a ``bash``, an MCP call
 # and a tool pi does not have, each ended ``failed`` with nothing on disk, and a
 # session with no gate extension is refused before its first prompt by the routing.
 #

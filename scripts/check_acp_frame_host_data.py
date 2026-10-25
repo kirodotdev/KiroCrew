@@ -84,21 +84,6 @@ BASELINE: dict = {
     ),
     "test/fixtures/acp_frames/kiro/session.expected.json": ("a run or request uuid",),
     "test/fixtures/acp_frames/kiro/session.jsonl": ("a run or request uuid",),
-    "test/fixtures/acp_frames/pi/permission-request-live.expected.json": ("a run or request uuid",),
-    "test/fixtures/acp_frames/pi/permission-request-live.jsonl": (
-        "a run or request uuid",
-        "the harness's own command inventory",
-        "an absolute scratch path",
-    ),
-    "test/fixtures/acp_frames/pi/session-live.expected.json": ("a run or request uuid",),
-    "test/fixtures/acp_frames/pi/session-live.jsonl": (
-        "a run or request uuid",
-        "the harness's own command inventory",
-    ),
-    "test/fixtures/acp_frames/pi/session-load-live.jsonl": (
-        "a run or request uuid",
-        "the harness's own command inventory",
-    ),
 }
 
 

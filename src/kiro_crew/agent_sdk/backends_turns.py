@@ -266,13 +266,13 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # drive did: ``Agent::reply`` routes ``/compact`` through ``execute_command`` to
 # ``handle_compact_command``, and ``command_starts_turn("/compact")`` is false.
 #
-# pi is a member on a LIVE drive against pi-acp 0.0.34 over pi 1.2.0, taken with
+# pi is a member on a LIVE drive against pi-acp 0.0.34 over pi 1.3.0, taken with
 # ``scripts/capture_acp_compaction.py`` and a locally served model named in pi's own
 # ``models.json``. Over four ordinary turns its ``usage_update.used`` climbed
-# 12773 -> 25127 -> 37481 -> 49834. A ``/compact`` prompt then answered pi's own
+# 13483 -> 25572 -> 37610 -> 49648. A ``/compact`` prompt then answered pi's own
 # ``Compaction completed`` chunk and returned ``stopReason: end_turn`` with no
 # ``usage_update`` and no status frame after it, and the next ORDINARY turn -- which
-# added another ~12k-token prompt -- read 37518, below the pre-compact peak. The
+# added another ~12k-token prompt -- read 13596, below the pre-compact peak. The
 # drive is committed as evidence: ``test/fixtures/acp_frames/pi/compact-live.jsonl``.
 # The source agrees: pi-acp intercepts ``/compact`` in ``prompt()``, awaits
 # ``session.proc.compact(...)`` and returns ``{ stopReason: "end_turn" }``.

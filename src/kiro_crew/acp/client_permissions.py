@@ -81,7 +81,7 @@ logger = logging.getLogger("kiro_crew.acp.client")
 # ``initialize`` -- the tripwire still catches a call that ran unasked, this
 # names the likely reason before it does. A warning, not a refusal: a newer
 # adapter is the common case and the tripwire is the control.
-PI_ACP_VERIFIED_VERSION = "0.0.33"
+PI_ACP_VERIFIED_VERSION = "0.0.34"
 # Versions already named this process, so a gateway on a newer adapter says so
 # once, not on every session.
 _pi_adapter_versions_noted: set[str] = set()

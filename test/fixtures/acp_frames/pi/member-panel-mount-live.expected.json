@@ -25,30 +25,30 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "fake/fake-model",
+        "currentValue": "stub/stub-model",
         "description": "Select the model for this session",
         "id": "model",
         "name": "Model",
         "options": [
           {
             "description": null,
-            "name": "fake/fake-model",
-            "value": "fake/fake-model"
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
           }
         ],
         "type": "select"
       },
       {
         "category": "thought_level",
-        "currentValue": "off",
+        "currentValue": "medium",
         "description": "Set the reasoning effort for this session",
         "id": "thought_level",
         "name": "Thinking",
         "options": [
           {
             "description": null,
-            "name": "Thinking: off",
-            "value": "off"
+            "name": "Thinking: medium",
+            "value": "medium"
           }
         ],
         "type": "select"
@@ -58,9 +58,14 @@
     "id": 2,
     "modes": {
       "advertised": true,
-      "current": "off",
+      "current": "medium",
       "ids": [
-        "off"
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ]
     },
     "session_id": "pi-session-1"
@@ -90,7 +95,7 @@
           "template": "default"
         },
         "title": "mcp__kirocrew_panel__panel_publish",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__kirocrew_panel__panel_publish_2",
         "tool_input": "{\n  \"template\": \"default\",\n  \"data\": {\n    \"status\": \"pi member panel live\",\n    \"harness\": \"pi\",\n    \"waiting_on_human\": \"nothing\"\n  }\n}",
         "tool_kind": "other",
         "wire_title": "mcp__kirocrew_panel__panel_publish"
@@ -112,7 +117,7 @@
           },
           "template": "default"
         },
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__kirocrew_panel__panel_publish_2",
         "tool_input": "{\n  \"template\": \"default\",\n  \"data\": {\n    \"status\": \"pi member panel live\",\n    \"harness\": \"pi\",\n    \"waiting_on_human\": \"nothing\"\n  }\n}"
       }
     ],
@@ -146,7 +151,7 @@
         },
         "shell_classified": true,
         "title": "mcp__kirocrew_panel__panel_publish",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__kirocrew_panel__panel_publish_2",
         "tool_input": "{\n  \"template\": \"default\",\n  \"data\": {\n    \"status\": \"pi member panel live\",\n    \"harness\": \"pi\",\n    \"waiting_on_human\": \"nothing\"\n  }\n}",
         "tool_kind": "other"
       }
@@ -163,7 +168,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_1",
+        "tool_call_id": "call_mcp__kirocrew_panel__panel_publish_2",
         "tool_final": true,
         "tool_output": "Error: tool 'panel_publish' is unavailable because this server could not prove which session it acts for (identity_unattested): the gateway refused the tool-policy read for session dashboard_member-pi-probe because the request carried no session token, or one that does not vouch for that session. Refusing the call rather than ignoring an operator's exclusion list.",
         "tool_output_bytes": 366,
@@ -195,7 +200,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      7674,
+      17971,
       128000
     ],
     "usage_cost": null

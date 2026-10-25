@@ -16,9 +16,9 @@
         "list": {}
       }
     },
-    "agent_version": "0.0.33",
+    "agent_version": "0.0.34",
     "frame": "response",
-    "id": 101,
+    "id": 1,
     "protocol_version": 1
   },
   {
@@ -33,7 +33,7 @@
       {
         "kind": "tool_call",
         "title": "read",
-        "tool_call_id": "call_snrgf5v4",
+        "tool_call_id": "call_read_2",
         "tool_kind": "read",
         "wire_title": "read"
       }
@@ -46,7 +46,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_snrgf5v4",
+        "tool_call_id": "call_read_2",
         "tool_output": "Validation failed for tool \"read\":\n  - path: must have required properties path\n\nReceived arguments:\n{}",
         "tool_output_bytes": 103,
         "tool_output_digest": "0c9ad5317c24ef1c20c92b5fa99042ad04e4e7c3d2aa636239e82ec238d2500a",
@@ -75,27 +75,22 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "ollama/llama3.2:3b",
+        "currentValue": "stub/stub-model",
         "description": "Select the model for this session",
         "id": "model",
         "name": "Model",
         "options": [
           {
             "description": null,
-            "name": "ollama/llama3.2:3b",
-            "value": "ollama/llama3.2:3b"
-          },
-          {
-            "description": null,
-            "name": "ollama/llama32-8k",
-            "value": "ollama/llama32-8k"
+            "name": "stub/Stub",
+            "value": "stub/stub-model"
           }
         ],
         "type": "select"
       },
       {
         "category": "thought_level",
-        "currentValue": "off",
+        "currentValue": "medium",
         "description": "Set the reasoning effort for this session",
         "id": "thought_level",
         "name": "Thinking",
@@ -135,10 +130,10 @@
       }
     ],
     "frame": "response",
-    "id": 102,
+    "id": 2,
     "modes": {
       "advertised": true,
-      "current": "off",
+      "current": "medium",
       "ids": [
         "off",
         "minimal",
@@ -153,6 +148,11 @@
     "action": "update",
     "events": [],
     "frame": "session/update",
-    "session_update": "available_commands_update"
+    "session_update": "usage_update",
+    "usage": [
+      1599,
+      128000
+    ],
+    "usage_cost": null
   }
 ]

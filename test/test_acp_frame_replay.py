@@ -308,7 +308,7 @@ def test_a_live_header_names_the_agent_its_capture_answered_as() -> None:
         info = _init_agent_info(frames)
         if info is not None:
             wire_names.setdefault(path.parent.name, set()).add(info.get("name"))
-            # pi's header adds the host binary's release after a space: "0.0.34 (pi 1.2.0)".
+            # pi's header adds the host binary's release after a space: "0.0.34 (pi 1.3.0)".
             assert (meta.get("agent_name"), str(meta.get("agent_version")).split(" ")[0]) == (
                 info.get("name"),
                 info.get("version"),
