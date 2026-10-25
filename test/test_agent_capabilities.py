@@ -521,11 +521,8 @@ def test_transport_types_are_validated_before_any_write(editor):
 
 
 def test_stdio_row_with_empty_url_can_still_be_pinned(editor):
-    """Regression: a stdio transport that reaches the Capabilities API with
-    an empty ``url`` (now valid, see agent_state tests) must also be
-    pinnable through the editor, not merely readable. Before this fix the
-    editor's own ``set`` check refused ``command`` + ``url`` together
-    unconditionally, so a row that loaded could not be saved.
+    """The editor accepts a stdio row with an empty ``url`` on a pin, so a
+    row the Capabilities API loads can also be saved.
     """
     service, home, specs, parent = editor
     parent["mcpServers"]["search"].pop("env")
