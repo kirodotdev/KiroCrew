@@ -143,6 +143,13 @@ export interface SideState {
    *  answer is already stale by the time the callback runs. Bounded, because
    *  only the recent past can still be raced. */
   removedQueueIds?: string[]
+  /** The latest text of queued entries another tab edited while this tab's restore
+   *  read was in flight, for entries this tab had no card for. The read can have
+   *  been answered before the edit, so its copy of the entry is the old text; the
+   *  restore puts this text on it instead, unless the read's copy carries a
+   *  `rev` at least as new as the one the edit's frame carried. Bounded like
+   *  `removedQueueIds`. */
+  editedBeforeRestore?: { id: string; content: string; rev?: number }[]
   openedAtTurnCount: number
   createdAt: string
   /** The banner counts the parent turns newer than `createdAt` instead of
@@ -517,6 +524,10 @@ export interface ChatState {
    *  on purpose, so a read still in flight when the user closed the panel cannot
    *  bring the closed conversation back. */
   slotSideRestored: Record<string, boolean>
+  /** Slots whose restore read (`GET .../side`) is in flight. Only then does a
+   *  queue edit for an entry this tab has no card for get kept
+   *  (`SideState.editedBeforeRestore`). */
+  slotSideReading?: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
   /** Fresh `has_more` for a BACKGROUND pane, written by every bounded warm.
    *  The pane's own query is staleTime:Infinity, so its has_more freezes at

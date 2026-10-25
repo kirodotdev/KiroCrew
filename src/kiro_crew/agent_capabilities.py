@@ -18,11 +18,12 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
-from kiro_crew import agent_state, kiro_cli, mate_capabilities
+from kiro_crew import agent_state, mate_capabilities
 from kiro_crew.agent import (
     OWNED_KIRO_AGENT_FILES,
     _is_confirmed_managed_dashboard_author,
     _read_spec_capped,
+    _spec_permissions_accepted,
     agents_spec_lock,
     kiro_agents_dir_path,
 )
@@ -791,9 +792,8 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
         vouched.add("permissions")
     parent = snap["parent_spec"]
     if "permissions" not in spec and "permissions" in parent:
-        # ``_write_derived_permissions`` removes the block itself on a release
-        # that refuses it, so its absence is then Crew's output, not a hand edit.
-        if not kiro_cli.spec_permissions_supported(kiro_cli.installed_kiro_cli_version()):
+        # The writer's own gate removed it, so it is Crew's output, not a hand edit.
+        if not _spec_permissions_accepted():
             vouched.add("permissions")
     # A deleted key is drift too: kiro-cli reads an absent key as its default
     # (``includeMcpJson`` absent means true), so a dropped parent key can grant.

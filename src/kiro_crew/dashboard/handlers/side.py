@@ -1031,7 +1031,12 @@ async def api_side_state(request: web.Request) -> web.Response:
             "running": side.turn_in_flight,
             "messages": [_wire_side_row(entry) for entry in side.messages],
             "queue": [
-                {"id": entry["id"], "content": redact(entry["content"]), "ts": entry["ts"]}
+                {
+                    "id": entry["id"],
+                    "content": redact(entry["content"]),
+                    "ts": entry["ts"],
+                    "rev": entry.get("rev", 0),
+                }
                 for entry in side.queue
             ],
         }
@@ -1766,7 +1771,8 @@ async def api_side_queue_edit(request: web.Request) -> web.Response:
             status=409,
         )
     queue_id = request.match_info["queue_id"]
-    if not side.queue_edit(queue_id, parsed):
+    rev = side.queue_edit(queue_id, parsed)
+    if rev is None:
         return web.json_response(
             {"error": "queue entry not found", "code": "queue_entry_not_found"},
             status=404,
@@ -1778,6 +1784,7 @@ async def api_side_queue_edit(request: web.Request) -> web.Response:
         queue_id=queue_id,
         content=parsed,
         depth=len(side.queue),
+        rev=rev,
     )
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",

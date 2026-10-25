@@ -372,6 +372,16 @@ any) bypasses the permission callback, and its tool-reference grammar.
 
 Consumers read the turn's `TurnUsage` fields and the usage routes, not the harness's own endpoints.
 
+`ACP_BACKENDS_REPORT_USAGE` (`agent_sdk/backends_turns.py`) names the columns
+whose turns land billing or token counts in `TurnUsage`: kiro-cli and KAS in
+credits, CC, OpenCode and goose in token counts on the `session/prompt` result.
+On a member a turn that reports none billed none, which is what lets memory
+consolidation take an empty, unbilled reply as free; it reads the provider's
+`reports_turn_usage`. Codex and Pi are outside the set because this section
+establishes no usage for them, and DeepSeek because its `usage_update` carries
+context occupancy (`used`, `size`), which feeds the context meter rather than
+`TurnUsage`, and its captured `session/prompt` result carries no token counts.
+
 **A provider must declare:** its billing unit, its quota API (or none), how its
 token is discovered, and its unattributable-overhead model.
 

@@ -740,7 +740,7 @@ def test_tool_guidance_never_says_heavy_work_is_fine_under_pressure(monkeypatch)
     assert "Guidance: macOS reports memory pressure — prefer the lighter path" in out
     # The queue note is said once, on the level line, not again in the guidance.
     assert out.count(rs.PRESSURE_QUEUE_NOTE) == 1
-    assert "heavy work is fine" not in out
+    assert "nothing is reserved" not in out
 
 
 @pytest.mark.parametrize("level", [2, 4])

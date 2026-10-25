@@ -8,7 +8,9 @@ the rebuild's last pass over the assembled list. Withholding a grant is a permis
 decision, so each filter leaves the same ``mcp_auto_approve_withheld`` SEL record.
 
 KAS reads auto-approval as a ``permissions`` block derived from the filtered
-``allowedTools``; :func:`_write_derived_permissions` is its one version-gated writer.
+``allowedTools``; :func:`_write_derived_permissions` is its one version-gated writer,
+and :func:`_spec_permissions_accepted` the gate: the installed kiro-cli's version on
+the relay route, the installed engine bundle's with ``agent.kas_bundle`` on.
 
 :func:`govern_spec` is the tail every generated spec writer runs: it pins the global
 ``mcp.json`` merge off, applies the ceiling, strips ungoverned ``autoApprove`` and sets
@@ -71,35 +73,81 @@ def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
     return dict(strip_ungoverned_auto_approve(servers))
 
 
-def _write_derived_permissions(
-    config: dict[str, Any], allowed_tools: object, agent_filename: str
-) -> None:
-    """Derive ``config["permissions"]`` from *allowed_tools*, but only if kiro-cli accepts it.
+def _bundled_engine_accepts_permissions() -> bool:
+    """Whether the installed engine bundle accepts a spec ``permissions`` block.
 
-    The one version gate every generated spec writer shares. kiro-cli validates
-    specs with serde ``deny_unknown_fields`` and also serves the KAS backend, so
-    a release whose schema predates ``permissions`` refuses the WHOLE spec and
-    falls back to broader default grants -- and cannot be the KAS relay the field
-    exists for. An accepting version replaces any inherited value with the fresh
-    derivation. A refusing or unknown version removes any inherited value, where
-    keeping it costs the spec and withholding it costs nothing that release could
-    honour. The default-spec seed guards its existing block before calling here,
-    so hand-written seed input remains untouched.
-
-    Generated conductor and worker configs start from ``build_agent_config``,
-    which may carry a user override for this field; the version gate therefore
-    owns both replacement and removal rather than assuming a fresh config.
-
-    Function-local imports on a boot path, and routed through the agent-sdk
-    boundary: ``drivers.acp`` is the one layer permitted to import
-    ``kiro_crew.acp``.
+    The engine's version comes from its install record (``installed_bundle``),
+    never from a spawn, and goes through the pin's gate
+    (``engine_spec_permissions_supported``). No installed engine is an unknown
+    version, which the gate reads as "do not write the field", the answer
+    kiro-cli's gate gives for a binary it cannot probe.
     """
+    from kiro_crew.agent_sdk import kas_bundle  # noqa: PLC0415 - boot path
+
+    installed = kas_bundle.installed_bundle()
+    return kas_bundle.engine_spec_permissions_supported(
+        installed.version if installed is not None else None
+    )
+
+
+def _kiro_cli_accepts_permissions() -> bool:
+    """kiro-cli's own gate: the pinned binary's version against its floor."""
     from kiro_crew.kiro_cli import (  # noqa: PLC0415 - boot path
         installed_kiro_cli_version,
         spec_permissions_supported,
     )
 
-    if not spec_permissions_supported(installed_kiro_cli_version()):
+    return spec_permissions_supported(installed_kiro_cli_version())
+
+
+def _spec_permissions_accepted() -> bool:
+    """The one version gate every generated spec writer shares.
+
+    The block is written only when EVERY program that may read the specs accepts
+    it. kiro-cli validates specs with serde ``deny_unknown_fields``, so a release
+    whose schema predates ``permissions`` refuses the WHOLE spec and drops every
+    Crew MCP server. With ``agent.kas_bundle`` off, KAS is kiro-cli's relay and
+    kiro-cli is the one reader. With the switch on, the bundled ``@kiro/agent``
+    reads the specs too, so the installed engine must pass its floor -- and
+    kiro-cli still must pass its own whenever it is installed, because the switch
+    changes only the kas backend and kiro-cli reads the same files for everything
+    else. A host with no kiro-cli at all gets the block from the engine alone,
+    which is what the route is for. ``kirocrew doctor`` reports the same verdict
+    from the same predicates.
+
+    Function-local imports on a boot path, and routed through the agent-sdk
+    boundary: ``drivers.acp`` is the one layer permitted to import
+    ``kiro_crew.acp``.
+    """
+    from kiro_crew.agent_sdk.backend_install import (  # noqa: PLC0415 - boot path
+        _kas_bundle_route,
+    )
+    from kiro_crew.kiro_cli import kiro_cli_installed  # noqa: PLC0415 - boot path
+
+    if not _kas_bundle_route():
+        return _kiro_cli_accepts_permissions()
+    if not _bundled_engine_accepts_permissions():
+        return False
+    return not kiro_cli_installed() or _kiro_cli_accepts_permissions()
+
+
+def _write_derived_permissions(
+    config: dict[str, Any], allowed_tools: object, agent_filename: str
+) -> None:
+    """Derive ``config["permissions"]`` from *allowed_tools*, if the reader accepts it.
+
+    :func:`_spec_permissions_accepted` is the gate. An accepting reader replaces
+    any inherited value with the fresh derivation. A refusing or unknown one
+    removes any inherited value, where keeping it costs the spec and withholding
+    it costs nothing that reader could honour. The default-spec seed guards its
+    existing block before calling here, so hand-written seed input remains
+    untouched.
+
+    Generated conductor and worker configs start from ``build_agent_config``,
+    which may carry a user override for this field; the gate therefore owns
+    both replacement and removal rather than assuming a fresh config.
+    """
+    if not _spec_permissions_accepted():
         config.pop("permissions", None)
         return
 

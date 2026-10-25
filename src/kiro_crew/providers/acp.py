@@ -67,6 +67,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     EVENT_COMPACTION_STATUS,
@@ -881,6 +882,15 @@ class AcpProvider(LLMProvider):
         runtime startup.
         """
         return resolve_billing_stats(getattr(self, "_client", None))
+
+    @property
+    def reports_turn_usage(self) -> bool:
+        """Membership in ``ACP_BACKENDS_REPORT_USAGE`` (harness-parity H6).
+
+        Read per call off the inner client's backend, which the runtime's session
+        provider reports once it replaces the placeholder client at startup.
+        """
+        return self._client.backend in ACP_BACKENDS_REPORT_USAGE
 
     @property
     def steer_needs_loss_recovery(self) -> bool:

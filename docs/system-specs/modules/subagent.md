@@ -893,7 +893,7 @@ contract.
 The level never rewrites the figure and never moves the posture, which stays
 figure-based. It is reported beside them: `summary_lines` (the
 `resource_status` tool, whose guidance then names the pressure instead of
-"heavy work is fine"), the `[RESOURCES]` context line, and the diagnostics
+"ample headroom right now"), the `[RESOURCES]` context line, and the diagnostics
 bundle. The eager-spawn admission (`chat_turn.eager_spawn._pressure_hold_blocks_prewarm`)
 admits no new speculative pre-warm while the hold applies, and leaves the idle
 ones already live to the host bands; the re-probe after a

@@ -34,9 +34,13 @@ _FAKE = [sys.executable, fake_acp_backend.__file__, "acp", "--agent", "kirocrew"
 _FAKE_KAS = [*_FAKE, fake_acp_backend.KAS_RELAY_FLAG, "v3"]
 
 
+def _work_dir(tmp_path):
+    return tmp_path / "wd"
+
+
 def _runtime(tmp_path, monkeypatch, backend: str) -> AcpRuntime:
     rt = AcpRuntime(
-        work_dir=tmp_path / "wd", agent="kirocrew", sandbox_mode="off", acp_backend=backend
+        work_dir=_work_dir(tmp_path), agent="kirocrew", sandbox_mode="off", acp_backend=backend
     )
     rt._KILL_TERM_TIMEOUT = 1.0
     rt._KILL_REAP_TIMEOUT = 1.0
@@ -54,7 +58,9 @@ async def _run(rt: AcpRuntime, tmp_path, *, accepts: bool, mode: str, answer):
     """One prompt on a fresh session; returns (elicitation events, echoed answer)."""
     await rt.spawn()
     try:
-        handle = await rt.create_session(cwd=tmp_path, mcp_servers=[])
+        # The session opens on the workspace the runtime is bound to: a delegated
+        # macOS runtime refuses any other one.
+        handle = await rt.create_session(cwd=_work_dir(tmp_path), mcp_servers=[])
         handle.accepts_elicitation = accepts
         events = []
         text: list[str] = []

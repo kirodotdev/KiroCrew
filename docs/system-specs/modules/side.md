@@ -238,7 +238,13 @@ The read and the frames travel separately, so either can be ahead:
   receipt, its user frame, or a receipt that hands the text back settles it.
 - The queue keeps the sidecar's order, with an entry the tab saw pushed to the front
   ahead of it and other entries the tab saw pushed at the end; an entry the tab saw
-  leave stays out, even one it never had a card for. Restored entries are redacted,
+  leave stays out, even one it never had a card for. An entry another tab edited
+  while this tab's read was in flight shows the edited text, even one this tab never
+  had a card for, unless the read's copy is at least as new: every queued entry
+  carries a `rev` that each edit bumps, and both the edit frame and the read send it
+  (`SideState.editedBeforeRestore`, kept only while `slotSideReading` marks the read
+  in flight: a read issued later is answered after the edit, so it carries the text
+  itself). Restored entries are redacted,
   so, like another tab's cards, they drain but cannot be edited or cancelled here.
 - A close in this tab marks the slot settled (`slotSideRestored`), so a read still
   in flight cannot bring the closed conversation back.
@@ -991,7 +997,7 @@ Busy-send invariants live in `test/test_side_steer_queue.py`:
 | Unavailable steer never drops text | `test_steer_unavailable_falls_through_to_the_queue` |
 | Queue mode leaves the session alone | `test_queue_mode_defers_even_when_steer_is_available` |
 | FIFO, one entry per turn | `test_queue_drains_fifo_one_entry_per_turn` |
-| Cancel / edit | `test_queue_cancel_removes_the_entry_and_echoes_content`, `test_queue_edit_rewrites_in_place_preserving_order` |
+| Cancel / edit | `test_queue_cancel_removes_the_entry_and_echoes_content`, `test_queue_edit_rewrites_in_place_preserving_order`, `test_the_read_and_the_edit_frame_carry_the_entry_revision` |
 | Bounded queue | `test_queue_refuses_past_its_bound` |
 | No stranding past the finally | `test_entry_queued_after_completion_is_not_stranded` |
 | Steer identity binding | `test_a_steer_that_lands_after_its_run_ended_is_queued_not_claimed`, `test_a_steer_cannot_land_on_a_sidecar_that_was_replaced` |

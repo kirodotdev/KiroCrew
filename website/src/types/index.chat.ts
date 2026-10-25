@@ -405,7 +405,9 @@ export interface SideSnapshot {
   /** A side turn is in flight, so a submit would steer or queue. */
   running?: boolean
   messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean }>
-  queue?: Array<{ id: string; content: string; ts: string }>
+  /** `rev` counts the entry's edits, as the edit frame reports it, so a reader
+   *  can tell which of two copies of the entry is newer. */
+  queue?: Array<{ id: string; content: string; ts: string; rev?: number }>
 }
 
 export interface ChatMessage {

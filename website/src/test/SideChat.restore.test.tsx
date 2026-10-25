@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import chatReducer, { awaitSideRestore, replaceMessages, restoreSideConversation, sideClose, sideOptimisticAppend, sideOptimisticRollback, sideRestore, sseSideQueue, sseSideResult } from '../store/chatSlice'
+import chatReducer, { awaitSideRestore, replaceMessages, restoreSideConversation, sideClose, sideOptimisticAppend, sideOptimisticRollback, sideRestore, sideRestoreReading, sseSideQueue, sseSideResult } from '../store/chatSlice'
 import type { SideSnapshot } from '../types'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -376,6 +376,65 @@ describe('sideRestore', () => {
     const s = chatReducer(fresh(), sideRestore({ slot: SLOT, snapshot: snapshot() }))
     expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
     expect(s.slotSide[SLOT].createdAt).toBe(CREATED)
+  })
+
+  const reading = sideRestoreReading({ slot: SLOT, reading: true })
+
+  it('shows the text another tab gave a queued question while the read was in flight', () => {
+    let s = chatReducer(fresh(), reading)
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    s = chatReducer(s, sideRestore({ slot: SLOT, snapshot: snapshot() }))
+    expect(s.slotSide[SLOT].queue?.map(entry => [entry.id, entry.content])).toEqual([['q3', 'Q3 edited']])
+    expect(s.slotSide[SLOT].editedBeforeRestore).toBeUndefined()
+    expect(s.slotSideReading?.[SLOT]).toBeUndefined()
+  })
+
+  it('keeps the latest of several such edits, in a tab that already has side state too', () => {
+    let s = chatReducer(fresh(), frame({ run_id: 'r2', role: 'user', content: 'Q2', message_id: 'u2' }))
+    s = chatReducer(s, reading)
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'first edit' }))
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'second edit' }))
+    s = chatReducer(s, sideRestore({ slot: SLOT, snapshot: snapshot() }))
+    expect(s.slotSide[SLOT].queue?.map(entry => [entry.id, entry.content])).toEqual([['q3', 'second edit']])
+  })
+
+  it('keeps no edit while no read is in flight, so a read issued later shows its own, newer text', () => {
+    // An edit this tab heard before any read, then a second edit it missed (its socket
+    // was down): the read issued later carries the second, and must win.
+    let s = chatReducer(fresh(), sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'first edit' }))
+    expect(s.slotSide[SLOT]).toBeUndefined()
+    s = chatReducer(s, reading)
+    s = chatReducer(s, sideRestore({ slot: SLOT, snapshot: snapshot({ queue: [{ id: 'q3', content: 'second edit', ts: '2026-10-21T06:00:05.000Z' }] }) }))
+    expect(s.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['second edit'])
+  })
+
+  it('drops a kept edit when its entry drains or is cancelled, and every kept edit when the read fails', () => {
+    let s = chatReducer(fresh(), reading)
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q4', content: 'Q4 edited' }))
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'drain', queue_id: 'q3' }))
+    expect(s.slotSide[SLOT].editedBeforeRestore).toEqual([{ id: 'q4', content: 'Q4 edited' }])
+
+    s = chatReducer(s, sideRestoreReading({ slot: SLOT, reading: false }))
+    expect(s.slotSide[SLOT].editedBeforeRestore).toBeUndefined()
+    expect(s.slotSideReading?.[SLOT]).toBeUndefined()
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q4', content: 'after the failure' }))
+    expect(s.slotSide[SLOT].editedBeforeRestore).toBeUndefined()
+  })
+
+  it('keeps no edit for a card it never had once the read has landed, or once the side is closed', () => {
+    const restored = chatReducer(
+      chatReducer(chatReducer(fresh(), reading), sideRestore({ slot: SLOT, snapshot: { open: false } })),
+      sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q-gone', content: 'late' }),
+    )
+    expect(restored.slotSide[SLOT]).toBeUndefined()
+
+    const closed = chatReducer(
+      chatReducer(chatReducer(fresh(), reading), sideClose(SLOT)),
+      sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'late' }),
+    )
+    expect(closed.slotSide[SLOT]).toBeUndefined()
+    expect(closed.slotSideReading?.[SLOT]).toBeUndefined()
   })
 })
 
@@ -786,10 +845,162 @@ describe('restoreSideConversation', () => {
     expect(store.getState().chat.slotSide[SLOT].messages).toHaveLength(4)
   })
 
+  it("keeps the read's copy of an entry when it carries a later edit than the one kept", async () => {
+    let answer: (s: SideSnapshot) => void = () => {}
+    vi.mocked(api.sideState).mockReturnValueOnce(new Promise<SideSnapshot>(resolve => { answer = resolve }))
+    const store = createTestStore()
+    const read = store.dispatch(restoreSideConversation(SLOT))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'edit A', rev: 1 }))
+    // The gateway answered after a second edit, one this tab never heard.
+    answer(snapshot({ queue: [{ id: 'q3', content: 'edit B', ts: '2026-10-21T06:00:05.000Z', rev: 2 }] }))
+    await read.unwrap()
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['edit B'])
+  })
+
+  it('shows a kept edit over a read answered before it, by revision', async () => {
+    let answer: (s: SideSnapshot) => void = () => {}
+    vi.mocked(api.sideState).mockReturnValueOnce(new Promise<SideSnapshot>(resolve => { answer = resolve }))
+    const store = createTestStore()
+    const read = store.dispatch(restoreSideConversation(SLOT))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'edit A', rev: 1 }))
+    answer(snapshot({ queue: [{ id: 'q3', content: 'before edit A', ts: '2026-10-21T06:00:05.000Z', rev: 0 }] }))
+    await read.unwrap()
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['edit A'])
+  })
+
+  it("keeps a retry's newer copy over an edit kept while the read it replaced was out", async () => {
+    vi.useFakeTimers()
+    let answerRetired: (s: SideSnapshot) => void = () => {}
+    let answerRetry: (s: SideSnapshot) => void = () => {}
+    onTestFinished(async () => {
+      answerRetired({ open: false })
+      answerRetry({ open: false })
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    })
+    vi.mocked(api.sideState)
+      .mockImplementationOnce(() => new Promise<SideSnapshot>(resolve => { answerRetired = resolve }))
+      .mockImplementationOnce(() => new Promise<SideSnapshot>(resolve => { answerRetry = resolve }))
+    const store = createTestStore()
+    const first = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 1000 }))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'edit A', rev: 1 }))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await first.unwrap()).toBe('timeout')
+
+    const retry = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 10_000 }))
+    expect(api.sideState).toHaveBeenCalledTimes(2)
+    answerRetry(snapshot({ queue: [{ id: 'q3', content: 'edit B', ts: '2026-10-21T06:00:05.000Z', rev: 2 }] }))
+    expect(await retry.unwrap()).toBe('restored')
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['edit B'])
+
+    answerRetired(snapshot({ queue: [{ id: 'q3', content: 'before edit A', ts: '2026-10-21T06:00:05.000Z', rev: 0 }] }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['edit B'])
+  })
+
   it('rejects on a failed read and settles nothing, so the caller can hold its question', async () => {
     vi.mocked(api.sideState).mockRejectedValue(new Error('offline'))
     const store = createTestStore()
     await expect(store.dispatch(restoreSideConversation(SLOT)).unwrap()).rejects.toThrow('offline')
     expect(store.getState().chat.slotSideRestored[SLOT]).toBeUndefined()
+  })
+
+  it('keeps an edit that lands while the read is in flight, and only then', async () => {
+    let answer: (s: SideSnapshot) => void = () => {}
+    vi.mocked(api.sideState).mockReturnValueOnce(new Promise<SideSnapshot>(resolve => { answer = resolve }))
+    const store = createTestStore()
+    // Before the read: not kept, since the read is answered after it.
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'heard before the read' }))
+    const read = store.dispatch(restoreSideConversation(SLOT))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    // The read was answered before that edit, so it carries the old text.
+    answer(snapshot())
+    await read.unwrap()
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['Q3 edited'])
+    expect(store.getState().chat.slotSideReading?.[SLOT]).toBeUndefined()
+  })
+
+  it('ends the window when the read fails, dropping what it kept', async () => {
+    let fail: (e: unknown) => void = () => {}
+    vi.mocked(api.sideState).mockReturnValueOnce(new Promise<SideSnapshot>((_resolve, reject) => { fail = reject }))
+    const store = createTestStore()
+    const read = store.dispatch(restoreSideConversation(SLOT))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    expect(store.getState().chat.slotSide[SLOT].editedBeforeRestore).toHaveLength(1)
+    fail(new Error('offline'))
+    await expect(read.unwrap()).rejects.toThrow('offline')
+    expect(store.getState().chat.slotSide[SLOT].editedBeforeRestore).toBeUndefined()
+    expect(store.getState().chat.slotSideReading?.[SLOT]).toBeUndefined()
+  })
+
+  it('keeps the window open for a newer read when a read retired at a deadline fails', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    let failFirst: (e: unknown) => void = () => {}
+    let answerSecond: (s: SideSnapshot) => void = () => {}
+    vi.mocked(api.sideState)
+      .mockReturnValueOnce(new Promise<SideSnapshot>((_resolve, reject) => { failFirst = reject }))
+      .mockReturnValueOnce(new Promise<SideSnapshot>(resolve => { answerSecond = resolve }))
+    const store = createTestStore()
+    const mount = store.dispatch(restoreSideConversation(SLOT))
+    // A question waits on that read and gives up at its deadline, which retires the read.
+    const first = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 50 }))
+    await vi.advanceTimersByTimeAsync(60)
+    expect(await first.unwrap()).toBe('timeout')
+    // The next question starts a second read, and another tab edits a card this tab has not seen.
+    const second = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 10_000 }))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    // The retired read fails while the second still answers for the slot: the edit stays kept.
+    failFirst(new Error('offline'))
+    await expect(mount.unwrap()).rejects.toThrow('offline')
+    expect(store.getState().chat.slotSide[SLOT].editedBeforeRestore).toHaveLength(1)
+    // The second read was answered before the edit, so it carries the old text.
+    answerSecond(snapshot())
+    expect(await second.unwrap()).toBe('restored')
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['Q3 edited'])
+    expect(store.getState().chat.slotSideReading?.[SLOT]).toBeUndefined()
+  })
+
+  it('keeps the window open for a read retired at a deadline when the newer read fails first', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    let answerFirst: (s: SideSnapshot) => void = () => {}
+    let failSecond: (e: unknown) => void = () => {}
+    vi.mocked(api.sideState)
+      .mockReturnValueOnce(new Promise<SideSnapshot>(resolve => { answerFirst = resolve }))
+      .mockReturnValueOnce(new Promise<SideSnapshot>((_resolve, reject) => { failSecond = reject }))
+    const store = createTestStore()
+    const mount = store.dispatch(restoreSideConversation(SLOT))
+    const first = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 50 }))
+    await vi.advanceTimersByTimeAsync(60)
+    expect(await first.unwrap()).toBe('timeout')
+    const second = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 10_000 }))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    // The newer read fails while the retired one still answers for the slot: the edit stays kept.
+    failSecond(new Error('offline'))
+    expect(await second.unwrap()).toBe('failed')
+    expect(store.getState().chat.slotSide[SLOT].editedBeforeRestore).toHaveLength(1)
+    // The retired read was answered before the edit, so it carries the old text.
+    answerFirst(snapshot())
+    await mount.unwrap()
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.content)).toEqual(['Q3 edited'])
+    expect(store.getState().chat.slotSideReading?.[SLOT]).toBeUndefined()
+  })
+
+  it('closes the window when the only read still answering, a retired one, fails', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    let failFirst: (e: unknown) => void = () => {}
+    vi.mocked(api.sideState).mockReturnValueOnce(new Promise<SideSnapshot>((_resolve, reject) => { failFirst = reject }))
+    const store = createTestStore()
+    const mount = store.dispatch(restoreSideConversation(SLOT))
+    const first = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 50 }))
+    await vi.advanceTimersByTimeAsync(60)
+    expect(await first.unwrap()).toBe('timeout')
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'edit', queue_id: 'q3', content: 'Q3 edited' }))
+    failFirst(new Error('offline'))
+    await expect(mount.unwrap()).rejects.toThrow('offline')
+    expect(store.getState().chat.slotSide[SLOT].editedBeforeRestore).toBeUndefined()
+    expect(store.getState().chat.slotSideReading?.[SLOT]).toBeUndefined()
   })
 })

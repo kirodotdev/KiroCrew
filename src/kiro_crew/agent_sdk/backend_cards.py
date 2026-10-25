@@ -550,6 +550,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "wrong membership either shows a failure as an answer or an answer as a "
         "failure, which is a defect"
     ),
+    "ACP_BACKENDS_REPORT_USAGE": (
+        "whether a turn that reports no usage billed nothing, read by memory consolidation "
+        "to decide whether an empty reply spends one of its attempts. The chat surfaces "
+        "already show what each harness reports, so a reader choosing a harness loses "
+        "nothing; a wrong membership either charges a throttled turn or retries a span "
+        "without end, which is a defect"
+    ),
     "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": (
         "whether a kindless permission frame takes its tool_call's kind so the "
         "gate's kind-keyed tiers see the harness's classification. Both states are "

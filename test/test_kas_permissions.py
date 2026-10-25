@@ -37,6 +37,8 @@ from kiro_crew.acp.kas_permissions import (
     merge_user_permissions,
 )
 from kiro_crew.agent import _seed_kas_permissions
+from kiro_crew.agent_materialization import auto_approve
+from kiro_crew.agent_sdk.kas_bundle import KAS_PIN_VERSION
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION, spec_permissions_supported
 
 #: A release that accepts the field, and one that refuses it. Expressed against
@@ -525,6 +527,224 @@ class TestTheInstalledCliDecidesWhetherTheFieldIsWrittenAtAll:
     )
     def test_the_gate_itself_is_pure_and_fails_closed(self, version, supported):
         assert spec_permissions_supported(version) is supported
+
+
+class TestTheBundledEngineDecidesOnTheBundleRoute:
+    """With ``agent.kas_bundle`` on, the engine bundle reads the specs, so ITS version
+    is the gate -- and an installed kiro-cli must still pass its own, because it
+    reads the same files for every backend the switch does not change.
+
+    A kiro-cli-free host is the point of the route; gating on kiro-cli there
+    withheld the block on every such host, and Crew's auto-approve list never
+    reached KAS's policy engine. The engine's floor is the pinned release, the one
+    the block was measured against, so an older engine selected through
+    ``KIROCREW_KAS_VERSION`` is unmeasured and withholds. No engine installed is
+    an unknown version: withheld, as a kiro-cli that cannot be probed is.
+    """
+
+    @staticmethod
+    def _config(**over) -> dict:
+        base: dict = {"name": "kirocrew", "tools": ["fs_read"], "allowedTools": ["web_fetch"]}
+        base.update(over)
+        return base
+
+    @pytest.fixture
+    def bundle_route(self, monkeypatch):
+        """Pin the switch as the writer reads it."""
+
+        def _pin(on: bool) -> None:
+            monkeypatch.setattr("kiro_crew.agent_sdk.backend_install._kas_bundle_route", lambda: on)
+
+        return _pin
+
+    @pytest.fixture(autouse=True)
+    def kiro_cli_present(self, _floor_monkeypatch):
+        """Pin whether any kiro-cli is installed. Defaults to none, the route's
+        point; a test that installs one says so. On the private patch stack, so
+        a test's own ``monkeypatch.undo()`` cannot drop this isolation."""
+
+        def _pin(present: bool) -> None:
+            _floor_monkeypatch.setattr(
+                "kiro_crew.kiro_cli.resolve_kiro_cli",
+                lambda: "/opt/kiro/bin/kiro-cli" if present else None,
+            )
+
+        _pin(False)
+        return _pin
+
+    @pytest.fixture
+    def installed_engine(self, monkeypatch, tmp_path):
+        """Pin what the writer believes the installed engine bundle is: ``None`` for
+        nothing installed, else a record at *version*. Patched through the agent-sdk
+        facade, which forwards the write to the owning ACP module."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        def _pin(version):
+            installed = (
+                None
+                if version is None
+                else kas_bundle.InstalledKasBundle(
+                    version=version,
+                    node_version="22.20.0",
+                    root=tmp_path,
+                    node_bin=tmp_path / "node",
+                    acp_server=tmp_path / "acp-server.js",
+                )
+            )
+            monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+
+        return _pin
+
+    def test_the_pinned_engine_and_no_kiro_cli_at_all_gets_the_block(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(None)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert config["permissions"] == {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+
+    def test_an_engine_above_the_floor_gets_the_block(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        bundle_route(True)
+        installed_engine("0.70.1")
+        installed_cli(None)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" in config
+
+    def test_no_engine_installed_withholds_even_with_an_accepting_kiro_cli(
+        self, bundle_route, installed_engine, installed_cli, kiro_cli_present
+    ):
+        """The engine reads the specs on this route, so kiro-cli alone cannot let
+        the block through."""
+        kiro_cli_present(True)
+        bundle_route(True)
+        installed_engine(None)
+        installed_cli(_ACCEPTS)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    def test_an_engine_below_the_floor_withholds(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        bundle_route(True)
+        installed_engine("0.66.32")
+        installed_cli(_ACCEPTS)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    def test_a_kiro_cli_free_host_is_never_version_probed(
+        self, bundle_route, installed_engine, monkeypatch
+    ):
+        """A kiro-cli-free host must not pay a failed version spawn per spec write."""
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.installed_kiro_cli_version",
+            lambda: pytest.fail("kiro-cli probed on the bundle route"),
+        )
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" in config
+
+    def test_the_generated_writer_removes_an_inherited_block_when_withheld(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        """The derive path owns removal too: a block a template carried is dropped
+        on a reader that may refuse it, as on the relay route."""
+        bundle_route(True)
+        installed_engine(None)
+        installed_cli(_ACCEPTS)
+        config = self._config(permissions={"rules": [{"capability": "shell", "effect": "allow"}]})
+        auto_approve._write_derived_permissions(config, config["allowedTools"], "kirocrew.json")
+        assert "permissions" not in config
+
+    @pytest.mark.parametrize(
+        "version,written",
+        [((2, 10, 0), False), (_REFUSES, False), (None, False), (_ACCEPTS, True)],
+        ids=["reported-2.10.0", "refusing", "unknown", "accepting"],
+    )
+    def test_an_installed_kiro_cli_must_also_accept_with_the_switch_on(
+        self, bundle_route, installed_engine, installed_cli, kiro_cli_present, version, written
+    ):
+        """The switch changes only the kas backend: a native Kiro session, a member
+        on kiro, or the operator running kiro-cli reads the same specs. An old or
+        unprobeable kiro-cli refuses the whole file, so it withholds the block even
+        though the engine accepts it."""
+        kiro_cli_present(True)
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(version)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert ("permissions" in config) is written
+
+    def test_a_kiro_cli_lookup_that_raises_counts_as_installed(
+        self, bundle_route, installed_engine, installed_cli, monkeypatch
+    ):
+        def _boom():
+            raise OSError("home unreadable")
+
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", _boom)
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(_REFUSES)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    @pytest.mark.parametrize(
+        "version,written",
+        [(_REFUSES, False), (None, False), (_ACCEPTS, True)],
+        ids=["refusing", "unknown", "accepting"],
+    )
+    def test_with_the_switch_off_kiro_cli_still_decides(
+        self, bundle_route, installed_engine, installed_cli, version, written
+    ):
+        """The relay route is unchanged: an installed engine is not consulted there."""
+        bundle_route(False)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(version)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert ("permissions" in config) is written
+
+    @pytest.mark.parametrize("on,written", [(True, True), (False, False)])
+    def test_the_switch_is_read_from_agent_kas_bundle(
+        self, monkeypatch, installed_engine, installed_cli, on, written
+    ):
+        """The writer reads the switch through the install probe's own reader, so
+        the two cannot disagree about which route is selected."""
+        from kiro_crew.config import KiroCrewConfig
+
+        class _Cfg:
+            agent = type("A", (), {"kas_bundle": on})()
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _Cfg()))
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(None)
+        assert auto_approve._spec_permissions_accepted() is written
+
+    def test_an_unreadable_config_selects_the_relay_route(
+        self, monkeypatch, installed_engine, installed_cli
+    ):
+        """Fail toward the gate that has always run, not toward a route nothing chose."""
+        from kiro_crew.config import KiroCrewConfig
+
+        def _boom(cls):
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(None)
+        assert auto_approve._spec_permissions_accepted() is False
+        installed_cli(_ACCEPTS)
+        assert auto_approve._spec_permissions_accepted() is True
 
 
 class TestTheVersionProbeItself:

@@ -137,6 +137,34 @@ class TestDoctorFlagsSpecPins:
             name == "proj-reviewer" for name, _pin, _fix in problems
         ), f"project-scoped pin was not audited: {problems}"
 
+    def test_the_declared_name_labels_the_problem_in_either_scope(self, tmp_path):
+        """A row names the agent its spec declares, not the file that holds it.
+
+        A spec's filename and its ``name`` are not required to agree; a
+        ``name`` that is a non-empty string labels the row in the global and
+        the project scope alike.
+        """
+        from kiro_crew import cli_doctor
+
+        global_dir = tmp_path / "agents"
+        global_dir.mkdir()
+        (global_dir / "global-file.json").write_text(
+            json.dumps({"name": "global-reviewer", "model": "claude-opus-4-8"}),
+            encoding="utf-8",
+        )
+        project = tmp_path / "proj"
+        project_dir = project / ".kiro" / "agents"
+        project_dir.mkdir(parents=True)
+        (project_dir / "project-file.json").write_text(
+            json.dumps({"name": "proj-reviewer", "model": "claude-opus-4-8"}),
+            encoding="utf-8",
+        )
+
+        problems = cli_doctor._agent_spec_model_problems(agents_dir=global_dir, project_dir=project)
+
+        assert problems is not None, "the check must have run"
+        assert sorted(name for name, _pin, _fix in problems) == ["global-reviewer", "proj-reviewer"]
+
     def test_unreadable_specs_report_unchecked_not_clean(self, tmp_path):
         """A diagnostic must not print green for a check it never performed."""
         from kiro_crew import cli_doctor

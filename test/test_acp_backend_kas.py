@@ -25,10 +25,13 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_SESSION_EVICTION,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
@@ -45,6 +48,16 @@ from kiro_crew.session import SessionManager
 #: compared the property against that same frozenset would agree with itself no
 #: matter which harnesses were in it.
 ON_THE_ACP_RUNTIME = {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+
+#: The backends whose turns land their spend in TurnUsage, spelled apart from the
+#: set ``reports_turn_usage`` reads for the same reason.
+REPORTS_TURN_USAGE = {
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_GOOSE,
+}
 
 
 def _build_provider(backend: str) -> AcpProvider:
@@ -115,6 +128,14 @@ class TestBackendPredicates:
         provider = _build_provider(backend)
         assert provider.is_acp_runtime_backend is (backend in ON_THE_ACP_RUNTIME)
         assert ON_THE_ACP_RUNTIME == set(ACP_BACKENDS_ACP_RUNTIME)
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
+    def test_reports_turn_usage_answers_positive_set_membership(self, backend):
+        """A provider answering True without reporting usage would let memory
+        consolidation take its billed empty replies as free and retry a span forever."""
+        provider = _build_provider(backend)
+        assert provider.reports_turn_usage is (backend in REPORTS_TURN_USAGE)
+        assert REPORTS_TURN_USAGE == set(ACP_BACKENDS_REPORT_USAGE)
 
     def test_a_harness_off_the_runtime_need_not_be_claude(self):
         """The backends where the negation and the membership disagree.

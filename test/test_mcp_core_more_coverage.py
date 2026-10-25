@@ -1454,7 +1454,10 @@ class TestResourceStatusTool:
         [
             ("critical", "do NOT start heavy work"),
             ("tight", "prefer the lighter path"),
-            ("ample", "ample headroom — heavy work is fine"),
+            (
+                "ample",
+                "ample headroom right now — nothing is reserved, so it can change before you act",
+            ),
             # An unmeasurable host must not silently read as "fine".
             ("unknown", "headroom could not be measured"),
         ],

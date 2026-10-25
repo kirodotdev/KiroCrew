@@ -601,6 +601,25 @@ payloads. Widening that regex or its key scope is a security change — the same
 constant also decides which paths are treated as local file reads, so the two
 decisions must stay on the one exported copy in `urlTransform.ts`.
 
+A root-relative image (`/images/a.png`) inside a previewed file (a
+`BasePathCtx` is set) is tried as an absolute path first, then against each
+directory above the file, nearest first, up to eight levels
+(`siteRootImageCandidates`). The leading `/` there usually names the root of the
+repository or site the markdown belongs to — GitHub, Zenn and Docusaurus all
+write images that way (issue #23623) — and nothing in the file says where that
+root is. A same-named image in a nearer directory therefore wins over one at
+the real root. Every candidate still goes through `/api/file-raw`, so the fallback
+reads nothing the absolute path could not already ask for. When every candidate
+fails, the broken-image fallback names and probes the path as written, as it
+does for any other image, so its "no longer exists" wording speaks for that path
+alone. That fallback states the failure through an inline `ErrorNotice` beside
+a chip that copies the on-disk path. The notice offers no agent hand-off: the
+renderer also previews unsaved drafts (the meeting note's Preview), and the
+navigation would unmount one. Every surface that
+provides `BasePathCtx` gets this (the file preview, the file explorer, the
+meeting notes sidebar); outside them (chat, artifacts) a leading-slash path
+stays absolute only.
+
 To SHOW a gateway path's file name, use `pathBasename` (and
 `stripTrailingSeparators` for a directory) from `utils/pathBasename.ts`, never
 `.split('/').pop()`: a Windows gateway reports `C:\repo\a.ts`, which a `/`-only

@@ -113,7 +113,8 @@ def _git_line(repo: Path, *args: str) -> str | None:
         return None
     if res.returncode != 0:
         return None
-    return res.stdout.strip().splitlines()[0].strip() if res.stdout.strip() else None
+    out = res.stdout.strip()
+    return out.splitlines()[0].strip() if out else None
 
 
 def _detect_userspace_oom_killer() -> str | bool | None:
@@ -202,7 +203,7 @@ def _aws_profile_names() -> list[str] | None:
     which is the "just use a different reader" move this whole feature exists to
     talk the agent out of. ``aws configure list-profiles`` is the command the
     remediation text names and ``test_deny_guidance`` pins as allowed, so the
-    report now comes through the same door the guidance points at.
+    report comes through the same door the guidance points at.
 
     ``None`` rather than ``[]`` when the CLI is absent or fails, because "cannot
     ask" and "asked, and there are none" are different things to tell an

@@ -44,8 +44,10 @@ class SideState:
     ``_run_side_turn`` finally block.
 
     ``queue`` holds messages submitted while a turn is in flight, as
-    ``{"id", "content", "ts"}`` dicts. It is drained one entry per turn by
-    ``_run_side_turn``'s finally block.
+    ``{"id", "content", "ts", "rev"}`` dicts. It is drained one entry per turn by
+    ``_run_side_turn``'s finally block. ``rev`` counts the entry's edits: the read
+    and the edit frame both carry it, so a tab holding two copies of an entry can
+    tell which is newer.
     """
 
     open: bool = False
@@ -53,7 +55,7 @@ class SideState:
     last_run_id: str = ""
     is_complete: bool = True
     created_at: str = field(default_factory=_now_iso)
-    queue: list[dict[str, str]] = field(default_factory=list)
+    queue: list[dict[str, Any]] = field(default_factory=list)
     #: Ledger of steers handed to the backend, as
     #: ``{"id", "text", "state"}`` where state is one of
     #: :data:`STEER_PENDING` / :data:`STEER_CONSUMED` / :data:`STEER_REQUEUED`.
@@ -172,7 +174,7 @@ class SideState:
         if len(self.queue) + len(self.steer_pending()) >= MAX_SIDE_QUEUE:
             return None
         qid = uuid.uuid4().hex[:12]
-        self.queue.append({"id": qid, "content": content, "ts": _now_iso()})
+        self.queue.append({"id": qid, "content": content, "ts": _now_iso(), "rev": 0})
         return qid
 
     def queue_headroom(self) -> int:
@@ -196,7 +198,7 @@ class SideState:
         if len(self.queue) >= MAX_SIDE_QUEUE:
             return None
         qid = uuid.uuid4().hex[:12]
-        self.queue.insert(0, {"id": qid, "content": content, "ts": _now_iso()})
+        self.queue.insert(0, {"id": qid, "content": content, "ts": _now_iso(), "rev": 0})
         return qid
 
     def steer_can_accept(self) -> bool:
@@ -210,7 +212,7 @@ class SideState:
         """
         return len(self.queue) + len(self.steer_pending()) < MAX_SIDE_QUEUE
 
-    def queue_pop(self) -> dict[str, str] | None:
+    def queue_pop(self) -> dict[str, Any] | None:
         """Pop the oldest queued entry, or None when the queue is empty."""
         if not self.queue:
             return None
@@ -224,13 +226,15 @@ class SideState:
                 return item["content"]
         return None
 
-    def queue_edit(self, queue_id: str, content: str) -> bool:
-        """Replace one entry's content by ID, preserving order. True if found."""
+    def queue_edit(self, queue_id: str, content: str) -> int | None:
+        """Replace one entry's content by ID, preserving order. Returns the entry's
+        new ``rev``, or None if not found."""
         for item in self.queue:
             if item["id"] == queue_id:
                 item["content"] = content
-                return True
-        return False
+                item["rev"] = int(item.get("rev", 0)) + 1
+                return int(item["rev"])
+        return None
 
     # ── Steer ledger ──
 

@@ -57,6 +57,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
+    ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
@@ -773,6 +774,12 @@ class TurnUsage:
     Carried on AcpEvent (EVENT_COMPLETE). Each provider fills the dimensions it
     bills in and leaves the rest at 0: claude_code/bedrock fill token counts +
     cost_usd, kiro (acp) fills credits. Consumers read whichever is non-zero.
+
+    ``num_turns`` is the number of model calls the turn made and
+    ``context_sum_tokens`` the context-window occupancy reported after each of
+    them, added up: the volume of context the turn's calls carried. kiro-cli
+    fills both from its per-call ``_kiro.dev/metadata`` frames (see
+    ``AcpPromptStats.note_metadata_frame``); they are not billed token counts.
     """
 
     input_tokens: int = 0
@@ -783,6 +790,7 @@ class TurnUsage:
     credits: float = 0.0
     num_turns: int = 0
     duration_ms: int = 0
+    context_sum_tokens: int = 0
 
 
 def _normalize_to_kebab(name: str) -> str:
@@ -1363,6 +1371,18 @@ class AcpPromptStats:
     # context breakdown and time to first token. PER-TURN, dropped by
     # ``carry_over()``, so a replayed or late frame cannot reach a later turn.
     kas_profile: "dict[str, Any] | None" = None
+    # The context-window occupancy, in tokens, after each model call this turn,
+    # kept as a running sum, the number of readings and the first reading (see
+    # ``note_metadata_frame``). Fixed size however many calls the turn makes.
+    # PER-TURN: ``carry_over()`` drops all three.
+    call_context_sum: int = 0
+    call_readings: int = 0
+    first_call_reading: int = 0
+    # Credit entries the turn's ``meteringUsage`` listed. kiro-cli lists one per
+    # model call, which is how ``to_turn_usage`` tells a reading that belongs to
+    # no call (the frame sent when a session opens) from one that does.
+    # PER-TURN like ``credits``.
+    metered_calls: int = 0
 
     def carry_over(self) -> "AcpPromptStats":
         """Return fresh per-turn stats carrying this turn's context state.
@@ -1529,6 +1549,38 @@ class AcpPromptStats:
         self.cache_read_tokens += int(cache_read_tokens)
         self.cache_write_tokens += int(cache_write_tokens)
 
+    def note_metadata_frame(self, pct: float | None, metering: object) -> None:
+        """Record what one ``_kiro.dev/metadata`` frame says about the turn's calls.
+
+        kiro-cli sends one frame after every model call, carrying the
+        ``contextUsagePercentage`` that call left, and closes the turn with a
+        frame whose ``meteringUsage`` lists one credit entry per call and
+        repeats the last percentage. So a frame with metering is counted by its
+        credit entries and its percentage is not recorded a second time; any
+        other frame records one call's context in tokens.
+
+        ``pct`` is the caller's sanitized percentage, ``None`` when the frame had
+        none. A reading needs a known window, so with the window unknown the
+        turn still counts its metered calls but sums no context. A real
+        ``usage_update`` makes the meter authoritative and the percentage is not
+        applied, so nothing is recorded from it either. Shared by the
+        ``AcpClient`` and ``AcpSessionHandle`` metadata trackers, called after
+        the percentage has been applied, so the two paths cannot drift.
+        """
+        if isinstance(metering, list):
+            self.metered_calls += sum(
+                1 for entry in metering if isinstance(entry, dict) and entry.get("unit") == "credit"
+            )
+            return
+        if pct is None or self.context_tokens_from_usage:
+            return
+        if self.context_window_tokens > 0:
+            reading = round(self.context_window_tokens * pct / 100.0)
+            if self.call_readings == 0:
+                self.first_call_reading = reading
+            self.call_context_sum += reading
+            self.call_readings += 1
+
     def to_turn_usage(self) -> "TurnUsage":
         """One ``TurnUsage`` carrying every billing dimension this turn filled.
 
@@ -1536,10 +1588,24 @@ class AcpPromptStats:
         ``EVENT_COMPLETE`` construction site uses this instead of hand-filling
         fields, so a backend that bills in cost/tokens (the claude seam) and
         one that bills in credits (kiro) both surface whatever they reported.
-        A backend that sends neither cost nor token counts leaves the new
-        dimensions at their zero defaults, so the result is byte-identical to
-        ``TurnUsage(credits=...)`` (harness parity).
+        A backend that sends neither cost, token counts nor per-call metadata
+        leaves those dimensions at their zero defaults, so the result is
+        byte-identical to ``TurnUsage(credits=...)`` (harness parity).
+
+        The model-call count and context sum come from ``note_metadata_frame``.
+        A turn that recorded exactly one reading more than it metered calls
+        leaves out its first reading: that is the frame a session sends when it
+        opens, which arrives ahead of the first call and measures no call. Any
+        other mismatch keeps every reading, and so does a turn that ended before
+        its metering frame arrived (a cancelled first turn then counts the
+        session-open reading). A turn that compacts mid-way records kiro-cli's
+        post-compaction report like a call's reading, so its sum is approximate.
         """
+        context_sum = self.call_context_sum
+        readings = self.call_readings
+        if self.metered_calls and readings == self.metered_calls + 1:
+            context_sum -= self.first_call_reading
+            readings -= 1
         return TurnUsage(
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
@@ -1548,6 +1614,8 @@ class AcpPromptStats:
             cache_creation_tokens=self.cache_write_tokens,
             cost_usd=self.cost_usd,
             credits=self.credits,
+            num_turns=self.metered_calls or readings,
+            context_sum_tokens=context_sum,
         )
 
     @staticmethod
