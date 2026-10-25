@@ -345,22 +345,34 @@ def _read_int_file(path: str) -> int | None:
 _MEMORY_STAT_READ_CAP = 64 * 1024
 
 
-def _read_inactive_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
-    """Inactive page cache charged to a cgroup, in bytes; 0 when unreadable.
+def _read_reclaimable_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
+    """Clean page cache charged to a cgroup, in bytes; 0 when unreadable.
 
     A cgroup's ``memory.current`` (v1: ``memory.usage_in_bytes``) counts the
     page cache its members touched. On a build-heavy host that cache fills the
     group up to its ceiling and stays there, so ``limit - usage`` reads as zero
     headroom while almost all of it is cache the kernel drops on demand.
-    Inactive file pages are the part it reclaims first and cheaply; subtracting
-    them gives the working set, the same figure the kubelet and cAdvisor evict
-    on. Active cache and anonymous memory stay counted as used.
+    Both file LRU lists are reclaimed before the kernel throttles at
+    ``memory.high`` or OOM-kills at ``memory.max``: active pages are only
+    demoted first. So the figure is ``active_file + inactive_file`` less the
+    dirty and writeback pages, which must reach disk before they can go.
+    Anonymous memory and ``shmem`` (tmpfs, which sits on the anon lists and
+    cannot be dropped without swap) stay counted as used. Host ``MemAvailable``
+    also counts most file cache as available, so the two probes roughly agree.
 
-    v2 ``memory.stat`` is hierarchical, so ``inactive_file`` covers the whole
-    subtree. v1 keeps the subtree figure in ``total_inactive_file``. Read
-    through ``kiro_crew.subagent``'s ``open`` for the same reason as :func:`_read_int_file`.
+    v2 ``memory.stat`` is hierarchical. v1 keeps the subtree figures in the
+    ``total_`` keys. Any unparseable value returns 0, so usage counts in full.
+    Read through ``kiro_crew.subagent``'s ``open`` for the same reason as
+    :func:`_read_int_file`.
     """
-    key = "inactive_file" if v2 else "total_inactive_file"
+    # The file LRU lists, then the dirty and writeback pages on them.
+    if v2:
+        reclaimable = ("inactive_file", "active_file")
+        unreclaimable = ("file_dirty", "file_writeback")
+    else:
+        reclaimable = ("total_inactive_file", "total_active_file")
+        unreclaimable = ("total_dirty", "total_writeback")
+    values: dict[str, int] = {}
     try:
         with open(str(directory / "memory.stat"), encoding="ascii") as fh:
             # A kernel-written file of ~40 short lines; the cap only keeps a
@@ -368,21 +380,23 @@ def _read_inactive_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
             text = fh.read(_MEMORY_STAT_READ_CAP)
         for line in text.splitlines():
             name, _, value = line.partition(" ")
-            if name == key:
-                return max(0, int(value))
+            if name in reclaimable or name in unreclaimable:
+                values[name] = max(0, int(value))
     except (OSError, UnicodeDecodeError, ValueError):
-        pass
-    return 0
+        return 0
+    cache = sum(values.get(name, 0) for name in reclaimable)
+    pinned = sum(values.get(name, 0) for name in unreclaimable)
+    return max(0, cache - pinned)
 
 
 def _working_set(directory: PurePosixPath | Path, v2: bool, usage: int) -> int:
-    """*usage* minus the group's inactive page cache, never below zero.
+    """*usage* minus the group's clean page cache, never below zero.
 
     The two files are read at different instants, so the cache figure can
     briefly exceed the usage figure; the floor keeps headroom from ever
     reading larger than the limit itself.
     """
-    return max(0, usage - _read_inactive_file_bytes(directory, v2))
+    return max(0, usage - _read_reclaimable_file_bytes(directory, v2))
 
 
 def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
@@ -468,7 +482,7 @@ def _cgroup_available_gb() -> float:
     slice term a bare host with tens of GB free reads as "ample" while agent
     process memory has already filled that ceiling, so admission keeps
     admitting into a throttle that reclaim cannot relieve. Both terms measure
-    the working set, so a slice held at ``memory.high`` only by inactive page
+    the working set, so a slice held at ``memory.high`` only by clean page
     cache is not refused; ``sandbox.agents_slice_throttling`` still reports
     that state to the cold-start handshake. The tighter of the two readings is
     returned; -1.0 only when neither constrains (``dynamic-subagent-sizing.md``
@@ -489,7 +503,7 @@ def _container_cgroup_available_gb() -> float:
     SAME level, including siblings charged to a parent. A finite limit with
     unknown usage contributes zero headroom, never zero usage. Ancestors
     hidden above a mount cannot be measured. Usage excludes the level's
-    inactive page cache (:func:`_read_inactive_file_bytes`). An unknown usage
+    clean page cache (:func:`_read_reclaimable_file_bytes`). An unknown usage
     records :data:`MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE` so a deferral can say
     the headroom is unknown rather than exhausted.
     """
@@ -532,8 +546,8 @@ def _agents_slice_available_gb() -> float:
     ``min(high, max) - working set``, floored at zero: usage can sit ABOVE
     ``memory.high`` while the kernel reclaims, and a negative figure would
     mislead every threshold comparison downstream. The working set is
-    ``memory.current`` minus inactive page cache
-    (:func:`_read_inactive_file_bytes`); without that, a slice whose cache has
+    ``memory.current`` minus clean page cache
+    (:func:`_read_reclaimable_file_bytes`); without that, a slice whose cache has
     filled it to ``memory.high`` reads as zero headroom and raises a critical
     memory alert on a host with hundreds of GB available.
 

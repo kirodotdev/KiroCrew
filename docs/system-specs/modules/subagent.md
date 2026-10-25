@@ -290,11 +290,14 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   limit as headroom. Missing discovery retains the conventional root-path
   fallback; ancestors hidden above a mount cannot be measured. Usage at every
   level is the working set: `memory.current` (v1 `memory.usage_in_bytes`)
-  minus the group's inactive page cache (`inactive_file` in v2 `memory.stat`,
-  `total_inactive_file` in v1), floored at zero, via `_working_set()`. The
-  kernel drops that cache on demand, so counting it as used made a slice full
-  of cold build cache read as 0 GB free. An unreadable `memory.stat` subtracts
-  nothing. The agents slice's own ceiling
+  minus the group's clean page cache (`active_file + inactive_file -
+  file_dirty - file_writeback` in v2 `memory.stat`, the `total_` keys in v1),
+  floored at zero, via `_working_set()`. The kernel reclaims both file lists
+  before it throttles at `memory.high` or OOM-kills at `memory.max`, so
+  counting either as used made a slice full of build cache read as near 0 GB
+  free. Dirty and writeback pages must reach disk first, and `shmem` (tmpfs)
+  sits on the anon lists, so all three stay used. An unreadable `memory.stat`
+  subtracts nothing. The agents slice's own ceiling
   (`min(memory.high, memory.max) - working set` on `kirocrew-agents.slice`,
   read via `_agents_slice_available_gb()`) is a second clamp: the slice is a
   sibling of the gateway's cgroup, not an ancestor, and the walk never reads

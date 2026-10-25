@@ -1415,7 +1415,8 @@ class TestCgroupAvailable:
             f"anon {3 * gib}\nfile {12 * gib}\nactive_file {2 * gib}\n"
             f"inactive_file {10 * gib}\n"
         )
-        assert sub._cgroup_available_gb() == pytest.approx(11.0, abs=0.01)
+        # 16 - (15 - 10 - 2)
+        assert sub._cgroup_available_gb() == pytest.approx(13.0, abs=0.01)
 
     def test_v1_reads_the_hierarchical_inactive_cache(self, cgroup_files, monkeypatch) -> None:
         import kiro_crew.subagent as sub
@@ -1426,10 +1427,13 @@ class TestCgroupAvailable:
             "/sys/fs/cgroup/memory/memory.usage_in_bytes": 7 * gib,
         }
         monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
-        # v1's local ``inactive_file`` excludes children; only the total counts.
+        # v1's local keys exclude children; only the ``total_`` keys count.
         cgroup_files["/sys/fs/cgroup/memory/memory.stat"] = (
-            f"inactive_file {1 * gib}\ntotal_inactive_file {4 * gib}\n"
+            f"inactive_file {1 * gib}\nactive_file {1 * gib}\ndirty {1 * gib}\n"
+            f"total_inactive_file {3 * gib}\ntotal_active_file {2 * gib}\n"
+            f"total_dirty {1 * gib}\ntotal_writeback 0\n"
         )
+        # 8 - (7 - (3 + 2 - 1))
         assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
 
     @pytest.mark.parametrize("used_gb", [2, 3])

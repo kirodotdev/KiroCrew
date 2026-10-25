@@ -396,7 +396,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_read_int_file", "function", "(path: 'str') -> 'int | None'"),
         ("_MEMORY_STAT_READ_CAP", "value", "int"),
         (
-            "_read_inactive_file_bytes",
+            "_read_reclaimable_file_bytes",
             "function",
             "(directory: 'PurePosixPath | Path', v2: 'bool') -> 'int'",
         ),

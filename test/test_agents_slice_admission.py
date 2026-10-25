@@ -124,8 +124,49 @@ class TestAgentsSliceHeadroom:
             encoding="utf-8",
         )
         monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
-        # 370 - (364 - 151); active cache and anon stay counted as used.
-        assert sa._agents_slice_available_gb() == pytest.approx(157.0)
+        # 370 - (364 - 151 - 126); anon and shmem stay counted as used.
+        assert sa._agents_slice_available_gb() == pytest.approx(283.0)
+
+    def test_active_page_cache_is_headroom(self, tmp_path, monkeypatch, no_container_cgroup):
+        """A 64 GB host at 38% RAM read 4 GB free because 24.7 GB of active
+        file cache counted as used. The kernel reclaims active cache too, so
+        only anon and shmem fill this slice."""
+        slice_dir = _fabricate_slice(
+            tmp_path, high=int(46.3 * GIB), maximum=int(49.4 * GIB), current=int(46.1 * GIB)
+        )
+        (slice_dir / "memory.stat").write_text(
+            f"anon {int(7.5 * GIB)}\nfile {int(36.6 * GIB)}\n"
+            f"active_file {int(24.7 * GIB)}\ninactive_file {int(4.0 * GIB)}\n"
+            f"shmem {int(7.9 * GIB)}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        # 46.3 - (46.1 - 24.7 - 4.0)
+        assert sa._agents_slice_available_gb() == pytest.approx(28.9, abs=0.01)
+
+    def test_dirty_and_writeback_cache_stay_used(self, tmp_path, monkeypatch, no_container_cgroup):
+        """Dirty and writeback pages must reach disk before the kernel can
+        drop them, so they are not headroom even on the file lists."""
+        slice_dir = _fabricate_slice(tmp_path, high=20 * GIB, maximum=26 * GIB, current=18 * GIB)
+        (slice_dir / "memory.stat").write_text(
+            f"active_file {6 * GIB}\ninactive_file {4 * GIB}\n"
+            f"file_dirty {3 * GIB}\nfile_writeback {1 * GIB}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        # 20 - (18 - (6 + 4 - 3 - 1))
+        assert sa._agents_slice_available_gb() == pytest.approx(8.0)
+
+    def test_dirty_beyond_cache_subtracts_nothing(self, tmp_path, monkeypatch, no_container_cgroup):
+        """The stat lines are not one atomic snapshot; a dirty figure ahead of
+        the cache figures must never add to usage."""
+        slice_dir = _fabricate_slice(tmp_path, high=20 * GIB, maximum=26 * GIB, current=18 * GIB)
+        (slice_dir / "memory.stat").write_text(
+            f"active_file {1 * GIB}\ninactive_file {1 * GIB}\nfile_dirty {3 * GIB}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        assert sa._agents_slice_available_gb() == pytest.approx(2.0)
 
     def test_cache_read_ahead_of_usage_never_exceeds_the_ceiling(
         self, tmp_path, monkeypatch, no_container_cgroup
