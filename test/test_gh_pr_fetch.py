@@ -627,6 +627,46 @@ class TestTheCheckBoardIsReadWhole:
         rows = [row for row in observation.checks if row.bare == "Lint"]
         assert len(rows) == 1
         assert rows[0].bucket == "pending"
+        assert observation.status == gh_pr.STATUS_PARTIAL
+        assert any(
+            "conservative" in note and "Lint" in note for note in observation.incomplete
+        ), observation.incomplete
+        assert observation.checks_complete, "every row was read; only the order is short"
+
+    def test_one_undated_row_is_enough_to_declare_the_choice(self, monkeypatch) -> None:
+        """A dated row and an undated one cannot be ordered either."""
+        _Forge().install(monkeypatch).paginate(
+            [
+                _check("Lint", "SUCCESS", started_at="2026-10-01T10:00:00Z"),
+                _check("Lint", conclusion=None, status="QUEUED"),
+            ]
+        )
+        observation = gh_pr.fetch(_msg())
+        rows = [row for row in observation.checks if row.bare == "Lint"]
+        assert [row.bucket for row in rows] == ["pending"]
+        assert observation.status == gh_pr.STATUS_PARTIAL
+        assert any("Lint" in note for note in observation.incomplete), observation.incomplete
+
+    def test_undated_duplicates_that_agree_add_no_note(self, monkeypatch) -> None:
+        """Nothing was chosen, so the reading stays whole."""
+        _Forge().install(monkeypatch).paginate(
+            [_check("Lint", "SUCCESS"), _check("Lint", "SUCCESS")]
+        )
+        observation = gh_pr.fetch(_msg())
+        assert observation.status == gh_pr.STATUS_OK
+        assert observation.incomplete == ()
+
+    def test_dated_duplicates_add_no_note(self, monkeypatch) -> None:
+        """Recency decided, so there is no choice to declare."""
+        _Forge().install(monkeypatch).paginate(
+            [
+                _check("Lint", "FAILURE", started_at="2026-10-01T10:00:00Z"),
+                _check("Lint", "SUCCESS", started_at="2026-10-01T11:00:00Z"),
+            ]
+        )
+        observation = gh_pr.fetch(_msg())
+        assert [row.bucket for row in observation.checks if row.bare == "Lint"] == ["passing"]
+        assert observation.status == gh_pr.STATUS_OK
 
     def test_the_same_check_name_from_two_workflows_stays_two_rows(self, monkeypatch) -> None:
         """Collapsing them lets one workflow's green swallow the other's red.
