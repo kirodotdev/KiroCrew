@@ -299,6 +299,24 @@ def _warn_declined_home_once(arm: str, target: Path, msg: str, *args: object) ->
     logger.warning(msg, *args)
 
 
+def _new_shared_spec_needs_owner_pin(target_dir: Path) -> bool:
+    """Must a spec this instance creates in *target_dir* carry its own home pin?
+
+    True only where :func:`_decline_shared_agent_home` would later judge the
+    directory by :func:`_existing_specs_are_mine`: the shared ambient directory,
+    from a non-default home that is not writing its own ``isolated_agents_dir``.
+    A file created there without a ``KIROCREW_HOME`` pin reads as owned by nobody,
+    and the same home is refused every later write to it.
+    """
+    target = target_dir.resolve()
+    if target != ambient_agents_dir().resolve():
+        return False
+    own_home = _valid_override_home()
+    if own_home is None or target == isolated_agents_dir(own_home).resolve():
+        return False
+    return not shared_kiro_agents_writable()
+
+
 def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     """Return the spec path to report, WITHOUT writing, when this instance must
     not own the shared agent home; ``None`` when writing is safe.
