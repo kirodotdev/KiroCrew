@@ -13,6 +13,7 @@ from pathlib import Path
 
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
+from kiro_crew.sqlite_wal import enable_wal
 
 from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3  # noqa: F401
 from ..sqlite_quarantine import (
@@ -479,7 +480,10 @@ class KnowledgeStore:
             if test_mode:
                 conn._owner_ident = threading.get_ident()
             try:
-                conn.execute("PRAGMA journal_mode=WAL")
+                # The store's own busy window, not the 30 s connect timeout: some
+                # callers still open it on the event loop, where a wait past the
+                # loop-stall exit budget kills the gateway.
+                enable_wal(conn, timeout_secs=10)
             except sqlite3.Error:
                 # A file that is not a database fails here; release the handle so
                 # the caller can move the file aside.

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
-from kiro_crew import memory_schema, memory_stores, platform_compat
+from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.lesson_validation import (
     contains_volatile_lesson_fact,
     extracted_lesson_applies,
@@ -121,7 +121,7 @@ def create_member_database(path: Path, *, member_id: str, store_id: str) -> None
     platform_compat.restrict_to_owner(path)  # lockdown-ok: empty reservation; SQLite writes follow
     db = sqlite3.connect(path, isolation_level=None)
     try:
-        db.execute("PRAGMA journal_mode=WAL")
+        sqlite_wal.enable_wal(db, timeout_secs=5.0)
         db.executescript(
             "BEGIN IMMEDIATE;" + memory_schema.CREW_SCHEMA_SQL + memory_schema.MEMBER_SCHEMA_SQL
         )
