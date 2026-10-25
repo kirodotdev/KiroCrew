@@ -390,6 +390,11 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     ``test_harness.py`` left this set when the gateway harness became
     cross-platform (reader thread instead of ``selectors`` on a pipe, tree kill
     instead of ``terminate_pgid``); it now runs on the Windows shards.
+    ``test_stop_kill_cancel.py``, the three ``test_theme_install*.py`` parts and
+    ``test_file_office_preview.py`` left it once their blockers were gone: the
+    kill-path tests skip their POSIX-only cases themselves, theme packs are served
+    on Windows, and the file schema accepts a drive-letter path. They run on the
+    Windows shards too.
 
     ``test_pod_windows_boot.py`` is the one entry here for a reason other than a
     POSIX assumption: it boots a real pod under Task Scheduler, needs a built
@@ -467,7 +472,6 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_acp_client_tool_events.py",
         "test_acp_client_tool_hooks.py",
         "test_acp_client_transient_errors.py",
-        "test_stop_kill_cancel.py",
         "test_app_backend_stale_reap.py",
         "test_env.py",
         "test_outbox_notify_broadcast.py",
@@ -478,13 +482,9 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_snapshot.py",
         "test_snapshot_notification_copy_branch.py",
         "test_snapshot_notification_merge_branch.py",
-        "test_theme_install.py",
-        "test_theme_install_declarations.py",
-        "test_theme_install_identity.py",
         "test_webapp_preview.py",
         "test_file_raw.py",
         "test_file_download.py",
-        "test_file_office_preview.py",
         "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
         "test_dev_fleet_app_make_live.py",

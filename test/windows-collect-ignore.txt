@@ -80,7 +80,6 @@ test_acp_client_tool_call_updates.py  # a test_acp_client.py topic part; same su
 test_acp_client_tool_events.py     # a test_acp_client.py topic part; same suite
 test_acp_client_tool_hooks.py      # a test_acp_client.py topic part; same suite
 test_acp_client_transient_errors.py  # a test_acp_client.py topic part; same suite
-test_stop_kill_cancel.py           # killpg/getuid kill-path semantics
 test_app_backend_stale_reap.py     # getpgid/killpg reaping semantics
 test_env.py                        # krb5 ccache resolver is Linux-only (getuid paths)
 test_outbox_notify_broadcast.py    # hardcoded /tmp outbox paths
@@ -91,9 +90,6 @@ test_deploy_web_handlers_webapp.py  # a test_deploy_web_handlers.py topic part; 
 test_snapshot.py                   # replace-while-open (WinError 32) semantics
 test_snapshot_notification_copy_branch.py  # a test_snapshot.py topic part; same suite
 test_snapshot_notification_merge_branch.py  # a test_snapshot.py topic part; same suite
-test_theme_install.py              # POSIX readable/mode gate rejects NTFS modes
-test_theme_install_declarations.py  # a test_theme_install.py topic part; same suite
-test_theme_install_identity.py     # a test_theme_install.py topic part; same suite
 test_webapp_preview.py             # preview routes 404 on Windows backends
 test_file_raw.py                   # 0o600/0o644 mode-bit assertions
 test_file_download.py              # 0o600/0o644 mode-bit assertions
@@ -111,7 +107,6 @@ test_dev_fleet_app_pull_build.py   # POSIX app-runner assumptions
 test_dev_fleet_app_worktrees.py    # POSIX app-runner assumptions
 test_dev_fleet_app_sync.py         # POSIX app-runner assumptions
 test_dev_fleet_app_guards.py       # POSIX app-runner assumptions
-test_file_office_preview.py        # FILE_READ_SCHEMA rejects C:\ paths (POSIX-only pattern)
 
 # Runs ONLY as the dedicated pod-boot canary in ci.yml, never in a shard: it
 # boots a real gateway under a real scheduled task, which needs a built .venv in
