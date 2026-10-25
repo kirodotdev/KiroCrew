@@ -105,13 +105,14 @@ members do not create unbounded native work.
 Private V2 execution requires `agent.sandbox=auto` and working Linux/WSL namespaces
 or macOS outer Seatbelt. Native Windows, unconfined execution, unsupported MCP
 backends and Kiro internal delegation refuse private member turns with a reason.
-The owner can still manage memory in the dashboard. Existing members, including
-the default assistant selection, keep their declared V1 memory after upgrading.
-To opt in, open Crew Manager, select the member, open **Workspace · Memory**, and
-choose **Create private memory**. The new V2 store starts empty; previous V1
-stores remain available for an explicit copy of selected starting knowledge.
-Check the execution requirements above before choosing V2. New members receive
-V2 automatically, and an existing V2 member never falls back to V1 on failure.
+The owner can still manage memory in the dashboard. A member's memory store is
+chosen when the member is created and cannot be rebound afterwards. Existing
+members, including the default assistant selection, keep their declared V1
+memory after upgrading. To give a crewmate private V2 memory, create a new crew
+member: new members receive V2 automatically, starting empty, and V1 stores
+remain available for an explicit copy of selected starting knowledge. Check the
+execution requirements above first. A V2 member never falls back to V1 on
+failure.
 
 ## Install paths
 
