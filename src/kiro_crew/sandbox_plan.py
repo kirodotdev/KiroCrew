@@ -25,14 +25,16 @@ here needs it.
 
 from __future__ import annotations
 
+import ntpath
 import os
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 #: The two renderers a plan is made for.
 BACKEND_NAMESPACE = "namespace"
 BACKEND_SEATBELT = "seatbelt"
+BACKEND_WINDOWS = "windows-mxc"
 
 #: The leaf name of the governance cache directory: a cache an ``extra_visible_dirs``
 #: entry lifts stays read-only, because its metadata records the source the next boot
@@ -63,6 +65,7 @@ class RendererCapabilities:
 
 #: The declared capabilities of each renderer.
 CAPABILITIES: Mapping[str, RendererCapabilities] = {
+    BACKEND_WINDOWS: RendererCapabilities(cc_unmaskable_dirs=frozenset()),
     BACKEND_NAMESPACE: RendererCapabilities(
         cc_unmaskable_dirs=frozenset(),
     ),
@@ -337,6 +340,9 @@ class ConfinementPlan:
     #: :attr:`SandboxRequest.exec_cwd`, carried to the namespace launcher.
     exec_cwd: str = ""
 
+    #: Windows rechecks these seals by object identity after pinning path ancestry.
+    immutable_roots: tuple[str, ...] = ()
+
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
         """The masked trees that stay masked, each spelling once."""
@@ -446,8 +452,10 @@ def window_is_a_hidden_target(path: str, hidden_dirs: Iterable[str]) -> bool:
     A mask lift written as a window. Refused on every backend and at every producer,
     because nothing downstream can make it safe: the window is the masked tree.
     """
-    probe = path.rstrip(os.sep)
-    return any(probe == hidden.rstrip(os.sep) for hidden in hidden_dirs)
+    probe = os.path.normcase(os.path.normpath(path)).rstrip(os.sep)
+    return any(
+        probe == os.path.normcase(os.path.normpath(hidden)).rstrip(os.sep) for hidden in hidden_dirs
+    )
 
 
 def window_contains_a_hidden_target(path: str, hidden_dirs: Iterable[str]) -> bool:
@@ -467,8 +475,11 @@ def window_contains_a_hidden_target(path: str, hidden_dirs: Iterable[str]) -> bo
     under a masked ``apps`` tree holds the masked ``apps/meetings/data/edits`` -- and a
     per-parent test accepts it on the strength of the first relationship.
     """
-    probe = path.rstrip(os.sep)
-    return any(hidden.rstrip(os.sep).startswith(probe + os.sep) for hidden in hidden_dirs)
+    probe = os.path.normcase(os.path.normpath(path)).rstrip(os.sep)
+    return any(
+        os.path.normcase(os.path.normpath(hidden)).startswith(probe + os.sep)
+        for hidden in hidden_dirs
+    )
 
 
 #: The log record a refused private window becomes. NEITHER path is named: the mask
@@ -507,15 +518,18 @@ def private_windows(
     windows: list[str] = []
     refusals: list[Refusal] = []
     for raw in extra_private_dirs:
-        path = absolute(raw, cwd)
+        path = os.path.normpath(absolute(raw, cwd))
+        path_key = os.path.normcase(path)
         refused = window_is_a_hidden_target(path, hidden_dirs) or (
             not remasks_contained_targets and window_contains_a_hidden_target(path, hidden_dirs)
         )
         if refused:
             refusals.append(Refusal("private-window", WINDOW_REFUSAL))
             continue
-        for parent in hidden_dirs:
-            if path.startswith(parent.rstrip(os.sep) + os.sep):
+        for raw_parent in hidden_dirs:
+            parent = os.path.normpath(raw_parent)
+            parent_key = os.path.normcase(parent)
+            if path_key.startswith(parent_key.rstrip(os.sep) + os.sep):
                 windows.append(path)
                 break
     return list(dict.fromkeys(windows)), refusals
@@ -1089,11 +1103,124 @@ def _seatbelt_plan(
     )
 
 
+def _windows_plan(
+    request: SandboxRequest, host: PlanHost, caps: RendererCapabilities
+) -> ConfinementPlan:
+    """Keep common masks while refusing writable windows through immutable seals."""
+    plan = _namespace_plan(request, host, caps)
+
+    def normalize(path: str) -> str:
+        return ntpath.normcase(ntpath.normpath(path))
+
+    # The adapter's credential roster also lists Crew governance files.
+    # Their READONLY disposition is authoritative: hiding them would make
+    # in-sandbox policy readers see the permissive standalone default.
+    readonly = tuple(
+        dict.fromkeys(
+            (
+                *plan.readonly,
+                *(os.path.join(host.home, rel) for rel in host.crew_readonly_targets),
+                *host.relocated_crew_readonly,
+                *host.kiro_agents_targets,
+                *host.install_root_targets,
+                *plan.runtime_parents,
+            )
+        )
+    )
+    readonly_keys = {normalize(path) for path in readonly}
+    masks = []
+    cancellations = list(plan.cancellations)
+    for mask in plan.masks:
+        if not mask.cancelled and normalize(mask.path) in readonly_keys:
+            masks.append(replace(mask, cancelled=True, read_only_when_cancelled=True))
+            cancellations.append(Cancellation(mask.path, (), True))
+        else:
+            masks.append(mask)
+    plan = replace(
+        plan,
+        masks=tuple(masks),
+        readonly=readonly,
+        files=tuple(path for path in plan.files if normalize(path) not in readonly_keys),
+        cancellations=tuple(cancellations),
+    )
+
+    carveable = {normalize(path) for path in plan.runtime_parents}
+    # A stronger mask can remove a seal from the namespace's readable list.
+    # It never authorizes a writable child through the original immutable floor.
+    immutable = [path for path in plan.readonly if normalize(path) not in carveable]
+    immutable.extend(
+        (
+            *(os.path.join(host.home, rel) for rel in host.crew_readonly_targets),
+            *host.relocated_crew_readonly,
+            *host.kiro_agents_targets,
+            *host.install_root_targets,
+            *(mask.path for mask in plan.masks if is_policy_cache_dir(mask.path)),
+        )
+    )
+    seals = {normalize(path) for path in immutable}
+    windows = []
+    refusals = list(plan.refusals)
+    for window in plan.windows:
+        path = normalize(window)
+        if any(path == seal or path.startswith(seal.rstrip("\\") + "\\") for seal in seals):
+            refusals.append(
+                Refusal(
+                    "readonly-window",
+                    "SECURITY: not opening a Windows private window through a read-only seal",
+                )
+            )
+        else:
+            windows.append(window)
+    return replace(
+        plan,
+        windows=tuple(windows),
+        refusals=tuple(refusals),
+        immutable_roots=tuple(dict.fromkeys(immutable)),
+    )
+
+
+def project_windows_permissions(
+    entries: Mapping[str, str], path_heads: Mapping[str, str]
+) -> dict[str, str]:
+    """Protect a missing subtree at its first absent component.
+
+    PSEC can constrain a missing leaf under an existing directory, but cannot
+    resolve a rule through a missing parent. Promoting a deny/read seal only
+    tightens the absent subtree. An approved write window must never expand.
+    Existing readable governance targets keep their original exact rules.
+    """
+    result = {}
+    keys: dict[str, str] = {}
+    for path, access in entries.items():
+        if path == ":root":
+            result[path] = access
+            continue
+        head = path_heads.get(path, path)
+        original = ntpath.normcase(ntpath.normpath(path))
+        projected = ntpath.normcase(ntpath.normpath(head))
+        if original != projected:
+            if access == "write":
+                raise ValueError("Cannot broaden a missing Windows writable window")
+            if not original.startswith(projected.rstrip("\\") + "\\"):
+                raise ValueError("Windows path snapshot does not name an ancestor")
+        key = keys.setdefault(projected, head)
+        previous = result.get(key)
+        if previous is not None and previous != access:
+            if "write" in (previous, access):
+                raise ValueError("Conflicting Windows writable path snapshot")
+            # Two absent descendants can coalesce. The hidden disposition wins;
+            # no currently existing readable file can be below an absent head.
+            access = "deny"
+        result[key] = access
+    return result
+
+
 #: The planner each backend renders from.
 _PLANNERS: Mapping[
     str, Callable[[SandboxRequest, PlanHost, RendererCapabilities], ConfinementPlan]
 ] = {
     BACKEND_NAMESPACE: _namespace_plan,
+    BACKEND_WINDOWS: _windows_plan,
     BACKEND_SEATBELT: _seatbelt_plan,
 }
 

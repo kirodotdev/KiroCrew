@@ -3969,6 +3969,26 @@ adapter honors the session's MCP overrides even when a global configuration
 contains the same server name. This applies to both create and load; it changes
 configuration precedence, not authentication or the sandbox's credential mask.
 
+On native Windows, a Codex runtime without an explicit `CODEX_HOME` now uses
+`<Crew data home>/codex`. The persistent profile keeps new Crew conversations,
+background helpers and resumed turns out of Codex Desktop's history. Only the
+Codex spawn receives an exact visibility lift for this otherwise hidden Crew
+directory; other harnesses and the shared file-tool gate keep it fenced.
+The first preparation copies configuration only when absent and imports only
+regular rollout files whose UUID and header match a `provider: codex` entry in
+Crew's own session map. The desktop index, unrelated conversations, OAuth state
+and log database are never copied or modified. Already imported private history
+and private configuration are never overwritten. The profile needs its own Codex
+sign-in (`scripts/configure_windows_codex_home.py --configure --login --device-auth`). An
+explicit `CODEX_HOME` retains operator authority, including the choice to share
+a desktop profile. Other operating systems retain their existing defaults.
+
+The explicit setup also routes `kirocrew-core` and `kirocrew-cron` through
+gatewayd via `mcp_gateway.stub_overrides`. The relay inherits the sandbox; its
+verified managed backend does not, so SEL and session-identity signing remain
+host-owned. This does not enable backend sharing. The SEL key, audit log and
+session credentials remain withheld from the foreign harness.
+
 The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
 `codex app-server` processes (Codex Desktop and each Crew runtime) do not share
 one set of SQLite databases and fail new sessions with `database is locked`. The

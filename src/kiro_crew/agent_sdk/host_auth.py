@@ -73,6 +73,10 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KNOWN,
 )
 
+# The default native Windows Codex profile. Its entire tree is a Crew secret;
+# only the Codex spawn receives a visibility grant for this exact owned root.
+CREW_CODEX_HOME_LEAF = "codex"
+
 # ── Where a harness's entitlement comes from ──
 # Named sources rather than a free string: the doctor row, the panel and the
 # logout policy all branch on this, and a typo'd spelling would read as a
@@ -464,13 +468,16 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         sign_in_remedy=(
             "Codex is a separate tool that signs in on its own — complete its "
             "sign-in, or name a model provider in ~/.codex/config.toml "
-            "(CODEX_HOME moves that folder). Neither is checked here: the adapter "
+            "(CODEX_HOME moves that folder). Native Windows Crew sessions default "
+            "to the separate ~/.kiro/crew/codex profile: sign in with CODEX_HOME "
+            "pointing there. Neither is checked here: the adapter "
             "reads them."
         ),
         signed_out_message=(
             "Codex is not signed in. Complete Codex's own sign-in, or name a "
             "model provider in ~/.codex/config.toml (CODEX_HOME moves that "
-            "folder), then start a new chat."
+            "folder), then start a new chat. On native Windows, use Crew's "
+            "separate codex profile under its data home for that sign-in."
         ),
         # Excluded deliberately: it signs in through its own credentials file, so
         # a ``kiro-cli logout`` says nothing about whether a running codex session

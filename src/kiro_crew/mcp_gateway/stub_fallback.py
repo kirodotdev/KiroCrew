@@ -465,6 +465,10 @@ def fallback_exec(args: argparse.Namespace) -> None:
     diagnostic. Windows has no in-place exec, so there the backend runs as a
     child inheriting this process's stdio -- see :func:`_fallback_spawn_child`
     for why the emulated ``exec*`` would kill the session outright."""
+    from kiro_crew.mcp_gateway.required import GatewayRequiredError, required
+
+    if required(args):
+        raise GatewayRequiredError()
     target_args = _resolve_target_args(args)
     argv = [args.target_command, *target_args]
     # Restore the server's declared env. The rewriter moves declared env

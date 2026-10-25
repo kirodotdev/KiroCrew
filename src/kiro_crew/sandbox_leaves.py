@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 
+from kiro_crew.agent_sdk.host_auth import CREW_CODEX_HOME_LEAF
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 
 #: The cache leaf, mirroring ``policy_distribution.CACHE_DIR_LEAF``; spelled here so
@@ -132,6 +133,8 @@ _MD_NOTEBOOK_RETIRED_STATE_LEAVES: tuple[str, ...] = tuple(
 
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
+    # Only Codex receives an exact trusted visibility lift for its private home.
+    CREW_CODEX_HOME_LEAF,
     # Gateway diagnostics: recorded host and gateway state, plus loop-stall dumps.
     # The gateway process writes these; an agent reads them through the owner-gated
     # /api/debug routes and the kirocrew-debug MCP tools, which redact on the way

@@ -28,7 +28,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from kiro_crew import member_essential_context
+from kiro_crew import member_essential_context, platform_compat
 from kiro_crew.acp import runtime_start
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
@@ -567,6 +567,11 @@ async def _mirrored_session_mcp(
 
     projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
+    scratch = getattr(self, "_scratch_dir", None)
+    if platform_compat.IS_WINDOWS and scratch is not None:
+        from kiro_crew.mcp_gateway.native_scope import attach
+
+        servers = await asyncio.to_thread(attach, list(servers), Path(scratch))
     return _MirroredSessionMcp(
         servers=list(servers) if isinstance(servers, list) else [],
         denied_tools=projection.denied_tools,

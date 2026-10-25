@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import secrets
 import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -235,7 +236,11 @@ async def _resolve_restart_target(
 
 @update_ownership.owning(update_ownership.Step.RESTART)
 async def _restart_gateway(
-    state: DashboardState, *, resolver: Callable[[], str] | None = None
+    state: DashboardState,
+    *,
+    resolver: Callable[[], str] | None = None,
+    before_exec: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    strict_cleanup: bool = False,
 ) -> bool:
     """Save state, close sessions, and exec the selected gateway entry point once.
 
@@ -255,6 +260,14 @@ async def _restart_gateway(
         return False
     state._gateway_restart_in_progress = True
     try:
+        if not strict_cleanup and os.name == "nt":
+            from kiro_crew.windows_settings import status as native_status
+
+            if (await asyncio.to_thread(native_status)).get("starts_blocked"):
+                from kiro_crew.dashboard.native_settings import wait_retirement
+
+                strict_cleanup = True
+                before_exec = wait_retirement
         state.push_update_progress("restarting", "Restarting server…")
         launcher, exe, refusal = await _resolve_restart_target(resolver)
         if refusal is not None:
@@ -285,9 +298,13 @@ async def _restart_gateway(
         # into an applied update is over. Not at entry: a restart that coalesces
         # or finds a broken launcher above leaves the deferral it found in place.
         update_ownership.restart_committed()
+        if strict_cleanup:
+            setattr(state, "_native_settings_stop_started", True)
         try:
             await state.sessions.close_all()
         except Exception:
+            if strict_cleanup:
+                raise
             logger.debug("Session cleanup before restart failed", exc_info=True)
         # close_all() cut every turn that was mid-reply, and each one saves the text
         # its user watched stream as it unwinds, after the save above. The exec
@@ -308,8 +325,13 @@ async def _restart_gateway(
         stop_broker = getattr(state, "_mcp_gateway_stop", None)
         if stop_broker is not None:
             try:
-                await stop_broker()
+                if strict_cleanup:
+                    await stop_broker(strict=True)
+                else:
+                    await stop_broker()
             except Exception:
+                if strict_cleanup:
+                    raise
                 # Past the point of no return: a broker that will not stop must
                 # not strand a gateway whose sessions are already closed.
                 logger.debug("MCP broker stop before restart failed", exc_info=True)
@@ -317,6 +339,8 @@ async def _restart_gateway(
         # a child whose parent pid survives the exec is never reclaimed. Each
         # such owner registers its stop with the pre-exec seam.
         await run_pre_exec_stops()
+        if before_exec is not None:
+            await before_exec()
         sys.stdout.flush()
         sys.stderr.flush()
         # The safety-override record publishes on a worker thread (its callers sit
@@ -826,6 +850,15 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
         code, sentence = refusal
         return web.json_response({"ok": False, "error": sentence, "code": code}, status=409)
 
+    native_candidate = None
+    if os.name == "nt":
+        from kiro_crew import windows_settings
+
+        candidate = await asyncio.to_thread(windows_settings.status)
+        candidate = getattr(state, "_native_settings_failure", None) or candidate
+        if candidate.get("starts_blocked") or candidate.get("status") == "activation_failed":
+            native_candidate = candidate
+
     # Coalesce repeat clicks/requests BEFORE the response-flush sleep below.
     # Without this latch, every POST creates a restart task and they all reach
     # session drain together.  _restart_gateway has its own process-wide claim
@@ -834,20 +867,92 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
     existing = state._gateway_restart_task
     if existing is not None and not existing.done():
         return web.json_response({"ok": True, "status": "restarting", "already_in_progress": True})
+    native_task = getattr(state, "_native_settings_task", None)
+    if native_task is not None and not native_task.done():
+        return web.json_response(
+            {"ok": False, "code": "native_settings_transition_in_progress"}, status=409
+        )
+    transition_id = secrets.token_hex(16)
+    native_owner = None
+    prior_native_fence = getattr(state, "_native_settings_fence", None)
+    if native_candidate is not None:
+        from kiro_crew.platform_compat_wintree import block_windows_tree_starts
+
+        native_owner = prior_native_fence or object()
+        if not block_windows_tree_starts(native_owner):
+            return web.json_response(
+                {"ok": False, "code": "native_settings_transition_in_progress"}, status=409
+            )
+        setattr(state, "_native_settings_fence", native_owner)
+        setattr(state, "_native_settings_stop_started", False)
 
     # Reply BEFORE restarting. os.execv replaces the process image, so a restart
     # kicked off inline would tear down the connection mid-response and the
     # client could not distinguish "restarting" from "the request failed".
     async def _restart() -> None:
-        # Let the response flush before the process image is replaced.
-        await asyncio.sleep(0.25)
+        native_record = None
+        claimed = False
         try:
-            await _restart_gateway(state)
-        except Exception:
+            if native_candidate is not None:
+                from kiro_crew.dashboard.native_settings import _mutate, recover_current_settings
+
+                native_record = {
+                    **native_candidate,
+                    "status": "stopping",
+                    "transition_id": transition_id,
+                    "starts_blocked": True,
+                    "active": False,
+                    "failed_step": None,
+                }
+                native_record = await _mutate(windows_settings.claim_transition, native_record)
+                claimed = True
+            # Let the response flush before the process image is replaced.
+            await asyncio.sleep(0.25)
+            if claimed:
+                restarted = await _restart_gateway(
+                    state,
+                    strict_cleanup=True,
+                    before_exec=lambda: recover_current_settings(transition_id),
+                )
+            else:
+                restarted = await _restart_gateway(state)
+            if not restarted:
+                raise OSError("Gateway restart was refused")
+        except (Exception, asyncio.CancelledError):
             logger.exception("Gateway restart failed")
             state.push_update_progress("failed", "Restart failed — check logs")
+            if native_record is not None:
+                blocked = bool(
+                    prior_native_fence
+                    or claimed
+                    and (
+                        native_record.get("prior_admission_blocked")
+                        or getattr(state, "_native_settings_stop_started", False)
+                    )
+                )
+                native_record.update(
+                    {
+                        "status": "activation_failed",
+                        "failed_step": "stop" if claimed else "claim",
+                        "starts_blocked": blocked,
+                    }
+                )
+                setattr(state, "_native_settings_failure", dict(native_record))
+                with contextlib.suppress(OSError, asyncio.CancelledError):
+                    if claimed:
+                        await _mutate(
+                            windows_settings.record_status,
+                            native_record,
+                            expected_transition=transition_id,
+                        )
+                if not blocked and native_owner is not None:
+                    from kiro_crew.platform_compat_wintree import unblock_windows_tree_starts
+
+                    unblock_windows_tree_starts(native_owner)
+                    setattr(state, "_native_settings_fence", None)
 
     task = asyncio.create_task(_restart())
+    setattr(state, "_native_settings_failure", None)
     state._gateway_restart_task = task
     state._background_tasks.add(task)
 
@@ -857,7 +962,7 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
             state._gateway_restart_task = None
 
     task.add_done_callback(_restart_done)
-    return web.json_response({"ok": True, "status": "restarting"})
+    return web.json_response({"ok": True, "status": "restarting", "transition_id": transition_id})
 
 
 # Named by the path callers import it from: the facade that serves it.

@@ -290,6 +290,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _RUN_DIR_ARTIFACTS,
         _SANDBOX_ARTIFACT_PREFIX,
         _SEATBELT_PROFILE_SUFFIX,
+        _WINDOWS_SANDBOX_ARTIFACT_PREFIX,
         _build_launcher_script,
         _build_seatbelt_profile,
         _carveout_probes,
@@ -308,6 +309,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         cleanup_stale_sandbox_profiles,
         namespace_argv,
         namespace_launcher_script_dir,
+        replace,
         sandbox_exec_argv,
     )
     from kiro_crew.sandbox_cgroup import (  # noqa: F401
@@ -741,6 +743,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         voice_runtime_workspace_conflict,
     )
     from kiro_crew.sandbox_wrap import (  # noqa: F401
+        WINDOWS_BACKEND,
         _backend,
         _background_warm,
         _kick_background_warm,
@@ -751,6 +754,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _warn_no_isolation,
         detect_backend,
         prewarm_backend,
+        probe_windows_sandbox,
         remedy_guidance,
         reset_backend,
         unavailable_kind,
@@ -758,5 +762,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         unavailable_remedy,
         userns_available,
         warm_backend,
+        windows_sandbox_argv,
+        windows_sandbox_executable,
         wrap_argv,
     )

@@ -50,7 +50,7 @@ from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.env import describe_search_path, mise_data_dir
+from kiro_crew.env import describe_search_path, mise_data_dir, node_bin_dirs
 from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST
 
 # The client's logger name, because the helpers below were the client's and every
@@ -322,6 +322,12 @@ def _resolve_node_adapter_argv(
         candidates.append(on_path)
 
     for script in candidates:
+        if sys.platform == "win32":
+            from kiro_crew.acp.node_adapter_cmd import npm_cmd_entry
+
+            node_entry = npm_cmd_entry(script)
+            if node_entry is not None:
+                script = str(node_entry)
         resolved = str(Path(script).resolve())
         node = _resolve_node_for_script(resolved)
         if node:
@@ -334,7 +340,12 @@ def _resolve_node_adapter_argv(
         # launcher-style shim with its true on-disk name (see _normalize_exe_casing).
         if platform_compat.is_executable_file(script):
             return [_normalize_exe_casing(script) or script], search_path
-        node_on_path = shutil.which("node", path=search_path)
+        # The ACP adapter itself is a Node program, not a shell command. Crew's
+        # configured Node toolchain (including its node-bin-dir marker) must
+        # outrank the gateway's inherited PATH: a desktop app can inherit an
+        # older system Node even when Crew has already selected a newer one.
+        node_search_path = os.pathsep.join((*node_bin_dirs(), search_path))
+        node_on_path = shutil.which("node", path=node_search_path)
         if node_on_path:
             return [node_on_path, resolved], search_path
 
@@ -877,6 +888,7 @@ class LaunchRequest:
     env_before_scrub: Callable[[dict[str, str], str | None], Awaitable[dict[str, str]]]
     extra_hidden_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
+    extra_visible_dirs: tuple[str, ...] = ()
     internal_sandbox: bool = False
     pod_home_remap: bool = False
     #: The runtime allocates scratch through its guarded hop; the client never has.
@@ -1063,6 +1075,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         # an enforced host has no claim on. Empty for every harness this core does
         # not enforce, so their spawn arguments are unchanged.
         extra_hidden_dirs=request.extra_hidden_dirs,
+        extra_visible_dirs=request.extra_visible_dirs,
         extra_private_dirs=scratch_window,
         extra_expose_files=request.extra_expose_files,
         **exec_cwd_options(host),

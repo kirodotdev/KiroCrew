@@ -230,10 +230,11 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.sandbox_argv": tuple("""
         _LAUNCHER_MAX_AGE_SECONDS _SANDBOX_ARTIFACT_PREFIX _LAUNCHER_SCRIPT_SUFFIX
-        _SEATBELT_PROFILE_SUFFIX _PI_GATE_ARTIFACT_PREFIX _PI_GATE_ARTIFACT_SUFFIXES
+        _SEATBELT_PROFILE_SUFFIX _WINDOWS_SANDBOX_ARTIFACT_PREFIX
+        _PI_GATE_ARTIFACT_PREFIX _PI_GATE_ARTIFACT_SUFFIXES
         _RUN_DIR_ARTIFACTS _DSH_GATE_ARTIFACT_PREFIX _DSH_PATCH_ARTIFACT_PREFIX
         _DSH_GATE_ARTIFACT_SUFFIXES _PI_GATE_DIR_ARTIFACTS _LEGACY_LAUNCHER_DIR
-        _resolve_agent_executable _ssh_supports_accept_new namespace_launcher_script_dir
+        replace _resolve_agent_executable _ssh_supports_accept_new namespace_launcher_script_dir
         _ensure_run_dir _LAUNCHER_INTERPRETER_FLAGS _launcher_script_of _log_refusals
         _carveout_probes _plan_cwd _live_plan_host _spawn_plan _build_launcher_script
         _build_seatbelt_profile namespace_argv _pinned_env_bin sandbox_exec_argv
@@ -279,6 +280,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _TRUSTED_LAUNCHER_TIMEOUT_SECS LAUNCHER_EXEC_FAILURE_RE
         """.split()),
     "kiro_crew.sandbox_wrap": tuple("""
+        WINDOWS_BACKEND probe_windows_sandbox windows_sandbox_argv windows_sandbox_executable
         _last_unshare_failure unavailable_remedy unavailable_reason remedy_guidance
         _warm_thread _record_probe_failure _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend

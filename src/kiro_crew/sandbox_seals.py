@@ -637,7 +637,12 @@ def _publish_empty_ceiling(
             view = view[written:]
         os.close(fd)
         fd = -1
-        os.link(tmp, target)
+        if os.name == "nt":
+            # Windows rename is an atomic no-replace publication. Unlike the
+            # POSIX operation, it refuses a target another writer created.
+            os.rename(tmp, target)
+        else:
+            os.link(tmp, target)
         return True
     except OSError:
         return False

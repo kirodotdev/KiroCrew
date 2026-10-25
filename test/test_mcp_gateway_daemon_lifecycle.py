@@ -343,12 +343,43 @@ class TestOwnerLivenessSweeper:
         await finished(gw._owner_liveness_sweeper(4242, 3600.0, stop), "owner liveness sweeper")
         assert stop.is_set()
 
-    def test_the_manager_names_itself_as_owner(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("windows", [False, True])
+    async def test_the_manager_names_itself_as_owner(
+        self, tmp_path: Path, monkeypatch, windows
+    ) -> None:
         """The argv the manager builds carries this process's PID."""
         manager = mgr.GatewayManager(mgr.GatewaySpec(socket_path=tmp_path / "gw.sock"))
-        src = Path(mgr.__file__).read_text(encoding="utf-8")
-        assert '"--owner-pid", str(os.getpid())' in src
-        assert manager is not None
+        captured, owners = [], []
+        owner = object()
+
+        class ObservedSpawn(Exception):
+            pass
+
+        async def capture(*argv, **kwargs):
+            captured.extend(argv)
+            raise ObservedSpawn
+
+        async def owned_spawn(actual_owner, *argv, **kwargs):
+            owners.append(actual_owner)
+            return await capture(*argv, **kwargs)
+
+        async def owned_factory(factory):
+            return await factory(windows_cleanup_owner=owner)
+
+        monkeypatch.setattr(mgr.platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setattr(
+            mgr.platform_compat, "create_windows_cleanup_owned_process", owned_factory
+        )
+        monkeypatch.setattr(mgr.platform_compat, "_create_windows_subprocess_owned", owned_spawn)
+        monkeypatch.setattr(mgr.asyncio, "create_subprocess_exec", capture)
+        monkeypatch.setattr(mgr, "mcp_runtime_path", lambda path: path)
+        monkeypatch.setattr(mgr, "resolve_krb5_ccname", lambda env: None)
+        monkeypatch.setattr(manager, "_host_available_mb", lambda: 0)
+        with pytest.raises(ObservedSpawn):
+            await manager._spawn_once()
+        assert captured[captured.index("--owner-pid") + 1] == str(os.getpid())
+        assert owners == ([owner] if windows else [])
 
 
 @_POSIX_ONLY

@@ -130,6 +130,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import acp_tool_gate
+from kiro_crew.acp.codex_home import prepare_codex_home
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
 from kiro_crew.acp.harness._common import MembershipHarness
 from kiro_crew.acp.harness.base import (
@@ -167,8 +168,8 @@ _SQLITE_HOME_ENV = SQLITE_HOME_ENV
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
     """Crew-owned processes between the spawned pid and the harness's adapter.
 
-    ``1`` for a backend that ``fork()``s and stays resident as the parent, ``0``
-    for one that execs into the target or does not wrap at all. Only a bounded RSS
+    A namespace supervisor adds one generation; Windows adds the profile-pin
+    launcher and native MXC runner. An exec-only wrapper adds none. Only a bounded RSS
     scope reads this: an unbounded measurement sums the whole subtree, where an
     extra generation at the top changes nothing.
 
@@ -177,7 +178,8 @@ def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
     ceiling is reached later rather than a healthy process being recycled early.
     """
     try:
-        return 1 if detect_backend(sandbox_mode) == "namespace" else 0
+        backend = detect_backend(sandbox_mode)
+        return {"namespace": 1, "windows-mxc": 2}.get(backend, 0)
     except Exception:
         logger.debug("sandbox wrapper-generation probe failed", exc_info=True)
         return 0
@@ -277,7 +279,18 @@ class CodexHarness(MembershipHarness):
             # authorings of it drift. The search path is threaded through so a
             # "searched ..." line can never name a directory the search skipped.
             raise AcpRuntimeError(client_mod.codex_acp_not_found_message(search_path))
+        from kiro_crew import platform_compat
+
+        private_home = (
+            await asyncio.to_thread(prepare_codex_home, ctx.environ, ctx.home)
+            if platform_compat.IS_WINDOWS
+            else None
+        )
         hidden, expose = await resolve_spawn_masks(ctx.sandbox_mode)
+        if private_home is not None:
+            # This root is otherwise masked for every agent. The same bound path
+            # goes into both the child environment and the exact visibility lift.
+            hidden = tuple(path for path in hidden if Path(path) != private_home)
         wrapper_generations = await asyncio.to_thread(
             _sandbox_wrapper_generations, ctx.sandbox_mode
         )
@@ -285,7 +298,8 @@ class CodexHarness(MembershipHarness):
         # they lock each other out: Codex Desktop plus a Crew runtime fail new
         # sessions with ``database is locked``. So each runtime gets its own
         # CODEX_SQLITE_HOME (the runtime's per-process scratch dir). Only the
-        # databases move: config, auth and the thread rollouts stay in CODEX_HOME,
+        # databases move: config, auth and the thread rollouts stay in CODEX_HOME
+        # (the persistent Crew-private profile by default on native Windows),
         # and a thread resumes from its rollout (measured on codex 0.159), so
         # spawn_continue still works across runtimes. Seed the private index
         # from a completed SQLite snapshot so a large rollout history does not
@@ -296,6 +310,8 @@ class CodexHarness(MembershipHarness):
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
+            extra_visible_dirs=(str(private_home),) if private_home is not None else (),
+            env_defaults={"CODEX_HOME": str(private_home)} if private_home is not None else {},
             private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
             private_state_seed=seed_private_state,
         )

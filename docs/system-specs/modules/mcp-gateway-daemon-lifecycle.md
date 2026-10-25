@@ -4,6 +4,37 @@ The MCP gateway daemon (`mcp_gateway/gatewayd.py`) pools MCP backends across ses
 
 This module states the contract that closes it. Two gateways deliberately sharing one data home are not a supported configuration (they contend for the dashboard port, `.local_secret` and `config.json` before the daemon is ever reached), so the design is **one daemon, one owner**: the daemon belongs to the gateway process that spawned it, dies with it, and is never adopted across a code revision.
 
+## Native Windows MXC clients
+
+With the pinned MXC SDK, direct connections to the owner-only broker pipe fail:
+asyncio's `ConnectPipe` and minimal data-read/write/synchronize `CreateFileW`
+both return WinError 5. The pinned SDK exposes
+no documented isolated client-only grant for this namespace. Pipe DACLs and
+peer-SID checks remain unchanged. There is no HTTP replacement.
+
+`mcp_gateway/native_handles.py` is an outside helper owned by the existing
+Windows launcher. Anonymous control handles reach only its attested native root.
+The runner publishes that root's PID and an instance nonce in an exact read-only
+descriptor, held without delete sharing. A stub proves a live, chronological
+descendant chain with pinned process handles. The host verifies its same-user
+identity, signed launch scope, expiry, session token and current launch approval.
+The scope MAC uses the existing SEL root; the agent never reads that root.
+
+The host sends canonical REGISTER before transferring a minimal data handle to
+the stub. Caller identity is resolved by the broker, never taken from the client.
+The scope binds the actual final ACP MCP overlay, executable identity and runtime
+instance. In a source checkout only code-generation metadata is normalized from
+the signed host declaration; the independently measured executable hash remains
+mandatory. The sidecar imports its trusted package root in isolated Python mode.
+
+Late replies are correlated to PID/start/request. Refused stubs answer at most
+one RPC and exit within a fixed deadline, including silent or invalid stdin, so
+a delayed duplication cannot retain a broker connection indefinitely. Root death
+or launcher EOF retires the helper. Privileged managed servers with masked trust
+return structured `connection_failed`, `launch_approval_required`, or
+`identity_unattested` errors; they cannot take the direct fallback. Other
+explicitly permitted direct fallbacks retain their previous behavior.
+
 ## Code fingerprint
 
 `code_fingerprint.code_fingerprint()` is one opaque token naming WHICH Kiro Crew code a process imported, computed once per process. Git is resolved through `platform_compat.trusted_git_bin` (fixed system directories, never `PATH`) and run with global and system config disabled, inherited `GIT_*` variables dropped and `--no-ext-diff --no-textconv`, because this runs in the gateway process on a tree an agent can write to; no trusted git means the mtime rule. Inside a git worktree it is the HEAD commit plus `+<sha256 of the tracked diff>` when tracked files differ — the diff TEXT, not a dirty bit, because two uncommitted edits to one HEAD are different code, and a bare `+dirty` would let a daemon from the first edit be adopted by a gateway on the second. Otherwise it is `mtime:<digest>` over the installed distribution version and the newest `*.py` mtime under the package, since a wheel is immutable until replaced and replacing it moves the mtimes. The only contract is *equal iff the same code*. The first computation runs `git` or walks the package tree, so the two async owners — `run_gatewayd` before it binds, `GatewayManager._start_locked` before its election loop — await `warm_code_fingerprint()` (`asyncio.to_thread`) once; every later synchronous read on their event loops (the pong, the stand-down handler, `_code_drift`) is a cache hit. The stub computes it inside `build_register_payload`, which already runs on the subprocess executor.

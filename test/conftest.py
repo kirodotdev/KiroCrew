@@ -287,6 +287,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
     _no_managed_venv_override,
+    _no_native_windows_runner,
     _no_release_feed_network,
     _no_restart_ready_timeout_override,
     _release_source_corpus_after_module,

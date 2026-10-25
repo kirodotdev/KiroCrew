@@ -32,8 +32,8 @@ export type McpShareReason = {
  */
 export type McpShareRecommendation = {
   strength: string
-  // Two axes, not one verdict. `recommendStub` is the safe half — Kiro Crew's
-  // stub in the path, backend still 1:1 with the session — while
+  // Two axes, not one verdict. `recommendStub` is the safe half â€” Kiro Crew's
+  // stub in the path, backend still 1:1 with the session â€” while
   // `recommendShare` is the one that introduces co-tenancy. A bulk action has to
   // consult whichever one the global sharing switch makes true of a click.
   recommendStub: boolean
@@ -64,16 +64,16 @@ export type McpMeasureProgress = {
 export type McpManagedServer = {
   name: string
   stub: boolean            // effective: can_stub AND in_allowlist
-  can_stub: boolean       // stdio AND not denylisted — a property of the server, not a choice
+  can_stub: boolean       // stdio AND not denylisted â€” a property of the server, not a choice
   in_allowlist: boolean    // present in config mcp_gateway.stub_servers
-  entry_poolable: boolean  // some agent entry sets poolable:true — RETIRED, informational only
+  entry_poolable: boolean  // some agent entry sets poolable:true â€” RETIRED, informational only
   agents: string[]         // agent configs that declare this server
   transport: string        // "stdio" (stubbable) or "http" (no stdio pipe to interpose on)
-  denylisted: boolean      // in UNPOOLABLE_SERVERS — can never be pooled
+  denylisted: boolean      // in UNPOOLABLE_SERVERS â€” can never be pooled
   // True when stubbing this server cannot produce a SHARED backend anyway: the
   // rewriter leaves an env-declaring entry unwrapped rather than spawn a pooled
   // backend without a declared key. Optional for the same reason as
-  // `recommendation` — an older gateway does not send it, and its absence must
+  // `recommendation` â€” an older gateway does not send it, and its absence must
   // read as "no obstacle known", not as an obstacle.
   pooling_blocked_by_env?: boolean
   // Optional because the field is only as old as the shareability detector: a
@@ -81,6 +81,23 @@ export type McpManagedServer = {
   // Live to an earlier worktree), and a row with no verdict must read as "not
   // measured" rather than crash the table.
   recommendation?: McpShareRecommendation
+}
+
+export type NativeSettingsConsent = {
+  restart_native_sessions: true
+  native_settings_confirmation_token: string
+}
+
+export type NativeRoutingStatus = {
+  saved?: boolean | null
+  active?: boolean
+  status?: string
+  active_stub?: string[]
+  restart_required?: boolean
+  failed_step?: string | null
+  action?: string | null
+  transition_id?: string | null
+  starts_blocked?: boolean
 }
 
 export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
@@ -95,7 +112,7 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     /** Multi-provider MCP server discovery (official registry, plus the
      *  edition capability provider when one is installed). A query
      *  shorter than 2 chars returns {results: [], providers: [...]} without
-     *  hitting any provider — a cheap availability probe. */
+     *  hitting any provider â€” a cheap availability probe. */
     mcpDiscover: (query: string, opts?: { provider?: string; limit?: number }) =>
       get(`/api/mcp/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../../types').McpDiscoverResponse>,
     /** Full description + install-plan preview for one discovered server. */
@@ -130,15 +147,15 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
   const gateway = {
     // MCP Gateway (shared pool)
-    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
-    mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
+    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> } & NativeRoutingStatus>,
+    mcpGatewayEnable: (enabled: boolean, consent?: NativeSettingsConsent) => post('/api/mcp-gateway/enable', { enabled, ...consent }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean } & NativeRoutingStatus>,
     mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
     mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpManagedServer[] }>,
     // What the gateway would run for this server, so the operator approves a
     // command rather than a name. `expected_launch` is the identity the approval
     // is written against and is present only when every command could be shown.
     mcpGatewayLaunchPreview: (name: string) => fetch(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
-    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
+    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false, consent?: NativeSettingsConsent) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}), ...consent }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] } & NativeRoutingStatus>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per
     // unmeasured server, so the answer arrives through the progress read, not here.

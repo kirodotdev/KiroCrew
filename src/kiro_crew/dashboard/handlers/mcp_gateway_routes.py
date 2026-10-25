@@ -65,6 +65,32 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
     ping_ok = manager is not None and running and await manager.ping()
     cfg = KiroCrewConfig.load().mcp_gateway
     launch_refused = await asyncio.to_thread(refused_servers)
+    from kiro_crew.windows_settings import status as native_status
+    from kiro_crew.windows_settings import transition_owner_alive
+
+    native = await asyncio.to_thread(native_status)
+    if (
+        native.get("starts_blocked")
+        and native.get("status") in {"stopping", "saved"}
+        and not await asyncio.to_thread(transition_owner_alive, native)
+    ):
+        native = {
+            **native,
+            "status": "activation_failed",
+            "failed_step": "activation_interrupted",
+            "action": "restart_and_review",
+        }
+    failure = getattr(state, "_native_settings_failure", None)
+    if failure is not None:
+        native = {
+            **failure,
+            "starts_blocked": bool(failure.get("starts_blocked") or native.get("starts_blocked")),
+        }
+    served = sorted(getattr(state, "_mcp_stub_servers_started", ()))
+    sharing_active = getattr(state, "_mcp_sharing_started", cfg.enabled) == cfg.enabled
+    routing_active = bool(
+        ping_ok and served == sorted(cfg.stub_servers) and sharing_active
+    ) or not (served or cfg.stub_servers)
     return web.json_response(
         {
             "enabled": cfg.enabled,
@@ -88,6 +114,24 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
             # disable the toggle (and explain why) on unsupported platforms
             # (Windows) instead of surfacing a generic "could not apply" failure.
             "supported": is_gateway_supported(),
+            "saved": native.get("saved", True),
+            "active": bool(
+                routing_active
+                and not native.get("starts_blocked")
+                and native.get("status") != "activation_failed"
+            ),
+            "live_routing_active": bool(routing_active),
+            "status": (
+                native.get("status")
+                if native.get("starts_blocked") or native.get("status") == "activation_failed"
+                else ("active" if routing_active else "saved")
+            ),
+            "active_stub": served,
+            "restart_required": bool(native.get("starts_blocked") or not routing_active),
+            "failed_step": native.get("failed_step"),
+            "action": native.get("action"),
+            "transition_id": native.get("transition_id"),
+            "starts_blocked": native.get("starts_blocked", False),
         }
     )
 
@@ -268,7 +312,9 @@ async def api_mcp_resolve_refresh(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
+async def api_mcp_gateway_enable(
+    request: web.Request, *, _body_override: dict | None = None
+) -> web.Response:
     """POST /api/mcp-gateway/enable — persist the flag and apply it in-process.
 
     Writes ``mcp_gateway.enabled`` to config.json then applies the change
@@ -293,14 +339,15 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     )
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular import
 
-    body, body_err = await read_bounded_json(request)
+    body, body_err = (
+        await read_bounded_json(request) if _body_override is None else (_body_override, None)
+    )
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
-
     # Fail closed on platforms the broker can't run on (Windows): never persist
     # enabled=true where the broker will never start — that would leave config
     # diverged from reality and surface as a generic apply failure. Disabling
@@ -319,6 +366,23 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     apply = getattr(state, "_mcp_gateway_apply", None)
     if apply is None:
         return web.json_response({"error": "gateway apply unavailable"}, status=503)
+
+    overlay = await asyncio.to_thread(_local_overlay_section)
+    if _overlay_shadowed_keys(overlay, ("enabled",)):
+        return web.json_response(
+            {
+                "error": "config.local.json owns mcp_gateway.enabled; edit that file instead",
+                "code": "overlay_owns_enabled",
+            },
+            status=409,
+        )
+    from kiro_crew.dashboard.native_settings import maybe_restart
+
+    native_response = await maybe_restart(
+        request, body, lambda: api_mcp_gateway_enable(request, _body_override=dict(body))
+    )
+    if native_response is not None:
+        return native_response
 
     async def _persist_and_apply() -> web.Response:
         # Serialize the whole persist+apply under the apply lock so two racing
@@ -375,7 +439,18 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
                 if section_not_object:
                     return web.json_response({"error": "mcp_gateway is not an object"}, status=500)
             try:
-                result = await apply(enabled)
+                from kiro_crew.windows_settings import permitted
+
+                result = (
+                    {
+                        "enabled": enabled,
+                        "running": False,
+                        "ping_ok": False,
+                        "restart_required": True,
+                    }
+                    if permitted()
+                    else await apply(enabled)
+                )
             except Exception as exc:
                 sel().log_api_access(
                     caller=request.get("user", "dashboard"),

@@ -106,6 +106,9 @@ async def _init_mcp_gateway(
     cfg_gw = self._cfg.mcp_gateway
     stubs = frozenset(cfg_gw.stub_servers) if stub_servers is None else stub_servers
     if not stubs:
+        from kiro_crew.dashboard.native_settings import finish_activation
+
+        await finish_activation(self._cfg, None, stubs)
         return
     self._mcp_stub_servers_started = stubs
     # Runs on every platform the transport layer covers -- an AF_UNIX socket
@@ -156,6 +159,9 @@ async def _init_mcp_gateway(
         )
     except Exception:
         logger.exception("mcp-gateway rewriter failed — falling back")
+        from kiro_crew.dashboard.native_settings import finish_activation
+
+        await finish_activation(self._cfg, None, stubs)
         return
     # The boot rebuild ran before this overlay existed, so a server routed since
     # the last start is still withheld in the agent spec, with its tool refs
@@ -265,6 +271,7 @@ async def _init_mcp_gateway(
         from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
 
         set_overlay_refresher(self._refresh_mcp_overlays)
+        setattr(self, "_mcp_sharing_started", cfg_gw.enabled)
         # Admission already uses the in-memory, fail-closed filtered map.
         # Persistence waits for the process readiness boundary and cannot
         # extend the boot path.
@@ -285,6 +292,14 @@ async def _init_mcp_gateway(
             len(stubs),
             "on" if cfg_gw.enabled else "off",
         )
+    from kiro_crew.dashboard.native_settings import finish_activation
+
+    await finish_activation(
+        self._cfg,
+        getattr(self, "_mcp_gateway_manager", None),
+        stubs,
+        refused=frozenset(dropped_targets) | frozenset(approvals.refused),
+    )
 
 
 def _mcp_resolve_refresh_secs(self: GatewayOrchestrator) -> float:
@@ -386,7 +401,7 @@ async def _refresh_mcp_resolutions(self: GatewayOrchestrator) -> dict:
     }
 
 
-async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
+async def _stop_mcp_broker(self: GatewayOrchestrator, *, strict: bool = False) -> None:
     """Stop the MCP gateway broker if running and clear the handle."""
     task = self._mcp_resolve_prefetch
     self._mcp_resolve_prefetch = None
@@ -404,7 +419,12 @@ async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
     if mgr is not None:
         try:
             await mgr.shutdown()
+            if strict and (mgr.is_running or await mgr.ping()):
+                raise OSError("MCP broker stop was not confirmed")
         except Exception:
+            if strict:
+                self._mcp_gateway_manager = mgr
+                raise
             logger.exception("mcp-gateway: broker shutdown failed")
 
 
@@ -448,6 +468,11 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     mgr = self._mcp_gateway_manager
     if self.dashboard_state is not None:
         self.dashboard_state._mcp_gateway_manager = mgr
+        setattr(
+            self.dashboard_state,
+            "_mcp_sharing_started",
+            getattr(self, "_mcp_sharing_started", None),
+        )
     # Rebuild the provider factory so new sessions resolve the overlay
     # path from the CURRENT config, not the value captured at boot.
     # refresh_defaults() rebuilds the factory and drains the warm pool
@@ -599,3 +624,16 @@ def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:
     # Read by the dashboard restart handler, which execs without running
     # ``_shutdown``: the broker this process owns must still die with it.
     self.dashboard_state._mcp_gateway_stop = self._stop_mcp_broker
+    setattr(
+        self.dashboard_state,
+        "_native_settings_work_counts",
+        getattr(self, "_in_flight_work_counts", None),
+    )
+    setattr(
+        self.dashboard_state,
+        "_mcp_stub_servers_started",
+        getattr(self, "_mcp_stub_servers_started", ()),
+    )
+    setattr(
+        self.dashboard_state, "_mcp_sharing_started", getattr(self, "_mcp_sharing_started", None)
+    )

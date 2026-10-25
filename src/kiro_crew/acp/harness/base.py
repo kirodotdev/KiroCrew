@@ -227,6 +227,12 @@ class SpawnPlan:
     hides, or it re-exposes something nothing denied.
     """
 
+    extra_visible_dirs: tuple[str, ...] = ()
+    """Exact host-owned directories this harness must read and write."""
+
+    env_defaults: Mapping[str, str] = field(default_factory=dict)
+    """Defaults resolved from the same snapshot as the sandbox grants."""
+
     private_state_env: str | None = None
     """Environment variable this host needs pointed at a per-process directory.
 

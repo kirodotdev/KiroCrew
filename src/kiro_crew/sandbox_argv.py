@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -108,6 +109,7 @@ _SANDBOX_ARTIFACT_PREFIX = "kirocrew_sandbox_"
 #: same prefix.
 _LAUNCHER_SCRIPT_SUFFIX = ".py"
 _SEATBELT_PROFILE_SUFFIX = ".sb"
+_WINDOWS_SANDBOX_ARTIFACT_PREFIX = "kirocrew_native_"
 _PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
 # Named ONCE because two sweeps accept this family: the run dir still holds artifacts
 # written before they moved, and the gate dir holds the current ones. Two spellings could
@@ -118,6 +120,7 @@ _PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
 _PI_GATE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".sh", ".cmd", ".ts", ".tmp", ".json")
 _RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
     _SANDBOX_ARTIFACT_PREFIX: (_SEATBELT_PROFILE_SUFFIX, _LAUNCHER_SCRIPT_SUFFIX),
+    _WINDOWS_SANDBOX_ARTIFACT_PREFIX: (".json",),
     # The run sweep accepts pi artifacts as well as sandbox launchers.
     _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
 }
@@ -415,6 +418,7 @@ def _spawn_plan(
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
     exec_cwd: str = "",
+    runtime_install_roots: tuple[str, ...] = (),
 ) -> sandbox_plan.ConfinementPlan:
     """Plan one spawn for *backend* against this host, logging what the plan refused.
 
@@ -441,7 +445,12 @@ def _spawn_plan(
         crew_home_aliases=tuple(crew_home_aliases),
         exec_cwd=exec_cwd,
     )
-    plan = sandbox_plan.plan_confinement(request, _live_plan_host(request))
+    host = _live_plan_host(request)
+    if runtime_install_roots:
+        host = replace(
+            host, install_root_targets=(*host.install_root_targets, *runtime_install_roots)
+        )
+    plan = sandbox_plan.plan_confinement(request, host)
     _log_refusals(plan.refusals)
     return plan
 

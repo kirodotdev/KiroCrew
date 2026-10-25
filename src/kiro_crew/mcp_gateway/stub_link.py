@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -347,9 +348,10 @@ def must_degrade_nonce_blind(server: str, poolable: bool, capabilities: list[str
 class FallbackRequestedError(Exception):
     """Handshake cannot complete; caller must exec the real backend."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, error_class: str = "connection_failed") -> None:
         super().__init__(reason)
         self.reason = reason
+        self.error_class = error_class
 
 
 class StaleGenerationError(FallbackRequestedError):
@@ -371,15 +373,26 @@ async def handshake(
     gateway-unavailable condition (connect refused, socket missing,
     rejected register, unexpected reply)."""
     try:
-        reader, writer = await transport.connect(
-            socket_path,
-            limit=READ_BUFFER_LIMIT_BYTES,
-        )
+        native = bool(os.environ.get("KIROCREW_NATIVE_MCP_SCOPE_TOKEN"))
+        if native:
+            from kiro_crew.mcp_gateway.native_handles import connect_registered
+
+            reader, writer = await connect_registered(payload, limit=READ_BUFFER_LIMIT_BYTES)
+        else:
+            reader, writer = await transport.connect(socket_path, limit=READ_BUFFER_LIMIT_BYTES)
     except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
-        raise FallbackRequestedError(f"connect failed: {exc}") from exc
+        raise FallbackRequestedError(
+            f"connect failed: {exc}",
+            error_class=(
+                "identity_unattested"
+                if native and isinstance(exc, PermissionError)
+                else "connection_failed"
+            ),
+        ) from exc
 
     try:
-        await _write_frame(writer, payload)
+        if not native:
+            await _write_frame(writer, payload)
         resp = await _read_frame(reader)
     except (OSError, ConnectionError, json.JSONDecodeError) as exc:
         await _safe_close(writer)
@@ -407,7 +420,10 @@ async def handshake(
         return reader, writer, payload["stub_uuid"], resp
     await _safe_close(writer)
     if msg_type == "rejected":
-        raise FallbackRequestedError(f"gateway rejected: {resp.get('reason', '?')}")
+        raise FallbackRequestedError(
+            f"gateway rejected: {resp.get('reason', '?')}",
+            error_class=resp.get("class", "connection_failed"),
+        )
     raise FallbackRequestedError(f"unexpected handshake reply: type={msg_type!r}")
 
 
