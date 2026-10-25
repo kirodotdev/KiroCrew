@@ -485,7 +485,6 @@ test/test_enterprise.py
 test/test_env.py
 test/test_eval_harness.py
 test/test_events_forward.py
-test/test_external_registry.py
 test/test_fake_acp_backend.py
 test/test_fetch_thread_replies.py
 test/test_file_download.py

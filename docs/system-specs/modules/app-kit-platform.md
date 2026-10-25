@@ -624,6 +624,23 @@ an index cannot spell a directory into an app name, where a name-prefix
 convention (skip `_registry_*`) would be imitable by an app literally named
 `_registry_x` and hand a hostile index files the sweep never reclaims.
 
+A failed listing fetch is remembered too. `_resolve_manifest` writes an empty
+`<stem>-<digest>.miss.json` marker beside where the manifest would go, keyed
+through `_manifest_cache_path` on the same coordinates, and for
+`_MANIFEST_NEGATIVE_CACHE_TTL` (one hour, read off the marker's mtime) the
+listing shows that row's minimal info without cloning again, so a store listing
+does not re-run a fetch (often a shallow clone bounded only by `_CLONE_TIMEOUT`)
+for every source that keeps failing. A fresh marker only turns the remote off:
+`_resolve_manifest` still calls `_fetch_app_manifest` with `allow_remote=False`,
+so the installed clone's `app.json` is read first and an app installed since the
+failure keeps its full row. A listing that skipped the remote leaves the
+marker's mtime alone, so it still lapses on time. Only the listing reads
+the marker: the install path calls `_fetch_app_manifest` directly and always
+fetches. The registry-refresh sweep expires each row's marker alongside its
+manifest file, so an explicit refresh always retries, and the marker lives in
+`by-source/`, so the GC sweep reclaims it. A missing, expired or unreadable
+marker reads as absent and the listing fetches.
+
 The client
 (`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
 reads the server fields, still rejects a `_registry`-tagged row first (so

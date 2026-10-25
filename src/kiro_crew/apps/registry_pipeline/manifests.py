@@ -18,7 +18,12 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
-from kiro_crew.apps.registry_pipeline.caches import _read_manifest_cache, _write_manifest_cache
+from kiro_crew.apps.registry_pipeline.caches import (
+    _read_manifest_cache,
+    _read_manifest_negative_cache,
+    _write_manifest_cache,
+    _write_manifest_negative_cache,
+)
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
     _HOOKS_NEUTRALIZER_ARGV,
@@ -65,6 +70,7 @@ async def _fetch_app_manifest(
     *,
     owner_designated: bool = False,
     commit: str = "",
+    allow_remote: bool = True,
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -94,6 +100,11 @@ async def _fetch_app_manifest(
     install fetches a pinned commit would gate one tree and install another --
     and a pinned row carries no branch at all, so the branch would silently be
     the ``"main"`` default.
+
+    *allow_remote*: when False, only step 1 runs -- the local persistent clone
+    is still read, and a miss returns None without cloning. The listing passes
+    False while a failed-fetch marker is fresh, so an app that is already
+    installed keeps its manifest while the remote stays off.
     """
 
     def _read_manifest_text(path: Path) -> str | None:
@@ -156,6 +167,9 @@ async def _fetch_app_manifest(
                 return json.loads(local_content)
             except json.JSONDecodeError:
                 pass
+
+    if not allow_remote:
+        return None
 
     if not _looks_like_git_url(git_url):
         # Not a cloneable URL (e.g. empty or a bare name on a public machine).
@@ -346,11 +360,21 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         logger.info("%s=1 — not fetching app.json for %s", official_catalog.SKIP_FETCH_ENV, name)
         return entry
 
+    # A fetch for these exact source coordinates failed within
+    # ``_MANIFEST_NEGATIVE_CACHE_TTL``: skip the remote clone. The local
+    # installed clone is still read first, so an app installed since the
+    # failure keeps its manifest. The marker shares the success cache's key,
+    # so another branch, repository or subdirectory still fetches. Only the
+    # listing consults it; the install path calls ``_fetch_app_manifest``
+    # directly.
+    negative_cached = await asyncio.to_thread(_read_manifest_negative_cache, entry)
+
     # Fetch from repo
     # Same-repo credential carve-out: if the entry's clone URL matches the
     # owner-configured registry repo, use owner credentials for the manifest
     # fetch (the confused-deputy defense does not apply to the owner's own URL).
     owner_target = await asyncio.to_thread(_owner_designated_repo_target, entry)
+    fetch_kwargs: dict[str, Any] = {"allow_remote": False} if negative_cached else {}
     manifest = await _fetch_app_manifest(
         repo,
         branch,
@@ -358,15 +382,23 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         app_name=name,
         git_url=owner_target or git_url,
         owner_designated=bool(owner_target),
+        **fetch_kwargs,
     )
     if manifest:
         await asyncio.to_thread(_write_manifest_cache, entry, manifest)
         return _merge_manifest(entry, manifest)
 
+    if negative_cached:
+        # The remote was skipped, so nothing new failed: leave the marker's
+        # age alone so it still lapses on time.
+        return entry
+
     # No manifest available — return entry as-is (minimal info). The failed
     # fetch attaches NOTHING: the source-scoped cache read above already
     # missed, and there is deliberately no name-only fallback that could
     # attach a manifest cached for another branch or repository.
+    # The negative-cache marker stops the next listings from cloning again.
+    await asyncio.to_thread(_write_manifest_negative_cache, entry)
     logger.info("Could not fetch app.json for %s — showing minimal info", name)
     return entry
 
