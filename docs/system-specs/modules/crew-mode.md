@@ -3123,14 +3123,19 @@ the Kiro Crew docs search (`search_docs`, `find_ui` on `kirocrew-guide`, which
 both the conductor's fixed servers and the worker's base config mount);
 `work_ledger_record` / `work_ledger_read`, `save_goal_report`, `save_notes`;
 the worker's kit, the capability card that adds to it, the Profile's
-Permissions reaching its sessions. `test_every_crewmate_only_tool_is_named_in_the_assembled_conductor_prompt`
+Permissions reaching its sessions, and its own worktree under the crew/
+prefix. `test_every_crewmate_only_tool_is_named_in_the_assembled_conductor_prompt`
 reads the tool names from the `kirocrew-mate`, `kirocrew-panel`,
 `kirocrew-crew-log` and `kirocrew-work` server sources plus the guide and
 session tools, and fails when the assembled prompt omits one, with an explicit
 exempt list (`panel_templates`, `work_brief`, `work_report`,
 `work_ledger_rebuild`). The worker's principles add one line: facts the
 crewmate's Dashboard depends on are recorded as crew-log events, through the
-tools that record them.
+tools that record them. It also says its project directory is the crewmate's
+own worktree on `crew/<crewmate>/<repo>`, to commit there and name further
+branches under that prefix, to rebase onto the default branch itself when it
+needs that branch's changes, and to check a branch with `git merge-tree` before
+it pushes.
 
 `scripts/crewmate_prompt_preview.py --fixture <name> [--piece <p>] [--diff | --write]`
 runs the real assembly over a fixture in a throwaway data home and prints
@@ -3727,6 +3732,62 @@ worker is archived by `dashboard.idle_slot_sweep_days` like any tab, and a
 conductor's `session_send` to it revives it first (session-control.md). The
 conductor reads `process: live | released` on `session_status`, and the worker
 tab shows a released one with a small marker (`session-row-released`).
+
+**Each crewmate works in a git worktree of its own** (`kiro_crew.crewmate_worktree`,
+`dashboard/crewmate_worktree_scope.py`), so two crewmates handed one repository
+never share a working tree or a checked-out branch. The gateway does three
+things here and leaves every other git step to the worker's prompt
+(`worker.principles`):
+
+1. **One worktree per crewmate per repository.** `crewmate_worktree.ensure`
+   makes it at `<crewmate workspace>/worktrees/<crewmate slug>/<repo>-<hash>`
+   (`path_for`: the slug keeps two crewmates sharing a workspace apart, the
+   hash two repositories sharing a name), on the branch
+   `crew/<crewmate slug>/<repo>` (`branch_for`), cut the first time from the
+   repository's default branch (`refs/remotes/origin/HEAD`, else `refs/heads/main`
+   or `master`, else `HEAD`; full ref names, so a tag never stands in for the <!-- wokeignore:rule=master -->
+   branch). After that a worktree git registers at that place is used as it is,
+   on whatever branch the worker has checked out; one whose folder was deleted
+   by hand is pruned and made again. A name segment the cleaning changed (or
+   one over 40 characters) keeps a digest of the whole and is a legal git ref
+   component. A repository that contains the crewmate's own workspace is not
+   one it was handed and gets none. The repository is read from git's common
+   directory, so a path inside another crewmate's worktree maps to the same
+   repository.
+2. **The worker runs there.** At the start of a worker's turn (a `template`
+   record on `kirocrew-mate-worker` with the crewmate's `member_id`; the
+   conductor is left alone), after its Permissions are seeded and before the
+   provider is claimed, turn admission (`chat_turn/turn_admission._turn_admit`)
+   calls `scope_worker_turn`. It reads the repository from the paths the
+   turn's message names (absolute or `~` paths, and drive paths on Windows; a
+   quoted one is read whole; one not made yet is read from its nearest existing
+   folder; `crewmate_worktree.paths_in`), then from the slot's project, and sets
+   `slot.project` to the crewmate's worktree of the first one in a git
+   repository (the same subfolder when the path named one, unless that folder
+   is a link out of the worktree or holds a control character or bracket). A
+   path in the worktree the worker already runs in, or in that repository's own
+   checkout, moves nothing. The binding is re-captured under the dispatch lock,
+   and a session already running takes the deferred reset `set_project` uses.
+   Git failing (or no sandbox) leaves the turn on its project. The
+   repository's `aws.project_profiles` binding still applies in the worktree:
+   the cwd is matched as the same path in the checkout, asked of git each time
+   (`crewmate_worktree.source_path`; config.md, "Project AWS profiles").
+3. **It goes with the crewmate.** Deleting the crewmate
+   (`crew_removal.api_kirocrew_agent_delete`, `crewmate_worktree.remove_for_member`)
+   lists `<workspace>/worktrees/<slug>` and removes each folder git registers as
+   a worktree of its repository with `git worktree remove` (never `--force`).
+   One with uncommitted changes, ignored files or a repository that configures a
+   checkout filter is kept and logged; so is anything git does not register.
+   Branches stay, and the repositories' own checkouts are never touched.
+
+Git runs through the follow-up card's sandboxed runner
+(`handlers/worktree._run_git`): no hooks, no fsmonitor, and a repository
+declaring a checkout filter is refused. The folders sit in the agent-writable
+workspace, so the gateway makes a new worktree's folder through no-follow
+descriptors (`pinned_fs.open_pinned_descendant_dir`) and, after a failed
+`worktree add`, removes it only by descriptor and only while it is still the
+folder it made (`remove_tree_pinned`, by `(dev, ino)`), then drops the branch
+it cut (`test/test_crewmate_worktree.py`).
 
 **A worker reports back on its own** (`dashboard/mate_thread_wakes.py`), so the
 conductor dispatches and ends its turn. Every top-level turn end calls
