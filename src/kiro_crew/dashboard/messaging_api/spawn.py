@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         ValidationError,
         _redact,
         _spawn_scope_refusal,
+        body_int,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
@@ -358,8 +359,8 @@ async def api_spawn(request: web.Request) -> web.Response:
     if batch_id and not batch_id.isalnum():
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
     try:
-        batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
+    except (TypeError, ValueError):
         batch_total = 0
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
@@ -606,8 +607,8 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
     try:
-        max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        max_turns = max(0, min(body_int(body.get("max_turns", 0) or 0), 1000))
+    except (TypeError, ValueError):
         max_turns = 0
     # The run's own cwd, resolved OFF the event loop: a continuation has to run
     # where the run ran (a project-local agent does not resolve against the pool

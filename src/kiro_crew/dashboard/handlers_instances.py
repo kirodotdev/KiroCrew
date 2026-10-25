@@ -32,6 +32,7 @@ import kiro_crew  # noqa: F401
 from kiro_crew import _facade_mirror
 from kiro_crew.apps.version import versions_compatible  # noqa: F401
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     cap_effort_capability_levels,
     register_reasoning_effort_values,
@@ -228,7 +229,7 @@ async def api_instances_add(request: web.Request) -> web.Response:
                 reg.add,
                 name=str(body.get("name", "")),
                 ssh_host=str(body.get("ssh_host", "")),
-                remote_port=int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
+                remote_port=body_int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
                 ttl=str(body.get("ttl", "20h")),
                 remote_bin=str(body.get("remote_bin", "")),
                 connection_method=str(body.get("connection_method", "ssh")),
@@ -237,7 +238,7 @@ async def api_instances_add(request: web.Request) -> web.Response:
                 aws_profile=str(body.get("aws_profile", "")),
                 aws_region=str(body.get("aws_region", "")),
                 via_instance_id=via_instance_id,
-                via_remote_port=int(body.get("via_remote_port", 0)),
+                via_remote_port=body_int(body.get("via_remote_port", 0)),
                 via_remote_id=via_remote_id,
                 instance_id=body.get("id"),
             )

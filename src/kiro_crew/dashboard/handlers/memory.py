@@ -19,6 +19,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.memory_sections import memory_writes_off_key
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.memory_graph import _build_memory_graph
 from kiro_crew.dashboard.handlers.memory_services import _get_vector_store_async, _sel
@@ -588,7 +589,7 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                 )
         if "history_max_days" in body:
             try:
-                updates["history_max_days"] = max(7, int(body["history_max_days"]))
+                updates["history_max_days"] = max(7, body_int(body["history_max_days"]))
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_max_days must be an integer"}, status=400
@@ -1419,9 +1420,9 @@ async def api_memory_promote(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     try:
-        min_count = int(body.get("min_count", 5))
+        min_count = body_int(body.get("min_count", 5))
         min_sim = float(body.get("min_sim", 0.75))
-    # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
+    # OverflowError: float() of a JSON integer beyond float range raises it.
     except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "min_count/min_sim must be numeric"}, status=400)
     # Run in executor (can take 10+ seconds)

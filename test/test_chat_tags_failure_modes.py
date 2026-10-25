@@ -336,6 +336,25 @@ class TestUpdateDeleteRace:
             assert not any(t["id"] == tid for t in state._tags)
 
 
+class TestTagOrderInfinity:
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_infinite_order_is_skipped_not_a_500(self, tmp_path, monkeypatch, raw):
+        """JSON reads ``1e999`` as an infinite float: the field is skipped, as for "abc"."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Inf"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                data=f'{{"order": {raw}}}',
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["order"] == tag["order"]
+
+
 class TestNonObjectBodiesAcrossConvertedHandlers:
     """Every converted handler answers 400, never 5xx, on a non-object body.
 

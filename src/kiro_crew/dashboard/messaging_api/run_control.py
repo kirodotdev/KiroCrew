@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _run_belongs_to_caller,
         _sel,
         _spawn_on_loop,
+        body_int,
         dashboard_slot_key,
         effective_session_key,
         internal_memory_scope,
@@ -386,8 +387,8 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     if not batch_id or not batch_id.isalnum():
         return web.json_response({"error": "valid batch_id required"}, status=400)
     try:
-        batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
+    except (TypeError, ValueError):
         batch_total = 0
     reason = str(body.get("reason", "") or "spawn submission failed")[:300]
     parent_session = str(body.get("parent_session", "") or "")
