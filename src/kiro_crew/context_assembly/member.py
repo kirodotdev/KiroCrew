@@ -285,8 +285,9 @@ _MEMBER_BRIEFING_ITEM_UNAVAILABLE = _prompt("conductor.briefing_item_unavailable
 # that file any more, so it is the USER's note now, and the text says so: it can
 # be out of date, the thread wins where the two disagree, and a stale one is the
 # member's to report and the user's to edit or delete (the header names the
-# file). No ``kirocrew-mate`` tool writes the briefing (``update_self`` takes a
-# name, a description and a face), so there is no tool to name instead. The text
+# file). A crewmate with the ``kirocrew-mate`` tools keeps its briefing through
+# ``save_notes``, so ``briefing_writable`` holds wherever the layer is read and
+# it never gets this item: a crewmate this item reaches has no tool to name. The text
 # speaks of the TEMPLATE, not of what the session can reach: a harness that does
 # not enforce a spec's ``tools`` (claude, codex) still offers its own writers,
 # and the template's no-write charter holds there too.
@@ -309,15 +310,14 @@ _MEMBER_BRIEFING_ITEM_NO_FILE_TOOLS = _prompt("conductor.briefing_item_no_file_t
 # ``test_dashboard_manager_agent.py::test_the_base_prompt_names_the_agent_the_installer_writes``
 # reads the name off the installed spec and asserts it appears in this prompt.
 #
-# THE CREWMATE drives its own page, which is a correction. An earlier wording sent
-# every page request to the `kirocrew-dashboard-manager` subagent and told the
-# crewmate it had no tools for it -- while ``_MEMBER_PANEL_GRANTS`` grants it all six
-# verbs. The crewmate is also the only one of the two whose identity the panel's
-# tools can resolve: they go through ``mcp_core.require_strict_session_key``, which
-# resolves the CALLING session and never a parent through a ``/proc`` walk, because
-# that walk is how a subagent would reach a page that is not its own. A member DM
-# session has that identity; a subagent is a weaker place to stand. So the subagent is
-# extra capacity for a long page job, and the crewmate's own hands are the path.
+# THE CREWMATE drives its own page: ``_MEMBER_PANEL_GRANTS`` grants it every tool
+# this item names. The crewmate is also the only one of the two whose identity the
+# panel's tools can resolve: they go through ``mcp_core.require_strict_session_key``,
+# which resolves the CALLING session and never a parent through a ``/proc`` walk,
+# because that walk is how a subagent would reach a page that is not its own. A
+# member DM session has that identity; a subagent is a weaker place to stand. So the
+# subagent is extra capacity for a long page job, and the crewmate's own hands are
+# the path.
 _MEMBER_DASHBOARD_ITEM = _prompt("conductor.dashboard_item")
 
 
@@ -517,14 +517,13 @@ def build_member_section(
 
         # This crewmate's own Dynamic capabilities preview, off by default.
         manual = crewmate_dynamic_capabilities.restricted_for(member)
-        identity.append(
-            (
-                (_MATE_TOOLS_IDENTITY_MANUAL if manual else _MATE_TOOLS_IDENTITY)
-                if has_mate_tools
-                else _NO_MATE_TOOLS_IDENTITY
-            )
-            + _prompt("conductor.tracking")
-        )
+        if not has_mate_tools:
+            mate_tools_identity = _NO_MATE_TOOLS_IDENTITY
+        elif manual:
+            mate_tools_identity = _MATE_TOOLS_IDENTITY_MANUAL
+        else:
+            mate_tools_identity = _MATE_TOOLS_IDENTITY
+        identity.append(mate_tools_identity + _prompt("conductor.tracking"))
 
     parts = ["\n".join(identity)]
     if not desk_withheld:
