@@ -82,14 +82,19 @@ function claimKeys(): string[] {
 }
 
 /**
- * Set when this window could not persist its own claim.
+ * When each composer in THIS window last failed to persist its claim.
  *
  * A claim that did not reach storage is invisible to every other window, so a close
  * fired elsewhere reads a clean slot and discards the draft. Quota is per-origin, so a
  * write THIS window cannot make is one no window could — which makes a local failure
  * usable evidence that the absence of claims is unreliable rather than informative.
  *
- * Local evidence only, and that is the limit this flag cannot pass: it says nothing
+ * Keyed per composer, and bounded on `CLAIM_TTL_MS`, for the two reasons the shared
+ * record already carries: a single window-wide flag let one composer's successful
+ * publish erase a sibling's live failure, and an unbounded one stayed set after the only
+ * composer that could clear it had retracted, pinning every slot for the window's life.
+ *
+ * Local evidence only, and that is the limit this map cannot pass: it says nothing
  * about a window whose write failed while THIS one is healthy. `claimFailureKey`
  * carries that case, because it lives in the storage both windows share.
  *
@@ -97,7 +102,17 @@ function claimKeys(): string[] {
  * window whose claim write failed is invisible to the healthy window doing the closing,
  * which is the fail-open this guard exists to prevent.
  */
-let claimWriteFailed = false
+const claimWriteFailedAt = new Map<string, number>()
+
+/** Does any composer in this window hold a claim-write failure that is still current? */
+function localWriteFailureIsLive(now: number): boolean {
+  for (const at of claimWriteFailedAt.values()) {
+    // A failure from the future counts as live for the same reason a claim does: a clock
+    // moved backwards must not silently drop protection.
+    if (now - at < CLAIM_TTL_MS) return true
+  }
+  return false
+}
 
 /**
  * Where ONE composer records that it could not persist its claim.
@@ -142,21 +157,25 @@ export function publishSlotDirty(
     } catch {
       /* storage unavailable — nothing to clear */
     }
-    // A removal proves nothing about whether WRITES land, so it must not clear the flag.
+    // A removal proves nothing about whether WRITES land, so it must not clear the
+    // failure. It ages out on `CLAIM_TTL_MS` instead, which is what stops a composer
+    // that retracted while failing from pinning every slot for good.
     return true
   }
   const claim: DirtyClaim = { s: slot, t: Date.now() }
   const stored = safeSetItem(key, JSON.stringify(claim))
-  claimWriteFailed = !stored
-  // Recorded where every window reads it, and scoped to THIS composer: clearing a shared
-  // record on success erased the evidence another window had written.
+  // Both tiers are scoped to THIS composer: a sibling's landed write is not evidence
+  // that the composer which could not persist has recovered. Clearing a shared record on
+  // any success erased the evidence another window had written.
   if (stored) {
+    claimWriteFailedAt.delete(composerId)
     try {
       localStorage.removeItem(claimFailureKey(composerId))
     } catch {
       /* the claim landed; a stale failure record ages out on its own */
     }
   } else {
+    claimWriteFailedAt.set(composerId, Date.now())
     safeSetItem(claimFailureKey(composerId), JSON.stringify({ f: Date.now() }))
   }
   return stored
@@ -212,7 +231,7 @@ export function anyWindowSlotDirty(slot: string): boolean {
     // Storage unreadable, so no claim could be found whether or not one exists.
     return true
   }
-  return claimWriteFailed || !storageAcceptsClaims()
+  return localWriteFailureIsLive(now) || !storageAcceptsClaims()
 }
 
 /**
@@ -274,7 +293,7 @@ function storageAcceptsClaims(): boolean {
 
 /** @internal test-only: drop every claim. */
 export function __resetSlotDirtyForTests(): void {
-  claimWriteFailed = false
+  claimWriteFailedAt.clear()
   probeAt = 0
   probeOk = true
   try {

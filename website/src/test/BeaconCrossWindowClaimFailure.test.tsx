@@ -1,10 +1,10 @@
 /**
  * A claim that FAILED in another window must not read as an empty composer.
  *
- * `claimWriteFailed` is module-local, so it only ever fails closed for the window that
- * hit the failure. The destructive case is the opposite one: window B could not persist
- * its claim while window A's storage is healthy, so A's flag is false, A's probe
- * succeeds, and A reports a clean slot over B's live draft.
+ * The local failure tier is module-local, so it only ever fails closed for the window
+ * that hit the failure. The destructive case is the opposite one: window B could not
+ * persist its claim while window A's storage is healthy, so A records no local failure,
+ * A's probe succeeds, and A reports a clean slot over B's live draft.
  *
  * Two shapes of the same class are covered: a failure another window recorded, and a
  * claim that is PRESENT but unreadable — a truncated write is how a quota failure
