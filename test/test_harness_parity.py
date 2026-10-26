@@ -1205,11 +1205,18 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "Its unpooled managed stdio declarations need a per-session token override; "
     "other harnesses already carry identity through their own projections.",
     (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "create_session",
+    ): "The native Windows broker scope and MCP startup metadata belong to the "
+    "Codex stdio adapter. Other harnesses retain their own session transport and "
+    "credential-mask plans without a native Codex handoff (H13).",
+    (
         "src/kiro_crew/acp/runtime_session_load.py",
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
-    "kiro path an awaited step it does not need (H13).",
+    "kiro path an awaited step it does not need (H13). Native Windows Codex additionally "
+    "re-seals its final broker roster and uses its adapter's MCP startup metadata.",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
         "stream_command",

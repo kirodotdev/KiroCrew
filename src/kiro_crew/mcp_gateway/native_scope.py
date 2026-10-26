@@ -196,8 +196,8 @@ def attach(
         args = _parse_args(argv[argv.index("kiro_crew.mcp_gateway.stub") + 1 :])
         env = {item["name"]: item["value"] for item in entry.get("env", [])}
         token = env.get(STUB_SESSION_TOKEN_ENV, "")
-        # The channel is an explicit argv field from _acp_server_entry. The
-        # untrusted in-sandbox caller walk does not construct authority.
+        # The final entry carries the channel in argv or env. The untrusted
+        # in-sandbox caller walk does not construct authority.
         register = build_register_payload(
             args,
             session_token=token,
@@ -208,11 +208,16 @@ def attach(
                 "channel_id": "",
             },
         )
+        # Codex creates stdio children from the entry's env, rather than the
+        # host's ambient channel. Sign the same value the child will register.
+        register["channel_id"] = args.channel_id or env.get("KIROCREW_CHANNEL_ID") or None
         env.update(
             {
                 DESCRIPTOR_ENV: str(descriptor),
                 SCOPE_ENV: issue(register, info["instance"]),
                 REQUIRED_ENV: "1",
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8:backslashreplace",
             }
         )
         result.append(

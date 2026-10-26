@@ -7,6 +7,7 @@ The member-dispatch mount on both paths, ``load_session`` against
 import asyncio
 import json
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,6 +25,7 @@ from acp_runtime_helpers import (
 
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_SESSION_LOAD,
@@ -33,6 +35,83 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.testing.wait import await_until
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["create", "load"])
+async def test_native_scope_follows_late_member_mount(monkeypatch, tmp_path, path):
+    from kiro_crew import members, platform_compat
+    from kiro_crew.acp import runtime as runtime_mod
+    from kiro_crew.mcp_gateway import native_session
+
+    runtime, _, _ = _make_runtime()
+    runtime._acp_backend = ACP_BACKEND_CODEX
+    runtime._scratch_dir = tmp_path
+    runtime._can_load_session = True
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(AcpSessionHandle, "apply_session_permission_routing", AsyncMock())
+    monkeypatch.setattr(
+        runtime,
+        "_mirrored_session_mcp",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                servers=[],
+                stub_token="host-token",
+                denied_tools=frozenset(),
+                derived_spec_snapshot=None,
+                ref_spec=None,
+                agent_spec=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(runtime_mod, "session_mcp_server_is_disabled", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        members,
+        "member_dispatch_session_server",
+        lambda *a: {"name": members.MEMBER_DISPATCH_SERVER, "command": "direct", "args": []},
+    )
+
+    async def panel(entries, **kwargs):
+        return entries, False
+
+    async def finalize(rt, entries, **kwargs):
+        assert rt is runtime
+        [member] = entries
+        assert member["name"] == members.MEMBER_DISPATCH_SERVER
+        assert member["command"] == "direct"
+        return [{**member, "command": "broker"}], "host-token"
+
+    sent = []
+
+    async def send(method, params, **kwargs):
+        sent.append((method, params))
+        return {
+            "sessionId": "native-session",
+            "modes": {"currentModeId": "kirocrew"},
+            "configOptions": [
+                {
+                    "id": "mode",
+                    "name": "Mode",
+                    "type": "select",
+                    "currentValue": "read-only",
+                    "options": [{"value": "read-only", "name": "Read only"}],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(runtime, "_mount_member_panel", panel)
+    monkeypatch.setattr(native_session, "finalize", finalize)
+    monkeypatch.setattr(runtime, "_send_and_await", send)
+    kwargs = dict(cwd=str(tmp_path), agent="kirocrew", member_session_key="dashboard_member-native")
+    if path == "create":
+        await asyncio.wait_for(runtime.create_session(**kwargs), timeout=30)
+        method = METHOD_SESSION_NEW
+    else:
+        await asyncio.wait_for(runtime.load_session("", "native-session", **kwargs), timeout=30)
+        method = METHOD_SESSION_LOAD
+    params = next(params for sent_method, params in sent if sent_method == method)
+    assert params["mcpServers"][0]["command"] == "broker"
+    assert params["_meta"]["mcpStartupAwaitTimeoutMs"] == 15_000
 
 
 def _identity_tokens(elements):

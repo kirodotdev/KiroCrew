@@ -23,7 +23,7 @@ def main() -> int:
     parser.add_argument(
         "--configure",
         action="store_true",
-        help="Route Crew core/cron tools through the host broker",
+        help="Route managed Crew runtime tools through the host broker",
     )
     parser.add_argument("--device-auth", action="store_true")
     parser.add_argument("--codex", default=os.environ.get("CODEX_PATH", "codex"))
@@ -44,6 +44,7 @@ def main() -> int:
                 "desktop_history_modified": False,
                 "private_auth_file_present": (private / "auth.json").exists(),
                 "crew_core_and_cron_broker_configured": args.configure,
+                "crew_managed_broker_configured": args.configure,
             }
         ),
         flush=True,

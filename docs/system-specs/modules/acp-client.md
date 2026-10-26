@@ -4024,3 +4024,19 @@ in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index
 with no seed, and gives up the isolation from other `codex app-server`
 processes that this section exists for.
+
+Native Windows Codex runtimes finalize their MCP roster after member and panel
+mounts on both `session/new` and `session/load`. `mcp_gateway/native_session.py`
+replaces canonical managed direct launches with broker stubs, attaches session
+authority, then seals the final entries with `native_scope`. Thus a late Dashboard
+mount cannot start a tool server inside MXC where the SEL key is masked. An
+explicitly assigned Work broker stub is also admitted by the Codex mirror when
+the server is enabled and its tools are unrestricted; a direct Work declaration
+remains withheld.
+The scope's channel comes from that entry's effective stdio environment, rather
+than the shared host process. `check_windows_native_mcp.py --codex ... --adapter
+... --node ...` exercises the actual ACP adapter, required read-only permission
+routing, managed tools and authenticated calls against isolated loopback fixtures.
+Native create and resume requests ask the adapter to await MCP startup for at most
+15 seconds (`_meta.mcpStartupAwaitTimeoutMs`), within the normal request budget.
+This prevents the first model turn racing an empty, still-starting tool catalog.

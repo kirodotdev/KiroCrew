@@ -35,6 +35,21 @@ return structured `connection_failed`, `launch_approval_required`, or
 `identity_unattested` errors; they cannot take the direct fallback. Other
 explicitly permitted direct fallbacks retain their previous behavior.
 
+Native Codex session creation and resume finalize this scope after runtime member
+and panel mounts. Canonical managed entries appended by those mounts become
+broker stubs before signing; their backend reads the SEL key outside MXC. Direct
+Work declarations stay withheld by the Codex mirror. An assigned Work broker stub
+is admitted only without a server disable or per-tool narrowing, like Dashboard.
+The finalizer requires each managed server's broker route to be enabled; an
+explicit direct-route choice is refused before any protected backend is launched.
+The final roster republishes its token claim before stubs start, including when
+the base roster was empty when the runtime minted that token.
+Scope issuance signs the channel carried by the final stdio entry (or its explicit
+`--channel-id`), never an ambient host channel. Codex clears ambient environment
+variables for MCP children; signing the host value would reject a legitimate
+session. Managed native stubs receive an explicit UTF-8 stream contract so their
+protocol and startup errors remain readable through Codex's stdio launcher.
+
 ## Code fingerprint
 
 `code_fingerprint.code_fingerprint()` is one opaque token naming WHICH Kiro Crew code a process imported, computed once per process. Git is resolved through `platform_compat.trusted_git_bin` (fixed system directories, never `PATH`) and run with global and system config disabled, inherited `GIT_*` variables dropped and `--no-ext-diff --no-textconv`, because this runs in the gateway process on a tree an agent can write to; no trusted git means the mtime rule. Inside a git worktree it is the HEAD commit plus `+<sha256 of the tracked diff>` when tracked files differ — the diff TEXT, not a dirty bit, because two uncommitted edits to one HEAD are different code, and a bare `+dirty` would let a daemon from the first edit be adopted by a gateway on the second. Otherwise it is `mtime:<digest>` over the installed distribution version and the newest `*.py` mtime under the package, since a wheel is immutable until replaced and replacing it moves the mtimes. The only contract is *equal iff the same code*. The first computation runs `git` or walks the package tree, so the two async owners — `run_gatewayd` before it binds, `GatewayManager._start_locked` before its election loop — await `warm_code_fingerprint()` (`asyncio.to_thread`) once; every later synchronous read on their event loops (the pong, the stand-down handler, `_code_drift`) is a cache hit. The stub computes it inside `build_register_payload`, which already runs on the subprocess executor.

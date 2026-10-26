@@ -145,15 +145,24 @@ def prepare_codex_home(environ: Mapping[str, str], home: Path) -> Path | None:
 def configure_codex_broker() -> None:
     """An explicit setup action: route trusted Crew tools through their host broker.
 
-    Sharing and all other server decisions stay as configured. Core and cron
+    Sharing and other server decisions stay as configured. Managed runtime tools
     cannot audit or authenticate inside a foreign harness's credential mask.
+    Agent grants and restrictions decide which of these servers a session mounts.
     """
     from kiro_crew.config.loader import config_path, update_config_locked
 
     def configure(data: dict) -> dict:
         gateway = dict(data.get("mcp_gateway", {}))
         overrides = dict(gateway.get("stub_overrides", {}))
-        overrides.update({"kirocrew-core": True, "kirocrew-cron": True})
+        overrides.update(
+            {
+                "kirocrew-core": True,
+                "kirocrew-cron": True,
+                "kirocrew-dashboard": True,
+                "kirocrew-work": True,
+                "kirocrew-panel": True,
+            }
+        )
         gateway["stub_overrides"] = overrides
         data["mcp_gateway"] = gateway
         return data

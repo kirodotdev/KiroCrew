@@ -1,4 +1,4 @@
-"""Real MXC, real gatewayd/core/cron, synthetic home and authenticated API fixture."""
+"""Real MXC and four managed MCP servers, synthetic home and authenticated API fixture."""
 
 import argparse
 import asyncio
@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -110,7 +111,7 @@ async def main():
             for _ in range(64):
                 line = await asyncio.wait_for(p.stdout.readline(), 35)
                 if not line:
-                    raise RuntimeError("MCP EOF: " + (await p.stderr.read()).decode())
+                    raise RuntimeError("MCP EOF: " + (await p.stderr.read()).decode("utf-8", errors="replace"))
                 msg = json.loads(line)
                 if msg.get("id") == id:
                     return msg
@@ -128,10 +129,17 @@ async def main():
             )
             if "result" not in init:
                 await p.wait()
-                raise AssertionError((init, (await p.stderr.read()).decode()))
+                raise AssertionError((init, (await p.stderr.read()).decode("utf-8", errors="replace")))
             p.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             await p.stdin.drain()
             tools = await rpc(2, "tools/list", {})
+            if case["server"] in {"kirocrew-work", "kirocrew-dashboard"}:
+                assert tools["result"]["tools"], tools
+                results.append({
+                    "server": case["server"], "tools_list": True,
+                    "tool_count": len(tools["result"]["tools"]),
+                })
+                continue
             assert case["tool"] in [t["name"] for t in tools["result"]["tools"]], tools
             call = await rpc(
                 3, "tools/call", {"name": case["tool"], "arguments": case["arguments"]}
@@ -150,11 +158,73 @@ async def main():
         finally:
             p.stdin.close()
             await asyncio.wait_for(p.wait(), 10)
-            stderr = (await p.stderr.read()).decode()
+            stderr = (await p.stderr.read()).decode("utf-8", errors="replace")
             if stderr:
                 print(stderr, file=sys.stderr)
     print(json.dumps({"key_denied": True, "results": results}))
 
+
+asyncio.run(main())
+"""
+
+ACP_PROGRAM = r"""
+import asyncio, json, os, sys
+from pathlib import Path
+
+async def main():
+    try:
+        Path(os.environ['KIROCREW_HOME'], 'trust/sel_hmac.key').read_bytes()
+        raise AssertionError('native key readable')
+    except PermissionError:
+        pass
+    env = dict(os.environ, CODEX_PATH=os.environ['NATIVE_TEST_CODEX'], DISABLE_MCP_CONFIG_FILTERING='true')
+    p = await asyncio.create_subprocess_exec(
+        env['NATIVE_TEST_NODE'], env['NATIVE_TEST_ADAPTER'], env=env,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, limit=16_777_216,
+    )
+    stderr = asyncio.create_task(p.stderr.read())
+    permission_count = 0
+    async def rpc(i, method, params):
+        nonlocal permission_count
+        p.stdin.write((json.dumps({'jsonrpc':'2.0','id':i,'method':method,'params':params})+'\n').encode())
+        await p.stdin.drain()
+        while True:
+            line = await asyncio.wait_for(p.stdout.readline(), 50)
+            if not line:
+                raise AssertionError('ACP adapter closed')
+            obj = json.loads(line)
+            if obj.get('id') == i:
+                assert 'error' not in obj, obj
+                return obj['result']
+            if 'id' in obj:
+                assert obj.get('method') == 'session/request_permission', obj
+                permission_count += 1
+                option = next(o['optionId'] for o in obj['params']['options'] if o['kind'] == 'allow_once')
+                p.stdin.write((json.dumps({'jsonrpc':'2.0','id':obj['id'],'result':{'outcome':{'outcome':'selected','optionId':option}}})+'\n').encode())
+                await p.stdin.drain()
+    try:
+        await rpc(1, 'initialize', {'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'kirocrew','version':'synthetic-fixture'}})
+        entries = [{'name':x['server'],'command':sys.executable,
+                    'args':['-s','-P','-m','kiro_crew.mcp_gateway.stub',*x['args']],
+                    'env':[{'name':k,'value':v} for k,v in x['env'].items()]} for x in json.loads(sys.argv[1])]
+        sid = (await rpc(2, 'session/new', {'cwd':os.getcwd(),'mcpServers':entries,
+               '_meta':{'mcpStartupAwaitTimeoutMs':15000}}))['sessionId']
+        configured = await rpc(3, 'session/set_config_option', {'sessionId':sid,'configId':'mode','value':'read-only'})
+        assert any(o.get('currentValue') == 'read-only' for o in configured.get('configOptions',[])), configured
+        result = await rpc(4, 'session/prompt', {'sessionId':sid,'prompt':[{'type':'text','text':'Use Crew skill_search and cron_list, then finish.'}]})
+        assert result['stopReason'] == 'end_turn', result
+        assert permission_count >= 2, 'Crew tool approvals did not reach ACP'
+        await rpc(5, 'session/close', {'sessionId':sid})
+        print(json.dumps({'key_denied':True,'acp_session_verified':True,'permission_requests':permission_count}), flush=True)
+    finally:
+        p.stdin.close()
+        try:
+            await asyncio.wait_for(p.wait(), 10)
+        except TimeoutError:
+            p.kill()
+            await p.wait()
+        print((await stderr).decode('utf-8',errors='replace'), file=sys.stderr)
 
 asyncio.run(main())
 """
@@ -217,7 +287,7 @@ async def main():
         reply = json.loads(stdout)
         assert reply["id"] == 42 and reply["error"]["data"]["class"] == case["expected"], (
             reply,
-            stderr.decode(),
+            stderr.decode("utf-8", errors="replace"),
         )
         assert reply["error"]["data"]["direct_fallback"] is False
         assert p.returncode != 0
@@ -278,12 +348,15 @@ async def _stop_gateway(task, event):
             await asyncio.gather(task, return_exceptions=True)
 
 
-async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=None):
+async def exercise(
+    root, sandbox_runner, codex=None, mode="mcp", report_path=None, *, adapter=None, node=None
+):
     async with contextlib.AsyncExitStack() as cleanup:
         home = root / "crew"
         user = root / "home"
         workspace = root / "workspace"
-        for path in (home / "trust", user, workspace, home / "run", home / "codex"):
+        codex_home = user / "codex-profile"
+        for path in (home / "trust", user, workspace, home / "run", codex_home):
             path.mkdir(parents=True, exist_ok=True)
         retained = {
             key: value
@@ -316,7 +389,7 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                 "USERDOMAIN": "synthetic",
                 "APPDATA": str(user / "AppData/Roaming"),
                 "LOCALAPPDATA": str(user / "AppData/Local"),
-                "CODEX_HOME": str(home / "codex"),
+                "CODEX_HOME": str(codex_home),
                 "PATH": str(Path(sys.executable).parent)
                 + os.pathsep
                 + os.environ["SystemRoot"]
@@ -331,14 +404,14 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.config.paths import kiro_agents_dir
         from kiro_crew.instances import run_marker
-        from kiro_crew.mcp_gateway import native_scope, transport
+        from kiro_crew.mcp_gateway import native_scope, native_session, transport
         from kiro_crew.mcp_gateway.claim import (
             STUB_SESSION_TOKEN_ENV,
             mint_stub_session_token,
             send_claim,
         )
         from kiro_crew.mcp_gateway.gatewayd import run_gatewayd
-        from kiro_crew.mcp_gateway.hashing import encode_target_args, hash_effective_env
+        from kiro_crew.mcp_gateway.hashing import hash_effective_env
         from kiro_crew.mcp_gateway.launch_approval import (
             ResolvedLaunch,
             approve,
@@ -513,14 +586,20 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                 {
                     "mcp_gateway": {
                         "socket_path": str(socket),
-                        "stub_overrides": {"kirocrew-core": True, "kirocrew-cron": True},
+                        "stub_overrides": {
+                            "kirocrew-core": True,
+                            "kirocrew-cron": True,
+                            "kirocrew-work": True,
+                            "kirocrew-dashboard": True,
+                        },
                     }
                 }
             )
         )
         KiroCrewConfig.load()
         specs = {
-            name: agent.managed_mcp_spec_entry(name) for name in ("kirocrew-core", "kirocrew-cron")
+            name: agent.managed_mcp_spec_entry(name, include_opt_in=True)
+            for name in ("kirocrew-core", "kirocrew-cron", "kirocrew-work", "kirocrew-dashboard")
         }
         assert all(specs.values()), specs
         agents = kiro_agents_dir()
@@ -531,7 +610,12 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     "name": "synthetic-agent",
                     "prompt": "synthetic fixture",
                     "mcpServers": specs,
-                    "tools": ["@kirocrew-core", "@kirocrew-cron"],
+                    "tools": [
+                        "@kirocrew-core",
+                        "@kirocrew-cron",
+                        "@kirocrew-work",
+                        "@kirocrew-dashboard",
+                    ],
                 }
             )
         )
@@ -541,18 +625,13 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
         for name, spec in specs.items():
             command, args = spec["command"], spec["args"]
             targets[name] = (command, args, dict(os.environ), str(workspace))
-            argv = [
-                "--server",
-                name,
-                "--agent",
-                "synthetic-agent",
-                "--target-command",
-                command,
-                "--target-args-b64",
-                encode_target_args(args),
-                "--work-dir",
-                str(workspace),
-            ]
+            [routed] = native_session.broker_entries(
+                [{"name": name, **spec}],
+                agent_name="synthetic-agent",
+                work_dir=str(workspace),
+                socket_path=socket,
+            )
+            argv = routed["args"][routed["args"].index("kiro_crew.mcp_gateway.stub") + 1 :]
             parsed = _parse_args(argv)
             payload = build_register_payload(
                 parsed,
@@ -564,15 +643,16 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     "channel_id": "",
                 },
             )
+            payload["channel_id"] = "dashboard"
             if mode != "approval":
                 approve(
                     {
                         name: [
                             ResolvedLaunch(
-                                launch_fingerprint(command, args, {}),
+                                launch_fingerprint(command, args, spec.get("env", {})),
                                 command,
                                 tuple(args),
-                                frozenset({hash_effective_env({})}),
+                                frozenset({hash_effective_env(spec.get("env", {}))}),
                             )
                         ]
                     }
@@ -582,7 +662,11 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     "server": name,
                     "args": argv,
                     "payload": payload,
-                    "env": {STUB_SESSION_TOKEN_ENV: token},
+                    "env": {
+                        STUB_SESSION_TOKEN_ENV: token,
+                        "KIROCREW_CHANNEL_ID": "dashboard",
+                        "KIROCREW_HOME": str(home),
+                    },
                     "tool": "skill_search" if name.endswith("core") else "cron_list",
                     "arguments": {"query": "synthetic"} if name.endswith("core") else {},
                 }
@@ -622,7 +706,7 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
             [sys.executable, "-c", ROOT_PROGRAM],
             extra_hidden_dirs=(str(home / "trust"),),
             extra_private_dirs=(str(scratch),),
-            extra_visible_dirs=(str(home / "codex"),),
+            extra_visible_dirs=(str(codex_home),),
         )
         cleanup.callback(_cleanup_windows_profile, Path(artifact))
 
@@ -646,7 +730,7 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
         try:
             first = await asyncio.wait_for(process.stdout.readline(), 20)
             if not first:
-                raise RuntimeError((await process.stderr.read()).decode())
+                raise RuntimeError((await process.stderr.read()).decode("utf-8", errors="replace"))
             descriptor = scratch / native_scope.DESCRIPTOR_NAME
             for _ in range(500):
                 try:
@@ -658,14 +742,44 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                 await asyncio.sleep(0.02)
             else:
                 raise AssertionError("descriptor not ready")
-            if mode not in {"identity", "outage"}:
+            attached_scopes = {}
+            if mode == "mcp":
+                attached, _ = await native_session.finalize(
+                    SimpleNamespace(_scratch_dir=scratch, pid=process.pid),
+                    [
+                        {
+                            "name": case["server"],
+                            "command": sys.executable,
+                            "args": ["-m", "kiro_crew.mcp_gateway.stub", *case["args"]],
+                            "env": [{"name": k, "value": v} for k, v in case["env"].items()],
+                        }
+                        for case in cases
+                    ],
+                    agent_name="synthetic-agent",
+                    work_dir=str(workspace),
+                    session_key=session,
+                    token=token,
+                )
+                for entry in attached:
+                    argv = entry["args"]
+                    case = next(case for case in cases if case["server"] == entry["name"])
+                    case["args"] = argv[argv.index("kiro_crew.mcp_gateway.stub") + 1 :]
+                    case["env"].update({item["name"]: item["value"] for item in entry["env"]})
+                    attached_scopes[entry["name"]] = {
+                        item["name"]: item["value"] for item in entry["env"]
+                    }[native_scope.SCOPE_ENV]
+            if mode not in {"identity", "outage", "mcp"}:
                 await send_claim(str(socket), process.pid, session, stub_session_token=token)
             for case in cases:
                 payload = case.pop("payload")
-                scope = native_scope.issue(
-                    payload,
-                    "0" * 64 if mode == "foreign_scope" else info["instance"],
-                    now=0 if mode == "expired" else None,
+                scope = (
+                    attached_scopes[case["server"]]
+                    if mode == "mcp"
+                    else native_scope.issue(
+                        payload,
+                        "0" * 64 if mode == "foreign_scope" else info["instance"],
+                        now=0 if mode == "expired" else None,
+                    )
                 )
                 if mode == "tamper":
                     invalid = json.loads(scope)
@@ -715,7 +829,7 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     'env_key = "NATIVE_TEST_API_KEY"',
                     f'base_url = "http://127.0.0.1:{model_port}/v1"',
                 ]
-                for case in cases:
+                for case in ([] if adapter else cases):
                     name = case["server"].replace("-", "_")
                     lines.extend(
                         [
@@ -731,14 +845,20 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     lines.extend(
                         key + " = " + json.dumps(value) for key, value in case["env"].items()
                     )
-                (home / "codex/config.toml").write_text("\n".join(lines) + "\n")
+                (codex_home / "config.toml").write_text("\n".join(lines) + "\n")
                 environment = {
                     "NATIVE_TEST_CODEX": str(codex),
                     "NATIVE_TEST_API_KEY": "synthetic-model-key",
                     "CODEX_SQLITE_HOME": str(scratch),
+                    "TEMP": str(scratch),
+                    "TMP": str(scratch),
                 }
+                if adapter:
+                    environment.update(
+                        {"NATIVE_TEST_ADAPTER": str(adapter), "NATIVE_TEST_NODE": str(node)}
+                    )
             program = (
-                CODEX_PROGRAM
+                (ACP_PROGRAM if adapter else CODEX_PROGRAM)
                 if codex
                 else (
                     FOREIGN_PROGRAM
@@ -800,7 +920,7 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
             report = {
                 "rc": process.returncode,
                 "stdout": stdout.decode(),
-                "stderr": stderr.decode(),
+                "stderr": stderr.decode("utf-8", errors="replace"),
                 "authenticated_api_calls": calls,
                 "model_calls": model_calls,
                 "resolutions": resolutions,
@@ -819,7 +939,15 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     "access": "data-read-write-sync",
                     "winerror": 5,
                 }
-            if codex:
+            if adapter:
+                actual = json.loads(json.loads(stdout)["stdout"])
+                assert actual["acp_session_verified"] and actual["key_denied"], actual
+                namespaces = {namespace or "" for name, namespace in model_calls[0]["tools"]}
+                for server in specs:
+                    assert any(
+                        server.replace("-", "_") in namespace for namespace in namespaces
+                    ), server
+            elif codex:
                 child = json.loads(stdout)
                 actual = json.loads(child["stdout"])
                 events = [
@@ -838,7 +966,7 @@ async def exercise(root, sandbox_runner, codex=None, mode="mcp", report_path=Non
                     item["thread_id"] for item in events if item.get("type") == "thread.started"
                 )
                 assert list(
-                    (home / "codex" / "sessions").rglob("*" + thread_id + "*.jsonl")
+                    (codex_home / "sessions").rglob("*" + thread_id + "*.jsonl")
                 ), "Codex rollout did not persist in its isolated profile"
             if mode == "mcp":
                 assert {"/api/skills/-/discover", "/api/crons/tools"}.issubset(
@@ -863,6 +991,8 @@ if __name__ == "__main__":
         "--runner", required=True, type=lambda value: Path(value).resolve(strict=True)
     )
     parser.add_argument("--codex", type=lambda value: Path(value).resolve(strict=True))
+    parser.add_argument("--adapter", type=lambda value: Path(value).resolve(strict=True))
+    parser.add_argument("--node", type=lambda value: Path(value).resolve(strict=True))
     parser.add_argument(
         "--mode",
         choices=(
@@ -883,5 +1013,17 @@ if __name__ == "__main__":
         parser.error("Real Windows MXC is required")
     if args.codex and args.mode != "mcp":
         parser.error("Codex is used for the positive MCP test only")
+    if bool(args.adapter) != bool(args.node) or (args.adapter and not args.codex):
+        parser.error("ACP verification requires --adapter, --node and --codex together")
     with tempfile.TemporaryDirectory(prefix="crew-native-real-mcp-") as temp:
-        asyncio.run(exercise(Path(temp), args.runner, args.codex, args.mode, args.report))
+        asyncio.run(
+            exercise(
+                Path(temp),
+                args.runner,
+                args.codex,
+                args.mode,
+                args.report,
+                adapter=args.adapter,
+                node=args.node,
+            )
+        )

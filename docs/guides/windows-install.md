@@ -1005,6 +1005,14 @@ helper without the process-descriptor protocol cannot serve this MCP channel.
 Close Crew fully before running the private-profile setup command above. The
 profile requires its own sign-in; existing desktop chats are not deleted.
 
+Validate the real ACP path with `scripts/check_windows_native_mcp.py --runner
+<helper.exe> --codex <codex.exe> --adapter <codex-acp/dist/index.js> --node
+<node.exe>`. It uses synthetic credentials, an isolated Codex profile and loopback
+fixtures, checks all four managed server catalogs, then calls `skill_search` and
+`cron_list` through ACP approval. Native session creation and resume wait up to
+15 seconds for server startup. A successful bare broker probe alone does not
+establish that a live Codex session has the tools.
+
 In **Settings → MCP**, routing and backend sharing are separate choices. The
 effective routed set includes `stub_overrides` and local configuration layers;
 an empty authored `stub_servers` list does not mean routing is disabled.
@@ -1039,7 +1047,8 @@ $env:KIROCREW_TEST_CODEX_EXE = 'C:\path\to\codex.exe'
 python -m pytest -n 2 test/test_windows_native_mcp_integration.py
 ```
 
-They exercise real MXC, gatewayd, core/cron, and the supplied Codex executable.
+They exercise real MXC, gatewayd, Core, Cron, Work and Dashboard tool lists,
+including the native final-session routing, and the supplied Codex executable.
 The Codex leg uses a local synthetic Responses provider with custom-model
 fallback metadata; no account or real model provider is contacted. It checks
 completed `skill_search`/`cron_list` calls, signed session headers, key denial,
