@@ -59,6 +59,14 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
 
+def _stat_or_none(path: Path) -> "os.stat_result | None":
+    """``path``'s stat, or ``None`` when it cannot be taken (the carry is then skipped)."""
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
 class SessionMetadataProjection:
     """Locked metadata mutation and permanent session deletion operations."""
 
@@ -437,7 +445,9 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
+        before = _stat_or_none(path)
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+        old_head = lines[0] if lines else ""
         healing_corrupt_line = False
         if lines:
             try:
@@ -499,6 +509,10 @@ class SessionMetadataProjection:
                 pass
             raise
         _history_facade()._restore_mtime(path, previous_mtime)
+        if before is not None:
+            self._log._read_projection.carry_index_over_head_rewrite(
+                key, before, old_head, lines[0]
+            )
         self._log._invalidate_cache(key)
         return True
 
@@ -521,9 +535,11 @@ class SessionMetadataProjection:
             if not path.exists():
                 return
             previous_mtime = _history_facade()._safe_mtime(path)
+            before = _stat_or_none(path)
             lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
             if not lines:
                 return
+            old_head = lines[0]
             try:
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
@@ -545,8 +561,12 @@ class SessionMetadataProjection:
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
             lines[0] = json.dumps(metadata) + "\n"
-            atomic_write(path, "".join(lines), fsync=False)
+            atomic_write(path, "".join(lines), fsync=False, newline="")
             _history_facade()._restore_mtime(path, previous_mtime)
+            if before is not None:
+                self._log._read_projection.carry_index_over_head_rewrite(
+                    key, before, old_head, lines[0]
+                )
             # Invalidate before releasing the lock so no preserved-mtime fill
             # can publish the pre-clear metadata under the current generation.
             self._log._invalidate_cache(key)

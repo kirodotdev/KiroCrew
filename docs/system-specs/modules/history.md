@@ -123,6 +123,10 @@ use:
   new read family gets an owner of its own; a name both projections need goes
   to `history_projection_contract.py`. `test/test_history_projection_facade.py`
   pins the owners, the exception's module, the logger and the patch reach.
+  `history_page_index.py` is such an owner, outside the facade: it keeps the
+  bounded-page index base on disk and carries it across first-line rewrites
+  (see "Bounded transcript pages"), and the reads owner imports it inside the
+  functions that use it, so the facade serves none of its names.
 - `history_rewrite.py` owns locked compaction rewrites and size-based rotation.
 - `history_consolidation.py` defines `HistoryConsolidator` (construction,
   `reconfigure`, retry accounting, off-loop counting and every scheduling entry
@@ -211,11 +215,26 @@ that scan (`_page_index_base`: device, inode, the record boundary it stopped at,
 a blake2b digest of the 4 KiB before the boundary, the row count and the
 checkpoints) across invalidation, because `ConversationLog.append` invalidates on
 every write and the file only grows by appends. The scan resumes only when the
-open handle it is about to read has the same device and inode, is longer than the
-boundary, and has the same digest before the boundary; it then scans only the
-appended rows. Compaction, rotation and metadata updates replace the file through
-`atomic_write` (a new inode), so they always rebuild from byte zero, and a final
-row without a line terminator is never used as a boundary. The premise is that
+open handle it is about to read has the same device and inode, is at least as long
+as the boundary (equal means nothing was appended, and nothing is scanned), and has
+the same digest before the boundary; it then scans only the appended rows. A final
+row without a line terminator is never used as a boundary.
+
+The base also survives a restart and a first-line rewrite
+(`kiro_crew.history_page_index`). For a transcript of 256 KiB or more it is
+persisted to `<transcripts>/.page-index/<file>.json` after a build, and again after
+each further 256 KiB; a read with no usable in-memory base loads it, checks its
+shape, and applies the same handle re-check, so a stale or damaged sidecar costs one
+rebuild and never a wrong page. `delete_session` removes it. The metadata-line
+writers (`update_metadata`, `clear_closed`, `mark_consolidated`,
+`advance_consolidation_sub_offset`) replace the file through `atomic_write` (a new
+inode) and then move the base onto the new file, shifting every offset by the first
+line's change in length, only when that is proven: both first lines end in a
+newline, the bytes after them are the same length in both files (which rules out a
+text read's newline translation), the base names the old file with every offset past
+its first line, and the 4 KiB before the moved boundary in the new file hash to the
+saved digest. Compaction, rotation and body rewrites change rows, so they rebuild
+from byte zero. The premise is that
 product writes are `O_APPEND` appends or atomic replaces; an in-place edit that
 keeps the inode and the 4 KiB before the old end and also lengthens the file would
 not be noticed. A key with
@@ -232,8 +251,10 @@ members yields a row is served from the key's own file); there is no second
 lineage model, and a chain whose membership changes during a page read is treated
 as a revision change.
 
-The index stores counts and offsets only, never message content, and never crosses
-a process boundary or trusts agent-writable derived state. In-memory validity
+The index stores counts and offsets only, never message content. The persisted base
+is trusted no further than the in-memory one: it sits beside the transcript with the
+same permissions, every row a page returns is decoded from the transcript itself,
+and a writer able to forge it can rewrite the transcript directly. In-memory validity
 requires the full file stamp (`mtime_ns`, `ctime_ns`, size, inode, device) and the process-wide
 history invalidation generation. An unpinned page read whose revision changes
 mid-read is retried once; a read pinned to an `expected_revision` is not, since

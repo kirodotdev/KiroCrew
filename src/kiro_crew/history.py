@@ -811,6 +811,7 @@ class ConversationLog:
     def delete_session(self, key: str, *, skip_pinned: Literal[True]) -> bool | None: ...
 
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool | None:
+        transcript = self._path(key)
         with self.delete_in_flight_window(key):
             if skip_pinned:
                 deleted = self._metadata_projection.delete_session(key, skip_pinned=True)
@@ -822,6 +823,8 @@ class ConversationLog:
             from kiro_crew._durable_vouch import forget_durable_vouch
 
             forget_durable_vouch(key)
+            # And its persisted page index, so the sidecars track live transcripts.
+            self._read_projection.forget_page_index(transcript)
         return deleted
 
     def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
