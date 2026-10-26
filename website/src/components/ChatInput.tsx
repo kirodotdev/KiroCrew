@@ -57,6 +57,8 @@ import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
 import { useTextareaListContinuation } from './chat-input/listContinuation'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { KasChatQuestionCard } from '../apps/workflows/kas/KasChatQuestionCard'
+import { KasComposerApprovals } from './chat-input/KasComposerApprovals'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -383,7 +385,7 @@ function ChatInput({
           : terminalRefusal === 'pending' ? i18nT('components.chatInput.terminal_pending')
             : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
   const {
-    pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
+    pendingApproval, hasApproval, approvalId, kasQuestion, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
@@ -1054,6 +1056,11 @@ function ChatInput({
             transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
           >
           <div className={`bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] ${showGhost ? 'rounded-2xl' : 'rounded-t-2xl border-b border-[color:var(--glass-edge)]'} transition-[border-radius,border-color,border-width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]`}>
+              {kasQuestion && activeSlot ? (
+                <div className="px-3 py-2.5" data-testid="kas-chat-question">
+                  <KasChatQuestionCard slot={activeSlot} requestId={approvalId} question={kasQuestion} />
+                </div>
+              ) : (<>
               <AnimatePresence initial={false}>
                   {showGhost && (
                       <motion.div
@@ -1166,6 +1173,7 @@ function ChatInput({
                   </button>
                 </div>
               )}
+              </>)}
             </div>
           </motion.div>
         )}
@@ -1233,6 +1241,7 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
+      {!terminal.active && <KasComposerApprovals slotId={slotApprovalChrome ? slotId : null} />}
       {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}

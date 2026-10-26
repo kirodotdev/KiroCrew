@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         command_invokes_git,
         dashboard_slot_key,
         is_read_only_bash,
+        kas_needs_a_person,
         logger,
         name_grant,
         redact,
@@ -140,6 +141,12 @@ def _interactive_approval(
         _child_grant_eligible = (not _child_lf) or (
             getattr(event, "child_unconditional_grant_eligible", False) is True
         )
+        # A KAS workflow plan handoff or KAS ``user_input`` question (each
+        # answer an ``allow_once``, so any approval picks the first) is the
+        # person's call in every mode: none of the shortcuts below
+        # (per-source auto-approve, --approval yolo/reads, YOLO, slot
+        # trust) answers it, and it goes straight to the human prompt.
+        _kas_person_only = kas_needs_a_person(event)
         # Background callers pass the authoritative parent session key. Prefer it
         # over a request-ID resolver because tool permission IDs are opaque UUIDs,
         # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
@@ -176,7 +183,7 @@ def _interactive_approval(
             approval_slot = ""
 
         # Per-source auto-approve (e.g. cron, taskrunner, subagent)
-        if source in self._cfg.hooks.get("auto_approve_sources", []):
+        if source in self._cfg.hooks.get("auto_approve_sources", []) and not _kas_person_only:
             if not _child_grant_eligible:
                 # The operator explicitly configured this source to run
                 # UNATTENDED — nobody is watching the interactive window,
@@ -200,7 +207,11 @@ def _interactive_approval(
         # 'yolo' is an UNCONDITIONAL grant (consumes no event data) so a
         # verified-identity child qualifies; 'reads' classifies the
         # agent-authored TITLE, so it requires the composite fidelity.
-        if self._approval_mode in ("yolo", "reads") and _child_grant_eligible:
+        if (
+            self._approval_mode in ("yolo", "reads")
+            and _child_grant_eligible
+            and not _kas_person_only
+        ):
             # A shell command is a 'reads' grant only when the read-only
             # classifier accepts its own text and it runs no git, whatever its
             # title says: the title is agent-authored, and git reads
@@ -263,10 +274,10 @@ def _interactive_approval(
                 return True
 
         # Check both YOLO sources: Slack handler (!yolo on) and dashboard UI
-        if safety_override().is_active() and _child_grant_eligible:
+        if safety_override().is_active() and _child_grant_eligible and not _kas_person_only:
             return True
 
-        if self.dashboard_state:
+        if self.dashboard_state and not _kas_person_only:
             # Check if the parent slot is trusted (not all slots).
             # The parent comes from the authoritative parent session key or
             # an explicit slot_resolver -- never from a guess. When a
@@ -517,9 +528,10 @@ def _interactive_approval(
                 slot=approval_slot,
                 is_background=is_background,
             )
-        if _child_lf:
+        if _child_lf or _kas_person_only:
             # No human surface answered and none of the (skipped)
-            # shortcuts may speak for an agent-authored request:
+            # shortcuts may speak for an agent-authored request, nor for
+            # a KAS plan or question, which only a person answers:
             # fail closed.
             return False
         return True  # no UI → auto-approve
@@ -592,7 +604,9 @@ async def _heartbeat_approval(
             critical=critical,
         )
 
-    if _is_heartbeat_safe_tool(event):
+    if not kas_needs_a_person(event) and _is_heartbeat_safe_tool(event):
+        # A KAS plan handoff or question never rides the allowlist: its
+        # title is model-authored text, and nobody is here to answer it.
         # A shell command passed on its text; the program names in it still
         # resolve through a PATH that can lead with agent-writable directories,
         # so run the name-grant check every other unattended auto-approve path

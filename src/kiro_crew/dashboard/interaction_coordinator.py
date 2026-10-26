@@ -41,6 +41,13 @@ def _bounded_purpose(text: str) -> str:
     return _redact_tool_field(text, limit=_MAX_TOOL_PURPOSE)
 
 
+def _is_kas_question(future: Any) -> bool:
+    """Whether *future* is the open card of a chat's own KAS question."""
+    from kiro_crew.kas_workflows.chat import held_question
+
+    return held_question(future) is not None
+
+
 def _slot_decision(approved: bool, rejected_once: bool) -> str:
     """The decision string a slot's approval future carries."""
     if approved:
@@ -251,6 +258,11 @@ class ApprovalCoordinator:
         if not future or future.done():
             return False
         if expected_future is not None and future is not expected_future:
+            return False
+        if approved and _is_kas_question(future):
+            # The chat's own KAS question offers answers, not an allow: an
+            # approval here would pick the first answer for the person. Only
+            # the chat card's ``answer`` action (or a dismiss) settles it.
             return False
         decision = _slot_decision(approved, rejected_once)
         future.set_result(decision)

@@ -235,7 +235,12 @@ async def _resolve_permission(
     decides it is whether the rule survives without its pin.
     """
     from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+    from kiro_crew.kas_workflows.chat import needs_a_person
     from kiro_crew.sel import sel
+
+    # A KAS workflow plan handoff or KAS ``user_input`` question: no hook
+    # auto-approve and no caller-less default answers it (see below).
+    _kas_person_only = needs_a_person(event)
 
     def _log(outcome: str, **extra):
         # Single funnel for every decision path, so the sink cannot miss one.
@@ -672,7 +677,7 @@ async def _resolve_permission(
             await _steer_host_deny(provider, event, tool_result.reason, cause=DENY_CAUSE_POLICY)
             await provider.reject_tool(event.request_id)
             return False
-        if tool_result.action == TOOL_AUTO_APPROVE:
+        if tool_result.action == TOOL_AUTO_APPROVE and not _kas_person_only:
             if policy == ToolApprovalPolicy.READ_ONLY and not tool_result.read_only:
                 # READ_ONLY honours the classifier's verdict alone, and the
                 # result says which route produced it: ``read_only`` is set only
@@ -781,6 +786,21 @@ async def _resolve_permission(
             )
             await provider.reject_tool(event.request_id)
             return False
+
+    # A KAS plan handoff or question is answered by a person or not at all: with
+    # no approver on this surface (cron, autonudge, heartbeat, Meetings, an
+    # AUTO_APPROVE caller) it is refused rather than auto-approved below.
+    if _kas_person_only and on_tool_approval is None:
+        _log("rejected", metadata={"reason": "kas_person_only_headless_reject"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "a Kiro Agent workflow plan or question needs a person and this surface "
+            "has no approver",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
+        await provider.reject_tool(event.request_id)
+        return False
 
     # Interactive approval if callback provided
     if on_tool_approval:

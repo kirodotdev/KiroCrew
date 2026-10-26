@@ -168,9 +168,17 @@ interface UserMessageProps {
   steerActionRefusal?: SteerRetractRefusalNotice
   /** The take-back request failed before its outcome was known. */
   steerActionRequestFailed?: boolean
+  /** Why Edit & resend is refused for THIS message right now (a Kiro Workflows
+   *  run started from it or after it is still live). Set, the edit control
+   *  stays visible but disabled, with this as its tooltip / menu hint, and no
+   *  gesture opens the editor. */
+  editBlockedReason?: string
+  /** One line shown in the editor beside Send, for what the edit will NOT do
+   *  (a workflow run from this message on has ended: editing does not undo it). */
+  editNote?: string
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, activeReactions, onToggleReaction, reactionError, onClearReactionError, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, activeReactions, onToggleReaction, reactionError, onClearReactionError, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed, editBlockedReason, editNote }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -322,6 +330,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // same text is not shown twice. See `messageQuote.ts`.
   const carriedQuote = readMessageQuote(meta)
   const startEdit = useCallback(() => {
+    // Refused for this message (editBlockedReason): no gesture opens the editor.
+    if (editBlockedReason) return
     // Expand any collapsed paste tokens into their original content so the
     // user can actually edit the pasted text. Once edited, the message is
     // resent as plain expanded text — no chip reconstruction. The carried
@@ -332,7 +342,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     const initial = pastes.length ? expandPasteTokens(body, pastes) : body
     setDraft(initial)
     setEditing(true)
-  }, [content, meta, carriedQuote])
+  }, [content, meta, carriedQuote, editBlockedReason])
 
   // ⌘↑ / Ctrl+Up edit request: fire on the rising edge only, so a
   // re-render that re-delivers the same seq (or a memo-compare miss elsewhere)
@@ -347,6 +357,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       taRef.current?.focus()
       onEditConsumed?.()
     } else if (canEdit && onEditResend) {
+      // A refused edit (editBlockedReason) opens nothing but still consumes the request.
       startEdit()
       onEditConsumed?.()
     }
@@ -424,7 +435,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   // The gesture is attached only when the user opted in: it takes the
   // double-click that would otherwise select a word in the bubble.
-  const dblClickEdits = !!(canEdit && onEditResend && doubleClickToEdit)
+  const dblClickEdits = !!(canEdit && onEditResend && doubleClickToEdit && !editBlockedReason)
 
   // Declared before the editing early-return so hook order stays stable across
   // the read-only and editing renders.
@@ -547,6 +558,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             never impose a min-width floor on the auto-sized bubble. */}
         <div className="flex justify-end items-center gap-2 mt-1">
           {/* Send rewinds: say what it costs, beside the button that does it. */}
+          {editNote ? <span className="text-[12px] leading-4 text-muted" data-testid="edit-note">{editNote}</span> : null}
           <span className="text-[12px] leading-4 text-muted">{i18nT('pages.chat.userMessage.edit_replaces_below')}</span>
           <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
             {i18nT('pages.chat.userMessage.cancel')}
@@ -616,7 +628,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     { id: 'copy', label: i18nT('pages.chat.assistantMessage.copy_text'), icon: <Copy size={14} />, onSelect: copyMessage, separatorBefore: quoteOffered },
     ...(canCopyLink ? [{ id: 'copy-link', label: i18nT('pages.chat.userMessage.copy_link_to_message'), icon: <Link2 size={14} />, onSelect: copyLink }] : []),
     ...(canPin ? [{ id: 'pin', label: pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message'), icon: pinned ? <PinOff size={14} /> : <Pin size={14} />, onSelect: () => onTogglePin?.() }] : []),
-    ...(canEditResend && !standIn ? [{ id: 'edit', label: i18nT('pages.chat.userMessage.edit_resend'), icon: <Pencil size={14} />, onSelect: startEdit }] : []),
+    ...(canEditResend && !standIn ? [{ id: 'edit', label: i18nT('pages.chat.userMessage.edit_resend'), icon: <Pencil size={14} />, onSelect: startEdit, ...(editBlockedReason ? { hint: editBlockedReason } : {}) }] : []),
   ] : []
 
   const bubble = (
@@ -918,11 +930,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 </DropdownMenuItem>
               )}
               {canEditResend && !standIn && (
-                <DropdownMenuItem data-testid="edit-menu-item" onSelect={startEdit}>
+                <DropdownMenuItem data-testid="edit-menu-item" disabled={!!editBlockedReason} title={editBlockedReason} onSelect={startEdit}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
                   <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
                     <Pencil className="lucide-inline shrink-0" /><span>{i18nT('pages.chat.userMessage.edit_resend')}</span>
                   </span>
+                  {editBlockedReason ? <span className="block text-[11.5px] text-muted whitespace-normal" data-testid="edit-blocked-reason">{editBlockedReason}</span> : null}
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>
@@ -959,8 +972,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             // no one can see, focus or leave. Edit is offered again once the row
             // scrolls back below the fold.
             data-message-edit=""
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title={i18nT('pages.chat.userMessage.edit_resend')}
+            className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={!!editBlockedReason}
+            title={editBlockedReason || i18nT('pages.chat.userMessage.edit_resend')}
             aria-label={i18nT('pages.chat.userMessage.edit_resend')}
           >
             <Pencil size={14} />

@@ -28,6 +28,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.kas_workflows import chat as kas_chat
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -574,6 +575,14 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "index or ts required", "code": "index_or_ts_required"}, status=400
             )
+
+        # The rewind route's Kiro Workflows guard, on this sibling door: this
+        # edit discards the same native conversation (``discard_conversation``
+        # below), so a live run launched from this message on is refused here
+        # too, before any mutation.
+        kas_refusal = kas_chat.rewind_refusal(slot.key, msgs[index].get("ts"))
+        if kas_refusal is not None:
+            return web.json_response(kas_refusal, status=409)
 
         # Capture routing state BEFORE any live mutation, exactly like rewind:
         # the truncation is a real conversation boundary, so the native ACP

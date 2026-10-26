@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Literal
+import time
+from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
 from kiro_crew.dashboard.state import (
@@ -20,8 +21,11 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_expired_note,
     format_approval_no_budget_card,
     format_approval_timeout_card,
+    person_wait_window_secs,
 )
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.kas_workflows import chat as kas_chat
+from kiro_crew.kas_workflows.asks import chat_question as kas_chat_question
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
@@ -54,6 +58,7 @@ if TYPE_CHECKING:
         _reject_hook_blocked,
         _reject_hook_error,
         _reject_invalid_tool,
+        _settle_kas_question,
         _steer_policy_notice,
     )
     from kiro_crew.dashboard.chat_turn.tool_approval import _pre_tool_hooks_should_block
@@ -74,6 +79,7 @@ async def _on_permission_prompt(
     _declined_grant_notices = turn._declined_grant_notices
     _refusal_notices = turn._refusal_notices
     _refusal_reasons = turn._refusal_reasons
+    _kas_person_only = turn._kas_person_only
     client = turn.client
     session_key = turn.session_key
     slot = turn.slot
@@ -145,7 +151,7 @@ async def _on_permission_prompt(
         )
         slot.append("tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event))
         # Mark the permission as resolved so UI shows rejection
-        perm_meta: dict[str, str] = {
+        perm_meta: dict[str, Any] = {
             "request_id": str(event.request_id),
             "tool_call_id": event.tool_call_id or "",
             "resolved": "rejected",
@@ -177,6 +183,31 @@ async def _on_permission_prompt(
         "request_id": str(event.request_id),
         "tool_call_id": event.tool_call_id or "",
     }
+    if _kas_person_only:
+        # Read by the Trust/YOLO mode-switch sweep
+        # (chat_handlers.api_chat_mode), which approves every other
+        # pending card and must leave this one for the person.
+        perm_meta["person_only"] = "1"
+    # The chat's own KAS question: the card lists its answers in the
+    # workflow-step question card's shape, and only a picked answer
+    # (the approve route's ``answer`` action) or a dismiss settles it.
+    _kas_question = (
+        kas_chat_question(
+            request_id=event.request_id,
+            tool_call_id=event.tool_call_id or "",
+            title=event.title or "",
+            options=event.options,
+            slot=slot.key,
+            created_at=time.time(),
+            # A ``_kiro/userInput`` question carries the whole
+            # question (descriptions, recommended, sub-options).
+            user_input=getattr(event, "user_input", None),
+        )
+        if kas_chat.is_question(event)
+        else None
+    )
+    if _kas_question is not None:
+        perm_meta["kas_question"] = _kas_question.to_payload()
     if event.tool_purpose:
         perm_meta["tool_purpose"] = _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE)
     if event.tool_input:
@@ -279,6 +310,8 @@ async def _on_permission_prompt(
     )
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
+    if _kas_question is not None:
+        kas_chat.hold_question(fut, _kas_question)
     slot.register_approval(str(event.request_id), fut, permission_row)
     # Push via global SSE AFTER registering the future, so the
     # slot dict reflects pending_approval=true and Board cards
@@ -447,7 +480,15 @@ async def _on_permission_prompt(
         tool=event.tool_name or "",
         reason=event.title or "",
     )
-    _approval_window = min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
+    _approval_window = (
+        # A KAS plan handoff or question waits for the person, not
+        # for the approval window (gap 4): bounded only by what is
+        # left of this turn's own ceiling. An unattended slot keeps
+        # its deny-fast window: no person is there to wait for.
+        person_wait_window_secs()
+        if _kas_person_only and not slot.unattended
+        else min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
+    )
     _unattended_wait = slot.unattended
     _approval_card: str | None = None
     try:
@@ -545,6 +586,18 @@ async def _on_permission_prompt(
         _host_cancelled = True
         raise
     finally:
+        # The chat's own KAS question settles only on a picked answer:
+        # an approval that arrived with none (no surface may answer it
+        # for the person, so none should) is a dismissal, never the
+        # first answer. Read before the ledger and the card mark below.
+        _kas_answer = kas_chat.take_answer(fut) if _kas_question is not None else None
+        if _kas_question is not None and _kas_answer is None:
+            if outcome in ("approved", "approved_trust_reads"):
+                logger.warning(
+                    "KAS question req=%s approved with no answer; dismissing it",
+                    event.request_id,
+                )
+                outcome = "rejected"
         if _approval_card is not None:
             try:
                 slot.append("error", _approval_card, "msg msg-err")
@@ -664,6 +717,19 @@ async def _on_permission_prompt(
                     "Failed to clean up linked Slack approval message",
                     exc_info=True,
                 )
+    if _kas_question is not None:
+        # Answer or dismiss; either way nothing else in the turn is
+        # refused for it (a question is not a refused tool, so no
+        # batch cascade), and no tool hook runs: no tool runs.
+        await _settle_kas_question(
+            client,
+            slot,
+            event,
+            _kas_question,
+            _kas_answer,
+            session_key=session_key,
+        )
+        return _Flow.CONTINUE
     if outcome == "approved_trust_reads":
         slot._trust_reads = True
         outcome = "approved"

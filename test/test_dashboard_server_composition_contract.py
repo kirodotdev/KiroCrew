@@ -414,13 +414,22 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.change_cards": "change_card_middleware",
     "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
+    "kiro_crew.dashboard.handlers.kas_workflows": (
+        "api_kas_approval_answer api_kas_question_answer api_kas_recipe_create "
+        "api_kas_recipe_delete api_kas_recipe_detail api_kas_recipes api_kas_run_control "
+        "api_kas_run_get api_kas_run_restart api_kas_run_retry api_kas_run_start api_kas_runs "
+        "api_kas_slot_reconnect api_kas_slot_runs api_kas_state api_kas_step_cancel "
+        "api_kas_step_complete api_kas_step_grant api_kas_step_reply api_kas_step_transcript "
+        "cancel_kas_boot_recovery observe_turn_starter start_kas_boot_recovery"
+    ),
     "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
         "api_workflow_author api_workflow_definition_get api_workflow_definition_run "
         "api_workflow_definition_update api_workflow_definitions "
-        "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
+        "api_workflow_definitions_create api_workflow_engine api_workflow_run "
+        "api_workflow_run_cancel "
         "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
         "api_workflow_run_rerun api_workflow_runs"
     ),
@@ -431,6 +440,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
     "kiro_crew.kiro_prerequisite": "KiroPrerequisiteService register_turn_auth_service",
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
+    "kiro_crew.kas_workflows.router": "close_router dashboard_hooks install_dashboard_hooks install_turn_starter",
     "kiro_crew.memory": "MemoryStore",
     "kiro_crew.messaging.session_trust": "clear_trusted_sessions",
     "kiro_crew.metrics": "_gauges",
@@ -462,7 +472,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 98
+    assert len(expected) == 126
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

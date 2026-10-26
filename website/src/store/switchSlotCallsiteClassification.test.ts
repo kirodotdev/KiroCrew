@@ -43,6 +43,7 @@ const PINNED: Record<string, Counts> = {
   'src/apps/issue-radar/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/issue-radar/views/CrewPageView.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'awaited unwrap() with page-level error handling' },
   'src/apps/papyrus/CoAuthorPanel.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },
+  'src/apps/workflows/kas/KasRunView.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: "a KAS run card's Open chat goes to the run's chat, which may since have been deleted" },
   'src/components/ArtifactChatPanel.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },
   'src/components/ChatInput.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'mic-owner status-row click announces' },
   'src/components/ImportSessionItem.tsx': { gesture: 1, announced: 1, keepTarget: 1, plain: 0, reason: 'on upload the just-imported slot is new, so a 404 is a create/fetch race (#6309); the shell notice\'s later Open is a click, so it announces and is a gesture' },

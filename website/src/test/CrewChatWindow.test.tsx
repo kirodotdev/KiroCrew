@@ -879,10 +879,17 @@ describe('CrewChatWindow', () => {
     // A guide offer row reads the local guide store, which a peer's window has none of.
     // An elicitation card answers through THIS hub's slot route; the peer's ask lives
     // on the peer, so the window leaves it to the SDK default, which draws it read-only.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation'])
+    // A KAS run card reads THIS gateway's run state and answers its approvals,
+    // which a peer's window must not do on that peer's behalf. The KAS workflow
+    // tool line opens THIS gateway's run (store + selection), and the KAS event
+    // marker is decided not peer-safe too: a peer's window draws both through
+    // the store-free default rather than claim a run it does not hold.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'kas_run_workflow_tool', 'kas_turn_marker', 'kas_event_marker', 'kas_workflow_tool_line', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
+    expect(crew).not.toContain('kas_run_workflow_tool')
+    expect(crew).not.toContain('kas_workflow_tool_line')
     expect(crew).not.toContain('subagent_run_tool')
     expect(crew).not.toContain('conversation_card')
     expect(crew).not.toContain('elicitation')

@@ -16,6 +16,7 @@ from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, parse_session_key
 from kiro_crew.messaging.renderer import split_options_trailer
+from kiro_crew.messaging.workflow_markers import mirror_text
 from kiro_crew.mirror_admission import admission_required, verify_mirror_admission
 from kiro_crew.platform import redact_via_context
 
@@ -777,7 +778,11 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     chokepoint: this echo goes to a channel without passing a renderer, and a
     credential the user typed with markdown between its halves is whole once the
     client renders the markup away.
+
+    A workflow marker row (launch / reconnect / observe, each carrying a turn
+    token) is echoed as its one short human line instead, never with the token.
     """
+    raw_user_message = mirror_text(raw_user_message or "")
     safe, _ = redact_for_display(raw_user_message or "", redact_via_context)
     if len(safe) <= _MIRROR_ECHO_LIMIT:
         return safe

@@ -421,7 +421,16 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
         return await _refuse(ask, policy, verdict)
     low = _low_fidelity(ask, policy)
     held: Hit | None = None
-    for grant in policy.child.grants if low else policy.grants:
+    # A KAS workflow plan handoff or KAS ``user_input`` question is the person's
+    # call: no grant (the gate's own auto-approve included) answers it, so it
+    # reaches an attended responder or the unattended refusal. A gate deny above
+    # still wins.
+    from kiro_crew.kas_workflows.chat import needs_a_person
+
+    grants: tuple[Grant, ...] = (
+        () if needs_a_person(ask.event) else (policy.child.grants if low else policy.grants)
+    )
+    for grant in grants:
         hit = verdict if grant is GATE_GRANT else await grant.offer(ask)
         if hit is not None and await _admitted(ask, policy, hit, low):
             held = hit

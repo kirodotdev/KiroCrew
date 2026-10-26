@@ -135,6 +135,8 @@ class _ChatTurn:
     _is_refusal_retry_turn: "bool"
     _is_synthetic: "bool"
     _jev_route_text: "str"
+    _kas_observe: "bool"
+    _kas_person_only: "bool"
     _l1_escalated: "bool"
     _l1_interrupted: "bool"
     _leak_card_posted: "bool"

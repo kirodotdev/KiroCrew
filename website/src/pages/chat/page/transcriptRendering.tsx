@@ -39,6 +39,8 @@ import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
+import { kasRewindGuard, type KasRewindRun } from '../../../apps/workflows/kas/kasRewindGuard'
+import { mergeRuns, useKasChatRuns, useKasState, useKasWorkflowsEnabled } from '../../../apps/workflows/kas/useKasWorkflows'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
@@ -219,6 +221,22 @@ export function useTranscriptRendering({
     return null
   }, [messages])
   const slotStateRef2 = useRef(slotState); slotStateRef2.current = slotState
+  // Kiro Workflows runs this chat started, for the Edit & resend guard (gap 3):
+  // an edit is refused while a run started from that message or after it is
+  // live, and carries a note once they have all ended. Narrowed to a string key
+  // of (start, ended) pairs so a 2s state poll that changes nothing else does
+  // not re-render every message row.
+  const { enabled: kasWorkflowsOn } = useKasWorkflowsEnabled()
+  const kasState = useKasState(kasWorkflowsOn)
+  const kasLedger = useKasChatRuns(activeSlot, kasWorkflowsOn)
+  const kasRewindKey = useMemo(() => {
+    if (!kasWorkflowsOn || !activeSlot) return '[]'
+    const rows = mergeRuns(kasState.data?.runs ?? [], kasLedger.data?.runs)
+      .filter(r => r.slotKey === activeSlot)
+      .map(r => ({ slotKey: r.slotKey, createdAt: r.createdAt, status: r.status }))
+    return JSON.stringify(rows)
+  }, [kasWorkflowsOn, activeSlot, kasState.data, kasLedger.data])
+  const kasRewindRuns = useMemo(() => JSON.parse(kasRewindKey) as KasRewindRun[], [kasRewindKey])
 
   // Row action handlers that never change identity. Their sources are rebuilt on
   // every chunk flush (handleEditResend and handleRegenerate close over
@@ -309,6 +327,8 @@ export function useTranscriptRendering({
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}
               canEdit={!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound}
+              editBlockedReason={kasRewindGuard(kasRewindRuns, activeSlot, m.ts) === 'blocked' ? i18nT('pages.chat.userMessage.edit_blocked_workflow') : undefined}
+              editNote={kasRewindGuard(kasRewindRuns, activeSlot, m.ts) === 'ended' ? i18nT('pages.chat.userMessage.edit_workflow_not_undone') : undefined}
               slotRunning={slotRunning}
               messageIndex={i}
               messageTs={m.ts || ''}
@@ -486,7 +506,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, reactionsFor, reactionErrorFor, clearReactionError, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, reactionsFor, reactionErrorFor, clearReactionError, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, kasRewindRuns])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

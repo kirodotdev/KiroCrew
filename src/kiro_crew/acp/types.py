@@ -474,6 +474,32 @@ KAS_CLIENT_CAPABILITIES: dict = {
     "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
 }
 
+
+def kas_client_capabilities(base: dict, *, user_input: bool) -> dict:
+    """*base* (:data:`KAS_CLIENT_CAPABILITIES`), with ``_meta.kiro.userInput`` when *user_input*.
+
+    ``userInput`` is a CALLBACK capability like ``openExternalUrl``: declared, KAS
+    asks every ``user_input`` question as a ``_kiro/userInput`` request carrying
+    the whole question (descriptions, the recommended answer, sub-option
+    toggles, free-form questions), which Crew answers from a person's card
+    (``acp.kas_wire.METHOD_USER_INPUT``). Undeclared, KAS falls back to its lossy
+    permission bridge and skips free-form questions. The harness declares it only
+    while the single Kiro Workflows switch is on (``kas_workflows_enabled``), so
+    with the switch off the handshake is exactly the constant above. It is read
+    at initialize, so a runtime keeps what it was started with until it restarts.
+
+    Returns *base* itself when *user_input* is False, otherwise a copy: the
+    constant is shared and never mutated.
+    """
+    if not user_input:
+        return base
+    raw_meta = base.get("_meta")
+    meta: dict = raw_meta if isinstance(raw_meta, dict) else {}
+    kiro = dict(meta.get("kiro") or {})
+    kiro["userInput"] = True
+    return {**base, "_meta": {**meta, "kiro": kiro}}
+
+
 # ── Claude backend permission modes ──
 # Values written into a per-session settings.local.json
 # ``permissions.defaultMode`` for the ``ACP_BACKEND_CLAUDE`` backend.
@@ -1104,6 +1130,20 @@ class AcpEvent:
     #: maps to its kiro-cli policy name. False on every other harness, whose
     #: bare ids the gate reads under their own name only.
     kas_builtin_ids: bool = False
+    #: answers_only: every option this permission request offered stated kind
+    #: ``allow_once`` and none refuses. That is the shape of KAS's legacy
+    #: ``user_input`` bridge (``handleUserInputViaPermissionRequest``): one
+    #: ``allow_once`` option per answer, so "approving" it picks an answer.
+    #: Every tool approval offers a reject option. Read from the kinds the
+    #: request stated, never inferred from an option id, so an option with no
+    #: kind leaves it False.
+    answers_only: bool = False
+    #: user_input: the ``_kiro/userInput`` request's params when this permission
+    #: event was built from one (``AcpSessionHandle``), so the question card can
+    #: draw the whole question; None for every real permission request. Such an
+    #: event is also ``answers_only`` and ``kas_builtin_ids``, so every surface
+    #: that holds a KAS question for a person holds it unchanged.
+    user_input: dict | None = None
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

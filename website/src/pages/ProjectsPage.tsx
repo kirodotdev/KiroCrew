@@ -21,6 +21,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
+import KasTaskRunnerSection from '../apps/workflows/kas/KasTaskRunnerSection'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
@@ -586,6 +587,9 @@ export default function ProjectsPage() {
         <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder={i18nT('pages.projectsPage.paste_yaml_workflow_or_upload_a_yaml_file')} accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
           banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.yaml_workflows_bypass_the_llm_decomposer')} <code>{i18nT('pages.projectsPage.depends_on')}</code> {i18nT('pages.projectsPage.is_enforced_as_a_hard_dag_constraint')}</div>} />
       )}
+      {/* Kiro Agent's own workflows, below the three modes and independent of
+          them. Renders nothing unless KAS owns workflows and its preview is on. */}
+      <KasTaskRunnerSection />
     </div>
   )
 

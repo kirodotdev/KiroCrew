@@ -36,6 +36,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_SURFACE_POLICY,
     TOOL_APPROVAL_TIMEOUT,
 )
+from kiro_crew.kas_workflows.chat import needs_a_person as kas_needs_a_person
 from kiro_crew.llm_helpers import (
     CREDENTIAL_RELOAD_RETRY_NOTICE,
     SESSION_NOT_FOUND_GIVE_UP_TEXT,
@@ -1492,8 +1493,11 @@ async def _stream_task(
                     )
                     await client.reject_tool(event.request_id)
                     continue
-                # YOLO mode (global) or channel trust — auto-approve
-                if (is_yolo and is_yolo()) or channel.trusted:
+                # YOLO mode (global) or channel trust — auto-approve. Never for a
+                # KAS workflow plan handoff or KAS ``user_input`` question (each
+                # answer an ``allow_once``, so approving picks the first one):
+                # those are the person's call and go to the card below.
+                if not kas_needs_a_person(event) and ((is_yolo and is_yolo()) or channel.trusted):
                     approval_outcome = (
                         "auto_approved_yolo"
                         if (is_yolo and is_yolo())

@@ -1,5 +1,12 @@
 import { openActivityToTab, awaitSideRestore, setAgentSwitchNotice, sideSendStatus, sseSideQueue, takeSideQueueDroppedByClose } from '../../store/chatSlice'
 import { api } from '../../api/client'
+import type { KasRunRow } from '../../api/client'
+import {
+  isKasWorkflowCommand,
+  parseKasWorkflowCommand,
+  runKasWorkflowCommand,
+} from '../../components/chat-input/kasSlashCommands'
+import { kasLaunchSteps, launchKasWorkflow } from '../../apps/workflows/kas/launchKasWorkflow'
 import { i18nT } from '../../i18n/t'
 import { sendTurn, SEND_ABORT_MS } from '../../chat-core/transport/sendTurn'
 import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
@@ -86,7 +93,7 @@ export function isSideCommand(trimmed: string): boolean {
  *  ChatPage's steer() — so this stays in lockstep with the matches below. */
 export function isInterceptedSlashCommand(raw: string): boolean {
   const trimmed = raw.trim()
-  return trimmed === '/onboarding' || SIDE_RE.test(trimmed) || agentSwitchTarget(trimmed) !== null
+  return trimmed === '/onboarding' || SIDE_RE.test(trimmed) || agentSwitchTarget(trimmed) !== null || isKasWorkflowCommand(trimmed)
 }
 
 export async function interceptSlashCommand(
@@ -96,6 +103,50 @@ export async function interceptSlashCommand(
   opts: SlashInterceptOptions = {},
 ): Promise<SlashInterceptResult> {
   const trimmed = raw.trim()
+  // Gap 15: the Kiro Agent workflow commands are handled here, before anything
+  // else, so a typed `/workflow-run|resume|status|cancel` never reaches the
+  // model as prose. `/workflow` (Crew's own saved-workflow runner) is a
+  // different, hyphen-free token and is left untouched.
+  const kasCmd = parseKasWorkflowCommand(trimmed)
+  if (kasCmd !== null) {
+    // The chat's project is where its recipes live and where a launched run
+    // runs; read it from the store (the slot carries it). No project ⇒
+    // resolveRecipe returns null ⇒ `/workflow-run` opens the launch form.
+    const project = slot
+      ? (dispatch((_d, getState) => getState().dashboard.slots.find(s => s.key === slot)?.project) ?? '')
+      : ''
+    try {
+      const result = await runKasWorkflowCommand(
+        kasCmd,
+        {
+          slot,
+          listRuns: async () => {
+            const snap = await api.kasState()
+            return (snap.runs ?? []).filter((r: KasRunRow) => r.slotKey === slot)
+          },
+          control: (workflowId, action) => api.kasRunControl(workflowId, action),
+          resolveRecipe: async nameOrSource => {
+            if (!project) return null
+            const { recipes } = await api.kasRecipes(project)
+            const matches = recipes.filter(r => r.name === nameOrSource || r.source === nameOrSource)
+            return matches.length === 1 ? matches[0] : null
+          },
+          launch: (recipe, inputs) => launchKasWorkflow(kasLaunchSteps(dispatch), { recipe, project, inputs }),
+          openWorkflows: () => dispatch(openActivityToTab('workflows')),
+        },
+        {
+          noSlot: i18nT('pages.chat.chatInput.kas_cmd_no_slot'),
+          noRun: i18nT('pages.chat.chatInput.kas_cmd_no_run'),
+          ambiguous: i18nT('pages.chat.chatInput.kas_cmd_ambiguous'),
+        },
+      )
+      return result.failed
+        ? { intercepted: true, failed: true, error: result.error, stage: 'turn' }
+        : { intercepted: true }
+    } catch (e: unknown) {
+      return { intercepted: true, failed: true, error: failureMessage(e), stage: 'turn' }
+    }
+  }
   const agent = agentSwitchTarget(trimmed)
   if (agent !== null) {
     if (!slot) {

@@ -1963,6 +1963,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.use-kiro-workflows-when-kiro-agent-server-is-configured",
+    "label": "Use Kiro Workflows when Kiro Agent Server is configured",
+    "labelKey": "pages.developer.featurePreviewsTab.kas_workflows",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.webhooks",
     "label": "Webhooks",
     "labelKey": "pages.developer.featurePreviewsTab.webhooks",

@@ -1511,6 +1511,18 @@ export default [
     },
   },
 
+  // DURABLE SERVER-SIDE NAMES ONLY, same category as `sessionFolder.ts` above: the
+  // KAS workflows chat-folder name (the key `ensureChatFolder` looks the folder up
+  // by, so a translation would fork a second folder per language) and the
+  // `Workflow: ` chat-title prefix the backend itself writes for workflow chats
+  // (`dashboard/workflow_inject.py`). Scoped to this one copy-free module.
+  {
+    files: ['src/apps/workflows/kas/wireNames.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // PROTOCOL KEY NAMES ONLY, same category as `wireValues.ts` above: this module's
   // entire contents are the two spellings of kiro-cli's reserved tool-purpose
   // ARGUMENT NAME (`__tool_use_purpose` and the camelCased echo) plus the regex that
