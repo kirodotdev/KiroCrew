@@ -319,9 +319,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0

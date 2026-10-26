@@ -45,7 +45,6 @@ import notificationsReducer from '../store/notificationsSlice'
 // `_resetBuiltinsForTest()` in its own `beforeEach`.
 import '../surfaces/builtins'
 import {
-  PREVIEW_CREW,
   PREVIEW_FLAG_EVENT,
   PREVIEW_FLAG_PREFIX,
   PREVIEW_INSTANCE_SESSIONS,
@@ -126,7 +125,7 @@ describe('preview flag storage', () => {
   it('keeps every flag under the shared prefix', () => {
     // Cross-tab listeners match on the prefix rather than a list of known flags,
     // so a flag named outside it would silently stop updating other tabs.
-    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_INSTANCE_SESSIONS]) {
+    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_INSTANCE_SESSIONS]) {
       expect(flag.startsWith(PREVIEW_FLAG_PREFIX)).toBe(true)
     }
   })
@@ -151,26 +150,13 @@ describe('surfacePreviewEnabled', () => {
  * registry in its `beforeEach` and would take the imported builtins with it.
  * Vitest runs describes in declaration order, so this position is the fixture.
  */
-describe('crew is preview-gated end to end', () => {
-  it('gates the Crew Members surface on PREVIEW_CREW', () => {
-    // A literal `'mc-preview-crew'` here would keep passing if the constant were
-    // renamed, leaving the rail reading one key and the toggle writing another.
-    expect(getBuiltinSurface('members')?.previewFlag).toBe(PREVIEW_CREW)
+describe('crew is advertised with no opt-in', () => {
+  it('carries no preview flag on the Crew Members surface', () => {
+    expect(getBuiltinSurface('members')?.previewFlag).toBeUndefined()
   })
 
-  it('drops Crew Members from the advertised list until the flag is on', () => {
-    const advertised = () => getAdvertisedSurfaces().some(s => s.navId === 'members')
-    expect(advertised()).toBe(false)
-    // Sessions is the ungated neighbour: it proves the real registry loaded, so
-    // the `false` above cannot be an empty-registry artefact.
-    expect(getAdvertisedSurfaces().some(s => s.navId === 'chat')).toBe(true)
-    localStorage.setItem(PREVIEW_CREW, '1')
-    expect(advertised()).toBe(true)
-  })
-
-  it('keeps the route registered either way', () => {
-    // The page has to be reachable the moment the flag flips, and a bookmark
-    // must still resolve — gating removes the ADVERTISEMENT, not the surface.
+  it('lists Crew Members in the advertised surfaces on a default install', () => {
+    expect(getAdvertisedSurfaces().some(s => s.navId === 'members')).toBe(true)
     expect(getBuiltinSurfaces().find(s => s.navId === 'members')?.route).toBe('/members')
   })
 })
@@ -397,33 +383,9 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(toggleState()).toBe('true')
   })
 
-  it('carries a crew card that starts off', () => {
-    // One card per feature: crew's own toggle, not a row folded into the
-    // webhooks card. Anchored (`^…$`) because the label's words also appear in
-    // this card's description and in the "Chat on a crew" card next to it. The
-    // label names the page the flag holds so it stops sharing a bare "Crew"
-    // with that neighbour, which a newcomer could not tell apart.
-    renderTab()
-    expect(screen.getByRole('switch', { name: /^mates$/i }).getAttribute('aria-checked')).toBe('false')
-  })
-
-  it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
-    renderTab()
-    await act(async () => {
-      screen.getByRole('switch', { name: /^mates$/i }).click()
-    })
-    expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
-    // Two flags, two keys: a shared write would release both features at once.
-    expect(localStorage.getItem(PREVIEW_WEBHOOKS)).not.toBe('1')
-  })
-
-  it('gives the crew card NO ingress link, on either side of the toggle', async () => {
-    // Deliberate asymmetry with the webhooks card, and the reason is `webhooks`
-    // being `hiddenFromNav`: its card is that page's ONLY door, so it needs one.
-    // Crew's rail row returns in the same tick as the click, so a link here
-    // would be a second spelling of a door already on screen — and would cost a
-    // catalog key in twelve languages forever. Pinned so it cannot drift back in
-    // by symmetry with the card above it.
+  it('offers no ingress button besides the webhooks link', async () => {
+    // `webhooks` is `hiddenFromNav`, so its card is that page's ONLY door and
+    // carries a link once on. No other card here does.
     //
     // Counted as `<button>` ELEMENTS rather than by accessible name: the name of
     // a link that no longer exists is not in any catalog, so a name query could
@@ -504,15 +466,11 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 2 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 1 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
     }
-    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
-    await act(async () => {
-      screen.getByRole('switch', { name: /^mates$/i }).click()
-    })
     expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
     // The Decisions subtree, exactly. A new button here -- or a duplicate of one of
     // these -- fails, which a name allowance could not do.
@@ -526,8 +484,8 @@ describe('Settings > Developer > Feature Previews', () => {
     await waitFor(() => {
       expect(kasButtons()).toEqual(['Ask the agent', 'Retry'])
     })
-    // The webhooks card still HAS its link, so this is an asymmetry on purpose
-    // rather than the ingress mechanism having been broken for both.
+    // The webhooks card HAS its link, so the empty census above is not the
+    // ingress mechanism having been broken.
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
@@ -555,7 +513,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(8)
+      expect(screen.getAllByRole('switch')).toHaveLength(7)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -571,7 +529,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(8) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(7) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
@@ -588,7 +546,7 @@ describe('Settings > Developer > Feature Previews', () => {
     await act(async () => { toggle().click() })
     expect(localStorage.getItem(PREVIEW_REMOTE_CREW_CHAT)).toBe('1')
     expect(toggle().getAttribute('aria-checked')).toBe('true')
-    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS]) {
+    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_INSTANCE_SESSIONS]) {
       expect(localStorage.getItem(other)).not.toBe('1')
     }
   })

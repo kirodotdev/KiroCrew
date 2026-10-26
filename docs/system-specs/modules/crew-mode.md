@@ -1292,16 +1292,12 @@ Loading, a failed roster read and a genuinely empty roster remain distinct. The
 page's copy says mate / Mates and "Built from"; the crew record, its API
 and its identifiers are unchanged.
 
-With the Mates preview off, Mate still exists in the background, but every list
-that offers crew records leaves it out (`hideMateWithoutPreview` in
-`lib/assistantMember.ts`: the agent pickers fed by `useAgents`, Customize and a
-template's crew list), so nothing names it until the preview is on. With the
-preview on, Customize > Crewmates lists it as a card like any other crewmate:
-its row carries `member_id: "mate"`, so it is not a legacy binding
+Customize > Crewmates lists Mate as a card like any other crewmate: its row
+carries `member_id: "mate"`, so it is not a legacy binding
 (`mate_worker.is_legacy_binding`) and the pickers list it unchatted.
 
 Mate's chat has no static welcome card. Mate speaks first instead: once the thread
-endpoint has confirmed Mate's pinned thread, with the Mates preview on, the page
+endpoint has confirmed Mate's pinned thread, the page
 calls `POST /api/members/{slug}/greet` (owner-only; app tokens get 404), once per
 thread per tab (`pages/members/useFirstGreeting.ts`). A failed request shows
 nothing: the chat works without the greeting, and the next open of the thread asks
@@ -1606,8 +1602,7 @@ above leaves them out (`member-hidden-hint`); the form that names every hidden
 mate also says the search finds them. The line is drawn only
 while no search is typed, no filter narrows the list, and at least one row is
 listed (the every-row-hidden case already has its own line).
-Before any of the landing rules, a bare visit with the Mates preview on
-opens Mate while no message has been exchanged with it (`resolveMateLanding`:
+Before any of the landing rules, a bare visit opens Mate while no message has been exchanged with it (`resolveMateLanding`:
 Mate's row has neither `has_dm_message` nor a live `last_message`), ahead of a
 remembered, the last-chatted or a more recently used mate, at most once per
 page mount; once Mate's thread holds anything, that rule answers nothing and the
@@ -4601,6 +4596,4 @@ its own standing thread. What remains, and why:
   left in place rather than re-litigating a security boundary in a removal PR.
 
 The sidebar's create menu no longer carries the entry that used to create a
-crew-mode session: `/members` is reached from its rail item while `PREVIEW_CREW`
-(Settings → Developer → Feature Previews) is on, and by turning that card on
-while it is off.
+crew-mode session: `/members` is reached from its rail item.

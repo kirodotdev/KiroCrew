@@ -8911,13 +8911,8 @@
         "intro": {
           "webhooks_summary": "Another system can start your agent for you — CI, a review bot, a deploy pipeline — by sending a message with an access token you create on the Webhooks page.",
           "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
-          "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right.",
-          "crew_summary": "Mates lists every agent you have and what each is driving now, with a thread per member. Unrelated to “Chat on a crew” below, which is about another machine.",
-          "crew_where": "“Mates” appears in the sidebar under Sessions once this is on.",
-          "crew_media_members": "The Mates page, with one member selected and its activity panel open."
+          "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right."
         },
-        "crew_members": "Mates",
-        "crew_members_desc": "The Mates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
         "decisions": "Decisions (Jev)",
         "decisions_desc": "A small, fast model makes quick calls for {{productName}}, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up.",
         "decisions_egress": "While this is on, your messages and your skills' names and descriptions are sent over the internet to Jev. Every other kind of data has its own switch below and stays off until you turn it on.",

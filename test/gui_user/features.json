@@ -1279,7 +1279,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Order = builtins.tsx registration order filtered by group; Notifications, Webhooks, Explore are hiddenFromNav; Members hidden unless mc-preview-crew=1."
+        "notes": "Order = builtins.tsx registration order filtered by group; Notifications, Webhooks, Explore are hiddenFromNav."
       },
       "runnable": "smoke",
       "estimated_steps": 1,
@@ -1951,7 +1951,7 @@
       "title": "Crew Members",
       "user_story": "As a crew operator, I want a durable DM thread per member with a docked side panel led by the crew's Dashboard tab, an auto-patrol badge on each roster row, and a filterable roster, so that I can supervise each crew in one place.",
       "start_url": "/members",
-      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members (preview on) > roster filter input + activity chips > roster row (?member=<name> selects a row) > DM thread + docked side panel",
+      "entry_path": "Rail > Crew Members > roster filter input + activity chips > roster row (?member=<name> selects a row) > DM thread + docked side panel",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -1959,18 +1959,15 @@
           "beta",
           "gamma"
         ],
-        "feature_flags": [
-          "mc-preview-crew"
-        ],
-        "notes": "Fixture must define at least three crew members so the thread endpoint confirms a slot and the roster filter (rosterFilter.ts, activityDays.ts) has something to narrow; roster filters need starred and package-installed crews. Surface has slotMode 'member' and badge 'unread member threads'; page lazy-loaded; route stays registered even when the flag is off."
+        "feature_flags": [],
+        "notes": "Fixture must define at least three crew members so the thread endpoint confirms a slot and the roster filter (rosterFilter.ts, activityDays.ts) has something to narrow; roster filters need starred and package-installed crews. Surface has slotMode 'member' and badge 'unread member threads'; page lazy-loaded."
       },
       "runnable": "nightly",
       "estimated_steps": 6,
-      "rationale": "Preview-gated, multi-panel surface with several data dependencies; too many steps for the smoke lane but fully renderable on the fake backend. Roster+thread and roster-filter records are sub-steps of this one flow.",
+      "rationale": "Multi-panel surface with several data dependencies; too many steps for the smoke lane but fully renderable on the fake backend. Roster+thread and roster-filter records are sub-steps of this one flow.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/surfaces/builtins.tsx",
-        "website/src/utils/previewFlags.ts",
         "website/src/App.tsx",
         "website/src/pages/members/MembersPage.tsx",
         "website/src/pages/members/rosterFilter.ts",
@@ -1990,15 +1987,13 @@
       "title": "Reply in thread on a mate's bubble opens the thread panel and the bubble gains a replies footer",
       "user_story": "As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Settings > Developer > Mates > enable Reply threads on mate chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
+      "entry_path": "Settings > Developer > Mates > enable Reply threads on mate chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
       "preconditions": {
         "seed": "rich",
         "members": [
           "nova-sky"
         ],
-        "feature_flags": [
-          "mc-preview-crew"
-        ],
+        "feature_flags": [],
         "notes": "Threads exist only on a mate's chat (a member-mode slot); the fake ACP backend answers the main-chat message so a finished mate bubble carries the Reply in thread action, and answers the thread reply too, so the footer reads '1 reply' then '2 replies'. Replies live in the slot's .threads sidecar, never in the transcript."
       },
       "runnable": "nightly",
@@ -2023,15 +2018,13 @@
       "title": "A member's DM thread survives leaving and returning; it keeps its history and still answers",
       "user_story": "As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > Nova Sky > DM thread (send a message, get a reply) > leave to another rail item > back to Crew Members > Nova Sky > send again",
+      "entry_path": "Rail > Crew Members > Nova Sky > DM thread (send a message, get a reply) > leave to another rail item > back to Crew Members > Nova Sky > send again",
       "preconditions": {
         "seed": "rich",
         "members": [
           "nova-sky"
         ],
-        "feature_flags": [
-          "mc-preview-crew"
-        ],
+        "feature_flags": [],
         "notes": "The seeded member keeps its store; a member's memory is fixed at creation and its binding is immutable (PUT /api/agents changing memory_store returns 409 member_memory_immutable), so there is no store-switch control to touch. The check is that the DM thread persists across navigation and still answers on the fake ACP backend, which replies to both messages."
       },
       "runnable": "nightly",
@@ -2051,25 +2044,22 @@
     {
       "id": "sidebar-crew-members-create-menu-entry",
       "feature": "members",
-      "title": "Mates page is reached through its preview card",
-      "user_story": "As a user, I want to turn on the Mates preview and find its rail row, so that I can open the page.",
-      "start_url": "/settings/developer",
-      "entry_path": "Settings > Developer > Feature Previews > Mates card toggle on > rail row 'Mates' appears > lands on /members",
+      "title": "Mates rail row is there on a default install",
+      "user_story": "As a user, I want the Mates rail row on a fresh install, so that I can open the page without turning anything on.",
+      "start_url": "/chat",
+      "entry_path": "Rail row 'Mates' > lands on /members",
       "preconditions": {
         "seed": "minimal",
         "members": [],
-        "feature_flags": [
-          "mc-preview-crew"
-        ],
-        "notes": "The sidebar New menu carries no Mates entry; with PREVIEW_CREW off the page is reached only by turning its Feature Previews card on. Toggling the card shows the rail row without a reload."
+        "feature_flags": [],
+        "notes": "The sidebar New menu carries no Mates entry; the rail row is the page's door and needs no opt-in."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Checks the only ingress to a preview-gated page now that the create menu has no Mates entry; runs headless.",
+      "rationale": "Checks the ingress to the Mates page now that the create menu has no Mates entry; runs headless.",
       "source": [
-        "website/src/pages/settings/FeaturePreviewsSection.tsx",
         "website/src/shell/nav/appRail.tsx",
-        "website/src/utils/previewFlags.ts"
+        "website/src/surfaces/surfaceData.ts"
       ],
       "priority": "P2",
       "merged_from": [

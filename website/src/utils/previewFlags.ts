@@ -74,27 +74,9 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
 
 /**
- * Crew Members: the Crew Members page (`/members`) and its rail item.
- *
- * The rail item is the page's door; the sidebar's create menu carries no Mates
- * entry, so a user who has not opted in reaches the page by turning this card on
- * in Settings > Developer > Feature Previews.
- *
- * Gating the INGRESS only. Turning the flag off hides the rail item; it does not
- * orphan existing work — it stops advertising the page to someone who has not
- * opted in.
- */
-export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
-
-/**
  * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
- * entry in the sidebar's create menu.
- *
- * Its own flag, deliberately NOT {@link PREVIEW_CREW}. The word "crew" carries
- * two unrelated meanings here: `PREVIEW_CREW` holds the Crew Members page, while
- * this holds sessions dispatched to another MACHINE over the instances tunnel.
- * Sharing one key would release or hold both at once, which is the same
- * half-ship failure a per-feature flag exists to prevent.
+ * entry in the sidebar's create menu: sessions dispatched to another MACHINE
+ * over the instances tunnel.
  *
  * ONE flag for the whole feature: it also merges each connected crew's live
  * sessions into the Sessions list, grouped per crew. It used to share that half
@@ -108,8 +90,7 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * unreleased surface, and NOT on Settings > Remote Crew where it started: a
  * held feature is found by looking at the one page that lists held features, so
  * scattering an opt-in onto the page it happens to act on hides it from the only
- * reader who wants it. It keeps its own card there rather than sharing
- * {@link PREVIEW_CREW}'s, for the two-meanings reason above.
+ * reader who wants it.
  *
  * Gating the INGRESS only. A session already created on a peer keeps running
  * there and stays reachable through that crew's own dashboard; turning the flag

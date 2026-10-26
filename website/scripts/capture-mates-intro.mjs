@@ -65,8 +65,8 @@ const OFFER = {
 }
 // Mate's greeting reads the crew board on this page; the shipped empty fixture.
 const CREW_BOARD = JSON.parse(readFileSync(new URL('./fixtures/crew-board-empty.json', import.meta.url), 'utf8'))
-// Expanded rail (`mc-nav` 0) so the row label and the tag read; Mates preview on.
-const STORAGE = { 'mc-lang': 'en', 'mc-nav': '0', 'mc-members-panel-open': '0', 'mc-preview-crew': '1', 'mc-privacy-notice-v1': '1' }
+// Expanded rail (`mc-nav` 0) so the row label and the tag read.
+const STORAGE = { 'mc-lang': 'en', 'mc-nav': '0', 'mc-members-panel-open': '0', 'mc-privacy-notice-v1': '1' }
 
 const verdicts = []
 const extraFor = (theme) => async (path, route) => {

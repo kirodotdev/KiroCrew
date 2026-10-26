@@ -1087,13 +1087,6 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
-      "id": "developer.mates",
-      "label": "Mates",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.mates",
-      "hint": "The Mates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
-    },
-    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

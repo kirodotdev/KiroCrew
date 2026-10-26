@@ -118,7 +118,6 @@ async function openFilters() {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
-  localStorage.setItem('mc-preview-crew', '1')
 })
 
 describe('matchesSource', () => {

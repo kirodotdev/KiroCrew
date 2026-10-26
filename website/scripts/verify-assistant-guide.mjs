@@ -49,7 +49,7 @@ try {
           { key: 'chat-default', title: 'default', agent: 'default', messages: 0, running: false },
         ],
         theme: 'light', preserveStorage: true,
-        localStorageEntries: { 'mc-preview-crew': '1', 'mc-members-panel-open': '0', 'mc-lang': 'en' },
+        localStorageEntries: { 'mc-members-panel-open': '0', 'mc-lang': 'en' },
         extra: async (path, route) => {
           const reply = async (v, status = 200) => { await json(route, v, status); return true }
           if (path === '/api/theme/boot') return reply({ mode: 'light', onboarded: true, import_onboarded: true, privacy_acked: true })

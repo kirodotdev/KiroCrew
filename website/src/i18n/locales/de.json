@@ -13616,13 +13616,8 @@
         "intro": {
           "webhooks_summary": "Ein anderes System – CI, ein Review-Bot, eine Deploy-Pipeline – kann deinen Agenten für dich starten, indem es eine Nachricht mit einem Zugriffstoken sendet, das du auf der Webhooks-Seite erstellst.",
           "webhooks_where": "Sobald das an ist, erscheint auf dieser Karte in den Einstellungen der Link „Webhooks öffnen“; dort öffnest du die neue Webhooks-Seite. In der Seitenleiste erscheint sie erst, wenn sie fertig ist. Ausschalten blendet die Seite nur wieder aus; erstellte Token bleiben erhalten.",
-          "webhooks_media_page": "Die Webhooks-Seite: links die Token-Liste, rechts die Einrichtung „Ein externes System soll deinen Agenten wecken“.",
-          "crew_summary": "Crewmates listet alle deine Agenten und woran jeder gerade arbeitet, mit einem Thread pro Mitglied. Nichts mit „Chat auf einer Crew“ unten zu tun, da geht es um eine andere Maschine.",
-          "crew_where": "„Crewmates“ erscheint in der Seitenleiste unter Sessions, sobald das an ist.",
-          "crew_media_members": "Die Seite Crewmates mit einem ausgewählten Mitglied und geöffnetem Aktivitätsbereich."
+          "webhooks_media_page": "Die Webhooks-Seite: links die Token-Liste, rechts die Einrichtung „Ein externes System soll deinen Agenten wecken“."
         },
-        "crew_members": "Crewmates",
-        "crew_members_desc": "Die Seite Crewmates: alle deine Agenten, jeder mit eigenem Thread. Noch im Aufbau, daher erst verfügbar, wenn du das hier einschaltest.",
         "decisions": "Entscheidungen (Jev)",
         "decisions_desc": "Ein kleines, schnelles Modell trifft für {{productName}} kurze Entscheidungen, etwa welcher deiner Skills zu deiner Nachricht passt. Wähle das Modell unten. Ist es zu langsam oder antwortet nicht, entscheidet die eingebaute Regel, sodass deine Antwort nie aufgehalten wird.",
         "decisions_egress": "Solange das an ist, gehen deine Nachrichten und die Namen und Beschreibungen deiner Skills über das Internet an Jev. Jede andere Art von Daten hat unten einen eigenen Schalter und bleibt aus, bis du ihn einschaltest.",

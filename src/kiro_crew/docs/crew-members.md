@@ -14,12 +14,10 @@ one entry in the `agents` map of `~/.kiro/crew/config.json`. This page is the
 user-facing view of them; [agents.md](agents.md) covers the agent JSON and
 markdown specs a mate boots from.
 
-## Turning the page on
+## Where to find it
 
-Mates is a feature preview. Enable **Settings → Developer → Feature
-Previews → Mates** and the **Mates** row appears in the left rail
-at `/members`. The same card has a "See what it looks like" button that shows the
-page before you switch it on.
+The **Mates** row sits in the left rail, under Sessions, and opens
+`/members`.
 
 ## What a mate is made of
 

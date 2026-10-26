@@ -38,12 +38,3 @@ export function pendingMate<T extends RosterHistory>(rows: readonly T[]): T | un
   return history ? undefined : mate
 }
 
-/** `rows` without Mate while the Crewmates preview is off. Mate is created in the
- *  background on every install, but nothing about it is shown until the person
- *  turns the Crewmates preview on, so every list that offers crew records (the
- *  agent pickers, Customize, a template's crews) drops it first. */
-export function hideMateWithoutPreview<T extends { name?: string; source?: string }>(rows: readonly T[], crewPreview: boolean): T[] {
-  // Only the row Kiro Crew created (`source: builtin`) is hidden: a crewmate the
-  // person already had under the key `mate` stays where it always was.
-  return crewPreview ? [...rows] : rows.filter(r => !(isAssistantMember(r) && r.source === 'builtin'))
-}

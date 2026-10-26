@@ -1005,9 +1005,7 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   it('the plans resolve a select step at its picker and a gate step that points at nothing', () => {
     const edit = resolveGuideAction(show('members.edit'))
     if (!edit.ok) throw new Error(edit.reason)
-    // The Crewmates preview's gate opens the plan; the pick is the next step.
-    expect(edit.action.steps[0]).toMatchObject({ target: { kind: 'none' }, complete: { kind: 'gate', gate: 'preview_flag:mc-preview-crew' } })
-    expect(edit.action.steps[1]).toMatchObject({
+    expect(edit.action.steps[0]).toMatchObject({
       target: { kind: 'location', id: 'members.roster-list' },
       complete: { kind: 'select', selection: 'crewmate_selected', entity: 'crewmate' },
       textKey: 'components.guideLayer.select_crewmate',
@@ -1059,7 +1057,6 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   })
 
   it('a select step points at the picker and completes only on the selection fact, never on a visible later control', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     function Host() {
@@ -1078,22 +1075,21 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
     expect(await screen.findByText(L('select_crewmate'))).toBeTruthy()
     expect(await screen.findByTestId('guide-arrow')).toBeTruthy()
     await tickTracker(4)
-    // Only the preview gate (on) has passed; the pick is still waiting.
-    expect(writes('/api/guide/progress')).toHaveLength(1)
+    // The pick is still waiting.
+    expect(writes('/api/guide/progress')).toHaveLength(0)
     fireEvent.click(screen.getByTestId('roster'))
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'observed' })
   })
 
   it('a pick already made when the step starts passes the step at once: no "already open, press Next" stop', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     renderGuide('/members', <><SelectionFact selected available /><LocTarget id="members.roster-list" /><LocTarget id="members.edit" rect={{ top: 400, left: 300, width: 80, height: 28 }} /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
-    // The preview gate passes, then the pick already made passes its step.
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
+    // The pick already made passes its step.
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'observed' })
   })
 
   it('a job already open before a delete step is shown once to confirm, and goes on only on Next', async () => {
@@ -1175,26 +1171,24 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
   })
 
   it('a pick already made while its list is folded away passes the step too, never sending the person to the list', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     renderGuide('/members', <><SelectionFact selected available /><LocTarget id="members.edit" rect={{ top: 400, left: 300, width: 80, height: 28 }} /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
-    // The preview gate passes, then the pick already made passes its step.
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
+    // The pick already made passes its step.
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1))
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'observed' })
   })
 
   it('an empty picker shows a blocker and reports selection_empty; it never points at a create control', async () => {
-    localStorage.setItem('mc-preview-crew', '1')
     pending = [planned('members.edit', 'any')]
     walk(pending[0])
     renderGuide('/members', <><SelectionFact selected={false} available={false} /><LocTarget id="members.roster-list" /><LocTarget id="members.new" /></>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     expect((await screen.findByTestId('guide-selection-empty')).textContent).toBe(L('select_empty_crewmate'))
     expect(screen.queryByTestId('guide-arrow')).toBeNull()
-    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2), { timeout: 4000 })
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'target_missing', detail: 'selection_empty' })
+    await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(1), { timeout: 4000 })
+    expect(writes('/api/guide/progress')[0].body).toMatchObject({ step_index: 0, outcome: 'target_missing', detail: 'selection_empty' })
   })
 
   it('asks for a re-plan when the viewport class changes mid-guide, and not before', async () => {

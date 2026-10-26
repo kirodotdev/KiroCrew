@@ -31,7 +31,6 @@ async function prime(page, theme, lang) {
     await skip.waitFor({ state: 'hidden', timeout: 10000 })
   }
   await page.evaluate(async ([th, lg]) => {
-    localStorage.setItem('mc-preview-crew', '1')
     localStorage.setItem('mc-lang', lg)
     localStorage.setItem('mc-theme', th)
     localStorage.setItem('mc-members-drawer-open', '1')

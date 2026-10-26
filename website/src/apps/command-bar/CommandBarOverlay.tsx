@@ -27,9 +27,7 @@ import {
   type ContributedCommand,
 } from './contributedCommands'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { usePointerMotion } from '../../hooks/usePointerMotion'
-import { PREVIEW_CREW } from '../../utils/previewFlags'
 import { ARTIFACTS_ROW_LIMIT, COPY_KEY, DEBOUNCE_MS, ENTER_KEY, SKELETON_WIDTHS, actionLabel, headerOf, rootRowCopyable, type Scope } from './commandBarOverlayModel'
 import { useCommandBarOverlayEngines } from './useCommandBarOverlayEngines'
 import { useCommandBarOverlayRootRows } from './CommandBarOverlayRootRows'
@@ -65,20 +63,6 @@ export default function CommandBarOverlay({
   initialQuery?: string
 }) {
   const ime = useImeGuard()
-  /**
-   * Whether the Crewmates preview is on for this reader.
-   *
-   * This bar is an INGRESS to `/members`, and that page is registered with
-   * `previewFlag: PREVIEW_CREW` — so every other door to it applies this gate, and a
-   * surface that did not would advertise a page the operator has not opted into. The
-   * app ships `defaultEnabled: true`, so without this a default install shows
-   * `Search Crewmates` in the root, carries a typed query into it, and lets Enter
-   * reach `/members` while the page itself is supposed to be invisible.
-   *
-   * It gates all THREE rows this feature adds — the view row, the fallback row and the
-   * empty-state row — because each one is independently reachable.
-   */
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
   const vv = useVisualViewport()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -301,7 +285,7 @@ export default function CommandBarOverlay({
 
   const ranked = useCommandBarOverlayRootRows({
     liveSlots, unreadSlots, slotStatusDetail, simplifiedToolNames, dispatch, navigate, store, cycleTheme,
-    crewPreview, commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
+    commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
     setAttentionExpanded,
   })
 
@@ -313,7 +297,7 @@ export default function CommandBarOverlay({
     rowsAnswerTheQuery, slots, rowCount, scopeLoading, scopeFetching,
   } = useCommandBarOverlaySlots({
     scope, debounced, query, sessions, recentSessions, artifacts, folderSortMode, folders, runningMates, mates,
-    argCommand, crewPreview, ranked, selected, setSelected,
+    argCommand, ranked, selected, setSelected,
   })
 
   const { seedNewSession, activateIndex } = useCommandBarOverlayActivation({

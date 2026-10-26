@@ -316,9 +316,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -655,16 +652,6 @@ describe('MembersPage default member, memory and URL', () => {
     await renderPage([defaultRow(), assistantRow({ has_dm_message: true }), row({ name: 'alpha', slug: 'alpha' })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     expect(api.memberThread).not.toHaveBeenCalledWith('mate')
-  })
-
-  it('with the Mates preview off, opening the page neither lands on Mate nor asks for its welcome', async () => {
-    localStorage.setItem('mc-preview-crew', '0')
-    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
-    await renderPage([defaultRow(), assistantRow({ has_dm_message: false }), row({ name: 'alpha', slug: 'alpha' })])
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
-    expect(api.memberThread).not.toHaveBeenCalledWith('mate')
-    // Only Mate's open thread ever asks, and Mate was never opened.
-    expect(api.memberGreet).not.toHaveBeenCalled()
   })
 
   it('an explicit member link is not hijacked by the Assistant', async () => {

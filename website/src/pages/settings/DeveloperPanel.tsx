@@ -85,8 +85,7 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
                 </SettingsCard>
               </SettingsSection>
               <FeaturePreviewsSection />
-              {/* The crewmate feature switches, under the Crew Members preview
-                  card that is their one door (`CrewmatesSection.tsx`). */}
+              {/* The crewmate feature switches (`CrewmatesSection.tsx`). */}
               <CrewmatesSection />
               {localGatewaySupported && (
                 <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>

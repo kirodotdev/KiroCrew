@@ -54,9 +54,8 @@ const RADAR = {
   last_active_ts: now - 30, last_message: 'Quiet morning: three new issues, one needs a decision.',
 }
 const SLOTS = [{ key: 'member-radar', title: 'Radar', mode: 'member', created: new Date((now - 86400) * 1000).toISOString(), last_ts: new Date((now - 30) * 1000).toISOString(), running: false, agent: 'Radar' }]
-// The Crewmates rail row is preview-gated (`mc-preview-crew`); the rail is
-// expanded so its labels read in the frames.
-const STORAGE = { 'mc-lang': 'en', 'mc-crewmates-onboarded': '1', 'mc-crewmates-page-entered': '1', 'mc-nav': '0', 'mc-members-panel-open': '0', 'mc-preview-crew': '1', 'mc-privacy-notice-v1': '1' }
+// The rail is expanded so its labels read in the frames.
+const STORAGE = { 'mc-lang': 'en', 'mc-crewmates-onboarded': '1', 'mc-crewmates-page-entered': '1', 'mc-nav': '0', 'mc-members-panel-open': '0', 'mc-privacy-notice-v1': '1' }
 const LEAVE_MESSAGE = 'Leave this page? Your unsaved mate draft will be lost.'
 const NAME = 'Scribe'
 // Mate's greeting reads the crew board on this page; the shipped empty fixture.

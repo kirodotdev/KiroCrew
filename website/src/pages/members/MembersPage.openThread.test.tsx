@@ -313,9 +313,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -539,7 +536,7 @@ describe('MembersPage unread drain', () => {
 })
 
 describe('MembersPage identity pill and Profile entry', () => {
-  beforeEach(() => { localStorage.clear(); localStorage.setItem('mc-preview-crew', '1') })
+  beforeEach(() => { localStorage.clear() })
 
   it('the identity pill opens the Profile card, not the editor', async () => {
     localStorage.setItem(PANEL_OPEN_KEY, '0')

@@ -55,8 +55,6 @@ async function openMate(ctx, theme, { outcome = 'started', reduceMotion = false 
   if (reduceMotion) await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.addInitScript(() => {
     localStorage.setItem('mc-lang', 'en')
-    // Crew Members is preview-gated, and so is Mate's greeting.
-    localStorage.setItem('mc-preview-crew', '1')
   })
   const greets = { count: 0 }
   await routeMembersApi(page, EMPTY_THREAD, { members: [MATE] })

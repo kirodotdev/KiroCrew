@@ -18,8 +18,6 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
-import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
 
@@ -234,7 +232,7 @@ describe('create-button caret menu', () => {
   // The Mates door is gone from this menu: every row here creates something and
   // is named "New …"; a row that navigated instead read as an unnamed create
   // action on every open. Mates is reached from the rail. The retired Crew Mode
-  // ingress stays gone too, whatever the preview flag says.
+  // ingress stays gone too.
   it('offers no Mates door and no Crew Mode ingress among the create entries', async () => {
     // Asserted on a plain `localStorage.clear()` (the beforeEach): a fresh install.
     renderSidebar()
@@ -252,19 +250,9 @@ describe('create-button caret menu', () => {
     expect(mocks.createChatSlot).not.toHaveBeenCalled()
   })
 
-  it('the Mates preview deep-link id still names a live settings entry', () => {
-    // Registry ids derive from the card's LABEL, so a relabel silently breaks
-    // every `?highlight=` link that inlines the string — this pins the constant
-    // to a live entry on the developer tab, the same guard
-    // `SETTINGS_DEFAULT_MODEL_ID` carries.
-    const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_CREW_MEMBERS_PREVIEW_ID)
-    expect(entry, `no registry entry for ${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`).toBeDefined()
-    expect(entry?.tab).toBe('developer')
-  })
-
   // "New chat on crew" — creating a session that runs on a connected peer. The
   // row mirrors "New chat in folder": a dynamic list behind one submenu. It is
-  // preview-gated on its OWN flag (not the Crew Members page's), so both conditions have to
+  // preview-gated on its own flag, so both conditions have to
   // hold: a warm peer AND the opt-in.
   it('offers no crew entry when no peer holds a live tunnel', async () => {
     // Absent, not disabled. A disabled row on a single-machine install

@@ -1,12 +1,8 @@
 # Nightly: the PoC scenario from the research report -- find a crew member and
-# send them a DM. The Mates page sits behind a feature-preview switch
-# (per-device localStorage), so the tester turns it on through the GUI first,
-# exactly as a user would.
-#
-# The Feature Previews card for this page is titled "Mates"; older
-# builds titled it "Crew Members" or "Crew Members and Crew Mode". The steps
-# name the card by its current title (older titles listed as valid readings)
-# and the page by its rail label, "Mates". Nightly-only because it is the longest scenario.
+# send them a DM. The Mates page is always on; older builds put it behind a
+# per-device Feature Previews switch titled "Mates", "Crew Members" or "Crew
+# Members and Crew Mode", so the first step turns that switch on only where it
+# exists. The page is named by its rail label, "Mates". Nightly-only because it is the longest scenario.
 name: members-dm-hello
 tier: nightly
 feature: members
@@ -15,15 +11,15 @@ user_story: >-
   message it directly, so that each agent has its own standing conversation
   instead of a pile of one-off sessions.
 docs_url: docs/system-specs/modules/crew-mode.md
-summary: Enable the Mates preview, open a member and send "hello" in the DM
+summary: Open a member on the Mates page and send "hello" in the DM
 preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /settings
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
-  - Turn on the preview whose title starts with "Mates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
-  - Open the Mates page. After the preview is on, a "Mates" item appears in the left rail, directly under Sessions; click it.
+  - If the Feature Previews list has a preview whose title starts with "Mates" (or "Crew Members", or "Crew Members and Crew Mode"), make sure it is ON -- click it once if it is off. Current builds have no such preview because Mates is always on; then go straight on. Ignore the Webhooks preview.
+  - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
   - Click the search box at the top of the mates list (its placeholder reads "Search mates…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
   - Find the member card for Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) and click it to open a direct-message conversation with it.
   - Type exactly "hello" in the message box and send it with Enter.

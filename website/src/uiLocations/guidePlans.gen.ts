@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:eafe85264ccd7bca7f979da3fba3c1a2228555bd6cac2f41f45877549f19ec8e"
+export const GUIDE_BUILD_DIGEST = "sha256:c87f4e83f142ffc3c0fb97f67005b7ba826f4f2d8f9a9d5622e683e337f5b602"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -1754,12 +1754,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:members.switcher",
             "location": "members.switcher",
             "label_key": "pages.membersPage.switch_crewmate",
@@ -1788,12 +1782,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster",
@@ -1821,12 +1809,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:members.switcher",
             "location": "members.switcher",
@@ -1862,12 +1844,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster",
@@ -1901,12 +1877,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:members.switcher",
             "location": "members.switcher",
@@ -1942,12 +1912,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster",
@@ -1982,12 +1946,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "mobile",
         "steps": [
           {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "mobile:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2013,12 +1971,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "steps": [
           {
-            "id": "any:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "any:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2043,12 +1995,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "id": "any",
         "route": "/members",
         "steps": [
-          {
-            "id": "any:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "any:select:crewmate_selected",
             "kind": "select",
@@ -2081,12 +2027,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "id": "any",
         "route": "/members",
         "steps": [
-          {
-            "id": "any:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "any:select:crewmate_selected",
             "kind": "select",
@@ -2128,12 +2068,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2159,12 +2093,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
@@ -2198,12 +2126,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2235,12 +2157,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
@@ -2274,12 +2190,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "viewport": "desktop",
         "steps": [
           {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
-          {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",
             "location": "members.roster-list",
@@ -2305,12 +2215,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
         "route": "/members",
         "viewport": "desktop",
         "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.mates"
-          },
           {
             "id": "desktop:select:crewmate_selected",
             "kind": "select",

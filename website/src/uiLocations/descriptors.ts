@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -157,7 +157,6 @@ export type UiLocationId = keyof typeof UI_LOCATIONS
 export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_ARTIFACT_DEPLOY]: 'developer.artifact-deploy',
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
-  [PREVIEW_CREW]: 'developer.mates',
   [PREVIEW_SESSION_ENVIRONMENTS]: 'developer.session-environments',
 }
 

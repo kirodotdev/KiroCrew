@@ -13390,13 +13390,8 @@
         "intro": {
           "webhooks_summary": "让另一个系统替你启动代理——CI、评审机器人、部署流水线——只需用你在 Webhooks 页面创建的访问令牌发送一条消息。",
           "webhooks_where": "开启后，这张卡片在“设置”里会出现“打开 Webhooks”链接，新的 Webhooks 页面从那里进入；页面完成之前不会出现在侧边栏里。关闭后只是重新隐藏这个页面；你创建的 token 会保留。",
-          "webhooks_media_page": "Webhooks 页面：左侧是 token 列表，右侧是“让外部系统唤醒你的代理”的设置。",
-          "crew_summary": "队友列出你拥有的每个代理及其当前进展，每个成员各有一个话题。与下方的“在 crew 上聊天”无关，那个说的是另一台机器。",
-          "crew_where": "开启后，“队友”出现在侧边栏 Sessions 下方。",
-          "crew_media_members": "队友页面，选中了一个成员并打开了它的活动面板。"
+          "webhooks_media_page": "Webhooks 页面：左侧是 token 列表，右侧是“让外部系统唤醒你的代理”的设置。"
         },
-        "crew_members": "队友",
-        "crew_members_desc": "队友页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。",
         "decisions": "决策（Jev）",
         "decisions_desc": "一个小而快的模型替 {{productName}} 做快速判断，比如哪个技能适合你的消息。在下方选择模型。模型太慢或没有回应时，改用内置规则判断，不会拖慢你的回复。",
         "decisions_egress": "开启后，你的消息以及技能的名称和描述会通过互联网发送给 Jev。其他类型的数据在下方各有开关，打开之前都不会发送。",

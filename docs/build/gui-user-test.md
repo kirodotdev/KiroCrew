@@ -269,7 +269,7 @@ navigation lands on the browser's "Leave site?" prompt over that form. The same 
 profile, so a per-device switch (Show Timestamps, a feature preview)
 that a scenario flips is still flipped when the next scenario starts. A scenario that
 flips one either puts it back before it ends or leaves a state nothing later depends on
-(the members scenarios leave the Mates preview on), and it words each switch step
+(on older builds the members scenarios leave the Mates preview on), and it words each switch step
 as the position to leave the switch in ("make sure it is ON -- click it once if it is
 off") rather than as a click, so a retry that starts from a half-finished attempt
 converges instead of inverting it.

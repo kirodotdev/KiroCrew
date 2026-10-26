@@ -1426,11 +1426,8 @@ describe('the committed index', () => {
     expect(byId.get('setting:developer.session-environments')!.placements[0].requires).toEqual([])
   })
 
-  it('keeps Mates behind its preview, naming the switch that shows it', () => {
-    expect(byId.get('page.members')!.placements[0].requires).toEqual([
-      { kind: 'preview_flag', flag: 'mc-preview-crew', location: 'setting:developer.mates' },
-    ])
-    expect(byId.has('setting:developer.mates')).toBe(true)
+  it('shows Mates with no prerequisite', () => {
+    expect(byId.get('page.members')!.placements[0].requires).toEqual([])
   })
 
   it('resolves every parent, prerequisite and label it references', () => {

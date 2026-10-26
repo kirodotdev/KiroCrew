@@ -406,13 +406,13 @@ class TestShippedScenarios:
         """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
         sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
         preview_step = next(
-            s for s in sc.steps if "preview" in s.lower() and "turn on" in s.lower()
+            s for s in sc.steps if "preview" in s.lower() and "make sure it is on" in s.lower()
         )
         assert 'starts with "Mates"' in preview_step
         assert (
             "Crew Members and Crew Mode" in preview_step
         )  # the older titles are still valid readings on older builds
-        assert any('"Mates" item appears in the left rail' in s for s in sc.steps)
+        assert any('"Mates" item is in the left rail' in s for s in sc.steps)
 
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""
@@ -429,19 +429,24 @@ class TestShippedScenarios:
             assert not any('named "Nova Sky"' in s for s in sc.steps), name
 
     def test_crewmates_scenarios_name_the_current_preview_and_rail_label(self) -> None:
-        """Every scenario that turns on the Crewmates preview leads with today's card title and rail label."""
+        """Every scenario that meets the old Mates preview treats it as optional and names today's rail label.
+
+        Mates is always on, so a current build has no such switch; older
+        builds still do, and the step must hold on both.
+        """
         checked = 0
         for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
             sc = scenarios.load_scenario(path)
-            preview_steps = [
-                s for s in sc.steps if "turn on the preview" in s.lower() and "Crew" in s
-            ]
+            preview_steps = [s for s in sc.steps if "Crew Members and Crew Mode" in s]
             for step in preview_steps:
                 checked += 1
                 assert 'starts with "Mates"' in step, (path.name, step)
-            rail_steps = [s for s in sc.steps if "item appears in the left rail" in s]
+                assert step.startswith("If the Feature Previews list has"), (path.name, step)
+                assert "turn on the preview" not in step.lower(), (path.name, step)
+            assert not any("item appears in the left rail" in s for s in sc.steps), path.name
+            rail_steps = [s for s in sc.steps if "item is in the left rail" in s]
             for step in rail_steps:
-                assert '"Mates" item appears in the left rail' in step, (path.name, step)
+                assert '"Mates" item is in the left rail' in step, (path.name, step)
         assert checked >= 5
 
     def test_created_crewmate_speaks_first_with_no_user_greeting_bubble(self) -> None:

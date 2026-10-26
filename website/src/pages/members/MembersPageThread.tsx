@@ -22,8 +22,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObjec
 import { type NavigateFunction, type Location, type SetURLSearchParams } from 'react-router-dom'
 import { RotateCw } from 'lucide-react'
 import { useReducedMotion } from 'framer-motion'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW } from '../../utils/previewFlags'
 import { Btn } from '../../components/ui'
 import { type CreatedCrewmate, type CrewmateDraft } from './NewCrewmateDialog'
 import { useTranslation } from 'react-i18next'
@@ -171,10 +169,6 @@ export function useMembersPageThread({
       freshStartMutate({ slug, slot })
     })
   }, [active, activeSlot, confirmFreshStart, t, requestCloseProfile, freshStartMutate])
-  // The Crewmates preview. Mate is created in the background whatever it says,
-  // but nothing about Mate is put in front of the user -- no landing, no
-  // welcome -- until the preview is on and the page is opened.
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
   // Mate's first-visit landing happens at most once per page mount, so a phone
   // Back to the roster is never bounced into Mate's chat again.
   const mateLandedRef = useRef(false)
@@ -182,8 +176,8 @@ export function useMembersPageThread({
   // thread is open, ask the gateway for the first greeting. The server greets
   // only an empty, never-greeted thread that still owes one (Mate's welcome,
   // or the goal question of a crewmate created with `first_greeting`), so this
-  // is a no-op on every later open. Asked only for Mate (with the preview on)
-  // and dashboard-created crewmates: no other row can be owed one.
+  // is a no-op on every later open. Asked only for Mate and dashboard-created
+  // crewmates: no other row can be owed one.
   // The first Mate's entrance (#23207): in the one tab whose greeting request
   // the server answers `started`, Mate's face enters centre stage with a line,
   // flies into the header pill's face slot, and only then does the greeting
@@ -203,7 +197,7 @@ export function useMembersPageThread({
   useFirstGreeting(
     active?.slug,
     activeSlot,
-    !!active && ((crewPreview && isAssistantMember(active)) || active.dashboard_created === true),
+    !!active && (isAssistantMember(active) || active.dashboard_created === true),
     isAssistantMember(active) ? startEntrance : undefined,
   )
   // An entrance belongs to the thread it was answered for. Leaving that thread
@@ -346,7 +340,7 @@ export function useMembersPageThread({
 
   return {
     activeSlot, freshStarts, freshStartError, setFreshStartError, freshStart, freshStartConfirmDialog,
-    askFreshStart, crewPreview, mateLandedRef, activeCollision, activeThreadFailed, postThread, connected,
+    askFreshStart, mateLandedRef, activeCollision, activeThreadFailed, postThread, connected,
     confirmedSlot, entrance, entranceFaceHidden, landEntrance, endEntrance,
   }
 }

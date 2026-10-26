@@ -96,7 +96,6 @@ export function useCommandBarOverlayRootRows({
   navigate,
   store,
   cycleTheme,
-  crewPreview,
   commandById,
   apps,
   settingsGovernance,
@@ -115,7 +114,6 @@ export function useCommandBarOverlayRootRows({
   navigate: (route: string) => void
   store: AppStore
   cycleTheme: () => void
-  crewPreview: boolean
   commandById: Map<string, ContributedCommand>
   apps: ReturnType<typeof useCommandBarOverlayEngines>['apps']
   settingsGovernance: SettingsSearchGovernance
@@ -301,31 +299,23 @@ export function useCommandBarOverlayRootRows({
     // tempting, and `matesProvider` records why it is not — the catalog behind it is a
     // FETCH, so a root group would either issue a request on every open of this bar or
     // show an empty Crewmates group on a cold install.
-    //
-    // Behind the PREVIEW GATE, because this row is an INGRESS to `/members` and that
-    // page is registered with `previewFlag: PREVIEW_CREW`. Every other door to it
-    // applies the same gate; a launcher row that did not would advertise a page the
-    // operator has not opted into, and this app ships `defaultEnabled: true`, so it
-    // would do so on a default install.
-    if (crewPreview) {
-      rows.push({
-        id: 'command:search-mates',
-        title: i18nT('apps.commandBar.cmd_search_mates'),
-        // "Crewmate" is this product's word, the way "artifact" is: a reader who has
-        // not opened the Crewmates page has no reason to know that the agents they
-        // talk to have their own durable threads. The subtitle names what the view
-        // gets them instead of restating the category.
-        subtitle: i18nT('apps.commandBar.cmd_search_mates_sub'),
-        group: 'commands',
-        kind: 'view',
-        view: 'mates',
-        icon: matesIcon(),
-        // The words a reader who has not learned "crewmate" would reach for. `agent`
-        // earns its place above all of them: it is what the rest of the product calls
-        // the thing answering them.
-        keywords: ['crew', 'agent', 'member', 'mate', 'teammate', 'roster'],
-      })
-    }
+    rows.push({
+      id: 'command:search-mates',
+      title: i18nT('apps.commandBar.cmd_search_mates'),
+      // "Crewmate" is this product's word, the way "artifact" is: a reader who has
+      // not opened the Crewmates page has no reason to know that the agents they
+      // talk to have their own durable threads. The subtitle names what the view
+      // gets them instead of restating the category.
+      subtitle: i18nT('apps.commandBar.cmd_search_mates_sub'),
+      group: 'commands',
+      kind: 'view',
+      view: 'mates',
+      icon: matesIcon(),
+      // The words a reader who has not learned "crewmate" would reach for. `agent`
+      // earns its place above all of them: it is what the rest of the product calls
+      // the thing answering them.
+      keywords: ['crew', 'agent', 'member', 'mate', 'teammate', 'roster'],
+    })
     // Commands contributed by installed apps. This is the seam that lets a row live
     // outside this repository: the app declares the row and what it does, and the
     // host renders and runs it. Nothing app-authored executes here.
@@ -392,7 +382,7 @@ export function useCommandBarOverlayRootRows({
     // the tree without remounting it, which does not recompute a memo. Omitting it
     // would freeze these rows in whichever language the surface first resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, commandById, crewPreview, cycleTheme, dispatch, liveSlots, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
+  }, [apps, commandById, cycleTheme, dispatch, liveSlots, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
 
   // The root ranks from the LIVE query, not the debounced one. Ranking is pure and
   // local, so there is nothing to throttle, and debouncing it would let a fast Enter

@@ -35,7 +35,6 @@ export function useCommandBarOverlaySlots({
   runningMates,
   mates,
   argCommand,
-  crewPreview,
   ranked,
   selected,
   setSelected,
@@ -47,7 +46,6 @@ export function useCommandBarOverlaySlots({
   debounced: string
   query: string
   argCommand: ContributedCommand | null
-  crewPreview: boolean
   ranked: RankedRow[]
   selected: number
   setSelected: Dispatch<SetStateAction<number>>
@@ -348,7 +346,7 @@ export function useCommandBarOverlaySlots({
         out.push({ key: 'slot:retry', tag: 'retry-mates' })
       } else if (!matesFetching && out.length === 0 && mateQuery) {
         out.push({ key: 'slot:clear-query', tag: 'clear-query-mates' })
-      } else if (crewPreview && !matesFetching && out.length === 0 && mateRows !== undefined) {
+      } else if (!matesFetching && out.length === 0 && mateRows !== undefined) {
         // NO CREW AT ALL, and the reader is one keystroke from fixing that. A centred
         // sentence naming the Crewmates page was the dead end here: a reader reported
         // that "nothing looks like a link", so the one thing they came to do had no
@@ -389,9 +387,7 @@ export function useCommandBarOverlaySlots({
       // a session title or an artifact name far more often than it is a crew's name —
       // and a crew name that IS typed is often distinctive enough to have already
       // matched the view row's own keywords above.
-      // Behind the same preview gate as the view row: this row is a second, independent
-      // way for a typed query to reach `/members`.
-      if (crewPreview) out.push({ key: 'slot:fallback-mates', tag: 'fallback-mates' })
+      out.push({ key: 'slot:fallback-mates', tag: 'fallback-mates' })
       // The recovery row exists for the dead end — a typed query that matched
       // nothing — not for every keystroke. Riding the fallback's own condition put a
       // row about switching the feature off under every successful search, and
@@ -399,7 +395,7 @@ export function useCommandBarOverlaySlots({
       if (ranked.length === 0) out.push({ key: 'slot:recovery', tag: 'recovery' })
     }
     return out
-  }, [argCommand, crewPreview, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery, folderQuery, folderRows, foldersError, foldersFetching, mateQuery, mateRows, matesError, matesFetching])
+  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery, folderQuery, folderRows, foldersError, foldersFetching, mateQuery, mateRows, matesError, matesFetching])
 
   const rowCount = slots.length
   /**

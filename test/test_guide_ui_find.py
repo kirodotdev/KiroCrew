@@ -487,14 +487,13 @@ def test_a_create_question_is_guided_even_though_mate_could_create_it(
 def test_one_label_in_several_places_is_guided_to_the_features_own_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # "New crewmate" is drawn on Customize and on the Crewmates page. The
-    # Crewmates page is still behind its preview, which this tab does not show
-    # as on, so the tie is not settled on it: the user is asked which one,
-    # never sent to the first-ranked Customize button either.
+    # "New mate" is drawn on Customize and on the Mates page. The Mates page
+    # has no preview in front of it, so the tie settles on the feature's own
+    # page, never on the first-ranked Customize button.
     out = _next_for(monkeypatch, "Where do I create a new mate?")
     assert out["ambiguous"] is True and out["tied"] >= 2
     assert out["results"][0]["id"] == "agents.add"
-    assert out["next"] == mcp_guide._AMBIGUOUS_NO_GUIDE_NOTE
+    assert out["next"].startswith("members.add-menu.new has a guide_ref")
 
 
 def test_ties_are_one_guide_only_for_the_same_location_or_the_same_target() -> None:
