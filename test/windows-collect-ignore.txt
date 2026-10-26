@@ -37,7 +37,6 @@ test_pid_lifecycle_process_sweeps.py  # process-group semantics
 test_pid_lifecycle_provider_tree.py  # process-group semantics
 test_pid_lifecycle_teardown.py     # process-group semantics
 test_pid_lifecycle_tracking_integrity.py  # process-group semantics
-test_pid_sweep_helpers.py          # process-group semantics
 test_process_tree_kill.py          # killpg/getpgid semantics
 test_source_providers.py           # providers require the POSIX sandbox
 test_source_providers_app_contributors.py  # a test_source_providers.py topic part; same suite
