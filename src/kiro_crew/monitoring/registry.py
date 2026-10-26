@@ -166,16 +166,66 @@ _KINDS: dict[str, MonitorKind] = {
 }
 
 
+#: Kinds a downstream edition contributed at boot through
+#: :func:`kiro_crew.monitoring.plugins.register_monitor_kind`. Held apart from
+#: :data:`_KINDS` so a built-in entry can never be replaced, and so this module
+#: stays DATA: the plugin's provider and parser live in ``plugins``, which imports
+#: this module and never the reverse.
+_PLUGIN_KINDS: dict[str, MonitorKind] = {}
+
+#: The objectives a contributed kind may declare. A contributed kind is observed
+#: through the pull-request facts, decision and fingerprint path, which only
+#: implements review readiness. Widening this is a change to that path, not to a
+#: plugin.
+PLUGIN_KIND_OBJECTIVES = frozenset({REVIEW_READY})
+
+
+def _add_plugin_kind(entry: MonitorKind) -> None:
+    """Record a contributed kind. Called only by ``plugins.register_monitor_kind``.
+
+    Refuses a built-in name and a duplicate loudly: a registration that silently
+    did nothing, or that shadowed a built-in, would arm monitors against a
+    provider nobody chose.
+    """
+    if entry.name in _KINDS:
+        raise ValueError(f"monitor kind {entry.name!r} is built in and cannot be registered")
+    if entry.name in _PLUGIN_KINDS:
+        raise ValueError(f"monitor kind {entry.name!r} is already registered")
+    if entry.supports_shadow:
+        # The shadow path probes without the owner-credential gate the controller
+        # applies, so a contributed kind may not claim it.
+        raise ValueError(f"monitor kind {entry.name!r} cannot declare the shadow path")
+    if not entry.objectives or not entry.objectives <= PLUGIN_KIND_OBJECTIVES:
+        raise ValueError(
+            f"monitor kind {entry.name!r} declares objectives a contributed kind cannot "
+            f"support: {sorted(entry.objectives - PLUGIN_KIND_OBJECTIVES) or 'none'}"
+        )
+    _PLUGIN_KINDS[entry.name] = entry
+
+
+def _all_kinds() -> tuple[MonitorKind, ...]:
+    return (*_KINDS.values(), *_PLUGIN_KINDS.values())
+
+
 def monitor_kind(name: object) -> MonitorKind | None:
     """The entry for *name*, or None when nothing is registered under it."""
     if not isinstance(name, str):
         return None
-    return _KINDS.get(name)
+    return _KINDS.get(name) or _PLUGIN_KINDS.get(name)
+
+
+def is_pull_request_monitor_kind(name: object) -> bool:
+    """Whether *name* is observed through the pull-request facts path.
+
+    The built-in review kinds, plus every contributed kind: a contributed kind is
+    pull-request shaped by construction (see :data:`PLUGIN_KIND_OBJECTIVES`).
+    """
+    return isinstance(name, str) and (name in PULL_REQUEST_MONITOR_KINDS or name in _PLUGIN_KINDS)
 
 
 def publicly_armable_kinds() -> frozenset[str]:
     """The kinds a caller may name. This is what an entry allowlist should expose."""
-    return frozenset(entry.name for entry in _KINDS.values() if entry.publicly_armable)
+    return frozenset(entry.name for entry in _all_kinds() if entry.publicly_armable)
 
 
 def publicly_armable_objectives() -> frozenset[str]:
@@ -188,7 +238,7 @@ def publicly_armable_objectives() -> frozenset[str]:
     """
     return frozenset(
         objective
-        for entry in _KINDS.values()
+        for entry in _all_kinds()
         if entry.publicly_armable
         for objective in entry.objectives
     )

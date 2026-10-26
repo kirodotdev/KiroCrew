@@ -17,7 +17,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from kiro_crew.monitoring.limits import MAX_RUNTIME_CEILING_SECS
-from kiro_crew.monitoring.registry import PULL_REQUEST_MONITOR_KINDS
+from kiro_crew.monitoring.registry import PULL_REQUEST_MONITOR_KINDS, is_pull_request_monitor_kind
 
 logger = logging.getLogger(__name__)
 
@@ -778,6 +778,25 @@ class MonitorProbe(Protocol):
     ) -> Mapping[str, MonitorProbeResult]: ...
 
 
+class MonitorProbeProvider(MonitorProbe, Protocol):
+    """The probe contract the controller calls, one provider per monitored kind.
+
+    :class:`MonitorProbe` plus ``use_owner_credentials``: the controller passes
+    False when the monitor's owner did not authorize probing with their
+    credentials. The persistence-only path (``shadow.run_shadow_probe``) takes the
+    narrower :class:`MonitorProbe` because it never applies that gate. Every
+    built-in provider and every contributed kind's provider satisfies both.
+    """
+
+    def probe(
+        self,
+        subjects: Sequence[str],
+        *,
+        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+        use_owner_credentials: bool = True,
+    ) -> Mapping[str, MonitorProbeResult]: ...
+
+
 def transient_probe_failure() -> MonitorProbeResult:
     """The result a probe that could not answer usably is treated as returning."""
     return MonitorProbeResult(
@@ -1471,7 +1490,7 @@ def _public_pull_request_observation(
     pull_request_state = projected.get("state")
     if (
         projected.get("kind") != expected_kind
-        or expected_kind not in PULL_REQUEST_MONITOR_KINDS
+        or not is_pull_request_monitor_kind(expected_kind)
         or not isinstance(projected.get("target"), str)
         or not projected.get("target")
         or not isinstance(projected.get("head_revision"), str)
