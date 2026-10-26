@@ -156,6 +156,13 @@ describe('Color-blind safe theme', () => {
     expect(THEME_LABEL_KEY.colorblind).toBe('hooks.theme.color_blind_safe')
   })
 
+  it('gives the light user bubble a fill, since its --card is the page colour', () => {
+    expect(resolveVar('colorblind-light', '--card')).toBe(resolveVar('colorblind-light', '--bg'))
+    expect(ratio('colorblind-light', 'bg-hover', 'bg')).toBeGreaterThan(1.09)
+    const css = readFileSync(join(__dirname, '../styles/chat-transcript.css'), 'utf8')
+    expect(css).toMatch(/\[data-theme="colorblind-light"\] \.user-bubble\{background-color:var\(--bg-hover\)\}/)
+  })
+
   it('the distance floor fails a palette that is not colour-blind safe (control)', () => {
     // High Contrast pairs a pure green ok with a yellow warn: far apart for
     // typical vision, nearly one colour without M cones.
@@ -176,6 +183,17 @@ describe('Color-blind safe theme', () => {
           expect(de, `${a}/${b} closest under ${vision}: ${de.toFixed(1)} dE00`).toBeGreaterThanOrEqual(MIN_DELTA_E)
         })
       }
+
+      it('keeps --danger apart from body text, so an error never reads as plain text', () => {
+        // Under red-green simulation light danger is a dark brown that differs
+        // from the near-black body text mainly in lightness. Warn already sits at
+        // its 3:1 ceiling on white and danger must stay 20 dE00 darker than it,
+        // so the luminance step to --text is held at the widest that leaves
+        // room for both: 2.3:1 (the first release had 2.14:1).
+        const { vision, de } = worstSeparation(theme, 'danger', 'text')
+        expect(de, `danger/text closest under ${vision}: ${de.toFixed(1)} dE00`).toBeGreaterThanOrEqual(MIN_DELTA_E)
+        expect(ratio(theme, 'danger', 'text')).toBeGreaterThanOrEqual(2.3)
+      })
 
       it('keeps added and removed diff lines apart under every simulation', () => {
         const { vision, de } = worstSeparation(theme, 'diff-add-text', 'diff-del-text')

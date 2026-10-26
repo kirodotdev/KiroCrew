@@ -249,6 +249,8 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 /* Amethyst OLED gives --card the page colour too (#000000 in dark, a near-match in light), so its
    borderless user bubble takes the same --bg-hover step as kiro-light's. */
 [data-theme="amethyst-oled-dark"] .user-bubble,[data-theme="amethyst-oled-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Color-blind safe light keeps a white --card on a white page as well. */
+[data-theme="colorblind-light"] .user-bubble{background-color:var(--bg-hover)}
 /* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
    `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
    the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every
