@@ -32,7 +32,7 @@ from typing import Any, Iterator
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog, bus, eager, emit
+from kiro_crew.crew_log import CrewLog, bus, eager, emit, lease
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import projection_catalogue, slot_prime
 from kiro_crew.crew_log import store as crew_log_store
@@ -78,6 +78,7 @@ def _isolated(tmp_path, _floor_monkeypatch):
     _reset()
     yield
     _reset()
+    _release_write_leases()
 
 
 def _reset() -> None:
@@ -86,6 +87,26 @@ def _reset() -> None:
     crew_log.forget_session_folds()
     bus.reset_for_tests()
     emit.reset_caches()
+
+
+def _release_write_leases() -> None:
+    """Release any write lease a handle this test created still holds.
+
+    A ``CrewLog`` handle releases its write lease when it is dropped, through the
+    ``weakref.finalize`` the handle arms. A reader that caches handles process-wide
+    (``read.dispatch_view``'s session-tree keeps one per unit it scans) holds some of
+    this test's handles past the test's own frame, so the refcount drop -- and the
+    release that rides it -- waits for a later generational collection. On POSIX that
+    wait is harmless, but the next test on this xdist worker (``test_crew_log_types``)
+    asserts in its teardown that no lease outlived a test, so a lease released only at
+    the next GC reads there as leaked. Releasing them here, where they are created,
+    keeps the boundary clean without a ``gc.collect()`` and without touching the other
+    file's check. The lease release is idempotent, so the handle's own finalizer
+    running later is a no-op.
+    """
+    for key in list(lease._held):
+        while key in lease._held:
+            lease.release(key)
 
 
 # --------------------------------------------------------------------------- #
