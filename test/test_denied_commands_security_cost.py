@@ -1308,7 +1308,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
         "floor",
         [
             "_is_credential_mint",
-            "_is_self_kill",
+            "_self_kill_span",
             "_matches_self_subcommand",
             "_is_ssh_to_self",
         ],
@@ -1348,12 +1348,19 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
                             found.append(sub.lineno)
             return found
 
+        def loops_over_tokens(node) -> bool:
+            # The frame loop binds ``tokens``, either as a bare target or as the
+            # second element of a ``(source, tokens)`` unpacking (the kill floor
+            # walks ``_shell_payload_walk`` for the source it reports a span in).
+            target = node.target
+            if isinstance(target, ast.Name):
+                return target.id == "tokens"
+            if isinstance(target, ast.Tuple):
+                return any(isinstance(el, ast.Name) and el.id == "tokens" for el in target.elts)
+            return False
+
         frame_loops = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.For)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "tokens"
+            node for node in ast.walk(tree) if isinstance(node, ast.For) and loops_over_tokens(node)
         ]
         assert len(frame_loops) == 1, f"{floor} no longer has exactly one frame loop"
         loop = frame_loops[0]
