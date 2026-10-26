@@ -53,11 +53,13 @@ def _nt_expand(path: str) -> str:
 
 
 def _nt_norm_item(path: str) -> str:
-    """``_norm_item`` as a Windows gateway runs it: the same steps on ``ntpath``."""
-    norm = ntpath.abspath(_nt_expand(path))
-    if norm.startswith("//") and not norm.startswith("///"):
-        norm = norm[1:]
-    return norm
+    """``_norm_item`` as a Windows gateway running from ``C:\\gateway`` computes it.
+
+    Anchored at a drive, as Windows' ``abspath`` always is: ``ntpath.abspath`` on a
+    POSIX host keeps ``/workspace/app/x`` driveless, a path no Windows gateway
+    produces, so it would meet a driveless POSIX pattern no real Windows item meets.
+    """
+    return ntpath.normpath(ntpath.join("C:\\gateway", _nt_expand(path)))
 
 
 def _windows_reading(monkeypatch) -> None:
@@ -346,8 +348,9 @@ def test_a_remote_call_cannot_reach_a_gateway_path(monkeypatch, reading, path):
     [
         ("C:\\work\\secret\\k", "C:\\work\\secret\\*", True),
         ("C:\\work\\x\\..\\secret\\k", "C:\\work\\secret\\*", True),
-        ("C:\\work\\secret\\k", "c:\\work\\secret\\*", True),  # Windows opens any case
-        ("C:\\work\\secret\\k", "C:/work/secret/*", True),  # and either separator
+        ("C:\\work\\secret\\k", "c:\\work\\secret\\*", True),  # a drive in either case
+        ("C:\\work\\secret\\k", "C:\\work\\Secret\\*", False),  # only a deny folds the rest
+        ("C:\\work\\secret\\k", "C:/work/secret/*", True),  # either separator
         ("C:/work/secret/k", "C:\\work\\secret\\*", True),  # ntpath folds / to \\
         ("/workspace/app/x", "/workspace/app/**", False),  # a POSIX pattern never met it
     ],

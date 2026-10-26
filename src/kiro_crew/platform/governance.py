@@ -1233,6 +1233,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.platform.governance_parts.matching import (  # noqa: F401
         _DEFAULT_MATCHER,
+        _DENY_MATCHERS,
         _MATCHERS,
         _NETWORK_SCHEMES,
         _ORDINAL_SCALES,
@@ -1246,16 +1247,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _expand,
         _looks_like_host,
         _match_command,
+        _match_denied_path,
         _match_host,
         _match_identifier,
         _match_ip,
+        _match_local_path,
         _match_mcp,
         _match_origin,
         _match_path,
         _norm_item,
         _origin_form,
-        _path_key,
+        _upper_drive,
         _url_host,
+        _windows_glob,
         register_matcher,
         url_policy_hosts,
     )
