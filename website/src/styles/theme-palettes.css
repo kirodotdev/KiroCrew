@@ -978,3 +978,67 @@
   --shadow-lg:0 12px 28px rgba(0,0,0,.18);
   color-scheme:light;
 }
+
+
+/* ── Color-blind safe ── */
+/* Status hues come from the Okabe-Ito palette (Okabe & Ito, "Color Universal Design", 2008),
+   chosen so success, warning and error stay apart under protanopia, deuteranopia and
+   tritanopia: ok is blue (not green), danger is vermillion, warn is yellow, and in each
+   variant danger and warn sit far apart in lightness so a red-green deficiency, which
+   flattens their hue difference, still leaves a step. Diffs follow the same rule (added
+   lines blue, removed lines vermillion). The accent is Okabe-Ito reddish purple, which no
+   status token uses. colorBlindTheme.test.ts measures every status pair under each of the
+   three simulations, and the fg/bg contrast of each token. */
+[data-theme="colorblind-dark"]{
+  --bg:#101216;--bg-accent:#16191e;--bg-elevated:#1b1f25;--bg-hover:#252a31;
+  --card:#16191e;--card-fg:#e8eaed;--card-hl:rgba(255,255,255,.05);
+  --panel:#101216;--panel-strong:#16191e;
+  --chrome:rgba(16,18,22,.96);
+  --text:#e3e6ea;--text-strong:#ffffff;--muted:#a3abb5;--muted-fg:#000;--muted-strong:#c4cad1;
+  --border:#2c323a;--border-strong:#3d444e;--border-hover:#59616c;
+  --accent:#CC79A7;--accent-fg:#000;--accent-hover:#D892B8;--accent-subtle:rgba(204,121,167,.16);
+  --accent-glow:rgba(204,121,167,.3);--ring:#CC79A7;
+  --ok:#56B4E9;--ok-fg:#000;--ok-subtle:rgba(86,180,233,.14);
+  --warn:#F0E442;--warn-fg:#000;--warn-subtle:rgba(240,228,66,.12);
+  --danger:#DB5A00;--danger-fg:#000;--danger-subtle:rgba(219,90,0,.16);
+  --info:#2BBF94;--info-fg:#000;
+  --aim:#B9A3E3;--aim-fg:#000;--aim-subtle:rgba(185,163,227,.16);
+  --clarify:#F0E442;--clarify-subtle:rgba(240,228,66,.08);
+  --diff-add:rgba(86,180,233,.15);--diff-add-text:#56B4E9;
+  --diff-del:rgba(219,90,0,.18);--diff-del-text:#EE7A33;
+  --diff-hunk:rgba(43,191,148,.14);--diff-hunk-text:#2BBF94;
+  --diff-meta-text:#e3e6ea;
+  --json-key:#56B4E9;--json-str:#2BBF94;--json-num:#CC79A7;--json-bool:#E69F00;
+  --term-magenta:#CC79A7;--term-cyan:#9AD8F2;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow-md:0 4px 12px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.03);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.45);
+  color-scheme:dark;
+}
+[data-theme="colorblind-light"]{
+  --search-highlight:rgba(255,167,38,.35);--search-highlight-current:rgba(255,120,0,.7);--search-highlight-current-border:rgba(0,0,0,.8);
+  --bg:#ffffff;--bg-accent:#f3f4f6;--bg-elevated:#ffffff;--bg-hover:#e9ebee;
+  --card:#ffffff;--card-fg:#15181c;--card-hl:rgba(0,0,0,.04);
+  --panel:#f7f8f9;--panel-strong:#eff1f3;
+  --chrome:rgba(255,255,255,.96);
+  --text:#1b1e23;--text-strong:#000000;--muted:#555c66;--muted-fg:#fff;--muted-strong:#3a4049;
+  --border:#d3d7dd;--border-strong:#b5bbc3;--border-hover:#7d848e;
+  --accent:#A8487E;--accent-fg:#fff;--accent-hover:#8E3A6A;--accent-subtle:rgba(168,72,126,.10);
+  --accent-glow:rgba(168,72,126,.18);--ring:#A8487E;
+  --ok:#0072B2;--ok-fg:#fff;--ok-subtle:rgba(0,114,178,.10);
+  --warn:#AB9100;--warn-fg:#000;--warn-subtle:rgba(171,145,0,.12);
+  --danger:#962E00;--danger-fg:#fff;--danger-subtle:rgba(150,46,0,.10);
+  --info:#007A5A;--info-fg:#fff;
+  --aim:#5E3A9E;--aim-fg:#fff;--aim-subtle:rgba(94,58,158,.10);
+  --clarify:#8A7400;--clarify-subtle:rgba(138,116,0,.08);
+  --diff-add:rgba(0,114,178,.12);--diff-add-text:#005A8C;
+  --diff-del:rgba(150,46,0,.12);--diff-del-text:#962E00;
+  --diff-hunk:rgba(0,122,90,.12);--diff-hunk-text:#006B4F;
+  --diff-meta-text:#1b1e23;
+  --json-key:#0072B2;--json-str:#007A5A;--json-num:#A8487E;--json-bool:#962E00;
+  --term-magenta:#A8487E;--term-cyan:#00708A;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 12px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.12);
+  color-scheme:light;
+}

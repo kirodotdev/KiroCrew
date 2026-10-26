@@ -10226,7 +10226,8 @@
     "theme": {
       "high_contrast": "🔆 উচ্চ কনট্রাস্ট",
       "nu_disco": "🪩 Nu Disco",
-      "amethyst_oled": "💜 Amethyst OLED"
+      "amethyst_oled": "💜 Amethyst OLED",
+      "color_blind_safe": "👁️ বর্ণান্ধতা-বান্ধব"
     },
     "useCronActions": {
       "failed_to_cancel_job": "জব বাতিল করা যায়নি",

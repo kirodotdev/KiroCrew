@@ -4558,7 +4558,8 @@
     "theme": {
       "high_contrast": "🔆 High Contrast",
       "nu_disco": "🪩 Nu Disco",
-      "amethyst_oled": "💜 Amethyst OLED"
+      "amethyst_oled": "💜 Amethyst OLED",
+      "color_blind_safe": "👁️ Color-blind safe"
     },
     "usePanelTabs": {
       "artifacts": "Artifacts",

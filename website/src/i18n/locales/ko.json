@@ -10081,7 +10081,8 @@
     "theme": {
       "high_contrast": "🔆 고대비",
       "nu_disco": "🪩 Nu Disco",
-      "amethyst_oled": "💜 Amethyst OLED"
+      "amethyst_oled": "💜 Amethyst OLED",
+      "color_blind_safe": "👁️ 색각 이상 친화"
     },
     "useCronActions": {
       "failed_to_cancel_job": "작업을 취소하지 못했습니다",

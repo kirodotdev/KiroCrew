@@ -10081,7 +10081,8 @@
     "theme": {
       "high_contrast": "🔆 高コントラスト",
       "nu_disco": "🪩 Nu Disco",
-      "amethyst_oled": "💜 Amethyst OLED"
+      "amethyst_oled": "💜 Amethyst OLED",
+      "color_blind_safe": "👁️ 色覚バリアフリー"
     },
     "useCronActions": {
       "failed_to_cancel_job": "ジョブのキャンセルに失敗しました",

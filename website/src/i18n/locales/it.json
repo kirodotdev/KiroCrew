@@ -10371,7 +10371,8 @@
     "theme": {
       "high_contrast": "🔆 Contrasto elevato",
       "nu_disco": "🪩 Nu Disco",
-      "amethyst_oled": "💜 Amethyst OLED"
+      "amethyst_oled": "💜 Amethyst OLED",
+      "color_blind_safe": "👁️ Adatto al daltonismo"
     },
     "useCronActions": {
       "failed_to_cancel_job": "Impossibile annullare il job",

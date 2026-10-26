@@ -10516,7 +10516,8 @@
     "theme": {
       "high_contrast": "🔆 Высокий контраст",
       "nu_disco": "🪩 Nu Disco",
-      "amethyst_oled": "💜 Amethyst OLED"
+      "amethyst_oled": "💜 Amethyst OLED",
+      "color_blind_safe": "👁️ Для дальтоников"
     },
     "useCronActions": {
       "failed_to_cancel_job": "Не удалось отменить задание",
