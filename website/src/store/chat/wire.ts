@@ -1,11 +1,12 @@
 /** The trust boundary of the chat state: everything here takes a value that
  *  arrived from the gateway (a WebSocket frame or an HTTP payload) and makes it
  *  safe to store. Prototype-pollution key guards, the slot-detail read and its
- *  normalization, queue-entry attachment lists, agent-authored workflow text
+ *  normalization, queue-entry attachment lists and paste blocks, agent-authored workflow text
  *  and the oversize tool-payload clamp. No reducer lives here. */
 import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
+import { findTokenRanges, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -110,6 +111,33 @@ export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
 export function queueEntrySendId(meta: unknown): { sendId?: string } {
   const id = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).sendId : undefined
   return typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? { sendId: id } : {}
+}
+
+/** The paste blocks behind a queue entry's text, when THIS browser sent it.
+ *  The entry holds the wire text, in which every `[ Paste #N ]` token is
+ *  already expanded, and the gateway carries no blocks on it (it stores
+ *  `meta.pastes` on no row). The sending tab recorded the send in the paste
+ *  side table under that wire text (`saveStoredPaste`), which is the source
+ *  the sent bubble re-collapses from on a reload (`mergePreservedPastes`), so
+ *  the queue card and the bubble it becomes agree. Another browser, or an
+ *  evicted entry, finds nothing and the card shows the text as sent. No
+ *  length gate ahead of the read: the text here is trimmed, and a paste that
+ *  was collapsed at exactly the threshold with trailing whitespace lies under
+ *  it once trimmed. */
+export function queueEntryPastes(content: string): { pastes?: PasteBlock[] } {
+  if (!content) return {}
+  const stored = readStoredPaste(content.trimEnd())
+  if (!stored || !Array.isArray(stored.pastes) || !stored.pastes.length) return {}
+  // In TOKEN ORDER, read off the display text the record keeps: the order the
+  // bodies stand in the wire, which is what lets the card fold them back to
+  // the right tokens (`foldPastesInOrder`) when one body is a prefix of
+  // another's. A block with no token in the display was not live on the
+  // send and is dropped; a record whose display holds no token at all keeps
+  // the blocks as recorded.
+  const ordered = findTokenRanges(typeof stored.displayTxt === 'string' ? stored.displayTxt : '', stored.pastes)
+    .sort((a, b) => a.start - b.start)
+    .map(r => r.block)
+  return { pastes: ordered.length ? ordered : stored.pastes }
 }
 
 export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
