@@ -17,10 +17,26 @@ stdin (JSON):
     {"items": [
         {"id": "item-1", "accept": {"kind": "pr_checks", "pr": 123,
                                      "repo": "owner/name"}},
-        {"id": "item-2", "accept": {"kind": "file", "path": "/abs/path",
+        {"id": "item-2", "accept": {"kind": "pr_merged", "pr": 123,
+                                     "repo": "owner/name"}},
+        {"id": "item-3", "accept": {"kind": "crux_cr", "cr": "CR-123456"}},
+        {"id": "item-4", "accept": {"kind": "file", "path": "/abs/path",
                                      "exists": true}},
-        {"id": "item-3", "accept": {"kind": "human_approval"}}
+        {"id": "item-5", "accept": {"kind": "human_approval"}}
     ]}
+
+Kinds:
+    pr_checks       every check on a GitHub pull request is green
+                    (``gh pr checks``).
+    pr_merged       a GitHub pull request is merged (``gh pr view``; an open
+                    one is pending, a closed-unmerged one fails). ``repo`` is
+                    required here.
+    crux_cr         a code review in an edition's review system has merged and
+                    its review gates are satisfied. Read by
+                    ``kirocrew crux-status``, which only an edition that ships
+                    that command provides; elsewhere this is an ``error``.
+    file            a path exists (or, with ``"exists": false``, does not).
+    human_approval  never machine-evaluated; always ``pending``.
 
 stdout (JSON):
     {"results": [{"id": "...", "verdict": "pass|fail|pending|refused|error",
@@ -86,6 +102,7 @@ Stdlib-only, Python 3.8+.
 """
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -94,15 +111,33 @@ from pathlib import Path
 #: allowlist - nothing in a spec can name a command at all. This exists so a
 #: handler that ever passes spec input into `_exec` fails closed instead of
 #: executing it, which is the regression the `cmd` kind's removal prevents.
-#: Both invocations here are `gh` (`pr checks` and the `pr view` draft probe),
-#: so a second entry would widen the surface for nothing.
-_SELF_BUILT_COMMANDS = {"gh"}
+#: `gh` serves `pr_checks`, its draft probe and `pr_merged`; `kirocrew` serves
+#: `crux_cr` and runs exactly one fixed subcommand, `crux-status --json <cr>`.
+_SELF_BUILT_COMMANDS = {"gh", "kirocrew"}
 
 TIMEOUT_SECS = 300
 EVIDENCE_TAIL_CHARS = 500
 
 #: gh pr checks exits 8 when checks are still running (gh >= 2.30).
 _GH_PENDING_EXIT = 8
+
+#: The review id ``crux_cr`` accepts. Applied with ``fullmatch``: a ``$`` anchor
+#: also matches before a trailing newline, so ``"CR-123456\n"`` would pass it.
+#: ``[0-9]`` rather than ``\d``, which also matches non-ASCII digits.
+_CR_ID = re.compile(r"CR-[0-9]{6,12}")
+
+#: The GitHub ``owner/name`` ``pr_merged`` accepts, applied with ``fullmatch``.
+#: An owner cannot start with ``-``, so the value can never read as a flag.
+_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+
+#: ``kirocrew crux-status`` exit codes and the report verdict each must carry.
+#: The report has to agree with the exit code before either is believed: a
+#: crash also exits 1, and a crash is not a failed review.
+_CRUX_EXIT_VERDICTS = {0: "pass", 1: "fail", 3: "needs_person", 8: "pending"}
+
+#: argparse's usage exit. The evaluator validated every argument already, so on
+#: this exit the installed ``kirocrew`` has no ``crux-status`` command at all.
+_CRUX_USAGE_EXIT = 2
 
 
 def _tail(text: str) -> str:
@@ -191,6 +226,96 @@ def _pr_is_draft(pr, repo=None):
     return proc.stdout.strip().lower() == "true"
 
 
+def _pr_merged(accept):
+    """Has this GitHub pull request merged? ``MERGED`` passes.
+
+    ``OPEN`` is ``pending``, because it can still merge; ``CLOSED`` fails,
+    because a closed pull request that did not merge carries no merged code. A
+    ``gh`` that cannot answer (no such PR, no auth) is an ``error``, never a
+    ``fail``: it says nothing about the work.
+
+    ``repo`` is required, unlike ``pr_checks``: without it ``gh`` resolves the
+    number against whatever checkout the evaluator runs in.
+    """
+    pr = accept.get("pr")
+    # bool is an int subclass; a non-positive number would reach gh as a flag.
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        return ("error", "pr_merged spec needs a positive integer pr")
+    repo = accept.get("repo")
+    if not isinstance(repo, str) or not _GH_REPO.fullmatch(repo):
+        return ("error", "pr_merged spec needs a repo of the form owner/name")
+    argv = ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "-q", ".state"]
+    problem, proc = _exec(argv)
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode != 0:
+        return ("error", f"could not read PR #{pr} in {repo}: exit {proc.returncode}: {output}")
+    state = proc.stdout.strip().upper()
+    if state == "MERGED":
+        return ("pass", f"PR #{pr} in {repo} is merged")
+    if state == "OPEN":
+        return ("pending", f"PR #{pr} in {repo} is open and not merged yet")
+    if state == "CLOSED":
+        return ("fail", f"PR #{pr} in {repo} was closed without merging")
+    return ("error", f"PR #{pr} in {repo} reported an unknown state: {output}")
+
+
+def _crux_report(stdout):
+    """The one JSON object ``kirocrew crux-status --json`` prints, or ``None``."""
+    try:
+        report = json.loads(stdout or "")
+    except (ValueError, RecursionError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _crux_cr(accept):
+    """Has this code review merged with its review gates met?
+
+    The edition command does the reading and judging; this handler validates
+    the id, builds the one fixed argv, and maps the answer. The exit code and
+    the report's ``verdict`` must agree, and the report must name the review
+    that was asked about, before either is believed. Anything else is an
+    ``error``: an unexpected exit is a broken environment, not a verdict on the
+    work, so it must never read as ``fail`` - or, worse, as ``pass``.
+
+    ``needs_person`` (exit 3) becomes ``refused``: the review merged without a
+    gate the command requires, waiting cannot change that, and the conductor
+    surfaces a ``refused`` verdict to the user rather than polling it.
+    """
+    cr = accept.get("cr")
+    if not isinstance(cr, str) or not _CR_ID.fullmatch(cr):
+        return ("error", "crux_cr spec needs a cr of the form CR-123456 (6 to 12 digits)")
+    problem, proc = _exec(["kirocrew", "crux-status", "--json", cr])
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode == _CRUX_USAGE_EXIT:
+        return (
+            "error",
+            "kirocrew crux-status is not available: the crux_cr kind needs an "
+            f"edition that ships that command ({output or 'exit 2'})",
+        )
+    expected = _CRUX_EXIT_VERDICTS.get(proc.returncode)
+    report = _crux_report(proc.stdout)
+    if (
+        expected is None
+        or report is None
+        or report.get("verdict") != expected
+        or report.get("cr") != cr
+    ):
+        return (
+            "error",
+            f"kirocrew crux-status exit {proc.returncode} came without a matching "
+            f"report for {cr}: {output}",
+        )
+    summary = _tail(str(report.get("summary") or "")) or f"{cr}: {expected}"
+    if expected == "needs_person":
+        return ("refused", f"{summary} -- waiting will not change this; a person decides")
+    return (expected, summary)
+
+
 def _evaluate(item):
     accept = item.get("accept") or {}
     kind = accept.get("kind")
@@ -234,6 +359,10 @@ def _evaluate(item):
                 "review or change the acceptance kind",
             )
         return (verdict, evidence)
+    if kind == "pr_merged":
+        return _pr_merged(accept)
+    if kind == "crux_cr":
+        return _crux_cr(accept)
     if kind == "file":
         path = accept.get("path")
         if not isinstance(path, str) or not path:

@@ -1165,7 +1165,7 @@ class TestAcceptEvaluatorInvariant:
         verdict, evidence = mod._run(["git", "--version"])
         assert verdict == "refused"
         assert "not a command this script builds" in evidence
-        assert mod._SELF_BUILT_COMMANDS == {"gh"}
+        assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew"}
 
     def test_the_draft_probe_refuses_a_command_it_did_not_build(self):
         """Same guard, reached through the probe's own seam."""
