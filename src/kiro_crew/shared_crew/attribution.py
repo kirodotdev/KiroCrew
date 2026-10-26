@@ -232,6 +232,18 @@ def bind_request_author(actor: ActorContext) -> None:
         _REQUEST_AUTHOR.set((task, author_meta(actor)))
 
 
+def request_author_bound() -> bool:
+    """Whether the running task is an authorized request's own handler task."""
+    bound = _REQUEST_AUTHOR.get()
+    if bound is None:
+        return False
+    try:
+        current = asyncio.current_task()
+    except RuntimeError:
+        current = None
+    return current is not None and current is bound[0]
+
+
 def with_request_author(meta: dict[str, Any] | None) -> dict[str, Any] | None:
     """*meta* with the running request's author when it names none.
 

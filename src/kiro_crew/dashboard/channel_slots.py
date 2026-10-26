@@ -80,7 +80,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.shared_crew.attribution import stamp_principal_author
+from kiro_crew.shared_crew.attribution import restore_from_metadata, stamp_principal_author
 from kiro_crew.shared_crew.contracts import Principal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -589,6 +589,10 @@ def surface_channel_session(
     # without created_at, so the delete-won guard's evidence gate engages.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
+    # Shared Crew: a Slack-born session's creator was recorded on this line by
+    # its first row's append (``ConversationLog.append``); a line with none
+    # reads back as legacy and is never back-filled.
+    restore_from_metadata(slot, meta)
     slot._memory_assignment_from_history = True
     # Model and reasoning_effort go through the shared restore helper so this
     # path validates them exactly like the persistence loaders and History

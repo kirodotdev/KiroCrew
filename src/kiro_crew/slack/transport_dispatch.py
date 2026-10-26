@@ -63,6 +63,7 @@ from kiro_crew.slack.handler import (
     _is_slack_restricted,
     _maybe_auto_title_slack,
     _should_auto_approve_spawn,
+    _slack_sender_row_meta,
     _thread_agents,
     get_dashboard_state,
     get_orch_cfg,
@@ -426,7 +427,18 @@ async def handle_message_transport(
     # Shared with native handle_message so a thread linked via
     # /kirocrew link-to-dashboard routes into its dashboard slot (with the same
     # auth recheck + bang fall-through) instead of spawning a fresh session.
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    # Shared Crew attribution: this message's user rows name their Slack sender
+    # (``meta["slack_sender"]``), as on the native path; a bot's name none.
+    _user_row_meta = _slack_sender_row_meta(user_id, "", from_trusted_bot)
+    if await maybe_route_linked_thread(
+        text,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        reply_ts,
+        sender_is_bot=from_trusted_bot,
+    ):
         return
 
     # ── Hook: auto-reply before touching the LLM (mirrors native) ──
@@ -447,6 +459,7 @@ async def handle_message_transport(
                     source_thread=session_key,
                     source_user=user_id,
                     agent=_agent,
+                    user_meta=_user_row_meta,
                 )
             return
 
@@ -515,6 +528,7 @@ async def handle_message_transport(
         task_runner=task_runner,
         cron_service=cron_service,
         channel_agent=agent_override,
+        user_meta=_user_row_meta,
     ):
         return
 
@@ -785,6 +799,7 @@ async def handle_message_transport(
                     # shows this session as "default" even though the turn ran
                     # under ``_agent`` (see ConversationLog.append docstring).
                     agent=_agent,
+                    extra_meta=_user_row_meta,
                 )
                 _logged_user_turn = True
             except Exception:
@@ -949,6 +964,7 @@ async def handle_message_transport(
                     # session to "default" forever (same reasoning as the
                     # receipt write above).
                     agent=_agent,
+                    user_meta=_user_row_meta,
                 )
             _stamped_turn = True
             # The asker is the conversation that RAN this turn. Resolving the
@@ -1114,6 +1130,7 @@ async def handle_message_transport(
                         source_thread=session_key,
                         source_user=user_id,
                         agent=_agent,
+                        user_meta=_user_row_meta,
                     )
                 await _refresh_dashboard_tab(session_key)
         except Exception:

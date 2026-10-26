@@ -46,6 +46,13 @@ SESSION_ATTRIBUTION_META_KEY = "attribution"
 #: Message ``meta`` key that holds the accepted message's author principal.
 MESSAGE_AUTHOR_META_KEY = "author"
 
+#: Message ``meta`` key a Slack-sourced user row carries: the raw Slack ids of
+#: its sender, ``{"team_id", "enterprise_id", "user_id"}``. Written only by the
+#: gateway's Slack paths (a request may never supply it), read once at append
+#: time into :data:`MESSAGE_AUTHOR_META_KEY` (``slack_identity``). Plain data
+#: that grants nothing.
+SLACK_SENDER_META_KEY = "slack_sender"
+
 UNKNOWN_PRINCIPAL_ID = "p_unknown"
 
 _PRINCIPAL_ID_RE = re.compile(r"\Ap_[a-z0-9_]{1,64}\Z")
@@ -76,7 +83,17 @@ class Provenance(str, enum.Enum):
     ENTERPRISE = "enterprise"
     #: Server-internal automation with a named owner component.
     INTERNAL = "internal"
+    #: A Slack event delivered over the gateway's own authenticated Slack app
+    #: connection, naming the sender Slack reported. Attribution only: it was
+    #: admitted by the Slack allowlist, never by a Shared Crew boundary.
+    SLACK_EVENT = "slack_event"
     NONE = "none"
+
+
+#: Providers whose principals are channel senders. A channel principal labels
+#: who wrote or answered something; it is never a collaborator, never a budget
+#: owner and never evidence that a team path exists.
+CHANNEL_PROVIDERS = frozenset({"slack"})
 
 
 @dataclass(frozen=True)
@@ -165,6 +182,20 @@ class Principal:
     def is_unknown(self) -> bool:
         return self.kind is PrincipalKind.UNKNOWN
 
+    @property
+    def via(self) -> str:
+        """The channel this principal was seen through (``"slack"``), else ``""``.
+
+        A principal read back from a public record has no provider, so the
+        public ``via`` label it carried is read instead. Display data only: it
+        decides a mark and keeps channel senders out of team-path inference,
+        and grants nothing.
+        """
+        if self.provider in CHANNEL_PROVIDERS:
+            return self.provider
+        raw = self.extra.get("via")
+        return raw if isinstance(raw, str) and raw in CHANNEL_PROVIDERS else ""
+
     def to_dict(self) -> dict[str, Any]:
         body = {
             "schema_version": SCHEMA_VERSION,
@@ -179,8 +210,19 @@ class Principal:
         return merge_extra(body, self.extra)
 
     def to_public_dict(self) -> dict[str, Any]:
-        """The browser-facing shape: no issuer or subject, only id and label."""
-        return {"id": self.id, "kind": self.kind.value, "display": self.display.to_dict()}
+        """The browser-facing shape: no issuer or subject, only id and label.
+
+        A channel principal adds ``via``, the channel's name, so a surface can
+        say "via Slack". It names the channel, never the workspace or user id.
+        """
+        body: dict[str, Any] = {
+            "id": self.id,
+            "kind": self.kind.value,
+            "display": self.display.to_dict(),
+        }
+        if self.via:
+            body["via"] = self.via
+        return body
 
     @classmethod
     def from_dict(cls, raw: object) -> Principal:
@@ -199,6 +241,11 @@ class Principal:
             ),
             extra=split_extra(data, cls._KNOWN),
         )
+
+
+def is_channel_principal(principal: Principal) -> bool:
+    """Whether *principal* is a channel sender (attribution only, see :data:`CHANNEL_PROVIDERS`)."""
+    return bool(principal.via)
 
 
 def principal_or_unknown(raw: object) -> Principal:

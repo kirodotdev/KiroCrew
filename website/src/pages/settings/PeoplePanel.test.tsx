@@ -145,6 +145,37 @@ describe('PeoplePanel', () => {
     expect(await screen.findByTestId('shared-access-setup')).toBeInTheDocument()
   })
 
+  it('keeps a personal Crew personal when the only other people came from Slack', async () => {
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
+    const slack = row('p_s', 'Sam Slack', { sources: ['session_creator'], last_seen_at: null })
+    people.mockResolvedValue({
+      schema_version: 1, directory: { state: 'unavailable' }, usage_available: false,
+      people: [row('p_a', 'Alice', { is_viewer: true }), { ...slack, principal: { ...slack.principal, via: 'slack' } }],
+    })
+    mount()
+    expect(await screen.findByTestId('shared-access-setup')).toBeInTheDocument()
+  })
+
+  it('shows a Slack person as attributed only, with no action', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', membership_link: 'tailscale_admin' })
+    const slack = row('p_s', 'Sam Slack', { sources: ['session_creator'], last_seen_at: null, usage: { active: 0, queued: 0 } })
+    people.mockResolvedValue({
+      schema_version: 1, directory: { state: 'unavailable' }, usage_available: true,
+      people: [row('p_a', 'Alice', { is_viewer: true }), { ...slack, principal: { ...slack.principal, login: '', via: 'slack' } }],
+    })
+    mount()
+    const person = await screen.findByTestId('person-p_s')
+    const via = person.querySelector('[data-testid="person-via"]') as HTMLElement
+    expect(via.getAttribute('data-via')).toBe('slack')
+    expect(via.querySelector('.sr-only')?.textContent).toMatch(/does not let them use this Crew/)
+    expect(via.textContent).toContain('Via Slack')
+    expect(via.getAttribute('title')).toMatch(/does not let them use this Crew/)
+    // Never budgeted, so no usage line even where usage is reported.
+    expect(person.querySelector('[data-testid="person-usage"]')).toBeNull()
+    expect(person.querySelectorAll('button')).toHaveLength(0)
+    expect(screen.getByTestId('person-p_a').querySelector('[data-testid="person-via"]')).toBeNull()
+  })
+
   it('shows one setup empty state when no shared-access path is configured', async () => {
     caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })

@@ -21,7 +21,8 @@ import { ExternalLink, Users } from 'lucide-react'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Badge, ContentSkeleton, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import { capabilityUsable, membershipPointer, principalInitials, principalName, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
+import { capabilityUsable, channelName, membershipPointer, othersSeenIn, principalInitials, principalName, principalVia, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
+import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { SharedAccessSetup } from './SharedAccessSetup'
 import { ConsoleAccess, NetworkAdapters, RemoteControlCard, TeamConfigInvalid } from './PeopleModes'
 import { TailscaleInvites } from './TailscaleInvites'
@@ -47,6 +48,8 @@ function sourceLabel(source: PeopleSource): string {
 function PersonRow({ row, usageAvailable }: { row: PeopleRow; usageAvailable: boolean }) {
   const name = row.member?.alias || principalName(row.principal) || i18nT('sharedCrew.unattributed')
   const login = row.principal.display.login
+  // A Slack person is attributed only: named on what they wrote, never admitted.
+  const via = principalVia(row.principal)
   return (
     <li className="flex items-start gap-3 py-2 min-w-0" data-testid={`person-${row.principal.id}`}>
       {row.member?.avatar_id ? (
@@ -61,6 +64,18 @@ function PersonRow({ row, usageAvailable }: { row: PeopleRow; usageAvailable: bo
           <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
           {row.is_viewer && <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>}
           {row.principal.kind === 'machine' && <Badge variant="muted">{i18nT('sharedCrew.kind_machine')}</Badge>}
+          {via && (
+            <span
+              className="inline-flex items-center gap-1"
+              data-testid="person-via"
+              data-via={via}
+              title={i18nT('sharedCrew.people_via_channel_hint', { channel: channelName(via) })}
+            >
+              <ChannelBrandIcon channel={via} size={12} />
+              <Badge variant="muted">{i18nT('sharedCrew.people_via_channel', { channel: channelName(via) })}</Badge>
+              <span className="sr-only">{i18nT('sharedCrew.people_via_channel_hint', { channel: channelName(via) })}</span>
+            </span>
+          )}
           {row.sources.map(s => <Badge key={s} variant="aim">{sourceLabel(s)}</Badge>)}
         </div>
         {login && login !== name && <span className="text-[12px] text-muted truncate" title={login}>{login}</span>}
@@ -70,7 +85,7 @@ function PersonRow({ row, usageAvailable }: { row: PeopleRow; usageAvailable: bo
             <><span aria-hidden>{'\u00A0·\u00A0'}</span>{i18nT('sharedCrew.sessions_created', { n: fmtNumber(row.sessions_created ?? 0) })}</>
           )}
         </span>
-        {usageAvailable && row.usage && (
+        {usageAvailable && row.usage && !via && (
           <span className="text-[12px] text-muted" data-testid="person-usage">
             {i18nT('sharedCrew.usage_line', { active: fmtNumber(row.usage.active), queued: fmtNumber(row.usage.queued) })}
           </span>
@@ -94,8 +109,9 @@ export function PeoplePanel() {
     return <ErrorNotice message={modeQuery.error instanceof Error ? modeQuery.error.message : i18nT('sharedCrew.mode_failed')} askAgent testId="people-mode-error" />
   }
   // Someone other than the viewer already connected: sharing works, whatever the
-  // setup paths say (Tailscale Serve set up by hand, for one).
-  const othersSeen = (people.data?.people ?? []).some(row => !row.is_viewer)
+  // setup paths say (Tailscale Serve set up by hand, for one). A Slack person is
+  // attributed only and says nothing about a team path.
+  const othersSeen = othersSeenIn(people.data?.people)
   const modeData = modeQuery.data ?? null
   const mode = effectiveMode(modeData, { teamPath: sharedAccessConfigured(capabilities), othersSeen })
   if (mode === 'invalid' && modeData) return <TeamConfigInvalid mode={modeData} />

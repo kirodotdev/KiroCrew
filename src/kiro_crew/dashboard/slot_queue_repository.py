@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY
+
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
 
@@ -855,6 +857,12 @@ class SlotQueueRepository:
             else:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
+            # The edited words are the editor's, not the Slack person's who sent
+            # the entry: a changed text drops its Slack sender, so the drained row
+            # is never stamped with that person's name (shared_crew.slack_identity).
+            meta = item.get("meta")
+            if isinstance(meta, dict) and item["content"] != previous:
+                meta.pop(SLACK_SENDER_META_KEY, None)
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

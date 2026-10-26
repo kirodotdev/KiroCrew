@@ -36,7 +36,13 @@ from urllib.parse import urlsplit
 
 from kiro_crew.shared_crew.access import tailnet_identity_config_unreadable
 from kiro_crew.shared_crew.codec import SCHEMA_VERSION
-from kiro_crew.shared_crew.contracts import CapabilityState, Principal, PrincipalKind, Provenance
+from kiro_crew.shared_crew.contracts import (
+    CapabilityState,
+    Principal,
+    PrincipalKind,
+    Provenance,
+    is_channel_principal,
+)
 from kiro_crew.shared_crew.enterprise import (
     CAP_HUMAN_CREDENTIALS,
     CAP_HUMAN_SIGN_IN,
@@ -220,10 +226,16 @@ def others_observed(
     *creators* are session creators read back from public attribution, which
     carries no provenance. One counts unless its id is one of
     :func:`operator_ids`; a stored record never makes anyone the operator.
+
+    A channel sender (a Slack person) counts in neither: the channel's own
+    allowlist admitted them, so their being attributed says nothing about a
+    Shared Crew path, and a personal Crew stays personal.
     """
     mine = operator_ids(viewer, owner_id)
     for principal in observed:
         if principal.kind in (PrincipalKind.UNKNOWN, PrincipalKind.SYSTEM):
+            continue
+        if is_channel_principal(principal):
             continue
         if principal.provenance is not Provenance.LOCAL_OPERATOR:
             return True
@@ -231,6 +243,8 @@ def others_observed(
             return True
     for creator in creators:
         if creator.kind in (PrincipalKind.UNKNOWN, PrincipalKind.SYSTEM):
+            continue
+        if is_channel_principal(creator):
             continue
         if creator.id not in mine:
             return True

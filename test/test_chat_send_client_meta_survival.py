@@ -183,3 +183,26 @@ async def test_feature_request_stamp_survives_ingress_persistence_echo_and_fetch
         assert fetched[0]["meta"][_STAMP] is True
         assert _RESERVED not in fetched[0]["meta"]
         await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_a_send_cannot_speak_as_a_slack_person(survival_state):
+    """``slack_sender`` names who a Slack path relayed a row for; a request that
+    supplies one is stripped at ingress, so its row is never Slack-authored."""
+    app = _make_app(survival_state)
+    app.middlewares.insert(0, token_auth.token_auth_middleware())
+    async with TestClient(TestServer(app)) as client:
+        token = token_auth.generate_token("local-app")
+        forged = {"team_id": "T0TEAM", "enterprise_id": "", "user_id": "U0ALICE"}
+        response = await client.post(
+            "/api/chat",
+            params={"token": token},
+            json={"slot": _SLOT, "message": "hello", "meta": {"slack_sender": forged}},
+        )
+        assert response.status == 200
+        slot = survival_state.get_slot(_SLOT)
+        await slot.task
+        row = _user_rows(list(slot.messages))[-1]
+        meta = row.get("meta") or {}
+        assert "slack_sender" not in meta
+        assert (meta.get("author") or {}).get("via") != "slack"

@@ -4,6 +4,8 @@
  *  are the only source, so every collaborator reads the same line. */
 import { MessageCircleQuestionMark, ShieldCheck } from 'lucide-react'
 import type { SharedDecision } from '../../../api/sharedCrew'
+import { channelName, principalVia } from '../../../api/sharedCrewUi'
+import { ChannelBrandIcon } from '../../../components/ChannelBrandIcon'
 import { i18nT } from '../../../i18n/t'
 import { requestedByLine, resolvedByLine } from '../../../components/chat-input/sharedDecision'
 
@@ -27,10 +29,18 @@ export function DecisionAttributionList({ items }: { items: readonly SharedDecis
         const head = d.state === 'pending'
           ? (d.kind === 'question' ? i18nT('sharedCrew.question_waiting') : i18nT('sharedCrew.approval_waiting'))
           : resolvedByLine(d)
+        // Answered in a channel (a Slack click): its mark beside the name, as on a byline.
+        const via = d.state === 'pending' ? '' : principalVia(d.responder)
         return (
           <li key={d.decision_id} className="flex items-center gap-1.5 min-w-0 text-[12px] leading-5" data-state={d.state}>
             <Icon size={12} className="shrink-0 text-muted" aria-hidden />
             <span className="text-text shrink-0">{head}</span>
+            {via && (
+              <span className="inline-flex shrink-0" data-testid="decision-via" data-via={via}>
+                <ChannelBrandIcon channel={via} size={12} />
+                <span className="sr-only">{i18nT('sharedCrew.via_channel', { channel: channelName(via) })}</span>
+              </span>
+            )}
             <span className="text-muted truncate min-w-0" title={requestedByLine(d)}>{'\u00A0·\u00A0'}{requestedByLine(d)}</span>
           </li>
         )

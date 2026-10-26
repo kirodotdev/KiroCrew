@@ -654,3 +654,129 @@ def _settle_slot_by_id(
             slot, approval_id, approved, rejected_once=rejected_once, expected_future=future
         )
     )
+
+
+# -- Channel-native approvals ----------------------------------------------
+#
+# A Slack session's own tool approval is answered in Slack: no dashboard card
+# and no dashboard future exist for it. Recording it here still lets the
+# session's dashboard view say who asked and who answered. The registry only
+# records: the Slack handler's claim-before-await already decides the one
+# answer, so ``apply`` here is a no-op that always takes.
+
+
+def channel_approval_decision_id(session_key: str, request_id: str) -> str:
+    """The decision id of a channel-native approval, apart from slot approvals."""
+    return f"approval-channel:{len(session_key)}:{session_key}:{request_id}"
+
+
+def open_channel_approval(
+    state: Any, session_key: str, request_id: str, initiator: Principal
+) -> str:
+    """Open the decision for a channel session's approval prompt; return its id.
+
+    *session_key* is the dashboard slot key the session shows under. Never
+    raises into the caller.
+    """
+    decision_id = channel_approval_decision_id(str(session_key), str(request_id))
+    open_and_broadcast(state, decision_id, DecisionKind.APPROVAL, str(session_key), initiator)
+    return decision_id
+
+
+def settle_channel_approval(
+    state: Any,
+    decision_id: str,
+    outcome: str | None,
+    responder: Principal | None,
+    *,
+    withdrawn: bool = False,
+) -> None:
+    """Close a channel approval's decision once its wait ended. Never raises.
+
+    With a *responder* (the person who clicked) the decision resolves to
+    *outcome* in their name; without one the prompt went unanswered and the
+    decision ends ``withdrawn`` (the turn was cancelled) or ``expired``.
+    """
+    try:
+        registry = decisions_for(state)
+        if responder is not None and outcome:
+            settled = registry.resolve(
+                decision_id,
+                response_id="",
+                responder=responder,
+                outcome=outcome,
+                apply=lambda: True,
+            ).decision
+        else:
+            settled = registry.close(
+                decision_id, DecisionState.WITHDRAWN if withdrawn else DecisionState.EXPIRED
+            )
+        if settled is not None:
+            broadcast_decision(state, settled)
+    except Exception:
+        log = getattr(state, "_log", None)
+        if log is not None:
+            log.warning("channel decision settle failed", exc_info=True)
+
+
+def resolve_channel_click(
+    state: Any,
+    approval_id: str,
+    approved: bool,
+    responder: Principal,
+    settle: Callable[[], bool],
+) -> bool:
+    """Settle a dashboard approval a channel click answered, in the clicker's name.
+
+    *settle* is the caller's own settle (``state.resolve_approval``), unchanged:
+    it runs once, inside the registry's lock and only when this response wins,
+    so the shared decision names *responder* instead of Unknown. The caller's
+    own gates (the Slack allowlist) already admitted the click; this decides
+    nothing about it. With no live approval under *approval_id* -- or a state
+    without approval futures -- it is *settle* alone, as before.
+    """
+    outcome = "approved" if approved else "rejected"
+    registry = decisions_for(state)
+    futures = getattr(state, "_approval_futures", None)
+    future = futures.get(approval_id) if isinstance(futures, dict) else None
+    if future is not None and not future.done():
+        records = getattr(state, "_pending_approvals", None)
+        record = records.get(approval_id) if isinstance(records, dict) else None
+        record = record if isinstance(record, dict) else {}
+        decision_id = state_approval_decision_id(approval_id)
+        registry.open(
+            decision_id,
+            DecisionKind.APPROVAL,
+            str(record.get("slot") or "state"),
+            system_initiator(str(record.get("source") or "")),
+        )
+    else:
+        slot = _slot_awaiting(state, approval_id)
+        if slot is None:
+            return bool(settle())
+        decision_id = approval_decision_id(str(slot.key), approval_id)
+        registry.open(
+            decision_id, DecisionKind.APPROVAL, str(slot.key), turn_initiator(slot.messages)
+        )
+    resolution = registry.resolve(
+        decision_id,
+        response_id="",
+        responder=responder,
+        outcome=outcome,
+        apply=lambda: bool(settle()),
+    )
+    if resolution.applied and resolution.decision is not None:
+        broadcast_decision(state, resolution.decision)
+    return resolution.applied
+
+
+def _slot_awaiting(state: Any, approval_id: str) -> Any:
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return None
+    for slot in list(slots.values()):
+        pending = getattr(slot, "_approval_futures", None)
+        future = pending.get(approval_id) if isinstance(pending, dict) else None
+        if future is not None and not future.done():
+            return slot
+    return None

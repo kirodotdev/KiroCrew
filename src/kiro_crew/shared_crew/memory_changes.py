@@ -155,11 +155,16 @@ def crew_is_shared(state: Any, writer: Principal) -> bool:
 
     True when the writer reached the Crew over a network path, a network
     sharing path is on, or anyone other than the operator has been seen. A
-    personal Crew answers False.
+    personal Crew answers False. A channel sender (a Slack person) is not a
+    network path: Slack's allowlist admitted them, not a Shared Crew boundary.
     """
-    from kiro_crew.shared_crew.contracts import Provenance
+    from kiro_crew.shared_crew.contracts import Provenance, is_channel_principal
 
-    if writer.kind is PrincipalKind.HUMAN and writer.provenance is not Provenance.LOCAL_OPERATOR:
+    if (
+        writer.kind is PrincipalKind.HUMAN
+        and writer.provenance is not Provenance.LOCAL_OPERATOR
+        and not is_channel_principal(writer)
+    ):
         return True
     try:
         from kiro_crew.shared_crew.access import setup_paths_dict

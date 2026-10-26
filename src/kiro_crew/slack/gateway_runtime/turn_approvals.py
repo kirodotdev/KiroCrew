@@ -479,9 +479,17 @@ def _interactive_approval(
                             logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
                 finally:
                     _pending_approvals.pop(key, None)
-                    # Resolve dashboard approval if Slack responded first
+                    # Resolve dashboard approval if Slack responded first,
+                    # in the name of the Slack person who clicked (if any).
                     if self.dashboard_state:
-                        self.dashboard_state.resolve_approval(request_id, outcome == "approved")
+                        from kiro_crew.slack.handler import _resolve_dashboard_approval
+
+                        _resolve_dashboard_approval(
+                            self.dashboard_state,
+                            request_id,
+                            outcome == "approved",
+                            pending.responder,
+                        )
                     if dashboard_future and not dashboard_future.done():
                         dashboard_future.cancel()
 

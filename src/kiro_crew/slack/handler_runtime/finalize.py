@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
@@ -220,8 +220,17 @@ async def _post_review_draft(
     return True
 
 
-def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -> None:
-    """Append this Slack turn to the dashboard slot its thread is linked to."""
+def _mirror_to_dashboard(
+    linked_session_key: str,
+    text: str,
+    accumulated: str,
+    sender_meta: dict[str, Any] | None = None,
+) -> None:
+    """Append this Slack turn to the dashboard slot its thread is linked to.
+
+    *sender_meta* is the user row's ``slack_sender`` meta (``None`` for a
+    bot's message); the slot's append turns it into the row's author.
+    """
     try:
         ds = _dashboard_state
         slot_name = linked_session_key.removeprefix("dashboard:")
@@ -230,16 +239,14 @@ def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -
             # The person typed this in Slack; mirroring it into the
             # linked slot keeps it a human turn (see
             # history.HUMAN_TURN_META_KEY).
-            # A Slack sender has no Shared Crew principal: Unknown.
+            # The Slack sender rides as ``slack_sender``, which the append
+            # turns into the row's author; a row naming none stays Unknown.
             from kiro_crew.shared_crew.attribution import stamp_principal_author
             from kiro_crew.shared_crew.contracts import Principal
 
-            slot.append(
-                "user",
-                text,
-                "msg msg-u",
-                meta=stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown()),
-            )
+            row_meta = stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown())
+            row_meta.update(sender_meta or {})
+            slot.append("user", text, "msg msg-u", meta=row_meta)
             slot.append("assistant", accumulated, "msg msg-a")
             if slot._on_message:
                 slot._on_message(slot.key, {"role": "user", "content": text, "cls": "msg msg-u"})

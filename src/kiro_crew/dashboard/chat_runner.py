@@ -687,6 +687,7 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     session_agent_selection_kind,
 )
 from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY
 from kiro_crew.shared_crew.decisions import open_slot_approval, settle_slot_approval
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
@@ -5298,8 +5299,14 @@ async def _start_next_queued_turn(
     # A drop-notice address names the one sender whose text the notice quotes.
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
-    # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "author"):
+    # last writer would be quoted another sender's words. A Slack sender is the
+    # same kind of address: a merged row names one only when every entry does.
+    for _address_key in (
+        CHANNEL_RECIPIENT_META_KEY,
+        SEND_ORIGIN_META_KEY,
+        "author",
+        SLACK_SENDER_META_KEY,
+    ):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)

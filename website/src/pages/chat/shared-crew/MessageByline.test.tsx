@@ -7,6 +7,7 @@ import { api } from '../../../api/client'
 import { ALL_UNAVAILABLE } from '../../../api/sharedCrewUi'
 import type { CrewModeResponse } from '../../../api/sharedCrewMode'
 import { MessageByline } from './MessageByline'
+import { useSharedCrewMode } from '../../../hooks/sharedCrew/useSharedCrew'
 
 vi.mock('../../../api/client', () => ({ api: { sharedCrewViewer: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), sharedCrewPeople: vi.fn() } }))
 const viewer = vi.mocked(api.sharedCrewViewer)
@@ -77,5 +78,50 @@ describe('MessageByline', () => {
     expect((await screen.findByTestId('message-byline')).textContent).toBe('Cy')
     const { container } = mount(<MessageByline meta={{}} />, null)
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('MessageByline for a Slack sender', () => {
+  const slackAuthor = (via: string = 'slack') => ({ author: { ...person('p_alice', 'Alice Example'), via } })
+
+  it('names the Slack person with the Slack mark beside the name', async () => {
+    mount(<MessageByline meta={slackAuthor()} slotKey="s1" />, [SLOT])
+    const line = await screen.findByTestId('message-byline')
+    expect(line.getAttribute('title')).toBe('Sent by Alice Example via Slack')
+    expect(line.querySelector('.truncate')?.textContent).toBe('Alice Example')
+    const mark = screen.getByTestId('message-byline-via')
+    expect(mark.getAttribute('data-via')).toBe('slack')
+    expect(mark.querySelector('img')).not.toBeNull()
+    expect(mark.textContent).toBe('via Slack')
+  })
+
+  it('labels a Slack person with no cached name as a Slack user, never Unattributed', async () => {
+    mount(<MessageByline meta={{ author: { ...person('p_anon', ''), via: 'slack' } }} slotKey="s1" />, [SLOT])
+    const line = await screen.findByTestId('message-byline')
+    expect(line.querySelector('.truncate')?.textContent).toBe('Slack user')
+  })
+
+  it('draws no mark for a channel this build does not know', async () => {
+    mount(<MessageByline meta={slackAuthor('carrier-pigeon')} slotKey="s1" />, [SLOT])
+    const line = await screen.findByTestId('message-byline')
+    expect(line.textContent).toBe('Alice Example')
+    expect(screen.queryByTestId('message-byline-via')).toBeNull()
+  })
+
+  it('shows no Slack byline on a personal Crew, like every other byline', async () => {
+    vi.mocked(api.sharedCrewMode).mockResolvedValue({
+      schema_version: 1, mode: 'personal', crew_id: 'crew-a', viewer: person('p_bob', 'Bob'),
+      team_config: { state: 'not_configured', reason: '', capability: '', cause: '' },
+      console: { state: 'not_offered', url: '' }, adapters: {}, systems_manager_attribution: 'unavailable', workload_identity_ref: 'unavailable',
+    } satisfies CrewModeResponse)
+    // The witness reads the same mode query the byline gates on, so once it
+    // renders the byline has rendered against the loaded personal mode too:
+    // its absence is then the decision, not a not-yet-loaded state.
+    function ModeLoaded() {
+      return useSharedCrewMode().isSuccess ? <span data-testid="mode-loaded" /> : null
+    }
+    mount(<><MessageByline meta={slackAuthor()} slotKey="s1" /><ModeLoaded /></>, [SLOT])
+    await screen.findByTestId('mode-loaded')
+    expect(screen.queryByTestId('message-byline')).toBeNull()
   })
 })
