@@ -49,4 +49,3 @@ src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
 src/kiro_crew/slack/allowlist.py 57.1   # 68/119
 src/kiro_crew/telegram/gateway.py 15.5   # 11/71
 src/kiro_crew/webex/client.py 64.1   # 173/270
-src/kiro_crew/weixin/gateway.py 20.4   # 11/54
