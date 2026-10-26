@@ -156,6 +156,7 @@ describe('LTS: Feature Previews off', () => {
     expect(screen.queryByRole('switch', { name: 'Webhooks' })).toBeNull()
     expect(screen.queryByRole('switch', { name: 'Chat on a crew' })).toBeNull()
     expect(screen.queryByRole('switch', { name: 'Explore' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Visual refresh' })).toBeNull()
     expect(screen.queryByText('See what it looks like')).toBeNull()
     expect(screen.queryByText('Open Webhooks')).toBeNull()
   })
@@ -202,6 +203,9 @@ describe('LTS: Feature Previews off', () => {
     const entries = SETTINGS_REGISTRY.filter(e => PREVIEW_FLAG_SETTING_IDS.has(e.id))
     lockLts()
     for (const entry of entries) expect(settingEntryOffered(entry, GOVERNANCE)).toBe(false)
+    const visualRefresh = SETTINGS_REGISTRY.find(e => e.id === 'developer.visual-refresh')
+    expect(visualRefresh).toBeDefined()
+    expect(settingEntryOffered(visualRefresh!, GOVERNANCE)).toBe(false)
   })
 })
 

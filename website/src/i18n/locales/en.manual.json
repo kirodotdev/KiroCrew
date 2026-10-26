@@ -10477,6 +10477,8 @@
         "bridge_approvals": "Send pending approvals to chat apps",
         "bridge_approvals_desc": "When a tool approval opens, {{productName}} sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard.",
         "bridge_approvals_desc_summary": "Tells a connected chat app when a tool needs approval.",
+        "visual_refresh": "Visual refresh",
+        "visual_refresh_desc": "Turns on the in-progress restyle of the dashboard. Nothing is restyled yet: pieces appear as they land, and may look unfinished or change between updates. Turn it off to go back to the current look.",
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Lets a chat hand tasks to a crew and track them on a Board.",
         "crew_mode_desc_summary": "Hands a chat's tasks to a crew.",

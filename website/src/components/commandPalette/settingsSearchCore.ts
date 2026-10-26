@@ -133,6 +133,7 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
   'developer.session-environments',
+  'developer.visual-refresh',
 ])
 
 /** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`

@@ -15141,6 +15141,8 @@
         "bridge_approvals": "把待处理的审批发到聊天应用",
         "bridge_approvals_desc": "工具审批打开时，{{productName}} 会把一条相关提示发到通知桥接所投递的聊天应用。仪表板的铃铛不会为此响起，提示里也还没有按钮，请在仪表板中处理审批。",
         "bridge_approvals_desc_summary": "工具需要审批时，通知已连接的聊天应用。",
+        "visual_refresh": "视觉焕新",
+        "visual_refresh_desc": "开启仪表板正在进行中的新样式。目前还没有任何改动：各部分完成后会陆续出现，可能看起来未完成，或在更新之间发生变化。关闭即可恢复当前外观。",
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。",
         "crew_mode_desc_summary": "把对话的任务交给团队。",

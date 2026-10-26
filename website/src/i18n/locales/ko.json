@@ -15141,6 +15141,8 @@
         "bridge_approvals": "대기 중인 승인을 채팅 앱으로 보내기",
         "bridge_approvals_desc": "도구 승인이 열리면 {{productName}}이(가) 알림 브리지가 전달하는 채팅 앱으로 그 메모를 보냅니다. 대시보드 종은 울리지 않으며 메모에는 아직 버튼이 없으니, 승인은 대시보드에서 답하세요.",
         "bridge_approvals_desc_summary": "도구에 승인이 필요할 때 연결된 채팅 앱에 알립니다.",
+        "visual_refresh": "비주얼 리프레시",
+        "visual_refresh_desc": "진행 중인 대시보드 새 디자인을 켭니다. 아직 바뀐 것은 없습니다. 완성되는 대로 하나씩 나타나며, 미완성으로 보이거나 업데이트마다 바뀔 수 있습니다. 끄면 현재 모습으로 돌아갑니다.",
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 보드에서 추적할 수 있게 합니다.",
         "crew_mode_desc_summary": "채팅의 작업을 크루에게 맡깁니다.",

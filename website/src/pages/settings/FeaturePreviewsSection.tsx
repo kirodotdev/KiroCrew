@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -132,6 +132,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_DASHBOARD_STALE_FIELDS: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_fields')
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
+    case PREVIEW_VISUAL_REFRESH: return i18nT('pages.developer.featurePreviewsTab.visual_refresh')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
@@ -164,6 +165,7 @@ export function FeaturePreviewsSection() {
   const dashboardStaleFields = usePreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
+  const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
@@ -542,6 +544,20 @@ export function FeaturePreviewsSection() {
       <ErrorBoundary scope="feature-preview-remote-dispatch" fallback={null}>
         <RemoteDispatchCard />
       </ErrorBoundary>
+      {/* The visual refresh: a restyle built behind this switch so it can land in
+          pieces. Toggle-only, like the layout harness: there is no page to open
+          (it restyles the pages already on screen) and no capture yet, because
+          the look is still being designed and a capture would go stale. */}
+      {!previewsOff && (
+        <SettingsCard>
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.visual_refresh')}
+            description={i18nT('pages.developer.featurePreviewsTab.visual_refresh_desc')}
+            checked={visualRefresh}
+            onChange={v => setPreviewFlag(PREVIEW_VISUAL_REFRESH, v)}
+          />
+        </SettingsCard>
+      )}
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
           and the Install button for the pinned engine. It lives here, not on the
           KAS harness row, while the route is in shadow testing, so the one click

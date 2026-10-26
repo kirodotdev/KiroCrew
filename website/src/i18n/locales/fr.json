@@ -15929,6 +15929,8 @@
         "bridge_approvals": "Envoyer les approbations en attente aux apps de chat",
         "bridge_approvals_desc": "Quand une approbation d'outil s'ouvre, {{productName}} envoie une note à son sujet aux apps de chat que dessert le pont de notifications. La cloche du tableau de bord ne sonne pas pour elle et la note n'a pas encore de boutons : réponds donc à l'approbation dans le tableau de bord.",
         "bridge_approvals_desc_summary": "Prévient une app de chat connectée quand un outil a besoin d'une approbation.",
+        "visual_refresh": "Refonte visuelle",
+        "visual_refresh_desc": "Active la refonte en cours du tableau de bord. Rien n'est encore refondu : les éléments apparaissent au fur et à mesure et peuvent sembler inachevés ou changer d'une mise à jour à l'autre. Désactive-la pour revenir à l'apparence actuelle.",
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Permet à un chat de confier des tâches à une équipe et de les suivre sur un tableau.",
         "crew_mode_desc_summary": "Confie les tâches d’un chat à une équipe.",

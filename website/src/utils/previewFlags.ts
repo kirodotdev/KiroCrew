@@ -248,6 +248,22 @@ export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
 export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-stale-wake`
 
 /**
+ * Visual refresh: an in-progress restyle of the dashboard, built behind this
+ * switch so it can land on `main` piece by piece without changing what anyone
+ * sees.
+ *
+ * Default OFF, and OFF must stay byte-for-byte the dashboard on `main`: every
+ * refreshed style or component is reached only when this key reads on, so a
+ * reader who never flipped it renders exactly what they did before.
+ *
+ * Like {@link PREVIEW_FOLDER_CONDUCTOR}, and unlike the ingress-only flags,
+ * this one holds look, not a door. Removing it (shipping the refresh to
+ * everyone) changes what every reader sees by default, so that step needs a
+ * recorded decision, not just a polished surface.
+ */
+export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -270,6 +286,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_SESSION_HARNESS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_VISUAL_REFRESH,
 ]
 
 /**
