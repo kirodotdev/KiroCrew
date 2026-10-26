@@ -276,6 +276,7 @@ from kiro_crew.llm_helpers import (
     annotate_model_fallback,
     append_fallback_story,
     configured_fallback_chain,
+    engine_attributed_model,
     provider_fallback_active,
     provider_last_turn_usage,
     provider_model_pin_partial,

@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_MODEL_FALLBACK,
     EVENT_STEER_CONSUMED,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
@@ -111,6 +112,7 @@ from kiro_crew.context import (
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -157,6 +159,7 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     _on_mcp_server_initialized,
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
+    _clear_fallback_sticky_state,
     _fallback_swap_for_turn,
     _on_acp_model_access,
     _sync_served_model,
@@ -1009,6 +1012,14 @@ async def _run_chat(
                 await _on_mcp_server_init_failure(turn, event)
             elif event.kind == EVENT_TODO_UPDATE:
                 await _on_todo_update(turn, event)
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # kiro-cli moved this turn onto another model, or could not. The
+                # handle already moved the resolved model; the slot follows a
+                # promotion, and the finally ends the walk with one notice.
+                if event.model_fallback is not None:
+                    _engine_fallback.record_engine_fallback(
+                        state, slot, client, turn._engine_fallback_walk, event.model_fallback
+                    )
             elif event.kind == EVENT_SUBAGENT_LIST:
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
@@ -1153,6 +1164,13 @@ async def _run_chat(
         slot._git_repo_touch_terminal.clear()
         slot._git_repo_touch_overflow = False
         await _turn_record_outcome(turn)
+        # The engine's fallback walk, said once whatever path ended the turn.
+        _engine_fallback.finish_engine_fallback(
+            slot,
+            turn._engine_fallback_walk,
+            stop_reason=turn._stop_reason,
+            cancelled=turn._crew_log_error == "CancelledError",
+        )
         await _turn_close_crew_log(turn)
         await _turn_release_handles(turn)
         await _turn_settle_debts(turn)

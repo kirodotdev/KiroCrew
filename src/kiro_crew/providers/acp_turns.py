@@ -137,6 +137,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # nothing to render: an empty card the person cannot answer, while
         # the engine holds the tool call open for the whole window.
         elicitation=e.elicitation,
+        # The engine's fallback decision on EVENT_MODEL_FALLBACK. Dropping it
+        # zeroes the payload to None, so the dashboard enters its branch with
+        # nothing to record: no notice line and no promotion of the slot to
+        # the model the engine moved to (acp/engine_fallback.py).
+        model_fallback=e.model_fallback,
     )
 
 

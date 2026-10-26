@@ -217,7 +217,9 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
 
             if not result_text:
                 result_text = "_No response._"
-            result_text = _annotate_model_fallback(result_text, client)
+            result_text = _annotate_model_fallback(
+                result_text, client, stop_reason=_turn_stop["reason"]
+            )
 
             # ── Per-turn usage row: attribute heartbeat spend. ──
             await _persist_turn_row(

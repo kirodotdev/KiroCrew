@@ -565,6 +565,7 @@ class WebexDispatcher:
 
             await surface_dispatcher_session(self)
 
+        _pick_before = self._model_pref.get(email)
         try:
             await drive_turn(
                 ChannelTurn(
@@ -613,12 +614,24 @@ class WebexDispatcher:
                         session_key, user_text, reply, is_new, agent
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
-                    model=self._model_pref.get(email) or None,
+                    model=_pick_before or None,
                     audit_caller=f"webex:{email}",
                     after_persist=_surface_new_session,
                 ),
                 sessions=self.sessions,
                 ctx_builder=self.ctx_builder,
+            )
+            # The person's pick is what `/model` shows and a cold start re-applies,
+            # so it follows a promotion, before any await lets the next prompt
+            # reset the walk. Imported here because this facade's bound names are
+            # pinned (composition test).
+            from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+
+            follow_engine_promotion(
+                self._model_pref,
+                email,
+                self.sessions.get_provider(session_key),
+                before=_pick_before,
             )
         finally:
             # A reservation the driver never awaited (the prompt rendered, then the

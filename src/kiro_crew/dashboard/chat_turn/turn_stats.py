@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.llm_helpers import (
     _NO_PRIOR_STATS,
+    engine_attributed_model,
     provider_active_model,
     record_interaction_event,
     usage_has_billing,
@@ -642,7 +643,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # the `model_source` walk — no worse than the blank it would
     # write anyway.
     _provider_name = capabilities_of(client).provider_seam
-    _record_model = slot.model
     # A model pick can land on the slot mid-turn: api_chat_slot_model's
     # deferred branch writes slot.model and marks _deferred_model_switch_key
     # for the turn boundary to apply. The live session is NOT switched then, so
@@ -652,8 +652,18 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # slot.model — which would overwrite the pending pick, replacing an Auto
     # pick's "" with the served id and silently undoing it.
     _deferred_model_pick = bool(slot._deferred_model_switch_key)
-    if _deferred_model_pick:
-        _record_model = _turn_model or provider_active_model(client)
+    # The model Crew put this turn on: the pin, the served id under a deferred
+    # pick, or while either fallback mechanism is active, the provider's, never
+    # written into slot.model. A move the engine made inside the prompt then
+    # wins over all three (`engine_attributed_model`, the cron, heartbeat and
+    # sub-agent rows' rule): the engine's target is what answered.
+    if slot._active_fallback_model or slot._refusal_fallback_primary:
+        _crew_model = provider_active_model(client)
+    elif _deferred_model_pick:
+        _crew_model = _turn_model or provider_active_model(client)
+    else:
+        _crew_model = slot.model
+    _record_model = engine_attributed_model(_crew_model, client)
     # Occupancy is read ABOVE the billing gate, beside the other locals
     # the turn closer needs. Two reasons, and either alone decides it:
     # the closer runs for EVERY completed turn, so a name bound only
@@ -665,11 +675,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # elsewhere. `read_context_tokens` never raises and answers (0, 0)
     # for a provider without the accessors.
     _ctx_used, _ctx_window = read_context_tokens(client)
-    if slot._active_fallback_model or slot._refusal_fallback_primary:
-        # Either fallback mechanism active ⇒ the model that SERVED
-        # this turn is the provider's, not the pin; attribute usage
-        # to it without ever writing it into slot.model.
-        _record_model = provider_active_model(client)
     # One shared predicate across every persist gate: a
     # claude-seam turn ending via a synthetic EVENT_COMPLETE
     # (timeout, tool-stall, cancel-unacked) can carry cost or cache

@@ -861,6 +861,7 @@ class DiscordDispatcher:
                 or self._session_key(user_id, thread_id) == monitor_session_key
             )
 
+        _pick_before = self._model_pref.get(scope_id)
         try:
             outcome = await self._channel_turns().answer(
                 Asker(
@@ -885,7 +886,7 @@ class DiscordDispatcher:
                     # ``model`` applies only when this turn COLD-STARTS the session:
                     # the fast path returns a reused session before it consults the
                     # argument, which is exactly what ``!model``'s reply promises.
-                    model=self._model_pref.get(scope_id) or None,
+                    model=_pick_before or None,
                     # A resumed session runs its own persisted agent.
                     agent=None if resumed_key is not None else self._resolve_agent(scope_id),
                 ),
@@ -899,6 +900,20 @@ class DiscordDispatcher:
                     else None
                 ),
             )
+            if resumed_key is None and outcome.stop_reason is not None:
+                # The pick is what `!model` shows and a cold start re-applies, so
+                # it follows a promotion from a prompt this call ran (a BUSY or
+                # refused wake may be reading another turn's walk), before any
+                # await lets the next prompt reset the walk. Imported here because
+                # this facade's bound names are pinned (composition test).
+                from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+
+                follow_engine_promotion(
+                    self._model_pref,
+                    scope_id,
+                    self.sessions.get_provider(session_key),
+                    before=_pick_before,
+                )
         finally:
             # Identity-checked: a later turn on this key may have published its own.
             if built and self._active_renderers.get(session_key) is built[0]:

@@ -25,7 +25,7 @@ logger = logging.getLogger("kiro_crew.llm_helpers")
 # answers every ``getattr`` with a fresh child). Sized so no plausible wrapper
 # depth reaches it: session sharing, a channel link, a subagent companion and
 # a fallback wrapper each add a layer, and the same object graph is the one
-# ``dashboard.handlers.usage._wrapper_chain`` walks for the model with the
+# ``wrapper_chain.wrapper_chain`` walks for the model with the
 # same guard.
 _WRAPPER_WALK_MAX_NODES = 64
 
