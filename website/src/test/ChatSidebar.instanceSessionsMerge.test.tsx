@@ -337,6 +337,32 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     expect(container.textContent).not.toMatch(/checking remote crews/i)
   })
 
+  it('shows no remote-sessions error banner when the gateway reports the instances feature off', async () => {
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    listInstancesMock.mockRejectedValue(new ApiError(
+      403, 'instances feature is disabled',
+      JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' }),
+    ))
+    const { container } = renderSidebar()
+
+    await waitFor(() => expect(listInstancesMock).toHaveBeenCalled())
+    await waitFor(() => expect(container.textContent).toContain('LIVE newer slot'))
+    expect(screen.queryByTestId('instance-sessions-error')).toBeNull()
+  })
+
+  it('still reports an owner-only 403 on the instance list with the preview flag on', async () => {
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    listInstancesMock.mockRejectedValue(new ApiError(
+      403, 'non-owner identity rejected',
+      JSON.stringify({ error: 'non-owner identity rejected' }),
+    ))
+    renderSidebar()
+
+    const notice = await screen.findByTestId('instance-sessions-error')
+    expect(notice.textContent).toMatch(/could not be listed/i)
+    expect(notice.textContent).toContain('non-owner identity rejected')
+  })
+
   it('shows no remote-sessions error banner while the preview flag is off', async () => {
     // The banner describes the PREVIEW's own rows. With the flag off the sidebar
     // makes no claim about peer sessions, so a failing warm-instance read is not

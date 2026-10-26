@@ -7,6 +7,7 @@ import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessions'
 import { i18nT } from '../../i18n/t'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
 import { useDebouncedSessionSearch } from './search'
 import type { Slot } from './types'
@@ -94,6 +95,8 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // different feature's decision to make.
   const remoteSessionsError = useMemo((): { title?: string, message: string } | null => {
     if (!instanceSessionsEnabled) return null
+    // The gateway's own "feature off" 403 is routine, not a failed read.
+    if (isInstancesDisabledError(instancesQuery.error)) return null
     const say =(sentence: string, detail?: string) => (detail
       ? { title: sentence, message: detail }
       : { message: sentence })
