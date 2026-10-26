@@ -56,7 +56,7 @@ def _seeded_bare(tmp_path: Path) -> Path:
 
 
 def _spec(bare: Path) -> CloneSpec:
-    return CloneSpec("o/r", bare.as_uri(), "o--r")
+    return CloneSpec("o/r", bare.as_uri(), "o--r", "github", "github.com", "o/r")
 
 
 def _setup(bare: Path, root: Path) -> tuple[dict, str]:
@@ -82,7 +82,9 @@ def test_second_setup_reuses_the_neutralized_clone(tmp_path: Path) -> None:
 def test_clone_start_failure_returns_controlled_error_without_cleanup(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    spec = CloneSpec("o/r", (tmp_path / "remote.git").as_uri(), "o--r")
+    spec = CloneSpec(
+        "o/r", (tmp_path / "remote.git").as_uri(), "o--r", "github", "github.com", "o/r"
+    )
     with (
         mock.patch.object(clone_setup, "validate_target_url", return_value=(spec, "")),
         mock.patch.object(clone_setup.subprocess, "run", side_effect=OSError("git missing")),
@@ -99,7 +101,9 @@ def test_clone_start_failure_returns_controlled_error_without_cleanup(tmp_path: 
 def test_failed_clone_with_no_destination_returns_controlled_error(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    spec = CloneSpec("o/r", (tmp_path / "remote.git").as_uri(), "o--r")
+    spec = CloneSpec(
+        "o/r", (tmp_path / "remote.git").as_uri(), "o--r", "github", "github.com", "o/r"
+    )
     failed = subprocess.CompletedProcess(["git", "clone"], 128, "", "clone failed")
     with (
         mock.patch.object(clone_setup, "validate_target_url", return_value=(spec, "")),

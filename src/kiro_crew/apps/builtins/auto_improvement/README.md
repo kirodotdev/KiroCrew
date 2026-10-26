@@ -1,12 +1,12 @@
 # Auto-Improvement
 
-Measures a GitHub repository before it changes it.
+Measures a GitHub or GitLab repository before it changes it.
 
 Most "AI improves your code" loops optimize whatever their metric happens to
 report, which means a noisy or wrong metric produces confident nonsense. This app
 inverts the order: it builds a metric, **proves** the metric can detect a known
-win, and only then starts changing code. Survivors become draft pull requests you
-review.
+win, and only then starts changing code. Survivors become draft pull or merge
+requests you review.
 
 > The design thesis, kept from the original: *a measurement system that happens
 > to write code, not a code-writing system that happens to measure.*
@@ -42,7 +42,7 @@ blocks the run.
 | D · Measure | serial pinned interleaved A/B, median not mean | deterministic |
 | D' · Bug gate | RED×2 on base → GREEN on fix → whole suite stays green | deterministic |
 | E · Keep or revert | accept only if the win clears the noise band | deterministic |
-| F · Draft PR | second independent reproduce, then `gh pr create --draft` | deterministic |
+| F · Draft PR/MR | second independent reproduce, then `gh pr create --draft` or `glab mr create --draft` | deterministic |
 
 Every phase that decides anything is deterministic Python. The agent proposes; it
 never grades its own work.
@@ -54,9 +54,10 @@ to game than a codebase is to improve.
 
 - **Push-disabled clone.** The target clone's push remote is pinned to
   `DISABLED_NO_PUSH` and the driver refuses to start otherwise.
-- **Draft-only output.** PRs are created with `--draft`. Nothing here publishes,
-  marks ready for review, merges, or enables auto-merge.
-- **Generated branches only.** A PR's head branch is
+- **Draft-only output.** PRs and MRs are created as drafts. Nothing here
+  publishes, marks ready for review, merges, or enables auto-merge or
+  merge-when-pipeline-succeeds.
+- **Generated branches only.** A PR's or MR's head branch is
   `auto-improvement/<kind>-<fingerprint>` — never a branch you work on. It is
   checked against a non-overridable protected-branch denylist that a hand-edited
   config cannot widen.
@@ -68,7 +69,7 @@ to game than a codebase is to improve.
 
 ## Chats
 
-Each pull request, finding, ruler, and run gets its own **resumable** chat
+Each pull or merge request, finding, ruler, and run gets its own **resumable** chat
 session, filed into an `Auto-Improve - <repo>` folder. Clicking "discuss" twice
 returns to the same conversation rather than starting a second one. The
 autonomous loop's own agent runs happen on silent sessions, so a night's run does
@@ -76,8 +77,12 @@ not fill the chat surface with agent cards.
 
 ## Requirements
 
-- `git` and an authenticated `gh` CLI on the gateway host
-- A GitHub repository you can open pull requests against
+- `git` on the gateway host, plus an authenticated `gh` CLI (`gh auth login`) for
+  GitHub repositories or an authenticated `glab` CLI (`glab auth login`) for
+  GitLab repositories
+- A GitHub or GitLab repository you can open pull/merge requests against.
+  gitlab.com works out of the box; a self-hosted GitLab instance works once its
+  host is listed in the `dashboard.gitlab_hosts` allowlist.
 
 ## Layout
 
@@ -90,7 +95,7 @@ backend/            notable modules (the directory holds more, e.g. runner,
   pr_checks.py      PR status, CI checks, and the watcher verdict
 spine/              the target-agnostic engine (driver, gate, measurer, keeper…)
 profiles/
-  github_repo/      the GitHub target profile (PR recipe lives here)
+  github_repo/      the GitHub/GitLab target profile (PR/MR recipe lives here)
 skills/             ai-discover, metric-design
 agents/             discovery, pr-author, scout, engineer
 docs/MANUAL.md      user manual — how to run it, read findings, and configure it

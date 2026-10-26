@@ -9486,7 +9486,7 @@
     "queuedOnly": "queued locally, not opened",
     "refreshPr": "Refresh pull request status",
     "regressed": "Regressed tests: {{tests}}",
-    "repoLabel": "GitHub repository to improve",
+    "repoLabel": "GitHub or GitLab repository to improve",
     "reproTest": "Repro test",
     "rulerHeading": "The ruler",
     "rulerNotReady": "The ruler is not calibrated yet, so no improvement cycle will run. Calibration proves the metric can detect a known win before anything is optimized.",

@@ -28,7 +28,7 @@ from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.security import redact
 
-from ..profiles.github_repo.pr_recipe import GitHubPRRecipe
+from ..profiles import build_pr_recipe, target_provider
 from ..spine.push_policy import normalize_branch
 from . import (
     clone_setup,
@@ -888,8 +888,14 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
                 ),
             }
 
-        recipe = GitHubPRRecipe(
-            user=str(config.get("githubUser") or ""),
+        # Provider-selected: a GitLab target drafts an MR via `glab`, a GitHub one a
+        # PR via `gh`. The factory owns which user config key each recipe reads.
+        provider = target_provider(config)
+        recipe = build_pr_recipe(
+            provider,
+            # GitLab attribution comes from the authenticated glab token, so only the
+            # GitHub recipe reads a user config key.
+            user=str(config.get("githubUser") or "") if provider == "github" else "",
             clone_path=Path(clone),
             pr_queue_dir=queue,
             base_ref=str(config.get("branch") or "origin/main"),
@@ -1536,9 +1542,7 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
         # sandbox-launcher failure, not a config/state conflict — a distinct
         # `code` so a UI branching on it does not render the misleading
         # push-isolation guidance. The message is the actionable part.
-        return web.json_response(
-            {"code": "sandbox_launcher_failed", "error": str(exc)}, status=409
-        )
+        return web.json_response({"code": "sandbox_launcher_failed", "error": str(exc)}, status=409)
     except (RuntimeError, ValueError, PermissionError) as exc:
         # Already running / no repository configured / push not disabled — all three are
         # "the request conflicts with current state", all three are user-fixable, and the

@@ -29,6 +29,7 @@ import importlib as _importlib
 import json
 import logging
 import os
+import re  # noqa: F401
 import shlex  # noqa: F401
 import shutil
 import signal
@@ -1380,10 +1381,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _COMMAND_WRAPPERS,
         _FORBIDDEN_BINARIES,
         _FORBIDDEN_SUBCOMMANDS,
+        _GLAB_ALLOWED_SUBCOMMANDS,
+        _GLAB_HOST_OPTIONS,
+        _GLAB_STEERING_ASSIGNMENT,
+        _GLAB_STEERING_MENTION,
+        _GLAB_STEERING_VAR,
+        _GLAB_WORD,
         _MAX_UNWRAP_DEPTH,
         _SHELL_BINARIES,
         _VALUE_TAKING_OPTIONS,
         _WRAPPER_VALUE_TAKING_LONG_OPTIONS,
+        _glab_refusal,
+        _glab_steering_refusal,
         _refusal,
         _shell_words,
     )

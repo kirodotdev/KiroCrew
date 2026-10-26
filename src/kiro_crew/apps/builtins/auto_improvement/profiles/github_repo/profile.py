@@ -97,7 +97,6 @@ from ...spine.contracts import (
     StageBreakdown,
 )
 from ...spine.profile import CalibrationParams, ProfileFieldAliases
-from .pr_recipe import GitHubPRRecipe
 
 logger = logging.getLogger(__name__)
 
@@ -1486,6 +1485,7 @@ class GitHubRepoProfile(ProfileFieldAliases):
         # urls are neutralized so agent-run Bash inside it cannot find a push target.
         # Only the pr_recipe (a trusted publisher) receives it.
         origin_url: str = "",
+        provider: str = "github",
         track: str = TRACK_BUG,
         benchmark_cmd: str = "",
         scope_base: str = "",
@@ -1558,7 +1558,13 @@ class GitHubRepoProfile(ProfileFieldAliases):
         #: reads, so discovery keys off this raw value (see ``discover``).
         self._user_edit_globs = list(allowed_globs) if allowed_globs else None
         self.isolation = RepoIsolation(clone_path=self.clone_path, base_ref=base_ref)  # ④
-        self.pr_recipe = GitHubPRRecipe(  # ⑤ — reused verbatim
+        # ⑤ — chosen by the configured target's provider. One profile serves both
+        # forges because only the draft CLI differs; the measurement machinery is
+        # provider-independent.
+        from .. import build_pr_recipe
+
+        self.pr_recipe = build_pr_recipe(
+            provider,
             user=user,
             clone_path=self.clone_path,
             pr_queue_dir=Path(pr_queue_dir),
@@ -1817,11 +1823,15 @@ def build_profile(config: dict) -> GitHubRepoProfile:
     else:
         base_ref = f"origin/{branch}"
 
+    # Which review provider field ⑤ drafts against, from the target URL.
+    from .. import target_provider
+
     return GitHubRepoProfile(
         clone_path=Path(clone),
         pr_queue_dir=store.pr_queue_dir(),
         user=str(cfg.get("prUser") or cfg.get("user") or ""),
         base_ref=base_ref,
+        provider=target_provider(cfg),
         track=str(cfg.get("track") or TRACK_BUG),
         benchmark_cmd=str(cfg.get("benchmarkCommand") or ""),
         scope_base=str(cfg.get("scopeDiffBase") or ""),

@@ -218,6 +218,20 @@ def _allowed_gitlab_hosts() -> frozenset[str]:
     return _gitlab_hosts_snapshot
 
 
+def gitlab_hosts_blocking() -> frozenset[str]:
+    """The self-managed GitLab allowlist for sync code that runs OFF the event loop.
+
+    The cached snapshot while it is fresh, including a fresh EMPTY one (an operator
+    with no self-managed hosts pays no config read). Otherwise one blocking config
+    read, which does not touch the shared snapshot. Never call this on the loop: use
+    :func:`ensure_gitlab_hosts_loaded` there.
+    """
+    if _gitlab_hosts_fresh():
+        return _gitlab_hosts_snapshot
+    gitlab, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
+    return gitlab
+
+
 def _allowed_jira_hosts() -> frozenset[str]:
     """Return the cached self-hosted Jira hosts. Same discipline as GitLab.
 
