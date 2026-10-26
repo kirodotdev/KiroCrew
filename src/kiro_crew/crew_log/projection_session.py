@@ -438,6 +438,17 @@ class _SessionFold:
         self._fold.step(grown, entry)
         return grown
 
+    def apply_owned(self, state: dict[str, Any], entry: Entry) -> dict[str, Any]:
+        """:meth:`apply` onto a state the caller owns: stepped in place, never copied.
+
+        The registry calls it only on a private copy no reader can see until the pass
+        ends (``prime`` and ``prime_checkpointed``'s tail), so the per-entry copy that
+        made a cold fold O(N^2) buys nothing there.
+        """
+        if self._fold.touched_by(entry):
+            self._fold.step(state, entry)
+        return state
+
     def view(self, state: dict[str, Any]) -> dict[str, Any]:
         return self._fold.render(state)
 

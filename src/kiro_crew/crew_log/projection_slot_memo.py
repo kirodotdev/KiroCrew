@@ -272,6 +272,19 @@ class _SlotFold:
         self._fold.step(grown, entry)
         return grown
 
+    def apply_owned(self, state: dict[str, Any], event: _Ordinal) -> dict[str, Any]:
+        """:meth:`apply` onto a state the caller owns: stepped in place, never copied.
+
+        The cold fold's path (``registry.prime`` and a cold ``prime_checkpointed``
+        tail), where no reader sees a state between
+        the first entry and the last. Copying there cost one copy of the whole state
+        per entry, so a cold fold of N entries was O(N^2); this is O(N).
+        """
+        entry = event.entry
+        if self._fold.touched_by(entry):
+            self._fold.step(state, entry)
+        return state
+
     def view(self, state: dict[str, Any]) -> dict[str, Any]:
         return self._fold.render(state)
 
