@@ -30,7 +30,6 @@ from turn_harness import TurnScript, run_turn
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
 from kiro_crew.context import build_session_replay
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.state import _RESTART_MEMORY_TAIL
 
 KEY = "dashboard:member-kirocrew-conductor"
 CONDUCTOR = "kirocrew-conductor"
@@ -181,14 +180,29 @@ async def test_rule_a_trims_a_session_over_400k_at_a_turn_start(tmp_path):
     assert await _check(state, slot) == "trimmed"
 
     assert sessions.discards == [(KEY, True, True)]
-    [notice] = _notices(slot)
-    assert notice["role"] == "assistant"
-    assert notice["meta"]["kind"] == "compaction"
-    assert notice["content"] == (
-        "♻️ Context reached 412K tokens, so the session was restarted on a shorter context. "
-        + _RESTART_MEMORY_TAIL
-    )
+    assert slot.messages == []
     assert chat_runner._take_context_cap_seed(KEY) is True
+
+
+@pytest.mark.asyncio
+async def test_a_trim_appends_no_transcript_row(tmp_path):
+    """The rows the reply scans read are the same before and after a trim."""
+    from kiro_crew.dashboard.chat_backfill import _is_conversational
+    from kiro_crew.dashboard.state_parts.transcript_rows import is_turn_interrupted
+
+    sessions = _Sessions(_Provider(412_000), idle_secs=0.0)
+    state, slot = _conductor(tmp_path, sessions)
+    slot.append("assistant", "done", "msg msg-a")
+    slot.append("user", "next", "msg msg-u")
+    before = [dict(m) for m in slot.messages]
+
+    assert await _check(state, slot) == "trimmed"
+
+    assert slot.messages == before
+    # Interrupted-turn detection, Slack backfill and the Regenerate target all
+    # read these rows, so each answers as it does with no trim.
+    assert is_turn_interrupted(slot.messages) is True
+    assert [m["content"] for m in slot.messages if _is_conversational(m)] == ["done", "next"]
 
 
 @pytest.mark.asyncio
@@ -475,17 +489,23 @@ def test_the_replay_budget_is_the_one_asked_for(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_the_trim_notice_row_is_not_replayed(tmp_path, snapshot_reads):
+async def test_a_stored_trim_notice_row_is_not_replayed(tmp_path, snapshot_reads):
+    """A transcript can still hold a notice row; the seed keeps the note and skips it."""
     sessions = _Sessions(_Provider(412_000))
     state, slot = _conductor(tmp_path, sessions)
     _transcript(state, rows=4, size=10)
     assert await _check(state, slot) == "trimmed"
-    [notice] = _notices(slot)
-    state.conversation_log.append(KEY, "assistant", notice["content"], extra_meta=notice["meta"])
+    state.conversation_log.append(
+        KEY,
+        "assistant",
+        "♻️ Context reached 412K tokens, so the session was restarted on a shorter context.",
+        extra_meta={"kind": "compaction", "notice": NOTICE},
+    )
     state.conversation_log.append(KEY, "user", "after the trim")
 
     seed = await _replay(state, slot)
 
+    assert seed.startswith(chat_runner.CONTEXT_CAP_TRIM_NOTE)
     assert "after the trim" in seed
     assert "Context reached" not in seed
     later = build_session_replay(state.conversation_log, KEY)
