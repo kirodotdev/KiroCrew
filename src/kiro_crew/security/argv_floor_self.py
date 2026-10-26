@@ -711,26 +711,83 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
-    Two shapes, matched separately because the two kill families take different
-    kinds of target:
+    Boolean wrapper over :func:`_self_kill_span`, so the verdict and the span the
+    diagnostic reports are derived from one walk and cannot disagree.
+    """
+    return _self_kill_span(text_lower) is not None
 
-    * ``pkill``/``killall`` select processes BY NAME, so the product name in any
-      argument IS the target -- including inside a quoted pattern such as
-      ``pkill -f '[;]*kirocrew'``, where a raw-string regex mis-reads the quoted
-      ``;`` as a command separator and stops scanning short of the name.
-    * bare ``kill`` takes PIDs, so it can only aim at the product through a
-      command substitution that resolves the name to one (``kill $(pgrep -f
-      kirocrew)``, ``kill $(pidof kirocrew)``, ``kill $(cat /run/kirocrew.pid)``,
-      backticks).  A ``kill <pid>`` alongside a command that merely mentions a
-      product path is NOT a self-kill -- that is the false positive this
-      structural check avoids.
+
+def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
+    """Where the self-kill was matched in *text_lower*, or ``None`` if none is.
+
+    ``None`` means "not a self-kill"; a match ALWAYS yields ``(start, end)`` -- the
+    located kill target, or the whole-command fallback when it cannot be placed
+    honestly -- so :func:`_is_self_kill` reads ``is not None`` as the verdict. The
+    span is a diagnostic aid and never changes whether the kill is refused.
+
+    Two shapes: ``pkill``/``killall`` take the name in any argument (even a quoted
+    pattern); bare ``kill`` takes PIDs, reaching the product only via a
+    substitution that resolves the name (``kill $(pgrep -f kirocrew)``, a pidfile,
+    backticks) -- a ``kill <pid>`` that merely mentions a product path is not one.
     """
     # Perf short-circuit: both loops below re-run the payload descent.
     # A kill can only target the product if the gate's necessary condition
     # holds, so a miss skips both descents.
     if not _self_floor_can_fire(text_lower):
-        return False
-    for tokens in _self_token_frames(text_lower):
+        return None
+
+    whole = (0, len(text_lower))
+    # A located span is honest only where the matched token sits in the command
+    # exactly as its resolved form reads. ANY normalization the floor applies
+    # (quote/escape removal, parameter and command expansion, brace, tilde, glob,
+    # printf escapes) makes the token a value whose raw form is absent
+    # (``'kiro''crew'``, ``${X}crew``), so a plain search skips to an unrelated
+    # later copy. Rather than chase each construct, locate ONLY in a command that
+    # carries none of that machinery -- reusing the floor's own detectors so this
+    # cannot drift -- where resolution is the identity. Everything else takes the
+    # whole-command span: a conservative fallback is always correct.
+    _verbatim = not (
+        _SELF_FLOOR_MACHINERY_RE.search(text_lower) or _SELF_FLOOR_QUOTE_JUNK_RE.search(text_lower)
+    )
+
+    def _locate(source: str, frame: "list[str]", verb_i: int, target: str) -> "tuple[int, int]":
+        """Offsets of the product NAME inside *target*, or the whole command.
+
+        A diagnostic aid, so it is BEST-EFFORT location, not a fence: it points at
+        the ``_SELF_NAME_RE`` match within the matched token when that can be placed
+        cleanly, and otherwise returns the whole command. Anchoring on the name
+        itself -- rather than the whole argv token -- is what keeps a glued operator,
+        redirect or paren (``pkill kirocrew>/dev/null``) out of the span without a
+        per-spelling denylist, which AGENTS.md calls a review smell. Located only
+        when: the frame is TOP-LEVEL (a nested ``bash -c`` payload has no outer
+        offset and is quoted anyway); ``_verbatim`` holds (no normalization
+        machinery, so the token is a literal substring); the target occurs exactly
+        ONCE (``echo kirocrew && pkill -f kirocrew`` is ambiguous); and that one
+        occurrence is at/after the verb. Offsets index ``text_lower``; ``deny_gate``
+        forwards them only while ``str.lower`` kept the length, so a width-changing
+        lowercase (``İ`` U+0130) cannot shift them off the subject.
+        """
+        if source is not text_lower or not target or not _verbatim:
+            return whole
+        if text_lower.count(target) != 1:
+            return whole
+        name = _SELF_NAME_RE.search(target)
+        if name is None:
+            return whole
+        cursor = 0
+        for tok in frame[: verb_i + 1]:
+            if not tok:
+                continue
+            found = text_lower.find(tok, cursor)
+            if found < 0:
+                return whole
+            cursor = found + len(tok)
+        pos = text_lower.find(target, cursor)
+        if pos < 0:
+            return whole
+        return (pos + name.start(), pos + name.end())
+
+    for source, tokens in _shell_payload_walk(text_lower):
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
@@ -763,7 +820,7 @@ def _is_self_kill(text_lower: str) -> bool:
                 n = _shell_normalizer
                 views = (_debracket(arg), n._normalize_operand(arg), n._resolved_word_view(arg))
                 if any(_SELF_NAME_RE.search(view) for view in views):
-                    return True
+                    return _locate(source, tokens, i, arg)
                 depth += _substitution_depth_delta(arg)
                 if depth <= 0 and _ends_argv(arg):
                     break
@@ -800,7 +857,7 @@ def _is_self_kill(text_lower: str) -> bool:
             # there the name is an operand of ``cp``, not of the kill.
             for operand in own[1:]:
                 if _SELF_NAME_RE.search(_shell_normalizer._normalize_operand(operand)):
-                    return True
+                    return _locate(source, frame, i, operand)
             for body in _substitution_bodies(" ".join(own)):
                 # ``kill $(pgrep -f kiro${x:-crew})`` hides the name behind an
                 # expansion whose literal branch the shell substitutes back in, so
@@ -808,7 +865,7 @@ def _is_self_kill(text_lower: str) -> bool:
                 if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
                     _resolve_param_defaults(body)
                 ):
-                    return True
+                    return _locate(source, frame, i, body)
         # The window above is bounded by ``_substitution_depth_delta`` on
         # DE-QUOTED tokens, so a quoted close-paren reads as a real closer and
         # closes the window early, dropping the clause that names the target
@@ -829,17 +886,20 @@ def _is_self_kill(text_lower: str) -> bool:
         # transform DESTROYS (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill``
         # leg searches the same view per argument).  See the helper's docstring for
         # why the transform is not ``_normalize_operand``.
+        # This quote-aware fallback window is not anchored to a kill verb's argv
+        # position, so there is no honest offset to report -- the whole command is
+        # the standing span.
         for body in _bare_kill_raw_bodies(source):
             if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
                 _resolve_param_defaults(body)
             ):
-                return True
+                return whole
             for word in _shell_normalizer._self_tokens(body):
                 if _SELF_NAME_RE.search(_debracket(word)) or _SELF_NAME_RE.search(
                     _shell_normalizer._resolved_word_view(word)
                 ):
-                    return True
-    return False
+                    return whole
+    return None
 
 
 # ── Self-protection subcommand floor (argv-structural) ──────────────────────

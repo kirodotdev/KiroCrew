@@ -1229,6 +1229,151 @@ class TestARefusalNamesItsRuleAndSpan:
         assert "cred" not in line
         assert "~" not in line
 
+    #: The one floor whose refusal now carries a located span: the kill target.
+    _PROD = "kiro" + "crew"
+
+    def _kill_diagnostic(self, command: str) -> str:
+        from kiro_crew.security import is_denied
+
+        reason = is_denied(command)
+        assert reason is not None, f"expected a refusal for {command!r}"
+        assert "self-protection-kill" in reason, f"not the kill floor for {command!r}"
+        lines = reason.splitlines()
+        assert len(lines) >= 2, "a floor refusal must carry a diagnostic line"
+        return lines[-1]
+
+    def test_the_kill_floor_names_the_matched_target_not_the_whole_command(self) -> None:
+        """The issue: a self-kill refusal spanned the whole command, so an operator
+
+        could not tell which argv tokens were read as the kill program and target.
+        The floor still refuses -- only the span sharpens, from the whole command to
+        the matched target.
+        """
+        command = "pk" + "ill -f " + self._PROD
+        line = self._kill_diagnostic(command)
+        start, end = self._span(line)
+        assert (start, end) != (0, len(command)), "the span is still the whole command"
+        assert command[start:end] == self._PROD, (start, end, command)
+
+    def test_a_substitution_target_falls_back_to_the_whole_command(self) -> None:
+        """A ``kill $(pgrep -f <name>)`` resolves the name out of a command
+
+        substitution, so the resolved token is not a verbatim substring of the
+        command at a stable offset. The span honestly falls back to the whole
+        command. Still refused.
+        """
+        command = "k" + "ill $(pgrep -f " + self._PROD + ")"
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_a_parameter_expansion_target_falls_back_to_the_whole_command(self) -> None:
+        """A name assembled by parameter expansion (``${X}crew``) is not verbatim
+
+        in the command, so a search would skip to a later literal copy. The
+        presence of expansion machinery makes the span fall back to the whole
+        command rather than point at the wrong copy.
+        """
+        command = "X=kiro; pk" + "ill -f ${X}crew x ; echo " + self._PROD
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_a_nested_kill_payload_falls_back_to_the_whole_command(self) -> None:
+        """A match inside a wrapper payload has no offset in the outer command line,
+
+        so the span honestly reports the whole command rather than a fabricated one.
+        The decision is unchanged -- it is still refused.
+        """
+        command = "bash -c 'pk" + "ill -f " + self._PROD + "'"
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_the_kill_diagnostic_never_echoes_the_product_name(self) -> None:
+        """The sharper span is still payload-free: offsets and a census, no bytes."""
+        line = self._kill_diagnostic("pk" + "ill -f " + self._PROD)
+        assert self._PROD not in line
+
+    def test_the_kill_floor_verdict_is_unchanged_by_the_span(self) -> None:
+        """Diagnostics only: every refusal still refuses, every allow still allows."""
+        from kiro_crew.security import is_denied
+
+        def killed(command: str) -> bool:
+            reason = is_denied(command)
+            return reason is not None and "self-protection-kill" in reason
+
+        refused = (
+            "pk" + "ill -f " + self._PROD,
+            "kill" + "all " + self._PROD,
+            "pk" + "ill -f '[;]*" + self._PROD + "'",
+            "k" + "ill $(pgrep -f " + self._PROD + ")",
+            "k" + "ill $(pidof " + self._PROD + ")",
+            "bash -c 'pk" + "ill -f " + self._PROD + "'",
+        )
+        allowed = (
+            "k" + "ill 8123 && cp /tmp/" + self._PROD + ".json ~/",
+            "pk" + "ill other; echo " + self._PROD,
+            "echo pk" + "ill " + self._PROD,
+        )
+        assert [c for c in refused if not killed(c)] == []
+        assert [c for c in allowed if killed(c)] == []
+
+    def test_an_ambiguous_earlier_mention_falls_back_to_the_whole_command(self) -> None:
+        """When the name appears earlier in the command (an allowed ``cp`` of a
+
+        product-named path, then a kill of the product), the located occurrence is
+        ambiguous, so the span honestly falls back to the whole command rather than
+        risk pointing at the wrong copy. Still refused.
+        """
+        command = "cp /tmp/" + self._PROD + ".json . && pk" + "ill -f " + self._PROD
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_a_product_name_in_the_kill_programs_own_path_is_ambiguous(self) -> None:
+        """A product-named directory in the kill verb's own path
+
+        (``/tmp/kirocrew/pkill -f kirocrew``) makes the name appear twice, so the
+        span falls back to the whole command instead of guessing which is the
+        target.
+        """
+        command = "/tmp/" + self._PROD + "/pk" + "ill -f " + self._PROD
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_a_length_changing_lowercase_falls_back_to_the_whole_command(self) -> None:
+        """When ``str.lower`` changes the command's length (``İ`` U+0130 -> two
+
+        chars), an offset into the lowercased command would land on the wrong bytes
+        of the raw subject, so the span honestly falls back to the whole command.
+        The kill is still refused; only the span widens.
+        """
+        command = "\u0130\u0130\u0130=1; pk" + "ill -f " + self._PROD
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_a_quoted_target_with_a_later_mention_falls_back_to_the_whole_command(
+        self,
+    ) -> None:
+        """A quote-spliced target (``pkill -f 'kiro''crew'``) holds no verbatim
+
+        product name, so a plain search would skip PAST the kill's own argv to a
+        later benign mention (``; echo kirocrew``). A command separator between the
+        verb and the hit means the hit is a different command, so the span honestly
+        falls back to the whole command. Still refused.
+        """
+        command = "pk" + "ill -f 'kiro''crew' ; echo " + self._PROD
+        line = self._kill_diagnostic(command)
+        assert self._span(line) == (0, len(command))
+
+    def test_a_target_glued_to_a_command_operator_spans_only_the_name(self) -> None:
+        """The span is anchored on the product name, so a glued operator, redirect
+
+        or paren (``pkill kirocrew&&true``) is excluded from it without any
+        per-operator special-casing. The located region is exactly ``kirocrew``.
+        """
+        command = "pk" + "ill " + self._PROD + "&&true"
+        line = self._kill_diagnostic(command)
+        start, end = self._span(line)
+        assert command[start:end] == self._PROD, (start, end, command)
+
     def test_a_non_identifier_cannot_reach_the_line(self) -> None:
         """Structural, not careful: the format cannot quote a command.
 
