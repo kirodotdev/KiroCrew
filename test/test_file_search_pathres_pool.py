@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -70,7 +70,7 @@ def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
-    state.file_indexes.get.return_value = None
+    state.file_indexes.ensure = AsyncMock(return_value=None)
     state.owner_id = ""
     app["state"] = state
     return as_owner(app)
