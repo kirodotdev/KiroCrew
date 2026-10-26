@@ -541,8 +541,9 @@ pass retracted a record or a retraction it owed failed, and the hook's
 `Runtime reconcile: unowned_alive=...` line is WARNING only when the pass killed,
 would have killed or retracted something. A reading made only of permanently
 withheld unowned pids and `not-mine` records repeats every tick, so both lines
-drop to DEBUG; the `session.runtime_reconcile` counter still carries every field
-on every pass.
+drop to DEBUG; the `kirocrew.session.runtime_reconcile` counter still counts every
+pass, with each reading field as a nonzero flag rather than its raw count, because a
+raw count as an attribute value opens a new series on nearly every pass.
 
 ### Platform scope
 

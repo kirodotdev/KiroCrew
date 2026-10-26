@@ -95,6 +95,9 @@ TURN_TIMEOUT_CAUSE = "kirocrew.turn.timeout.cause"
 #: runtime mid-turn, the teardown signature of the original incidents.
 SESSION_IDLE_EXPIRED = "kirocrew.session.idle_expired"
 
+#: One runtime-reconcile pass: its reading's counts, emitted every pass.
+SESSION_RUNTIME_RECONCILE = "kirocrew.session.runtime_reconcile"
+
 
 # ---------------------------------------------------------------------------
 # Business-event series — "did this subsystem do its job, and how often"

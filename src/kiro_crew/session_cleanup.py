@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
 from kiro_crew.process_identity import (
     audit_kill_decision,
     audit_kill_phase,
@@ -627,9 +628,14 @@ class SessionCleanup:
                 self._note_reconcile_refusal(reading.reason or "unsupported")
                 return
             self._clear_reconcile_refusal()
+            # Each field as "nonzero", never the raw count: a series is kept per
+            # attribute set for the process's life, and a byte sum or pid count
+            # would open a new one on nearly every pass. The leaked counts stay
+            # on the reading the dashboard serves; five others are in the summary
+            # line below.
             self._deps.emit_counter(
-                "session.runtime_reconcile",
-                reading.as_counter_fields(),
+                SESSION_RUNTIME_RECONCILE,
+                {k: bool(v) for k, v in reading.as_counter_fields().items()},
             )
             if reading.unowned_alive or reading.owned_dead:
                 # ``would_kill`` belongs beside the other four: it is the number an
@@ -643,7 +649,8 @@ class SessionCleanup:
                 # all permanently withheld (long-lived tool work, app backends) or
                 # all "not mine to retract" reads the same every tick, and at
                 # WARNING it was a line per tick for the gateway's life. The
-                # counter above still carries every field on every pass.
+                # counter above still carries every field, as a nonzero flag, on
+                # every supported pass.
                 acted = reading.killed or reading.would_kill or reading.forgotten
                 self._deps.logger.log(
                     logging.WARNING if acted else logging.DEBUG,
