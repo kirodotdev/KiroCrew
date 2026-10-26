@@ -403,6 +403,20 @@ def _backoff_shift(job: CronJob, unshifted: float | None) -> float | None:
     return backoff_until
 
 
+def _cron_due_at_backoff_end(job: CronJob, backoff_until: float) -> bool:
+    """Whether the cron-expression ``job`` is due at its own backoff end.
+
+    The minute the backoff ends in can match the expression; the timer then wakes
+    on the end (:func:`next_wake_secs`) and the preview shows it
+    (:func:`compute_next_run_ts`). An end no datetime can hold (a hand-edited
+    store) is not due.
+    """
+    try:
+        return is_due(job, backoff_until)
+    except (ValueError, OverflowError, OSError):
+        return False
+
+
 def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
     """Return the next fire time as a UTC epoch, or ``None`` if unknown.
 
@@ -415,6 +429,18 @@ def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
     RESULT, covering every arithmetic route at the serialize site.
     """
     result = _compute_next_run_ts_raw(job, now)
+    # A cron job due at a backoff end still ahead runs then: nothing runs before
+    # the end, and next_wake_secs wakes on it. croniter's get_next is strictly
+    # after its base, so the raw lookup alone never names that end.
+    if result is not None and job.schedule.kind == "cron":
+        backoff_end = job.failure_backoff_until()
+        current = now if now is not None else time.time()
+        if (
+            backoff_end is not None
+            and backoff_end > current
+            and _cron_due_at_backoff_end(job, backoff_end)
+        ):
+            return backoff_end
     # A failing job past the default limit: its next fire is the first slot after its backoff.
     backoff_until = _backoff_shift(job, result)
     if backoff_until is not None:
@@ -708,4 +734,13 @@ def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float)
                 delays.append(max(0.0, cron_next - now))
             else:
                 delays.append(_TIMER_POLL_SECS)
+            # A backoff ending inside a matching minute makes the job due at that
+            # end, which can fall between the boundary wake and the next poll.
+            backoff_until = job.failure_backoff_until()
+            if (
+                backoff_until is not None
+                and backoff_until > now
+                and _cron_due_at_backoff_end(job, backoff_until)
+            ):
+                delays.append(backoff_until - now)
     return min(delays) if delays else None

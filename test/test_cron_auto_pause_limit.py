@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -161,6 +162,74 @@ class TestNeverPauseBackoff:
         now = job.last_run_ts + 30
         nxt = compute_next_run_ts(job, now)
         assert nxt is not None and nxt >= job.failure_backoff_until()
+
+    def _quarter_hourly_failing(self) -> CronJob:
+        # Last run 08:40 UTC; 7 failures put the backoff end on the 09:00 slot.
+        job = self._failing(7, last=datetime(2026, 10, 26, 8, 40, tzinfo=timezone.utc).timestamp())
+        job.schedule = CronSchedule(kind="cron", cron_expr="*/15 * * * *")
+        job.timezone = "UTC"
+        return job
+
+    def test_cron_display_keeps_a_slot_that_falls_exactly_on_the_backoff_end(self) -> None:
+        job = self._quarter_hourly_failing()
+        until = job.failure_backoff_until()
+        assert until == datetime(2026, 10, 26, 9, 0, tzinfo=timezone.utc).timestamp()
+        assert is_due(job, until)
+        assert compute_next_run_ts(job, job.last_run_ts + 60) == until
+
+    def test_cron_display_keeps_the_minute_a_fractional_backoff_end_falls_in(self) -> None:
+        # A cron run's last_run_ts is its completion time, so the end is rarely whole.
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 0.5  # backoff now ends half a second into the 09:00 slot
+        until = job.failure_backoff_until()
+        nxt = compute_next_run_ts(job, job.last_run_ts + 60)
+        assert nxt == until and is_due(job, nxt)
+
+    def test_a_late_backoff_end_in_a_matching_minute_is_woken_on_and_shown(self) -> None:
+        # Ends 45 s into the 09:00 slot: past both the boundary wake and the 30 s poll.
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 45
+        until = job.failure_backoff_until()
+        assert until == datetime(2026, 10, 26, 9, 0, 45, tzinfo=timezone.utc).timestamp()
+        assert not is_due(job, until - 15) and is_due(job, until)
+        assert compute_next_run_ts(job, job.last_run_ts + 60) == until
+        assert next_wake_secs([job], set(), until - 15) == pytest.approx(15)
+        # Read inside that minute, before the end: the end is still the next run.
+        assert compute_next_run_ts(job, until - 15) == until
+
+    def test_a_backoff_end_between_slots_adds_no_wake(self) -> None:
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 5 * 60  # ends 09:05; the 08:45 boundary wake stays first
+        now = datetime(2026, 10, 26, 8, 46, tzinfo=timezone.utc).timestamp()
+        assert next_wake_secs([job], set(), now) == pytest.approx(14 * 60)
+
+    def test_cron_display_moves_a_backoff_end_between_slots_to_the_next_slot(self) -> None:
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 5 * 60  # backoff now ends at 09:05, between slots
+        nxt = compute_next_run_ts(job, job.last_run_ts + 60)
+        assert nxt == datetime(2026, 10, 26, 9, 15, tzinfo=timezone.utc).timestamp()
+
+    def test_cron_display_on_a_skipped_backoff_end_date_moves_to_the_next_allowed_date(
+        self,
+    ) -> None:
+        job = self._quarter_hourly_failing()
+        job.skip_dates = ["2026-10-26"]
+        nxt = compute_next_run_ts(job, job.last_run_ts + 60)
+        assert nxt == datetime(2026, 10, 27, 0, 0, tzinfo=timezone.utc).timestamp()
+        assert is_due(job, nxt)
+
+    def test_cron_display_with_an_out_of_range_backoff_end_has_no_next_run(self) -> None:
+        # A millisecond last_run_ts puts the backoff end past the year datetime can hold.
+        job = self._quarter_hourly_failing()
+        now = job.last_run_ts + 60
+        job.last_run_ts *= 1000
+        assert compute_next_run_ts(job, now) is None
+
+    def test_cron_display_without_backoff_stays_strictly_future(self) -> None:
+        job = self._quarter_hourly_failing()
+        job.consecutive_failures = 0
+        on_slot = datetime(2026, 10, 26, 8, 45, tzinfo=timezone.utc).timestamp()
+        assert compute_next_run_ts(job, on_slot) == on_slot + 15 * 60
 
 
 class TestNeverPauseAudit:
