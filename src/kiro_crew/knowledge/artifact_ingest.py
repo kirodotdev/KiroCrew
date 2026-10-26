@@ -370,9 +370,10 @@ async def ingest_artifact(
         # File-backed artifact: art_store.get() read live content from
         # source_path on disk. Refuse to ingest a file that resolves to a
         # sensitive credential path into the searchable Knowledge store
-        # (defense-in-depth; resolves symlinks before checking).
+        # (defense-in-depth; resolves symlinks before checking). Resolving stats
+        # the disk, so it runs in a worker thread, not on the event loop.
         try:
-            resolved = str(Path(art.source_path).expanduser().resolve())
+            resolved = str(await asyncio.to_thread(Path(art.source_path).expanduser().resolve))
         except (OSError, ValueError, RuntimeError):
             return None
         if is_sensitive_path(resolved):

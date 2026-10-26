@@ -200,7 +200,9 @@ class KnowledgeWatcher:
                     if is_sensitive_path(uri):
                         logger.warning("Skipping sensitive path: %s", uri)
                         continue
-                    if not Path(uri).exists():
+                    # The file can sit on a slow or network disk, so its stats
+                    # run in a worker thread, not on the event loop.
+                    if not await asyncio.to_thread(Path(uri).exists):
                         # Mark missing in the COLUMN. Writing it into the properties
                         # JSON instead left the row's visible state stale -- the
                         # Library renders the column, so a file that had vanished
@@ -229,7 +231,7 @@ class KnowledgeWatcher:
                         deferred += 1
                         continue
 
-                    mtime = os.stat(uri).st_mtime
+                    mtime = (await asyncio.to_thread(os.stat, uri)).st_mtime
                     props = self._parse_props(row["properties"])
                     stored_mtime = props.get("mtime", 0)
                     # A row that reads 'missing' has been away, and the mtime gate

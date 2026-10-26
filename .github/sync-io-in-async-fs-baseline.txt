@@ -47,9 +47,6 @@
 1 src/kiro_crew/dashboard/messaging_api/webex_settings.py
 1 src/kiro_crew/dashboard/server.py
 2 src/kiro_crew/frontend.py
-1 src/kiro_crew/knowledge/artifact_ingest.py
-1 src/kiro_crew/knowledge/ingestion.py
-2 src/kiro_crew/knowledge/watcher.py
 1 src/kiro_crew/mcp_discovery_probe.py
 1 src/kiro_crew/mcp_gateway/resolve_once.py
 1 src/kiro_crew/providers/acp_runtime_start.py
