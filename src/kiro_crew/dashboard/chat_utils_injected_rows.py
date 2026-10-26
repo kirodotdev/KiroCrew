@@ -519,7 +519,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     A merge run stops at a system injection, at an attachment-bearing entry
     (see :func:`carries_attachments`), at a possibly-delivered steer
     (``STEER_POSSIBLY_DELIVERED_META``), at a requeued automation steer
-    (:data:`AUTOMATION_STEER_META`) and where the stamped turn actor
+    (:data:`AUTOMATION_STEER_META`), at an entry a decision steered
+    (``meta.decisions_strip``) and where the stamped turn actor
     changes, so an app's queued send never folds into the user's own words; an
     entry that starts no run pops alone.
     """
@@ -534,6 +535,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
                 # Automation text, never folded into a person's row.
                 or (item.get("meta") or {}).get(AUTOMATION_STEER_META)
+                # A decision's receipt names one message; a merged row has one meta.
+                or (item.get("meta") or {}).get("decisions_strip")
             ):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):
