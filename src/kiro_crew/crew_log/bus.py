@@ -213,6 +213,11 @@ def subscribe(
     through the same revision floor. A fold with no minted revision yet delivers no
     baseline and the floor stays at 0.
 
+    A SLOT baseline never folds cold. With no warm cell and no usable savepoint the
+    subscriber gets no baseline (as for a fold with no revision), one background prime
+    per cell is scheduled (:mod:`kiro_crew.crew_log.slot_prime`), and its value arrives
+    as the next pushed event. So the read below is O(entries since the savepoint).
+
     The baseline read is FILE I/O on the CALLER's thread. That keeps it off the append
     path and off the fold worker, as this module's contract requires, and it means a
     caller on an event loop runs this through ``asyncio.to_thread``; a callback on the
@@ -330,7 +335,9 @@ def _read_baseline(scope: str, key: str, fold: str) -> "FoldAdvanced | None":
 
     The same reads a route serves -- ``read_slot_projection`` for a slot fold and
     ``read_projection`` for a session one -- so the baseline carries the revision a
-    pushed event for that cell would carry. ``None`` when the fold has no revision yet.
+    pushed event for that cell would carry. ``None`` when the fold has no revision yet,
+    and ``None`` for a slot fold that is NOT READY: one with no warm cell and no usable
+    savepoint is never folded here (:mod:`kiro_crew.crew_log.slot_prime`).
 
     Imported here and not at module level: the bus is loaded by the eager folder, which
     is on the gateway's boot path, and the fold surface must not be.
@@ -338,7 +345,17 @@ def _read_baseline(scope: str, key: str, fold: str) -> "FoldAdvanced | None":
     from kiro_crew.crew_log import projection
 
     if scope == SCOPE_SLOT:
-        folded = projection.read_slot_projection(key, fold)
+        try:
+            folded = projection.read_slot_projection(key, fold, cold=False)
+        except projection.SlotFoldNotReady:
+            # No warm cell and no usable savepoint: the value would cost a fold of every
+            # unit the slot ran under, on this caller's thread. Answer "no baseline yet"
+            # -- the shape a fold with no revision already has -- and let one background
+            # prime fold it; its FOLD_ADVANCED reaches this subscriber, registered above.
+            from kiro_crew.crew_log import slot_prime
+
+            slot_prime.schedule(key, fold, for_reader=True)
+            return None
     else:
         folded = projection.read_projection(key, fold)
     revision = int(getattr(folded, "revision", 0) or 0)

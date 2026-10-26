@@ -1161,6 +1161,19 @@ The read runs on the subscriber's own thread: never the append path and never th
 worker, so a caller on an event loop calls it through `asyncio.to_thread`. A read that
 raises removes the subscription and propagates.
 
+A slot baseline NEVER folds cold. It reads with `read_slot_projection(..., cold=False)`,
+which continues a warm cell or resumes a savepoint as before (O(entries since the
+savepoint)) and raises `SlotFoldNotReady` where it would otherwise stream every unit of
+the slot. The subscriber then gets no baseline -- the same shape as a fold with no
+revision yet -- and `crew_log/slot_prime.py` schedules one background prime for that
+(home, slot, fold): one worker thread, one fold per cell at a time however many
+subscribers and wakes ask, published on the bus as an ordinary `FoldAdvanced` when it
+ends. A subscriber registered before that publish receives it through the hold-and-replay
+above; one registered after reads the now-warm cell. A failed prime is logged; the next
+request retries once, and after two failures in a row the cell waits 60 s before another
+attempt. The eager worker's `_advance` takes the same path, so a cold cell never stalls
+the fold worker either, and `eager.drain` (the shutdown barrier) also waits for primes.
+
 The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
 `slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps
 their disposers so a second install in one process swaps all three instead of doubling

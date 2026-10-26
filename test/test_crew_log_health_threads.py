@@ -39,6 +39,7 @@ from crew_log_fold_eager_helpers import (  # noqa: F401 -- the autouse fixture r
 
 from kiro_crew.crew_log import eager
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.crew_log import slot_prime
 from kiro_crew.metrics import crew_log_health as health
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -284,7 +285,8 @@ def test_a_cold_then_warm_slot_fold_records_both_origins(rec):
     """
     _a_slot_with_work()
     health.claim_fold_worker_thread()
-    eager._advance(WORK_SLOT, "work")
+    eager._advance(WORK_SLOT, "work")  # cold: handed to the background prime
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
     eager._advance(WORK_SLOT, "work")
     starts = rec.attrs_for(health.FOLD_START)
     assert {"scope": "slot", "origin": "cold"} in starts
@@ -359,6 +361,7 @@ def test_an_applied_slot_fold_is_counted_once_with_its_name(rec):
     _a_slot_with_work()
     health.claim_fold_worker_thread()
     eager._advance(WORK_SLOT, "work")
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
     applied = rec.attrs_for(health.FOLD_APPLY)
     assert len(applied) == 1
     assert applied[0]["scope"] == "slot"
@@ -384,7 +387,8 @@ def test_a_slot_fold_that_raises_mid_apply_records_its_start_and_no_apply(rec, m
 
     monkeypatch.setattr(projection_slot_memo, "_persist_slot_fold", boom)
     health.claim_fold_worker_thread()
-    eager._advance(WORK_SLOT, "work")  # swallowed by the worker, as a bad fold is
+    eager._advance(WORK_SLOT, "work")  # cold, so the prime folds; it swallows the raise
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
     assert rec.attrs_for(health.FOLD_START) == [{"scope": "slot", "origin": "cold"}]
     assert rec.attrs_for(health.FOLD_APPLY) == [], "nothing was applied"
 
@@ -413,7 +417,8 @@ def test_an_idle_slot_pass_records_its_start_and_no_apply(rec):
     """
     _a_slot_with_work()
     health.claim_fold_worker_thread()
-    eager._advance(WORK_SLOT, "work")  # the real fold
+    eager._advance(WORK_SLOT, "work")  # the real fold, on the background prime
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
     first = len(rec.attrs_for(health.FOLD_APPLY))
     eager._advance(WORK_SLOT, "work")  # nothing changed in between
     eager._advance(WORK_SLOT, "work")
@@ -462,8 +467,21 @@ def test_a_session_pass_that_moved_nothing_counts_no_apply(rec):
 
 
 def test_the_eager_advance_records_on_the_calling_thread_only(rec):
-    """Every point is stamped with the thread that folded, never another."""
-    _a_slot_with_work()
+    """Every point is stamped with the thread that folded, never another.
+
+    The cold pass is folded by the background prime and stamped with ITS thread; the
+    warm pass after it is folded by the caller and stamped with the caller's.
+    """
+    handle = _slot_log("acp-health-slot", WORK_SLOT)
+    _work_entry(handle, "it-1")
+    _work_entry(handle, "it-2")
     health.claim_fold_worker_thread()
+    eager._advance(WORK_SLOT, "work")
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
+    primed = rec.threads_for(health.FOLD_APPLY)
+    assert len(primed) == 1 and threading.current_thread().name not in primed
+    assert all(name.startswith("crew-log-slot-prime") for name in primed)
+    rec.calls.clear()
+    _work_entry(handle, "it-3")
     eager._advance(WORK_SLOT, "work")
     assert rec.threads_for(health.FOLD_APPLY) == {threading.current_thread().name}
