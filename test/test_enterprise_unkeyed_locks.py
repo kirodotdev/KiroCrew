@@ -10,13 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock
 
 import pytest
 
 from kiro_crew import edition_locks
-from kiro_crew.apps import dev_mode
 from kiro_crew.computer_use import enable_state
 from kiro_crew.config.sections_telemetry import TelemetryConfig
 from kiro_crew.dashboard.handlers import updates
@@ -83,28 +81,6 @@ def test_oss_release_channel_file_still_applies(channel_file):
     assert update_layout.release_channel() == "nightly"
 
 
-def test_dev_mode_enable_is_refused(enterprise):
-    result = dev_mode.set_dev_mode("some-app", True)
-    assert result == {"error": edition_locks.LOCKED_BY_POLICY, "code": "locked_by_policy"}
-
-
-def test_dev_mode_metadata_is_ignored(enterprise, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(dev_mode, "_read_installed", lambda name: SimpleNamespace(dev=True))
-    monkeypatch.setattr(dev_mode, "_read_dev_sentinel", lambda: {"some-app"})
-    dev_mode._set_dev_cache({"some-app"})
-    try:
-        assert dev_mode.is_dev_mode("some-app") is False
-        assert dev_mode.is_dev_mode_cached("some-app") is False
-        assert dev_mode._load_dev_apps() == set()
-    finally:
-        dev_mode._set_dev_cache(set())
-
-
-def test_oss_dev_mode_metadata_still_applies(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(dev_mode, "_read_installed", lambda name: SimpleNamespace(dev=True))
-    assert dev_mode.is_dev_mode("some-app") is True
-
-
 def test_computer_use_opt_in_is_ignored(enterprise):
     assert enable_state.is_enabled({"enabled": True}) is False
 
@@ -161,17 +137,6 @@ def test_channel_switch_api_answers_locked_and_writes_nothing(enterprise, tmp_pa
     assert resp.status == 409
     assert json.loads(resp.body)["code"] == "locked_by_policy"
     assert not (tmp_path / "channel").exists()
-
-
-def test_cli_dev_mode_refusal_is_audited(enterprise, monkeypatch: pytest.MonkeyPatch):
-    calls = []
-    monkeypatch.setattr(
-        dev_mode, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: calls.append(kw))
-    )
-    dev_mode.set_dev_mode("some-app", True)
-    assert [(c["operation"], c["outcome"], c["error"]) for c in calls] == [
-        ("app_dev_mode", "denied", "locked_by_policy")
-    ]
 
 
 def test_schema_marks_locked_config_paths(enterprise):

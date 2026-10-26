@@ -37,6 +37,7 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "approval_modes": (("normal", "trust", "trust_reads"), ("yolo",)),
     "mcp": (("@kirocrew-core/local_knowledge_search",), ("@other/tool", "@other")),
     "apps": ((), ("any-app",)),
+    "app_versions": ((), ("any-app@1.0.0",)),
     "commands": ((), ("ls", "git status")),
     "filesystem.read": ((_WORKSPACE_FILE,), ("/etc/passwd", os.path.join("~", "notes.txt"))),
     "filesystem.write": ((), (_WORKSPACE_FILE,)),

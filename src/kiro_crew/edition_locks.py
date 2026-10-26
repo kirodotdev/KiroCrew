@@ -35,7 +35,6 @@ LOCKED_BY_POLICY = "locked by policy"
 #: Control id -> the local source that is ignored and what the feature does instead.
 #: Ids follow the RFC appendix "Crew key" column.
 UNKEYED_LOCKS: Dict[str, str] = {
-    "app_dev_mode": "app dev mode toggles are ignored; every app is served as installed",
     "computer_use": "the computer_use.json opt-in is ignored; desktop control stays off",
     "tunnel": "tunnel.enabled is ignored; no tunnel is started",
     "telemetry.otlp_hosts": "telemetry.otlp_endpoint is ignored; no metrics leave the host",

@@ -211,6 +211,9 @@ class _Installer:
     async def sync_plugins(self):
         return await self._ok("sync_plugins")
 
+    async def plugins_out_of_sync(self):
+        return []
+
 
 @pytest.mark.parametrize("edition", EDITIONS)
 def test_extension_install_off_in_enterprise(monkeypatch, edition) -> None:

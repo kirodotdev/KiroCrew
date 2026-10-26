@@ -123,6 +123,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     ),
     "mcp": ScopeSpec(RULESET, matcher="mcp"),
     "apps": ScopeSpec(RULESET, matcher="identifier"),
+    # Which app versions may be installed and loaded, as ``<app>@<version>``
+    # (``{"mode": "allow", "allow": ["file-explorer@1.*"]}``). Asked by
+    # ``apps.admission.app_admission_denied`` at install, update, boot and enable
+    # (``extension_governance.app_version_denied``). RFC enterprise edition,
+    # appendix row "App versions".
+    "app_versions": ScopeSpec(RULESET, matcher="identifier"),
     "commands": ScopeSpec(RULESET, matcher="command"),
     "filesystem.read": ScopeSpec(RULESET, matcher="path"),
     "filesystem.write": ScopeSpec(RULESET, matcher="path"),
@@ -465,6 +471,27 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # row permits, as for every capability.
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched.
     "capabilities.decisions_local": ScopeSpec(CAPABILITY, capability_default=True),
+    # Installing extensions through the edition's ``CapabilityManager``: MCP
+    # servers, skills, agent packages and plugin sync. Off pins every install,
+    # uninstall and sync shut. Inner ``extensions`` ruleset (``identifier``): what
+    # may be installed, as ``<kind>:<id>`` (``mcp:github``, ``plugin:reviewer``).
+    # Enforced at the seam every caller goes through
+    # (``capability_bound.BoundedCapabilityManager``, via
+    # ``extension_governance``). Default True: naming the row without ``enabled``
+    # keeps install working. RFC enterprise edition, appendix rows "Extension
+    # install", "Extension uninstall" and "Plugin sync". Named by the RFC's policy
+    # term, not its ``capability_install`` Crew key: an edition may already
+    # ``register_scope`` that name with its own spec, and a second spec under one
+    # name makes ``register_scope`` raise at composition.
+    "capabilities.extension_install": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"extensions": "identifier"}
+    ),
+    # App developer mode (``apps/dev_mode.py``): live reload and ``no-store``
+    # serving of an app's own UI tree. Asked at the toggle and on every read, so a
+    # policy that turns it off also stops apps already in dev mode. Default True.
+    # ``extension_governance.developer_mode_permitted`` is the one reader. RFC
+    # enterprise edition, appendix row "App developer mode".
+    "capabilities.app_dev_mode": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

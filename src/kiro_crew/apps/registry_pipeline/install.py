@@ -527,7 +527,16 @@ async def install_from_registry(
     # but BEFORE the repo is cloned and setup.onInstall runs, so a banned /
     # non-allowlisted / unsigned app is never cloned nor its install script run.
     admission_manifest = AppManifest.from_dict(manifest) if manifest else None
-    denied = app_admission_denied(name, manifest=admission_manifest, action="install_from_registry")
+    # The version is not asked here: this manifest can be a stale local checkout.
+    # The clone-time admission (``_clone_build_app_locked``) asks it on the
+    # fetched manifest, before the build or ``onInstall`` runs.
+    denied = await asyncio.to_thread(
+        app_admission_denied,
+        name,
+        manifest=admission_manifest,
+        action="install_from_registry",
+        check_version=False,
+    )
     if denied:
         sel().log_api_access(
             caller="app_install_from_registry",
@@ -835,7 +844,8 @@ async def install_from_registry(
         # install_app/update_app will actually register, and a build step can
         # rewrite app.json; a manifest that does not satisfy the admission
         # policy (e.g. signature required but absent) must not install.
-        denied = app_admission_denied(
+        denied = await asyncio.to_thread(
+            app_admission_denied,
             name,
             manifest=AppManifest.from_dict(manifest_data),
             action="install_from_registry",
@@ -1047,7 +1057,8 @@ async def install_from_registry(
                 # Retained-stale reporting for this post-script refusal is owned
                 # by the `finally` below (it re-stamps outcome["log"]).
                 return outcome
-            denied = app_admission_denied(
+            denied = await asyncio.to_thread(
+                app_admission_denied,
                 name,
                 manifest=AppManifest.from_dict(manifest_data),
                 action="install_from_registry",
@@ -1234,6 +1245,30 @@ async def install_from_registry(
             outcome = startup_refusal
             return outcome
 
+        async def _roll_back_refused() -> None:
+            # A refusal from here on comes after the build and the script. An
+            # update that fast-forwarded a pre-existing checkout in place is not
+            # restored by the `finally` (it restores moved-aside checkouts only),
+            # so it takes the desktop gates' rollback. A fresh clone keeps its
+            # existing handling.
+            if not build_result.get("_checkout_preexisted"):
+                return
+            await _roll_back_post_script_refusal(
+                name,
+                app_source,
+                app_source_dir(name),
+                log_lines,
+                layout_before=layout_before,
+                checkout_preexisted=bool(build_result.get("_checkout_preexisted")),
+                pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
+                manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
+                manifest_snapshot=build_result.get("_pre_update_manifest"),
+                restore_from=_restorable_or_none(
+                    build_result.get("_pending_stale_cleanup"),
+                    build_result.get("_restorable_stale"),
+                ),
+            )
+
         # Step 4: Register with Kiro Crew
         if is_self_managed:
             # Pre-register with manifest from the cloned repo so the app
@@ -1241,6 +1276,7 @@ async def install_from_registry(
             # The app will update its own registration on next launch.
             # ``manifest_data`` is the identity-checked read from above — reusing
             # it avoids a second read that could see different bytes.
+            from kiro_crew.apps.admission import app_version_refusal
             from kiro_crew.apps.manager import refresh_app_config_keys, register_external_app
 
             display = manifest_data.get("displayName", name)
@@ -1250,6 +1286,18 @@ async def install_from_registry(
             # checkout beside the new record. The route holds this app's
             # lifecycle lock, and a contended record lock refuses before the
             # record is read, so the refusal path below stays consistent.
+            # The app_versions check reads the governance profile store, so it is
+            # asked here, off the loop, and register_external_app skips it.
+            version_refusal = await asyncio.to_thread(
+                app_version_refusal, name, AppManifest.from_dict(manifest_data), str(version)
+            )
+            if version_refusal:
+                log_lines.append(
+                    _refusal_line(verb, f"blocked by admission policy: {version_refusal}")
+                )
+                await _roll_back_refused()
+                outcome = {"ok": False, "name": name, "message": "", "error": version_refusal}
+                return outcome
             reg_result = register_external_app(
                 name=name,
                 version=version,
@@ -1259,6 +1307,7 @@ async def install_from_registry(
                 origin="registry",
                 source_repository=persisted_git_url,
                 start_disabled=start_disabled,
+                version_checked=True,
             )
             if not reg_result.ok:
                 # A refused registration leaves the prior record as it was, so the
@@ -1266,6 +1315,7 @@ async def install_from_registry(
                 # the `finally` puts the previous checkout back beside that record,
                 # and the caller sees the error that names the fix.
                 log_lines.append(reg_result.error or "registration failed")
+                await _roll_back_refused()
                 outcome = {
                     "ok": False,
                     "name": name,
@@ -1339,6 +1389,8 @@ async def install_from_registry(
             else:
                 result = await asyncio.to_thread(install_app, str(app_source))
         log_lines.append(result.message or result.error or "done")
+        if not result.ok:
+            await _roll_back_refused()
 
         # Record the source marker plus structured provenance, so a later update
         # resolves the source this install actually came from rather than
@@ -1380,9 +1432,9 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
-        # Install/update failed AFTER a successful clone+build: durable_success
-        # stays False, so the `finally` restores the restorable stale and its
-        # reporter filters it out — no per-exit report is needed here.
+        # Install/update failed AFTER a successful clone+build: the checkout was
+        # rolled back above, durable_success stays False, and the `finally`'s
+        # reporter filters the restored stale out — no per-exit report is needed.
 
         outcome = {
             "ok": result.ok,

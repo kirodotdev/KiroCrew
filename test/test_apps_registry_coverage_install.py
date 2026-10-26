@@ -538,7 +538,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": "banned"
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: "banned"
         )
         result = await registry.install_from_registry("demo")
         assert result["ok"] is False
@@ -566,7 +566,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": None
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: None
         )
         result = await registry.install_from_registry("demo")
         assert result["needsClientInstall"] is True
@@ -587,7 +587,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": None
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: None
         )
         monkeypatch.setattr("kiro_crew.apps.version.check_min_version", lambda mv: "needs 999.0.0")
         result = await registry.install_from_registry("demo")
@@ -607,7 +607,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _manifest)
         monkeypatch.setattr(registry, "get_app", lambda name: None)
         monkeypatch.setattr(
-            registry, "app_admission_denied", lambda name, manifest=None, action="": None
+            registry, "app_admission_denied", lambda name, manifest=None, action="", **_k: None
         )
         monkeypatch.setattr(
             registry,
