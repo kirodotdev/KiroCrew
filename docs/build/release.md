@@ -1382,7 +1382,16 @@ rather than replacing them — so the published body is always
 for one to appear.
 
 - **Remove the generated commit list.** `generate_release_notes: true` appends a
-  `## What's Changed` line per commit since the previous tag. On v0.5.0 that was
+  `## What's Changed` line per pull request since the previous tag. The step
+  names that tag itself (`scripts/release_previous_tag.py`): the previous
+  stable tag for a stable release, and the previous prerelease of the same
+  `X.Y.Z` line for a prerelease, or the previous stable for the first one.
+  It reads tags with `scripts/check_feed_advance.py::parse_version`, and if
+  listing tags or choosing one fails, GitHub chooses as before. A prerelease
+  tag whose run failed and published no page still counts as a base (#25077).
+  GitHub's own choice is the newest ancestor release tag, and since each
+  release is tagged on its own release branch that is a tag from the project's
+  first weeks. A stable list can still be long: on v0.5.0 it was
   **746 lines for 922 commits** — 65% of the body, and it pushed the whole thing
   to 125,219 characters, past GitHub's 125,000-character ceiling, so the body was
   published truncated mid-word. The page already links "N commits to main since

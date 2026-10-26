@@ -1361,6 +1361,41 @@ jobs:
           fi
 
 
+      # The generated notes compare this tag against a previous one. Left to
+      # choose, GitHub takes the newest release tag that is an ancestor of this
+      # one, and because every release is tagged on its own release branch that
+      # is a tag from the project's first weeks: v0.9.0 and v0.10.0 each listed
+      # thousands of old pull requests. The script picks the base by lineage
+      # instead (previous stable for stable, previous prerelease of the same
+      # line for a prerelease); see its docstring. The checkout is shallow and
+      # carries no tags, so the names come from the API.
+      - name: Choose the previous tag for the generated notes
+        id: notes_base
+        if: steps.page.outputs.action == 'create'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Only the notes' base depends on this, so a failed listing or a failed
+          # choice falls back to GitHub's choice rather than holding back the
+          # release page.
+          if ! tags=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref'); then
+            echo "::warning::could not list tags; GitHub chooses the base for the generated notes of $TAG."
+            tags=""
+          fi
+          if ! previous=$(printf '%s\n' "$tags" | python3 scripts/release_previous_tag.py "$TAG"); then
+            echo "::warning::could not choose a previous tag; GitHub chooses the base for the generated notes of $TAG."
+            previous=""
+          fi
+          echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
+          if [ -n "$previous" ]; then
+            echo "Generated notes for $TAG compare against $previous."
+          else
+            echo "::notice::no previous release tag fits $TAG; GitHub chooses the base for its generated notes."
+          fi
+
       # A STABLE page is created as a DRAFT, and record-stable-promotion is what
       # makes it visible. This action creates the release and uploads every asset
       # in one call, so publishing on create means the page is public from its
@@ -1385,6 +1420,7 @@ jobs:
         with:
           body_path: release-notes.md
           generate_release_notes: true
+          previous_tag: ${{ steps.notes_base.outputs.previous_tag }}
           draft: ${{ steps.page.outputs.draft }}
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
