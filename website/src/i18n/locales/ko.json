@@ -11621,6 +11621,7 @@
         "restore_retry": "다시 시도",
         "send_blocked_not_loaded": "이 사이드 대화를 아직 불러오지 못했습니다",
         "steer_demoted_to_queue": "턴이 끝나 대기열에 추가했습니다",
+        "closed_in_another_tab": "다른 탭에서 컨텍스트를 새로 고쳐 이 사이드 채팅이 지워졌습니다",
         "thinking": "생각 중…",
         "turn_other": "{{count}}턴",
         "stop_failed": "사이드 턴을 중지하지 못했습니다 — 다시 시도하세요",

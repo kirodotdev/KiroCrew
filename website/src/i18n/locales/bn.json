@@ -11788,6 +11788,7 @@
         "restore_retry": "আবার চেষ্টা করো",
         "send_blocked_not_loaded": "এই সাইড কথোপকথন এখনও লোড হয়নি",
         "steer_demoted_to_queue": "টার্ন শেষ হয়েছে — পরিবর্তে কিউ করা হয়েছে",
+        "closed_in_another_tab": "অন্য ট্যাবে কনটেক্সট রিফ্রেশ করায় এই সাইড চ্যাট মুছে গেছে",
         "thinking": "ভাবছে…",
         "turn_one": "{{count}}টি টার্ন",
         "turn_other": "{{count}}টি টার্ন",

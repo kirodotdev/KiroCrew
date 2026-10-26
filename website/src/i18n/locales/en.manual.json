@@ -5209,6 +5209,7 @@
         "restore_retry": "Retry",
         "send_blocked_not_loaded": "this side conversation hasn't loaded yet",
         "steer_demoted_to_queue": "The turn ended — queued instead",
+        "closed_in_another_tab": "Refreshing the context in another tab cleared this side chat",
         "stop_failed": "Could not stop the side turn — try again"
       },
       "sidePanel": {

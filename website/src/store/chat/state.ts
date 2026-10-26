@@ -567,6 +567,11 @@ export interface ChatState {
    *  queue edit for an entry this tab has no card for get kept
    *  (`SideState.editedBeforeRestore`). */
   slotSideReading?: Record<string, boolean>
+  /** Slots whose side conversation another tab closed (`chat.side_closed` naming
+   *  another tab) while this tab showed it or held one of its questions, so the
+   *  panel says why it emptied. `sideClose` and a new conversation clear it, so
+   *  this tab's own Refresh context shows nothing new. */
+  slotSideClosedElsewhere?: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
   /** Fresh `has_more` for a BACKGROUND pane, written by every bounded warm.
    *  The pane's own query is staleTime:Infinity, so its has_more freezes at
