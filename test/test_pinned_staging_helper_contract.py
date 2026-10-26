@@ -36,11 +36,12 @@ def test_an_unknown_copytree_keyword_is_rejected_rather_than_dropped(tmp_path: P
 def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() -> None:
     """Pins the bug that made every POSIX snapshot refuse before it was caught.
 
-    ``os.lstat`` is NOT a member of ``os.supports_dir_fd`` even where the pinned walk
-    works perfectly -- the capability belongs to ``os.stat``. Probing the wrong one
-    reports False on a fully capable platform, which turns the deliberate refusal into
-    a blanket outage. Asserted as a property of the stdlib so the probe cannot drift
-    back.
+    The capability the pinned walk needs belongs to ``os.stat``. A probe that named
+    some other function could report False on a fully capable platform, which turns the
+    deliberate refusal into a blanket outage. Asserted as a property of the stdlib so
+    the probe cannot drift back. Whether ``os.lstat`` is ALSO in ``os.supports_dir_fd``
+    depends on the Python build (it is on some 3.12 patch releases), so that is not
+    asserted either way.
 
     The membership assertions are guarded because `os.supports_dir_fd` is EMPTY on Windows,
     where "which function carries the capability" is not a meaningful question -- nothing
@@ -55,7 +56,6 @@ def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() 
         return
 
     assert os.stat in os.supports_dir_fd
-    assert os.lstat not in os.supports_dir_fd
     if pinned_fs.supports_pinned_walk():
         assert pinned_fs.supports_pinned_tree_walk() is True
 
