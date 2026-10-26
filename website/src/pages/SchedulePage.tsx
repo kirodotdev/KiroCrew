@@ -28,6 +28,7 @@ import { useTableColumnWidths, type TableColumnSpec } from '../hooks/useTableCol
 import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
+import { isPartlyBlocked } from '../utils/cronPartlyBlocked'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { ResizableTableHead, SortableTableHead } from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
@@ -559,8 +560,10 @@ export default function SchedulePage() {
       return ka - kb || compareText(scheduleLabel(a), scheduleLabel(b))
     },
     status: (a: CronJob, b: CronJob) => {
+      // A partly blocked run sorts between a failed one and a clean one, the
+      // same order its badge reads in: worse than OK, better than Error.
       const rank = (j: CronJob) =>
-        j.is_running ? 4 : !j.enabled ? 0 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 2 : 3;
+        j.is_running ? 5 : !j.enabled ? 0 : isPartlyBlocked(j) ? 2 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 3 : 4;
       return rank(a) - rank(b);
     },
     lastRun: (a: CronJob, b: CronJob) => (a.last_run_ts || 0) - (b.last_run_ts || 0),
@@ -1107,7 +1110,7 @@ export default function SchedulePage() {
                     without it. */}
                 <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
-                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
+                <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={j.last_error || ''}>{i18nT('pages.schedulePage.partly_blocked')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
                   <span className="block truncate">{fmtAgo(j.last_run_ts)}</span>
                   {/* Retry telemetry for the LAST run only: a job that needed

@@ -1241,6 +1241,19 @@ carries the first line of its refusal in parentheses (`spawn_run (Blocked by
 security policy: <pattern>)`), so the reader sees which rule fired rather than
 a bare refusal.
 
+The Schedule page shows the middle arm as its own state, **Partly blocked**
+(amber, the reason on hover), not **Error**: a run that did all but one call
+must not look like one that died (#20514). `last_status` stays `error`, so
+every other reader (the history record, `cron_list`, health checks) is
+unchanged. The page has no status of its own to read, so `isPartlyBlocked`
+(`website/src/utils/cronPartlyBlocked.ts`) recognises the arm by the opening
+of its reason, `N of M tool call(s) blocked by the security gate: `, a pattern
+kept in `website/src/lib/backendPhrases.json` and pinned against
+`refusal_summary()` by
+`test_cron_refusal_status.py::TestPartialBlock::test_the_schedule_page_tells_a_partial_block_from_a_total_one`.
+An all-blocked reason (`all N ...`) and any script or command job keep
+**Error**.
+
 The tally does not separate the gate's tiers: a title-tier refusal (`rm -rf /`
 as a command) and an input-tier one (a document body the scanner read as a
 command line) are both `security_blocked`, and both are reported, because the
