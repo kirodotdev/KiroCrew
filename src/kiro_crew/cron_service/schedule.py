@@ -450,7 +450,7 @@ def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
         if job.schedule.kind == "cron":
             result = _compute_next_run_ts_raw(job, backoff_until)
         else:
-            result = backoff_until
+            result = _next_unskipped_ts(job, backoff_until)
     # Float-gated like every non-finite check in this module: a bignum int
     # result serializes as digits (valid JSON) and math.isfinite(huge_int)
     # raises OverflowError -- the exact escape this guard exists to prevent.
@@ -505,6 +505,36 @@ def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
     return nxt
 
 
+def _next_unskipped_ts(job: CronJob, candidate: float) -> float | None:
+    """First allowed instant at or after an interval or one-shot deadline.
+
+    These schedules stay due until attempted, so an excluded deadline moves to
+    the next allowed local day's start, without advancing the stored schedule.
+    Calendar days, rather than elapsed 24-hour periods, preserve DST boundaries.
+    """
+    if not job.skip_dates:
+        return candidate
+    from kiro_crew import cron as seams
+
+    try:
+        tz = _job_tz(job)
+        skipped = set(job.skip_dates)
+        horizon = candidate + _MAX_SKIP_DATE_HORIZON_SECS
+        for _ in range(len(skipped) + 1):
+            local = seams.datetime.fromtimestamp(candidate, tz=tz)
+            if local.strftime("%Y-%m-%d") not in skipped:
+                return candidate
+            midnight = (local + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0, fold=0
+            )
+            candidate = midnight.timestamp()
+            if candidate > horizon:
+                return None
+    except Exception:
+        logger.warning("Failed to compute allowed run date for job %s", job.id, exc_info=True)
+    return None
+
+
 def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | None:
     """Unchecked next-fire-time computation; see :func:`compute_next_run_ts`."""
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
@@ -519,9 +549,9 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
             if last is None:
                 return None
             nxt = last + sched.every_secs
-            return nxt if nxt > now else now
+            return _next_unskipped_ts(job, nxt if nxt > now else now)
         if sched.kind == "at" and sched.at_ts is not None:
-            return sched.at_ts if sched.at_ts > now else None
+            return _next_unskipped_ts(job, sched.at_ts) if sched.at_ts > now else None
         if sched.kind == "cron" and sched.cron_expr is not None:
             # croniter interprets cron_expr in base's timezone; get_next(float) returns UTC epoch
             tz = _job_tz(job)
