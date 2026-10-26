@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -219,8 +220,17 @@ class TestTheInjectedImplementationAnswers:
         assert (history / "2020-01-01.md").exists()  # local file untouched
 
     def test_pruning_removes_from_the_seam_and_leaves_local_files_alone(
-        self, tmp_path: Path, injected: DictProvider
+        self, tmp_path: Path, injected: DictProvider, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # ``prune_history`` dates its cutoff from ``datetime.now()``. Pinning that
+        # clock one day after the recent entry keeps the entry inside the 30-day
+        # window on any calendar day and in any host zone.
+        class _PinnedClock(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return cls(2026, 9, 26, 12, tzinfo=tz)
+
+        monkeypatch.setattr("kiro_crew.memory.datetime", _PinnedClock)
         workspace = _seed_local_tree(tmp_path, preferences="- x\n")
         history = workspace / "memory" / "history"
         (history / "2020-01-01.md").write_text("# local only\n", encoding="utf-8")
