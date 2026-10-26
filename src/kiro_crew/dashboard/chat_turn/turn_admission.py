@@ -389,14 +389,25 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # miss falls through to the fail-loud below. Strictly guarded: the
         # common hot path (no ``_app``, or already resolved) does zero extra
         # work and zero extra I/O.
-        if slot._app and not bindings.requested_resolved:
+        #
+        # Step (1) also covers a named non-app slot while the installed snapshot
+        # is incomplete: a scan that could not read a spec, or a boot
+        # scan that has not landed, may be missing a template whose file is on
+        # disk, and the turn below would otherwise fail memory_unavailable for
+        # it. One rescan, then the same fail-loud. A complete snapshot is
+        # trusted, so a really removed agent costs no I/O here.
+        from kiro_crew.config.loader_snapshots import materialized_snapshot_complete
+
+        if not bindings.requested_resolved and (
+            slot._app or (slot.agent and not materialized_snapshot_complete())
+        ):
             try:
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), refresh_materialized_agents
                 )
             except Exception:  # noqa: BLE001 — warm failure only costs the fail-loud below
                 logger.warning(
-                    "Failed to warm materialized agents for app slot %s",
+                    "Failed to warm materialized agents for slot %s",
                     slot.key,
                     exc_info=True,
                 )
@@ -416,7 +427,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             turn.memory_store = memory_store
             agent_model = normalize_agent_model(bindings.model)
             turn.agent_model = agent_model
-            if not bindings.requested_resolved:
+            if slot._app and not bindings.requested_resolved:
                 bindings = await _recover_app_agent_binding(
                     cfg, slot, project=selected_binding[1] or None
                 )
