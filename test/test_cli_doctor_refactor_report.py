@@ -175,6 +175,10 @@ class _Host:
         mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg: dict(self.creds))
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
+        mp.setattr(cli_doctor.gateway_lock, "lock_holder", self._lock_holder)
+        mp.setattr(
+            cli_doctor, "derive_capability", lambda: SimpleNamespace(managed_by=self.managed_by)
+        )
         mp.setattr(cli_doctor.subprocess, "run", self._run)
         mp.setattr(cli_doctor.urllib.request, "urlopen", self._urlopen)
         mp.setattr(cli_doctor, "current_context", lambda: self.ctx)
@@ -263,6 +267,8 @@ class _Host:
             mp.setattr(cli_doctor, name, self._marker(name))
 
         self.kiro: str | None = _KIRO
+        self.gateway_pid: int | str | None = None
+        self.managed_by = "wheel"
         self.ctx = SimpleNamespace(
             profile="standalone",
             jail=SimpleNamespace(
@@ -302,6 +308,11 @@ class _Host:
                 _issues_arg(name, args).append(f"{name} issue")
 
         return marker
+
+    def _lock_holder(self, home):
+        if self.gateway_pid == "indeterminate":
+            raise cli_doctor.gateway_lock.LockProbeError("probe could not answer")
+        return SimpleNamespace(pid=self.gateway_pid)
 
     def _model_pins(self, project_dir=None, provider="acp"):
         self.calls.append(("_agent_spec_model_problems", (), {"project_dir": project_dir}))
@@ -681,6 +692,10 @@ Connectivity
 
 def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) -> None:
     host.kiro = None
+    # A git checkout without git, and a running gateway without its agent spec:
+    # both are real faults, so both rows stay red.
+    host.managed_by = cli_doctor.MANAGED_BY_GIT
+    host.gateway_pid = 4242
     host.which.update(node="/usr/bin/node")
     host.runs[("/usr/bin/node", "-v")] = _done("v18.19.0\n")
     # The frozen report asserts the DEFAULT (nodejs.org / nvm) node remedy. Pin a
@@ -760,6 +775,33 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
     assert args == (host.tmp / "repo",)
     args, _ = host.called("_doctor_discord")
     assert args[2] == 9999
+
+
+def test_a_fresh_wheel_install_without_git_or_agent_spec_passes(host, capsys) -> None:
+    """Right after cli.sh: no git, no gateway run yet. Both are normal, not faults."""
+    _ready(host)
+    del host.which["git"]
+    (host.agents / "kirocrew.json").unlink()
+
+    out, code = host.run(capsys)
+
+    assert "  git:         ⏭  not found (not needed: this install updates without git)\n" in out
+    assert "  config:      ⏭  not created yet (kirocrew gateway creates it on start)\n" in out
+    assert "❌" not in out
+    assert code is None
+
+
+def test_a_missing_agent_spec_stays_red_when_the_lock_probe_cannot_answer(host, capsys) -> None:
+    """No proof that no gateway runs: the missing spec is still reported as a fault."""
+    _ready(host)
+    (host.agents / "kirocrew.json").unlink()
+    host.gateway_pid = "indeterminate"
+
+    out, code = host.run(capsys)
+
+    assert "  config:      ❌ not found (run kirocrew setup)\n" in out
+    assert "agent config" in out.splitlines()[-1]
+    assert code == 1
 
 
 _SLACK = """\

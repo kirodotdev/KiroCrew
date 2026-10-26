@@ -55,6 +55,7 @@ from kiro_crew import (  # noqa: F401
     agent_state,
     dep_sync,
     diagnostics,
+    gateway_lock,
     platform_compat,
     sandbox,
     session_pid,
@@ -233,6 +234,7 @@ from kiro_crew.platform.tool_names import (
     kas_verified_releases,
     kas_vocabulary_drift,
 )
+from kiro_crew.platform.update_capability import MANAGED_BY_GIT, derive_capability
 from kiro_crew.sandbox import _MOUNT_SOURCE_PREFIX, warm_backend  # noqa: F401
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -431,6 +433,14 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
 _AWS_PROBE_TIMEOUT_SECS = 10
 
 
+def _no_gateway_running() -> bool:
+    """True only when the lock probe positively says nobody holds the gateway lock."""
+    try:
+        return gateway_lock.lock_holder(config_dir()).pid is None
+    except Exception:
+        return False
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -582,9 +592,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     git = shutil.which("git")
     if git:
         print(f"  git:         ✅ {git}")
-    else:
+    elif derive_capability().managed_by == MANAGED_BY_GIT:
+        # Only a git checkout updates through git; a wheel re-runs its installer.
         print("  git:         ❌ not found (needed for kirocrew update)")
         issues.append("git")
+    else:
+        print("  git:         ⏭  not found (not needed: this install updates without git)")
 
     _report_node(issues)
     install._doctor_browser_bootstrap()
@@ -610,7 +623,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     agent_path = _agents_dir() / AGENT_FILENAME
     if agent_path.exists():
         print(f"  config:      ✅ {agent_path}")
+    elif _no_gateway_running():
+        print("  config:      ⏭  not created yet (kirocrew gateway creates it on start)")
     else:
+        # A running gateway writes this spec at start, so missing here is a fault;
+        # a lock probe that cannot answer is treated the same way.
         print("  config:      ❌ not found (run kirocrew setup)")
         issues.append("agent config")
 
