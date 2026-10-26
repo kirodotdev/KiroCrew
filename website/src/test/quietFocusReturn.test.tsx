@@ -1,6 +1,7 @@
 /**
  * A pointer open → pick → close of a menu or select hands focus back to its
- * trigger WITHOUT the keyboard ring; a keyboard close keeps it.
+ * trigger WITHOUT the keyboard ring; a keyboard close keeps it. A filter-less
+ * listbox opened by pointer focuses its option without the ring too.
  *
  * Radix's DropdownMenu and Select open on pointerdown and cancel it, so the
  * trigger never takes mouse focus, and Chromium paints `:focus-visible` on the
@@ -10,11 +11,13 @@
  * after keyboard input.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useRef } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { lastInputIsPointer, quietNextFocus } from '../lib/quietFocusReturn'
+import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -111,6 +114,50 @@ describe('DropdownMenu focus return', () => {
     const calls = focusCallsOn(spy, trigger)
     expect(calls.length).toBeGreaterThan(0)
     for (const opts of calls) expect(opts?.focusVisible).not.toBe(false)
+  })
+})
+
+/** A filter-less listbox on useListboxKeyboard, which focuses its selected option on open. */
+function Listbox({ open }: { open: boolean }) {
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const { onListKeyDown } = useListboxKeyboard({
+    open, dropdownRef, inputRef, hasFilterInput: false, filteredCount: 2,
+    onEnterSingleMatch: () => {}, closeToTrigger: () => {},
+  })
+  if (!open) return null
+  return (
+    <div ref={dropdownRef} role="listbox" aria-label="Letters" tabIndex={-1} onKeyDown={onListKeyDown}>
+      <button role="option" aria-selected={false} tabIndex={-1}>A</button>
+      <button role="option" aria-selected tabIndex={-1}>B</button>
+    </div>
+  )
+}
+
+describe('useListboxKeyboard open focus', () => {
+  it('a pointer open focuses the selected option without the ring', async () => {
+    const spy = vi.spyOn(HTMLElement.prototype, 'focus')
+    const { rerender } = render(<Listbox open={false} />)
+    fireEvent.pointerDown(document.body)
+    rerender(<Listbox open />)
+    const option = screen.getByRole('option', { name: 'B' })
+
+    await waitFor(() => expect(option).toHaveFocus())
+    expect(focusCallsOn(spy, option)).toEqual([{ focusVisible: false }])
+  })
+
+  it('a keyboard open keeps the ring', async () => {
+    const spy = vi.spyOn(HTMLElement.prototype, 'focus')
+    const { rerender } = render(<Listbox open={false} />)
+    fireEvent.pointerDown(document.body)
+    fireEvent.keyDown(document.body, { key: 'Enter' })
+    rerender(<Listbox open />)
+    const option = screen.getByRole('option', { name: 'B' })
+
+    await waitFor(() => expect(option).toHaveFocus())
+    const calls = focusCallsOn(spy, option)
+    expect(calls.length).toBe(1)
+    expect(calls[0]?.focusVisible).not.toBe(false)
   })
 })
 
