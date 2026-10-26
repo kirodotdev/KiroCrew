@@ -490,9 +490,10 @@ async def test_dedicated_transport_confirmed_narrow_list_honours_the_interval():
 
     await provider.maybe_refresh_available_models(["auto", "claude-opus-5"])
     client._available_models_captured_at = time.monotonic() - _ENTITLEMENT_PROBE_TTL_SECS - 1.0
-    await provider.maybe_refresh_available_models(["auto", "claude-opus-5"])
+    second = await provider.maybe_refresh_available_models(["auto", "claude-opus-5"])
 
-    client._probe_advertised_models.assert_awaited_once()
+    assert client._probe_advertised_models.await_count == 1
+    assert second == provider.available_models()
 
 
 @pytest.mark.asyncio
@@ -566,10 +567,13 @@ async def test_dedicated_transport_unconfirmed_narrow_snapshot_is_rate_limited()
 
     # First poll probes (and fails); records _picker_probe_at.
     await provider.maybe_refresh_available_models(["auto", "claude-opus-5"])
+    assert provider._picker_probe_at > 0.0
     # Second poll within the interval must NOT probe again.
-    await provider.maybe_refresh_available_models(["auto", "claude-opus-5"])
+    second = await provider.maybe_refresh_available_models(["auto", "claude-opus-5"])
 
-    probe.assert_awaited_once()
+    assert probe.await_count == 1
+    # The rate-limited poll answers with the current snapshot instead.
+    assert second == provider.available_models()
 
 
 @pytest.mark.asyncio

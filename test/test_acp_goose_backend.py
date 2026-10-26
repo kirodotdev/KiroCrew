@@ -1146,14 +1146,18 @@ def test_the_mode_tripwire_is_gated_on_the_read_back_predicate() -> None:
     auto = next(
         f for f in _mode_update_frames() if f["params"]["update"]["currentModeId"] == "auto"
     )
+    from unittest.mock import AsyncMock
+
     for backend in sorted(acp_backends.ACP_BACKENDS_KNOWN - {GOOSE}):
         client = _stub(backend)
-        client._kill_process = None  # type: ignore[assignment]  # would raise if reached
+        client._kill_process = AsyncMock()  # type: ignore[method-assign]
+        assert client._is_goose is False, backend
         asyncio.run(
             client._tripwire_goose_mode(
                 JsonRpcMessage(**{k: auto[k] for k in ("method", "params")})
             )
         )
+        assert client._kill_process.await_count == 0, backend
 
 
 def test_the_codex_rawinput_channel_still_answers_first() -> None:
@@ -1776,14 +1780,17 @@ class TestGooseEffortReachesAThinkingModel:
 
     @pytest.mark.asyncio
     async def test_the_level_is_written_under_thinking_effort(self, tmp_path) -> None:
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, call
 
         provider = _goose_provider(tmp_path, _config_option_sets()[0])
         provider._client.set_config_option = AsyncMock()
 
         await provider._set_effort_config_option("high")
 
-        provider._client.set_config_option.assert_awaited_once_with("thinking_effort", "high")
+        # goose's own option id, and only the requested level: no ladder walk.
+        assert provider._client.set_config_option.await_args_list == [
+            call("thinking_effort", "high")
+        ]
 
     def test_a_non_thinking_model_offers_no_control(self, tmp_path) -> None:
         """``off`` alone: every write reads back ``off``, so no dropdown is offered."""

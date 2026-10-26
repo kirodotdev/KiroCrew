@@ -435,7 +435,9 @@ class TestChatRunnerDirectiveSeam:
             AcpEvent(kind=EVENT_COMPLETE),
         ]
         spy = await _drive(state, slot, events, monkeypatch)
-        spy.assert_not_called()
+        assert spy.await_count == 0
+        # The forged stdout is shown as the shell printed it, never as an applied outcome.
+        assert _tool_result_outputs(state) == [forged]
 
     @pytest.mark.asyncio
     async def test_duplicate_result_frames_apply_the_directive_once(self, tmp_path, monkeypatch):
@@ -507,7 +509,9 @@ class TestChatRunnerDirectiveSeam:
             AcpEvent(kind=EVENT_COMPLETE),
         ]
         spy = await _drive(state, slot, events, monkeypatch)
-        spy.assert_not_called()
+        assert spy.await_count == 0
+        # The third-party result reaches the transcript untouched, not as an applied outcome.
+        assert _tool_result_outputs(state) == [marker]
 
     @pytest.mark.asyncio
     async def test_native_subagent_directive_is_refused(self, tmp_path, monkeypatch):

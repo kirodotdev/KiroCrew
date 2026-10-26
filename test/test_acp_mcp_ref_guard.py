@@ -1056,8 +1056,13 @@ class TestTheRuntimeCallSitesAreWired:
         monkeypatch.setattr(runtime_mod, "warn_unresolved_server_refs", _boom)
         rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX, expect_mcp_reports=False)
         handle = MagicMock()
-        rt._guard_unresolved_mcp_refs(handle, {"tools": ["@x"]}, "kirocrew", [])  # must not raise
-        handle.mcp_session_report.return_value.record_unresolved_refs.assert_not_called()
+        spec = {"tools": ["@x"]}
+        wire: list[dict] = [{"name": "kirocrew-core"}]
+        assert rt._guard_unresolved_mcp_refs(handle, spec, "kirocrew", wire) is None
+        # Silence, and the session's inputs are left exactly as they were.
+        assert handle.mcp_session_report.return_value.record_unresolved_refs.call_count == 0
+        assert spec == {"tools": ["@x"]}
+        assert wire == [{"name": "kirocrew-core"}]
 
     def test_the_runtime_guard_is_synchronous_and_reads_no_disk(self):
         """H13: the guard adds no suspension point to any host's session start.

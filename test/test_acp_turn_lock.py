@@ -84,8 +84,10 @@ async def test_turn_releases_on_normal_completion(tmp_path):
             pass
 
     await drive(1)
+    assert not client._turn_lock.locked()
     # If L1 held the lock past turn 1, this second turn would hang; bound it.
     await finished(drive(2), "second turn after a deadline-ended first turn")
+    assert not client._turn_lock.locked()
 
 
 @pytest.mark.asyncio

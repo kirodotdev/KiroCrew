@@ -354,15 +354,18 @@ class TestProcessMessageUnknownServerRequest:
         assert "terminal/create" in payload["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_reject_noop_when_no_id(self, tmp_path):
+    async def test_reject_noop_when_no_id(self, tmp_path, caplog):
         from kiro_crew.acp.types import JsonRpcMessage
 
         client = AcpClient(work_dir=tmp_path)
         client._process = _scripted_process([])
         msg = JsonRpcMessage(id=None, method="terminal/create", params={})
 
-        await client._reject_unknown_server_request(msg)
-        client._process.stdin.write.assert_not_called()
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+            await client._reject_unknown_server_request(msg)
+        # A notification has no id to answer, so nothing is written or reported.
+        assert client._process.stdin.write.call_count == 0
+        assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.acp.client"] == []
 
 
 class TestFormatAcpError:

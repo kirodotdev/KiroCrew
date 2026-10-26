@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
@@ -784,11 +784,11 @@ class TestApproveTool:
         client = AcpClient(work_dir=tmp_path)
         client._permission_options[43] = {"once": "allow", "always": "allow_always"}
         client._send_response = AsyncMock()
-        await client.approve_tool(43)
-        client._send_response.assert_awaited_once_with(
-            43,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "allow"}},
-        )
+        assert await client.approve_tool(43) is True
+        assert client._send_response.await_args_list == [
+            call(43, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "allow"}})
+        ]
+        assert 43 not in client._permission_options
 
     @pytest.mark.asyncio
     async def test_no_recorded_falls_back_to_literal(self, tmp_path):
@@ -800,16 +800,12 @@ class TestApproveTool:
 
         client = AcpClient(work_dir=tmp_path)
         client._send_response = AsyncMock()
-        await client.approve_tool(44)
-        client._send_response.assert_awaited_with(
-            44,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}},
-        )
-        await client.approve_tool(45, always=True)
-        client._send_response.assert_awaited_with(
-            45,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ALWAYS}},
-        )
+        assert await client.approve_tool(44) is True
+        assert await client.approve_tool(45, always=True) is True
+        assert client._send_response.await_args_list == [
+            call(44, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}}),
+            call(45, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ALWAYS}}),
+        ]
 
     @pytest.mark.asyncio
     async def test_explicit_option_id_skips_recorded_pop(self, tmp_path):
@@ -900,11 +896,13 @@ class TestRejectTool:
 
         client = AcpClient(work_dir=tmp_path)
         client._send_response = AsyncMock()
+        assert client._turn_permission_denied is False
         await client.reject_tool(62)
-        client._send_response.assert_awaited_once_with(
-            62,
-            {"outcome": {"outcome": OUTCOME_CANCELLED}},
-        )
+        assert client._send_response.await_args_list == [
+            call(62, {"outcome": {"outcome": OUTCOME_CANCELLED}})
+        ]
+        # The denial can end the turn, which the steer settle reads.
+        assert client._turn_permission_denied is True
 
 
 class TestHandlePermission:
@@ -920,10 +918,14 @@ class TestHandlePermission:
             method="session/requestPermission",
             params={"toolCall": {"title": "bash"}, "options": []},
         )
-        client.approve_tool = AsyncMock()
+        client.approve_tool = AsyncMock(return_value=True)
+        client.reject_tool = AsyncMock()
+        client._send_error = AsyncMock()
 
-        await client._handle_permission(msg)
-        client.approve_tool.assert_awaited_once_with(55)
+        assert await client._handle_permission(msg) is None
+        assert client.approve_tool.await_args_list == [call(55)]
+        assert client.reject_tool.await_count == 0
+        assert client._send_error.await_count == 0
 
 
 class TestReadNewToolResultsSync:

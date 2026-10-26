@@ -11,7 +11,7 @@ import asyncio
 import dataclasses
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -463,11 +463,13 @@ class TestCompactRouting:
         provider = _build_provider(backend="")
         provider._client.send_command = AsyncMock(return_value="")
         provider._client.stream_events = MagicMock(return_value=_async_iter([]))
+        provider._compact_result = {"type": "completed", "summary": "stale"}
 
         await provider.compact()
 
-        provider._client.stream_events.assert_called_once_with("/compact")
-        provider._client.send_command.assert_not_called()
+        assert provider._client.stream_events.call_args_list == [call("/compact")]
+        assert provider._client.send_command.call_count == 0
+        assert provider._compact_result is None
 
     @pytest.mark.asyncio
     async def test_kiro_backend_prompt_with_context(self):
@@ -552,8 +554,10 @@ class TestCompactRouting:
 
         await provider.compact()
 
-        provider._client.stream_events.assert_called_once_with("/compact")
-        provider._client.send_command.assert_not_called()
+        assert provider._client.stream_events.call_args_list == [call("/compact")]
+        assert provider._client.send_command.call_count == 0
+        # A text chunk is not a compaction status, so nothing is cached for the wait.
+        assert provider._compact_result is None
 
     @pytest.mark.asyncio
     async def test_claude_backend_truncates_long_context(self):
@@ -660,7 +664,8 @@ class TestEffortControl:
         provider = self._effort_provider(backend=ACP_BACKEND_CLAUDE, model="claude-opus-4.7")
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         await provider._apply_initial_effort()
-        provider._client.set_config_option.assert_awaited_once_with("effort", "max")
+        assert provider._client.set_config_option.await_args_list == [call("effort", "max")]
+        assert provider._client.send_command.await_count == 0
 
     @pytest.mark.asyncio
     async def test_claude_start_pushes_effort_keyed_by_configured_model_spelling(self):
@@ -683,7 +688,8 @@ class TestEffortControl:
 
         client.ensure_ready = AsyncMock(side_effect=_ensure_ready)
         await provider.start()
-        client.set_config_option.assert_awaited_once_with("effort", "max")
+        assert client._model == "claude-opus-5-5[1m]"
+        assert client.set_config_option.await_args_list == [call("effort", "max")]
 
     @pytest.mark.asyncio
     async def test_apply_initial_effort_noop_on_kiro_backend(self):
@@ -697,13 +703,20 @@ class TestEffortControl:
         provider._client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_claude_apply_initial_effort_swallows_adapter_error(self):
+    async def test_claude_apply_initial_effort_swallows_adapter_error(self, caplog):
         provider = self._effort_provider(backend=ACP_BACKEND_CLAUDE, model="claude-opus-4.7")
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         provider._client.set_config_option = AsyncMock(side_effect=RuntimeError("bad"))
         # Must not raise — a rejected effort cannot break session start.
-        await provider._apply_initial_effort()
-        provider._client.set_config_option.assert_awaited_once_with("effort", "max")
+        with caplog.at_level("WARNING", logger="kiro_crew.providers.acp"):
+            await provider._apply_initial_effort()
+        assert provider._client.set_config_option.await_args_list == [call("effort", "max")]
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.providers.acp" and r.levelname == "WARNING"
+        ]
+        assert any("initial effort apply failed" in m for m in warnings), warnings
 
     @pytest.mark.asyncio
     async def test_claude_initial_effort_skips_when_option_unsupported(self):
@@ -714,8 +727,10 @@ class TestEffortControl:
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         provider._client.supports_config_option = MagicMock(return_value=False)
         await provider._apply_initial_effort()
-        provider._client.supports_config_option.assert_called_once_with("effort")
-        provider._client.set_config_option.assert_not_awaited()
+        # A level does resolve, so the missing push is the option gate's doing.
+        assert provider._resolve_effort() == "max"
+        assert provider._client.supports_config_option.call_args_list == [call("effort")]
+        assert provider._client.set_config_option.await_count == 0
 
     @pytest.mark.asyncio
     async def test_claude_change_effort_returns_false_when_option_unsupported(self):
@@ -747,8 +762,8 @@ class TestEffortControl:
         )
         # Must not raise, and must not walk down the ladder: an unknown option
         # is not a value rejection.
-        await provider._set_effort_config_option("max")
-        provider._client.set_config_option.assert_awaited_once_with("effort", "max")
+        assert await provider._set_effort_config_option("max") is None
+        assert provider._client.set_config_option.await_args_list == [call("effort", "max")]
 
     @pytest.mark.asyncio
     async def test_kiro_clear_effort_no_default_returns_false_for_reset(self):
@@ -990,20 +1005,24 @@ class TestStartKiroRuntimeResume:
     )
     async def test_fresh_start_without_a_resumable_session(self, resume_sid, file_exists):
         provider = self._kiro_provider()
-        _handle, runtime = await self._run_start(provider, resume_sid, file_exists=file_exists)
-        runtime.load_session.assert_not_awaited()
-        runtime.create_session.assert_awaited_once()
+        handle, runtime = await self._run_start(provider, resume_sid, file_exists=file_exists)
+        assert runtime.load_session.await_count == 0
+        assert runtime.create_session.await_count == 1
+        assert provider._client._handle is handle
+        assert provider._client.resumed is False
 
     @pytest.mark.asyncio
     async def test_failed_load_falls_back_to_create_session(self):
         # session/load raising (e.g. capability guard, missing "modes") must not
         # abort startup — it falls back to a fresh session/new.
         provider = self._kiro_provider()
-        _handle, runtime = await self._run_start(
+        handle, runtime = await self._run_start(
             provider, "abc-123", file_exists=True, load_raises=True
         )
-        runtime.load_session.assert_awaited_once()
-        runtime.create_session.assert_awaited_once()
+        assert runtime.load_session.await_count == 1
+        assert runtime.create_session.await_count == 1
+        assert provider._client._handle is handle
+        assert provider._client.resumed is False
 
     @pytest.mark.asyncio
     async def test_non_default_model_applied_to_runtime_session(self):
@@ -1012,7 +1031,8 @@ class TestStartKiroRuntimeResume:
         # silently runs the agent's default model.
         provider = self._kiro_provider(model="global.anthropic.claude-opus-4-8[1m]")
         handle, _runtime = await self._run_start(provider, "", file_exists=True)
-        handle.set_model.assert_awaited_once_with("global.anthropic.claude-opus-4-8[1m]")
+        assert handle.set_model.await_args_list == [call("global.anthropic.claude-opus-4-8[1m]")]
+        assert provider._client._handle is handle
 
     @pytest.mark.asyncio
     async def test_default_model_does_not_call_set_model(self):
@@ -1694,7 +1714,8 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_unknown_entitlement_still_applies(self):
         """No advertised list means unknowable, so behaviour is unchanged."""
         handle = await self._run("claude-opus-4.8", [])
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
+        assert handle.model_pin_refused == ""
 
     @pytest.mark.asyncio
     async def test_auto_sentinel_never_reaches_the_check(self):
@@ -1713,8 +1734,9 @@ class TestStartKiroRuntimeModelEntitlement:
             ["claude-sonnet-4.6"],
             probe=["claude-sonnet-4.6", "claude-opus-4.8"],
         )
-        handle.refresh_available_models.assert_awaited_once()
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.refresh_available_models.await_count == 1
+        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
+        assert handle.model_pin_refused == ""
 
     @pytest.mark.asyncio
     async def test_spawn_withhold_revalidation_forces_a_fresh_probe(self):
@@ -1751,8 +1773,9 @@ class TestStartKiroRuntimeModelEntitlement:
         # FIRST, so no throwaway session/new (refresh_available_models) is opened
         # on this common cold-start path; the bare id is what reaches set_model.
         handle = await self._run("openrouter::z-ai/glm-5.3-flash", ["auto", "z-ai/glm-5.3-flash"])
-        handle.refresh_available_models.assert_not_awaited()
-        handle.set_model.assert_awaited_once_with("z-ai/glm-5.3-flash")
+        assert handle.refresh_available_models.await_count == 0
+        assert handle.set_model.await_args_list == [call("z-ai/glm-5.3-flash")]
+        assert handle.model_pin_refused == ""
 
 
 def test_child_fidelity_aware_survives_client_replacement():

@@ -501,7 +501,15 @@ class TestResolveKiroBinEnvOverride:
 
             client = AcpClient(work_dir=tmp_path / "workspace")
             await client._spawn()
-            mock_exec.assert_awaited()
+            assert mock_exec.await_count == 1
+            launched = [
+                a
+                for a in mock_exec.await_args.args
+                if isinstance(a, str) and os.path.realpath(a) == os.path.realpath(fake)
+            ]
+            assert launched, mock_exec.await_args.args
+            # The path launched holds the updated bytes, not a pre-update copy.
+            assert Path(launched[0]).read_bytes() == b"#!/bin/sh\n# self-updated\n"
 
             await _stop_stderr_drain(client)
 
