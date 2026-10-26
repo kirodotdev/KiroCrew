@@ -160,7 +160,7 @@ async def _run_once(sdk: Any) -> None:
         )
         if is_due
     ]
-    # Check the drive BEFORE claiming any run, as the loop did before this change.
+    # Check the drive BEFORE claiming any run.
     # The drive is tag-discovered per wake, not trusted from memory; until one
     # exists there is nowhere to push, so no run is claimed. Claiming one anyway
     # would leave a `done` SDK run on the Backup row every 30 minutes for a backup

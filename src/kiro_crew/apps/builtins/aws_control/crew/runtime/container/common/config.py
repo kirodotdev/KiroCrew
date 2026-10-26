@@ -292,9 +292,8 @@ class Settings:
     # supervisor installs it into the crew's read paths before the backend
     # starts, so "it started" means "the named crew is installed". Defaults to
     # the real image path `/app/crew-bundle`, NEVER a temp dir: a temp default
-    # would let a test's throwaway bundle look like the shipped one, which is
-    # the class of "served a default agent while gates were green" this change
-    # exists to prevent.
+    # would let a test's throwaway bundle look like the shipped one, so a default
+    # agent could be served while every gate is green.
     #
     # Carries a default because the Settings dataclass is constructed by hand in
     # several tests, so a field with no default would break every one of them.

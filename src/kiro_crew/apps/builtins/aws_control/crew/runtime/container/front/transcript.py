@@ -329,7 +329,7 @@ def _resolve_transcript_key(reader: TranscriptReader, settings: Settings, stem: 
     digest = _digest_for_stem(index_raw, stem)
     if digest is None:
         # The committed index does not name this stem: a genuinely new conversation (an
-        # UNINDEXED stem, GPT's permitted absence). NOT a refusal -- the index exists and
+        # UNINDEXED stem, a permitted absence). NOT a refusal -- the index exists and
         # simply has no entry, which is the fresh-conversation case.
         return None
     return keys.blob_key(settings, digest)
