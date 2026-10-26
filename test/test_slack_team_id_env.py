@@ -59,6 +59,19 @@ def _clean_team_registry(_floor_monkeypatch: pytest.MonkeyPatch):
     team_ids._reset_for_tests()
 
 
+async def _spawn_without_windows_cleanup_capture(factory):
+    """Run the spawn factory the way the POSIX branch of the seam does.
+
+    On Windows the spawn goes through
+    ``platform_compat.create_windows_cleanup_owned_process``, which hands the factory
+    a cleanup owner; ``create_subprocess_limited`` then calls native CreateProcess
+    directly, past the mocked ``asyncio.create_subprocess_exec``, and fails on the
+    synthetic binary. A mocked spawn owns no real child to pin, and these tests ask
+    only what environment the spawn is handed.
+    """
+    return await factory()
+
+
 async def _spawn_env(client: AcpClient, *, claude: bool = False) -> dict[str, str]:
     """Spawn *client* against a mocked process and return the child env."""
     if claude:
@@ -80,6 +93,13 @@ async def _spawn_env(client: AcpClient, *, claude: bool = False) -> dict[str, st
         ),
         patch("kiro_crew.acp.client.wrap_argv", return_value=(argv, None)),
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        patch(
+            "kiro_crew.platform_compat.create_windows_cleanup_owned_process",
+            side_effect=_spawn_without_windows_cleanup_capture,
+        ),
+        # On Windows this applies a Job ceiling and resumes every thread of the
+        # pid it is handed; the mocked pid is not a child, so nothing may act on it.
+        patch("kiro_crew.acp.client_start.finish_suspended_spawn"),
         patch("kiro_crew.session._track_pid"),
         patch("kiro_crew.session._track_session_pid"),
     ):
