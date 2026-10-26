@@ -557,7 +557,7 @@
   --border:#352f3d;--border-strong:#4a464f;--border-hover:#5e5966;
   --accent:#8e48ff;--accent-fg:#ffffff;--accent-hover:#9f63ff;--accent-subtle:rgba(178,127,255,.16);
   --accent-glow:rgba(142,72,255,.3);--ring:#8e48ff;
-  --ok:#008543;--ok-subtle:rgba(0,133,67,.15);
+  --ok:#008543;--ok-fg:#fff;--ok-subtle:rgba(0,133,67,.15);
   --warn:#e0b94d;--warn-subtle:rgba(224,185,77,.12);
   --danger:#f94359;--danger-subtle:rgba(249,67,89,.12);
   --info:#6f9ae0;
@@ -582,10 +582,10 @@
   --border:#e4e4e7;--border-strong:#d4d4d8;--border-hover:#a1a1aa;
   --accent:#8e48ff;--accent-fg:#ffffff;--accent-hover:#7a35e0;--accent-subtle:rgba(142,72,255,.12);
   --accent-glow:rgba(142,72,255,.15);--ring:#8e48ff;
-  --ok:#008543;--ok-subtle:rgba(0,133,67,.12);
+  --ok:#008543;--ok-fg:#fff;--ok-subtle:rgba(0,133,67,.12);
   --warn:#a38a00;--warn-fg:#000;--warn-subtle:rgba(163,138,0,.1);
   --danger:#d92544;--danger-fg:#fff;--danger-subtle:rgba(217,37,68,.1);
-  --info:#285092;
+  --info:#285092;--info-fg:#fff;
   --aim:#8041e6;--aim-subtle:rgba(128,65,230,.12);
   --clarify:#a38a00;--clarify-subtle:rgba(163,138,0,.06);
   --diff-add:rgba(22,163,74,.12);--diff-add-text:#15803d;

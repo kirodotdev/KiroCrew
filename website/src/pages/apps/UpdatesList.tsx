@@ -53,7 +53,7 @@ export default function UpdatesList({
           {i18nT('pages.appsPage.update', { count: rows.length })} {i18nT('pages.appsPage.available')}
         </h3>
         <Btn
-          className="!bg-[var(--info)] !text-white hover:!opacity-80"
+          className="!bg-[var(--info)] !text-info-fg hover:!opacity-80"
           onClick={onUpdateAll}
           disabled={!!updatingAll}
         >
@@ -101,7 +101,7 @@ export default function UpdatesList({
                 </div>
               </div>
               <Btn
-                className="!bg-[var(--info)] !text-white hover:!opacity-80 shrink-0"
+                className="!bg-[var(--info)] !text-info-fg hover:!opacity-80 shrink-0"
                 onClick={() => onUpdate(app.name)}
                 disabled={busy}
                 title={i18nT('components.appstore.installedAppCard.update_to', { version: app._newVersion || app.version })}

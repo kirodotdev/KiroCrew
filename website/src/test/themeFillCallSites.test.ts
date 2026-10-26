@@ -2,14 +2,13 @@
  * Text on a solid theme fill is inked with that fill's own `-fg` token, never a
  * hard-coded white.
  *
- * themeFillForeground.test.ts proves each pair (`--accent`/`--accent-fg`,
- * `--warn`/`--warn-fg`, `--danger`/`--danger-fg`) clears AA in every theme bar
- * the amoled pairs it records; this file pins that the call sites actually use
- * the pair. White only reads on a dark fill, and most dark palettes pick light
+ * themeFillForeground.test.ts proves each pair (`--accent`/`--accent-fg`, and
+ * the same for warn, danger, ok and info) clears AA in every theme bar the
+ * amoled pairs it records; this file pins that the call sites actually use the
+ * pair. White only reads on a dark fill, and most dark palettes pick light
  * ones: white on `--accent` fails WCAG AA (4.5:1) in 23 of the 40 theme
- * variants, Amber dark's `#ffd230` at 1.45:1, and white on `--danger` fails in
- * 25. `ok` and `info` join TIERS here once themeFillForeground.test.ts covers
- * them.
+ * variants, Amber dark's `#ffd230` at 1.45:1, white on `--danger` fails in 25,
+ * on `--ok` in 34 and on `--info` in 30.
  *
  * Asserted over source: the defect is a class or style literal, and jsdom
  * resolves no theme colours, so a render could not show it. A solid fill is
@@ -24,7 +23,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import { readSource } from './readSource'
 
 const ROOT = resolve(__dirname, '..')
-const TIERS = 'accent|warn|danger'
+const TIERS = 'accent|warn|danger|ok|info'
 const SOLID = `!?bg-(?:(?:${TIERS})(?![\\w/-])|\\[var\\(--(?:${TIERS})\\)\\])`
 const WHITE = '(?<![\\w-])!?text-white(?![\\w/-])'
 /** A solid fill and white text in one class string, in either order. */
@@ -71,7 +70,7 @@ describe('text on a solid theme fill', () => {
     expect(STYLE_WHITE.test("color: 'var(--danger-fg)'")).toBe(false)
   })
 
-  it("inks every solid accent, warn and danger fill with the fill's own -fg token", () => {
+  it("inks every solid accent, warn, danger, ok and info fill with the fill's own -fg token", () => {
     expect(offenders()).toEqual([])
   })
 })

@@ -1134,7 +1134,7 @@ export default function AppDetailPage() {
               {app.installed && isSelfManaged && !isBuiltin && (
                 <>
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_version', { version: app.installedVersion })}</div>
-                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
                   {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
@@ -1168,7 +1168,7 @@ export default function AppDetailPage() {
                   )}
                     </>
                   )}
-                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
                   {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
                   {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
