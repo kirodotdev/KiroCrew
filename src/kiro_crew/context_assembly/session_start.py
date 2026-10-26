@@ -120,6 +120,7 @@ def build_session_context(
     steering_dirs: tuple[str, ...] = (),
     _v2_essentials: str | None = None,
     member_dispatch_mounted: bool | None = None,
+    served_model: str = "",
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -154,6 +155,12 @@ def build_session_context(
     duplicate what kiro already loaded; the CC backend (claude-agent-acp)
     does NOT read agent ``resources`` and still needs the explicit load.
     Everything else stays at CC/ACP parity.
+
+    *served_model* is the model id the live session reports serving, passed only
+    for a harness whose own system prompt names no model
+    (:func:`kiro_crew.agent_sdk.served_model_identity.crew_states_served_model`);
+    it becomes the ``[ACTIVE MODEL]`` block, in a minimal start too. Empty adds
+    nothing.
 
     *context_groups* selects which switchable groups are injected (see
     ``SWITCHABLE_CONTEXT_GROUPS``). ``None`` — every caller except a
@@ -226,6 +233,8 @@ def build_session_context(
         # A minimal run still calls Kiro Crew's tools, so it gets the same
         # spelling rule; nothing at all on a harness that needs none.
         parts.append(_tool_names.tool_names_block(provider_type))
+        # A cron run can be asked which model it is too; nothing when no id came.
+        parts.append(_sections.active_model_block(served_model))
         logger.debug(
             "Minimal session context: agent=%s, %d chars",
             agent_label,
@@ -316,6 +325,13 @@ def build_session_context(
     tool_names = _tool_names.tool_names_block(provider_type)
     if tool_names:
         append_required(tool_names)
+
+    # The model serving the session, on a harness whose own prompt names none.
+    # Required, not budgeted: it is the one grounded answer to "which model are
+    # you?", and without it the model answers from training priors.
+    active_model = _sections.active_model_block(served_model)
+    if active_model:
+        append_required(active_model)
 
     # Crew-member operating mode — injected only for a member's pinned DM
     # session (mode carries the slot's mode; "member" slots are born only
