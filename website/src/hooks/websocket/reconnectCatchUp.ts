@@ -14,6 +14,7 @@ import { consumeUpdateRestartLatch } from './bundleReload'
 import { refreshServerStateAfterReconnect } from './serverState'
 import type { SocketConnection } from './connection'
 import type { StreamBuffers } from './streamBuffers'
+import { replaySlotFrames, subagentReplaySlots } from '../../lib/subagentReplayScope'
 
 export interface CatchUpContext {
   dispatch: AppDispatch
@@ -25,6 +26,17 @@ export interface CatchUpContext {
   syncPendingQuestions: () => Promise<void>
   syncWorkflowRuns: () => Promise<void>
   focusedSlot: () => string | null
+}
+
+/** `subscribe_subagents` naming the slots whose finished runs the gateway
+ *  rebuilds from the crew log; names past one frame's cap follow as
+ *  `subagent_replay` frames. */
+function sendSubagentSubscribe(ws: WebSocket, ctx: CatchUpContext): void {
+  const [first = [], ...rest] = replaySlotFrames(
+    subagentReplaySlots(ctx.focusedSlot(), observedPaneSlots(ctx.queryClient)),
+  )
+  ws.send(JSON.stringify({ type: 'subscribe_subagents', slots: first }))
+  for (const slots of rest) ws.send(JSON.stringify({ type: 'subagent_replay', slots }))
 }
 
 /** The first successful open of this hook: register as connected and take
@@ -69,7 +81,7 @@ export function runFirstConnect(ws: WebSocket, ctx: CatchUpContext): void {
   void dispatch(resyncWaitingSideConversations())
   // Eagerly subscribe to subagent events on first connect too.
   dispatch(clearSubagentsForSnapshot())
-  ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
+  sendSubagentSubscribe(ws, ctx)
   // Flush a log subscription that was requested before the socket opened.
   // subscribeLogs() stores the callback but returns early when readyState
   // is not OPEN, so a page mounting during the handshake (a cold load of
@@ -186,7 +198,7 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // Eagerly subscribe to subagent events so chunks arrive even when
   // Activity Panel isn't open — final result still comes via done event.
   dispatch(clearSubagentsForSnapshot())
-  ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
+  sendSubagentSubscribe(ws, ctx)
   if (socket.logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
   // Re-announce only while visible. Reconnect itself is never a return edge;
   // a hidden reconnect waits for visibilitychange.

@@ -343,6 +343,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.crew_log.projection_session_log import (  # noqa: F401
         _log_identity,
+        _unit_log_identity,
         log_origin,
         open_session_log,
     )
