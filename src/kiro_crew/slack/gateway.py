@@ -147,7 +147,7 @@ from kiro_crew.cron import (
     effective_wake_budget,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
-from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
+from kiro_crew.dashboard import cautious_boot, chat_trust_persistence, start_dashboard, token_secret
 from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
     wait_for_unwinding_turns,

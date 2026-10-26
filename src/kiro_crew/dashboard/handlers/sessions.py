@@ -115,6 +115,7 @@ if TYPE_CHECKING:
         _resolve_history_delete_claim,
         _rollback_ledger_exclusion,
         _stranded_job_ids,
+        _trust_keys_for_delete,
         _unstrand_shared_ledger_unit,
         _warn_stranded_cron_ownership,
         _warn_unprovable_channel_binding,
@@ -127,9 +128,11 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.handlers.sessions_parts.delete_routes import (  # noqa: F401
         _claim_history_delete,
+        _clear_history_batch,
         _clear_history_rows,
         _clearable_history_keys,
         _delete_claimed_session,
+        _delete_history_row,
         _user_only_query,
         api_session_delete,
         api_sessions_clear,
@@ -185,9 +188,11 @@ if TYPE_CHECKING:
     from kiro_crew.cron import CronStoreBusy  # noqa: F401
     from kiro_crew.cron import CronStoreUnreadable  # noqa: F401
     from kiro_crew.cron import cron_owner_matches  # noqa: F401
+    from kiro_crew.dashboard import chat_trust_persistence  # noqa: F401
     from kiro_crew.dashboard import directive_queue  # noqa: F401
     from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.chat_utils import effective_session_key  # noqa: F401
+    from kiro_crew.dashboard.chat_utils import session_key_for  # noqa: F401
     from kiro_crew.dashboard.chat_utils import slot_history_key  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import internal_memory_scope  # noqa: F401

@@ -152,6 +152,11 @@ def _url_payload_command(n: int) -> str:
 #: line parser and digest helpers apart from ``argv_floor``'s per-module cap). A
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
+#: Raised by six lines for the ``session-trust`` and
+#: ``session-trust-stop`` entries in ``_CREW_SECRET_LEAVES``, the owner's
+#: crash-surviving chat trust record and its owner-stop marker. The
+#: store itself lives in ``dashboard/session_trust_store.py``; no rule, matcher or
+#: pass was added here.
 #:
 #: Raised again, from 28,399, by two lines: case (1) of the ssh self-target refusal
 #: note names a dotless target refused while a hosts file over 64 KiB is still read
@@ -517,7 +522,7 @@ def _url_payload_command(n: int) -> str:
 #: the dispatcher that falls back to the Python gate (kept verbatim as
 #: ``_might_contain_credential_py``) on a missing, stale, disabled or failing module.
 #: Seventy-one lines. No pattern moved and no pass changed.
-_PACKAGE_LINE_BUDGET = 32_601
+_PACKAGE_LINE_BUDGET = 32_607
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

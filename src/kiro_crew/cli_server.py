@@ -329,6 +329,13 @@ async def _gateway(
     test_mode: bool = False,
 ) -> None:
     """Load config and start the gateway (dashboard + configured messaging channels)."""
+    # First, before any boot work: the gateway lock is already held, and a stop
+    # from here until the gateway's own handlers exist is still an owner stop for
+    # saved chat trust.
+    from kiro_crew.dashboard import chat_trust_persistence
+
+    chat_trust_persistence.install_early_stop_marker()
+
     # Activate mise once at gateway start so every subprocess we
     # later spawn — MCP servers, script crons, kiro-cli — inherits the user's
     # mise-managed toolchain. Without this, Node-based MCP servers spawn against
@@ -894,6 +901,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _replacement_is_serving,
         _resolve_restart_ready_timeout,
         _restart,
+        _restart_gateway,
+        _restart_incumbent,
         _spawn_detached_gateway,
         _wait_for_pids_exit,
         _wait_gateway_ready,
@@ -903,7 +912,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_ECHOED_NAME_LEN,
         _SHUTDOWN_RESPONSE_MAX_BYTES,
         _gateway_pid,
+        _incumbent_still_serving,
+        _lock_holder_pid,
         _manual_stop_command,
+        _mark_owner_stop_for_session_trust,
         _pid_exited,
         _refuse_if_lock_held,
         _refuse_lock_holder,
@@ -911,8 +923,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _report_authenticated_shutdown,
         _request_gateway_shutdown,
         _stop,
+        _stop_delivery,
         _stop_expected_pid,
         _stop_mcp_gateway_daemon,
+        _stopped_pids,
+        _targets_another_homes_gateway,
         _terminal_safe_name,
         _verified_loopback_gateway_pids,
     )
@@ -924,3 +939,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_managed_venv,
         _update_wheel,
     )
+    from kiro_crew.dashboard import session_trust_store  # noqa: F401
