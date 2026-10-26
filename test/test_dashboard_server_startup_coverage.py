@@ -243,6 +243,10 @@ def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
         "start_enabled_app_backends": MagicMock(return_value=[]),
         # The bound-port wave (Dev Fleet) — spawned after the site is bound.
         "start_deferred_app_backends": MagicMock(return_value=[]),
+        # Arms a real daemon thread that sweeps for lost-watch backends and is never
+        # stopped by this unit harness (it has no gateway-shutdown teardown); stub it so
+        # the boot does not leak a live background thread across tests.
+        "start_app_backend_backstop": MagicMock(),
         # Writes into the apps dir and re-materialises builtin manifests.
         "register_builtin_apps": MagicMock(),
         # Rewrites the operator's REAL ~/.kiro/settings/mcp.json — the one step

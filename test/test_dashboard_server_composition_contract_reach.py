@@ -189,6 +189,7 @@ _RESOLVED_DYNAMIC_PATCHES: dict[tuple[str, str], frozenset[str]] = {
         {
             "start_enabled_app_backends",
             "start_deferred_app_backends",
+            "start_app_backend_backstop",
             "register_builtin_apps",
             "cleanup_migrated_builtin",
             "on_gateway_startup",
@@ -786,7 +787,7 @@ _DASHBOARD_BOOT = tuple("""
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
-    _reserve_dashboard_port subprocess_executor init_hooks_system safe_context_call
+    _reserve_dashboard_port subprocess_executor start_app_backend_backstop init_hooks_system safe_context_call
     current_context _register_dist_static_routes _dist_file_handler _dist_file_handler
     _dist_file_handler _dist_file_handler _dist_file_handler discover_app_window_entries
     register_app_window_paths _install_asset_cache_control_finalizer
