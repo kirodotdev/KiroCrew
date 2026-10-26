@@ -283,6 +283,30 @@ async def api_cron_ack(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok})
 
 
+# The most runs one history page returns. The in-tree callers ask for 10, 21 and
+# 40 (JobLogsView, ExecutionsView, mcp_cron_list_render).
+_HISTORY_PAGE_MAX = 200
+
+
+def _history_page(request: web.Request) -> tuple[int, int]:
+    """``(limit, offset)`` for a history read, folded into a real page.
+
+    Both reads end in a Python list slice, where a negative bound counts from
+    the END: ``offset=-3`` would return the three oldest runs and ``limit=-1``
+    every run but one. So ``offset`` folds to ``>= 0`` and ``limit`` to
+    ``[1, _HISTORY_PAGE_MAX]``. A non-integer keeps the default, as before.
+    """
+    try:
+        limit = int(request.query.get("limit", "20"))
+    except (ValueError, TypeError):
+        limit = 20
+    try:
+        offset = int(request.query.get("offset", "0"))
+    except (ValueError, TypeError):
+        offset = 0
+    return max(1, min(limit, _HISTORY_PAGE_MAX)), max(0, offset)
+
+
 async def api_cron_history(request: web.Request) -> web.Response:
     """GET /api/crons/{id}/history — paginated execution history (no trace)."""
     state: DashboardState = request.app["state"]
@@ -292,14 +316,7 @@ async def api_cron_history(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.history")
     if app_denied is not None:
         return app_denied
-    try:
-        limit = int(request.query.get("limit", "20"))
-    except (ValueError, TypeError):
-        limit = 20
-    try:
-        offset = int(request.query.get("offset", "0"))
-    except (ValueError, TypeError):
-        offset = 0
+    limit, offset = _history_page(request)
     runs, total = await state.crons.get_history().get_job_history(
         job_id, limit=limit, offset=offset
     )
@@ -335,14 +352,7 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
     """GET /api/crons/history — unified history across all jobs, enriched with job_name."""
     state: DashboardState = request.app["state"]
     job_id = request.query.get("job_id")
-    try:
-        limit = int(request.query.get("limit", "20"))
-    except (ValueError, TypeError):
-        limit = 20
-    try:
-        offset = int(request.query.get("offset", "0"))
-    except (ValueError, TypeError):
-        offset = 0
+    limit, offset = _history_page(request)
     app = _app_caller(request)
     if app:
         # An app sees only the runs of jobs it owns, judged by the same

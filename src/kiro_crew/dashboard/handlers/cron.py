@@ -101,6 +101,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_lessons_delete,
     )
     from kiro_crew.dashboard.handlers.cron_runs import (  # noqa: F401
+        _HISTORY_PAGE_MAX,
+        _history_page,
         api_cron_ack,
         api_cron_cancel,
         api_cron_history,
