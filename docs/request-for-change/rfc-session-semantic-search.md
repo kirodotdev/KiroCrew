@@ -3,9 +3,9 @@ title: Session search by meaning, routed so an exact identifier still wins
 status: draft
 author: dma9527
 created: 2026-10-26
-last-audited: 2026-10-26
-audited-at: f172b404
-doc-pr: null
+last-audited: 2026-11-01
+audited-at: 42243e7c
+doc-pr: 24478
 implementation-prs: []
 tracking-issues: [24476]
 supersedes: []
@@ -145,6 +145,9 @@ conversations with at least 4 chunks.
   plus description. Written by an independent author who saw only the target
   passages, from targets drawn with a different seed excluding set A's. The routing
   rule was fixed before set B was scored.
+- Set C, 80 queries: one 1-word and one 2-word query for each of set B's 40 target
+  passages, written by an independent author who saw only the passages. Built to
+  test the routing rule on short queries (section 6.6).
 
 The sets are built from private transcripts and cannot ship. Section 10 ships the
 harness and a synthetic fixture instead.
@@ -188,6 +191,22 @@ Holding the keyword top hit first then puts a wrong conversation in row one.
 | Query embedding, short query | 200 ms median, 337 ms max of 5 |
 | Wait behind one in-flight bulk batch | about 1.3 s |
 | First full index at duty 0.2 | 75 to 161 hours wall clock |
+
+### 6.6 Short queries
+
+The whole-query rule in 7.3 fires on most short queries, because a common word
+appears somewhere in the keyword top conversation. On set C it fired on 39 of 40
+1-word queries and 10 of 40 2-word queries; the keyword leg returned a median of 32
+conversations, and its top conversation was the target in 8 of the 49 that fired.
+
+| Set C | Fired | Vector R@1 | Routed R@1 | Vector R@5 | Routed R@5 |
+|---|---|---|---|---|---|
+| 1 word | 39 of 40 | 0.200 | 0.175 | 0.725 | 0.650 |
+| 2 words | 10 of 40 | 0.425 | 0.375 | 0.775 | 0.750 |
+
+Routing still beats keyword search on short queries (R@1 0.275 against 0.138
+overall), but it falls below the vector leg alone, so the rule needs a rarity
+condition (open question 5).
 
 ## 7. Design
 
@@ -234,7 +253,11 @@ share of gold pairs at or above 0.62 from 0.53 to 0.33.
 Run the keyword leg first. If the case-folded whole query occurs in its top
 conversation's folded content, return `_rrf_fuse` of both legs with that conversation
 held first. Otherwise return the vector ranking. If the vector leg is off, absent or
-empty, return the keyword ranking unchanged.
+empty, return the keyword ranking unchanged. While coverage is below
+`SEMANTIC_MIN_COVERAGE`, section 8.3 orders a non-literal query's rows instead.
+
+As written the rule treats almost every 1-word query as literal (6.6). Phase 3 adds a
+rarity condition on the literal branch, chosen on the harness (open question 5).
 
 Pinned by tests:
 
@@ -242,6 +265,8 @@ Pinned by tests:
 2. Literal query: the keyword top conversation is row one against a higher-scoring
    vector row.
 3. Non-literal query: the vector ranking is returned as it stands.
+4. Partial index: below `SEMANTIC_MIN_COVERAGE`, a non-literal query returns every
+   keyword row ahead of every meaning row.
 
 ### 7.4 Result rows
 
@@ -282,6 +307,13 @@ eligible}`, and every surface that shows #23603's scan note adds "Meaning search
 covers N of M sessions so far" until they are equal. A reader then knows a missing
 hit can still arrive.
 
+The first build takes days (section 6.5), so the route also reads coverage. While
+`indexed / eligible` is below `SEMANTIC_MIN_COVERAGE`, a non-literal query returns
+the keyword rows first and the meaning rows after them, so a half-built index never
+displaces a keyword result. At or above it, section 7.3 applies as written. The value
+0.9 is a starting value; phase 3's harness run reports recall at
+several coverage shares to set it.
+
 ### 8.4 Latency
 
 The query embedding adds about 200 ms after the 250 ms debounce. During a bulk build
@@ -294,8 +326,10 @@ only the new text, and the sidebar's debounce already drops intermediate keystro
 - Identifier plus description: the keyword leg needs every word and often finds
   nothing, and the vector leg can miss the identifier. 1 of 6 such queries on set B
   failed both (target 22nd).
+- Short common query: the whole-query rule fires and holds a keyword hit first that
+  is usually wrong (6.6) until open question 5 is decided.
 - A query whose answer is not in the corpus still gets up to 10 meaning rows. They
-  are labelled, and no floor is set because no measurement supports one (section 11).
+  are labelled, and no floor is set because no measurement supports one (open question 1).
 
 ## 9. Risks and rollback
 
@@ -317,12 +351,77 @@ this leg, so it leaves with it.
 | 0 | #23603 (scan window key, `SearchRows`) | merged first |
 | 1 | Query role on the embed call; unused by existing callers; recall harness under `src/kiro_crew/eval/bench/` with a synthetic fixture | no behaviour change |
 | 2 | Chunk store, indexer, pending and coverage metrics | off |
-| 3 | Vector leg, routing, `match`, snippets, labels, tool text, coverage note | off |
-| 4 | Default on, after the harness and an operator-run private set show routed R@1 at or above vector R@1 and literal R@1 at or above keyword | on |
+| 3 | Vector leg, routing (including `SEMANTIC_MIN_COVERAGE`), `match`, snippets, labels, tool text, coverage note. Entry condition: open questions 2 and 5 are decided on the harness first, so the routing rule ships once | off |
+| 4 | Default on, after the harness and an operator-run private set measured on the full index show routed R@1 at or above vector R@1 and literal R@1 at or above keyword, and the operator set's index has reached `SEMANTIC_MIN_COVERAGE`, and the resource ceilings below hold | on |
 
 Phase 4 changes a default, which is the decision this document asks to record.
 
-## 11. Alternatives considered
+Exit criteria, each a test or a harness run:
+
+- Phase 1: the harness reports R@1, R@10 and MRR per query type for today's search
+  on the synthetic fixture, and a test asserts that an embed call without the query
+  role sends the same text as on main.
+- Phase 2: with `session.semantic_search` off, the harness rows equal main's row for
+  row; the fixture indexes to coverage 1.0, and a restart mid-build resumes with the
+  pending count never rising; the deletion test in section 12 passes.
+- Phase 3: tests 1 to 4 in 7.3 and the ownership test in section 9 pass; on the
+  fixture, routed R@1 is at or above vector R@1 and literal R@1 at or above keyword
+  R@1; the harness reports resident memory and CPU at the measured chunk count.
+
+Resource ceilings for phase 4, measured on the smallest host the project supports:
+
+- Resident memory added by the leg, matrix included, stays under
+  `SEMANTIC_MAX_RESIDENT_MB`, starting at 256. A host whose projected matrix exceeds
+  it, or exceeds 5% of physical memory, keeps the default off and shows the coverage
+  note's reason.
+- The bulk build stays within its configured duty of one core, and an interactive
+  search during the build stays within 8.4's wait.
+
+Both values are starting values, and phase 3's harness run reports memory and CPU at
+the measured chunk count so phase 4 can confirm or replace them.
+
+## 11. Backward compatibility
+
+- `match` is a new field on each row. A caller that ignores it reads today's shape.
+- A federated peer row without `match` reads as `"text"`, so a peer on an older
+  version merges as it does today (8.2).
+- `session.semantic_search` is off until phase 4, and with it off the rows equal
+  today's (test 1 in 7.3).
+- `session_vectors.db` is a new file beside the FTS index. Nothing existing reads it,
+  and deleting it removes the feature's data.
+- The query role on the embed call is optional. Existing callers omit it and get the
+  vectors they get today.
+
+## 12. Security considerations
+
+`session_vectors.db` holds transcript-derived data: text hashes, message offsets and
+the vectors computed from the text. It stores no chunk text, but a vector can leak the
+text it came from, so the store gets the FTS index's deletion and privacy contract.
+
+- Restricted sessions: the indexer reads a session through the derivation guard
+  (`_withhold_if_restricted`, which applies `is_incognito_transcript`), so incognito
+  and temporary sessions are never chunked or embedded. A refused read drops any rows
+  the session has.
+- Delete: `delete_session` drops the session from this store in the same step as from
+  `SessionSearchIndex`, under the same contract. The drop reports whether removal
+  happened, and a store that exists on disk but cannot be opened blocks the delete.
+- What a drop removes, in one transaction: the session's `chunk_ref` rows, then every
+  `chunk` row, with its vector, that no remaining ref points at. A chunk another
+  session still references stays, because that text is still in a live transcript.
+- Bytes: the store opens with `PRAGMA secure_delete=ON`, and after a drop it
+  checkpoints the WAL with TRUNCATE and reads the checkpoint's verdict, as
+  `SessionSearchIndex.drop` does. The store has no FTS tables, so zeroed pages and a
+  truncated WAL are the whole erasure.
+- Resident matrix: the drop removes the session's rows from the loaded matrix, so a
+  deleted session never ranks once the delete returns. A session whose file is gone
+  is dropped by the indexer, as the FTS indexer does.
+- Embedding runs on the local model, so no transcript text leaves the host.
+
+Pinned by a test: seed a session with a unique chunk, delete it, then assert that no
+`chunk_ref` or `chunk` row remains for it, that neither the database nor the WAL file
+contains its vector bytes, and that a meaning query no longer returns it.
+
+## 13. Alternatives considered
 
 | Alternative | Why not |
 |---|---|
@@ -333,14 +432,23 @@ Phase 4 changes a default, which is the decision this document asks to record.
 | LLM query expansion | A model call per search, and still no match for a paraphrase sharing no term |
 | A FAISS file | No row-level staleness, and `faiss` is optional and absent on some installs |
 | A Crew app page | Cannot change the search box people already use |
+| float16 or int8 vectors | Not chosen yet: recall at reduced precision is unmeasured. Halves or quarters the matrix (104 MB or 52 MB at 51,005 chunks), so it is the first lever if phase 3 measures the matrix above `SEMANTIC_MAX_RESIDENT_MB` |
 
-## 12. Open questions
+## 14. Open questions
 
 1. Floor for meaning rows. Needs a set of queries with no answer in the corpus;
    until then the cap of 10 and the label stand.
 2. Identifier plus description. Route on an identifier token rather than the whole
-   query? Untested.
+   query? Untested, and decided before phase 3 opens. `match` is a per-row field
+   (`"text"` or `"meaning"`) and does not depend on which rule picked the route, so
+   the answer changes routing only, not the row contract.
 3. Chunks beyond the first 8 per conversation were not measured; the design indexes
-   all of them.
+   all of them. Phase 4 measures recall on the full index before the default changes.
 4. Should the bulk build run at full duty while the gateway is idle, shortening the
    75 to 161 hours?
+5. Rarity condition for the literal branch. Candidates: a cap on the keyword leg's
+   hit count, a share of scanned conversations, or a minimum query length. A hit-count
+   cap of 15, chosen after seeing sets A to C, keeps R@1 on set A, lifts it from 0.718
+   to 0.744 on set B and from 0.275 to 0.300 on set C, and lowers set B's R@5 from
+   0.949 to 0.923. It needs a fresh set before it is adopted,
+   and a fixed count drifts as stores grow, so a share is the likelier form.
