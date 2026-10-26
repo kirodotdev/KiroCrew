@@ -41,6 +41,7 @@ from kiro_crew.computer_use.types import (
     TOOL_END_TURN,
     TOOL_GET_STATE,
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     TOOL_PERFORM_ACTION,
     TOOL_PRESS_KEY,
     TOOL_SCROLL,
@@ -1096,7 +1097,7 @@ def test_read_only_and_mutating_sets_partition_the_tools():
     """
     assert READ_ONLY_TOOLS & MUTATING_TOOLS == frozenset()
     assert READ_ONLY_TOOLS | MUTATING_TOOLS | {TOOL_END_TURN} == set(ALL_TOOLS)
-    assert READ_ONLY_TOOLS == {TOOL_LIST_APPS, TOOL_GET_STATE}
+    assert READ_ONLY_TOOLS == {TOOL_LIST_APPS, TOOL_LIST_WINDOWS, TOOL_GET_STATE}
 
 
 @pytest.mark.parametrize("tool", sorted(MUTATING_TOOLS))

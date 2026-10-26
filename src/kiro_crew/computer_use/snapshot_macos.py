@@ -54,12 +54,15 @@ from kiro_crew.computer_use.types import (
     AX_TITLE,
     AX_VALUE,
     AX_VISIBLE_CHILDREN,
+    AX_WINDOW,
     AX_WINDOWS,
     ELIDABLE_ROLES,
+    ERR_WINDOW_NOT_FOUND,
     MAX_TREE_DEPTH_LIMIT,
     MAX_TREE_NODES_LIMIT,
     ROW_BEARING_ROLES,
     SECURE_SUBROLE,
+    TOOL_LIST_WINDOWS,
     TRAIT_EDITABLE,
     TRAIT_EXPANDED,
     TRAIT_SELECTED,
@@ -79,9 +82,11 @@ WINDOW_ATTRIBUTE = AX_WINDOWS
 # ``AXMain``: the app's own notion of its primary window. The tie-breaker when the
 # CG window id cannot be correlated.
 AX_MAIN = "AXMain"
-# How many AX windows are examined while looking for the one the window list
-# picked. Bounded so an app with a hundred open windows cannot make the
-# correlation scan expensive; the target is almost always in the first few.
+# How many AX windows are examined while looking for the default window the
+# window list picked. Bounded so an app with a hundred open windows cannot make
+# the correlation scan expensive; the target is almost always in the first few.
+# A pinned window is searched without this bound, because the caller chose it
+# from ``computer_list_windows``, which lists every window.
 MAX_WINDOWS_TO_INSPECT = 16
 # Returned by ``_frontmost_window`` in place of an AX error when ``AXWindows``
 # listed only the application element itself. Positive, so it can never collide
@@ -189,8 +194,22 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
             )
 
         window, err = _frontmost_window(
-            app_elem, window_id=app.window_id, window_title=app.window_title
+            app_elem,
+            window_id=app.window_id,
+            window_title=app.window_title,
+            pinned=app.pinned_window,
+            pid=app.pid,
         )
+        if window is None and app.pinned_window and err == macos_ffi.AX_ERR_SUCCESS:
+            # The app exposed windows, and none is the one the caller chose: the
+            # window closed after the window-list read. Refused here rather than
+            # through the Electron retry below, which would wait two seconds to
+            # report the same thing less clearly.
+            raise ComputerUseError(
+                ERR_WINDOW_NOT_FOUND.format(
+                    window_id=app.window_id, app=app.name, tool=TOOL_LIST_WINDOWS
+                )
+            )
         elements: tuple[ElementRec, ...] = ()
         stats = WalkStats()
         selected_text = ""
@@ -236,7 +255,9 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
                         f"(AX error {err}). Electron apps may need a moment after launch."
                     )
 
-                selected_text = _selected_text(focused, text_limit=req.text_limit)
+                selected_text = _window_selection(
+                    focused, window, pinned=app.pinned_window, text_limit=req.text_limit
+                )
 
                 return Snapshot(
                     app=app,
@@ -264,7 +285,12 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
 
 
 def _frontmost_window(
-    app_elem: object, *, window_id: int = 0, window_title: str = ""
+    app_elem: object,
+    *,
+    window_id: int = 0,
+    window_title: str = "",
+    pinned: bool = False,
+    pid: int = 0,
 ) -> "tuple[object | None, int]":
     """``(window_element_or_None, ax_error)`` for the window we mean to observe.
 
@@ -300,7 +326,7 @@ def _frontmost_window(
     4. ``AXWindows[0]``, as a last resort.
     """
     listed = macos_ffi.ax_retained_elements(
-        app_elem, WINDOW_ATTRIBUTE, limit=MAX_WINDOWS_TO_INSPECT
+        app_elem, WINDOW_ATTRIBUTE, limit=0 if pinned else MAX_WINDOWS_TO_INSPECT
     )
     # A degraded accessibility server can list the APPLICATION element itself in
     # ``AXWindows``. It is not a window, and the last-resort ``windows[0]`` below
@@ -316,27 +342,77 @@ def _frontmost_window(
         _, err = macos_ffi.ax_attr_error(app_elem, WINDOW_ATTRIBUTE)
         return None, err
 
-    chosen = _select_window(windows, window_id, window_title)
+    chosen = _select_window(windows, window_id, window_title, pinned=pinned, pid=pid)
     # Release every window we did NOT choose: each came back +1.
     macos_ffi.release_all([w for w in windows if w is not chosen])
     return chosen, macos_ffi.AX_ERR_SUCCESS
 
 
-def _select_window(windows: list, window_id: int, window_title: str) -> object:
-    """Pick the window matching *window_id* / *window_title*; see the caller."""
+def _select_window(
+    windows: list, window_id: int, window_title: str, *, pinned: bool = False, pid: int = 0
+) -> "object | None":
+    """Pick the window matching *window_id* / *window_title*; see the caller.
+
+    *pinned* is the caller's explicit choice of window (``window_id`` on the tool
+    call). Then only the two correlations that identify THAT window count: the
+    window id, and the title prefix when the private id symbol answers ``0`` for
+    every window (absent on this macOS) and exactly one window carries that prefix,
+    in the accessibility tree and in the CoreGraphics list of *pid*, where that one
+    window has to be *window_id*.
+    The ``AXMain`` and first-window fallbacks
+    are skipped and ``None`` is returned instead, because walking whatever window
+    the app calls main would hand the model a different window than the one it
+    named, a silent switch of target window.
+    """
+    ids_known = False
     if window_id > 0:
         for window in windows:
-            if macos_ffi.ax_window_id(window) == window_id:
+            found = macos_ffi.ax_window_id(window)
+            ids_known = ids_known or found > 0
+            if found == window_id:
                 return window
+    if pinned and ids_known:
+        # The id symbol works and no window carries the id: the window is not in
+        # the accessibility tree (closed between the window-list read and now).
+        return None
     stem = _title_stem(window_title)
     if stem:
-        for window in windows:
-            if macos_ffi.ax_str(window, AX_TITLE).startswith(stem):
-                return window
+        matches = [w for w in windows if macos_ffi.ax_str(w, AX_TITLE).startswith(stem)]
+        if pinned and len(matches) > 1:
+            # Two windows share the title and no window id tells them apart, so the
+            # title cannot say which one the caller named.
+            return None
+        if pinned and matches and not _window_list_confirms_title(pid, window_id, stem):
+            # The AX title alone cannot tell the pinned window from a sibling that
+            # starts with the same words, and the target policy only checked the
+            # pinned title: if the pinned window closed, the lone match could be a
+            # sibling the operator denies.
+            return None
+        if matches:
+            return matches[0]
+    if pinned:
+        return None
     for window in windows:
         if macos_ffi.ax_bool(window, AX_MAIN, default=False):
             return window
     return windows[0]
+
+
+def _window_list_confirms_title(pid: int, window_id: int, stem: str) -> bool:
+    """True when the only window of *pid* whose CoreGraphics title starts with *stem*
+    is *window_id* itself. Fails closed."""
+    if pid <= 0 or window_id <= 0:
+        return False
+    try:
+        own = [
+            info
+            for info in macos_ffi.window_list()
+            if info.pid == pid and info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL
+        ]
+    except Exception:
+        return False
+    matching = [info for info in own if info.title.startswith(stem)]
+    return len(matching) == 1 and matching[0].window_id == window_id
 
 
 def _title_stem(window_title: str) -> str:
@@ -461,6 +537,34 @@ def _focused_element(app_elem: object) -> Iterator[object]:
         macos_ffi.release_all([ref] if ref is not None else [])
 
 
+def _focus_in_window(focused: object, window: object) -> bool:
+    """Whether *focused* belongs to *window*, read from its ``AXWindow``.
+
+    ``False`` when the attribute cannot be read, so an unknown owner counts as
+    another window.
+    """
+    if not focused or window is None:
+        return False
+    with macos_ffi.ax_owned_attr(focused, AX_WINDOW) as (owner, err):
+        return (
+            err == macos_ffi.AX_ERR_SUCCESS
+            and owner is not None
+            and macos_ffi.same_element(owner, window)
+        )
+
+
+def _window_selection(focused: object, window: object, *, pinned: bool, text_limit: int) -> str:
+    """The selection to report for a snapshot of *window*.
+
+    The focused element is the application's, so on a pinned window it can sit in
+    a sibling the caller did not select, which the operator's app rules may deny.
+    A pinned snapshot therefore reports a selection only from inside its own window.
+    """
+    if pinned and not _focus_in_window(focused, window):
+        return ""
+    return _selected_text(focused, text_limit=text_limit)
+
+
 def _selected_text(focused: object, *, text_limit: int) -> str:
     """The operator's current text selection inside *focused*, or ``""``.
 
@@ -552,7 +656,11 @@ def _retry_with_manual_accessibility(
     while True:
         time.sleep(macos_ffi.ELECTRON_OPT_IN_POLL_SECS)
         window, err = _frontmost_window(
-            app_elem, window_id=app.window_id, window_title=app.window_title
+            app_elem,
+            window_id=app.window_id,
+            window_title=app.window_title,
+            pinned=app.pinned_window,
+            pid=app.pid,
         )
         if window is not None:
             elements, stats, _ = _walk(
@@ -898,7 +1006,11 @@ def resolve_element(
             yield None, None
             return
         window, _ = _frontmost_window(
-            app_elem, window_id=app.window_id, window_title=app.window_title
+            app_elem,
+            window_id=app.window_id,
+            window_title=app.window_title,
+            pinned=app.pinned_window,
+            pid=app.pid,
         )
         if window is None:
             yield None, None
