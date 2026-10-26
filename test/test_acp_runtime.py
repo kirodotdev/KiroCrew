@@ -190,7 +190,7 @@ def kas_readiness_wire(monkeypatch, tmp_path):
         assert request["method"] == (METHOD_SESSION_LOAD if resume else METHOD_SESSION_NEW)
         # The projection reaches the wire with the ACTIVE agent's hoistable
         # managed declarations carried in the session-level array instead of the
-        # block (``hoist_managed_servers``); everything else is byte-identical.
+        # block (``hoist_servers_for_session``); everything else is byte-identical.
         projection = rt._kas_custom_agents.return_value.custom_agents
         sent_agents = request["params"]["_meta"]["kiro"]["customAgents"]
         assert len(sent_agents) == len(projection)

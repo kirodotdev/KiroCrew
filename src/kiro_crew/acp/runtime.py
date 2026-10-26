@@ -86,7 +86,7 @@ from kiro_crew.acp.harness import (
 )
 from kiro_crew.acp.harness.kas import PROTOCOL_VERSION_KAS
 from kiro_crew.acp.harness.kiro import KIRO_CLI_SUBCMD, PROTOCOL_VERSION
-from kiro_crew.acp.kas_agents import hoist_managed_servers
+from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
 from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,

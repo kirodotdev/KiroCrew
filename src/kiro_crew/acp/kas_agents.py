@@ -32,7 +32,7 @@ while never leaving the session with nothing. Two fields are dropped on the way
 through, and a muted or registry-governed entry is not declared at all — see
 :func:`_project_mcp_servers`. The runtime then carries the ACTIVE
 agent's projected managed entries in the session-level array itself
-(:func:`hoist_managed_servers`), the declaration site the captured 2.18.0 release
+(:func:`hoist_servers_for_session`), the declaration site the captured 2.18.0 release
 honours over a same-named global or workspace server and every probed release
 reports as the session's own.
 
@@ -1333,25 +1333,28 @@ def _pin_legacy_negotiation(servers: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
-def hoist_managed_servers(
+def hoist_servers_for_session(
     custom_agents: list[dict[str, Any]] | None,
     agent_id: str,
     session_servers: list[dict[str, Any]],
     session_token: str = "",
     *,
-    resume: bool = False,
+    include_user_servers: bool = False,
     reserved_names: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
-    """Carry the ACTIVE agent's managed declarations in the session-level array.
+    """Carry the ACTIVE agent's servers for this session in the session-level array.
+
+    Managed declarations always move; user-declared ones move only with
+    ``include_user_servers=True`` (the ``session/load`` path).
 
     Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
     entry over a same-named global or workspace ``mcp.json`` server on
     ``session/new`` and ``session/load`` alike. On ``session/new`` an agent-block
     declaration loses to a same-named global one; on ``session/load`` the
     session-level array is re-initialised but the agent block is not re-launched,
-    so ``resume=True`` moves user-declared servers to the session-level array so
-    they are launched and win over the global entry. The array stamps no status
-    provenance. The
+    so ``include_user_servers=True`` moves user-declared servers to the
+    session-level array so they are launched and win over the global entry. The
+    array stamps no status provenance. The
     retained 2.20.0 capture proves a session-level injection reports
     ``origin: client`` and reaches readiness; its same-name collision behaviour
     was not probed. The session-level array is therefore the one declaration site
@@ -1371,8 +1374,9 @@ def hoist_managed_servers(
 
     * a name the caller's array already carries -- a broker stub or the member
       dispatch entry is authoritative and a name must appear once;
-    * a non-managed server when ``resume=False`` (the default) -- third-party
-      declarations are not this seam's; ``resume=True`` (for ``session/load``)
+    * a non-managed server when ``include_user_servers=False`` (the default) --
+      third-party declarations are not this seam's; ``include_user_servers=True``
+      (for ``session/load``)
       hoists remaining user-declared servers, without a session token, UNLESS
       the name is in *reserved_names* (see below);
     * an inactive agent's block -- it must not widen the active session's tool
@@ -1449,7 +1453,7 @@ def hoist_managed_servers(
             keep = True
             managed = name in MANAGED_MCP_SERVER_NAMES
             if (
-                (managed or resume)
+                (managed or include_user_servers)
                 and name not in taken
                 and isinstance(entry, dict)
                 and set(entry) <= _HOISTABLE_ENTRY_KEYS
@@ -1478,7 +1482,8 @@ def hoist_managed_servers(
         # Deferred like session_mcp above: the kiro path returns before this, and
         # the token is per SESSION while the projection is per agent.
         # Apply the token only to managed entries; user-declared servers hoisted
-        # via ``resume=True`` travel as projected with no session credential.
+        # via ``include_user_servers=True`` travel as projected with no session
+        # credential.
         from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
 
         hoisted = [

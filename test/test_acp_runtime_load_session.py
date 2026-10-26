@@ -529,7 +529,7 @@ class TestAcpRuntimeLoadSession:
     async def test_the_kas_resume_report_reads_the_hoisted_array(self, monkeypatch):
         """The session report must name the array the resume SENT, post-hoist.
 
-        ``hoist_managed_servers`` moves a managed server out of the agent definition
+        ``hoist_servers_for_session`` moves a managed server out of the agent definition
         and into the session array, so on KAS the array the wire carries is not the
         one the roster was bound from. The report and the stall diagnostic read that
         binding, so a resume that re-assigned only the request param would describe
@@ -561,7 +561,7 @@ class TestAcpRuntimeLoadSession:
         reported: list[list] = []
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
         monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
-        monkeypatch.setattr(runtime_mod, "hoist_managed_servers", _hoist)
+        monkeypatch.setattr(runtime_mod, "hoist_servers_for_session", _hoist)
         monkeypatch.setattr(
             rt,
             "_guard_unresolved_mcp_refs",
@@ -586,7 +586,7 @@ class TestAcpRuntimeLoadSession:
         """On KAS the managed servers reach the wire through the hoist, token included.
 
         The runtime stamps the per-session token onto its array BEFORE
-        ``hoist_managed_servers`` runs, and on KAS that array is empty: every
+        ``hoist_servers_for_session`` runs, and on KAS that array is empty: every
         managed server arrives through the hoist. A hoisted ``kirocrew-core``
         without the token reads its tool policy unattested and refuses every call
         as ``identity_unattested`` -- memory, logs, spawn_run -- on every session.

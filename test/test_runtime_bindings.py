@@ -316,7 +316,7 @@ _BASE_IMPORTS = frozenset("""
     browser_session_env browser_socket_env build_session_new_params cgroup_scope_argv
     create_subprocess_limited data_home deque emit_counter encode_frame
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
-    group_vouching_available harness_for has_mirror hoist_managed_servers importlib
+    group_vouching_available harness_for has_mirror hoist_servers_for_session importlib
     inject_xdist_auto_cap injection_server_names is_auth_failure_output
     is_sandbox_init_failure_output kas_client_meta_settings kas_secret_storage
     kas_wire_agent_id kiro_agents_dir launch live logging markdown_spec_for_agent

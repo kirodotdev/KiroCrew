@@ -2036,7 +2036,7 @@ unknown, KAS conservatively treats activation as a change. A reconnect invalidat
 that server's prior tool exposure.
 
 Before either request goes out, the runtime carries the ACTIVE agent's managed
-declarations in the session-level array (`kas_agents.hoist_managed_servers`).
+declarations in the session-level array (`kas_agents.hoist_servers_for_session`).
 Captured released 2.18.0 honours that array over a same-named global or
 workspace `mcp.json` server on new and load alike (the member dispatch server
 already travels this way); the retained 2.20.0 capture proves a session-level
@@ -2058,8 +2058,9 @@ must not hand the token to another binary. Its env keeps only the projected
 `KIROCREW_PORT` / `KIROCREW_SESSION_KEY` plus the managed env; a name whose
 managed invocation does not resolve is hoisted as projected with no token. On `session/new` the move covers the active agent's managed names only; on
 `session/load` it additionally hoists remaining user-declared names
-(`resume=True` in `hoist_managed_servers`): kiro-cli re-initialises MCP servers
-from the session-level array only on load — not from agent-block declarations —
+(`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
+re-initialises MCP servers from the session-level array only on load — not from
+agent-block declarations —
 so a spec edit adding a new MCP server is silently ignored on resume without the
 wider hoist. That load-only launch set was probed on released kiro-cli 2.31.0
 (the #17781 repro: `session/load` with a spec adding `@probe/beta` exposed no

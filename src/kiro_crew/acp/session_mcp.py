@@ -397,7 +397,7 @@ def settings_server_names(work_dir: str | Path | None) -> frozenset[str]:
     :func:`native_settings_sources` enumerates, read once each with no bracketing
     because a name set is advisory here, not a restriction to fail closed on.
 
-    Used by :func:`~kiro_crew.acp.kas_agents.hoist_managed_servers` as
+    Used by :func:`~kiro_crew.acp.kas_agents.hoist_servers_for_session` as
     ``reserved_names`` on the ``session/load`` path: a user-declared server whose
     name a settings file also declares stays in the agent block, so the resumed
     session resolves that name exactly as ``session/new`` did -- by kiro-cli's own

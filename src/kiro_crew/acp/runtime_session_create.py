@@ -34,7 +34,7 @@ from kiro_crew.acp._dispatch import (
     build_session_new_params,
     parse_session_modes,
 )
-from kiro_crew.acp.kas_agents import hoist_managed_servers
+from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _pooled_session_servers_and_ref_spec,
@@ -320,9 +320,9 @@ async def create_session(
     # Crew's managed servers travel in the session-level array, the one
     # declaration site the captured 2.18.0 release honours over a same-named
     # global/workspace entry and 2.20.0 reports as the client's own (see
-    # ``hoist_managed_servers``). The kiro path returns None here and is
+    # ``hoist_servers_for_session``). The kiro path returns None here and is
     # untouched.
-    kas_agents, mcp_servers = hoist_managed_servers(
+    kas_agents, mcp_servers = hoist_servers_for_session(
         kas_agents, active_agent, mcp_servers, session_token=stub_token
     )
     # The host's last word on its own tool surface. A host that reads an
