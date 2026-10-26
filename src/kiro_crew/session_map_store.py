@@ -16,7 +16,8 @@ binds it by name, so it reads and writes the map's own state on the instance, an
 the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_batch_depth``, ``_batch_dirty``, ``_data``, ``_dirty``,
-``_flush_task``, ``_snapshot_seq``, ``_thread_to_session``, ``_written_seq``.
+``_flush_task``, ``_load_failed``, ``_snapshot_seq``, ``_thread_to_session``,
+``_written_seq``.
 
 Instance fields read: ``_io_lock``, ``_path``.
 """
@@ -26,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -39,6 +41,8 @@ from kiro_crew.messaging.link import ChannelLink, canonical_key
 if TYPE_CHECKING:
     from kiro_crew.session_map import SessionMap
 
+#: The map's own logger: this code logs under ``kiro_crew.session_map``.
+logger = logging.getLogger("kiro_crew.session_map")
 
 # Serializes every structural access to the map. MODULE-level, not per-instance,
 # because the instances are not the unit of exclusion: the read-only call sites
@@ -131,7 +135,20 @@ def _load(self: SessionMap) -> None:
     if self._path.exists():
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+        except ValueError:
+            self._data = {}
+            return
+        except OSError:
+            # The file is there but unread, so ``_data`` is NOT the map on disk,
+            # and every mutation rewrites the whole file from ``_data``.
+            # ``_write_payload`` raises while this is set, so a failed read
+            # cannot erase every binding and no durability point reports a
+            # write that did not happen; the next start that reads it recovers.
+            logger.exception(
+                "Could not read %s; session-map writes will fail until a restart reads it",
+                self._path,
+            )
+            self._load_failed = True
             self._data = {}
             return
         if not isinstance(raw, dict):
@@ -412,8 +429,13 @@ def _write_payload(self: SessionMap, payload: str, seq: int) -> None:
     remains covered by the class contract's rule 3 (a throwaway
     ``SessionMap()`` is read-only, only the live map writes). tmp+rename
     keeps a crash from ever leaving a truncated file: the worst case is a
-    well-formed OLDER map.
+    well-formed OLDER map. After a failed :meth:`_load` it raises ``OSError``
+    without touching the file, which holds bindings this instance never read;
+    raising, not returning, is what lets ``flush``/``aflush`` re-owe the state
+    and their callers take the failure branch instead of reporting a save.
     """
+    if self._load_failed:
+        raise OSError(f"{self._path} was not readable at load; refusing to replace it")
     with self._io_lock:
         if seq <= self._written_seq:
             return
