@@ -184,9 +184,8 @@ async def _handle_state(
     # `is_primary()` -> `_schedule_me()` -> `schedule_file.resolve_login()`, which spawns
     # `gh api user` synchronously (10s timeout) on a cold login cache.
     #
-    # An earlier revision of this handler reasoned that the awaited `resolve_shift()` above
-    # always warms that cache first, so an inline call was safe. That was WRONG, and review
-    # caught it: `resolve_shift` wraps each source in `asyncio.wait_for(...,
+    # The awaited `resolve_shift()` above does NOT always warm that cache first, so an
+    # inline call is not safe: `resolve_shift` wraps each source in `asyncio.wait_for(...,
     # DEFAULT_POLL_TIMEOUT_SECS)`, and a timeout cancels the awaiting coroutine while the
     # `to_thread` worker keeps running — so the poll can give up with `_login_cache` still
     # unset and `describe()` then pays the full spawn, inline, on the loop. "Something
@@ -246,7 +245,7 @@ async def _handle_state(
             # Off-loop: this walks `importlib.metadata.entry_points()`, which enumerates
             # every installed distribution's metadata from disk. `/state` is a POLLED
             # endpoint, so on a fat site-packages (or a cold page cache) that scan pauses
-            # the chat turn and the liveness heartbeat on every poll. Found in review.
+            # the chat turn and the liveness heartbeat on every poll.
             "companions": companions,
             "webhook_queue": webhook_mod.queue_depth(),
         }

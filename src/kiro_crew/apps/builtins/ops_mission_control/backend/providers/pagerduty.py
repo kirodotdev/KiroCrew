@@ -192,7 +192,7 @@ class PagerDutyAdapter:
             # the off-shift refusal stopped firing. Reproduced end to end: with schedules set
             # and PagerDuty reporting off shift the write was refused; clearing `schedule_ids`
             # — changing nothing about who is on call — returned "granted by rule on
-            # cloudwatch" for the same signal. Found in review (GPT 5.6).
+            # cloudwatch" for the same signal.
             #
             # A stored `user_id` is the operator's own statement that they use this rotation,
             # and it is the ONE input here the agent cannot forge. With it present, an empty
@@ -216,10 +216,10 @@ class PagerDutyAdapter:
             # Both the query filter below and the per-entry check further down are
             # conditional on `user_id`, so a blank one made this return `on_shift=True` for
             # ANY teammate's shift — the off-shift refusal then read a colleague's rotation as
-            # this instance's own and permitted a production write. Found in review.
+            # this instance's own and permitted a production write.
             #
-            # `unknown`, NOT `on_shift=False`: the review suggested False, and that is the
-            # wrong direction here. `_definitely_off_shift` treats a False as a real
+            # `unknown`, NOT `on_shift=False`: False is the wrong direction here.
+            # `_definitely_off_shift` treats a False as a real
             # off-shift VOTE, so an operator who set `schedule_ids` and never set a user id
             # would find every manual action refused with no way to see why — a
             # configuration omission silently disabling the app, which is the failure mode

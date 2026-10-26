@@ -291,8 +291,8 @@ def _coerce_index(raw: Any, *, strict: bool = False) -> dict[str, Incident]:
             # `expire_stale_proposals` iterates `index.values()` and writes back with
             # `index[inc.incident_id] = ...`, so a row stored under `INV-1` whose id says
             # `INV-9` is REKEYED on the next expiry sweep -- leaving `INV-1` behind as a
-            # duplicate, or overwriting a real `INV-9`. Found in review (GPT 5.6), and it is
-            # the one hole the equivalence rule could not close on its own: the corruption
+            # duplicate, or overwriting a real `INV-9`. This is the one hole the equivalence
+            # rule cannot close on its own: the corruption
             # manifests at WRITE time, not at read time.
             if str(survived.get("incident_id", "")) != str(key):
                 raise CorruptDocumentError(
@@ -374,10 +374,10 @@ def _read_index_for_update() -> dict[str, Incident]:
     except UnicodeDecodeError as exc:
         # A file that is not valid UTF-8 never reaches `json.loads`, so it arrives as
         # `UnicodeDecodeError` -- which is a `ValueError` but NOT a `JSONDecodeError`. Left
-        # unwrapped it slips past every corruption clause in this change and lands in the
-        # tolerant `except (KeyError, ValueError, OSError)` arms instead, silently swallowed:
-        # the exact accidental tolerance this change exists to close, reached through a
-        # sibling exception type. Found in review (GPT 5.6). Wrapped so a corrupt byte stream
+        # unwrapped it slips past every corruption clause and lands in the tolerant
+        # `except (KeyError, ValueError, OSError)` arms instead, silently swallowed: an
+        # accidental tolerance reached through a sibling exception type. Wrapped so a
+        # corrupt byte stream
         # is one condition regardless of which decoder noticed it first.
         raise CorruptDocumentError(
             f"index is not valid UTF-8: {exc.reason}",
@@ -1072,7 +1072,7 @@ def expire_stale_proposals(*, now: str = "") -> list[str]:
             # inconsistent one the old form MOVED the record, duplicating it or overwriting a
             # real incident. The strict reader now refuses such a document, so this is
             # belt-and-braces -- but the function that rewrites the index should not be the one
-            # relying on the reader to have checked. Found in review (GPT 5.6).
+            # relying on the reader to have checked.
             index[key] = replace(inc, proposed_action=proposal)
             touched.append(inc.incident_id)
         if touched:

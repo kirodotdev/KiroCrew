@@ -220,9 +220,7 @@ class CloudWatchSignalSource:
             # as a SUCCESSFUL poll that saw nothing — indistinguishable from "nothing is
             # firing". With expired credentials that reads as an all-clear over a live
             # estate, and `all_sources_healthy` then promises absence-means-recovery, which
-            # is the one claim this app must never make falsely. Found in review; it is the
-            # same "machinery that looks deliberate while doing nothing" defect the
-            # SignalsPanel `ready / ok` row was.
+            # is the one claim this app must never make falsely.
             #
             # `configured()` is the honest place to say "no AWS here" — boto3 missing or no
             # credential chain surfaces as a per-source error the Signals tab renders, not
@@ -258,7 +256,7 @@ class CloudWatchSignalSource:
             # `poll_all` needs to see the result is over-limit and mark the poll
             # non-authoritative, while draining an unbounded estate would trade this bug for the
             # memory/rate-limit one the cap exists to prevent. `_MAX_ALARM_PAGES` additionally
-            # bounds a provider that keeps handing back a token. Found in review (GPT 5.6).
+            # bounds a provider that keeps handing back a token.
             for page in range(_MAX_ALARM_PAGES):
                 try:
                     response = client.describe_alarms(**kwargs)

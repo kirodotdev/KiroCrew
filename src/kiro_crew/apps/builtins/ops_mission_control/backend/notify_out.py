@@ -126,7 +126,7 @@ def set_settings(*, enabled: bool | None = None) -> None:
     if enabled is None:
         return
     # `set_top_level` holds `_ConfigLock` across the read-modify-write; the open-coded sequence
-    # here did not, so a concurrent settings PUT could silently drop this flag. Found in review.
+    # here did not, so a concurrent settings PUT could silently drop this flag.
     set_top_level(_ENABLED_KEY, bool(enabled))
 
 

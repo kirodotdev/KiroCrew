@@ -444,7 +444,6 @@ def register_routes(app: web.Application) -> None:
     # landed on the event loop — the gateway's first `/signals` poll stalled the heartbeat
     # and every other task for the length of a filesystem plugin scan. `register_routes`
     # runs synchronously before the loop serves anything, so paying it here is free.
-    # Found in review.
     #
     # Fail-open: this app is default-disabled and an install that never enables it must not
     # crash gateway startup on a discovery fault (`get_registry` already swallows companion
