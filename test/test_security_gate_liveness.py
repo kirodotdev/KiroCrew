@@ -510,7 +510,13 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised by 3, from 32,527, for the ``web-push`` leaf in ``paths_lists`` (the Web
 #: Push key and device secrets): the leaf and its two-line reason. No rule changed.
-_PACKAGE_LINE_BUDGET = 32_530
+#:
+#: Raised by 59, from 32,530, for the loopback-IP OAuth carve-out in ``exfil``:
+#: the ``_is_loopback_ip_host`` helper and the ``_exfil_url_warning`` branch that
+#: treats a literal loopback IP as an OAuth endpoint, stripping the standard
+#: shape-bounded OAuth fields before BOTH the length and the base64-blob pattern
+#: heuristics so the verdict is length-independent, with their rationale comments.
+_PACKAGE_LINE_BUDGET = 32_589
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

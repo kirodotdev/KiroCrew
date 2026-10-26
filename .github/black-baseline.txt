@@ -587,7 +587,6 @@ test/test_mcp_gateway_stub_poolable_ack.py
 test/test_mcp_gateway_stub_recaller.py
 test/test_mcp_internal_caller.py
 test/test_mcp_knowledge_add_document.py
-test/test_mcp_oauth_banner.py
 test/test_mcp_preflight.py
 test/test_mcp_preflight_real_server.py
 test/test_mcp_probe_treadmill.py

@@ -284,15 +284,23 @@ class TestEmitMcpOAuthRequest:
 
     @pytest.mark.parametrize(
         "host",
-        ["localhost:3100", "127.0.0.1:3100", "[::1]:3100"],
+        # A loopback host the guard REFUSES: ``localhost`` is a DNS name, not an
+        # IP literal, so the loopback-IP query-length carve-out (127.0.0.0/8,
+        # [::1]) does not cover it. This keeps a genuinely-refused loopback URL
+        # exercising the retry-advice branch.
+        ["localhost:3100"],
     )
     def test_loopback_rejection_points_at_a_retry_not_the_allowlist(self, host):
-        """A loopback authorize URL is still REJECTED, but the banner
-        must not send the user to ``oauth_endpoints.json`` -- that file refuses
-        loopback hosts and the gate never relaxes http/port, so the advice is
-        unactionable. It names the endpoint and suggests reconnecting."""
+        """A refused loopback authorize URL points at a retry, not the allowlist.
+
+        The banner must not send the user to ``oauth_endpoints.json`` -- that
+        file refuses loopback hosts and the gate never relaxes http/port, so the
+        advice is unactionable. It names the endpoint and suggests reconnecting.
+        Pinned on ``localhost`` because a literal loopback IP (127.0.0.1/[::1])
+        is ALLOWED by the guard and never reaches this branch.
+        """
         url = f"http://{host}/authorize{self._LOOPBACK_AUTHORIZE_QUERY}"
-        # Premise: the guard verdict itself is unchanged by this fix.
+        # Premise: the guard still refuses this (name-host) loopback URL.
         assert oauth_url_contains_credential(url)
         slot = _ChatSlot("s1")
         _emit_mcp_oauth_request(MagicMock(), slot, "tidal-knowledge", url)
@@ -322,6 +330,30 @@ class TestEmitMcpOAuthRequest:
         m = slot.messages[0]
         assert m["meta"]["remedy"] == "oauth_endpoints.json"
         assert "oauth_endpoints.json" in m["content"]
+
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1:49954", "[::1]:49954"],
+        ids=["ipv4", "ipv6"],
+    )
+    def test_literal_loopback_ip_authorize_url_renders_the_consent_banner(self, host):
+        """A real MCP authorization server on a literal loopback IP (the
+        RFC 8252 native-app pattern) is ALLOWED by the guard, so the banner
+        renders the live consent URL rather than the refused-loopback retry
+        advice. The guard verdict for a loopback IP is what keeps this out of
+        the rejection branch, while ``localhost`` (a name) is refused and gets
+        the retry advice."""
+        url = f"http://{host}/authorize{self._LOOPBACK_AUTHORIZE_QUERY}"
+        # The guard now accepts a literal loopback-IP authorize URL.
+        assert oauth_url_contains_credential(url) is False
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(MagicMock(), slot, "local-idp", url)
+        m = slot.messages[0]
+        assert m["role"] == "mcp_oauth"
+        # Accepted -> the live auth-request banner, NOT a rejection.
+        assert m["meta"].get("rejected_url") is not True
+        assert m["meta"].get("failed") is not True
+        assert m["meta"]["oauth_url"] == url
 
     # A Cloudflare Access per-tenant consent URL with a real-world shape:
     # PKCE + state + redirect push the query past the 200-char length gate, and
@@ -566,9 +598,9 @@ class TestMarkMcpOAuthCompleted:
         state = MagicMock()
         _mark_mcp_oauth_completed(state, slot, "linear", success=True)
 
-        assert second["meta"].get("completed") is True, (
-            "the completion landed on the wrong row -- ts is not a row identity"
-        )
+        assert (
+            second["meta"].get("completed") is True
+        ), "the completion landed on the wrong row -- ts is not a row identity"
         assert first["meta"].get("completed") is None
         _, payload = state.broadcast_ws.call_args[0]
         assert payload["mid"] == second["meta"]["mid"]
@@ -868,9 +900,9 @@ class TestSupersededOAuthBanners:
         state = MagicMock()
         _supersede_open_mcp_oauth_banners(state, slot, "miro", False)
 
-        assert all(m["meta"].get("superseded") is True for m in slot.messages), (
-            "a ts collision left a banner open, still offering a dead loopback link"
-        )
+        assert all(
+            m["meta"].get("superseded") is True for m in slot.messages
+        ), "a ts collision left a banner open, still offering a dead loopback link"
         assert all("oauth_url" not in m["meta"] for m in slot.messages)
         # Each row patched exactly once -- not the first one twice.
         assert state.broadcast_ws.call_count == 2
@@ -1540,8 +1572,10 @@ def _own(tmp_path, monkeypatch, servers) -> None:
 
 def _pending(*names):
     return _FakeProviderClient(
-        [{"serverName": n, "oauthUrl": f"https://{n}.example.com/authorize?client_id=x"}
-         for n in names]
+        [
+            {"serverName": n, "oauthUrl": f"https://{n}.example.com/authorize?client_id=x"}
+            for n in names
+        ]
     )
 
 
@@ -1679,9 +1713,7 @@ class TestAnnotationFailsOpen:
         """Both halves of the predicate must fail open, not just the store read."""
         _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
         slot = _ChatSlot("s1")
-        with patch(
-            f"kiro_crew.dashboard.chat_runner.{broken}", side_effect=RuntimeError("boom")
-        ):
+        with patch(f"kiro_crew.dashboard.chat_runner.{broken}", side_effect=RuntimeError("boom")):
             await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
         assert _owned_flags(slot) == [False]
 
@@ -1713,9 +1745,7 @@ class TestDrainDoesNoBlockingWorkOnTheLoop:
         assert _owned_flags(slot) == [True]
 
     @pytest.mark.asyncio
-    async def test_lookup_is_skipped_entirely_when_nothing_is_pending(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_lookup_is_skipped_entirely_when_nothing_is_pending(self, tmp_path, monkeypatch):
         """Session init is the hot path and the common case is zero requests."""
         _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
         calls: list[int] = []
@@ -1763,9 +1793,7 @@ class TestMidTurnRequestsAreNeverAnnotated:
 
     def test_annotation_is_opt_in_per_call(self):
         slot = _ChatSlot("s1")
-        _emit_mcp_oauth_request(
-            MagicMock(), slot, "acme", LEGIT_OAUTH_URLS[0][1], card_owned=True
-        )
+        _emit_mcp_oauth_request(MagicMock(), slot, "acme", LEGIT_OAUTH_URLS[0][1], card_owned=True)
         assert slot.messages[0]["meta"]["card_owned"] is True
 
 

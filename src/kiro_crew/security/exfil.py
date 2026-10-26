@@ -372,6 +372,15 @@ def _exfil_url_warning(
             or _approved_oauth_authorization_endpoint(_dom, path_and_query.split("?", 1)[0])
         )
     )
+    # A literal loopback IP host (127.0.0.0/8 or ::1) is an MCP server's own
+    # authorization server (RFC 8252 native-app pattern). It never meets the
+    # https + no-port approved-endpoint gate, so it is recognized here instead,
+    # on the banner path only. The SAME standard-field strip then feeds BOTH the
+    # length and the pattern heuristics, so a loopback URL gets one verdict
+    # whatever its query length. A name (localhost) or any DNS host is never
+    # loopback here. http and an explicit port are accepted for this host class
+    # only; no other host, scheme or rule changes.
+    _loopback_oauth_endpoint = allow_oauth_entropy and _is_loopback_ip_host(domain)
     if _oauth_endpoint:
         # Names are matched literally and case-sensitively; encoded/mixed-case
         # aliases fail closed as unknown parameters.
@@ -380,6 +389,24 @@ def _exfil_url_warning(
             for segment in query.split("&")
             if segment.partition("=")[0] not in _OAUTH_QUERY_PARAMS
         )
+    elif _loopback_oauth_endpoint:
+        # Drop a standard OAuth field ONLY when its value cannot smuggle a
+        # credential past the heuristics: an entropy-bearing field
+        # (_OAUTH_ENTROPY_QUERY_PARAMS) must additionally carry a protocol shape
+        # (bounded by _oauth_entropy_value_is_protocol_shaped, as at an approved
+        # endpoint), so an AWS-secret-shaped value in `state` stays in the
+        # heuristic query and is still caught. Every non-standard field stays.
+        kept: list[str] = []
+        for segment in query.split("&"):
+            key, sep, value = segment.partition("=")
+            standard = key in _OAUTH_QUERY_PARAMS
+            entropy = key in _OAUTH_ENTROPY_QUERY_PARAMS
+            drop = standard and (
+                not entropy or (bool(sep) and _oauth_entropy_value_is_protocol_shaped(key, value))
+            )
+            if not drop:
+                kept.append(segment)
+        heuristic_query = "&".join(kept)
     elif (
         _slack_alias := _kirocrew_slack_app_link_alias(
             _dom,
@@ -1065,6 +1092,24 @@ def _oauth_credential_scan_target(
     return url[: query_start + 1] + sanitized_query + suffix
 
 
+def _is_loopback_ip_host(hostname: str | None) -> bool:
+    """True only when *hostname* is a LITERAL loopback IP address.
+
+    ``hostname`` is ``urlparse``'s parsed host (lowercased, IPv6 brackets
+    stripped: ``[::1]`` -> ``::1``), read as an IP LITERAL via :mod:`ipaddress`
+    and accepted only when loopback (``127.0.0.0/8`` or ``::1``). A name that
+    merely RESOLVES to loopback is NOT trusted: ``localhost`` and any DNS name
+    raise ``ValueError`` here, so no resolution and no host-suffix trick
+    (``127.0.0.1.evil.com`` is not an IP literal) can earn the carve-out.
+    """
+    if not hostname:
+        return False
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def diagnose_oauth_url_credential(
     url: str, *, assume_approved_endpoint: bool = False
 ) -> OAuthUrlCredentialDiagnostic | None:
@@ -1201,12 +1246,26 @@ def diagnose_oauth_url_credential(
     rule = rules[0] if rules else "exfil_unknown"
 
     heuristic_query = parsed.query
-    if approved_endpoint:
-        heuristic_query = "&".join(
-            segment
-            for segment in parsed.query.split("&")
-            if segment.partition("=")[0] not in _OAUTH_QUERY_PARAMS
-        )
+    # A literal loopback IP host (127.0.0.0/8 or ::1) is recognized as an OAuth
+    # endpoint inside _exfil_url_warning, so the verdict above already used the
+    # standard-field-stripped query. Mirror that strip here so the reported
+    # diagnostic shape matches the verdict. localhost and any DNS name are never
+    # loopback.
+    loopback_ip = _is_loopback_ip_host(parsed.hostname)
+    if approved_endpoint or loopback_ip:
+
+        def _keep(segment: str) -> bool:
+            key, sep, value = segment.partition("=")
+            if key not in _OAUTH_QUERY_PARAMS:
+                return True
+            if not loopback_ip or approved_endpoint:
+                return False
+            # Loopback: drop an entropy field only when protocol-shaped.
+            if key in _OAUTH_ENTROPY_QUERY_PARAMS:
+                return not (bool(sep) and _oauth_entropy_value_is_protocol_shaped(key, value))
+            return False
+
+        heuristic_query = "&".join(seg for seg in parsed.query.split("&") if _keep(seg))
     else:
         slack_alias = _kirocrew_slack_app_link_alias(
             parsed.hostname.lower(),
