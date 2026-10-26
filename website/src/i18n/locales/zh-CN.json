@@ -7026,7 +7026,7 @@
       "provider_github": "GitHub",
       "provider_jira": "Jira",
       "provider_gitlab": "GitLab",
-      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file."
+      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. 此读取器使用 Jira API 令牌，与 Atlassian MCP 登录相互独立。登录该 MCP 服务器不会配置它。"
     },
     "jobForm": {
       "a_short_label_for_this_job": "此任务的简短标签",

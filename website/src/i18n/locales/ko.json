@@ -7026,7 +7026,7 @@
       "provider_github": "GitHub",
       "provider_jira": "Jira",
       "provider_gitlab": "GitLab",
-      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file."
+      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. 이 리더는 Jira API 토큰을 사용하며 Atlassian MCP 로그인과는 별개입니다. 해당 MCP 서버에 로그인해도 설정되지 않습니다."
     },
     "jobForm": {
       "a_short_label_for_this_job": "이 작업의 짧은 레이블",

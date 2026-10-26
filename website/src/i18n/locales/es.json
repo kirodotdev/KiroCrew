@@ -7276,7 +7276,7 @@
       "provider_github": "GitHub",
       "provider_jira": "Jira",
       "provider_gitlab": "GitLab",
-      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file."
+      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. Este lector usa un token de API de Jira y es independiente del inicio de sesión de Atlassian MCP. Iniciar sesión en ese servidor MCP no lo configura."
     },
     "jobForm": {
       "a_short_label_for_this_job": "Una etiqueta corta para este trabajo",

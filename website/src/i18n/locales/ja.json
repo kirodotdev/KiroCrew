@@ -7026,7 +7026,7 @@
       "provider_github": "GitHub",
       "provider_jira": "Jira",
       "provider_gitlab": "GitLab",
-      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file."
+      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. このリーダーは Jira API トークンを使用し、Atlassian MCP のサインインとは別です。その MCP サーバーにサインインしても設定されません。"
     },
     "jobForm": {
       "a_short_label_for_this_job": "このジョブの短いラベル",

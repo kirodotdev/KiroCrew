@@ -306,7 +306,9 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
             "jira_no_credentials: No Jira credentials configured for "
             f"{ref.host}. Add a jira_auth entry to config.json and set "
             f"JIRA_API_TOKEN (or {per_host_name} for multi-host) "
-            "in your .env file."
+            "in your .env file. This reader uses a Jira API token and is "
+            "separate from the Atlassian MCP sign-in; signing in to that "
+            "MCP server does not configure it."
         )
     email, token = auth_pair
     is_cloud = _jira_is_cloud(ref.host)

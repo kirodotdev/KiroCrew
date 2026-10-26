@@ -4,6 +4,7 @@ changes, and fix versions as the milestone equivalent."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from source_providers_helpers import _clear_issue_cache  # noqa: F401
@@ -524,6 +525,39 @@ async def test_fetch_jira_issue_no_credentials_raises_value_error(monkeypatch):
     )
     with pytest.raises(ValueError, match="jira_no_credentials"):
         await source._fetch_jira_issue(ref)
+
+
+_MCP_SEPARATE_NOTE = (
+    "This reader uses a Jira API token and is separate from the Atlassian "
+    "MCP sign-in; signing in to that MCP server does not configure it."
+)
+
+
+@pytest.mark.asyncio
+async def test_no_credentials_message_says_it_is_separate_from_mcp(monkeypatch):
+    """The backend message names the MCP sign-in as a different credential."""
+    monkeypatch.setattr(source, "_get_jira_auth", lambda host: None)
+    ref = source.SourceRef(
+        provider="jira",
+        url="https://acme.atlassian.net/browse/PROJ-123",
+        host="acme.atlassian.net",
+        owner="",
+        repo="PROJ",
+        number=123,
+        kind="issue",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        await source._fetch_jira_issue(ref)
+    assert _MCP_SEPARATE_NOTE in str(excinfo.value)
+    assert "Add a jira_auth entry to config.json" in str(excinfo.value)
+
+
+def test_panel_no_credentials_copy_says_it_is_separate_from_mcp():
+    """The issue panel's English copy carries the same sentence."""
+    catalog = Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.manual.json"
+    copy = json.loads(catalog.read_text(encoding="utf-8"))["components"]["issuePanel"]
+    assert _MCP_SEPARATE_NOTE in copy["jira_no_credentials"]
+    assert "Add a jira_auth entry to config.json" in copy["jira_no_credentials"]
 
 
 def test_parse_jira_cloud_url() -> None:
