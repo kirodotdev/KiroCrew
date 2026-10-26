@@ -1070,10 +1070,12 @@ class AcpProvider(LLMProvider):
     accepts_effort_level = _acp_model_effort.accepts_effort_level
     supports_effort = _acp_model_effort.supports_effort
     _resolve_effort = _acp_model_effort._resolve_effort
+    owner_effort = _acp_model_effort.owner_effort
     _set_effort_config_option = _acp_model_effort._set_effort_config_option
     change_effort = _acp_model_effort.change_effort
     reapply_live_effort = _acp_model_effort.reapply_live_effort
     set_model = _acp_model_effort.set_model
+    push_live_effort = _acp_model_effort.push_live_effort
     clear_effort = _acp_model_effort.clear_effort
     _apply_initial_effort = _acp_model_effort._apply_initial_effort
     # A cold start on a shared ``AcpRuntime``: ``kiro_crew.providers.acp_runtime_start``.

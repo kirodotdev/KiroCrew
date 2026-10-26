@@ -361,14 +361,15 @@ class SubagentInfo:
     # ``"auto"`` ⇒ unpinned (no per-spawn pin, no role pin — the provider picks
     # the model). Resolved once at spawn.
     requested_model: str = ""
-    # The model ``model.route`` picked for an UNPINNED start and the tier it ran
-    # at; both "" when the start was not routed. Kept apart from ``model``, which
+    # The model and effort ``model.route`` picked for an UNPINNED start and the
+    # tier it ran at; all "" when the start was not routed. Kept apart from ``model``, which
     # is only ever a caller's own pin, so a pinned start is never routed, a
     # recovery respawn of a routed start keeps the routing it already has, and
     # the usage row names the model that actually served (``model_source``)
     # rather than a routed id the child session may have withheld.
     routed_model: str = ""
     routed_tier: str = ""
+    routed_effort: str = ""
     # Per-call reasoning-effort override (spawn_run ``reasoning_effort``).
     # Wins over the ``role_efforts['subagent']`` pin; ``""`` defers to it.
     # Like ``model``, a non-empty value forces the dedicated-process path.

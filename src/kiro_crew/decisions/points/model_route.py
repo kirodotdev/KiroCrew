@@ -178,7 +178,9 @@ UNPINNED = ""
 #: ``no-switch-seam`` -- this provider exposes no ``set_model``, so a per-turn
 #: model cannot be expressed on it at all.
 #: ``switch-failed`` -- the provider refused or failed the switch.
+#: ``model-out-of-range`` -- the tier maps to an id outside the session's range.
 ERROR_UNKNOWN_MODEL = "model-not-advertised"
+ERROR_OUT_OF_RANGE = "model-out-of-range"
 ERROR_NO_SWITCH = "no-switch-seam"
 ERROR_SWITCH_FAILED = "switch-failed"
 
@@ -186,6 +188,11 @@ ERROR_SWITCH_FAILED = "switch-failed"
 #: window than the session's, and either the answer is under
 #: :data:`MIN_DOWNGRADE_P` or the turn's own history would not fit there.
 ERROR_WINDOW_REFUSED = "smaller-window-refused"
+
+#: ``effort_skipped`` on the outcome row of a tier that routes an effort on a session
+#: whose owner level is unnameable, so there would be no level to put back: no effort
+#: is routed.
+EFFORT_SKIPPED_BASELINE_UNKNOWN = "baseline-unknown"
 
 #: The module the strip hand-off lives in, resolved by name at call time so a
 #: build without it is a no-op rather than an import error on a turn path.
@@ -540,7 +547,13 @@ def probability_of(answers: Any) -> float | None:
     return answer.p if isinstance(answer, Answer) else None
 
 
-def resolve_model(tier: str, mapping: Mapping[str, str], advertised: Sequence[str]) -> str:
+def resolve_model(
+    tier: str,
+    mapping: Mapping[str, str],
+    advertised: Sequence[str],
+    *,
+    allowed: Sequence[str] = (),
+) -> str:
     """The model id *tier* maps to, or ``""`` when it is not one to switch to.
 
     ``""`` -- keep the session's current model -- covers an UNPINNED tier (the
@@ -557,15 +570,33 @@ def resolve_model(tier: str, mapping: Mapping[str, str], advertised: Sequence[st
     as permitted: the list comes from a live provider read that can be cold, and
     refusing on a cold read would make the feature silently inert on the first
     turn after a restart. The switch itself still fails loudly if the id is wrong.
+
+    A non-empty *allowed* is the session's range: a pin outside it is ``""`` too,
+    whether or not the advertised list is warm. Empty means no range.
     """
     wanted = str(mapping.get(tier, "") or "").strip()
     if not wanted:
         return ""
     known = [str(name or "").strip() for name in advertised]
     known = [name for name in known if name]
-    if known and not any(_same_model(wanted, name) for name in known):
+    if known and not _within(wanted, known):
+        return ""
+    if allowed and not _in_range(wanted, allowed):
         return ""
     return wanted
+
+
+def _within(model_id: str, ids: Sequence[str]) -> bool:
+    """Whether *model_id* is one of *ids*, compared as :func:`_same_model` does."""
+    return any(_same_model(model_id, str(name or "")) for name in ids)
+
+
+def _in_range(model_id: str, ids: Sequence[str]) -> bool:
+    """Whether *model_id* is in the range *ids*, an effort pair matching its base."""
+    base = model_registry.split_effort_suffix(model_id)[0]
+    return any(
+        _same_model(base, model_registry.split_effort_suffix(str(name or ""))[0]) for name in ids
+    )
 
 
 def is_unpinned(tier: str, mapping: Mapping[str, str]) -> bool:
@@ -702,6 +733,7 @@ async def routed_model(
     track: bool = True,
     rate_of: Callable[[str], float | None] | None = None,
     scopes: Sequence[str] = (),
+    allowed: Sequence[str] = (),
 ) -> dict[str, Any] | None:
     """The model this turn should run on, or ``None`` to leave it alone.
 
@@ -722,6 +754,9 @@ async def routed_model(
     *advertised* is the provider's advertised id list; an empty list reads as
     "not known" (see :func:`resolve_model`).
 
+    *allowed* is the session's range: a pin outside it keeps the model and records
+    ``model-out-of-range``, and a derived tier picks only from the in-range ids.
+
     With ``decisions.model_route_derive`` on, empty tiers take derived targets
     (:func:`effective_tier_models`, priced through *rate_of*, the session's own
     backend lookup from :func:`rate_lookup`) and the answered tier is raised by
@@ -732,9 +767,9 @@ async def routed_model(
     start asks under its parent's key) passes ``track=False``, which skips both.
     With the switch off neither *retried* nor *track* changes anything.
 
-    With the switch on and no advertised model priced -- a cold catalog, or a
-    backend no catalog prices -- the record says ``derive: "unpriced"``, so an
-    owner can read why turning derivation on moved nothing.
+    With the switch on and no advertised model in the range priced -- a cold
+    catalog, or a backend no catalog prices -- the record says ``derive:
+    "unpriced"``, so an owner can read why turning derivation on moved nothing.
 
     *scopes* are keystone scopes this request needs beyond the point's own,
     checked by the gate against the keystone read that authorizes the send
@@ -747,14 +782,15 @@ async def routed_model(
     # tier unpinned is NOT a reason to skip the question: the answer is what tells
     # an owner which tier their turns land in, which is how they decide what to pin.
     derive = derive_enabled(config)
+    in_range = [name for name in advertised if _in_range(name, allowed)] if allowed else advertised
     mapping, derived_tiers = effective_tier_models(
         tier_models(config),
-        advertised=advertised,
+        advertised=in_range,
         baseline_model=current_model,
         derive=derive,
         rate_of=rate_of,
     )
-    unpriced = derive and not has_prices(advertised, rate_of)
+    unpriced = derive and not has_prices(in_range, rate_of)
     turn_id = uuid.uuid4().hex[:16]
     trace: dict[str, Any] = {}
     # Bound before the try so the latency below is always measurable, including
@@ -797,7 +833,11 @@ async def routed_model(
     tracked = derive and track
     if tracked:
         tier = escalated_tier(session_key, tier, retried=retried)
-    chosen = UNPINNED if is_unpinned(tier, mapping) else resolve_model(tier, mapping, advertised)
+    chosen = (
+        UNPINNED
+        if is_unpinned(tier, mapping)
+        else resolve_model(tier, mapping, advertised, allowed=allowed)
+    )
     if not chosen and not is_unpinned(tier, mapping):
         # The tier arrived, the owner DID pin it, and the pin is not one this
         # account can run. The call row the gate wrote says the decision succeeded,
@@ -814,7 +854,11 @@ async def routed_model(
             turn_id=turn_id,
             tier=tier,
             latency_ms=latency_ms,
-            error=ERROR_UNKNOWN_MODEL,
+            error=(
+                ERROR_OUT_OF_RANGE
+                if allowed and not _in_range(mapping[tier], allowed)
+                else ERROR_UNKNOWN_MODEL
+            ),
         )
         return None
     routed: dict[str, Any] = {
@@ -865,6 +909,12 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
     if "applied" in routed:
         row["applied"] = bool(routed.get("applied"))
         row["model_used"] = str(routed.get("model_used") or "")
+    # Present only when a routed effort reached the session.
+    if routed.get("effort_chosen"):
+        row["effort_chosen"] = str(routed.get("effort_chosen"))
+        row["baseline_effort"] = str(routed.get("baseline_effort") or "")
+    if routed.get("effort_skipped"):
+        row["effort_skipped"] = str(routed.get("effort_skipped"))
     return row
 
 
@@ -1023,6 +1073,21 @@ def record_spawn_outcome(session_key: str | None, routed: Mapping[str, Any], run
         return False
 
 
+def tier_effort(tier: str, jev_range: Mapping[str, Any] | None) -> str:
+    """The effort *tier* runs at inside a session's Jev range, or ``""`` to keep the inherited one.
+
+    Complex takes the range's highest effort and simple its lowest; medium, and a
+    range without that bound, route none.
+    """
+    if not jev_range:
+        return ""
+    if tier == TIER_COMPLEX:
+        return str(jev_range.get("effort_max") or "")
+    if tier == TIER_SIMPLE:
+        return str(jev_range.get("effort_min") or "")
+    return ""
+
+
 async def routed_spawn_model(
     task: str,
     *,
@@ -1032,6 +1097,7 @@ async def routed_spawn_model(
     run_id: str = "",
     config: Any | None = None,
     rate_of: Callable[[str], float | None] | None = None,
+    allowed: Sequence[str] = (),
 ) -> tuple[str, str]:
     """``(model, tier)`` for an UNPINNED sub-agent start, or ``("", "")`` to leave it.
 
@@ -1051,6 +1117,9 @@ async def routed_spawn_model(
     (:func:`permits_smaller_window`), which writes the ``smaller-window-refused``
     row a chat turn writes. The tier comes back beside the model so a caller
     can tell a start that was asked from one that was not.
+
+    *allowed* is the parent session's range, as :func:`routed_model` reads it: a
+    range naming no advertised id routes no model, the same as a chat turn.
     """
     if not derive_enabled(config):
         return "", ""
@@ -1068,6 +1137,7 @@ async def routed_spawn_model(
         # same category -- checked by the gate against the very keystone read that
         # authorizes the endpoint.
         scopes=SPAWN_SCOPES,
+        allowed=allowed,
     )
     if not routed:
         return "", ""

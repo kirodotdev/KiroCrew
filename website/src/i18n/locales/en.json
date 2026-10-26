@@ -4965,7 +4965,9 @@
       "credit_multiplier": "{{value}} the credit cost of Auto",
       "credit_multiplier_baseline": "{{value}}, the baseline credit cost",
       "loading_models": "Loading models…",
-      "no_matches": "No matches"
+      "no_matches": "No matches",
+      "jev_may_use": "Jev may use {{model}}",
+      "jev_may_use_label": "Jev may use"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Manage in Settings",
@@ -4977,7 +4979,13 @@
       "pin_model_unavailable": "<model/> isn't offered right now",
       "set_default_for_agent": "Pin <model/> to the <agent/> agent (overrides the global default)",
       "set_default_for_new_sessions": "Global default for new sessions…",
-      "type_to_filter": "Type to filter…"
+      "type_to_filter": "Type to filter…",
+      "jev_lowest_effort": "Lowest effort Jev may use",
+      "jev_highest_effort": "Highest effort Jev may use",
+      "jev_range_save_failed": "Couldn't save the range Jev may use",
+      "jev_your_level": "Your level",
+      "jev_lowest_mine": "Use my level as the lowest",
+      "jev_highest_mine": "Use my level as the highest"
     },
     "monacoCodeBlock": {
       "close_editor": "Close editor",

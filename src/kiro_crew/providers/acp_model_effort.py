@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
+from kiro_crew.llm_helpers_parts.model_fallback import pick_epoch_host
 from kiro_crew.providers.acp_cli_overlay import _clear_cli_overlay_effort
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
@@ -52,6 +53,12 @@ if TYPE_CHECKING:
 
 #: The provider's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.providers.acp")
+
+#: The owner's level a routed dashboard turn puts back when it ends, set on the
+#: session's epoch host while Jev's level is live. On the host because slot aliases
+#: share one wire session; a reset or discard drops it with the host, while an
+#: in-place respawn keeps it, and the restore pushes onto the new process.
+JEV_ROUTE_EFFORT_ATTR = "_jev_route_effort_live"
 
 
 async def maybe_refresh_available_models(
@@ -264,7 +271,12 @@ def supports_effort(self: AcpProvider) -> bool:
 
 
 def _resolve_effort(self: AcpProvider) -> str | None:
-    """Resolve effort for the current model via the shared priority chain.
+    """Resolve effort for the current model via the shared priority chain."""
+    return self.owner_effort()
+
+
+def owner_effort(self: AcpProvider, model: str | None = None) -> str | None:
+    """The owner's level for *model* (default: the live one) via the shared priority chain.
 
     Both the slot overrides and the workspace defaults key on the model id as
     RECORDED, which on an ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` harness is the
@@ -282,7 +294,7 @@ def _resolve_effort(self: AcpProvider) -> str | None:
     # whose ceiling is ``xhigh`` is this harness's ``xhigh`` -- and a filter
     # that ran first would drop the very level the live push applied.
     return resolve_effort_for_model(
-        self._effort_model,
+        self._effort_model if model is None else model,
         slot_overrides=self._effort_per_model,
         defaults=self._effort_defaults,
         levels=self._advertised_effort_levels(),
@@ -520,6 +532,8 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     if self._unbound_effort:
         # Unpinned: the next restart binds the level picked last.
         self._unbound_effort = level
+    # A level set by hand wins over a routed turn's restore at its end.
+    setattr(pick_epoch_host(self), JEV_ROUTE_EFFORT_ATTR, None)
     logger.info(
         "ACP effort live-changed: model=%s effort=%s backend=%s",
         model,
@@ -569,15 +583,32 @@ async def set_model(self: AcpProvider, model: str) -> None:
         own = overrides.get(self._client._model) or overrides.get(model, "")
         if own or not carried:
             await self.reapply_live_effort(own)
-        elif self.supports_effort():
+        else:
             # Live only: persisting it would overwrite the target's stored state.
-            if self.capabilities.effort_via_config_option:
-                await self._set_effort_config_option(carried)
-            elif self.capabilities.effort_via_slash_command:
-                await self._client.send_command("/effort", args={"level": carried})
+            await self.push_live_effort(carried)
     except Exception:
         # The model DID switch; failing here would make a fallback walk skip it.
         logger.warning("Effort re-apply after set_model(%s) failed", model, exc_info=True)
+
+
+async def push_live_effort(self: AcpProvider, level: str) -> bool:
+    """Send *level* to the running session and store it nowhere; a respawn drops it.
+
+    False, sending nothing, when this session has no effort channel or its
+    vocabulary hides *level*: the guards ``change_effort`` applies, since a push
+    into a verb or option the adapter lacks fails the session. Errors propagate.
+    """
+    if not (self.supports_effort() and self.accepts_effort_level(level)):
+        return False
+    if self.capabilities.effort_via_config_option:
+        if not self._client.supports_config_option(effort_config_option_id(self._client.backend)):
+            return False
+        await self._set_effort_config_option(level)
+    elif self.capabilities.effort_via_slash_command:
+        await self._client.send_command("/effort", args={"level": level})
+    else:
+        return False
+    return True
 
 
 async def clear_effort(self: AcpProvider) -> bool | None:
@@ -645,6 +676,7 @@ async def clear_effort(self: AcpProvider) -> bool | None:
         else:
             await self._client.send_command("/effort", args={"level": level})
         logger.info("ACP effort cleared to workspace default %s (kiro)", level)
+        setattr(pick_epoch_host(self), JEV_ROUTE_EFFORT_ATTR, None)
         return True
     # No default to push live — clear the overlay and let the caller reset
     # so kiro respawns at the model's built-in default. A harness that never

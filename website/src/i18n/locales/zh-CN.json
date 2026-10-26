@@ -7635,7 +7635,9 @@
       "credit_multiplier_baseline": "{{value}}，积分消耗基准",
       "loading_models": "正在加载模型…",
       "no_matches": "无匹配项",
-      "auto_jev": "自动 (Jev)"
+      "auto_jev": "自动 (Jev)",
+      "jev_may_use": "Jev 可使用 {{model}}",
+      "jev_may_use_label": "Jev 可使用"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "设置中管理",
@@ -7647,7 +7649,13 @@
       "pin_model_unavailable": "<model/> 目前未提供",
       "set_default_for_agent": "将 <model/> 置顶到 <agent/> 代理（覆盖全局默认）",
       "set_default_for_new_sessions": "新会话的全局默认…",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "jev_lowest_effort": "Jev 可用的最低强度",
+      "jev_highest_effort": "Jev 可用的最高强度",
+      "jev_range_save_failed": "无法保存 Jev 可用的范围",
+      "jev_your_level": "你的设置",
+      "jev_lowest_mine": "最低强度使用我的设置",
+      "jev_highest_mine": "最高强度使用我的设置"
     },
     "monacoCodeBlock": {
       "close_editor": "关闭编辑器",
@@ -12000,6 +12008,7 @@
         "model_baseline_label": "未路由时的模型",
         "model_chosen_label": "使用的模型",
         "model_default": "内置默认模型",
+        "model_effort": "推理强度 {{effort}}（你的设置：{{baseline}}）",
         "model_latency": "{{ms}} 毫秒",
         "model_not_applied": "未应用 — 在 {{model}} 上运行",
         "model_tier": "Jev：{{tier}}",

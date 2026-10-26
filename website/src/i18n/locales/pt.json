@@ -7885,7 +7885,9 @@
       "credit_multiplier_baseline": "{{value}}, o custo em créditos de referência",
       "loading_models": "Carregando modelos…",
       "no_matches": "Nenhuma correspondência",
-      "auto_jev": "Auto (Jev)"
+      "auto_jev": "Auto (Jev)",
+      "jev_may_use": "Jev pode usar {{model}}",
+      "jev_may_use_label": "Jev pode usar"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gerenciar nas configurações",
@@ -7897,7 +7899,13 @@
       "pin_model_unavailable": "<model/> não está sendo oferecido no momento",
       "set_default_for_agent": "Fixar <model/> no agente <agent/> (substitui o padrão global)",
       "set_default_for_new_sessions": "Padrão global para novas sessões…",
-      "type_to_filter": "Digite para filtrar…"
+      "type_to_filter": "Digite para filtrar…",
+      "jev_lowest_effort": "Esforço mínimo que Jev pode usar",
+      "jev_highest_effort": "Esforço máximo que Jev pode usar",
+      "jev_range_save_failed": "Não foi possível salvar o intervalo do Jev",
+      "jev_your_level": "Seu nível",
+      "jev_lowest_mine": "Usar meu nível como mínimo",
+      "jev_highest_mine": "Usar meu nível como máximo"
     },
     "monacoCodeBlock": {
       "close_editor": "Fechar editor",
@@ -12368,6 +12376,7 @@
         "model_baseline_label": "Modelo sem roteamento",
         "model_chosen_label": "Modelo usado",
         "model_default": "Modelo padrão",
+        "model_effort": "esforço {{effort}} (o seu: {{baseline}})",
         "model_latency": "{{ms}} ms",
         "model_not_applied": "não aplicado – executado em {{model}}",
         "model_tier": "Jev: {{tier}}",

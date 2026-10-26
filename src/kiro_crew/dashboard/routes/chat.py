@@ -19,6 +19,7 @@ from kiro_crew.dashboard import (
     session_export,
     session_transfer,
 )
+from kiro_crew.dashboard.chat_jev_range import api_chat_slot_jev_range
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
@@ -143,6 +144,7 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/{slot}/reasoning-effort", chat.api_chat_slot_reasoning_effort
     )
+    app.router.add_post("/api/chat/slots/{slot}/jev-range", api_chat_slot_jev_range)
     app.router.add_get(
         "/api/chat/slots/{slot}/selection-capabilities",
         chat.api_chat_slot_selection_capabilities,

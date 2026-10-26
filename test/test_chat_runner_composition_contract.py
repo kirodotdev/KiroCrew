@@ -67,6 +67,7 @@ _OWNER_MODULES = frozenset(
         "eager_spawn",
         "elicitation_prompt",
         "file_changes",
+        "jev_route_effort",
         "mcp_session",
         "model_fallback",
         "native_cards",

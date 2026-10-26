@@ -6,6 +6,7 @@
 
 import { withDeadline } from '../../lib/withDeadline'
 import type { ClientTransport } from './transport'
+import type { JevRange } from '../../types'
 
 /** Deadline for `api.slashCommands`. Same value as the `$`-menu's
  *  `SKILLS_TIMEOUT_MS` (`./skills`), for the same reason and against the same
@@ -95,6 +96,10 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Owner only (403 otherwise); 400 `jev_range_invalid` for an unknown level, a
+     *  min above the max, or a model the backend does not advertise. */
+    chatSlotJevRange: (slot: string, range: JevRange) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/jev-range', range).then(j) as Promise<{ ok: boolean; jev_range: JevRange }>,
     chatSlotWorkspace: (slot: string, workspace: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
     // Relaunch the slot's agent process in place (fresh agent spec, env, and MCP

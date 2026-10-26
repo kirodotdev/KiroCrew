@@ -48,6 +48,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_turn/deny_chokepoints.py",
     "dashboard/chat_turn/directives.py",
     "dashboard/chat_turn/eager_spawn.py",
+    "dashboard/chat_turn/jev_route_effort.py",
     "dashboard/chat_turn/mcp_session.py",
     "dashboard/chat_turn/model_fallback.py",
     "dashboard/chat_turn/native_cards.py",
