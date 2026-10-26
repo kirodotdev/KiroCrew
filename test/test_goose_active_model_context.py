@@ -13,10 +13,13 @@ behind a stale session-start fact.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_GOOSE, ACP_BACKEND_KIRO, PROVIDER_LABEL_DEFAULT
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_blocks import split_blocks
@@ -26,6 +29,7 @@ from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.skills import SkillsLoader
 
 SERVED = "Intel/Qwen3-Coder-Next-int4-AutoRound"
+CORPUS = Path(__file__).parent / "fixtures" / "acp_frames" / "goose"
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +102,38 @@ class TestAGooseSessionIsToldItsModel:
         start = message.index("what model are you?")
         blocks = split_blocks(message, user_span=(start, start + len("what model are you?")))
         assert blocks.get("active_model", 0) > 0
+
+
+class TestTheOpeningTurn:
+    def test_the_model_goose_reports_at_session_new_is_named_on_the_first_turn(self, tmp_path):
+        """The reporter's case is the opening question. Turn admission starts the
+        session (``get_or_create`` -> ``provider.start()``, which reads the
+        ``session/new`` response) before the turn's prompt is built, so the model
+        goose advertises there is already the session's ``served_model``.
+
+        Driven by goose's own recorded ``session/new`` response, which names its
+        model through ``configOptions``, with the recorded placeholder id replaced.
+        """
+        frames = (CORPUS / "handshake-live.jsonl").read_text(encoding="utf-8").splitlines()
+        (response,) = [
+            frame["result"]
+            for frame in map(json.loads, filter(None, frames))
+            if isinstance(frame.get("result"), dict)
+            and "sessionId" in frame["result"]
+            and "configOptions" in frame["result"]
+        ]
+        (model_option,) = [opt for opt in response["configOptions"] if opt["id"] == "model"]
+        model_option["currentValue"] = SERVED
+        model_option["options"] = [{"value": SERVED, "name": SERVED}]
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_GOOSE)
+        client._capture_available_models(response)
+
+        class _Provider(AcpProvider):
+            def __init__(self) -> None:
+                self._client = client
+
+        assert _model_lines(_turn(tmp_path, _Provider())) == [f"[ACTIVE MODEL] {SERVED}"]
 
 
 class TestWhatIsNotStated:
