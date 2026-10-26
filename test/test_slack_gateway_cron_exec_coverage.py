@@ -85,10 +85,15 @@ class TestModuleHelpers:
     """``_persist_turn_row`` and ``_is_read_only_tool`` guard arms."""
 
     @pytest.mark.asyncio
-    async def test_persist_turn_row_swallows_failure(self):
+    async def test_persist_turn_row_swallows_failure(self, caplog):
         """A usage-row persistence failure never propagates into the caller."""
-        with patch.object(gw, "read_context_tokens", side_effect=RuntimeError("no provider")):
-            await gw._persist_turn_row(
+        caplog.set_level("DEBUG", logger=gw.logger.name)
+        persist = AsyncMock()
+        with (
+            patch.object(gw, "read_context_tokens", side_effect=RuntimeError("no provider")),
+            patch.object(gw, "persist_token_record_async", persist),
+        ):
+            result = await gw._persist_turn_row(
                 object(),
                 "_hb",
                 provider="anthropic",
@@ -96,6 +101,10 @@ class TestModuleHelpers:
                 agent_fallback=lambda: "kirocrew",
                 t0=0.0,
             )
+        assert result is None
+        persist.assert_not_awaited()
+        msgs = [r.getMessage() for r in caplog.records if r.name == gw.logger.name]
+        assert "usage row (heartbeat) persist failed" in msgs
 
     def test_read_only_tool_rejects_punctuation_only_title(self):
         """A title that tokenizes to nothing fails closed rather than approving."""

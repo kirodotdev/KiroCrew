@@ -469,6 +469,8 @@ class TestAutoTitleSlack:
             conversation_log=mock_log,
         )
         mock_log.set_title.assert_called_once_with("thread1", "ETL Debug")
+        titled = [a[1]["title"] for a in slack.actions if a[0] == "set_thread_title"]
+        assert titled == ["ETL Debug"]
 
 
 class TestCompactCommand:

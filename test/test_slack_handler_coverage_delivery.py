@@ -206,11 +206,14 @@ class TestSafeUpdates:
         assert text.startswith("x")
 
     @pytest.mark.asyncio
-    async def test_update_failure_is_swallowed(self):
+    async def test_update_failure_is_swallowed(self, caplog):
+        caplog.set_level("DEBUG", logger=h.logger.name)
         broken = MagicMock()
         broken.update_message = AsyncMock(side_effect=RuntimeError("gone"))
         await h._safe_update(broken, "C1", "m1", "hi")
         broken.update_message.assert_awaited_once_with("C1", "m1", "hi")
+        msgs = [r.getMessage() for r in caplog.records if r.name == h.logger.name]
+        assert "Failed to update message m1" in msgs
 
     @pytest.mark.asyncio
     async def test_final_update_splits_long_text(self, slack):
@@ -235,7 +238,7 @@ class TestSafeUpdates:
     async def test_reject_orphaned_tool_swallows_failure(self):
         provider = MagicMock()
         provider.reject_tool = AsyncMock(side_effect=RuntimeError("dead"))
-        await h._reject_orphaned_tool(provider, "r1")
+        assert await h._reject_orphaned_tool(provider, "r1") is False
         provider.reject_tool.assert_awaited_once_with("r1")
 
     @pytest.mark.asyncio

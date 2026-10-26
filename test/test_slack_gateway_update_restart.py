@@ -255,7 +255,7 @@ class TestCallbackSafeUpdateRestart:
 
     @pytest.mark.asyncio
     async def test_a_stop_signalled_during_the_restart_is_not_swallowed(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, caplog
     ):
         # The installer finished before the stop reached ``_shutdown``. Exec'ing
         # now would bring the gateway straight back up on the new version.
@@ -282,9 +282,13 @@ class TestCallbackSafeUpdateRestart:
         interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         gw.platform_compat.chmod_safe(interpreter, 0o700)
 
+        caplog.set_level("INFO", logger=gw.logger.name)
         await orch._restart_after_update(lambda: str(interpreter))
 
         reexec.assert_not_called()
+        msgs = [r.getMessage() for r in caplog.records if r.name == gw.logger.name]
+        assert "Update applied; restart skipped because the gateway is shutting down" in msgs
+        orch.sessions.close_all.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_the_restart_owns_the_bundle_gap_while_it_runs(self, monkeypatch, tmp_path):

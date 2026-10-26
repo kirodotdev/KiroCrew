@@ -175,10 +175,13 @@ class TestPublishHomeTabErrorHandling:
 
     @pytest.mark.asyncio
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
-    async def test_slack_none_logs_warning(self, _yolo):
+    async def test_slack_none_logs_warning(self, _yolo, caplog):
+        caplog.set_level("WARNING", logger="kiro_crew.slack.events")
         orch = _make_orch(slack=None)
-        # Should not raise
         await _publish_home_tab(orch, "U123")
+        msgs = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.slack.events"]
+        assert "Cannot publish home tab — Slack client is None" in msgs
+        assert not any(m.startswith("Failed to publish home tab") for m in msgs)
 
 
 class TestViewTypeAlwaysHome:

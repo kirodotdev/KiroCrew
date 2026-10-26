@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from unittest.mock import MagicMock
 
 import pytest
 from slack_handler_helpers import _clean_approval_state  # noqa: F401
@@ -124,12 +125,33 @@ class TestAllowedUsers:
                 await _within_lost_run(task, "the cancelled turn")
 
     @pytest.mark.asyncio
-    async def test_empty_allowed_users_rejects_all(self):
-        """When no allowed users configured, all interactions are rejected."""
+    async def test_empty_allowed_users_rejects_all(self, monkeypatch):
+        """With no allowed users only the owner passes the gate; a stale click claims nothing."""
+        import kiro_crew.slack.handler as _h
+
         set_allowed_users(set())
-        # _is_allowed_user returns False for any user when set is empty
-        await handle_interaction("C1", "fake_ts", "approve_tool", user_id="U1")
-        # If we get here without error, the rejection path was taken (early return)
+        rec = MagicMock()
+        monkeypatch.setattr(_h, "sel", lambda: rec)
+        _pending_approvals["C1:fake_ts"] = MagicMock()
+
+        def errors() -> list[str]:
+            return [c.kwargs["error"] for c in rec.log_api_access.call_args_list]
+
+        # No owner configured: nobody passes.
+        monkeypatch.setattr(_h, "_owner_id", "")
+        assert await handle_interaction("C1", "fake_ts", "approve_tool", user_id="U1") is None
+        # An owner is configured, and the click is someone else's.
+        monkeypatch.setattr(_h, "_owner_id", "UOWNER")
+        assert await handle_interaction("C1", "fake_ts", "approve_tool", user_id="U1") is None
+        assert errors() == ["unauthorized user", "unauthorized user"]
+        assert "C1:fake_ts" in _pending_approvals
+        # The owner passes the gate, but a click on a prompt with no pending entry
+        # is refused rather than approving anything.
+        assert await handle_interaction("C1", "gone", "approve_tool", user_id="UOWNER") is None
+        assert errors()[-1] == "no_pending_approval"
+        assert "C1:fake_ts" in _pending_approvals
+        assert [c.kwargs["outcome"] for c in rec.log_api_access.call_args_list] == ["denied"] * 3
+        assert [c.kwargs["caller"] for c in rec.log_api_access.call_args_list][:2] == ["U1"] * 2
 
     @pytest.mark.asyncio
     async def test_w_u_prefix_cross_match(self):

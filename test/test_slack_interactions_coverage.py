@@ -878,6 +878,7 @@ class TestAckHandlers:
         payload = _payload(message={"ts": "m1", "blocks": [], "text": "hello"})
         await ix._handle_cron_ack(payload, {"value": "job1"}, "C1", "m1")
         orch.cron_svc.ack_job_async.assert_awaited_once_with("job1", "hello")
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
 
     @pytest.mark.asyncio
     async def test_cron_ack_without_job_id_is_a_noop(self, orch: MagicMock) -> None:
@@ -1473,12 +1474,15 @@ class TestSessionNew:
         assert _sel_ops(sel_log) == []
 
     @pytest.mark.asyncio
-    async def test_post_failure_skips_ack(self, orch: MagicMock, _mock_aiohttp: AsyncMock) -> None:
+    async def test_post_failure_skips_ack(
+        self, orch: MagicMock, _mock_aiohttp: AsyncMock, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
         orch.slack.post_message = AsyncMock(side_effect=RuntimeError("api down"))
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_new(payload, {}, "C1", "m1", "U1")
         orch.slack.post_message.assert_awaited_once()
         _mock_aiohttp.post.assert_not_awaited()
+        assert "Failed to create new session message" in _ix_messages(ix_logs)
 
     @pytest.mark.asyncio
     async def test_ack_failure_is_swallowed(
@@ -1535,10 +1539,15 @@ class TestResumeChoice:
         resume_orch.sessions.set_slack_link.assert_called_once_with("dashboard_s1", "ts1", "C5")
 
     @pytest.mark.asyncio
-    async def test_dm_mode_opens_dm_and_links(self, resume_orch: MagicMock) -> None:
+    async def test_dm_mode_opens_dm_and_links(
+        self, resume_orch: MagicMock, sel_log: MagicMock
+    ) -> None:
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="dm")
         resume_orch.slack.open_dm.assert_awaited_once_with("U1")
         resume_orch.sessions.set_slack_link.assert_called_once_with("dashboard_s1", "ts1", "D1")
+        assert _sel_ops(sel_log) == [("slack.session_resume", "allowed")]
+        header = resume_orch.slack.post_message.await_args_list[0].args
+        assert header[0] == "D1" and "Resumed: *My session*" in header[1]
 
     @pytest.mark.asyncio
     async def test_unknown_mode_returns_without_linking(self, resume_orch: MagicMock) -> None:
@@ -1589,11 +1598,17 @@ class TestResumeChoice:
 
     @pytest.mark.asyncio
     async def test_governance_deny_blocks_transcript_publication(
-        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self,
+        resume_orch: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        ix_logs: pytest.LogCaptureFixture,
     ) -> None:
         gov = AsyncMock(return_value=False)
         monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="thread")
+        assert "slack session resume dropped: denied by channels governance policy" in (
+            _ix_messages(ix_logs)
+        )
         resume_orch.sessions.set_slack_link.assert_not_called()
         gov.assert_awaited_once_with("slack")
         resume_orch.slack.post_message.assert_not_awaited()
