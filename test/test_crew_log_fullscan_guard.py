@@ -403,12 +403,6 @@ def test_a_warm_baseline_does_not_list_the_crew_log_root(meter):
     assert meter.root_listings == 0, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="O(N) state copies on a cold prime: ProjectionRegistry.prime drives "
-    "_SlotFold.apply, which deep-copies the state once per entry; fixed by #24261 "
-    "(crew_log/projection_slot_memo.py prime / projection_registry.py)",
-)
 def test_a_cold_prime_copies_the_fold_state_a_fixed_number_of_times(meter):
     """The one allowed cold fold folds onto one state; it does not copy it per entry.
 
@@ -599,12 +593,6 @@ def ws_harness(tmp_path, monkeypatch):
     loop.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="full scan on WS connect: dashboard/ws.py _fold_durable folds every unit of "
-    "every open slot (crew_log_panel_units / backfill_legacy_panel_dismissals / "
-    "read_fold_subagent_records); fixed by #24268 (dashboard/ws.py)",
-)
 def test_a_ws_connect_does_not_fold_every_open_slot(meter, ws_harness):
     _other_slots()
 
@@ -616,12 +604,6 @@ def test_a_ws_connect_does_not_fold_every_open_slot(meter, ws_harness):
     assert meter.entries + meter.hashed <= ENTRY_SLACK, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="full scan on WS reconnect: dashboard/ws.py _fold_durable re-opens every unit "
-    "of every open slot and re-hashes each unit's prefix on resume; fixed by #24268 "
-    "(dashboard/ws.py)",
-)
 def test_a_ws_reconnect_with_nothing_new_reads_a_fixed_number_of_entries(meter, ws_harness):
     _other_slots()
 
