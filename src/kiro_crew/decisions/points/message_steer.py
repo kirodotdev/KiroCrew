@@ -134,6 +134,11 @@ SCAN_MARGIN_CHARS = 91
 #: excerpt entirely (see :func:`running_turn_excerpts`).
 MAX_REQUEST_SCAN_CHARS = MAX_RUNNING_MESSAGE_CHARS + 4096
 
+#: Longest activity row the redactors read when it crosses the budget. A longer
+#: one is skipped, never cut. Wider than the request's headroom because a row
+#: carries tool output, and a multi-line PEM block must still fit.
+MAX_ROW_SCAN_CHARS = MAX_ACTIVITY_CHARS + 8192
+
 #: Rows the activity excerpt is built from. ``chunk`` is the live, unflushed text
 #: of the reply in progress, which is exactly the part a sender is reacting to.
 #:
@@ -286,6 +291,10 @@ def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tup
         # contains whitespace, so a whitespace cut cannot halve one.
         room_left = activity_room - spent
         if len(content) > room_left:
+            # Too long to scan in one bounded pass: skipped, for the reason the
+            # request is dropped below.
+            if len(content) > MAX_ROW_SCAN_CHARS:
+                continue
             content = redacted(content, room_left + SCAN_MARGIN_CHARS)
             if len(content) > room_left:
                 margin = content[:SCAN_MARGIN_CHARS]
