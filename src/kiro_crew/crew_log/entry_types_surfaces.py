@@ -174,9 +174,9 @@ CREWMATE_TEXT_LIMIT = 240
 #: A correction is the other shape on ``dashboard/agentic_refused``: it says an
 #: accepted write used a field an earlier refusal had reached wrongly. It needs a
 #: code of its own because ``code`` is REQUIRED on the type -- a line that cannot
-#: say what it is gets refused at the append, which is the guard working, and was
-#: how an earlier draft of this entry (a correction with no code) was caught by
-#: the validator rather than by a test. Branching on this value also beats
+#: say what it is gets refused at the append, which is the guard working: a
+#: correction with no code is caught by the validator, not left for a test.
+#: Branching on this value also beats
 #: branching on the presence of ``corrects``: the one key that is always there is
 #: the one worth deciding on.
 MISTAKE_CORRECTED_CODE = "corrected"

@@ -276,9 +276,8 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         return f"Error: {_gov_mem}"
     # A stale client still holding the old advertised schema can send
     # scope="workspace". Silently forcing that to "global" would take a correction
-    # meant for one workspace and inject it into EVERY session -- the exact harm
-    # this change exists to end, and worse than the old behaviour, where the tier
-    # was inert and reached no prompt at all. So a legacy scope asking for anything
+    # meant for one workspace and inject it into EVERY session -- worse than a
+    # tier that is inert and reaches no prompt at all. So a legacy scope asking for anything
     # narrower than global is REFUSED, with the replacement named. Refusing loses
     # nothing that ever worked, and it tells the caller instead of widening silently.
     _legacy_scope = args.get("scope")

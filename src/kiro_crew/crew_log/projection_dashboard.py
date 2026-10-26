@@ -407,10 +407,10 @@ def _mistakes_step(state: dict[str, Any], entry: Entry) -> None:
     # reached wrongly, and the fix is the field the accepted write actually used.
     #
     # Decided on the CODE, which is the one key always present, rather than on the
-    # presence of ``corrects``: an earlier draft branched on the list and gave a
-    # correction no code at all, which the append validator refused outright -- so
-    # every correction was dropped at the door and the book stayed a list of errors
-    # with no answers in it.
+    # presence of ``corrects``: branching on the list would give a correction no
+    # code at all, which the append validator refuses outright -- so every
+    # correction would be dropped at the door and the book would stay a list of
+    # errors with no answers in it.
     if code == MISTAKE_CORRECTED_CODE:
         if not isinstance(corrects, list):
             return

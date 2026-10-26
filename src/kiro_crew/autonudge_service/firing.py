@@ -698,10 +698,9 @@ async def _settle_fire_cycle(
             # for, but a refused fire accounts for nothing: the next tick takes
             # the observation-free bypass, DELIVERS the turn, and finds no claim
             # to charge -- so a wake that really happened and really woke the
-            # agent was missing from ``wakes`` entirely. That counter is the one
-            # artifact this PR exists to make trustworthy, and omitting a
-            # delivered wake makes the saving look BETTER than it is, which is
-            # the same dishonesty as the zero nothing surfaced before.
+            # agent was missing from ``wakes`` entirely. That counter has to be
+            # trustworthy, and omitting a delivered wake makes the saving look
+            # BETTER than it is.
             #
             # Re-adding cannot double-charge: the charge happens once, at the
             # single point delivery is confirmed, and the claim is discarded

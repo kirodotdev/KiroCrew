@@ -640,8 +640,7 @@ class GatewayManager:
         # answer -- fingerprint warming, prewarm, socket setup -- so the fast
         # bound can time out against a daemon that is coming up correctly, and
         # killing it reports the start as failed and drops every stub to
-        # per-session exec, which is the process pile-up this change exists to
-        # avoid.
+        # per-session exec, a process pile-up.
         pong = await self._ping_with_escalation()
         if pong is None:
             logger.warning("mcp-gateway ping failed — treating start as failure")
@@ -1328,8 +1327,8 @@ class GatewayManager:
                     # evidence the escalation already provides. The owned path
                     # can afford its grace because its own socket stays bound
                     # while it waits, so waiting there costs nothing.
-                    # The load misverdict this change exists to fix is already
-                    # handled by the escalation: a daemon that answers either
+                    # A load misverdict is already handled by the escalation:
+                    # a daemon that answers either
                     # probe is alive and is never displaced.
                     pong = await self._ping_with_escalation(observe=True)
                     if pong is not None:

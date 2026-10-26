@@ -996,8 +996,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         #
         # Deliberately NOT counted as a wake: no turn is delivered here. A
         # terminal observation that incremented ``wakes`` would report a turn
-        # that never ran, in the very counters this change exists to make
-        # trustworthy.
+        # that never ran, in counters that have to be trustworthy.
         # Record the finish ON THE MONITOR, not only on the loop. Without
         # this the record reads as merely paused, and the generic resume path
         # -- the goal popover's Save, which is allowed to revive a current
@@ -1403,18 +1402,16 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             # that never ran, and since the honest free-tick figure is
             # ``quiet_ticks`` minus ``floor_ticks``, an over-counted floor
             # UNDERSTATES the saving -- the safe direction, but still a wrong
-            # number in the one artifact this PR exists to produce.
+            # number.
             #
-            # GPT's prescribed remedy was to revert this counter until it could be
-            # charged after delivery. Declined: the counter is what separates a
-            # quiet verdict from a free tick, so deleting it would remove the
-            # subtraction that makes the metering honest. The substance -- charge
-            # only on confirmed delivery -- is adopted instead, by the mechanism
-            # the wake charge already uses.
+            # The counter stays rather than being reverted until it can be charged
+            # after delivery: it is what separates a quiet verdict from a free
+            # tick, so deleting it would remove the subtraction that makes the
+            # metering honest. It is charged only on confirmed delivery, by the
+            # mechanism the wake charge already uses.
             #
-            # Two counters now carry the same owed-charge shape through the same
-            # fire cycle. They belong in one structure; that is the collapse
-            # recommended on the pull request rather than a third set later.
+            # Two counters carry the same owed-charge shape through the same fire
+            # cycle. They belong in one structure rather than a third set later.
             self._pending_floor_tick.add(loop.id)
             # And durably, because that claim is in memory while the reset above
             # is not: a process that stops between this decision and the turn

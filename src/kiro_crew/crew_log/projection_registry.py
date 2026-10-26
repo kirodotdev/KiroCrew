@@ -839,7 +839,7 @@ if _ORPHAN_EAGER:  # pragma: no cover - import-time
 
 #: A slot-keyed fold is the only kind that gets a warm cell, so it is the only kind the
 #: byte budget charges -- and a charge that cannot see the state's row count is a
-#: CONSTANT, which is what this change exists to stop being. Checked at import because a
+#: CONSTANT, which it must not be. Checked at import because a
 #: fold added without a counter would be silently under-charged forever.
 _UNCOUNTED_SLOT_FOLDS: Final[tuple[str, ...]] = tuple(
     name

@@ -818,8 +818,8 @@ def delete_semantic(
         # A forget writes its audit event best-effort AFTER committing the
         # tombstone, through the shared helper -- an unavailable event table
         # must not fail a forget. Only the supersede branch inlines the INSERT
-        # inside the transaction, where losing the winner/reason is the data
-        # loss this change exists to prevent.
+        # inside the transaction, where losing the winner/reason is data
+        # loss.
         store._log_event("delete", "semantic", key, row["value_json"], new_value, source)
     return True
 

@@ -1138,8 +1138,8 @@ async def _run_inner_impl(
                 elif attempts >= TRANSIENT_RETRIES:
                     # ── Throttle-exhaustion fallback chain ──
                     # Zero-activity budget spent: walk agent.fallback_model
-                    # before surfacing (empty chain ⇒ raise exactly as
-                    # before this feature). Two attempts per candidate
+                    # before surfacing (empty chain ⇒ raise directly).
+                    # Two attempts per candidate
                     # (FALLBACK_CANDIDATE_ATTEMPTS), ~2s backoff each —
                     # NOT the exponential same-model curve; see
                     # llm_helpers Case 2.75 for the rationale.

@@ -156,9 +156,9 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
             # DIFFERENT name, because the runtime resolver matches on
             # `data["name"] == agent OR path.stem == agent` -- so with nothing
             # declaring this name, the stem match makes THIS file the live spec,
-            # and refusing it would leave a live pin unresettable, which is the
-            # bug this change exists to fix. Only used when no declared match is
-            # found, and a declared match alongside it is the ambiguity the
+            # and refusing it would leave a live pin unresettable. Only used when
+            # no declared match is found, and a declared match alongside it is the
+            # ambiguity the
             # caller refuses rather than resolves.
             fallbacks.append(spec_path)
     if len(declared_matches) > 1:

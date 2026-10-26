@@ -698,7 +698,7 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
             # Guard 2 of 3 — SLOT accounting on its own one-shot token, so
             # the count is released exactly once whichever terminal path
             # arrives first (and is NOT skipped just because the reaper set
-            # `reaped`, which is how an earlier revision leaked slots).
+            # `reaped`, which would leak slots).
             if self._manager._release_slot(info):
                 self._manager._running_count -= 1
                 self._manager._drain_queue()

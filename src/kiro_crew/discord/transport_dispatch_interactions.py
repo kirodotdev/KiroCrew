@@ -229,7 +229,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         # edit is issued, which is the same contract the client's own mid-send
         # predicate states. Read here even on the arm that already read it above,
         # rather than carrying that answer forward: a value taken before a
-        # suspension is exactly the defect this change exists to close, and on an
+        # suspension can be stale by now, and on an
         # ungoverned install the read permits without writing a row, so the second
         # reading costs a row only where an operator asked for the audit trail.
         #
