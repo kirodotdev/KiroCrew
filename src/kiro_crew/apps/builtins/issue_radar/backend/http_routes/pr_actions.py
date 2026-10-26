@@ -41,11 +41,10 @@ logger = logging.getLogger("kirocrew.app.issue-radar")
 #    ``head_sha``. See the note on that constant.
 #    So the app offers both halves of the real
 #    workflow: ``merge`` for a PR that is mergeable now, and ``auto_merge`` for one
-#    that should land by itself once its checks pass. An earlier revision shipped
-#    only the second, reasoning that a direct merge could land unreviewed code —
-#    which, with the app-side gate above, it cannot; what that omission actually did
-#    was leave a repo with NO branch rule (where auto-merge is unavailable) with no
-#    merge path at all.
+#    that should land by itself once its checks pass. Offering only the second, on
+#    the theory that a direct merge could land unreviewed code, is wrong: with the
+#    app-side gate above it cannot, and a repo with NO branch rule (where auto-merge
+#    is unavailable) would be left with no merge path at all.
 #    There is still deliberately no "override and merge": an override is a
 #    governance decision recorded ON the provider (this repo does it with a reviewed
 #    `/ai-review override` comment), and a button

@@ -102,8 +102,8 @@ except ImportError:  # pragma: no cover - standalone app fallback
 try:  # agents dir resolver — honors KIRO_HOME so a pod reads its own specs
     from kiro_crew.config.paths import kiro_agents_dir
 except Exception:  # pragma: no cover - standalone / test fallback
-    # Deliberately NOT a hard-coded ~/.kiro/agents fallback: a second spelling of
-    # that path is what this PR removes. Unavailable means "cannot look a spec
+    # Deliberately NOT a hard-coded ~/.kiro/agents fallback: that path has one
+    # spelling, in kiro_crew.config.paths. Unavailable means "cannot look a spec
     # up", and both call sites already degrade to their documented defaults.
     kiro_agents_dir = None  # type: ignore[assignment]
 

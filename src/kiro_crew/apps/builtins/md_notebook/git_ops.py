@@ -876,11 +876,11 @@ async def status(dir_: str, subfolder: Optional[str] = None) -> list[FileChange]
     # OWNERSHIP, NOT NAME SHAPE, is what authorizes hiding a file. `<name>.<32
     # hex>.tmp` is the shape this module PRODUCES; it is not a shape only this
     # module can produce. A user -- or another tool -- may genuinely create a
-    # file with that name, and an earlier revision of this filter excluded it on
-    # the shape alone. That file then vanished from the pending badge, from the
-    # commit, and from the remote, with nothing to tell anyone it had been
-    # dropped. Silently withholding unknown filesystem content from the user's
-    # own git repository is a worse failure than committing a stray temp.
+    # file with that name. Excluding it on the shape alone would make that file
+    # vanish from the pending badge, from the commit, and from the remote, with
+    # nothing to tell anyone it had been dropped. Silently withholding unknown
+    # filesystem content from the user's own git repository is a worse failure than
+    # committing a stray temp.
     #
     # So only `is_inflight_temp` may hide a path: a temp THIS process currently
     # knows it is publishing, registered for the whole stage-and-retry
