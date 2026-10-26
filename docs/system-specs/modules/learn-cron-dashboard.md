@@ -425,8 +425,10 @@ member), and the server offers no member filter or server-side grouping, so ever
 per-crewmate list is a client-side filter over the whole payload through one shared
 predicate, `wakesCrew(job, crew, isDefaultCrew, memberId)`: durable `member_id` first -- compared against the mate's IMMUTABLE id, since `bind_cron_memory` rewrites the client's value to the canonical one before persisting -- then a
 multi-entry `agent_sequence`, then the template in `agent`, and finally the default
-crew for a job bound to nothing. `script` and `command` jobs are excluded — they run
-a file, not a crew, so no crew attribution exists to report. Two surfaces read that
+crew for a job bound to nothing. A `script` or `command` job is listed only through
+its `member_id` -- `bind_cron_memory` stamps one on every job a crewmate creates, so
+such a job has an explicit owner -- and is excluded from every fallback after it,
+since it runs a file, not a crew, and an empty or stale `agent` on it names no owner. Two surfaces read that
 predicate through one query key (`crewWakeQueryKey`): the crew editor's Schedules
 pane (`CrewWakeSection`) and the Mates Profile card's Schedules list
 (`CrewScheduleList`); the Mates page mounts `CrewWakeSection` only for its
