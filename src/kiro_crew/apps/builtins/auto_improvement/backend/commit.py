@@ -60,7 +60,7 @@ _BASE_REF = "refs/auto-improvement/commit-base"
 #: A module-level lock rather than one per clone: there is exactly one configured clone per
 #: install, and a per-path map would add eviction bookkeeping for no gain. `RLock` so a future
 #: caller that already holds it (e.g. commit calling into another guarded helper) cannot
-#: self-deadlock. Raised by the Opus 5 review of this branch.
+#: self-deadlock.
 _CLONE_LOCK = threading.RLock()
 
 
@@ -68,8 +68,7 @@ _CLONE_LOCK = threading.RLock()
 #: `_GIT_SAFE_CONFIG` in the driver. These commands run on the HOST as the gateway user against
 #: the tree the sandboxed agent edits, so a repo-written hook pointed at by `core.hooksPath`, or
 #: a `core.fsmonitor` program, would execute host-side (outside the sandbox) on the next
-#: add/commit/checkout. `-c` overrides on OUR argv beat the repo's own config. Raised by the GPT
-#: review.
+#: add/commit/checkout. `-c` overrides on OUR argv beat the repo's own config.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
@@ -335,7 +334,7 @@ def _commit_finding_locked(fp: str) -> dict[str, object]:
     # reached. The earlier failure points in this function already reset; these last two
     # returned with the commit intact. The durable queue copy is untouched, so a retry still
     # has everything it needs, and the message says "queued" rather than "committed locally"
-    # because after the reset that is what is true. Raised by the GPT review of this branch.
+    # because after the reset that is what is true.
     if not url:
         _git(clone, "reset", "--hard", base_ref_local)
         return {
@@ -387,7 +386,7 @@ def _commit_message(body_path: Path, fp: str) -> str:
     except Exception:  # noqa: BLE001 - a commit message is permanent, pushed git history
         # FAIL CLOSED: the message becomes unwipeable git history the moment it is pushed,
         # so an unscannable agent-authored subject must NOT be committed verbatim. Fall
-        # back to the fixed, prose-free subject. Raised by the GPT review of this branch.
+        # back to the fixed, prose-free subject.
         logger.warning("commit-message redaction failed; using the fixed subject", exc_info=True)
         return f"auto-improvement: apply verified change {fp[:12]}"
     return subject

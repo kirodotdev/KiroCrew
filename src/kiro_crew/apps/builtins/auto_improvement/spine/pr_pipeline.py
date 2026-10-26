@@ -385,8 +385,7 @@ class CrPipeline:
             # `.pr.md`, NOT `.cr.md`: the display reader (routes._handle_finding_detail,
             # commit.py) opens `<fp>.pr.md`, and the `.cr.md → .pr.md` rename (see store.py)
             # never reached this writer — so a direct-committed fix's description was written
-            # to a filename nothing reads and silently never rendered. Raised by the GPT
-            # review of this branch.
+            # to a filename nothing reads and silently never rendered.
             (qdir / f"{fp}.pr.md").write_text(f"# {summary}\n\n{body}\n", encoding="utf-8")
         except Exception:  # noqa: BLE001 — the queue copy is for display; never fatal
             self.log.debug("direct-commit queue-copy write failed for %s", fp, exc_info=True)
@@ -486,7 +485,6 @@ class CrPipeline:
         # `['QUEUED:abc']`. `STATUS_ERROR` is SOFT-terminal — retryable once the cooldown
         # elapses — which is exactly "we could not file it this time". `ledger_admin` already
         # treats this prefix as not-a-real-reference; that judgement now applies here too.
-        # Raised by the GPT review of this branch.
         if str(cr or "").startswith("QUEUED:"):
             self.ledger.record(
                 L.LedgerEntry(

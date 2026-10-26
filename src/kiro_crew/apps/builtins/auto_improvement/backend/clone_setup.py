@@ -152,8 +152,7 @@ class IsolationProbeError(RuntimeError):
 
 
 #: Signatures only the namespace-sandbox launcher emits on stderr, matched
-#: STRUCTURALLY so repository-influenced text cannot satisfy them (raised by
-#: the Opus review of this branch): a repo may legally be NAMED
+#: STRUCTURALLY so repository-influenced text cannot satisfy them: a repo may legally be NAMED
 #: ``kirocrew_sandbox_x`` (``_GITHUB_RE`` admits ``_``), which puts that
 #: substring into the clone PATH that git echoes on path-printing fatals — so
 #: the script-filename marker only counts inside a real Python traceback frame
@@ -462,8 +461,7 @@ def _retire_unsafe_clone(repo: Path) -> Path | None:
 #: ``apps/auto-improvement/data/`` would sit beneath a directory an agent CAN rename, taking
 #: the mount with it. At the top level the only ancestors are the data home and ``$HOME``,
 #: the residual every other fenced leaf already stands on. This mirrors
-#: ``aws_control.storage.STAGING_DIR_LEAF``, top-level for exactly this reason. Raised by the
-#: GPT review of this branch.
+#: ``aws_control.storage.STAGING_DIR_LEAF``, top-level for exactly this reason.
 _QUARANTINE_DIR_LEAF = "quarantined-clones"
 
 
@@ -1068,7 +1066,7 @@ def resolve_origin_url(config: dict) -> str:
         # form whenever `gh` prefers it, and refusing that would degrade every ssh install
         # to queue-only. A LOCAL path has no slug and stays allowed — it cannot exfiltrate.
         # Fail closed: when the two disagree, or `target_url` is missing/invalid so there is
-        # nothing to pin against, there is no push target. Raised by the GPT review.
+        # nothing to pin against, there is no push target.
         direct_slug = _remote_slug(direct)
         if direct_slug:
             pinned = str((config or {}).get("target_url") or "").strip()
@@ -1200,7 +1198,6 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         # via `require_pinned` — exactly like the other host-side helpers, through the ONE
         # shared config. Was re-declaring the `-c` pair inline, which both missed the
         # attribute vector and re-introduced the per-call-site drift the shared module removed.
-        # Raised by the Opus 5 review.
         require_pinned(clone)
         where = _git_cwd(clone)
         return subprocess.run(
@@ -1245,8 +1242,8 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
     # while the operator believes it is working on the one they configured. No network is
     # needed to fix it: the ref is already in the clone.
     #
-    # Raised by the GPT review of this branch; same root cause as the one-click-commit
-    # fetch bug (`commit.py`) — code inside a deliberately push-disabled clone cannot
+    # Same root cause as the one-click-commit fetch in `commit.py`: code inside a
+    # deliberately push-disabled clone cannot
     # reach the remote for READS either.
     remote_ref = f"origin/{bare}"
     if _run("rev-parse", "--verify", "--quiet", remote_ref, tmo=30).returncode == 0:

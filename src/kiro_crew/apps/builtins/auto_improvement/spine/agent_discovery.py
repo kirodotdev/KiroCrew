@@ -112,8 +112,8 @@ _HIGH_VALUE_MARKERS = (
 #: Trusted git config for host-side git over the agent-writable clone — same as the sibling
 #: helpers. Discovery's `diff`/`grep`/`log` run on the HOST over the clone the agent can edit,
 #: and `diff` (like `status`) consults+spawns `core.fsmonitor`; hooks run via `core.hooksPath`.
-#: `-c` overrides on OUR argv beat the repo config. Part of the D-120 hook-hardening class
-#: (Opus 5 review pressed on completeness across every host-side git helper). Raised by review.
+#: `-c` overrides on OUR argv beat the repo config. Part of the D-120 hook-hardening class,
+#: which covers every host-side git helper.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 

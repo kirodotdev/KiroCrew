@@ -214,7 +214,7 @@ class GitHubPRRecipe:
     #: driver/gate/commit `_GIT_SAFE_CONFIG`. This helper runs `git push` (and checkout/reset) on
     #: the HOST as the gateway user in the tree the sandboxed agent edited, so a repo-planted hook
     #: (`core.hooksPath`, incl. `pre-push`) or a `core.fsmonitor` program would execute host-side.
-    #: `-c` overrides on OUR argv beat the repo config. Raised by the GPT review.
+    #: `-c` overrides on OUR argv beat the repo config.
     _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
     def _git(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:

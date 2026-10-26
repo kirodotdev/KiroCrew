@@ -147,7 +147,7 @@ class Driver:
         # protected/shared branch always falls back to the CR path). Default False = the
         # safe draft-CR path. The authorization is re-checked at push time, never assumed.
         self.direct_commit = bool(direct_commit)
-        # F6/F10: require a clean automated reviewer review BEFORE a direct push — an
+        # Require a clean automated reviewer review BEFORE a direct push — an
         # auto-pushed commit gets no human review, so the automated reviewer is its gate
         # (fail-closed: an unavailable/uncertain review BLOCKS the push). Only meaningful
         # with direct_commit on. Default False (no gate) to keep CR-path behavior intact.
@@ -269,14 +269,13 @@ class Driver:
         #: Nothing local can repair that -- the rollback is what was supposed to -- so this
         #: latches and publishing refuses from here on. This flag covers ONE PROCESS; the clone
         #: is also QUARANTINED on disk (`_quarantine_unrolled_clone`), because the refused commit
-        #: outlives the run and the clone is reused. Raised by the GPT review of this branch.
+        #: outlives the run and the clone is reused.
         self._rollback_failed = False
         # Terminal latch for a probe whose sandbox launcher crashed: set (then
         # re-raised) by `_retire_if_unsafe`. Some intermediate layers catch
         # broadly to keep a run alive (per-candidate error containment), so
         # `run()` re-raises this before returning stats — otherwise a run
         # aborted by a safety-probe failure would be recorded as STATUS_DONE.
-        # Raised by the GPT review of this branch.
         self._probe_failure: Exception | None = None
 
     def _retire_if_unsafe(self, stage: str) -> bool:
@@ -926,8 +925,7 @@ class Driver:
         # enough: ``git push HEAD:refs/heads/<b>`` sends the COMMIT that HEAD points at, and
         # `git apply` + `git add -A` only touch the index — verified against a local bare
         # repo, where a staged-but-uncommitted fix pushed the ORIGINAL file content. So the
-        # fix has to be a commit, not just staged. Raised by review of this branch after a
-        # first attempt that only staged.
+        # fix has to be a commit, not just staged.
         #
         # The commit message needs ``outcome.reproduce``, which only the pipeline produces,
         # so this lands a PLACEHOLDER message and `_finalize_winner_commit` amends it with
@@ -1013,7 +1011,6 @@ class Driver:
                     # commit while its push publishes both. Measured on a real repo: candidate
                     # A refused for a planted `AKIAIOSFODNN7EXAMPLE`, candidate B's scan range
                     # showed the credential = False while its pushed range showed it = True.
-                    # Raised by the GPT review of this branch.
                     self._reset_provisional(pre_sha)
                     self.stats.kept -= 1  # push refused/failed → not a realized outcome
                 else:
@@ -1041,10 +1038,9 @@ class Driver:
             )
             # DELIBERATELY NOT reset here, unlike the bug track's filed path.
             #
-            # Review asked for `_reset_provisional(pre_sha)` after this progress event, because
-            # a filed perf winner stays on the local branch and a LATER cycle's PR therefore
-            # carries it (measured: pushing whole HEAD for PR#2 included cycle 1's `FIX_1`).
-            # The observation is correct, but the remedy would break the perf track's premise:
+            # No `_reset_provisional(pre_sha)` after this progress event, even though a filed
+            # perf winner stays on the local branch and a LATER cycle's PR therefore carries
+            # it. Resetting would break the perf track's premise:
             # this loop is EVOLUTIONARY — "current best == HEAD" is its documented durable state
             # (see the module docstring), `base_sha = self.head_sha()` is re-read every cycle,
             # and every measurement is reported as "Δ vs current best". Resetting would make
@@ -1064,7 +1060,6 @@ class Driver:
             # Recorded as a known limitation instead (see the module spec). It is also latent
             # rather than live: the perf track has never kept a measured win on a real
             # repository, so no perf PR has been filed for a second cycle to contaminate.
-            # Raised by the GPT review of this branch.
         else:
             # Not reproduced / duplicate / draft error → do NOT advance the branch; the
             # ledger already carries the terminal outcome (the pipeline recorded it).
@@ -1157,7 +1152,7 @@ class Driver:
             # durable "tested against" provenance a reviewer reads, so recording the fix as its
             # own base is self-referential nonsense. `pre_sha` is the HEAD captured before the
             # commit — the revision the RED→GREEN gate actually ran against. The perf twin
-            # already anchors on its own `base_sha` for the same reason. Raised by the GPT review.
+            # already anchors on its own `base_sha` for the same reason.
             base_anchor=f"{self.branch} @ {pre_sha[:12]}",
         )
         if outcome.filed or outcome.committed_ready:
@@ -1204,7 +1199,7 @@ class Driver:
                     # bug path only increments `kept` inside the SUCCESS arm above (`+= 1` after
                     # a landed push). Decrementing here subtracts from a counter this path never
                     # added to, driving `stats.kept` negative or undercounted in the `/run`
-                    # result. Raised by the GPT review.
+                    # result.
                     self._reset_provisional(pre_sha)
                 return  # _apply_bug_winner returns None (no fresh_count in this scope)
             self.stats.kept += 1
@@ -1242,7 +1237,6 @@ class Driver:
             # verified, reproduced work for a bookkeeping problem — each fix is on a distinct
             # locus and has passed RED x2 -> GREEN -> STAYGREEN independently. Resetting keeps
             # every winner AND keeps each PR to its own change.
-            # Raised by the GPT review of this branch.
             self._reset_provisional(pre_sha)
         else:
             # Roll the PROVISIONAL commit back — it exists only so the draft could push a

@@ -328,7 +328,7 @@ def _run(
     # candidate's own conftest/reproducing test — which is precisely who must not see the
     # operator's credentials. Measured on the author's host: under "standard" the child saw
     # all 7 ~/.aws entries; under "strict", 0. The agent SPAWN was already switched to
-    # strict; this is the gate, the other place untrusted code executes. Raised by review.
+    # strict; this is the gate, the other place untrusted code executes.
     # Also MASK Kiro Crew's own write-protected files. `mode="strict"` hides 52 credential
     # paths so agent-authored code cannot READ secrets, but it does not make the rest of the
     # filesystem read-only — measured on this host: a strict-mode child appended to
@@ -340,7 +340,7 @@ def _run(
     # under both `.kiro/crew` and `.kirocrew`), i.e. the one-way doors that
     # would corrupt the installation; broader hiding is not possible here because the
     # interpreter's own stdlib can live under `$HOME` (measured: hiding `~/.local/share`
-    # broke `import platform` outright). Raised by the GPT review of this branch.
+    # broke `import platform` outright).
     sandboxed, scrubbed_env, cleanup = sandboxed_spawn_argv(
         list(argv),
         mode="strict",
@@ -415,7 +415,7 @@ def _measure_env(tree: Path) -> dict[str, str]:
     # so anything inherited here is put straight back after the sandbox removed it.
     # Measured before fixing: an `AWS_SECRET_ACCESS_KEY` scrubbed by the sandbox
     # reappeared in the child's env once this dict was applied — handing the operator's
-    # credentials to agent-authored test code. Raised by review of this branch.
+    # credentials to agent-authored test code.
     #
     # A few HOST variables are still required for a subprocess to run at all (PATH) or to
     # behave like a normal user session (HOME, TMPDIR, locale). Those are matched against

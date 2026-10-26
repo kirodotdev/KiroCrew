@@ -279,7 +279,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
         # (`get_finding` proved arguments echo back; the name is the same surface) would leak
         # through both on the reject paths below. Redact ONCE and use the safe value for every
         # audit/error mention; the RAW `name` is used only for the `TOOLS` allowlist lookup,
-        # which is an exact-match dict get and never emitted. Raised by the GPT review.
+        # which is an exact-match dict get and never emitted.
         safe_name = _redact_error(name)
         entry = TOOLS.get(name)
         if entry is None:
@@ -293,8 +293,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
         # coercion made a malformed call (`"arguments": [1,2]` or a bare string) succeed
         # with `result` for any no-required-arg tool instead of returning INVALID_PARAMS —
         # the schema validator only ran against the already-emptied dict, so it never saw
-        # the violation. Absent/None stays valid (arguments are optional). Raised by the
-        # GPT review of this branch.
+        # the violation. Absent/None stays valid (arguments are optional).
         if raw_args is not None and not isinstance(raw_args, dict):
             _audit(safe_name, outcome="denied", request_id=req_id, error="invalid_arguments")
             return _error(req_id, _INVALID_PARAMS, "invalid arguments: expected an object")
@@ -305,7 +304,6 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
         # and an unknown key was silently ignored instead of refused. The shared validator
         # is fail-closed for exactly this boundary (untrusted `tools/call`), so use it
         # rather than a local check that would drift from the schema in `_schema()`.
-        # Raised by review of this branch.
         # Stays function-local, unlike `redact`/`sel` which were hoisted: this one has an
         # explicit `except ImportError` fallback, which is the `top-level-imports` rule's
         # documented optional-dependency exemption. Hoisting it would make an absent

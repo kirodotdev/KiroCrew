@@ -109,11 +109,10 @@ def _revision_scans_clean(self: Driver, rev: str) -> tuple[bool, str]:
     # `git replace` (not on that runner's denylist, which covers only `push` and
     # `remote set-url`) could point a replacement at clean content, have this scan read the
     # decoy, and still have the credential-bearing object transferred. Reading with replace
-    # refs disabled makes what is scanned and what is sent the same bytes. Raised by the
-    # GPT review of this branch.
+    # refs disabled makes what is scanned and what is sent the same bytes.
     # Only `diff.external=` here: `_git` already injects `core.useReplaceRefs=false` on
     # every call it makes, so spelling it again is the same guarantee written twice, and
-    # only the chokepoint spelling is test-pinned. Dropped on the first-principles review.
+    # only the chokepoint spelling is test-pinned.
     _NO_REPLACE = ("-c", "diff.external=")
     # SCAN THE COMMIT OBJECT ITSELF, not only the content it carries. A tree diff shows
     # what the commit CHANGES; the commit's own header lines are separate bytes that the
@@ -127,7 +126,7 @@ def _revision_scans_clean(self: Driver, rev: str) -> tuple[bool, str]:
     # the `--format=` branch both print nothing but the tree change. `cat-file commit`
     # yields the raw object -- tree, parent, author, committer, then the message -- so the
     # header bytes and the message reach the scanner as the transport sees them, and no
-    # diff-shaping flag applies. Raised by the GPT review of this branch.
+    # diff-shaping flag applies.
     meta = _git(["cat-file", "commit", rev], self.clone)
     if meta.returncode != 0:
         return False, "could not read the pushable commit object"
@@ -145,7 +144,7 @@ def _revision_scans_clean(self: Driver, rev: str) -> tuple[bool, str]:
     # reading each one is what makes the scanned bytes and the transferred bytes the same
     # bytes. This also scans a WHOLE blob rather than the changed hunks, which is again what
     # is published: a hunk is a view of an object, and it is the object that lands on the
-    # remote. Raised by the GPT review of this branch.
+    # remote.
     #
     # `--root` covers a root commit, which has no parent to diff against, so both cases go
     # through one listing rather than a branch whose second half was the weaker reading.
@@ -207,7 +206,7 @@ def _restore_branch(self: Driver, branch: str, *, promote: str = "") -> bool:
         # BEFORE the checkout can fail. A concurrent index lock that fails the checkout
         # would otherwise leave the branch promoted to a replay this method then reports as
         # unrestored -- the push aborts, the caller rolls back the detached HEAD, and the
-        # unpushed commit stays on the durable branch. Raised by the GPT review.
+        # unpushed commit stays on the durable branch.
         was = _git(["rev-parse", branch], self.clone).stdout.strip()
         if _git(["branch", "-f", branch, promote], self.clone).returncode != 0:
             self.log.error(
@@ -294,7 +293,7 @@ def _push_with_rebase(
     require_pinned(self.clone)
     # Remember WHICH OBJECT was sent, so the caller records that rather than re-reading
     # `HEAD` after the push: HEAD can move between the push and the read, which would put
-    # an unrelated sha in the ledger for a commit that did land. Raised by the GPT review.
+    # an unrelated sha in the ledger for a commit that did land.
     self._pushed_object = src
     push = subprocess.run(
         [
@@ -323,7 +322,6 @@ def _push_with_rebase(
         # publishing content that never descended from the verified object. Refuse instead:
         # the rebase input has to be the object this run authorized. Skipped when *src* is
         # the default symbolic `HEAD`, where there is no retained id to compare against.
-        # Raised by the GPT review of this branch.
         # A TAMPER DETECTOR, not the guarantee it once was. The rebase below names the
         # authorized object EXPLICITLY, so what gets replayed does not depend on where
         # HEAD points and this check is not what makes that safe. It stays because a HEAD
@@ -331,7 +329,7 @@ def _push_with_rebase(
         # and a clone being written by an unknown actor is not one to publish from. On its
         # own it is defeatable: it sits before the `fetch`, a network operation lasting
         # seconds, so relied on alone it would only see the branch as it was before that
-        # window. Raised by the GPT review of this branch.
+        # window.
         src_ok, src_note = self._head_is_the_committed_sha(src)
         if not src_ok:
             self.log.error(
@@ -350,7 +348,7 @@ def _push_with_rebase(
         # real tip was 2, the scanned range held only our own file, and a bare remote ACCEPTED
         # the push -- the foreign file landed. With the id taken from `--porcelain` stdout the
         # same attack replays onto the real tip and the foreign file is gone from the
-        # published range. Raised by the GPT review of this branch.
+        # published range.
         fetched = _git(["fetch", "--porcelain", fetch_url, dest], self.clone)
         if fetched.returncode != 0:
             return push
@@ -368,8 +366,7 @@ def _push_with_rebase(
         # one, so a replay left to resolve identity itself publishes attribution that a
         # distrusted actor chose. `src` already holds the identity the pipeline committed
         # under, recorded before any agent ran, and it is an immutable object: reading the
-        # answer off it needs no new state and no trust in any config file. Raised by the
-        # GPT review of this branch.
+        # answer off it needs no new state and no trust in any config file.
         pin_name, pin_email = _committer_identity(src, self.clone)
         if not pin_name or not pin_email:
             self._restore_branch(dest)
@@ -396,7 +393,7 @@ def _push_with_rebase(
         # object. Resolve the replacement to a full id, scan THAT, and push THAT -- so this
         # path holds the same invariant as the first push instead of trusting `HEAD`, which
         # is re-resolved by the push itself and can be moved in between by a process the
-        # reviewer left behind. Raised by the GPT review of this branch.
+        # reviewer left behind.
         #
         # RESOLVED BEFORE `_reverify_head`, DELIBERATELY. That gate runs the
         # repository-under-improvement's OWN test suite, i.e. arbitrary code from the tree
@@ -404,8 +401,7 @@ def _push_with_rebase(
         # the moved commit captured, scanned and pushed as though the gate had measured it:
         # credentials still covered, but the build-verification invariant broken with no
         # recheck. Capturing first and asserting HEAD is still that object afterwards makes
-        # the thing the gate measured and the thing published the same object. Raised by
-        # the GPT review of this branch, which found the earlier ordering.
+        # the thing the gate measured and the thing published the same object.
         rebased_id = (_git(["rev-list", "-1", "HEAD^{commit}"], self.clone).stdout or "").strip()
         verified = self._reverify_head()
         if self._retire_if_unsafe("post-rebase verification"):
@@ -448,7 +444,7 @@ def _push_with_rebase(
         #
         # A TREE, NOT A PATCH IDENTITY, because a patch identity ignores hunk positions:
         # the same added and removed lines placed elsewhere in the file carry the same
-        # identity and a different tree. Raised by the GPT review of this branch.
+        # identity and a different tree.
         #
         # FAIL-CLOSED, and the cost is a skipped publish, never a bad one: this cycle's
         # commit stays on the branch and the next cycle re-pushes it.
@@ -501,7 +497,7 @@ def _push_with_rebase(
         # the remote tip -- which every check below would then bind to, consistently, and
         # the ledger would record an unrelated commit as the one this pipeline landed. A
         # count of 0 is that case; anything above 1 means the replay is not the single
-        # commit this method is documented to handle. Raised by the GPT review.
+        # commit this method is documented to handle.
         #
         # BOTH ENDPOINTS ARE CAPTURED IDS. The base is the tip the fetch reported, not
         # `FETCH_HEAD` -- that name is a mutable file, so a count keyed on it measures the
@@ -513,8 +509,7 @@ def _push_with_rebase(
         # check-then-use pair -- naming the id removes the dependency instead of timing it.
         # It also makes the range counted identical to the range PUBLISHED: the push sends
         # *rebased_id*, so `base..rebased_id` is exactly what this adds to the remote.
-        # Raised by the GPT review of this branch, one step along from the same defect in
-        # the rebase input.
+        # One step along from the same defect class in the rebase input.
         replayed = (
             _git(["rev-list", "--count", f"{base}..{rebased_id}"], self.clone).stdout or ""
         ).strip()
@@ -528,10 +523,10 @@ def _push_with_rebase(
         # THE ONE PLACE THE BRANCH IS PROMOTED, and it is reached only after the replay has
         # passed re-verification, the HEAD-identity check and the credential scan. Doing it
         # any earlier would force the branch onto whatever HEAD happened to be if a later
-        # check refused -- silently, with the branch looking healthy. Raised in review.
+        # check refused -- silently, with the branch looking healthy.
         # A FAILED restore ABORTS the push: publishing while the clone is detached or its
         # durable branch is stale is exactly what the restore exists to prevent, so its
-        # status is checked rather than logged. Raised by the GPT review.
+        # status is checked rather than logged.
         if not self._restore_branch(dest, promote=rebased_id):
             self.log.error("direct-push: branch restore failed -- not pushing %s", dest)
             return push
@@ -607,8 +602,7 @@ def _prepush_review_clean(self: Driver, *, target: str, base_ref: str) -> tuple[
             # NO `Edit`. The prompt above is report-only and gives a reviewer no
             # sanctioned reason to modify the clone. What actually determines whether a
             # reviewer CAN modify it is the tool list, not the prose, so withholding the
-            # capability is what matters here. Raised by the first-principles review of
-            # this branch.
+            # capability is what matters here.
             #
             # This is least privilege, NOT the enforcement boundary: `Bash` remains (the
             # review has to run git to read the diff), and a shell can write files and
@@ -774,8 +768,7 @@ def _direct_push(self: Driver, *, fp: str, kind: str, target: str, sha: str) -> 
     # revision while its push sends the whole ancestry -- publishing the refused content
     # through a scanner that never looked at it. Checked HERE and not only via the run's
     # stop flag because that flag is read at cycle boundaries, and a cycle can hold SEVERAL
-    # bug winners (`for prop, bug_res in bug_winners`), each reaching this method. Raised by
-    # the GPT review of this branch.
+    # bug winners (`for prop, bug_res in bug_winners`), each reaching this method.
     if getattr(self, "_rollback_failed", False):
         reason = "a provisional rollback failed, so HEAD carries an unpublished commit"
         self.log.error("direct-push refused for %s: %s", target, reason)
@@ -796,7 +789,6 @@ def _direct_push(self: Driver, *, fp: str, kind: str, target: str, sha: str) -> 
     # which object this path anchors to. Validating the id the finalizer already produced
     # leaves no lookup to aim at. An empty or malformed value is carried forward and
     # refused below rather than raised, so a missing sha keeps its own existing message.
-    # Raised by the GPT review of this branch.
     committed_id = ""
     if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
         committed_id = sha
@@ -897,7 +889,6 @@ def _direct_push(self: Driver, *, fp: str, kind: str, target: str, sha: str) -> 
     # thing scanned here and the thing pushed below are the same object by construction
     # rather than by timing. `_push_with_rebase` calls the SAME helper on the replayed
     # object if it has to rebase, so neither publish path can go out unscanned.
-    # Raised by the GPT review of this branch.
     scan_ok, scan_note = self._revision_scans_clean(committed_id)
     if not scan_ok:
         self.log.error("direct-push REFUSED for %s: %s", target, scan_note)
@@ -959,7 +950,7 @@ def _direct_push(self: Driver, *, fp: str, kind: str, target: str, sha: str) -> 
     # caller's own snapshot either, because it is unreachable: the ONLY return in
     # `_push_with_rebase` that precedes `self._pushed_object = src` is the retire path's
     # `return None`, and that routes to this method's own `return None` above -- before this
-    # line. Raised by the GPT review, then narrowed twice by the first-principles review.
+    # line.
     sent = str(getattr(self, "_pushed_object", "") or "")
     self.pushed_sha = sent
     if push.returncode != 0:
