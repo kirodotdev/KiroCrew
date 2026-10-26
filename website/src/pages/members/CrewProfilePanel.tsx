@@ -576,7 +576,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               {pushed === 'about' ? (
                 <div className="px-4 py-4">
                   <div className="rounded-2xl border border-border bg-bg px-4 py-4 text-[14px] leading-relaxed text-text whitespace-pre-wrap" data-testid="crew-profile-about-full">{p.description}</div>
-                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-white text-[13px] font-semibold cursor-pointer">
+                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer">
                     <Pencil size={14} aria-hidden="true" />
                     {t('pages.membersPage.edit_member')}
                   </button>

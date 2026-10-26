@@ -900,7 +900,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
                   }}
                   style={{
                     background: 'var(--danger)', border: 'none', borderRadius: 6,
-                    padding: '5px 12px', color: '#fff', fontSize: 12, fontWeight: 600,
+                    padding: '5px 12px', color: 'var(--danger-fg, #fff)', fontSize: 12, fontWeight: 600,
                     cursor: clearState === 'working' ? 'wait' : 'pointer',
                     opacity: clearState === 'working' ? 0.6 : 1,
                   }}

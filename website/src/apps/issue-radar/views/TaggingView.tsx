@@ -514,7 +514,7 @@ function TaggingDashboard() {
               title={canWrite
                 ? i18nT('apps.issueRadar.views.taggingView.write_every_staged_label_to', { provider: providerTerms(active).providerName })
                 : readOnlyHint(active, i18nT('apps.issueRadar.views.taggingView.read_only_repo_needs_triage_or_push_access'))}
-              className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40 cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md bg-accent text-accent-fg hover:opacity-90 disabled:opacity-40 cursor-pointer"
             >
               <Check size={12} />
               {applyAll.isPending
