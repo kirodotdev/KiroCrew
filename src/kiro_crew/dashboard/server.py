@@ -144,6 +144,12 @@ from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
 from kiro_crew.dashboard.handlers.spawn_resume import setup_spawn_resume_routes  # noqa: F401
 from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
 from kiro_crew.dashboard.handlers.whatsapp_setup import setup_whatsapp_routes
+from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller  # noqa: F401
+from kiro_crew.dashboard.kiro_relay.ingress import (  # noqa: F401
+    RELAY_INGRESS_APP_KEY,
+    RelayIngress,
+    relay_ingress_middleware,
+)
 from kiro_crew.dashboard.listener_guard import (  # noqa: F401
     LISTENER_LOST_EXIT_CODE,
     ListenerGuard,
@@ -1059,6 +1065,11 @@ async def start_dashboard(
         # with, for handlers the middleware bypasses (POST /api/auth/refresh must
         # re-bind a rotated access token to the same verified peer identity).
         app["tailnet_trust"] = _tailnet_trust
+        # The relay client's door into this app (dashboard/kiro_relay). Built off:
+        # the relay client, and the setting that turns this on, arrive together in a
+        # later change. Off, the ingress middleware hands every request on to the
+        # client-sent relay-header strip.
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=False)
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )

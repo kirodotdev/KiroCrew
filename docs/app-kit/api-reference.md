@@ -1637,7 +1637,7 @@ The gateway assigns the first kind that matches:
 |---|---|---|
 | `agent-tool` | Internal authentication granted the call. MCP tools, agents, subagents and crons reach admitted gateway routes this way. | empty |
 | `app-token` | The caller authenticated with an app token. | empty |
-| `owner-session` | A dashboard session cookie authenticated the request, the request is not a `?token=` link exchange, and the caller is the dashboard owner. | the owner's user id |
+| `owner-session` | A dashboard session cookie authenticated the request, the request is not a `?token=` link exchange, and the caller is the dashboard owner. The owner of a personal Crew reaching it through the Kiro relay is this kind too. | the owner's user id |
 | `none` | Any other request, such as a `?token=` link exchange or an authenticated non-owner. | empty |
 
 `agent-tool` is checked first, so an internal caller never becomes `owner-session`,

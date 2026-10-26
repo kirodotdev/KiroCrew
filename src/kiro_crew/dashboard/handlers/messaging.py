@@ -84,6 +84,9 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.browser_view_relay import ROUTE_PREFIX  # noqa: F401
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
+from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate  # noqa: F401
+from kiro_crew.dashboard.kiro_relay.ingress import refuse_relayed  # noqa: F401
+from kiro_crew.dashboard.kiro_relay.limits import APPS_OFF_FOR_TEAMMATES  # noqa: F401
 from kiro_crew.dashboard.messaging_api import agent_push as _owner_agent_push
 from kiro_crew.dashboard.messaging_api import browser_routes as _owner_browser_routes
 from kiro_crew.dashboard.messaging_api import channel_config_writes as _owner_channel_config_writes
@@ -172,6 +175,8 @@ from kiro_crew.dashboard.messaging_api.imessage_settings import (  # noqa: F401
     api_imessage_config_get,
 )
 from kiro_crew.dashboard.messaging_api.notifications import (  # noqa: F401
+    _is_app_note,
+    _refuse_hidden_note,
     api_notification_ack,
     api_notification_channel_settings,
     api_notification_channels,
@@ -300,6 +305,9 @@ from kiro_crew.dashboard.token_auth import (  # noqa: F401
 from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     _audit_allow,
     _audit_deny,
+    audit_teammate_withheld,
+    is_app_channel,
+    notification_source_app,
     persisted_replay_denial_reason,
     persisted_snapshot_denial_reason,
     slot_owner_snapshot,

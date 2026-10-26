@@ -150,7 +150,18 @@ def is_proxied_request(request: web.Request) -> bool:
     This is NOT the inverse of :func:`is_direct_local_request`, which also
     requires loopback because it answers a different question ("is this the
     local machine", for the secret-reveal and config-write gates).
+
+    A request the Kiro relay delivered is proxied by construction: every person
+    on the relay reaches this gateway through the one relay client, so it answers
+    ``True`` whatever headers the person's client sent.
     """
+    # Imported here, not at module level: the relay package reads the prefix from
+    # ``relay_headers``, which imports aiohttp, and this module is on the slim MCP
+    # entry's import path (``port_resolution``), which must not load aiohttp.
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+
+    if published_relay_caller(request) is not None:
+        return True
     return any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
 

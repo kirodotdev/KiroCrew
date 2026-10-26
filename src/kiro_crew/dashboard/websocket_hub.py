@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
+from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
 from kiro_crew.write_buffer_level import level_is_progress_signal
 
 #: Capability a dashboard tab declares in the ``caps`` query parameter of
@@ -387,6 +388,18 @@ class WebSocketHub:
                 slug = data.get("slug") if isinstance(data, dict) else None
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
+                return False
+        if ws.get(RELAY_TEAMMATE_WS_FLAG, False):
+            # A relayed teammate is a dashboard user with no app surface: the
+            # remote limits refuse every app route, so the app frames the
+            # dashboard-user grant below would hand it are withheld first.
+            from kiro_crew.dashboard.ws_event_scope import (
+                app_origin_frame,
+                audit_teammate_withheld,
+            )
+
+            if app_origin_frame(msg_type, data):
+                audit_teammate_withheld(msg_type)
                 return False
         if ws.get("_is_dashboard_user", False):
             # The per-member event log is the owner's view of the crew, the

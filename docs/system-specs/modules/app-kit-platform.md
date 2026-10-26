@@ -4316,7 +4316,12 @@ the issue time. The wire format and the verifier's steps are in
    `is_dashboard_user` to true also sets `auth_from_query_token` from the
    credential it validated, including the two internal-path branches that serve
    mixed internal routes such as `/apps/design-tweak/api/thread`. So the owner's
-   cookie reads as `owner-session` on those routes too.
+   cookie reads as `owner-session` on those routes too, and so does the owner of
+   a personal Crew reaching it through the Kiro relay, whom token auth admits as
+   the owner ([dashboard-token-auth § Relay-delivered requests](dashboard-token-auth.md#relay-delivered-requests)).
+   A relayed teammate's subject never matches the owner predicate, and the whole
+   app surface (`/apps/*` and `/api/apps` with everything under it) is off for
+   teammates.
 4. `none` for every other request.
 
 The proxy strips any caller-sent `X-KiroCrew-Proxy` and `X-KiroCrew-Principal`
