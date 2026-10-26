@@ -1241,9 +1241,12 @@ carries the first line of its refusal in parentheses (`spawn_run (Blocked by
 security policy: <pattern>)`), so the reader sees which rule fired rather than
 a bare refusal.
 
-The Schedule page shows the middle arm as its own state, **Partly blocked**
-(amber, the reason on hover), not **Error**: a run that did all but one call
-must not look like one that died (#20514). `last_status` stays `error`, so
+The Schedule page shows the middle arm as its own state, **Partial** (amber),
+not **Error**: a run that did all but one call must not look like one that
+died (#20514). The label is one short word so it fits the Status column's
+default width in every locale; its hover text says the run finished but the
+security gate refused some of its tool calls, then gives the reason.
+`last_status` stays `error`, so
 every other reader (the history record, `cron_list`, health checks) is
 unchanged. The page has no status of its own to read, so `isPartlyBlocked`
 (`website/src/utils/cronPartlyBlocked.ts`) recognises the arm by the opening

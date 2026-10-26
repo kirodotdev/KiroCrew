@@ -19,10 +19,10 @@ const PARTIAL_GATE_BLOCK = new RegExp(backendPhrases.cronPartialGateBlockPattern
  *  The gateway records that run as `last_status: "error"` on purpose: the lost
  *  call means the run did not fully succeed, so it must not read as `ok` or
  *  reset a failure streak. But it also spent nothing from the failure budget,
- *  and showing it as a plain "Error" made a run that did all but one call look
- *  like one that died (#20514). The Schedule page reads this to show it as its
- *  own state instead. Script and command jobs never pass through the tool gate,
- *  so their errors are never read this way. */
+ *  and a plain "Error" would make a run that did all but one call look like
+ *  one that died. The Schedule page reads this to show it as its own state
+ *  instead. Script and command jobs never pass through the tool gate, so their
+ *  errors are never read this way. */
 export function isPartlyBlocked(job: Pick<CronJob, 'last_status' | 'last_error' | 'script' | 'command'>): boolean {
   if (job.last_status !== 'error' || job.script || job.command) return false
   return typeof job.last_error === 'string' && PARTIAL_GATE_BLOCK.test(job.last_error)

@@ -6,16 +6,18 @@ import { isPartlyBlocked } from '../utils/cronPartlyBlocked'
 import type { CronJob } from '../types'
 
 /**
- * #20514: a cron run that did its work but had ONE tool call refused by the
- * security gate showed "Error" on the Schedule page, the same badge as a run
- * that died. The gateway keeps `last_status: "error"` for that run on purpose
- * (it lost work, so it is not `ok`), and names the loss in `last_error` as
- * "N of M tool call(s) blocked by the security gate: ...". The page now reads
- * that reason and shows the run as its own state, "Partly blocked".
+ * A cron run that did its work but had SOME tool calls refused by the security
+ * gate keeps `last_status: "error"` on purpose (it lost work, so it is not
+ * `ok`), and names the loss in `last_error` as "N of M tool call(s) blocked by
+ * the security gate: ...". The Schedule page reads that reason and shows the
+ * run as its own state, "Partial", rather than the "Error" a run that died
+ * shows. The label is short so it fits the Status column's default width in
+ * every locale; the hover title says what the state means and what was lost.
  */
 
 const PARTIAL = '1 of 54 tool call(s) blocked by the security gate: Write /vault/daily.md (Blocked by security policy: write outside workspace)'
-const TOTAL = 'all 2 tool call(s) blocked by the security gate: rm -rf /, cat ~/.ssh/id_rsa'
+const TOTAL = 'all 2 tool call(s) blocked by the security gate: Write /etc/example.conf, Read /etc/example.key'
+const HINT = 'The run finished, but the security gate refused some of its tool calls.'
 
 const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({
   id: 'job-1',
@@ -71,12 +73,12 @@ describe('isPartlyBlocked', () => {
   })
 })
 
-describe('SchedulePage Status column — partly blocked run (#20514)', () => {
+describe('SchedulePage Status column, partly blocked run', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('shows "Partly blocked", not "Error", for a run that lost one call', async () => {
+  it('shows "Partial", not "Error", for a run that lost one call', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({
       jobs: [mkJob({ name: 'Vault digest', last_status: 'error', last_error: PARTIAL })],
@@ -86,9 +88,10 @@ describe('SchedulePage Status column — partly blocked run (#20514)', () => {
     await waitFor(() => expect(screen.getByText('Vault digest')).toBeInTheDocument())
 
     const row = rowOf('Vault digest')
-    const badge = within(row).getByText('Partly blocked')
-    // The badge names what was lost on hover, so the reader need not open the job.
-    expect(badge).toHaveAttribute('title', PARTIAL)
+    const badge = within(row).getByText('Partial')
+    // On hover the badge says what the state means, then what was lost, so the
+    // reader need not open the job.
+    expect(badge).toHaveAttribute('title', `${HINT}\n${PARTIAL}`)
     expect(within(row).queryByText('Error')).not.toBeInTheDocument()
   })
 
@@ -108,7 +111,7 @@ describe('SchedulePage Status column — partly blocked run (#20514)', () => {
     for (const name of ['Blocked job', 'Crashed job', 'Script job']) {
       const row = rowOf(name)
       expect(within(row).getByText('Error')).toBeInTheDocument()
-      expect(within(row).queryByText('Partly blocked')).not.toBeInTheDocument()
+      expect(within(row).queryByText('Partial')).not.toBeInTheDocument()
     }
   })
 
@@ -126,6 +129,6 @@ describe('SchedulePage Status column — partly blocked run (#20514)', () => {
 
     expect(within(rowOf('Clean job')).getByText('OK')).toBeInTheDocument()
     expect(within(rowOf('Paused job')).getByText('Paused')).toBeInTheDocument()
-    expect(within(rowOf('Paused job')).queryByText('Partly blocked')).not.toBeInTheDocument()
+    expect(within(rowOf('Paused job')).queryByText('Partial')).not.toBeInTheDocument()
   })
 })

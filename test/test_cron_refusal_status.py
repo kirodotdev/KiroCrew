@@ -488,13 +488,13 @@ class TestPartialBlock:
         assert "Write /vault/x.md" in job.last_error
 
     def test_the_schedule_page_tells_a_partial_block_from_a_total_one(self) -> None:
-        """#20514: the Schedule page shows this arm as "Partly blocked" rather
-        than "Error", while ``last_status`` stays ``error``. It recognises the
-        arm by the opening of the reason this arm writes, a pattern it reads
-        from ``website/src/lib/backendPhrases.json`` (backend prose the UI
-        matches), so the pattern must match every partial reason and no total
-        one -- otherwise a reworded summary silently turns the badge back into
-        "Error", or a run that did nothing reads as partly blocked."""
+        """The Schedule page shows this arm as "Partial" rather than "Error",
+        while ``last_status`` stays ``error``. It recognises the arm by the
+        opening of the reason this arm writes, a pattern it reads from
+        ``website/src/lib/backendPhrases.json`` (backend prose the UI matches),
+        so the pattern must match every partial reason and no total one --
+        otherwise a reworded summary silently turns the badge back into
+        "Error", or a run that did nothing reads as partial."""
         phrases = json.loads(
             (Path(__file__).resolve().parents[1] / "website/src/lib/backendPhrases.json").read_text(
                 encoding="utf-8"
