@@ -14316,6 +14316,7 @@
         "registry_help": "{{provider}}은(는) 조직의 MCP 레지스트리에서 관리하므로 여기서 고칠 것은 없습니다. 세션이 시작될 때 Kiro CLI가 불러오며, 이 페이지에서는 상태를 표시할 수 없습니다. 확인하려면 터미널에서 kiro-cli mcp list를 실행하세요.",
         "outdated": "오래됨",
         "outdated_help": "최근 30분 동안의 탐색 결과가 없습니다. 오른쪽 위의 새로고침 버튼(↻)을 선택해 다시 확인하세요.",
+        "not_probed": "탐색되지 않음",
         "not_probed_routing_guide": "이 서버를 MCP 게이트웨이를 통해 라우팅하는 방법",
         "pending_change_other": "보류 중인 변경 {{count}}건",
         "pending_disable_click_to_revert": "보류 중: 비활성화 (클릭하면 취소)",

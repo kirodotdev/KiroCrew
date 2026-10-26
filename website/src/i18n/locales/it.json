@@ -14778,6 +14778,7 @@
         "registry_help": "{{provider}} è gestito dal registro MCP della tua organizzazione, quindi qui non c'è nulla da correggere. La CLI di Kiro lo carica all'avvio di una sessione e questa pagina non può mostrarne lo stato. Per verificarlo, esegui kiro-cli mcp list in un terminale.",
         "outdated": "Obsoleto",
         "outdated_help": "Nessun risultato di sondaggio negli ultimi 30 minuti. Seleziona il pulsante di aggiornamento (↻, in alto a destra) per verificare di nuovo.",
+        "not_probed": "Non controllato",
         "not_probed_routing_guide": "Come instradare questo server tramite il gateway MCP",
         "pending_change_many": "{{count}} modifiche in attesa",
         "pending_change_one": "{{count}} modifica in attesa",

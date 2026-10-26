@@ -95,10 +95,23 @@ describe('McpTab: an outdated row that was not probed', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
+  it('labels the status badge Not probed, not Outdated (#20376)', async () => {
+    mockApi.mcpServers.mockResolvedValue([server({ status: 'outdated', error: REFUSAL })])
+    renderTab()
+    const badge = await screen.findByText('Not probed', undefined, ROW_WAIT)
+    // The badge belongs to the server's own row, in the status's warn tone:
+    // no probe ran, so nothing failed.
+    expect(within(rowOf('vault-backed')).getByText('Not probed')).toBe(badge)
+    expect(badge.className).toContain('text-warn-text')
+    expect(badge.className).not.toContain('text-danger-text')
+    // "Outdated" names an aged result a refresh would fix; this row has none.
+    expect(within(rowOf('vault-backed')).queryByText('Outdated')).toBeNull()
+  })
+
   it('drops the aged-result hint, which a refresh cannot satisfy', async () => {
     mockApi.mcpServers.mockResolvedValue([server({ status: 'outdated', error: REFUSAL })])
     renderTab()
-    const badge = await screen.findByText('Outdated', undefined, ROW_WAIT)
+    const badge = await screen.findByText('Not probed', undefined, ROW_WAIT)
     expect(within(badge.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
     expect(screen.queryByText(/30 minutes/)).toBeNull()
   })

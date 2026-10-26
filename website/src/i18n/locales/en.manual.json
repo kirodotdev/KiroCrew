@@ -6785,6 +6785,7 @@
         "registry_help": "{{provider}} is managed by your organization's MCP registry, so there is nothing to fix here. The Kiro CLI loads it when a session starts, and this page cannot show its status. To check it, run kiro-cli mcp list in a terminal.",
         "outdated": "Outdated",
         "outdated_help": "No probe result from the last 30 minutes. Select the refresh button (↻, top right) to check it again.",
+        "not_probed": "Not probed",
         "not_probed_routing_guide": "How to route this server through the MCP gateway",
         "pending_disable_click_to_revert": "Pending: disable (click to revert)",
         "pending_enable_click_to_revert": "Pending: enable (click to revert)",

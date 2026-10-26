@@ -14547,6 +14547,7 @@
         "registry_help": "{{provider}} wird von der MCP-Registry deiner Organisation verwaltet, hier gibt es also nichts zu beheben. Die Kiro CLI lädt es beim Start einer Sitzung, und diese Seite kann seinen Status nicht anzeigen. Zum Prüfen führe kiro-cli mcp list in einem Terminal aus.",
         "outdated": "Veraltet",
         "outdated_help": "Kein Prüfergebnis aus den letzten 30 Minuten. Wähle die Aktualisieren-Schaltfläche (↻, oben rechts), um erneut zu prüfen.",
+        "not_probed": "Nicht geprüft",
         "not_probed_routing_guide": "So leitest du diesen Server über das MCP-Gateway",
         "pending_change_one": "{{count}} ausstehende Änderung",
         "pending_change_other": "{{count}} ausstehende Änderungen",

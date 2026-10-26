@@ -14316,6 +14316,7 @@
         "registry_help": "{{provider}} 由你所在组织的 MCP registry 管理，这里没有需要修复的地方。会话启动时由 Kiro CLI 加载它，本页无法显示它的状态。要检查它，请在终端中运行 kiro-cli mcp list。",
         "outdated": "已过时",
         "outdated_help": "最近 30 分钟内没有探测结果。点击右上角的刷新按钮（↻）重新检查。",
+        "not_probed": "未探测",
         "not_probed_routing_guide": "如何通过 MCP 网关路由此服务器",
         "pending_change_other": "{{count}} 项待应用的更改",
         "pending_disable_click_to_revert": "待应用：禁用（点击可撤销）",

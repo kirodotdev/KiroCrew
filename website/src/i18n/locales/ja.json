@@ -14316,6 +14316,7 @@
         "registry_help": "{{provider}} は組織の MCP レジストリで管理されているため、ここで直す必要はありません。セッション開始時に Kiro CLI が読み込みますが、このページではその状態を表示できません。確認するには、ターミナルで kiro-cli mcp list を実行してください。",
         "outdated": "古い",
         "outdated_help": "直近 30 分間のプローブ結果がありません。右上の更新ボタン（↻）を選択すると再確認できます。",
+        "not_probed": "未プローブ",
         "not_probed_routing_guide": "このサーバーを MCP ゲートウェイ経由でルーティングする方法",
         "pending_change_other": "{{count}} の保留中の変更",
         "pending_disable_click_to_revert": "保留中：無効化（クリックで取り消し）",

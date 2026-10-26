@@ -956,8 +956,16 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         {/* The label tells the two off states apart in words: a
                             deliberate disable reads "Disabled", a non-boolean value
                             reads "Invalid value" -- colour and the chip are not the
-                            only distinction. */}
-                        {invalidValue ? i18nT('pages.overview.mcpTab.status_invalid_value') : mcpStatusLabel(s.status, mcpAuthState(s))}
+                            only distinction. A row that was not probed reads "Not
+                            probed", not the "Outdated" its status carries: beside a
+                            reason line saying no probe ran, "Outdated" names an aged
+                            result a refresh would fix, and a refresh repeats the
+                            refusal (#20376). The tone stays the status's own warn. */}
+                        {invalidValue
+                          ? i18nT('pages.overview.mcpTab.status_invalid_value')
+                          : notProbedReason
+                            ? i18nT('pages.overview.mcpTab.not_probed')
+                            : mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
                       {(() => {
                         const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
