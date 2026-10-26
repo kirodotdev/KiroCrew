@@ -928,6 +928,13 @@ commits first. SQL migrations go through `memory_schema.execute_script`, which r
 statement inside the caller's transaction. A step that commits anyway fails the open at
 the closing `COMMIT`.
 
+**The open-time metadata pass writes only when it has work.** After the schema step,
+`record_meta.reconcile` and (V1 algorithm only) `limit_v1_accepted_history` run in their
+own transaction. Reconcile skips rows whose content hash is unchanged, and the history
+bound selects only records over `V1_ACCEPTED_REVISION_LIMIT` before it deletes anything.
+Under implicit transactions any DML takes the write lock even when it matches no row, so
+a steady-state open issues none and does not wait on another writer (#21056).
+
 **Which lineage a file gets is decided once, structurally, inside `init()` — and the
 ordering there is the load-bearing part.** `memory_schema.detect_lineage(db)` reads
 SQLite's own schema table FIRST: a file holding `memory_items` as a table is crew, a file holding
