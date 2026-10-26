@@ -1817,6 +1817,7 @@ class TestABusyReplyCarriesItsContext:
             captured.append(msg.text)
 
         d.handle_message = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+        sess._busy = False  # turn ended; the session lease is free before the drain runs
         asyncio.run(d._drain_queue(self._KEY))
 
         assert len(captured) == 1
@@ -1855,6 +1856,7 @@ class TestABusyReplyCarriesItsContext:
             pass
 
         d.handle_message = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+        sess._busy = False  # turn ended; the session lease is free before the drain runs
         asyncio.run(d._drain_queue(self._KEY))
         # Exactly one audit, from the drain's single framing.
         assert audits == ["telegram_reply_parent"]
@@ -1890,6 +1892,7 @@ class TestABusyReplyCarriesItsContext:
             pass
 
         d.handle_message = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+        sess._busy = False  # turn ended; the session lease is free before the drain runs
         asyncio.run(d._drain_queue(self._KEY))
         assert audits == ["telegram_reply_parent"]
 
