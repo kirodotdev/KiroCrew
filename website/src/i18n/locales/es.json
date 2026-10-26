@@ -12121,6 +12121,7 @@
         "queue_cancel_failed": "No se pudo cancelar esa pregunta en cola",
         "queue_edit_failed": "No se pudo actualizar esa pregunta en cola",
         "refresh_context": "Actualizar el contexto",
+        "refresh_context_hint": "Borra este chat lateral en todas las pestañas abiertas y empieza de nuevo con el contexto actual",
         "refresh_blocked_queued": "Termina o cancela primero las preguntas en cola — actualizar las descartaría",
         "restore_failed": "No se pudo cargar esta conversación lateral. Reintenta antes de preguntar. Una pregunta enviada ahora vuelve al cuadro de redacción en lugar de hacerse.",
         "restore_failed_command": "No se pudo cargar esta conversación lateral, así que el comando no se ejecutó. Tu mensaje sigue en el cuadro de redacción. Envíalo de nuevo.",

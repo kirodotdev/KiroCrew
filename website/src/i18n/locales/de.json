@@ -11939,6 +11939,7 @@
         "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",
         "queue_edit_failed": "Diese Frage in der Warteschlange konnte nicht aktualisiert werden",
         "refresh_context": "Kontext aktualisieren",
+        "refresh_context_hint": "Leert diesen Seitenchat in jedem offenen Tab und beginnt mit dem aktuellen Kontext neu",
         "refresh_blocked_queued": "Lass die Fragen in der Warteschlange zuerst durchlaufen oder brich sie ab — ein Aktualisieren würde sie verwerfen",
         "restore_failed": "Diese Nebenunterhaltung konnte nicht geladen werden. Wiederhole den Versuch, bevor du fragst. Eine jetzt gesendete Frage landet wieder im Eingabefeld, statt gestellt zu werden.",
         "restore_failed_command": "Diese Nebenunterhaltung konnte nicht geladen werden, daher wurde der Befehl nicht ausgeführt. Deine Nachricht steht noch im Eingabefeld. Sende sie erneut.",
