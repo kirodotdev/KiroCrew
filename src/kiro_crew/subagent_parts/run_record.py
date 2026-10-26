@@ -602,6 +602,12 @@ class SubagentInfo:
     # Every store write the run makes carries it, so a late write from a
     # superseded dispatch of the same id is fenced out. 0 = no store row.
     _taskq_generation: int = 0
+    # Generation of the claim that began this attempt of the run: the attempt's
+    # identity. A wait wake moves ``_taskq_generation`` and never this, so it is
+    # what the run's tombstone records (``taskq_attempt``) and what the boot
+    # reconcile matches against the row's latest ``claimed`` event to tell this
+    # attempt's ending from an earlier one's. 0 = no store row.
+    _taskq_attempt: int = 0
     # Scheduler-core fields (session-start gate, lane-slot waits; see
     # docs/system-specs/modules/subagent.md § Lane-slot waits).
     # Time this start spent queued at its start queues in total, ms (the paused

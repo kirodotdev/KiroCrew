@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable
 
 from .dependency import (
     DependencyCoordinator,
@@ -74,7 +73,7 @@ from .model import (
     is_terminal,
     steps_to,
 )
-from .reconcile import ReconcileReport, reconcile_on_boot
+from .reconcile import ArtifactProbe, ReconcileReport, reconcile_on_boot
 from .store import (
     DEFAULT_DISPATCH_WINDOW,
     ClaimResult,
@@ -163,7 +162,7 @@ def open_default_store(
     home: Path,
     *,
     window: int = DEFAULT_DISPATCH_WINDOW,
-    artifact_probe: "Callable[[TaskRecord], str | None] | None" = None,
+    artifact_probe: "ArtifactProbe | None" = None,
     import_legacy_records: bool = True,
     taskrunner_runs_path: Path | None = None,
     journal_mode: str = "auto",

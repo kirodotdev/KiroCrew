@@ -106,7 +106,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_admit_wait_secs": ("function", "59162e39f6f1", "taskq_bridge"),
     "taskq_advance": ("function", "b70495611d88", "taskq_bridge"),
     "taskq_arm_reopen": ("function", "ad7cb1f4a178", "taskq_bridge"),
-    "taskq_artifact_probe": ("staticmethod", "9a4b8cbf4de4", "taskq_bridge"),
+    "taskq_artifact_probe": ("staticmethod", "a4e51b68714d", "taskq_bridge"),
     "taskq_batch_pending": ("function", "f583177755f4", "taskq_bridge_reads"),
     "taskq_batch_pending_async": ("coroutine", "f583177755f4", "taskq_bridge_reads"),
     "taskq_boot_dispatch": ("function", "b60c5fea256e", "taskq_bridge"),

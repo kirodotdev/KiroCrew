@@ -353,6 +353,11 @@ def _write_tombstone_file(
             # it is carried the same way rather than erased by that write.
             if "leaked_process" not in extra and prior.get("leaked_process") is True:
                 carried["leaked_process"] = True
+            # So is the attempt the ending belongs to: the boot reconcile reads
+            # it to tell this attempt's ending from an earlier one's.
+            attempt = prior.get("taskq_attempt")
+            if "taskq_attempt" not in extra and type(attempt) is int and attempt > 0:
+                carried["taskq_attempt"] = attempt
     tombstone = {
         "id": agent_id,
         "task": state.get("task", ""),
