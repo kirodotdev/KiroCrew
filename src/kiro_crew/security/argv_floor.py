@@ -197,6 +197,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _operands_lead_with,
         _self_cli_operands,
         _self_floor_can_fire,
+        _self_kill_span,
         _self_module_flag_scan,
         _self_module_name_index,
         _self_program_index,
