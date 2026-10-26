@@ -93,6 +93,48 @@ def _gateway(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_damaged_global_memory_db_is_named_and_left_untouched(monkeypatch, tmp_path):
+    """A damaged memory.db: startup completes, the file stays, and the advice fits.
+
+    The default advice ("cancel this store's pending restore") names a restore
+    that does not exist. The file is the store's only copy, so it is not moved.
+    """
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    db = tmp_path / "memory.db"
+    db.write_bytes(b"this is not a sqlite database" * 64)
+    before = db.read_bytes()
+    gateway.vector_memory = VectorMemoryStore(db_path=db)
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert "is damaged; it was left untouched" in message
+        assert str(db) in message
+        assert "Do not delete it" in message
+        assert "pending restore" not in message
+        assert db.read_bytes() == before
+        assert [p.name for p in tmp_path.iterdir() if "corrupt" in p.name] == []
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_a_non_damage_global_failure_keeps_the_restore_advice(monkeypatch):
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    gateway.vector_memory.init.side_effect = ValueError("restore staging is incomplete")
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        assert "Inspect or cancel this store's pending restore" in str(caught.value)
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
 async def test_preparation_task_without_owner_cannot_admit_consumers(monkeypatch):
     gateway = _gateway(monkeypatch)
     owner = gateway._memory_startup

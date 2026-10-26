@@ -119,7 +119,15 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                         indexed = memory.rebuild_index()
                         logger.info("Global memory ready: FTS indexed %d files", indexed)
                     except Exception as exc:
-                        startup.fail_store("default", exc)
+                        from kiro_crew.memory_startup import damaged_database_remedy
+
+                        startup.fail_store(
+                            "default",
+                            exc,
+                            remedy=damaged_database_remedy(
+                                getattr(self.vector_memory, "_db_path", None), exc
+                            ),
+                        )
                         self.vector_memory.close()
                 if restored:
                     logger.info("Activated memory restores for %s", ", ".join(restored))
