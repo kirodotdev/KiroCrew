@@ -158,14 +158,20 @@ def _norm_item(path_str: str) -> str:
     """Expand, absolutize, then lexically collapse ``.``/``..`` in a queried item.
 
     Applied to the queried ITEM only (never a pattern — see ``_match_path``).
-    Three steps, all purely lexical (no filesystem ``resolve()``, no I/O):
+    Four steps, all purely lexical (no filesystem ``resolve()``, no I/O):
 
     1. ``_expand`` — ``~`` / ``$VAR`` substitution.
-    2. ``os.path.abspath`` — anchor a relative path (e.g. ``../../etc/passwd`` or
+    2. on Windows, fold a namespace or default-stream alias of a local path to its
+       plain spelling (``_fold_windows_alias``, the keystone's own fold):
+       ``\\\\?\\C:\\x``, ``\\\\.\\C:\\x``, ``//?/C:/x``, ``\\??\\C:\\x`` and
+       ``C:\\x::$DATA`` all open ``C:\\x``, so each would otherwise dodge a deny
+       naming ``C:\\x`` and satisfy no allow that names it. UNC, volume GUID and
+       named-stream spellings stay as written. Identity off Windows.
+    3. ``os.path.abspath`` — anchor a relative path (e.g. ``../../etc/passwd`` or
        ``etc/passwd``) to the host CWD so it cannot dodge an absolute DENY glob by
        failing to match; ``abspath`` also runs ``normpath``, collapsing ``..``.
        An already-absolute path is unchanged except for the collapse.
-    3. collapse a leading ``//`` to ``/`` — POSIX (4.13) leaves a path beginning
+    4. collapse a leading ``//`` to ``/`` — POSIX (4.13) leaves a path beginning
        with exactly two slashes implementation-defined, and ``normpath`` PRESERVES
        it (``normpath('//etc/passwd') == '//etc/passwd'``).  An item supplied as
        ``//etc/passwd`` would then not match a ``/etc/**`` deny even though the OS
@@ -178,7 +184,9 @@ def _norm_item(path_str: str) -> str:
     best-effort anchor; the resolved ``is_sensitive_path`` keystone remains the
     authoritative block for the trust-root / credential dirs.
     """
-    p = os.path.abspath(_expand(path_str))
+    from kiro_crew.security.paths_resolver import _fold_windows_alias
+
+    p = os.path.abspath(_fold_windows_alias(_expand(path_str)))
     if p.startswith("//") and not p.startswith("///"):
         p = p[1:]
     return p
