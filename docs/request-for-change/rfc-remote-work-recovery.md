@@ -89,10 +89,12 @@ Two protocol facts frame the rest:
 - No code under `src/` sends or reads `tasks/get`, `tasks/result`, `tasks/cancel`,
   `tasks/list` or `notifications/tasks/status`. Kiro Crew's own MCP servers answer
   `initialize` with `protocolVersion` `2024-11-05` (`src/kiro_crew/mcp_shared_dispatch.py`),
-  and discovery asks for `2025-06-18` (`MCP_CLIENT_PROTOCOL_VERSION` in
-  `src/kiro_crew/mcp_discovery.py`). The broker's eager handshake,
-  `send_initialize` in `src/kiro_crew/mcp_gateway/backend_handshake.py`,
-  hard-codes `2024-11-05`, but production spawns take the lazy path: for a
+  and discovery asks for `2025-06-18` (`MCP_CLIENT_PROTOCOL_VERSION`, defined in
+  `src/kiro_crew/mcp_discovery_probe_state.py`). The broker's eager handshake,
+  `send_initialize` in `src/kiro_crew/mcp_gateway/backend_handshake.py`, offers
+  the same constant and retries once with the newest older version the server
+  lists if it refuses (`downgrade_protocol_version`), but production spawns take
+  the lazy path: for a
   routed server the gateway forwards the first stub's own `initialize`, so the
   version a session actually negotiates is whatever the engine asked for.
 - The gateway would mishandle a task-capable server today. A
