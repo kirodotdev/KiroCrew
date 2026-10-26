@@ -915,8 +915,12 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # Skill triggers read only what the person asked: none of
                 # the context prepended above, and nothing at all on a turn
                 # whose text the person did not write (a recovery or Continue
-                # continuation, the synthesis prompt, an MCP App's message).
-                skill_trigger_text="" if _is_synthetic else _jev_route_text,
+                # continuation, the synthesis prompt, an MCP App's message). A
+                # sub-agent completion is the parent's own work coming back, so
+                # its echoed task and result trigger nothing either.
+                skill_trigger_text=(
+                    "" if _is_synthetic or turn._turn_actor == "subagent" else _jev_route_text
+                ),
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
