@@ -95,7 +95,6 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
     _replayed = turn._replayed
     _stop_reason = turn._stop_reason
     _turn_completed_ok = turn._turn_completed_ok
-    _working_ts = turn._working_ts
     answer = turn.answer
     client = turn.client
     linked_session_key = turn.routed_link_key
@@ -159,7 +158,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             # this cancellation exit is not a verdict hole.
             if _turn_completed_ok:
                 turn.book_success()
-            await slack.set_thread_status(channel, reply_ts, "")
+            await turn.clear_working_indicators()
             if answer.stream_ts:
                 try:
                     await slack.delete_message(channel, answer.stream_ts)
@@ -170,29 +169,13 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                     await slack.delete_message(channel, answer.thinking_ts)
                 except Exception:
                     logger.debug("Failed to delete thinking placeholder", exc_info=True)
-            if _working_ts:
-                try:
-                    await slack.delete_message(channel, _working_ts)
-                except Exception:
-                    pass
-            turn._indicators_cleared = True
             turn.release_permit()
             return
 
-        # Clear assistant thread status (skip in review mode — keep indicator until button press)
-        if channel_activation != ACTIVATION_REVIEW:
-            await slack.set_thread_status(channel, reply_ts, "")
-
-        # Remove inline stop button
-        if _working_ts:
-            try:
-                await slack.delete_message(channel, _working_ts)
-            except Exception:
-                pass
-        # A review turn keeps its status until the draft lands; a cancel before
-        # that must still clear it, so its flag is set after the draft posts.
-        if channel_activation != ACTIVATION_REVIEW:
-            turn._indicators_cleared = True
+        # Clear the thread status and remove the inline Stop block. A review turn
+        # keeps its status until the draft lands (or a button press); a cancel
+        # before that must still clear it, so the turn keeps owning the status.
+        await turn.clear_working_indicators(keep_status=channel_activation == ACTIVATION_REVIEW)
 
         # Suppress error replies for trusted bot messages to prevent echo loops
         if from_trusted_bot and turn._had_error:
@@ -339,7 +322,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                     await turn.book_failure()
                 turn.release_permit()
                 return
-            turn._indicators_cleared = True
+            turn.release_working_indicators()
             # Persist conversation (draft counts as a turn). Best-effort: the draft
             # already reached the reader, so a persistence failure must not turn a
             # delivered draft into a failed turn — book success first, then persist.

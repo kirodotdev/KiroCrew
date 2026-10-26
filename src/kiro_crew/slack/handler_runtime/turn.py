@@ -271,22 +271,35 @@ class _SlackTurn:
             if callable(_close_gap):
                 _close_gap(self.session_key)
 
-    # Clear the "…is working" thread status and delete the inline Stop block, for
-    # ``handle_message``'s cancel arm. A no-op once ``_deliver_answer`` took them
-    # down, so a review-mode status it kept stays. Each Slack call is guarded on
-    # its own, so one failure does not skip the other.
-    async def clear_working_indicators(self) -> None:
+    # The one place that takes down the "…is working" thread status and the inline
+    # Stop block: ``_deliver_answer`` calls it on its exits, a compaction replay
+    # calls it before its nested turn starts, and ``handle_message``'s cancel arm
+    # calls it on a cancel. A no-op once the indicators are cleared or
+    # released, so a cancel after delivery adds no second clear. ``keep_status``
+    # deletes only the Stop block and leaves the turn owning the status (a review
+    # turn keeps it until its draft lands). Each Slack call is guarded on its own,
+    # so one failure does not skip the other.
+    async def clear_working_indicators(self, *, keep_status: bool = False) -> None:
         if self._indicators_cleared:
             return
-        try:
-            await self.slack.set_thread_status(self.channel, self.reply_ts, "")
-        except Exception:
-            logger.debug("Failed to clear thread status after a cancel", exc_info=True)
+        if not keep_status:
+            try:
+                await self.slack.set_thread_status(self.channel, self.reply_ts, "")
+            except Exception:
+                logger.debug("Failed to clear the thread status", exc_info=True)
         if self._working_ts:
             try:
                 await self.slack.delete_message(self.channel, self._working_ts)
             except Exception:
-                logger.debug("Failed to delete the Stop block after a cancel", exc_info=True)
+                logger.debug("Failed to delete the Stop block", exc_info=True)
+            self._working_ts = None
+        if not keep_status:
+            self._indicators_cleared = True
+
+    # Hand the thread status to its new owner: a posted review draft owns
+    # "Awaiting review…". A later cancel of this turn then leaves the status alone.
+    def release_working_indicators(self) -> None:
+        self._indicators_cleared = True
 
     def book_success(self) -> None:
         if self._verdict_booked:
@@ -521,6 +534,13 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await slack.post_message(channel, notice, reply_ts)
         except Exception:
             logger.debug("Failed to post the replay notice", exc_info=True)
+        # Clear this attempt's status before the nested turn starts, so a cancel
+        # that lands before the nested turn owns a status has nothing left over.
+        # From here the nested turn sets and clears its own status, and a cancel
+        # that unwinds this frame must not clear it (e.g. its "Awaiting review…"
+        # for a draft it already posted): the clear marks this turn's indicators
+        # done, so a later clear here is a no-op.
+        await turn.clear_working_indicators()
         try:
             await handle_message(
                 slack,
