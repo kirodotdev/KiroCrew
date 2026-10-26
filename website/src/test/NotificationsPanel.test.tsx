@@ -383,7 +383,13 @@ describe('NotificationsPanel', () => {
       expect(toggle.getAttribute('aria-disabled')).toBe('true')
       const describedBy = toggle.getAttribute('aria-describedby')
       expect(describedBy).toBeTruthy()
-      expect(document.getElementById(describedBy!)?.textContent).toMatch(/blocked/i)
+      const hint = document.getElementById(describedBy!)
+      // The hint is a SHORT back-reference to the System notifications row above
+      // (#23984), not a second copy of that row's full "blocked" sentence: the
+      // same page already shows the full sentence once, and repeating it read
+      // as two separate problems.
+      expect(hint?.textContent).toBe('Blocked in your browser — see above.')
+      expect(screen.getAllByText(/Turn it back on in the site's permission settings/i)).toHaveLength(1)
       fireEvent.click(toggle)
       fireEvent.keyDown(toggle, { key: ' ' })
       expect(mockPush.subscribe).not.toHaveBeenCalled()
@@ -391,5 +397,44 @@ describe('NotificationsPanel', () => {
       if (original === undefined) delete g.Notification
       else g.Notification = original
     }
+  })
+
+  // The hook sets `busy` only inside subscribe()/unsubscribe() and leaves
+  // `subscribed` as it was until the call ends, so the pair tells the two
+  // directions apart with no extra state (#23984).
+  it('says "Turning on…" under the disabled push toggle while subscribing', () => {
+    mockPush.busy = true
+    mockPush.subscribed = false
+    try {
+      render(<NotificationsPanel />, 'alerts')
+      const toggle = screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
+      expect(toggle.getAttribute('aria-disabled')).toBe('true')
+      const status = screen.getByRole('status')
+      expect(status.textContent).toBe('Turning on…')
+    } finally {
+      mockPush.busy = false
+    }
+  })
+
+  it('says "Turning off…" under the disabled push toggle while unsubscribing', () => {
+    mockPush.busy = true
+    mockPush.subscribed = true
+    try {
+      render(<NotificationsPanel />, 'alerts')
+      const toggle = screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
+      expect(toggle.getAttribute('aria-disabled')).toBe('true')
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+      const status = screen.getByRole('status')
+      expect(status.textContent).toBe('Turning off…')
+    } finally {
+      mockPush.busy = false
+      mockPush.subscribed = false
+    }
+  })
+
+  it('shows no status line under the push toggle when nothing is in flight', () => {
+    render(<NotificationsPanel />, 'alerts')
+    screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
+    expect(screen.queryByTestId('push-busy-status')).toBeNull()
   })
 })

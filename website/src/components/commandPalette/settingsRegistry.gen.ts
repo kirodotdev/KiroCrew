@@ -2298,7 +2298,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
     "label": "Notify me even when Kiro Crew is closed",
     "labelKey": "pages.settings.notificationsPanel.push_toggle_label",
-    "description": "A separate switch from system notifications above, which only work while Kiro Crew is open.",
+    "description": "Sends alerts to this device even after you close Kiro Crew. System notifications only appear while it's open.",
     "tab": "notifications",
     "type": "toggle",
     "occurrence": 1,

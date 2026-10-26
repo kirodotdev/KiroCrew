@@ -14,6 +14,16 @@ import { i18nT } from '../../i18n/t'
  * cannot work. While the browser has blocked notifications for the site the
  * toggle is disabled and the blocked hint sits beside it as its description:
  * no click here can succeed until the user changes the browser's site setting.
+ * The hint only points back at the System notifications row above, which
+ * already carries the full "blocked" sentence; repeating it here read as two
+ * separate problems (#23984).
+ *
+ * While a subscribe or unsubscribe call is in flight the toggle is disabled
+ * and a one-line status under it says which way it is going. The hook only
+ * sets `busy` inside those two calls and leaves `subscribed` untouched until
+ * the call ends, so `busy && !subscribed` is "turning on" and
+ * `busy && subscribed` is "turning off" with no extra state. `role="status"`
+ * makes it a polite live region so assistive tech hears the change too.
  *
  * Its own file so the settings registry maps it to the `alerts` rail page
  * (settingsExtract FILE map) instead of the bare Notifications tab.
@@ -46,9 +56,16 @@ export function PushSection() {
           describedBy={blocked ? blockedHintId : undefined}
           onChange={v => { if (v) void push.subscribe(); else void push.unsubscribe() }}
         />
+        {push.busy && (
+          <div role="status" data-testid="push-busy-status" className="text-[12px] text-muted">
+            {push.subscribed
+              ? i18nT('pages.settings.notificationsPanel.push_turning_off')
+              : i18nT('pages.settings.notificationsPanel.push_turning_on')}
+          </div>
+        )}
         {blocked && (
           <div id={blockedHintId} data-testid="push-blocked-hint" className="text-[12px] text-muted">
-            {i18nT('pages.settings.notificationsPanel.system_notifications_blocked')}
+            {i18nT('pages.settings.notificationsPanel.push_blocked_hint')}
           </div>
         )}
         {push.error && <ErrorNotice message={push.error} variant="inline" askAgent />}
