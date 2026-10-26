@@ -342,6 +342,18 @@ TaskRunner figure (`compute_memory_sized_parallel_cap`) and the memory posture
 (`resource_status`) still read `_available_memory_gb`, the reclaimable sum. So
 on a loaded Mac the floor defers more starts than before at the same
 `spawn_min_memory_gb`; `test_subagent_macos_probe.py` pins both readings.
+Because the posture can read AMPLE while the floor holds every start, the
+`resource_status` tool also reports the floor on the gate's own figure
+(`resource_status.spawn_floor_reading`): the floor, that figure, and the bar the
+cheapest top-level start must clear with nothing warming (the floor plus the
+shared price of the cheapest dedicated start the gate prices: the lowest of the
+unlearned price and any local bucket's learned settled figure, never under
+`subagent_cost_gb`), a lower bound since the warming reserve lives in the
+gateway's manager. When that bar is not met the tool says
+new top-level subagents cannot start and that they wait in the queue, in place
+of the AMPLE guidance. For a session bound to a remote workspace no reading is
+taken and nothing is reported blocked, since the gate prices that session's
+children without the floor.
 
 #### Memory guard: what must remain after the start
 
