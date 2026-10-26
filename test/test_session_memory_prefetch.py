@@ -32,7 +32,7 @@ _REAL_READS = store_admission.read_session_memory
 
 
 def _key(query: str) -> tuple:
-    return (None, None, store_admission._query_digest(query))
+    return store_admission._prefetch_key(None, None, query)
 
 
 def _held(query: str):
@@ -226,6 +226,18 @@ def test_a_real_store_token_holds_across_its_own_reads(tmp_path) -> None:
     before = store_admission._memory_read_inputs(memory, caps, MESSAGE, True)
     _REAL_READS(memory, caps, MESSAGE, inject_activity=True)
     assert store_admission._memory_read_inputs(memory, caps, MESSAGE, True) == before
+
+
+def test_the_default_store_keys_one_entry_however_it_is_spelled() -> None:
+    """The turn reserves under its bindings' ``"default"``; the build takes under the
+    execution record's ``""`` (or ``None``). One store, so one entry; a named store
+    keys apart from it."""
+    key = store_admission._prefetch_key
+    assert key("ws", "default", MESSAGE) == key("ws", "", MESSAGE) == key("ws", None, MESSAGE)
+    assert key("ws", "acme", MESSAGE) != key("ws", "", MESSAGE)
+    store_admission.reserve_memory_prefetch("ws", "default", MESSAGE)
+    store_admission.discard_memory_prefetch("ws", "", MESSAGE)
+    assert store_admission._memory_prefetches == {}
 
 
 def test_a_prefetch_for_another_message_is_not_used(builder, reads):
@@ -439,6 +451,86 @@ async def test_a_prewarmed_session_starts_no_memory_prefetch(tmp_path, monkeypat
     assert seen == []
 
 
+@pytest.mark.asyncio
+async def test_a_cold_start_build_takes_its_prefetch_and_sends_the_same_context(
+    tmp_path, monkeypatch
+):
+    """A dashboard cold start through the real runner and the real ``build_message``.
+
+    The turn reserves its prefetch under its bindings' store name (``"default"``) and
+    the build takes it under the execution record's (``""``). Run once without the
+    early reads (the build reads for itself) and once with them: the build takes the
+    prefetch, reading nothing itself, and the context sent is byte-for-byte the same.
+    """
+    from test_chat_runner_startup_recall import _turn, _turn_state
+
+    sent: dict[str, tuple[str, list[str]]] = {}
+    for run, prefetch in (("without", False), ("with", True)):
+        state, provider = _turn_state(tmp_path, monkeypatch, registered=False)
+        builder = state.context_builder
+        del builder.build_message  # the real method again, not the mock
+        if run == "without":  # one memory directory, written once, read by both runs
+            memory = builder.get_memory_for(None, None)
+            memory.write_preferences("# Preferences\n- Answer in short sentences.\n")
+            memory.write_projects("# Projects\n- Deploy checklist rework.\n")
+            memory.append_history("Reviewed the deploy checklist with the team.")
+        real_build = builder.build_message
+        build_reads: list[str] = []
+        all_reads: list[str] = []
+
+        def counted(*args, _all=all_reads, **kwargs):
+            _all.append(threading.current_thread().name)
+            return _REAL_READS(*args, **kwargs)
+
+        def build(*args, _real=real_build, _reads=build_reads, _all=all_reads, **kwargs):
+            before = len(_all)
+            out = _real(*args, **kwargs)
+            _reads.extend(_all[before:])
+            return out
+
+        monkeypatch.setattr(store_admission, "read_session_memory", counted)
+        loop = asyncio.get_running_loop()
+        prefetched = asyncio.Event()
+
+        def real_prefetch(*args, _done=prefetched, **kwargs):
+            try:
+                store_admission.prefetch_session_memory(*args, **kwargs)
+            finally:
+                loop.call_soon_threadsafe(_done.set)
+
+        monkeypatch.setattr(
+            chat_runner,
+            "prefetch_session_memory",
+            real_prefetch if prefetch else (lambda *a, **k: None),
+        )
+        if prefetch:
+            # The session finishes starting only once the early reads have run, as a
+            # real cold start outlasts them; without this the build could come first.
+            async def starting_session(*args, _done=prefetched, _p=provider, **kwargs):
+                await asyncio.wait_for(_done.wait(), 30)  # bound names a hang only
+                return _p, True, False
+
+            state.sessions.get_or_create = AsyncMock(side_effect=starting_session)
+        monkeypatch.setattr(builder, "build_message", build)
+        captured: list[str] = []
+        real_stream = provider.stream
+
+        async def stream(prompt, *args, _cap=captured, _real=real_stream, **kwargs):
+            _cap.append(prompt)
+            async for event in _real(prompt, *args, **kwargs):
+                yield event
+
+        provider.stream = stream
+        await _turn(state, "cold-start")
+        assert len(captured) == 1
+        sent[run] = (_CURRENT_DATE_LINE.sub("[CURRENT DATE] <now>", captured[0]), build_reads)
+
+    assert "Answer in short sentences." in sent["without"][0]
+    assert sent["with"][0] == sent["without"][0]
+    assert sent["without"][1], "without the prefetch the build reads memory itself"
+    assert sent["with"][1] == [], "the build read memory again instead of taking the prefetch"
+
+
 def test_the_table_holds_no_copy_of_the_message(builder) -> None:
     """A huge paste must not be retained by the prefetch table, as key or input."""
     paste = "x" * 200_000
@@ -583,6 +675,40 @@ def test_the_join_ends_at_the_build_embed_deadline(builder, monkeypatch) -> None
         embedding_work.set(previous)
     assert got is None
     assert len(done.waits) == 1 and done.waits[0] == 0.05
+
+
+def test_a_prefetch_whose_embed_wait_is_cut_is_joined_past_the_build_deadline(
+    builder, monkeypatch
+) -> None:
+    """Cut to the build's deadline, the prefetch's reads after it are the keyword
+    reads the build would make itself: the join keeps the long bound rather than end
+    at that deadline and run them a second time beside the prefetch's."""
+    from kiro_crew import context as ctx
+    from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, store_admission)
+    store_admission.reserve_memory_prefetch(None, None, MESSAGE)
+    entry = _held(MESSAGE)
+    entry.work = EmbeddingWork(deadline=30.0)
+    entry.started.set()
+    done = _record_done_waits()
+    done.set()  # so the join returns at once; the bound it was given is what is checked
+    previous = embedding_work.get()
+    embedding_work.set(EmbeddingWork(deadline=0.05))
+    try:
+        store_admission._take_memory_prefetch(
+            builder.get_memory_for(None, None),
+            ctx._resolve_caps(None),
+            workspace=None,
+            memory_store=None,
+            query=MESSAGE,
+            inject_activity=True,
+        )
+    finally:
+        embedding_work.set(previous)
+    assert entry.work.deadline == 0.05
+    assert done.waits == [ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS]
 
 
 def test_a_prefetch_older_than_its_ttl_is_not_taken(builder, reads) -> None:

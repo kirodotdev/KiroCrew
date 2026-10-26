@@ -399,12 +399,28 @@ class _MemoryPrefetch:
 
 
 _memory_prefetch_lock = threading.Lock()
-_memory_prefetches: dict[tuple[str | None, str | None, str], _MemoryPrefetch] = {}
+_memory_prefetches: dict[tuple[str | None, str, str], _MemoryPrefetch] = {}
 
 
 def _query_digest(query: str) -> str:
     """The message as the prefetch table holds it: a fixed-size digest, never the text."""
     return hashlib.sha256(query.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _prefetch_key(
+    workspace: str | None, memory_store: str | None, query: str
+) -> tuple[str | None, str, str]:
+    """The table key: the default store under one spelling, the message as its digest.
+
+    The dashboard turn names the default store ``"default"`` (its bindings), and the
+    build it feeds names it ``""`` (the execution record's ``legacy_name``) or
+    ``None``. All three are the one V1 store ``get_memory_for`` answers, so they key
+    one entry; any other name is a store of its own and keys as it is.
+    """
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    store = "" if not memory_store or memory_store == DEFAULT_MEMORY_STORE else memory_store
+    return (workspace, store, _query_digest(query))
 
 
 def read_session_memory(
@@ -557,7 +573,7 @@ def reserve_memory_prefetch(workspace: str | None, memory_store: str | None, que
             del _memory_prefetches[key]
         while len(_memory_prefetches) >= _MEMORY_PREFETCH_MAX:
             del _memory_prefetches[next(iter(_memory_prefetches))]
-        _memory_prefetches[(workspace, memory_store, _query_digest(query))] = _MemoryPrefetch(
+        _memory_prefetches[_prefetch_key(workspace, memory_store, query)] = _MemoryPrefetch(
             created=now
         )
 
@@ -565,7 +581,7 @@ def reserve_memory_prefetch(workspace: str | None, memory_store: str | None, que
 def discard_memory_prefetch(workspace: str | None, memory_store: str | None, query: str) -> None:
     """Drop a prefetch nobody will take (the session start failed)."""
     with _memory_prefetch_lock:
-        _memory_prefetches.pop((workspace, memory_store, _query_digest(query)), None)
+        _memory_prefetches.pop(_prefetch_key(workspace, memory_store, query), None)
 
 
 def prefetch_session_memory(
@@ -579,7 +595,7 @@ def prefetch_session_memory(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.embeddings import embedding_work
 
-    key = (workspace, memory_store, _query_digest(text))
+    key = _prefetch_key(workspace, memory_store, text)
     with _memory_prefetch_lock:
         entry = _memory_prefetches.get(key)
     if entry is None:
@@ -633,16 +649,17 @@ def _take_memory_prefetch(
 
     A prefetch that never started is not waited for. One still running started
     earlier than this build could, so it is joined, not restarted: a fresh read
-    would queue the same work behind it on the same pool. The join ends at this
-    build's own embedding deadline, and never later than
-    ``_PROMPT_BUILD_EMBED_TIMEOUT_SECS``; past it the build reads for itself. A
+    would queue the same work behind it on the same pool. Its embedding deadline
+    is cut to this build's own, and the join ends at
+    ``_PROMPT_BUILD_EMBED_TIMEOUT_SECS`` (at this build's own deadline when the
+    prefetch recorded no deadline to cut); past it the build reads for itself. A
     prefetch older than its TTL is not taken.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.embeddings import embedding_work
 
     with _memory_prefetch_lock:
-        entry = _memory_prefetches.pop((workspace, memory_store, _query_digest(query)), None)
+        entry = _memory_prefetches.pop(_prefetch_key(workspace, memory_store, query), None)
     if entry is None or not entry.started.is_set():
         return None
     if time.monotonic() - entry.created > _MEMORY_PREFETCH_TTL_SECS:
@@ -654,12 +671,14 @@ def _take_memory_prefetch(
     bound = ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
     if own is not None:
         if entry.work is not None:
+            # Once cut, what the prefetch reads past this deadline is the keyword
+            # read this build would make itself, already under way. So the join
+            # keeps the long bound rather than run that read a second time beside it.
             entry.work.deadline = min(entry.work.deadline, own.deadline)
-        # The join itself ends there too: that deadline is the long one when the
-        # embed is done and only the reads are slow, the short recall bound when
-        # the embed is still in flight, so it never waits past what this build
-        # would have spent reading for itself.
-        bound = min(bound, own.deadline - time.monotonic())
+        else:
+            # Nothing to cut: the join ends at this build's own deadline, so it never
+            # waits past what this build would have spent reading for itself.
+            bound = min(bound, own.deadline - time.monotonic())
     if not entry.done.wait(max(0.0, bound)):
         return None
     if (

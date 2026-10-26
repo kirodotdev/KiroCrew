@@ -1542,11 +1542,14 @@ the prefetch off), and the vector store's validity token (its scoring generation
 and `PRAGMA data_version`). The prefetch keeps its result only if none of these
 moved during the reads, and the build checks them again. A prefetch still running
 started before the build could, so the build joins it rather than reading again.
-It first cuts the prefetch's embedding deadline down to its own, and ends the join
-at that same deadline (never later than `_PROMPT_BUILD_EMBED_TIMEOUT_SECS`), so
-neither waits past what the build's own read would have spent. A result over 512K
-characters is not held, and the table keys and compares the message by its
-SHA-256, never the text. Anything else (none, not started, failed, moved, too
+It first cuts the prefetch's embedding deadline down to its own, so the prefetch
+ranks by keyword exactly when the build's own read would. What the prefetch reads
+past that deadline is the read the build would make, so the join waits for it, up
+to `_PROMPT_BUILD_EMBED_TIMEOUT_SECS`. A prefetch with no deadline to cut is joined
+only to the build's own deadline. A result over 512K characters is not held. The
+table keys the default store under one name (the turn says `"default"`, the build
+`""`), and keys and compares the message by its SHA-256, never the text. Anything
+else (none, not started, failed, moved, too
 large, past the bound, or older than 60 s) and the build reads for itself. A
 failed session start drops its prefetch. The synchronous
 `ContextBuilder.build_message` call remains off the event loop in the bounded
