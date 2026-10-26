@@ -5,9 +5,216 @@ import { GHOST_POSE_ICONS, GHOST_POSE_URLS } from '../components/GhostPoses'
 import { registerThemeBranding } from '../themeBranding'
 import { THEME_LOADER_ICONS } from '../themeLoaderIcons'
 
+// The per-turn loader draw is random; pin it so the carousel assertions below are
+// deterministic, and let the ghost-game tests choose what the next draw returns.
+const draw = vi.hoisted(() => ({ next: 'carousel' as string, calls: 0, motion: 'carousel' as string }))
+vi.mock('../components/GhostGames', async importOriginal => {
+  const actual = await importOriginal<typeof import('../components/GhostGames')>()
+  return { ...actual, pickLoaderChoice: () => { draw.calls++; return draw.next } }
+})
+vi.mock('../components/IconLoaderMotions', async importOriginal => {
+  const actual = await importOriginal<typeof import('../components/IconLoaderMotions')>()
+  return { ...actual, pickIconMotion: () => draw.motion }
+})
+
 const base = { running: false, stopping: false, state: '', lastRole: '', avatar: '/logo.png', botName: 'KiroCrew' }
 
-afterEach(() => document.documentElement.removeAttribute('data-theme'))
+afterEach(() => {
+  document.documentElement.removeAttribute('data-theme')
+  draw.next = 'carousel'
+  draw.calls = 0
+  draw.motion = 'carousel'
+})
+
+describe('ChatFooter theme icon motions', () => {
+  const themed = (slug: string) => {
+    const { cloud, flower, heart } = THEME_LOADER_ICONS
+    registerThemeBranding({ [slug]: { loaderIcons: [cloud, flower, heart, cloud] } })
+    document.documentElement.setAttribute('data-theme', `${slug}-light`)
+  }
+
+  it('plays the drawn motion with the theme\'s own icons instead of the carousel', () => {
+    draw.motion = 'spotlight'
+    themed('ilm-test-a')
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    const motion = screen.getByTestId('loader-motion')
+    expect(motion).toHaveAttribute('data-motion', 'spotlight')
+    expect(motion.querySelectorAll('.ilm-slot')).toHaveLength(4)
+    expect(motion.querySelectorAll('.ilm-slot .lucide').length).toBe(4)
+    expect(container.querySelector('.csb4')).toBeNull()
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+  })
+
+  it('keeps the carousel for a theme pool too short for a four-slot motion', () => {
+    draw.motion = 'spotlight'
+    const { cloud, flower, heart } = THEME_LOADER_ICONS
+    registerThemeBranding({ 'ilm-test-short': { loaderIcons: [cloud, flower, heart] } })
+    document.documentElement.setAttribute('data-theme', 'ilm-test-short-light')
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.queryByTestId('loader-motion')).toBeNull()
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+  })
+
+  it('never applies a motion to the default ghost poses', () => {
+    draw.motion = 'shuffle'
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.queryByTestId('loader-motion')).toBeNull()
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+  })
+
+  it('keeps the carousel under reduced motion', () => {
+    draw.motion = 'drop'
+    themed('ilm-test-b')
+    const spy = vi.spyOn(window, 'matchMedia').mockImplementation(q => ({
+      matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    }))
+    try {
+      const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+      expect(screen.queryByTestId('loader-motion')).toBeNull()
+      expect(container.querySelector('.csb4')).toBeInTheDocument()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('holds the motion for the turn and draws again on the next one', () => {
+    draw.motion = 'drop'
+    themed('ilm-test-c')
+    const { rerender } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    draw.motion = 'shuffle'
+    rerender(<ChatFooter {...base} running={true} lastRole="tool" />)
+    expect(screen.getByTestId('loader-motion')).toHaveAttribute('data-motion', 'drop')
+    rerender(<ChatFooter {...base} running={false} lastRole="assistant" />)
+    rerender(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.getByTestId('loader-motion')).toHaveAttribute('data-motion', 'shuffle')
+  })
+})
+
+describe('ChatFooter ghost games', () => {
+  it('shows the drawn game in place of the carousel, beside the full label', () => {
+    draw.next = 'phase'
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.getByTestId('loader-game')).toHaveAttribute('data-game', 'phase')
+    expect(container.querySelector('.csb4')).toBeNull()
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
+  })
+
+  it('renders the ellipsis game AFTER the label stem, so it eats the label\'s own dots', () => {
+    draw.next = 'ellipsis'
+    render(<ChatFooter {...base} running={true} lastRole="user" />)
+    const stem = screen.getByText('Thinking')
+    const game = screen.getByTestId('loader-game')
+    expect(game).toHaveAttribute('data-game', 'ellipsis')
+    expect(stem.compareDocumentPosition(game) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText('Thinking…')).toBeNull()
+    // The spoken name keeps the full label.
+    expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
+  })
+
+  it('keeps the carousel for an ellipsis draw while a starting environment names its stage', () => {
+    // The stage label stands in for "Thinking…", so there is no "…" to eat.
+    draw.next = 'ellipsis'
+    const { container } = render(
+      <ChatFooter
+        {...base}
+        running={true}
+        lastRole="user"
+        statusLabel={{
+          label: 'Setting up Coder MicroVM',
+          stage: 'Starting workspace',
+          elapsed: '3s',
+          steps: [{ key: 'provisioning', label: 'Starting workspace', state: 'current' }],
+        }}
+      />,
+    )
+    expect(screen.getByText('Setting up Coder MicroVM')).toBeInTheDocument()
+    expect(screen.queryByTestId('loader-game')).toBeNull()
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+    expect(screen.queryByText('Thinking')).toBeNull()
+  })
+
+  it('plays a drawn game beside a starting environment\'s stage label', () => {
+    draw.next = 'volley'
+    render(
+      <ChatFooter
+        {...base}
+        running={true}
+        lastRole="user"
+        statusLabel={{
+          label: 'Setting up Coder MicroVM',
+          stage: 'Starting workspace',
+          elapsed: '3s',
+          steps: [{ key: 'provisioning', label: 'Starting workspace', state: 'current' }],
+        }}
+      />,
+    )
+    expect(screen.getByTestId('loader-game')).toHaveAttribute('data-game', 'volley')
+    expect(screen.getByText('Setting up Coder MicroVM')).not.toHaveClass('thinking-shimmer')
+    expect(screen.getByRole('status', { name: 'Starting workspace' })).toBeInTheDocument()
+  })
+
+  it('falls back to the carousel and the full label when the ellipsis art fails to load', () => {
+    draw.next = 'ellipsis'
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    fireEvent.error(container.querySelector('.gg img')!)
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+    expect(screen.queryByTestId('loader-game')).toBeNull()
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+  })
+
+  it('a failed game asset costs only that turn its game, never the carousel or later games', () => {
+    draw.next = 'phase'
+    const { container, rerender } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    fireEvent.error(container.querySelector('.gg img')!)
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+    rerender(<ChatFooter {...base} running={false} lastRole="assistant" />)
+    rerender(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.getByTestId('loader-game')).toHaveAttribute('data-game', 'phase')
+  })
+
+  it('lets a theme\'s own loader artwork win over a drawn game', () => {
+    draw.next = 'volley'
+    const { cloud, flower, heart } = THEME_LOADER_ICONS
+    registerThemeBranding({ 'gg-test-theme': { loaderIcons: [cloud, flower, heart, cloud] } })
+    document.documentElement.setAttribute('data-theme', 'gg-test-theme-dark')
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+    expect(screen.queryByTestId('loader-game')).toBeNull()
+  })
+
+  it('keeps the carousel under reduced motion', () => {
+    draw.next = 'inhale'
+    const spy = vi.spyOn(window, 'matchMedia').mockImplementation(q => ({
+      matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    }))
+    try {
+      const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+      expect(container.querySelector('.csb4')).toBeInTheDocument()
+      expect(screen.queryByTestId('loader-game')).toBeNull()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('holds one draw for the whole turn and draws again when the next turn starts', () => {
+    draw.next = 'hop'
+    const { rerender } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    const callsAtStart = draw.calls
+    draw.next = 'phase'
+    // Mid-turn the footer hides while text streams and comes back: same scene.
+    rerender(<ChatFooter {...base} running={true} state="streaming" lastRole="streaming" streamTick={1} />)
+    rerender(<ChatFooter {...base} running={true} lastRole="tool" />)
+    expect(screen.getByTestId('loader-game')).toHaveAttribute('data-game', 'hop')
+    expect(draw.calls).toBe(callsAtStart)
+    // Turn ends, a new one starts: a fresh draw.
+    rerender(<ChatFooter {...base} running={false} lastRole="assistant" />)
+    rerender(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.getByTestId('loader-game')).toHaveAttribute('data-game', 'phase')
+  })
+})
 
 describe('ChatFooter', () => {
   it('returns null when not running', () => {
@@ -127,6 +334,8 @@ describe('ChatFooter', () => {
     const label = screen.getByText('Thinking…')
     expect(label).toBeInTheDocument()
     expect(label).not.toHaveClass('sr-only')
+    // The visible label shimmers; its fallback colour is the muted text tone.
+    expect(label).toHaveClass('thinking-shimmer')
   })
 
   it('exposes the running indicator as an accessible status with a single spoken name', () => {
