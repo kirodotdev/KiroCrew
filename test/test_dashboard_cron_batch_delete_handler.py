@@ -12,15 +12,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers.cron import api_cron_batch_delete
 
 
 def _make_app(state):
     app = web.Application()
+    state.owner_id = ""
     app["state"] = state
     app.router.add_delete("/api/crons", api_cron_batch_delete)
-    return app
+    return as_owner(app)
 
 
 def _make_state(existing_ids):

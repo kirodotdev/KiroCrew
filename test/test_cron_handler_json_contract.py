@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers.cron import (
@@ -59,7 +60,7 @@ def _cron_app(handler, route: str, **store) -> web.Application:
         ack_notification=AsyncMock(),
     )
     app.router.add_route("*", route, handler)
-    return app
+    return as_owner(app)
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_BODIES)

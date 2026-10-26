@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cron import CronJob, CronService
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -1136,7 +1137,7 @@ def _app(handler, route: str, *, folders=(FOLDER,), **store) -> web.Application:
         push_slots_update=MagicMock(),
     )
     app.router.add_route("*", route, handler)
-    return app
+    return as_owner(app)
 
 
 _BODY = {"name": "brief", "message": "Write it.", "every": 3600}
