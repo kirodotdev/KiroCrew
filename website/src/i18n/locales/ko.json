@@ -14280,6 +14280,10 @@
         "default_crewmate_unknown_reason": "크루메이트 목록에 {{name}}이(가) 더 이상 없습니다"
       },
       "mcpTab": {
+        "share_refused_other": "공유하도록 설정한 서버 {{count}}개가 공유되지 않습니다: {{names}}. 실행하려면 승인이 필요해서 채팅마다 별도 사본이 실행됩니다.",
+        "share_refused_restart": "MCP 관리에서 각각 공유를 승인하세요. 그런 다음 게이트웨이를 다시 시작하면(설정 → 정보 → 게이트웨이 다시 시작) 새 채팅이 공유 사본을 사용합니다.",
+        "share_refused_review": "MCP 관리에서 검토",
+        "share_status_failed": "공유하도록 설정한 서버가 승인되었는지 확인하지 못했습니다.",
         "actions": "동작",
         "add_custom": "사용자 지정 추가",
         "add_server": "서버 추가",

@@ -120,6 +120,7 @@ _BASE_NAMES: dict[str, str] = {
     "_doctor_managed_service_policy": "own-func",
     "_doctor_masked_credential_aliases": "own-func",
     "_doctor_mcp_gateway_daemon": "own-func",
+    "_doctor_mcp_share_refused": "own-func",
     "_doctor_mcp_governance": "own-func",
     "_doctor_mcp_tools": "own-func",
     "_doctor_member_dispatchability": "own-func",

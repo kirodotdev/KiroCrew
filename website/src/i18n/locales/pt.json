@@ -14738,6 +14738,12 @@
         "default_crewmate_unknown_reason": "{{name}} já não está na lista de companheiros"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} servidor que você quer compartilhar não está compartilhado: {{names}}. A inicialização dele precisa da sua aprovação, então cada chat inicia a própria cópia.",
+        "share_refused_many": "{{count}} servidores que você quer compartilhar não estão compartilhados: {{names}}. A inicialização deles precisa da sua aprovação, então cada chat inicia a própria cópia.",
+        "share_refused_other": "{{count}} servidores que você quer compartilhar não estão compartilhados: {{names}}. A inicialização deles precisa da sua aprovação, então cada chat inicia a própria cópia.",
+        "share_refused_restart": "Em Gerenciamento de MCP, aprove o compartilhamento de cada um. Depois reinicie o gateway (Configurações → Sobre → Reiniciar o gateway) para que novos chats usem a cópia compartilhada.",
+        "share_refused_review": "Revisar em Gerenciamento de MCP",
+        "share_status_failed": "Não foi possível verificar se os servidores que você quer compartilhar estão aprovados.",
         "actions": "Ações",
         "add_custom": "Adicionar personalizado",
         "add_server": "Adicionar servidor",

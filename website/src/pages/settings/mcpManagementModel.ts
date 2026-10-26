@@ -26,6 +26,9 @@ export type GatewayStatus = {
   // Stubbed servers whose launch the gateway refused to run outside the session
   // sandbox, keyed by name. Optional: an older gateway does not send it.
   launch_refused?: Record<string, LaunchRefusal>
+  // Share-list names, as configured, whose launch is refused, with the reason.
+  // Matched by the gateway, which knows the alias a refusal is recorded under.
+  share_refused?: Record<string, string>
 }
 
 /** Why a stubbed server's launch waits for the operator, and what approving it runs. */

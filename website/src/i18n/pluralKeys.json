@@ -216,6 +216,7 @@
   "pages.overview.mcpTab.applied_change",
   "pages.overview.mcpTab.disabled_count",
   "pages.overview.mcpTab.pending_change",
+  "pages.overview.mcpTab.share_refused",
   "pages.overview.memoryTab.session",
   "pages.overview.portabilityTab.import_complete_restart_gateway",
   "pages.overview.skillsTab.agent",

@@ -14738,6 +14738,12 @@
         "default_crewmate_unknown_reason": "{{name}} ya no aparece en la lista de compañeros"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} servidor que quieres compartir no se comparte: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
+        "share_refused_many": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
+        "share_refused_other": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
+        "share_refused_restart": "En Gestión de MCP, aprueba compartir cada uno. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela) para que los chats nuevos usen la copia compartida.",
+        "share_refused_review": "Revisar en Gestión de MCP",
+        "share_status_failed": "No se pudo comprobar si los servidores que quieres compartir están aprobados.",
         "actions": "Acciones",
         "add_custom": "Añadir personalizado",
         "add_server": "Añadir servidor",

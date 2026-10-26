@@ -6758,6 +6758,11 @@
         "default_crewmate_unknown_reason": "{{name}} is no longer in the mate list"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} server set to share is not shared: {{names}}. Its launch needs your approval, so every chat starts its own copy.",
+        "share_refused_other": "{{count}} servers set to share are not shared: {{names}}. Their launch needs your approval, so every chat starts its own copy.",
+        "share_refused_restart": "In MCP Management, press Approve sharing for each one. Then restart the gateway (Settings → About → Restart gateway) so new chats use the shared copy.",
+        "share_refused_review": "Review in MCP Management",
+        "share_status_failed": "Could not check whether the servers set to share are approved.",
         "applied_change_one": "Applied {{count}} change",
         "applied_change_other": "Applied {{count}} changes",
         "edit_json_for": "Edit JSON for {{name}}",

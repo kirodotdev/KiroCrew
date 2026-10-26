@@ -14280,6 +14280,10 @@
         "default_crewmate_unknown_reason": "队友列表中已没有 {{name}}"
       },
       "mcpTab": {
+        "share_refused_other": "{{count}} 个设为共享的服务器未被共享：{{names}}。它们需要你批准后才能启动，所以每个聊天都会启动自己的副本。",
+        "share_refused_restart": "在MCP 管理中逐个批准共享。然后重启网关（设置 → 关于 → 重启网关），新聊天才会使用共享副本。",
+        "share_refused_review": "在MCP 管理中查看",
+        "share_status_failed": "无法检查设为共享的服务器是否已获批准。",
         "actions": "操作",
         "add_custom": "添加自定义",
         "add_server": "添加服务器",
