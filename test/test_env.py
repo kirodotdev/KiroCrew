@@ -112,6 +112,32 @@ class TestAugmentedPath:
         toolbox_idx = next(i for i, d in enumerate(dirs) if ".toolbox/bin" in d)
         assert local_idx < toolbox_idx
 
+    def test_windows_searches_the_toolbox_localappdata_bin(self, monkeypatch, tmp_path) -> None:
+        """Toolbox on Windows installs tools in ``%LOCALAPPDATA%\\Toolbox\\bin``.
+
+        Without it a Toolbox-installed ``claude`` the inherited PATH lacks is
+        reported as not installed by the Agent Harness probe.
+        """
+        local = tmp_path / "Local"
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        dirs = augmented_path("").split(os.pathsep)
+        assert str(local / "Toolbox" / "bin") in dirs
+
+    def test_windows_toolbox_bin_follows_a_pinned_home(self, monkeypatch, tmp_path) -> None:
+        """A pinned home is another account: its own ``AppData\\Local``, not ours."""
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "mine"))
+        home = tmp_path / "other"
+        dirs = augmented_path("", home=str(home)).split(os.pathsep)
+        assert str(home / "AppData" / "Local" / "Toolbox" / "bin") in dirs
+        assert str(tmp_path / "mine" / "Toolbox" / "bin") not in dirs
+
+    def test_posix_does_not_add_the_windows_toolbox_dir(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        assert not any("Toolbox" + os.sep + "bin" in d for d in augmented_path("").split(os.pathsep))
+
     def test_includes_both_macos_install_prefixes(self) -> None:
         """``/usr/local/bin`` belongs beside ``/opt/homebrew/bin``, not instead of it.
 
