@@ -4,6 +4,7 @@ import ast
 import asyncio
 import inspect
 import json
+import sqlite3
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -130,6 +131,26 @@ async def test_a_non_damage_global_failure_keeps_the_restore_advice(monkeypatch)
         with pytest.raises(MemoryStartupUnavailable) as caught:
             require_memory_ready()
         assert "Inspect or cancel this store's pending restore" in str(caught.value)
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_damage_outside_the_vector_open_does_not_name_memory_db(monkeypatch, tmp_path):
+    """The remedy names memory.db, so a damaged index file must not earn it."""
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    gateway.vector_memory._db_path = tmp_path / "memory.db"
+    gateway.ctx_builder.memory.rebuild_index.side_effect = sqlite3.DatabaseError(
+        "database disk image is malformed"
+    )
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert "Inspect or cancel this store's pending restore" in message
+        assert "memory.db" not in message
     finally:
         await asyncio.to_thread(gateway._stop_memory_startup)
 
