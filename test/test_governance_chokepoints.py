@@ -10,6 +10,7 @@ publish chokepoints are in ``test_governance_chokepoints_scope_gates.py``.
 
 from __future__ import annotations
 
+import ntpath
 import os
 
 import pytest
@@ -921,6 +922,95 @@ class TestMatchPathNormalization:
         item = "/srv/app/teamA/shared/data.txt"
         pat = "/srv/app/**/../shared/**"
         assert _match_path(item, pat) == fnmatch.fnmatchcase(item, pat)
+
+
+_NT_HOME = r"C:\Users\u"
+
+
+def _nt_expand(path: str) -> str:
+    return ntpath.expanduser(ntpath.expandvars(path))
+
+
+def _nt_norm_item(path: str) -> str:
+    """``_norm_item`` as a Windows gateway running from ``C:\\work`` computes it."""
+    return ntpath.normpath(ntpath.join("C:\\work", _nt_expand(path)))
+
+
+class TestMatchPathOnWindows:
+    """A local path is matched the way Windows opens it: either separator, any case.
+
+    Runs on every OS by reading paths as a Windows gateway does (``ntpath`` for the
+    item, ``_WINDOWS_PATHS`` on), so the POSIX matrix guards the Windows contract.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _windows_reading(self, _floor_monkeypatch):
+        from kiro_crew.platform import governance
+
+        _floor_monkeypatch.setenv("USERPROFILE", _NT_HOME)
+        _floor_monkeypatch.setenv("HOME", _NT_HOME)
+        _floor_monkeypatch.setattr(governance, "_WINDOWS_PATHS", True)
+        _floor_monkeypatch.setattr(governance, "_norm_item", _nt_norm_item)
+        _floor_monkeypatch.setattr(governance, "_expand", _nt_expand)
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            "~/.ssh/id_rsa",
+            r"C:\Users\u\.ssh\id_rsa",
+            "C:/Users/u/.ssh/id_rsa",
+            r"c:\users\U\.SSH\id_rsa",
+            r"C:\Users\u\work\..\.ssh\id_rsa",
+        ],
+    )
+    def test_a_home_deny_matches_every_spelling_of_its_paths(self, item):
+        from kiro_crew.platform.governance import _match_path
+
+        # ``~`` expands to ``C:\Users\u/.ssh/**``: both separators in one pattern.
+        assert _match_path(item, "~/.ssh/**")
+        assert _match_path(item, "$HOME/.ssh/**")
+        assert _match_path(item, r"C:\Users\U\.ssh\**")
+
+    @pytest.mark.parametrize(
+        "item",
+        [r"C:\Users\u\.sshx\id_rsa", r"C:\Users\other\.ssh\id_rsa", r"D:\Users\u\.ssh\id_rsa"],
+    )
+    def test_a_home_deny_matches_no_other_path(self, item):
+        from kiro_crew.platform.governance import _match_path
+
+        assert not _match_path(item, "~/.ssh/**")
+
+    def test_a_drive_or_share_is_part_of_the_path(self):
+        from kiro_crew.platform.governance import _match_path
+
+        assert _match_path("c:/data/x.txt", r"C:\data\**")
+        assert not _match_path(r"D:\data\x.txt", "C:/data/**")
+        assert _match_path(r"\\srv\share\x.txt", "//srv/share/**")
+        assert not _match_path(r"C:\srv\share\x.txt", "//srv/share/**")
+
+    def test_a_traversal_still_cannot_satisfy_an_allow_prefix(self):
+        from kiro_crew.platform.governance import _match_path
+
+        assert not _match_path(r"C:\ws\..\secret.txt", "C:/ws/**")
+        assert _match_path(r"C:\ws\.\src\app.py", "C:/ws/**")
+
+    def test_a_policy_deny_written_with_slashes_is_enforced(self):
+        from governance_policy_helpers import _policy_body
+
+        from kiro_crew.platform.governance import parse_policy, resolve
+
+        ceiling = parse_policy(
+            _policy_body(filesystem={"read": {"mode": "deny", "deny": ["~/.ssh/**"]}})
+        )
+        assert not resolve(ceiling, None, "filesystem.read", r"C:\Users\u\.ssh\id_rsa").permitted
+        assert resolve(ceiling, None, "filesystem.read", r"C:\Users\u\notes.txt").permitted
+
+    def test_posix_compares_paths_as_written(self, monkeypatch):
+        from kiro_crew.platform import governance
+
+        monkeypatch.setattr(governance, "_WINDOWS_PATHS", False)
+        assert governance._path_key(r"/A\b") == r"/A\b"
+        assert not governance._match_path("/home/u/A.txt", "/home/u/a.txt")
 
 
 # ── chokepoints fail CLOSED on governance error ──

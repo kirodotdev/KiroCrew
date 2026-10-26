@@ -64,6 +64,7 @@ def _windows_reading(monkeypatch) -> None:
     # Through the facade: the split family's mirror sends the write to every holder.
     monkeypatch.setattr(governance, "_norm_item", _nt_norm_item)
     monkeypatch.setattr(governance, "_expand", _nt_expand)
+    monkeypatch.setattr(governance, "_WINDOWS_PATHS", True)
 
 
 @pytest.fixture(params=["this-os", "windows"])
@@ -345,7 +346,8 @@ def test_a_remote_call_cannot_reach_a_gateway_path(monkeypatch, reading, path):
     [
         ("C:\\work\\secret\\k", "C:\\work\\secret\\*", True),
         ("C:\\work\\x\\..\\secret\\k", "C:\\work\\secret\\*", True),
-        ("C:\\work\\secret\\k", "c:\\work\\secret\\*", False),  # case-sensitive, as on main
+        ("C:\\work\\secret\\k", "c:\\work\\secret\\*", True),  # Windows opens any case
+        ("C:\\work\\secret\\k", "C:/work/secret/*", True),  # and either separator
         ("C:/work/secret/k", "C:\\work\\secret\\*", True),  # ntpath folds / to \\
         ("/workspace/app/x", "/workspace/app/**", False),  # a POSIX pattern never met it
     ],

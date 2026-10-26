@@ -74,6 +74,13 @@ can reorder strictness or redefine matching):
   collapses a leading `//` to `/` (POSIX leaves a two-slash prefix
   implementation-defined and `normpath` preserves it, so `//etc/passwd` would
   otherwise dodge a `/etc/**` deny while the OS opens `/etc/passwd`).
+  On a **Windows** gateway the item comes out of `abspath` with `\` and a drive,
+  while a pattern is written with `/` (`~/.ssh/**` even expands to
+  `C:\Users\u/.ssh/**`), and Windows opens a path whatever its case. So both
+  sides are compared with `/` and in lower case (`_path_key`); the pattern is
+  still never `normpath`'d. Compared as written, a `~/.ssh/**` deny matched no
+  path at all there. A pattern rooted without a drive (`/data/**`) still never
+  meets an item, which `abspath` gives a drive. POSIX is unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix

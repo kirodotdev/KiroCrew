@@ -53,7 +53,8 @@ def _match_command(item: str, pattern: str) -> bool:
 def _match_path(item: str, pattern: str) -> bool:
     """Glob match for filesystem paths, expanding ``~`` / ``$HOME``.
 
-    Case-sensitive (POSIX path semantics).  ``fnmatch``'s ``*`` already crosses
+    Case-sensitive on POSIX. On Windows both sides are compared with ``/`` and in
+    lower case (``_path_key``).  ``fnmatch``'s ``*`` already crosses
     directory separators, which is the documented (broad) behaviour for a
     deny-oriented read block; callers wanting precise segment semantics should
     prefer narrower patterns.
@@ -108,7 +109,7 @@ def _match_path(item: str, pattern: str) -> bool:
     if isinstance(item, GuestPath):
         norm = guest_norm(item)
         return norm is not None and fnmatch.fnmatchcase(norm, _expand(pattern))
-    return fnmatch.fnmatchcase(_norm_item(item), _expand(pattern))
+    return fnmatch.fnmatchcase(_path_key(_norm_item(item)), _path_key(_expand(pattern)))
 
 
 def _match_host(item: str, pattern: str) -> bool:
@@ -300,6 +301,28 @@ def _norm_item(path_str: str) -> str:
     if p.startswith("//") and not p.startswith("///"):
         p = p[1:]
     return p
+
+
+# Whether a local path is a Windows one. A module constant rather than an inline
+# ``os.name`` test so a POSIX run can read a path the way a Windows gateway does.
+_WINDOWS_PATHS = os.name == "nt"
+
+
+def _path_key(path: str) -> str:
+    """The form a local item and its pattern are compared in.
+
+    Unchanged on POSIX. On Windows ``abspath`` writes an item with ``\\`` while an
+    operator writes a pattern with ``/``, the form the spec documents (``~/.ssh/**``
+    expands to ``C:\\Users\\u/.ssh/**``, both separators in one string). Windows
+    also opens a path whatever its case. Compared as written, a ``~/.ssh/**`` deny
+    matched no path at all, and a differently cased spelling of a denied path
+    slipped past a deny written with ``\\``. Both sides use ``/`` and lower case,
+    so a pattern matches every spelling Windows opens as one of the paths it names
+    and nothing else.
+    """
+    if not _WINDOWS_PATHS:
+        return path
+    return path.replace("\\", "/").lower()
 
 
 # Schemes that actually open a network connection to a host. A URL on any other
