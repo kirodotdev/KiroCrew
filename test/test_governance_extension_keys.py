@@ -210,6 +210,12 @@ def test_a_registration_without_a_manifest_is_judged_by_its_own_version(
     versionless = SimpleNamespace(version="", signer="")
     record.version = "1.0.0"
     assert app_admission_denied("my-app", manifest=versionless, action="enable") is None  # type: ignore[arg-type]
+    # The app-backend backstop's revive is an activation too, so it borrows the same
+    # installed version rather than judging an empty one.
+    assert app_admission_denied("my-app", manifest=versionless, action="backstop") is None  # type: ignore[arg-type]
+    record.version = "2.0.0"
+    assert app_admission_denied("my-app", manifest=versionless, action="backstop")  # type: ignore[arg-type]
+    record.version = "1.0.0"
     # ...but an install never borrows the installed version.
     assert app_admission_denied("my-app", manifest=versionless, action="install")  # type: ignore[arg-type]
 

@@ -192,12 +192,14 @@ def _isolated_module_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> An
         bmod._allocated_ports.clear()
         bmod._restart_attempts.clear()
         bmod._lifecycle_generation.clear()
+        bmod._seated_backends.clear()
     yield
     with bmod._lock:
         bmod._processes.clear()
         bmod._allocated_ports.clear()
         bmod._restart_attempts.clear()
         bmod._lifecycle_generation.clear()
+        bmod._seated_backends.clear()
 
 
 @pytest.fixture(name="spawn_root")

@@ -199,7 +199,7 @@ def verified_signer(manifest: "AppManifest | None") -> str:
 
 #: Admissions that load an app already installed, judged by its recorded version
 #: when the manifest names none.
-_ACTIVATION_ACTIONS = frozenset({"boot", "enable", "restart"})
+_ACTIVATION_ACTIONS = frozenset({"boot", "enable", "restart", "backstop"})
 
 
 def app_version_refusal(
@@ -209,12 +209,12 @@ def app_version_refusal(
 
     *version* is the caller's own version for the app, used when *manifest* has
     none (a registration that sends a version but no manifest). With neither, an
-    activation (*action* ``boot``, ``enable`` or ``restart``) uses the installed
-    record's version, so a registration whose manifest names no version is judged
-    by the version it was registered with. An install or update never falls back.
+    activation (*action* ``boot``, ``enable``, ``restart`` or ``backstop``) uses the
+    installed record's version, so a registration whose manifest names no version is
+    judged by the version it was registered with. An install or update never falls back.
 
     Asked as ``<app>@<version>`` by every admission (install, update, boot, restart,
-    enable), so a version the policy drops stops loading too. An unnamed scope
+    enable, backstop), so a version the policy drops stops loading too. An unnamed scope
     permits on oss; on enterprise it answers the baseline, which is off. Blocking.
     """
     from kiro_crew.extension_governance import app_version_denied
