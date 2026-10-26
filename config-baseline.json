@@ -8802,6 +8802,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.visual_refresh",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: visual_refresh",
+      "help": "Turn on the 'visual_refresh' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.webhooks",
       "kind": "core",
       "type": "boolean",

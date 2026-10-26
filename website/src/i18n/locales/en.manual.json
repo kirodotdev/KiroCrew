@@ -9368,6 +9368,8 @@
         "decisions_runtime_retry": "Try again",
         "folder_conductor": "Folder conductor",
         "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there.",
+        "visual_refresh": "Visual refresh",
+        "visual_refresh_desc": "Turns on the in-progress restyle of the dashboard. Nothing is restyled yet: pieces appear as they land, and may look unfinished or change between updates. Turn it off to go back to the current look.",
         "crewmate_harness": "Agent harness per mate",
         "crewmate_harness_desc": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
         "crew_mode": "Ultra Mode",

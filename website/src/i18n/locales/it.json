@@ -14414,6 +14414,8 @@
         "decisions_runtime_retry": "Riprova",
         "folder_conductor": "Conductor della cartella",
         "folder_conductor_desc": "Porta in cima alla cartella la chat che ha avviato le altre chat di quella cartella: una barra colorata sul bordo sinistro e una piccola etichetta conductor accanto al nome dell'agente. Questo cambia l'ordine dell'elenco delle sessioni, quindi l'elenco resta com'è finché non la attivi. La voce di chat nel menu della cartella c'è sempre.",
+        "visual_refresh": "Rinnovo visivo",
+        "visual_refresh_desc": "Attiva il restyling in corso della dashboard. Non è ancora cambiato nulla: le parti compaiono man mano che sono pronte e potrebbero sembrare incomplete o cambiare tra un aggiornamento e l'altro. Disattivalo per tornare all'aspetto attuale.",
         "crewmate_harness": "Harness dell’agente per compagno",
         "crewmate_harness_desc": "Aggiunge un’impostazione Harness dell’agente al profilo di ogni compagno, così uno può usare un altro strumento di programmazione IA, come Claude Code, con i suoi modelli, mentre gli altri restano su quello predefinito.",
         "crew_mode": "Ultra Mode",

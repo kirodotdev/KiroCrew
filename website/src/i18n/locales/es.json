@@ -14414,6 +14414,8 @@
         "decisions_runtime_retry": "Reintentar",
         "folder_conductor": "Conductor de la carpeta",
         "folder_conductor_desc": "Sube al principio de la carpeta el chat que inició los demás chats de esa carpeta: una barra de color en su borde izquierdo y una pequeña etiqueta conductor junto al nombre del agente. Esto cambia el orden de la lista de sesiones, así que la lista se queda igual hasta que lo actives. El elemento de chat del menú de la carpeta está siempre.",
+        "visual_refresh": "Renovación visual",
+        "visual_refresh_desc": "Activa el rediseño en curso del panel. Todavía no hay nada rediseñado: las partes aparecen a medida que se terminan y pueden verse sin terminar o cambiar entre actualizaciones. Desactívalo para volver al aspecto actual.",
         "crewmate_harness": "Harness del agente por compañero",
         "crewmate_harness_desc": "Añade un ajuste Harness del agente al perfil de cada compañero, para que uno pueda usar otra herramienta de programación con IA, como Claude Code, con sus modelos, mientras los demás siguen con el predeterminado.",
         "crew_mode": "Ultra Mode",

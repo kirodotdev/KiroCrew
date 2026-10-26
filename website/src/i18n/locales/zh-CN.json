@@ -13888,6 +13888,8 @@
         "decisions_runtime_retry": "重试",
         "folder_conductor": "文件夹调度者",
         "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。",
+        "visual_refresh": "视觉焕新",
+        "visual_refresh_desc": "开启仪表板正在进行中的新样式。目前还没有任何改动：各部分完成后会陆续出现，可能看起来未完成，或在更新之间发生变化。关闭即可恢复当前外观。",
         "crewmate_harness": "按队友设置代理运行框架",
         "crewmate_harness_desc": "在每个队友的资料中添加“代理运行框架”设置，让某个队友使用另一种 AI 编程工具（例如 Claude Code）及其模型，其他队友保持默认。",
         "crew_mode": "Ultra Mode",

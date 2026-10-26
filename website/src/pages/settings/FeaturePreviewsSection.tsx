@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -124,6 +124,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
     case PREVIEW_CREWMATE_HARNESS: return i18nT('pages.developer.featurePreviewsTab.crewmate_harness')
+    case PREVIEW_VISUAL_REFRESH: return i18nT('pages.developer.featurePreviewsTab.visual_refresh')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
@@ -152,6 +153,7 @@ export function FeaturePreviewsSection() {
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
   const crewmateHarness = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
+  const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   const writeError = usePreviewFlagWriteError()
@@ -417,6 +419,18 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.crewmate_harness_desc')}
           checked={crewmateHarness}
           onChange={v => setPreviewFlag(PREVIEW_CREWMATE_HARNESS, v)}
+        />
+      </SettingsCard>
+      {/* The visual refresh: a restyle built behind this switch so it can land in
+          pieces. Toggle-only, like the layout harness: there is no page to open
+          (it restyles the pages already on screen) and no capture yet, because
+          the look is still being designed and a capture would go stale. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.visual_refresh')}
+          description={i18nT('pages.developer.featurePreviewsTab.visual_refresh_desc')}
+          checked={visualRefresh}
+          onChange={v => setPreviewFlag(PREVIEW_VISUAL_REFRESH, v)}
         />
       </SettingsCard>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
