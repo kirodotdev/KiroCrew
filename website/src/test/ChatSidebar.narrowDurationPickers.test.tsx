@@ -152,7 +152,7 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     expect(screen.getByLabelText('Custom recency unit')).toBeInTheDocument()
     const presets = ['1 hour', '6 hours', '1 day', '1 week']
     for (const label of presets) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: label })).toBeInTheDocument()
     }
   })
 
@@ -166,20 +166,20 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // a gate on one viewport was the per-modality thinking that caused the bug.
     expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
     expect(screen.getByText('Within')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '1 week' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '1 week' })).toBeInTheDocument()
   })
 
   it('commits a preset from the inline chip without dismissing the menu', async () => {
     renderSidebar()
     await openFilterMenu()
 
-    fireEvent.click(screen.getByRole('button', { name: '1 week' }))
+    fireEvent.click(screen.getByRole('radio', { name: '1 week' }))
 
     await waitFor(() => expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(7 * DAY_MS)))
     // A chip is a plain button, not a menu item, so the menu survives the pick
     // and stays available for the next one.
     expect(filterMenuOpen()).toBe(true)
-    expect(screen.getByRole('button', { name: '1 week' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('radio', { name: '1 week' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('renders the dormant-collapse thresholds inline, and commits one', async () => {
@@ -193,10 +193,10 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     expect(row.getAttribute('role')).not.toBe('menuitem')
     // "Off" plus the day presets, as chips rather than more menu rows.
     for (const label of ['Off', '1d', '2d', '7d', '14d']) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: label })).toBeInTheDocument()
     }
 
-    fireEvent.click(screen.getByRole('button', { name: '7d' }))
+    fireEvent.click(screen.getByRole('radio', { name: '7d' }))
     await waitFor(() => expect(localStorage.getItem(STALE_COLLAPSE_LS_KEY)).toBe(String(7 * DAY_MS)))
     expect(filterMenuOpen()).toBe(true)
   })
@@ -221,7 +221,7 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // The picker lives in the closed submenu, so nothing of it is in the DOM yet.
     expect(screen.queryByText('Within')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Custom recency amount')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '1 week' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: '1 week' })).not.toBeInTheDocument()
   })
 
   it('turns the Recent filter on when a window is chosen, on BOTH viewports', async () => {
@@ -246,7 +246,7 @@ describe('sessions filter menu — duration pickers at phone width', () => {
       // Reaching the picker must not have enabled anything by itself.
       expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
 
-      fireEvent.click(screen.getByRole('button', { name: '1 week' }))
+      fireEvent.click(screen.getByRole('radio', { name: '1 week' }))
       await waitFor(() => expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBe('1'))
       view.unmount()
     }
@@ -259,8 +259,8 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // the most common pick.
     renderSidebar()
     await openFilterMenu()
-    const chip = screen.getByRole('button', { name: '1 hour' })
-    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    const chip = screen.getByRole('radio', { name: '1 hour' })
+    expect(chip).toHaveAttribute('aria-checked', 'true')
     expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
 
     fireEvent.click(chip)
