@@ -10,6 +10,7 @@ import type { GuideRevealScopeId } from '../../uiLocations/guidePlans.gen'
 import { createTriggerContext, heldGuard, ProbeHoldContext, useProbeHold, useProbeTarget, useTriggerRef } from '../../guide/probeRegistry'
 import { useGuideTrustRootAttrs } from '../../guide/trustRoot'
 import { MountAfterCommit, useCloseWhenCrewHidden, useOverlayRoot } from '../overlayRoot'
+import { quietNextFocus } from '../../lib/quietFocusReturn'
 
 type DropdownMenuProps = React.ComponentProps<typeof DropdownMenuPrimitive.Root> & {
   /**
@@ -30,6 +31,8 @@ type DropdownMenuProps = React.ComponentProps<typeof DropdownMenuPrimitive.Root>
 }
 
 const DropdownTriggerSink = createTriggerContext()
+/** The menu's trigger element, read by the content when it hands focus back. */
+const DropdownTriggerElement = React.createContext<(() => HTMLElement | null) | null>(null)
 
 /**
  * Radix `DropdownMenu.Root`, plus two rules.
@@ -79,6 +82,7 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
   const openRef = React.useRef(open)
   openRef.current = open
   const setTrigger = React.useCallback((el: HTMLElement | null) => { trigger.current = el }, [])
+  const getTrigger = React.useCallback(() => trigger.current, [])
   useProbeTarget(guideProbe ?? (!isControlled && !onOpenChange), {
     kind: 'popup',
     trigger: () => trigger.current,
@@ -95,9 +99,11 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
   return (
     <MaybeGuideRevealScope id={guideScope} open={open}>
       <DropdownTriggerSink.Provider value={setTrigger}>
-        <ProbeHoldContext.Provider value={probeHold.held}>
-          <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
-        </ProbeHoldContext.Provider>
+        <DropdownTriggerElement.Provider value={getTrigger}>
+          <ProbeHoldContext.Provider value={probeHold.held}>
+            <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
+          </ProbeHoldContext.Provider>
+        </DropdownTriggerElement.Provider>
       </DropdownTriggerSink.Provider>
     </MaybeGuideRevealScope>
   )
@@ -152,16 +158,26 @@ const DropdownMenuContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
 >(({ className, sideOffset = 4, onCloseAutoFocus, onFocusOutside, onInteractOutside, ...props }, ref) => {
   const held = React.useContext(ProbeHoldContext)
+  const getTrigger = React.useContext(DropdownTriggerElement)
   const trustRoot = useGuideTrustRootAttrs()
   // `onOpenAutoFocus` is not in Content's public props, but Radix reads it from them.
   const probeFocus = { onOpenAutoFocus: heldGuard<Event>(held, undefined) }
+  // Radix returns focus to the trigger right after this handler. After a
+  // pointer pick that return must not paint the keyboard ring (lib/quietFocusReturn).
+  // Armed before the caller's handler, so a caller that prevents the default
+  // and focuses the trigger itself gets the same quiet return; one that sends
+  // focus elsewhere never calls the trigger's focus() and is unaffected.
+  const closeAutoFocus = (e: Event) => {
+    quietNextFocus(getTrigger?.())
+    onCloseAutoFocus?.(e)
+  }
   return (
   <DropdownMenuPortal>
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
       {...probeFocus}
-      onCloseAutoFocus={heldGuard(held, onCloseAutoFocus)}
+      onCloseAutoFocus={heldGuard(held, closeAutoFocus)}
       onFocusOutside={heldGuard(held, onFocusOutside)}
       onInteractOutside={heldGuard(held, onInteractOutside)}
       {...trustRoot}

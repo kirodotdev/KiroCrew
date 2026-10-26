@@ -491,7 +491,9 @@ export default function EmbedTabStrip() {
               onPointerDown={e => onPointerDown(e, i)}
               onClick={() => { if (!dragRef.current?.active) selectTab(i) }}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTab(i) } }}
-              className={`group/tab flex items-center gap-2 pl-2 pr-2 py-1.5 rounded-md cursor-pointer select-none shrink-0 text-xs ${
+              // Inset keyboard ring: the unpadded overflow scroller clips an
+              // outset ring.
+              className={`group/tab flex items-center gap-2 pl-2 pr-2 py-1.5 rounded-md cursor-pointer select-none shrink-0 text-xs focus-visible:outline-offset-[-2px] ${
                 active
                   ? 'bg-bg-elevated text-text border border-border'
                   : 'text-muted hover:text-text hover:bg-bg-elevated/50 border border-transparent'

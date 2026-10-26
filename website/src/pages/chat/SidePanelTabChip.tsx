@@ -173,7 +173,9 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // .side-tab-active in index.css). Inactive = muted text with a hover wash.
       // This deliberately supersedes the earlier Figma "Side Navigation" pill
       // spec (28px, 6px all-corner radius, --border active fill).
-      className={`${narrowIconOnly ? 'side-tab-pinned-idle ' : ''}group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors ${
+      // The keyboard ring is drawn inset: each chip group is an unpadded
+      // horizontal scroller, which clips an outset ring.
+      className={`${narrowIconOnly ? 'side-tab-pinned-idle ' : ''}group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors focus-visible:outline-offset-[-2px] ${
         `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}`
       } ${
         active ? 'side-tab-active bg-bg text-accent border-x-border border-t-border border-b-transparent' : 'side-tab-inactive border-transparent text-muted hover:text-text'
