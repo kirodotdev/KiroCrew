@@ -787,8 +787,18 @@ def fold_slot_warm(name: str, unit_ids: Sequence[str], *, slot: str) -> Checkpoi
     return fold_slot_warm_revised(name, unit_ids, slot=slot)[0]
 
 
+class SlotFoldNotReady(Exception):
+    """A ``cold=False`` pass found no warm cell and no usable savepoint.
+
+    Raised INSTEAD of streaming every unit of the slot, so a request path can answer
+    "not ready" and hand the cold fold to a background prime
+    (:mod:`kiro_crew.crew_log.slot_prime`). Not a :class:`CrewLogError`: nothing is wrong
+    with the record, the value is only not folded yet.
+    """
+
+
 def fold_slot_warm_revised(
-    name: str, unit_ids: Sequence[str], *, slot: str
+    name: str, unit_ids: Sequence[str], *, slot: str, cold: bool = True
 ) -> "tuple[Checkpoint, int]":
     """:func:`fold_slot_warm`, and the REVISION of the cell it answered from.
 
@@ -803,6 +813,10 @@ def fold_slot_warm_revised(
     savepoint, a writer continuing a checkpoint and a test have no use for a revision,
     and giving them a tuple to unpack would spread a push's contract over callers that
     do not push.
+
+    ``cold=False`` is the request-path form: it continues a warm cell or resumes a
+    savepoint exactly as the default does, and raises :class:`SlotFoldNotReady` where
+    the default would fold every unit from its first record.
     """
     require_name(name)
     key = (str(data_home()), slot, name)
@@ -811,14 +825,62 @@ def fold_slot_warm_revised(
     # the PAIRING that a second pass would break -- see ``_slot_fold_locks``.
     entry = _acquire_fold_lock(key)
     try:
-        with entry.lock:
-            return _fold_slot_warm_locked(name, key, unit_ids, slot=slot)
+        if cold:
+            entry.lock.acquire()
+        else:
+            _acquire_unless_cold(entry, key, slot, name)
+        try:
+            return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+        finally:
+            entry.lock.release()
     finally:
         _release_fold_lock(key, entry)
 
 
+#: Keys whose COLD fold is running right now, on any thread (a background prime from
+#: :mod:`kiro_crew.crew_log.slot_prime`, or a default read). A ``cold=False`` pass that
+#: finds the key's lock held by one of these answers "not ready" instead of waiting out
+#: the whole fold.
+_cold_keys: "set[tuple[str, str, str]]" = set()
+
+#: How often a ``cold=False`` pass waiting on a held lock re-checks whether the holder is
+#: a background prime. Short: the wait it ends early is a whole cold fold.
+_PRIMING_POLL_SECONDS: Final[float] = 0.02
+
+
+def _acquire_unless_cold(
+    entry: "_FoldLock", key: "tuple[str, str, str]", slot: str, name: str
+) -> None:
+    """Take *entry*'s lock, or raise :class:`SlotFoldNotReady` while a prime holds it.
+
+    A warm pass holding the lock is short and worth waiting for, which is what the
+    default path does. A cold fold holding it streams every unit, and a request path
+    that waited for it would pay that fold's wall time after all.
+    """
+    while not entry.lock.acquire(timeout=_PRIMING_POLL_SECONDS):
+        if cold_fold_running(key):
+            raise SlotFoldNotReady(slot, name)
+
+
+def cold_fold_running(key: "tuple[str, str, str]") -> bool:
+    """Whether a cold fold of *key* (data home, slot, fold) is running right now."""
+    with _slot_memo_guard:
+        return key in _cold_keys
+
+
+def any_cold_fold_running(names: "frozenset[str]") -> bool:
+    """Whether a cold fold of any fold in *names* is running right now, for any slot."""
+    with _slot_memo_guard:
+        return any(held[2] in names for held in _cold_keys)
+
+
 def _fold_slot_warm_locked(
-    name: str, key: "tuple[str, str, str]", unit_ids: Sequence[str], *, slot: str
+    name: str,
+    key: "tuple[str, str, str]",
+    unit_ids: Sequence[str],
+    *,
+    slot: str,
+    allow_cold: bool = True,
 ) -> "tuple[Checkpoint, int]":
     """:func:`fold_slot_warm`'s body, with this key's lock already held.
 
@@ -882,6 +944,31 @@ def _fold_slot_warm_locked(
             return _slot_checkpoint(name, resumed)
     # Nothing warm and no savepoint: every unit of the slot is streamed from its
     # first record. The counter exists to make that share visible.
+    if not allow_cold and units:
+        # A request path asked: it must not pay for every unit. Raised before the origin
+        # stamp, because no pass started; the background prime stamps its own.
+        raise SlotFoldNotReady(slot, name)
+    # Marked for the whole cold tail (fold and savepoint write), whoever runs it, so a
+    # ``cold=False`` pass waiting on this key's lock answers "not ready" instead.
+    with _slot_memo_guard:
+        _cold_keys.add(key)
+    try:
+        return _fold_slot_cold(name, key, units, marks, slot=slot, known=known)
+    finally:
+        with _slot_memo_guard:
+            _cold_keys.discard(key)
+
+
+def _fold_slot_cold(
+    name: str,
+    key: "tuple[str, str, str]",
+    units: "tuple[str, ...]",
+    marks: "tuple[_UnitMark, ...]",
+    *,
+    slot: str,
+    known: bool,
+) -> "tuple[Checkpoint, int]":
+    """The cold branch of :func:`_fold_slot_warm_locked`: every unit from its first record."""
     _note_slot_fold_origin("cold")
     cold = _SlotStream(units)
     registry = ProjectionRegistry(seq_of=_ordinal_seq)
