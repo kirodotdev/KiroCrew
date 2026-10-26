@@ -184,8 +184,25 @@ class TestRunChatWakaTimeCodingAccounting:
         config.wakatime.send_heartbeats = True
         return config
 
+    @pytest.fixture
+    def sent_beats(self, monkeypatch):
+        """Every heartbeat payload the turn hands to the sender, in order."""
+        from kiro_crew.wakatime import heartbeats
+
+        sent: list[dict] = []
+        monkeypatch.setattr(heartbeats, "_schedule_send", sent.append)
+        return sent
+
+    @staticmethod
+    def _shapes(beats):
+        return [{k: v for k, v in beat.items() if k != "time"} for beat in beats]
+
+    _BEAT = {"entity": "kirocrew-session", "type": "app", "category": "ai coding", "is_write": True}
+
     @pytest.mark.asyncio
-    async def test_statusless_coding_call_demotes_when_permission_is_denied(self, tmp_path):
+    async def test_statusless_coding_call_demotes_when_permission_is_denied(
+        self, tmp_path, sent_beats
+    ):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -210,21 +227,18 @@ class TestRunChatWakaTimeCodingAccounting:
                 future.set_result("rejected")
 
         state.push_slots_update.side_effect = _deny_when_registered
-        with (
-            patch.object(
-                chat_runner.KiroCrewConfig,
-                "load",
-                return_value=self._wakatime_config(),
-            ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        with patch.object(
+            chat_runner.KiroCrewConfig,
+            "load",
+            return_value=self._wakatime_config(),
         ):
             await _drive(state, slot)
 
         client.reject_tool.assert_awaited_once_with("req-cov-1")
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_denied_coding_call_emits_no_cadence_heartbeat(self, tmp_path):
+    async def test_denied_coding_call_emits_no_cadence_heartbeat(self, tmp_path, sent_beats):
         # F1 regression: the cadence beat fires only on CONFIRMED coding, never at
         # pre-decision dispatch, so a denied write emits neither the attribution
         # beat nor a cadence beat — no is_write ai-coding row for work that never
@@ -253,23 +267,20 @@ class TestRunChatWakaTimeCodingAccounting:
                 future.set_result("rejected")
 
         state.push_slots_update.side_effect = _deny_when_registered
-        with (
-            patch.object(
-                chat_runner.KiroCrewConfig,
-                "load",
-                return_value=self._wakatime_config(),
-            ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
+        with patch.object(
+            chat_runner.KiroCrewConfig,
+            "load",
+            return_value=self._wakatime_config(),
         ):
             await _drive(state, slot)
 
         client.reject_tool.assert_awaited_once_with("req-cov-1")
-        note_activity.assert_not_called()
-        note_cadence.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_statusless_coding_call_counts_after_permission_is_approved(self, tmp_path):
+    async def test_statusless_coding_call_counts_after_permission_is_approved(
+        self, tmp_path, sent_beats
+    ):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -300,15 +311,17 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(chat_runner, "note_coding_cadence"),
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
-        note_activity.assert_called_once()
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_statusless_coding_call_without_permission_stays_counted(self, tmp_path):
+    async def test_statusless_coding_call_without_permission_stays_counted(
+        self, tmp_path, sent_beats
+    ):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -321,14 +334,17 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=config,
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(
+                chat_runner, "note_coding_activity", wraps=chat_runner.note_coding_activity
+            ) as note_activity,
+            patch.object(chat_runner, "note_coding_cadence"),
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_not_awaited()
-        note_activity.assert_called_once()
         assert note_activity.call_args.kwargs["config"] is config
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
     async def test_heartbeat_project_is_the_turn_start_snapshot(self, tmp_path):
@@ -368,7 +384,7 @@ class TestRunChatWakaTimeCodingAccounting:
         assert slot.project == str(picked)
 
     @pytest.mark.asyncio
-    async def test_many_auto_approved_coding_calls_keep_one_turn_bit(self, tmp_path):
+    async def test_many_auto_approved_coding_calls_keep_one_turn_bit(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -382,17 +398,22 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=config,
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(
+                chat_runner, "note_coding_activity", wraps=chat_runner.note_coding_activity
+            ) as note_activity,
+            patch.object(chat_runner, "note_coding_cadence"),
         ):
             await _drive(state, slot)
 
         # Per-call ids are not retained: any number of successful coding calls
         # collapses to one bounded bit and one turn-level heartbeat.
-        note_activity.assert_called_once()
         assert note_activity.call_args.kwargs["config"] is config
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_auto_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path):
+    async def test_auto_approved_coding_call_emits_one_cadence_heartbeat(
+        self, tmp_path, sent_beats
+    ):
         # Duration accrual for trusted tools: an auto-approved coding call never
         # reaches a permission decision, so _wt_note_approved never fires. Its
         # completed result frame is the point past gating where it has run, so a
@@ -419,16 +440,17 @@ class TestRunChatWakaTimeCodingAccounting:
                 return_value=self._wakatime_config(),
             ),
             patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_not_awaited()
-        note_cadence.assert_called_once_with(slot.project or None)
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_many_auto_approved_coding_results_emit_one_throttled_cadence(self, tmp_path):
+    async def test_many_auto_approved_coding_results_emit_one_throttled_cadence(
+        self, tmp_path, sent_beats
+    ):
         # The throttle: several auto-approved coding calls completing inside one
         # turn (well under CADENCE_MIN_INTERVAL_SECS apart) collapse to a single
         # cadence beat, matching WakaTime's coalescing bucket, instead of one
@@ -450,15 +472,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 return_value=self._wakatime_config(),
             ),
             patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
-        note_cadence.assert_called_once_with(slot.project or None)
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path):
+    async def test_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path, sent_beats):
         # Duration accrual: an approved coding call emits a cadence heartbeat so
         # WakaTime sees a mid-turn timestamp and accrues wall-clock duration,
         # instead of a long turn collapsing to a single end-of-turn instant.
@@ -493,15 +514,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 return_value=self._wakatime_config(),
             ),
             patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
-        note_cadence.assert_called_once_with(slot.project or None)
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_denied_pending_id_is_drained_before_a_later_decision(self, tmp_path):
+    async def test_denied_pending_id_is_drained_before_a_later_decision(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -543,22 +563,23 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot)
 
         client.reject_tool.assert_awaited_once_with("req-wt-deny")
         client.approve_tool.assert_awaited_once_with("req-wt-later")
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_collapsed_coding_id_cannot_be_counted_by_unrelated_approval(self, tmp_path):
+    async def test_collapsed_coding_id_cannot_be_counted_by_unrelated_approval(
+        self, tmp_path, sent_beats
+    ):
         from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
-        coding_tool_call_id = "AKIAIOSFODNN7EXAMPLE"
+        coding_tool_call_id = "AKIA" + "IOSFODNN7EXAMPLE"
         _set_stream(
             client,
             [
@@ -606,16 +627,15 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-wt-unrelated")
         client.reject_tool.assert_awaited_once_with("req-wt-deny")
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_restored_queued_turn_does_not_emit_heartbeat(self, tmp_path):
+    async def test_restored_queued_turn_does_not_emit_heartbeat(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -628,7 +648,6 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
             _quiet_sel(),
         ):
             await chat_runner._run_chat(
@@ -640,10 +659,10 @@ class TestRunChatWakaTimeCodingAccounting:
         await _settle(slot)
 
         client.stream.assert_called_once()
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_restored_queued_turn_emits_no_cadence_heartbeat(self, tmp_path):
+    async def test_restored_queued_turn_emits_no_cadence_heartbeat(self, tmp_path, sent_beats):
         # Opus regression: a gateway-restart replay (restored queued prompt)
         # lost its actor stamp, so even an approved coding call must not emit a
         # cadence beat — the provenance guard keeps the user fallback from
@@ -678,8 +697,6 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await chat_runner._run_chat(
                 state,
@@ -690,10 +707,10 @@ class TestRunChatWakaTimeCodingAccounting:
         await _settle(slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
-        note_cadence.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_mcp_name_fallback_is_not_used_by_chat_runner(self, tmp_path):
+    async def test_mcp_name_fallback_is_not_used_by_chat_runner(self, tmp_path, sent_beats):
         # A write-named MCP tool with no edit kind must not fall back to the
         # tool name to count as coding activity: only a recognised coding kind
         # counts, so a third-party MCP that happens to be named "write" stays
@@ -719,12 +736,11 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot)
 
         client.stream.assert_called_once()
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
     async def test_many_undecided_pending_coding_ids_stay_capped(self, tmp_path, caplog):
@@ -765,7 +781,7 @@ class TestRunChatWakaTimeCodingAccounting:
         note_activity.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_mcp_edit_kind_still_emits_heartbeat(self, tmp_path):
+    async def test_mcp_edit_kind_still_emits_heartbeat(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -788,12 +804,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=config,
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(
+                chat_runner, "note_coding_activity", wraps=chat_runner.note_coding_activity
+            ) as note_activity,
         ):
             await _drive(state, slot)
 
-        note_activity.assert_called_once()
         assert note_activity.call_args.kwargs["config"] is config
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
     async def test_heartbeat_uses_project_captured_at_turn_start(self, tmp_path):
@@ -825,7 +843,7 @@ class TestRunChatWakaTimeCodingAccounting:
         assert note_activity.call_args.args[0] == project_at_start
 
     @pytest.mark.asyncio
-    async def test_injected_turn_does_not_emit_heartbeat(self, tmp_path):
+    async def test_injected_turn_does_not_emit_heartbeat(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -837,15 +855,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot, _turn_actor="cron")
 
         client.stream.assert_called_once()
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_injected_turn_emits_no_cadence_heartbeat(self, tmp_path):
+    async def test_injected_turn_emits_no_cadence_heartbeat(self, tmp_path, sent_beats):
         # The cadence beat honors the same scope as the end-of-turn beat: a
         # cron/subagent/injected (non-user) turn is outside the declared surface,
         # so even an APPROVED coding call emits no cadence beat.
@@ -879,13 +896,11 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot, _turn_actor="cron")
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
-        note_cadence.assert_not_called()
+        assert sent_beats == []
 
 
 #: Fixture tokens for the glued-credential cases (made up, not real keys).

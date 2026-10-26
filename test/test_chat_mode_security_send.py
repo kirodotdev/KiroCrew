@@ -512,7 +512,7 @@ async def test_title_refresh_counts_only_the_users_turns(state, actor: str, refr
     slot.title, slot._titled, slot._title_origin = "Old", True, "auto"
     slot._title_low_signal = True  # due at the first user turn
     slot.append("user", "x", "msg msg-u", meta={TURN_ACTOR_META_KEY: actor} if actor else None)
-    generate = AsyncMock(return_value="")
+    generate = AsyncMock(return_value="Fresh title")
 
     with (
         patch("kiro_crew.dashboard.chat_title._generate_refreshed_title", new=generate),
@@ -522,6 +522,7 @@ async def test_title_refresh_counts_only_the_users_turns(state, actor: str, refr
         await maybe_refresh_title(state, slot)
 
     assert generate.called is refreshed
+    assert slot.title == ("Fresh title" if refreshed else "Old")
 
 
 def _app_then_user_turns(slot) -> None:

@@ -1212,15 +1212,19 @@ class TestVoiceSystemVoices:
             "kiro_crew.dashboard.chat_voice.resolve_system_tts_async",
             AsyncMock(return_value=("say", "/usr/bin/say")),
         )
-        probe = AsyncMock(return_value=[])
+        # A second probe would answer differently, so the second response shows
+        # whether it came from the cache.
+        alex = {"id": "Alex", "name": "Alex", "language": "en-US"}
+        probe = AsyncMock(side_effect=[[], [alex]])
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.list_system_voices", probe)
 
         async with TestClient(TestServer(self._app(tmp_path))) as client:
-            await client.get("/api/voice/system-voices")
-            await client.get("/api/voice/system-voices")
+            first = await (await client.get("/api/voice/system-voices")).json()
+            second = await (await client.get("/api/voice/system-voices")).json()
         # An empty list is cached too: it is stable for the life of the install,
         # and re-probing would cost a subprocess per panel visit.
         assert probe.await_count == 1
+        assert first["voices"] == second["voices"] == []
 
     @pytest.mark.asyncio
     async def test_probe_failure_returns_502(self, tmp_path, monkeypatch):

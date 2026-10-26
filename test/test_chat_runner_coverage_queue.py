@@ -338,6 +338,7 @@ class TestStartNextQueuedTurn:
         assert spawn.call_count == 1
         state.subagents.queued_count_or_none_async.assert_not_awaited()
         state.subagents.has_in_memory_pending_work_for.assert_not_called()
+        assert slot._queue == [], "the queued message was handed to the next turn"
 
 
 def _no_children() -> MagicMock:
@@ -651,6 +652,8 @@ class TestFinishQueueCycle:
         synth.assert_not_called()
         subs.running_agents_for.assert_called_once_with(linked)
         subs.queued_count_or_none_async.assert_awaited_once_with(linked)
+        assert slot._synthesis_inflight is False
+        assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("close_subagent_managers")
@@ -869,16 +872,18 @@ class TestFinishQueueCycle:
         """The withhold is scoped to synthesis; every other cycle still flushes."""
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = False
+        slot._deferred_notes.append({"content": "held for the idle cycle", "cls": "reconcile-note"})
 
-        with (
-            patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
-            patch.object(chat_runner, "title_then_refresh", new=AsyncMock()),
-        ):
+        with patch.object(chat_runner, "title_then_refresh", new=AsyncMock()):
             await chat_runner._finish_queue_cycle(state, slot)
             # flake-ok: pre-existing zero-length yield that lets a task the call scheduled run, moved verbatim; tracked for a de-flake pass
             await asyncio.sleep(0)
 
-        flush.assert_called_once()
+        assert slot._deferred_notes == []
+        assert any(
+            m.get("role") == "inject" and "held for the idle cycle" in m.get("content", "")
+            for m in slot.messages
+        )
 
     @pytest.mark.asyncio
     async def test_idle_cycle_emits_done_and_refreshes_the_sidebar(self, tmp_path):

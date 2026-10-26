@@ -734,15 +734,16 @@ class TestRunChatLocalCommands:
         assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
-    async def test_goal_command_is_handled_locally(self, tmp_path):
+    async def test_goal_command_is_handled_locally(self, tmp_path, monkeypatch):
         state, client = _runner_state(tmp_path)
         slot = _slot()
+        # No AutoNudge service: the local handler answers with its own notice.
+        monkeypatch.setattr(chat_runner, "get_instance", lambda: None)
 
-        with patch.object(chat_runner, "_handle_goal_command", new=AsyncMock()) as handler:
-            await _drive(state, slot, "/goal ship the thing")
+        await _drive(state, slot, "/goal ship the thing")
 
-        handler.assert_awaited_once_with(state, slot, "/goal ship the thing")
         state.sessions.get_or_create.assert_not_awaited()
+        assert any("Goal loops are unavailable" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

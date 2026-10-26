@@ -993,7 +993,7 @@ class TestAppAgentDispatchGuard:
         assert finished.is_set()  # register_app ran to completion before propagating
 
     @pytest.mark.asyncio
-    async def test_eager_spawn_bails_for_unresolved_app_slot(self, tmp_path):
+    async def test_eager_spawn_bails_for_unresolved_app_slot(self, tmp_path, caplog):
         # An app slot that stays cold after the eager self-heal must NOT register
         # a speculative session: resolve_agent_bindings returns the DEFAULT agent
         # on a cold miss, so a registered session would bind the wrong agent and
@@ -1015,7 +1015,16 @@ class TestAppAgentDispatchGuard:
             patch.object(chat_runner, "refresh_materialized_agents", MagicMock()),
             patch("kiro_crew.apps.bridges.register_app", MagicMock(return_value=[])),
             patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            caplog.at_level("INFO", logger=chat_runner.logger.name),
         ):
             await chat_runner._eager_spawn(state, slot)
 
         state.sessions.get_or_create.assert_not_awaited()
+        bails = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == chat_runner.logger.name and "unresolved after warm" in r.getMessage()
+        ]
+        assert bails == [
+            f"Eager spawn: app slot {slot.key} unresolved after warm; leaving to first turn"
+        ]
