@@ -92,8 +92,8 @@ def _two_specs_declaring(name: str) -> list[Path]:
     return files
 
 
-async def _create(client: TestClient, kiro_agent: str) -> tuple[int, dict]:
-    resp = await client.post("/api/agents", json={"name": "new-crew", "kiro_agent": kiro_agent})
+async def _create(client: TestClient, kiro_agent: str, name: str = "new-crew") -> tuple[int, dict]:
+    resp = await client.post("/api/agents", json={"name": name, "kiro_agent": kiro_agent})
     return resp.status, await resp.json()
 
 
@@ -106,7 +106,9 @@ async def test_two_specs_for_one_name_name_both_files_and_drop_the_retry(
     try:
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
             async with TestClient(TestServer(_crud_app())) as client:
-                status, body = await _create(client, "sh-eval")
+                # Named after the template: the one non-default template a
+                # create admits, so the lineage check is what answers it.
+                status, body = await _create(client, "sh-eval", name="sh-eval")
         assert status == 409
         assert set(body) == {"error", "code"}
         assert body["code"] == "lineage_unverifiable"
@@ -114,7 +116,7 @@ async def test_two_specs_for_one_name_name_both_files_and_drop_the_retry(
         for f in files:
             assert str(f) in body["error"]
         assert not body["error"].endswith(_GENERIC_RETRY)
-        assert "new-crew" not in json.loads(cfg.read_text(encoding="utf-8"))["agents"]
+        assert "sh-eval" not in json.loads(cfg.read_text(encoding="utf-8"))["agents"]
     finally:
         for f in files:
             f.unlink(missing_ok=True)
@@ -136,7 +138,7 @@ async def test_a_credential_shaped_spec_filename_is_masked(tmp_path: Path) -> No
     try:
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
             async with TestClient(TestServer(_crud_app())) as client:
-                status, body = await _create(client, "sh-eval")
+                status, body = await _create(client, "sh-eval", name="sh-eval")
         assert status == 409
         assert _AMBIGUOUS in body["error"]
         assert probe not in body["error"]

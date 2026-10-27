@@ -21,7 +21,6 @@ import kiro_crew.config.paths as paths_mod
 from kiro_crew import mate_capability_catalog, mate_worker
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.mate_config_migration import _read_back, migrate_existing_crewmates
-from kiro_crew.mate_worker_kit import read_record
 
 BASE = {
     "name": "kirocrew-mate-worker",
@@ -134,7 +133,6 @@ def test_a_shared_template_crewmate_carries_its_kit_and_nothing_the_base_has(lay
     assert saved["zxc"]["changed_fields"] == {"kiro_agent"}
     # Compare-and-set on what the pass planned from, so a switch made meanwhile wins.
     assert saved["zxc"]["expected_values"] == {"kiro_agent": "builder"}
-    assert read_record("zxc")["template"] == "builder"
     assert (user / "builder.json").is_file()  # kept, so the binding can point back
 
 
@@ -179,7 +177,6 @@ def test_a_crew_hex_crewmate_carries_its_private_copy(layout, persisted):
     written = _file(mates, "qwe")
     assert written["prompt"] == "Edited on the Capabilities page."
     assert set(written["mcpServers"]) == {"jira"}
-    assert read_record("qwe")["template"] == "crew-0a1b2c"
     assert (user / "crew-0a1b2c.json").is_file()
 
 
@@ -196,7 +193,6 @@ def test_a_default_template_crewmate_gets_a_file_that_adds_nothing(layout, persi
     assert written == {"name": "rty", "mcpServers": {}, "tools": [], "allowedTools": []}
     additions = mate_worker.worker_additions(BASE, _read_back("rty"))
     assert not mate_worker.has_additions(additions)
-    assert read_record("rty") is None
 
 
 def test_a_crewmate_whose_worker_would_lose_a_grant_moves_and_is_told_once(
@@ -364,7 +360,6 @@ def test_an_unreadable_agent_moves_onto_the_default_template_and_says_so(layout,
     assert report.moved_from_default == ["vbn"]
     assert _file(mates, "vbn") == {"name": "vbn", "mcpServers": {}, "tools": [], "allowedTools": []}
     assert saved["vbn"]["expected_values"] == {"kiro_agent": "gone"}
-    assert read_record("vbn") is None
     prompt = claim_notice_prompt(member_slug("vbn"), "vbn")
     assert "(gone) could not be read" in prompt and "default template" in prompt
     assert "source unreadable" not in prompt
@@ -662,7 +657,6 @@ def test_a_crewmate_bound_to_the_conductor_moves_without_a_notice_or_a_kit(layou
         "tools": [],
         "allowedTools": [],
     }
-    assert read_record("mate") is None
     assert not (member_dir("mate") / NOTICE_OWED_FILENAME).exists()
 
 
@@ -694,8 +688,7 @@ def test_the_first_crewmate_gets_what_a_default_template_crewmate_gets(layout, p
     assert {k: v for k, v in mate.items() if k != "name"} == {
         k: v for k, v in ordinary.items() if k != "name"
     }
-    # Still no notice and no kit for the crewmate whose chat did not move.
-    assert read_record("mate") is None
+    # Still no notice for the crewmate whose chat did not move.
     assert not (member_dir("mate") / NOTICE_OWED_FILENAME).exists()
 
 

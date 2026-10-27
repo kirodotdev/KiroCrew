@@ -220,13 +220,22 @@ refusal in the user's language inside the dialog that sent the name
 
 ## Custom agents tab
 
-The **Built from** section of the mate editor is read-only: it shows the
-custom agent a mate is built from (details, tools, MCP servers, skills),
-and only the choice of agent is edited there. The **Custom agents** tab under
-Customize (page title and sidebar label; route `/capabilities`) is the other
-half: it manages the shared templates themselves — "custom agents" in every
-user-facing string, the thing a mate is **built from** — the files under
-`~/.kiro/agents/` a chat or a mate runs. The tab sits flat in the pane like
+The **Abilities** section of the mate editor (section key `builtFrom`) is the
+**capabilities view**: "What *&lt;mate&gt;* can do", split into two bands —
+**Comes with** (read-only: what the worker base, `kirocrew-mate-worker`,
+provides) and **Added to** (what the crewmate's own file adds beyond that base).
+Both list tools, MCP servers and skills, partitioned by each capability row's
+`state` (`inherited` → Comes with, `local` → Added to). An added row that names
+a stored row carries **Remove**, which goes through the capabilities `remove`
+op; approvals are configured in the **Approvals** section, never here. The mate's
+**behavior directions** appear with **Remove**, which clears its single directions
+slot. **Add abilities** sits on the same page, under the bands
+(see "Adding abilities to a crewmate" below). General shows the section's name
+with **View abilities**, which opens it. The **Custom agents**
+tab under Customize (page title and sidebar label; route `/capabilities`) is the
+other half: it manages the shared templates themselves — "custom agents" in every
+user-facing string, the agents a chat or a mate copies abilities from — the files
+under `~/.kiro/agents/` a chat or a mate runs. The tab sits flat in the pane like
 the Mates tab: no card, no title row (the rail tab and the page title
 already say "Custom agents"), one toolbar row with the filter on the left and
 the **New custom agent** primary button on its right (the Skills tab's rhythm),
@@ -646,12 +655,19 @@ Duplicate affordance, so the three duplicate entry points read as one flow.
 ## Owner-reviewed capability inheritance
 
 **Dashboard surface.** The mate editor (`CrewEditorNextDialog`) shows a
-read-only **Built from** section, and its **Approvals** section
-(`CrewApprovalsEditor`) is the only dashboard writer of these routes. No
-dashboard surface edits enrollment, Stop following the parent, per-member MCP
-or skill rows, or a private copy's template: the classic `CrewCapabilitiesPane`
-and template pane that did are retired, and agent config is edited on the
-**Custom agents** tab. The routes and their refusal codes below are unchanged.
+two-band **capabilities view** (Comes with / Added to) in its **Abilities**
+section; Comes with is read-only, and an added tool / MCP server / skill can be
+removed (the capabilities `remove` op). Its **Approvals** section
+(`CrewApprovalsEditor`) is the writer for auto-run grants. **Add abilities**
+(`WorkerKitPane`), on the same page as the bands, adds abilities from
+another agent — connections, skills, resources and auto-approvals are additive,
+previewed as added vs. already-present (skipped). An agent with behavior directions
+replaces the mate's one directions slot; an agent without directions leaves it
+alone. No dashboard surface edits enrollment,
+Stop following the parent, per-member MCP or skill rows, or a private copy's
+template: the classic `CrewCapabilitiesPane` and template pane that did are
+retired, and agent config is edited on the **Custom agents** tab. The routes and
+their refusal codes below are unchanged.
 Where a paragraph below says "the pane", it records the copy that pane showed,
 kept as the contract the refusal codes were designed against; it is not a
 rendered surface.
@@ -1518,7 +1534,7 @@ record for a picture or a pack. Apply pins the pick and sends it as
 pick the create still carries that name-seeded icon as its `avatar` (frozen into
 a stored choice at create, never re-derived from a later rename), so a new mate
 is born an icon rather than wearing the name's ghost. The **Advanced settings** row unfolds inline below
-the avatar, in the same card: Built from, Goal, and the crew
+the avatar, in the same card: Goal and the crew
 editor fields (workspace, model, triggers, session colour), ending with a second
 Create. It is folded by default; `startExpanded` opens it unfolded, which is what
 the hero's Advanced link and the crew manager's door pass. Folding unmounts those
@@ -1552,8 +1568,7 @@ dashed roster card (`pages.kiroCrewAgentsPage.add_crew_member` in
 has no separate create sheet. Both doors use the
 existing owner-gated `POST /api/agents`; editing an existing member still uses
 the crew manager. The crew manager's door opens with Advanced settings unfolded
-and `kirocrew` as the default **Built from** (labelled as the default), and shows
-no first-greeting hint, since it asks for none. What happens after a create
+and shows no first-greeting hint, since it asks for none. What happens after a create
 depends on the door. On the Mates page the card sends `first_greeting`, the
 page re-reads the roster and opens the new mate's verified thread (a failed
 re-read keeps its retry), and that open's greeting request starts the hidden goal
@@ -4003,44 +4018,52 @@ the thread's own turn task, so a report is delivered once, never twice; pending
 reports live in memory. While the app is stopping
 (`mate_welcome.app_is_stopping`) no hidden turn starts and reports stay pending.
 
-**The worker's extra kit** (`kiro_crew.mate_worker_kit`, owner-only
+**Adding abilities to a crewmate** (`kiro_crew.mate_worker_kit`, owner-only
 `GET/PUT /api/agents/{name}/worker-kit` and `POST .../worker-kit/preview`,
-handler `dashboard/handlers/member_worker_kit.py`): the owner names ONE
-template, and its `prompt`, `mcpServers` (with `autoApprove`), `resources`,
-`skills`, `allowedTools` and the `tools` selectors for its servers are copied
-into the crewmate's file once, governed before the write. The file does not
-track the template. `~/.kiro/mates/kits/<id>.json` records what the last copy
-wrote (`record_initial_kit` writes it at create for a non-default template). A
-preview lists each change and writes nothing; `keep_additions` (default true)
-keeps what the file gained since the last copy (`added_since`). A re-copy
-replaces the kit's selectors, so a narrowed template narrows the file. The
-apply needs the preview's `revision` (`_plan_revision`, binding the file and the
-result shown) or answers `stale_revision`. The template's `excludedTools` join
-the file's. A template with `permissions` deny/ask rules, `toolsSettings` or
-hooks the worker would not carry (`uncarried_restrictions`) is refused
-`template_restrictions_uncarried`, and a create from it keeps the crewmate on
-that template. Other refusals: `not_a_mate_file`, `template_unreadable`,
-`template_required`, `revision_required`. Each code reads as a localized
-sentence (`components/crew/workerKitErrors.ts`), never as the code, wherever a
-kit failure shows; a `stale_revision` apply also drops the preview, and the
-roster's agent hand-off still carries the failed request (`reportForError`). A preview
-also lists what the copy restricts on a server the worker base declares
-(`disabledServers`, `disabledTools`), since the base's own entry wins the merge
-and those limits are not in the kit's servers. The surface is the crew editor's
-**Advanced** section (`components/crew/WorkerKitPane.tsx`, only for
-`mode: "mate"`); its rows name items through `components/crew/workerKitLabels.ts`,
-grouped by kind in a fixed order under a counted heading, added before changed
-before removed (`components/crew/workerKitGroups.ts`), each change word a badge
-tinted by its hue with a hue-coloured glyph, the word itself in `--text`.
-Under "Turned off" the badge states the effect ("Turns off", "Turns back on"),
-and a tool selector reads as what the worker can use ("Can use every jira tool").
-For such a crewmate, General shows the template read-only with **Open
-Advanced**. A switch changes only the file: a running worker keeps the kit it
-started with (`acp/harness/kas.mate_worker_projection` reads it at session
-start). Every "Built from" shows a template's name, never an id
-(`components/crew/builtFromName.ts`); a `crew-<hex>` copy is named by its origin
-(`mate_worker_kit._private_copy_origin`) or "Its own copy". Built From's
-summary and its Tools / MCP Servers / Skills lists read one set, the WORKER's
+handler `dashboard/handlers/member_worker_kit.py`): the owner picks another
+agent, and its `mcpServers` (with `autoApprove`), `resources`, `skills`, the
+`allowedTools` for servers the add writes, and the `tools` selectors for those
+servers are unioned into the crewmate's file, governed before the write. The add
+is purely additive: anything the file or the worker base already has is skipped,
+never replaced. The one exception is the file's `prompt`, the crewmate's single
+**behavior directions** slot, which the worker merge appends after the worker's
+source-defined prompt: an agent whose own spec names a prompt writes that prompt,
+minus any opening text the worker base already carries (`_directions_of`), over
+whatever the slot held; an agent with none leaves the slot alone. The preview
+shows the text (`directions`) and a `prompt` row, `added` into an empty slot,
+`replaced` over other directions, `skipped` when they match; the slot records no
+source agent. There is no kit record and the file does not track the agent; the
+file is the sum of what was added to it. A new crewmate's file is minimal
+(`mate_config.write_mate_config`): its name and empty additions, written without
+reading any agent file, so everything it can do at first comes from the worker
+base. A preview writes nothing and lists each `added` and each `skipped` item,
+plus every auto-approval the add writes
+(`allowedTools` rows, from either channel) and every tool the template newly
+excludes. The apply needs the preview's `revision` (`_plan_revision`, binding
+the file and the result shown) or answers `stale_revision`. The template's
+`excludedTools` join the file's. A template with `permissions` deny/ask rules,
+`toolsSettings` or hooks the worker would not carry (`uncarried_restrictions`)
+is refused `template_restrictions_uncarried`. Other refusals: `not_a_mate_file`,
+`template_unreadable`, `template_required`, `revision_required`,
+`invalid_spec`. Each code reads as a localized sentence
+(`components/crew/workerKitErrors.ts`), never as the code. The surface is **Add
+abilities** in the editor's Abilities section (`components/crew/WorkerKitPane.tsx`,
+only for `mode: "mate"`): picking an agent previews at once. A `stale_revision`
+or `revision_required` apply makes a fresh preview for the same agent and keeps
+the reason above it, because re-picking the same agent fires no change; a failed
+preview offers **Try again** and **Cancel**. A finished add says so under the
+picker ("Added N to <name>."), and when it granted auto-approvals it says those
+tools now run without asking and offers **Open Approvals**. Its rows name items through
+`components/crew/workerKitLabels.ts`, grouped by kind in a fixed order under a
+counted heading, added before skipped (`components/crew/workerKitGroups.ts`),
+each change word a badge tinted by its hue with a hue-coloured glyph, the word
+itself in `--text`; a tool selector reads as what the worker can use ("Can use
+every jira tool"). An add changes only the file: a running worker keeps the
+abilities it started with (`acp/harness/kas.mate_worker_projection` reads the
+file at session start). Every "Built from" shows a template's name, never an id
+(`components/crew/builtFromName.ts`); a crewmate that owns its file shows the
+generic "Mate" label (`builtFromName.mateAbilitiesLabel`). The Abilities
+section and its Tools / MCP Servers / Skills lists read one set, the WORKER's
 merged rows (`mate_capabilities.worker_summary`, the view's `worker.rows`); a
 skill row carries no label, and the pane names a `skill://` row with the
 preview's own `workerKitLabels.skillLabel`. The Customize > Crewmates roster
@@ -4081,7 +4104,7 @@ what was withheld (`change_notice`, `MigrationReport.moved_with_changes`).
 What the base withholds by design is no loss (`_by_design`, 2026-10-19 owner
 decision). An agent that cannot be read is no reason to stay either: the
 crewmate moves onto the default template's file (`_default_template_file`,
-`MigrationReport.moved_from_default`), with no kit record, and its notice says
+`MigrationReport.moved_from_default`), and its notice says
 the agent could not be read. An agent whose spec parses but cannot be read
 governed (its `file://` prompt does not resolve) still has its stated limits
 read raw, and the default template's file never loosens them
@@ -4100,7 +4123,7 @@ no `member_id` stays out of the migration: a `member_id` on a store that is not
 its own V2 store fails every turn (`memory_stores.require_member_memory_store`).
 A crewmate left where it was gets one WARNING (`MigrationReport.dry_run_failed`)
 and is tried again next boot. A written file is read back and checked against
-the same loosening rule, and the kit record names its source. The ledger keeps
+the same loosening rule. The ledger keeps
 how each crewmate moved under `reasons.<name>`.
 Only after every candidate is proven are bindings repointed, one at a time:
 the ledger entry (`~/.kiro/mates/migrated.json`, `threads.<name>`) is written
@@ -4131,8 +4154,8 @@ The gateway offers it to each open crewmate thread after the slots restore
 (`offer_upgrade_notices`), or at a thread's first turn end, and claims it with
 `O_EXCL` on `worker_notice_claimed.json`, so it is posted at most once, as one
 hidden turn (`NOTICE_PROMPT`, `[Worker upgrade]`) ahead of any report. It names
-where the user sees the worker's kit (Edit mate, Built From, read only) and
-where they change it (the same editor's Advanced, Worker's extra kit). A
+where the user sees what the worker can do and adds more (Edit mate,
+Abilities). A
 crewmate the pass left where it was (`dry_run_failed`, `skipped_no_source`,
 `copy_failed`, `repoint_failed`) owes its own notice instead
 (`mate_config_migration._tell_kept`, `members/<slug>/worker_kept_owed.json`),
@@ -4270,7 +4293,17 @@ switched off (`present: false`, `mate_capabilities._approval_rows`), so it can b
 turned back on, which drops the record. Revocations are written before the file
 and re-grants only after it.
 
-**Other guards.** A create whose template has the crew's own name is refused
+**Other guards.** A create names its starting template, and the only one it
+accepts is the built-in worker, `kirocrew` (`DEFAULT_CREWMATE_TEMPLATE`).
+`adopt_own_file` writes the source-free worker file and reads no template, so
+another template's tools, `excludedTools`, `disabledTools`, deny rules, servers,
+skills and prompt would never reach the crewmate. Any other value is refused
+before anything is written, by one rule both doors call
+(`mate_config.start_template_refusal`, judged against the config key
+`key_new_crew` derives, not the typed name): `400 mate_template_unsupported` on
+the route, exit 1 with the same sentence on `agent create`. Abilities from
+another agent are added afterwards in the crewmate's editor. A template named
+after the crew's own key passes that rule and is refused
 `409 template_name_in_use` (the route and `agent create`): the crewmate's file is
 resolved under its name, so the copy would be skipped. A stored `member_acp_backend: "kiro"` runs as `kas`, the Kiro
 backend that carries a member DM's dispatch tools, logged once per process at

@@ -489,7 +489,7 @@ class TestShippedScenarios:
             new_crewmate,
             pages["kiroCrewAgentsPage"]["filter_agents"],
             manual["components"]["avatarBuilder"]["edit_avatar"],
-            *(rail[k] for k in ("section_general", "section_built_from", "tab_approvals")),
+            *(rail[k] for k in ("section_general", "section_capabilities", "tab_approvals")),
             *(rail[k] for k in ("tab_schedules", "tab_webhooks", "section_memory")),
             rail["section_danger"],
         ):

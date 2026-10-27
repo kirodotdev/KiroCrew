@@ -258,14 +258,14 @@ def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
 
 
 def test_the_notice_names_the_path_to_the_worker_tabs_as_the_dashboard_shows_it():
-    """The tabs live in the crewmate editor's Built From section, opened by the pencil.
-
-    Built From only shows the kit, so the notice also names where it is changed:
-    the same editor's Advanced section, Worker's extra kit."""
-    for words in ("pencil button (Edit mate)", "Built From", "Tools, MCP Servers and Skills"):
+    """The worker's kit lives in the crewmate editor's Abilities section, opened by
+    the pencil. The notice names that path as the dashboard shows it today."""
+    for words in ("pencil button (Edit mate)", "Abilities"):
         assert words in notice.NOTICE_PROMPT
     assert "crewmate page" not in notice.NOTICE_PROMPT
-    assert "under Advanced, Worker's extra kit" in notice.NOTICE_PROMPT
+    # The retired editor language must not come back.
+    assert "Built From" not in notice.NOTICE_PROMPT
+    assert "Worker's extra kit" not in notice.NOTICE_PROMPT
 
 
 def test_the_notice_names_the_editor_labels_the_dashboard_shows():
@@ -278,5 +278,6 @@ def test_the_notice_names_the_editor_labels_the_dashboard_shows():
             encoding="utf-8"
         )
     )
-    kit = labels["crewWorkerKit"]
-    assert (kit["section_advanced"], kit["title"]) == ("Advanced", "Worker's extra kit")
+    # The section the notice points the user at is "Abilities".
+    assert labels["crewEditorNext"]["section_capabilities"] == "Abilities"
+    assert labels["crewEditorNext"]["section_capabilities"] in notice.NOTICE_PROMPT

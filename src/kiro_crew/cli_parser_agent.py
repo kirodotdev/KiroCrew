@@ -753,7 +753,14 @@ def register_agent_parser(sub: _Commands) -> None:
         help="Agent id, or any name: shown as typed, stored under a URL-safe id",
     )
     agent_create.add_argument("--display-name", default="", help="Label the dashboard shows")
-    agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
+    agent_create.add_argument(
+        "--kiro-agent",
+        default="kirocrew",
+        help=(
+            "Template the crew starts from. Only 'kirocrew', the built-in worker "
+            "(the default), is accepted; add other abilities in the crew's editor"
+        ),
+    )
     agent_create.add_argument(
         "--workspace",
         default="",

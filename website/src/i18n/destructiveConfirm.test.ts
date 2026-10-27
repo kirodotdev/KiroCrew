@@ -192,6 +192,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.agentTemplateDetail.reset_confirm_title',
   'components.agentTemplateDetail.switch_confirm_body',
   'components.agentTemplateDetail.switch_confirm_title',
+  'crewEditorNext.band_remove_confirm_title', // ability-name operand of the Added-band remove confirmation
   'components.remoteUpdate.confirm', // crew-name operand of the Update remote confirmation, quoted per locale
   'components.remoteUpdate.confirm_hint', // same operand on the confirmation's explanation line
   // The code-execution grant's title AND body. #5725 quoted only the title, which left

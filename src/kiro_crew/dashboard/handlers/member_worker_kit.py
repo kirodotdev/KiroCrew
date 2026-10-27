@@ -1,8 +1,8 @@
 """Owner-only worker-kit routes: ``/api/agents/{name}/worker-kit``.
 
-``GET`` reads which template the crewmate's worker kit was last copied from;
-``POST .../preview`` says what copying a template would change in the
-crewmate's own file; ``PUT`` copies it, once, after that preview. All disk work
+``GET`` reads the crewmate's own file revision; ``POST .../preview`` says what
+adding another agent's abilities would add to that file, and what it skips as
+already present; ``PUT`` adds them, once, after that preview. All disk work
 runs off the event loop through :mod:`kiro_crew.mate_worker_kit`.
 """
 

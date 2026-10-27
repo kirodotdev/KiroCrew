@@ -107,7 +107,8 @@ class TestAgentCreate:
 
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "research" in saved["agents"]
-        assert saved["agents"]["research"]["kiro_agent"] == "kirocrew"
+        # Create gives the crew its own file and binds it there.
+        assert saved["agents"]["research"]["kiro_agent"] == "research"
         store = saved["agents"]["research"]["memory_store"]
         assert store != "default"
         assert saved["memory_stores"][store]["owner_member"] == "research"
@@ -239,6 +240,50 @@ class TestAgentCreate:
 
         assert exc_info.value.code != 0
         assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
+
+    def test_create_refuses_another_template_before_writing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A crewmate starts as the built-in worker; the template's limits would be lost."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "locked-down")
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "Mates start from the built-in worker" in captured.err
+        assert "Created agent" not in captured.out
+        assert cfg_path.read_text(encoding="utf-8") == before
+        assert not (data_home() / "workspace-member-research").exists()
+
+    def test_create_accepts_the_builtin_worker_by_name(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "kirocrew")
+
+        assert "Created agent: research" in capsys.readouterr().out
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "research" in saved["agents"]
+
+    def test_create_naming_its_own_key_is_not_the_template_refusal(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The start-template rule admits the crew's own key; the same-name rule answers it."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "research")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Mates start from the built-in worker" not in err
+        assert "a template is already named 'research'" in err
+        assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_create_rejects_credential_shaped_member_name(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -109,6 +109,14 @@ store through a template, display-name change or arbitrary database path. This
 development-stage V2 contract has no old V2 data migration or compatibility mode.
 Global and named V1 memory retain their existing behavior independently.
 
+`--kiro-agent` on `agent create` names the starting template and accepts only
+`kirocrew`, the built-in worker and the default. Any other value exits 1 with
+"Mates start from the built-in worker; create it, then add abilities from that
+agent in its editor." before anything is written
+(`mate_config.start_template_refusal`, the rule `POST /api/agents` answers
+`400 mate_template_unsupported` with). A value equal to the crew's own key is
+refused as a template of the same name.
+
 `--model <id>` on `agent create` and `agent update` writes the member's
 `agents.<name>.model`, the field `_session_model` reads first. Omitted, `update`
 leaves the pin alone; `""` or `auto` stores `""` (inherit), through

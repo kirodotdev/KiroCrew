@@ -1274,11 +1274,10 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
 # specs in the agents-dir format, fenced like it. Only gateway handlers write it, directly.
 _KIRO_MATE_AGENTS_DIR = ".kiro/mates/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_MATE_AGENTS_DIR]
-# Its siblings: who owns each crewmate file, kit records, revoked approvals, the
-# tool-access record and the migration ledger. Only gateway handlers write them.
+# Its siblings: who owns each crewmate file, revoked approvals, the tool-access
+# record and the migration ledger. Only gateway handlers write them.
 _KIRO_MATE_STATE_LEAVES: tuple[str, ...] = (
     ".kiro/mates/owners.json",
-    ".kiro/mates/kits",
     ".kiro/mates/revoked-approvals.json",
     ".kiro/mates/tool-access.json",
     ".kiro/mates/migrated.json",

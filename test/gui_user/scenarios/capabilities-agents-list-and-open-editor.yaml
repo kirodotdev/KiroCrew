@@ -37,7 +37,7 @@ steps:
   - Wait a second for the dialog to finish loading.
 expectations:
   - A dialog is open whose title reads "nova-sky".
-  - The dialog has a rail on its left listing "General", "Built From", "Approvals", "Schedules", "Webhooks", "Memory" and "Danger Zone", and "General" is highlighted.
+  - The dialog has a rail on its left listing "General", "Abilities", "Approvals", "Schedules", "Webhooks", "Memory" and "Danger Zone", and "General" is highlighted.
   - The General pane shows an "Edit avatar" button beside the mate's avatar, a field labelled BUILT FROM whose value is "kirocrew" and a field labelled WORKSPACE whose value is "default" (the labels may be drawn in small capitals).
   - No red error notice is visible in the dialog or behind it.
 max_steps: 12

@@ -1835,16 +1835,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // The card is now a Radix-less Modal (role="dialog"), holding the look.
     const dialog = screen.getByRole('dialog')
     expect(dialog).toContainElement(screen.getByTestId('crewmate-create-look'))
-    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Goal' })).toBeNull()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
     // Advanced settings unfolds inline, in the same card.
     fireEvent.click(screen.getByTestId('crewmate-create-advanced-toggle'))
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     // The modal's own header X ("Close") is the way out, in place of the old
     // in-place card's Cancel.
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     await clickAddAdvanced()
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
     expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')

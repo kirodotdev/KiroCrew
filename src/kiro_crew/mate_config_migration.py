@@ -7,7 +7,7 @@ agent adds to the worker base (:func:`kiro_crew.mate_worker.worker_additions`),
 dry-run the merge (:func:`plan_move`: nothing gained and no limit loosened; a
 grant that would be gained is withheld for the capability card, a loss moves
 anyway and is named in the crewmate's one notice; an unreadable agent moves onto
-the default template), write and re-check the file and its kit record, then,
+the default template), write and re-check the file, then,
 once every candidate is proven,
 repoint each binding under the create path's optimistic lock and move its
 pre-upgrade threads (:func:`repoint_moved_threads`).
@@ -1028,7 +1028,6 @@ def migrate_existing_crewmates(
             # was not written and waits for the user's card.
             changes[name] = change
             logger.warning("crewmate migration: %s moves from %r; %s", label, source, change)
-        _record_kit(name, source, planned)
         verified.append(name)
 
     # Pointers move only once every candidate above has been written and proven.
@@ -1099,25 +1098,6 @@ def _tell_kept(report: MigrationReport) -> None:
         kept.setdefault(name, "its settings could not be switched over")
     for name, reason in kept.items():
         mark_kept_owed(name, reason)
-
-
-def _record_kit(name: str, source: str, spec: dict[str, Any]) -> None:
-    """Record *source* as the agent the worker kit was copied from. Never raises.
-
-    The default template is not recorded, as on the create path: it adds
-    nothing to the worker, so there is nothing to re-copy from it.
-    """
-    from kiro_crew.agent_files import is_kirocrew_default_agent
-    from kiro_crew.mate_worker_kit import _kit_of, write_record
-
-    if is_kirocrew_default_agent(source):
-        return
-    try:
-        write_record(name, source, _kit_of(spec))
-    except Exception:  # noqa: BLE001 - the file stands; a re-copy then keeps all
-        logger.warning(
-            "crewmate migration: worker kit record not written for %s", name, exc_info=True
-        )
 
 
 def _repoint(name: str, *, source: str, store: str | None) -> None:
