@@ -505,8 +505,13 @@ def is_denied(
     _rules = _submodule("denied_rules")
     _argv = _submodule("argv_floor")
     _diag = _submodule("diagnostics")
+    _marks = _submodule("quoted_marks")
 
-    lower = tool_name.lower()
+    # The tokenizer's quoted-text marks are control bytes no real command carries;
+    # one typed into the command (``ssh -i /tmp/k\x10 localhost``) would otherwise be
+    # read back as the separator it stands for.  Dropped here, once, so a mark below
+    # can only have been produced by the tokenizer's own pass.
+    lower = _marks.strip_marks(tool_name.lower())
 
     def _reason(
         matched: str,

@@ -194,7 +194,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
-        _self_cli_operands,
+        _self_cli_operand_readings,
         _self_floor_can_fire,
         _self_module_flag_scan,
         _self_module_name_index,
@@ -203,6 +203,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SelfModuleScan,
         _shell_payload_sources,
         _static_substitution_output,
+        _walker_is_fresh,
     )
     from kiro_crew.security.argv_floor_ssh import (  # noqa: F401
         _ARITH_INT_LITERAL_RE,
@@ -228,6 +229,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SSH_FORWARD_OPT_LETTERS,
         _SSH_ROUTING_OPTION_KEYS,
         _SSH_VALUELESS_SHORT_FLAGS,
+        _UNMASK_TABLE,
         _VAR_REFERENCE_RE,
         _VERB_FOLD_AMBIGUOUS_OPT_LETTERS,
         _VERB_VALUE_TAKING_OPT_LETTERS,
@@ -237,7 +239,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _command_value_names_self_endpoint,
         _function_call_binds_self,
         _glob_can_name_ssh_verb,
+        _glued_option_dials_self,
+        _glued_option_state,
         _is_ssh_to_self,
+        _literal_ticks,
         _mask_quoted_separators,
         _operand_targets_self,
         _proxyjump_value_targets_self,
@@ -308,7 +313,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _split_shell_words,
         _strip_redirect,
         _substitution_bodies,
-        _substitution_depth_delta,
+        _SubstitutionDepth,
         _xargs_here_string_rebuild,
     )
     from kiro_crew.security.vocabulary import (  # noqa: F401

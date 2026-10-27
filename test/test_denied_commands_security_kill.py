@@ -985,10 +985,12 @@ class TestSelfKillRawWindowSearchesDequotedView:
 
     Two windows scan a bare ``kill``'s substitution bodies, and each has a blind
     spot the other covers -- until one spelling lands in the intersection.  The
-    TOKEN window bounds the argv with ``_substitution_depth_delta``, a character
-    counter that scores a ``case`` PATTERN's ``)`` (the token ``x)``) as a
+    TOKEN window WAS bounded by ``_substitution_depth_delta``, a character
+    counter that scored a ``case`` PATTERN's ``)`` (the token ``x)``) as a
     substitution closer, so a lookup placed after ``case ... esac`` in the body's
-    command list falls outside its window.  The RAW window is immune to that --
+    command list fell outside its window (since closed by ``_SubstitutionDepth``
+    at every consumer -- ``test_argv_floor_case_pattern_window.py``; the
+    quoted-paren limit below still stands).  The RAW window is immune to that --
     it extracts the body whole through the quote-aware span scan -- but raw text
     and ``_resolve_param_defaults`` remove no quotes, so an adjacent-quote
     concatenation of the product name (``'kiro''crew'``) does not read as the

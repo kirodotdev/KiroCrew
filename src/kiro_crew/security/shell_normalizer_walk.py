@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, NamedTuple
 
+from . import quoted_marks as _quoted_marks
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -215,7 +217,8 @@ def _substitution_depth_delta(token: str) -> int:
     indistinguishable from a real one here and a window bounded by this delta
     under-runs on decoyed input.  The bare-``kill`` window recovers by
     re-deriving its bodies from the raw text, where the quotes still exist
-    (:func:`_bare_kill_raw_bodies`).
+    (:func:`_bare_kill_raw_bodies`).  A ``case`` PATTERN's ``)`` is the other
+    shape it cannot tell apart: the argv windows use ``_SubstitutionDepth``.
     """
     return token.count("$(") + token.count("`") // 2 - token.count(")")
 
@@ -668,20 +671,10 @@ def _prev_significant(text: str, index: int) -> int:
     return k
 
 
-#: Reserved words after which bash still reads the NEXT word in command
-#: position.  ``case`` is a reserved word ONLY in command position, so
-#: ``if true; then case x in ...`` must arm the pattern rule while
-#: ``echo case`` must not -- and the hand-through is INHERITED: ``then`` only
-#: passes command position when it stands in command position itself
-#: (``echo then case ...`` is three arguments).  Block ENDERS (``fi``,
-#: ``done``, ``}``, ``esac``) are deliberately absent: bash refuses a keyword
-#: directly after them (``fi case ...`` is a syntax error, measured), so not
-#: arming there is exact.  Cross-pinned against
-#: ``argv_floor._SHELL_RESERVED_WORDS`` by test, so the two keyword tables
-#: cannot drift apart silently.
-_KEEPS_COMMAND_POSITION = frozenset(
-    {"if", "then", "else", "elif", "while", "until", "do", "!", "{", "time", "coproc"}
-)
+#: Reserved words after which bash still reads the NEXT word in command position;
+#: the table lives in ``quoted_marks`` (see its comment there), which the raw-text
+#: closer scan and the argv window walker read too, so the readings cannot drift.
+_KEEPS_COMMAND_POSITION = _quoted_marks.KEEPS_COMMAND_POSITION
 
 
 def _prev_word(text: str, index: int) -> "tuple[str, int] | None":

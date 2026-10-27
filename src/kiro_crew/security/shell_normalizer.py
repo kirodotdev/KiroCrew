@@ -12,23 +12,26 @@ blinds every tier at once, and no OS sandbox sees shell text, so this layer
 over-approximates on purpose and the tiers above it are where precision belongs.
 Narrowing a matcher means narrowing the site that DECIDES, never this one.
 
-The reader is four modules below this one, and this one keeps attribution -- which
+The reader is five modules below this one, and this one keeps attribution -- which
 program a token reaches, nested shell payloads, local assignments and function
 aliases, the data-consumer exemption, the glob reading of a program name and the
 normalized token view. ``shell_normalizer_walk`` reads characters, quotes, words and
 structure; ``shell_normalizer_redirects`` reads the carriers that bring program text
 outside argv; ``shell_normalizer_escapes`` decodes escapes; ``shell_normalizer_programs``
-holds the program vocabulary. Every name a caller imports from this module still
+holds the program vocabulary; ``shell_normalizer_depth`` is the case-aware argv window
+walker. Every name a caller imports from this module still
 resolves here, and a name a test patches lives in the same module as every reader of
 it.
 
-Imports only ``vocabulary``, the layer below, for the product's own name, and its own
-four owners, which never import it: the tiers depend on the reader, never the reverse.
+Imports only ``vocabulary``, the layer below, for the product's own name,
+``quoted_marks`` for the tokenizer's quoted-text marks, and its own five owners,
+which never import it: the tiers depend on the reader, never the reverse.
 """
 
 from __future__ import annotations
 
 import bisect
+import functools
 import os
 import re
 import shlex
@@ -36,6 +39,29 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
+from . import quoted_marks as _quoted_marks
+from .shell_normalizer_depth import (  # noqa: F401  (also re-exported for importers)
+    _ARG,
+    _IN,
+    _MARKS,
+    _PATTERN,
+    _QUOTED_BLANK_MARK,
+    _QUOTED_GT_MARK,
+    _QUOTED_LT_MARK,
+    _QUOTED_NL_MARK,
+    _QUOTED_TAB_MARK,
+    _QUOTED_TICK_MARK,
+    _QUOTED_WORD_MARK,
+    _SUBST_MARK,
+    _UNMARK_TABLE,
+    _WALKER_GRAMMAR_WORDS,
+    _WORD,
+    _WORD_BREAK,
+    _Frame,
+    _mask_quoted_reserved_words,
+    _SubstitutionDepth,
+    _unmark,
+)
 from .shell_normalizer_escapes import (  # noqa: F401  (also re-exported for importers)
     _ANSI_C_QUOTE_RE,
     _decode_ansi_c_body,
@@ -823,6 +849,24 @@ def _output_redirect_scan(raw: str, start: int = 0) -> "tuple[str, int] | None":
 
 
 def _normalize_operand(token: str) -> str:
+    """A token reduced to the text the shell will actually pass along (cached for
+    tokens up to :data:`_OPERAND_CACHE_MAX_LEN`: the count bound alone would not bound
+    the memory the cache retains, R19).
+    """
+    if len(token) <= _OPERAND_CACHE_MAX_LEN:
+        return _normalize_operand_cached(token)
+    return _normalize_operand_uncached(token)
+
+
+_OPERAND_CACHE_MAX_LEN = 128
+
+
+@functools.lru_cache(maxsize=4096)
+def _normalize_operand_cached(token: str) -> str:
+    return _normalize_operand_uncached(token)
+
+
+def _normalize_operand_uncached(token: str) -> str:
     """A token reduced to the text the shell will actually pass along.
 
     Removes quoting, an attached redirection and empty substitutions, and truncates at
@@ -833,7 +877,12 @@ def _normalize_operand(token: str) -> str:
     The operator is a boundary, not a trailing nuisance: in ``<verb>;echo ok`` the shell
     passes ``<verb>`` and starts a new command, so stripping only from the END leaves the
     operand unrecognisable while the shell still runs it.
+
+    A pure function of the token, cached through :func:`_normalize_operand`: every
+    argv window re-reads the tokens after its anchor, so a long argv asks for the same
+    token's reading once per anchor (R18).
     """
+    token = _unmark(token)  # the text bash hands the program
     token = _resolve_param_defaults(token.strip(_SHELL_WRAPPER_CHARS))
     token = _EMPTY_SUBST_RE.sub("", token)
     token = _debracket(_strip_redirect(token).strip(_SHELL_WRAPPER_CHARS))
@@ -887,11 +936,13 @@ def _self_tokens(text_lower: str) -> "list[str]":
         # commands into one argv. Preserve those boundaries after folding
         # continuations; quoted newlines remain part of their operand.
         command = _fold_line_continuations(text_lower)
-        if "\n" in command:
-            command = "".join(
-                " ; " if step.active and step.char == "\n" else step.text
-                for step in _iter_shell_chars(command)
-            )
+        if "\n" in command or "#" in command:
+            # ...and a comment runs to the newline: bash's parser never sees it, so its
+            # ``)`` and ``;`` close and separate nothing (see ``quoted_marks.strip_comments``).
+            command = _quoted_marks.strip_comments(_iter_shell_chars(command))
+        # A quoted grammar word (``"case"``) is an argument to bash; mark it while
+        # the quotes are still in the text, since the tokenizer drops them (R15).
+        command = _mask_quoted_reserved_words(command)
         return _resolve_function_aliases(
             _resolve_local_assignments(normalize_shell_command(command))
         )
@@ -1117,15 +1168,32 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             # matters where it is used as a program or verb, and a wrong guess there is a
             # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
             # excluded: they carry their own literal and are resolved separately.
-            token = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), token)
+            token = _PARAM_TRANSFORM_RE.sub(
+                lambda m: _expand(values, m.group(1), m.group(0)), token
+            )
             token = _INDIRECT_VAR_USE_RE.sub(
-                lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
+                lambda m: _expand(values, values.get(m.group(1), ""), m.group(0)), token
             )
             token = _VAR_USE_RE.sub(
-                lambda m: values.get(m.group(1) or m.group(2), m.group(0)), token
+                lambda m: _expand(values, m.group(1) or m.group(2), m.group(0)), token
             )
+            token = _quoted_marks.settle_splices(token, _WALKER_GRAMMAR_WORDS, _WORD_BREAK)
         out.append(token)
     return out
+
+
+def _spliced(value: str) -> str:
+    """*value* as a resolver splices it into a token, followed by the splice mark:
+    bash expands AFTER parsing, so a grammar word an expansion spells -- whole (R22
+    Opus) or completed by the text around it (``a=cas; ${a}e``, R30 Opus) -- is an
+    ordinary word, and :func:`quoted_marks.settle_splices` marks the word it lands in."""
+    return value + _quoted_marks.SPLICE_MARK
+
+
+def _expand(values: "dict[str, str]", name: str, fallback: str) -> str:
+    """*name*'s tracked value spliced in, else *fallback*: one reading for every
+    expansion spelling (R23 Opus)."""
+    return _spliced(values[name]) if name in values else fallback
 
 
 def _nested_shell_payloads(
@@ -1469,8 +1537,9 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
-            # parent, so it is strictly shorter than the parent's source text.
-            payload = _decode_printf_escapes(payload)
+            # parent, so it is strictly shorter than the parent's source text.  The
+            # inner shell gets the UNMARKED text (a token carries the quoted marks, R22).
+            payload = _decode_printf_escapes(_unmark(payload))
             if len(payload) >= parent_len or payload in seen:
                 continue
             seen.add(payload)

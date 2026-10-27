@@ -27,6 +27,7 @@ from .shell_normalizer import (
     _python_reads_stdin,
     _shell_tokens,
     _stdin_program_text,
+    _unmark,
 )
 from .vocabulary import _SELF_NAME_RE
 
@@ -868,6 +869,9 @@ def _has_self_importing_inline_program(
     """
     if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
         return False
+    # The program text is read as bash hands it to the interpreter: the tokenizer's
+    # quoted-text marks (a quoted blank inside the ``-c`` payload) come off first.
+    tokens = [_unmark(t) for t in tokens]
     later_tokens = tokens[i + 1 :]
     glued = tokens[i].strip(_SHELL_WRAPPER_CHARS)
     if "<" in glued:

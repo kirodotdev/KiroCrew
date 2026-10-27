@@ -532,7 +532,21 @@ def _url_payload_command(n: int) -> str:
 #: substitution may expand to nothing in the program word, and
 #: ``#`` / ``<<`` inside an unpaired ``${…}`` / ``$[…]`` open no comment or heredoc.
 #: Each command is read with and without that tracking. Deny-only: no allow widened.
-_PACKAGE_LINE_BUDGET = 32_635
+#:
+#: Raised by 1,675, from 32,635, for the case-aware substitution-depth walker.
+#: Every argv window bounds itself with ``_SubstitutionDepth``
+#: (``shell_normalizer_depth.py``, a stack of per-command-list frames): one character
+#: pass per token with one shared lookahead, so the pass stays linear and a long clause
+#: run cannot raise out of the gate. A substitution inside a ``case`` pattern is a frame
+#: of its own, so its ``)`` closes that frame and never the pattern. The tokenizer's
+#: raw-text quote-state pass and its marks (a quoted grammar word, backtick, blank or
+#: redirection character, read by bash as text) live in ``quoted_marks.py`` with the
+#: comment stripper, which tracks the case grammar per substitution frame and the
+#: ``${ … }`` / ``$[ … ]`` text groups, so a ``#`` inside either opens no comment. The
+#: ssh-family and self-CLI floors (``argv_floor_ssh.py``, ``argv_floor_self.py``) read
+#: the walker's grammar and top-level words. A typed mark byte is dropped at the gate's
+#: entry (``strip_marks``). Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 34_310
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

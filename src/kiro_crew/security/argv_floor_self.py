@@ -44,7 +44,6 @@ from .shell_normalizer import (
     _data_consumer_exempt,
     _debracket,
     _decode_printf_escapes,
-    _ends_argv,
     _glob_could_expand_to,
     _is_mint_verb,
     _is_self_program,
@@ -55,7 +54,7 @@ from .shell_normalizer import (
     _shell_join_continuations,
     _shell_payload_walk,
     _substitution_bodies,
-    _substitution_depth_delta,
+    _SubstitutionDepth,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
 
@@ -320,6 +319,12 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
         # quadratic in the trigger count.  ``None`` until the first trigger token needs
         # it, so a frame carrying none pays nothing.
         disqualified: "bool | None" = None
+        # Anchors whose verb window an earlier anchor's walk already read: a later anchor
+        # the walk left behind in a FRESH state (no substitution, case or word open, no
+        # inline payload pending) would start the identical walk over the identical
+        # tokens, so its verdict is the one already found -- none.  Without this, 2,200
+        # anchors read 2,200 windows to the argv's end (R32 GPT).
+        same_window: set[int] = set()
         for i, token in enumerate(tokens):
             # AN INLINE PROGRAM THAT NAMES THE MINT SURFACE IS DENIED WITHOUT NEEDING THE VERB
             # AS AN ARGV WORD, and it is checked FIRST because it does not depend on the
@@ -354,9 +359,12 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             # scan: ``if true; then <name> <verb>; fi`` hands the verb over as
             # ``<verb>;`` -- one token that both IS the verb and carries the boundary,
             # so testing the boundary first discards the very argument that names it.
-            depth = 0
+            if i in same_window:
+                continue
+            depth = _SubstitutionDepth(rest=tokens[i + 1 :])
             inline_payload_next = False
-            for later in tokens[i + 1 :]:
+            fresh_at: list[int] = []
+            for k, later in enumerate(tokens[i + 1 :], i + 1):
                 if _is_mint_verb(later):
                     return True
                 # The operand of `-c` is a quoted PROGRAM, so its `;` is data, not a command
@@ -369,25 +377,62 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 # the CLI is denied above, before this loop runs, because it can construct the
                 # verb internally. The skip covers the remaining case —
                 # a payload that does NOT import us, followed by a real `token` argument.
+                # A skipped token is still shown to the walker as DATA (``feed_data``).
                 if inline_payload_next:
                     inline_payload_next = False
+                    if depth.feed_data(later):
+                        break
                     continue
                 _operand = _shell_normalizer._normalize_operand(later).strip("\"'")
                 if _operand in _PYTHON_INLINE_PROGRAM_FLAGS:
                     inline_payload_next = True
+                    if depth.feed_data(later):
+                        break
                     continue
                 # `-c<payload>` attached: the payload is already inside this token, so it is
                 # data in the same way — skip it without expecting a following one.
                 if len(_operand) > 2 and _operand[:2] in _PYTHON_INLINE_PROGRAM_FLAGS:
+                    if depth.feed_data(later):
+                        break
                     continue
                 # A separator NESTED in a command substitution is part of that
                 # substitution, not the end of this argv: ``<name> $(true; echo <verb>)``
                 # is still one command.  Only a top-level separator ends the scan.
-                depth += _substitution_depth_delta(later)
-                if depth <= 0 and _ends_argv(later):
+                ended = depth.feed(later)
+                # The token's TOP-LEVEL text with the substitutions cut out is the word
+                # bash hands over: ``$(case x in x) :;; esac)<verb>`` is the verb glued to
+                # a substitution's closer, and the whole token is not (R11).
+                if any(
+                    _is_mint_verb(_shell_normalizer._unmark(word))
+                    for word in depth.words + depth.alt_words
+                ):
+                    return True
+                if ended:
                     break
-                depth = max(depth, 0)
+                if _walker_is_fresh(depth):
+                    # AFTER this token: a walk anchored on it reads tokens[k + 1:] from
+                    # the state this one is in now (``<name> $(<name>`` is not fresh).
+                    fresh_at.append(k)
+            same_window.update(fresh_at)
     return False
+
+
+def _walker_is_fresh(depth: "_SubstitutionDepth") -> bool:
+    """True while *depth* stands exactly as a new walker would: one frame in argument
+    position with no case, group, word or ``esac`` reading open -- so a walk begun here
+    reads the tokens ahead exactly as this one will."""
+    frame = depth._frames[-1]
+    return (
+        depth.top_level
+        and frame.cases == 0
+        and frame.mode == _shell_normalizer._ARG
+        and not frame.groups
+        and not frame.word
+        and not frame.command_next
+        and not frame.name_next
+        and not depth._after_esac
+        and not depth._alt_pending
+    )
 
 
 def _static_substitution_output(body: str) -> str:
@@ -441,7 +486,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     """Substitution bodies inside a bare ``kill``'s own argv, read from the RAW text.
 
     The token walk in :func:`_is_self_kill` bounds the same window with
-    :func:`_substitution_depth_delta`, which counts parens on tokens
+    :class:`_SubstitutionDepth`, which counts parens on tokens
     ``normalize_shell_command`` has already stripped the quotes from -- so by the
     time the counter runs, a QUOTED close-paren is indistinguishable from a real
     closer and it ends the window early: ``kill $(printf ')' ; pgrep -f
@@ -752,7 +797,7 @@ def _is_self_kill(text_lower: str) -> bool:
             # so testing the boundary first would discard the very argument that
             # names the target.  Stopping after it keeps an unrelated later command
             # out of the match (``pkill other; echo kirocrew`` is not a self-kill).
-            depth = 0
+            depth = _SubstitutionDepth(rest=tokens[i + 1 :])
             for arg in tokens[i + 1 :]:
                 # Search the raw arg, its normalized form, and its resolved-word view.
                 # Normalizing alone is not enough: a pkill pattern is an ERE, so a ``>``
@@ -764,10 +809,8 @@ def _is_self_kill(text_lower: str) -> bool:
                 views = (_debracket(arg), n._normalize_operand(arg), n._resolved_word_view(arg))
                 if any(_SELF_NAME_RE.search(view) for view in views):
                     return True
-                depth += _substitution_depth_delta(arg)
-                if depth <= 0 and _ends_argv(arg):
+                if depth.feed(arg):
                     break
-                depth = max(depth, 0)
     # Bare ``kill`` whose PID comes out of a substitution naming the product.
     # The VERB is matched on tokens (so ``/usr/bin/kill``, ``$(which kill)`` and a
     # quoted spelling all count -- a raw-text pattern anchored on separators sees
@@ -783,14 +826,13 @@ def _is_self_kill(text_lower: str) -> bool:
             # ``kill 123; echo $(cat /tmp/kirocrew)`` was denied for a substitution
             # belonging to a different command.
             own = [token]
-            depth = 0
+            depth = _SubstitutionDepth(rest=frame[i + 1 :])
             for later in frame[i + 1 :]:
                 own.append(later)
                 # A separator INSIDE a substitution belongs to the substitution, not to
                 # this command line: ``kill $(echo x; pgrep <name>)`` is ONE argument, so
                 # ending the scan at that ``;`` would drop the half naming the target.
-                depth += _substitution_depth_delta(later)
-                if depth <= 0 and _ends_argv(later):
+                if depth.feed(later):
                     break
             # An operand of THIS kill that resolves to the protected name is a self-kill.
             # `kill` takes PIDs, so a bare name is not something a person types -- it gets
@@ -809,15 +851,12 @@ def _is_self_kill(text_lower: str) -> bool:
                     _resolve_param_defaults(body)
                 ):
                     return True
-        # The window above is bounded by ``_substitution_depth_delta`` on
-        # DE-QUOTED tokens, so a quoted close-paren reads as a real closer and
-        # closes the window early, dropping the clause that names the target
+        # The window above is bounded by ``_SubstitutionDepth`` on DE-QUOTED
+        # tokens, so a quoted close-paren reads as a real closer and closes the
+        # window early, dropping the clause that names the target
         # (``kill $(printf ')' ; pgrep -f kirocrew)``).  Re-derive the same
-        # window from the RAW text, where the quotes still exist.  The counter
-        # also scores a ``case`` PATTERN's ``)`` as a closer, so a lookup placed
-        # after ``case ... esac`` in the body's list falls outside the token
-        # window too -- only this raw window reaches it.  Search each body raw,
-        # with parameter defaults resolved, AND per WORD of the ``_self_tokens``
+        # window from the RAW text, where the quotes still exist.  Search each
+        # body raw, with parameter defaults resolved, AND per WORD of the ``_self_tokens``
         # view (de-quoting only exists as a product of tokenization, and that
         # view folds a ``backslash-newline`` split name whole and swallows an
         # untokenizable body instead of raising out of the gate): each word
@@ -859,8 +898,11 @@ _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
 )
 
 
-def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
-    """Non-flag operand words the product CLI at program index *i* receives, in order.
+def _self_cli_operand_readings(
+    tokens: "list[str]", i: int, *, limit: "int | None" = None
+) -> "tuple[list[str], ...]":
+    """Two readings of the non-flag operand words the product CLI at program index
+    *i* receives, in order: per TOKEN, and per top-level WORD.
 
     A token that stays a ``-``/``--`` word after quote/redirect normalization is a
     global flag and is skipped -- the self-protection top-level flags are all
@@ -870,21 +912,44 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
     ``kirocrew 2>/tmp/x restart`` still reads ``restart`` as the leading operand.
     Quoting is resolved by ``_normalize_operand``; the walk stops at the argv
     boundary so a chained later command's words are not attributed here.
+
+    The token reading sees a word's static spelling through an empty substitution
+    (``re$()start``).  The word reading is what bash builds: a command
+    substitution is one command list whose words are NOT this argv's, and the
+    text around it is one word -- ``<name> $(case x in x) :;; esac)<verb>`` and
+    ``<name> 2>$(: ; echo /dev/null) <verb>`` both run ``<verb>`` (R11).  A caller
+    matches either reading; each only ever adds a denial.
+
+    With *limit*, the walk stops once BOTH readings hold that many words: a caller
+    that matches a leading subcommand of *limit* words reads nothing past them, so a
+    long argv of anchors costs each anchor a few tokens rather than the rest of the
+    line (R18 GPT: 1,200 anchors; R19 Opus: a per-frame cache of the full readings
+    retained the quadratic result instead).
     """
     operands: "list[str]" = []
-    depth = 0
+    words: "list[str]" = []
+    # The closer reading behind an ``esac)`` the lookahead settled as a pattern: the
+    # words read so far, then that reading's own top-level words up to the event that
+    # refused it.  A sequence of its own, since a ``;;`` at top level may be an
+    # enclosing clause's and make that reading bash's (R28 Opus).
+    closer_words: "list[str] | None" = None
+    depth = _SubstitutionDepth(rest=tokens[i + 1 :])
     skip_target = False
     for later in tokens[i + 1 :]:
         is_redirect, expects_target = _redirect_consumes_next(later)
         if skip_target:
             # A separate redirection target (``> FILE``) is a filename: its bytes are
             # data, not an argv boundary, so a quoted ``;``/``|`` in it (``> 'a;b'``)
-            # must NOT end the scan. Consume it without the boundary/depth bookkeeping.
+            # must NOT end the scan. Consume it as data (``feed_data``).
             skip_target = False
+            if depth.feed_data(later):
+                break
             continue
         if is_redirect:
             # The redirection operator itself is not an operand and never ends the argv.
             skip_target = expects_target
+            if depth.feed_data(later):
+                break
             continue
         operand = _shell_normalizer._normalize_operand(later)
         # ANSI-C ($'...') and locale ($"...") quoting: shlex strips the quotes
@@ -897,11 +962,22 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
             operand = _decode_printf_escapes(operand[1:])
         if operand and not operand.startswith("-"):
             operands.append(operand)
-        depth += _substitution_depth_delta(later)
-        if depth <= 0 and _ends_argv(later):
+        ended = depth.feed(later)
+        if depth.alt_words and closer_words is None:
+            closer_words = list(words)
+        for word in depth.words + depth.alt_words:
+            word = _shell_normalizer._normalize_operand(word)
+            if word.startswith("$") and not word.startswith(("$(", "${")):
+                word = _decode_printf_escapes(word[1:])
+            if word and not word.startswith("-"):
+                words.append(word)
+                if closer_words is not None:
+                    closer_words.append(word)
+        if ended or (limit is not None and len(operands) >= limit and len(words) >= limit):
             break
-        depth = max(depth, 0)
-    return operands
+    if closer_words is not None:
+        return operands, words, closer_words
+    return operands, words
 
 
 def _operands_lead_with(operands: "list[str]", spec: "tuple[object, ...]") -> bool:
@@ -1039,7 +1115,10 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
                 command_disqualified=disqualified,
             ):
                 continue
-            if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+            if any(
+                _operands_lead_with(reading, spec)
+                for reading in _self_cli_operand_readings(tokens, prog_idx, limit=len(spec))
+            ):
                 return True
     return False
 
