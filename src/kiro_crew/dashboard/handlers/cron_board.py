@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 
@@ -294,6 +295,55 @@ async def api_cron_folders_create(request: web.Request) -> web.Response:
             )
     state.push_refresh("crons")
     return web.json_response(folder)
+
+
+# Folder ids are minted server-side as 8 hex characters. A missing reference of
+# that shape is a stale id, never a name to create (the MCP tool's rule too).
+_FOLDER_ID_SHAPE = re.compile(r"[0-9a-f]{8}")
+
+
+async def create_or_adopt_cron_folder(state: DashboardState, name: str) -> tuple[str, str | None]:
+    """Return the id of the folder called ``name``, creating it when there is none.
+
+    The app cron bridge's create path. It runs under the same lock and writes the
+    same in-memory list as ``POST /api/cron-folders``, so the dashboard's next
+    wholesale save keeps the folder. The name is matched again under the lock,
+    case-insensitively, so two registrations racing on one missing name make one
+    folder. A name several folders share is refused, as the lookup refuses it.
+    Returns ``(folder_id, error)``; on an error the id is ``""``.
+    """
+    name = str(name or "").strip()
+    if not name or len(name) > MAX_SHORT_STRING:
+        return "", "folder name is empty or too long"
+    if _FOLDER_ID_SHAPE.fullmatch(name):
+        return "", f"cron folder not found: {name!r} looks like a folder id"
+    async with _get_cron_folders_lock():
+        matches = [f for f in state._cron_folders if f["name"].strip().lower() == name.lower()]
+        if len(matches) > 1:
+            return "", f"{len(matches)} cron folders are named {name!r}"
+        if matches:
+            return str(matches[0]["id"]), None
+        try:
+            folder = await asyncio.to_thread(state.create_cron_folder, name, uuid.uuid4().hex[:8])
+        except Exception:
+            logger.warning("Failed to persist cron folder create", exc_info=True)
+            return "", "failed to save folder"
+    state.push_refresh("crons")
+    return str(folder["id"]), None
+
+
+def wire_app_cron_folder_creator(state: DashboardState) -> None:
+    """Let the app cron bridge create missing folders through this dashboard.
+
+    Call only after ``state.load_cron_folders()`` (before it the in-memory list is
+    empty, and a create would save over the folders on disk), and only after the
+    socket binds, so the startup registration pass adds no write to the boot path.
+    """
+
+    async def _create(name: str) -> tuple[str, str | None]:
+        return await create_or_adopt_cron_folder(state, name)
+
+    state.crons.folder_creator = _create
 
 
 async def api_cron_folders_update(request: web.Request) -> web.Response:

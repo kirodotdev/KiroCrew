@@ -1185,6 +1185,12 @@ async def start_dashboard(
             await _stop_spawned_backends()
         _dashboard_sock.close()
         raise
+    # After the bind, never on the boot path (no-new-work-on-gateway-boot-path):
+    # from here an app cron naming a missing folder creates it through the
+    # dashboard's own folder service. Boot-time registration stays read-only.
+    from kiro_crew.dashboard.handlers.cron_board import wire_app_cron_folder_creator
+
+    wire_app_cron_folder_creator(state)
     # The listener is up -- keep it up. One failed accept() on Windows would
     # otherwise close it for the life of the process (see listener_guard).
     _arm_listener_guard(state, runner, site)

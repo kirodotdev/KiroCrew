@@ -44,6 +44,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.cron_board import (  # noqa: F401
+        _FOLDER_ID_SHAPE,
         _cron_folders_lock,
         _get_cron_folders_lock,
         api_cron_folders,
@@ -51,7 +52,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_cron_folders_delete,
         api_cron_folders_update,
         api_crons,
+        create_or_adopt_cron_folder,
         logger,
+        wire_app_cron_folder_creator,
     )
     from kiro_crew.dashboard.handlers.cron_caller_session import (  # noqa: F401
         _headless_mode_refusal,

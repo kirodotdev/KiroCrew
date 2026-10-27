@@ -412,6 +412,7 @@ _LAZY_IMPORTS = {
         "api_monitors_list api_session_monitor_get"
     ),
     "kiro_crew.dashboard.handlers.change_cards": "change_card_middleware",
+    "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
     "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
@@ -461,7 +462,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 96
+    assert len(expected) == 97
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

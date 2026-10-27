@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -785,12 +786,13 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 continue
         try:
             # Resolve the manifest's folder NAME against existing Schedule-page
-            # folders (read-only: cron_folders.json is dashboard-owned and
-            # rewritten wholesale by its state, so creating from here could be
-            # silently clobbered). An unresolved folder degrades to ungrouped
-            # with a logged warning rather than failing the app's enable — the
-            # job matters more than its grouping, and the next enable re-files
-            # it once the folder exists.
+            # folders. cron_folders.json is dashboard-owned and rewritten
+            # wholesale by its state, so this never writes it: a MISSING name is
+            # created only through the dashboard's own folder service
+            # (``cron_service.folder_creator``, set by the gateway's dashboard).
+            # Without one (the CLI), or on any other error, the job degrades to
+            # ungrouped with a logged warning rather than failing the app's
+            # enable — the job matters more than its grouping.
             folder_id = ""
             folder_ref = d.get("folder") or ""
             if folder_ref:
@@ -800,6 +802,10 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 # every request and the heartbeat with it.
                 found = await asyncio.to_thread(lookup_cron_folder_id, folder_ref)
                 folder_id = found.folder_id
+                creator = getattr(cron_service, "folder_creator", None)
+                if found.missing and inspect.iscoroutinefunction(creator):
+                    folder_id, made_err = await creator(folder_ref)
+                    found = found._replace(error=made_err)
                 if found.error:
                     logger.warning(
                         "App %s: cron %r registered ungrouped: %s", app_name, name, found.error

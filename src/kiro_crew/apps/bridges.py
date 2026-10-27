@@ -183,6 +183,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import asyncio  # noqa: F401
     import hashlib  # noqa: F401
+    import inspect  # noqa: F401
     import json  # noqa: F401
     import logging  # noqa: F401
     import os  # noqa: F401
