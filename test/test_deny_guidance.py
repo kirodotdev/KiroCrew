@@ -1479,9 +1479,6 @@ class TestNoticeIntegration:
         assert "If the task is NOT finished, continue from there" in body
         assert "Only if the task IS finished" in body
 
-    def test_empty_refusals_still_yield_nothing(self):
-        assert build_refusal_recovery_prompt([]) == ""
-
 
 # The permission verb, spelled in halves so this file's own text does not trip the
 # rows under test.

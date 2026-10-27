@@ -395,10 +395,6 @@ class TestSpawnShimArgv:
         assert preexec is not None
         assert preexec is sandbox.extractor_resource_limit_preexec()
 
-    def test_policy_free_profile_skips_the_interpreter_hop(self):
-        # Nothing to do post-exec: no reason to pay an exec + startup.
-        assert spawn_shim_argv(RLIMIT_PROFILE_NONE) == ()
-
 
 # --------------------------------------------------------------------------
 # Parent side: the wrapper

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import security
 from kiro_crew.security import (
@@ -788,10 +789,6 @@ class TestTheBashGateMatchesNoPaths:
         "echo x > ~/.kiro/crew/apps/ops-mission-control/data/rotation.yaml",
     )
 
-    @pytest.mark.parametrize("command", UNMATCHED)
-    def test_a_path_in_command_text_is_not_a_verdict(self, command: str) -> None:
-        assert is_sensitive_bash_command(command) is None, command
-
     def test_imds_is_still_refused(self) -> None:
         reason = is_sensitive_bash_command("curl http://169.254.169.254/latest/meta-data/")
         assert reason is not None and reason.startswith("Blocked: command accesses IMDS")
@@ -1077,8 +1074,18 @@ class TestTraversalSimulationIsGone:
         "find src -name '*.py' -exec wc -l {} +",
     )
 
-    @pytest.mark.parametrize("command", ALLOWED)
-    def test_read_only_traversals_are_not_refused(self, command: str) -> None:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            *named_cases("test_read_only_traversals_are_not_refused", "command", ALLOWED),
+            *named_cases(
+                "test_a_path_in_command_text_is_not_a_verdict",
+                "command",
+                TestTheBashGateMatchesNoPaths.UNMATCHED,
+            ),
+        ],
+    )
+    def test_a_command_naming_a_path_is_not_refused(self, command: str) -> None:
         assert is_sensitive_bash_command(command) is None, command
 
     def test_the_simulation_helpers_are_absent(self) -> None:

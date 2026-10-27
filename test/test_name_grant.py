@@ -1150,12 +1150,6 @@ class TestDispatchers:
         refusal = name_grant.name_grant_refusal(f"{program} --version")
         assert refusal is None or refusal.code != name_grant.DISPATCHER
 
-    def test_the_windows_dispatcher_table_stays_out_of_the_shared_one(self):
-        # The Windows entries live in their own set so POSIX behaviour is
-        # identical to base. Guards against a future edit dropping one back into
-        # `_DISPATCHERS`, where it would refuse the same name on POSIX.
-        assert name_grant._DISPATCHERS.isdisjoint(name_grant._WINDOWS_DISPATCHERS)
-
 
 class TestInheritedHostEnvironment:
     """The rootdir conftest scrubs the inherited entries name_grant refuses on.

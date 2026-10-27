@@ -20,6 +20,7 @@ import os
 import subprocess
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import name_grant, platform_compat
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -197,16 +198,39 @@ class TestPowerShellBlockComments:
     @pytest.mark.parametrize(
         "command,expected",
         [
-            # `#` with no `<`/`>` beside it is an ordinary operand, not a
-            # comment delimiter this guard reacts to.
-            ("git commit -m fix#3", ["git"]),
-            ("echo a#b", ["echo"]),
-            # A redirect keeps working when the target is not a `#`.
-            ("head x > out", ["head"]),
-            ("git status", ["git"]),
+            *named_cases(
+                "test_controls_are_unaffected",
+                "command,expected",
+                [
+                    # `#` with no `<`/`>` beside it is an ordinary operand, not a
+                    # comment delimiter this guard reacts to.
+                    ("git commit -m fix#3", ["git"]),
+                    ("echo a#b", ["echo"]),
+                    # A redirect keeps working when the target is not a `#`.
+                    ("head x > out", ["head"]),
+                    ("git status", ["git"]),
+                ],
+            ),
+            *named_cases(
+                "test_controls_still_collect_the_program",
+                "command,expected",
+                [
+                    # Literal name after `&` must keep working: this is the shape a
+                    # user reaches for on purpose ("run whatever's on my PATH").
+                    ("& git status", ["git"]),
+                    # An absolute path after `&` is a literal, not an expression.
+                    (
+                        r'& "C:\Windows\System32\where.exe" x',
+                        [r"C:\Windows\System32\where.exe"],
+                    ),
+                    ("head a && echo b", ["head", "echo"]),
+                    ("git status", ["git"]),
+                    ("docker-compose up", ["docker-compose"]),
+                ],
+            ),
         ],
     )
-    def test_controls_are_unaffected(self, win, command, expected):
+    def test_controls_collect_the_program(self, win, command, expected):
         assert name_grant.program_names(command) == expected
 
     def test_posix_keeps_the_redirect_reading(self, monkeypatch):
@@ -301,25 +325,6 @@ class TestPowerShellExpressionInvocation:
         assert refusal is not None
         assert "the expression '{$p=' in a command position" in refusal.detail
         assert "s3cret" not in refusal.detail
-
-    @pytest.mark.parametrize(
-        "command,expected",
-        [
-            # Literal name after `&` must keep working: this is the shape a
-            # user reaches for on purpose ("run whatever's on my PATH").
-            ("& git status", ["git"]),
-            # An absolute path after `&` is a literal, not an expression.
-            (
-                r'& "C:\Windows\System32\where.exe" x',
-                [r"C:\Windows\System32\where.exe"],
-            ),
-            ("head a && echo b", ["head", "echo"]),
-            ("git status", ["git"]),
-            ("docker-compose up", ["docker-compose"]),
-        ],
-    )
-    def test_controls_still_collect_the_program(self, win, command, expected):
-        assert name_grant.program_names(command) == expected
 
     def test_posix_subshell_is_unchanged(self, monkeypatch):
         # `( head file )` on POSIX opens a SUBSHELL whose first word is the
@@ -961,7 +966,25 @@ class TestSystemAndWitness:
         assert refusal is not None
         assert refusal.code == name_grant.DISPATCHER
 
-    def test_the_windows_dispatcher_table_stays_disjoint_from_the_shared_one(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_the_windows_dispatcher_table_stays_disjoint_from_the_shared_one"),
+            # The Windows entries live in their own set so POSIX behaviour is
+            # identical to base. Guards against a future edit dropping one back into
+            # `_DISPATCHERS`, where it would refuse the same name on POSIX.
+            *named_cases(
+                "test_the_windows_dispatcher_table_stays_out_of_the_shared_one",
+                marks=[
+                    pytest.mark.skipif(
+                        platform_compat.IS_WINDOWS,
+                        reason="resolution fixtures rely on the POSIX execute bit and a ':'-joined PATH",
+                    )
+                ],
+            ),
+        ],
+    )
+    def test_the_windows_dispatcher_table_is_disjoint_from_the_shared_one(self):
         # Guards against a future edit dropping a Windows-only name back into
         # `_DISPATCHERS`, which would refuse it on POSIX too (where `iex` is
         # Elixir's REPL, `start` is a program a user is free to install, etc.).

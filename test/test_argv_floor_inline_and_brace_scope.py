@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import security
 from kiro_crew.security import argv_floor, inline_payload
@@ -1084,14 +1085,75 @@ class TestBraceExpansionMirrorsBash:
     @pytest.mark.parametrize(
         "cmd",
         [
-            "gh pr view 9362 --repo o/KiroCrew --json state --jq '{state,mergeStateStatus}'",
-            "gh api repos/o/KiroCrew/x --jq '{m:.mergeable,s:.mergeStateStatus}'",
-            "awk '{print $1, $2}' f.txt; gh run view 1 --repo o/KiroCrew",
-            "R=$KIROCREW_SCRATCH/r; join <(awk '{print $1}' \"$R/a\") <(awk '{print $1}' \"$R/b\")",
-            "printf 'x: {directory}' > note; sed -i '1r /w/kirocrew-scratch/epd.py' f.py",
+            *named_cases(
+                "test_a_quoted_brace_program_next_to_a_product_path_is_allowed",
+                "cmd",
+                [
+                    "gh pr view 9362 --repo o/KiroCrew --json state --jq '{state,mergeStateStatus}'",
+                    "gh api repos/o/KiroCrew/x --jq '{m:.mergeable,s:.mergeStateStatus}'",
+                    "awk '{print $1, $2}' f.txt; gh run view 1 --repo o/KiroCrew",
+                    "R=$KIROCREW_SCRATCH/r; join <(awk '{print $1}' \"$R/a\") <(awk '{print $1}' \"$R/b\")",
+                    "printf 'x: {directory}' > note; sed -i '1r /w/kirocrew-scratch/epd.py' f.py",
+                ],
+            ),
+            *named_cases(
+                "test_glob_argument_next_to_a_product_path_is_allowed",
+                "cmd",
+                [
+                    # Filesystem inspectors describe their arguments; a glob among them is a filename.
+                    "ls -d /w/KiroCrew-ws/* /h/w/KiroCrew-ws/* 2>/dev/null",
+                    "stat /w/kirocrew-wt-x/* | head",
+                    "du -sh /w/kirocrew/*",
+                    # A glob among a file mover's arguments is a path, whatever follows the
+                    # operator glued to it.
+                    "cp $KIROCREW_SCRATCH/retro/*; gh api repos/o/KiroCrew/issues/1/comments",
+                    "S=$KIROCREW_SCRATCH; mkdir -p $S/r; cp /tmp/a.txt $S/r/*; git diff origin/main -- src/kiro_crew",
+                ],
+            ),
+            *named_cases(
+                "test_a_prefixed_substitution_glob_argument_is_a_filename",
+                "cmd",
+                [
+                    # A host-stamped filename -- literal text, then a substitution, then a glob --
+                    # under a program that is NOT a data consumer, with a product-named path later
+                    # in the same argv.  The word expands to something starting with its literal
+                    # prefix, so it cannot be the verb; the body (``hostname``) is harmless.  Every
+                    # row was confirmed newly-refused by the scope review of the revision that read
+                    # the whole word as ``.*``.
+                    "tar czf logs_$(hostname)_*.tar.gz -C /w/kirocrew-scratch/logs .",
+                    "zip -q /tmp/bench.zip bench_`hostname`_*.json /w/kirocrew-scratch/notes.md",
+                    "gh run download 12345678 --pattern coverage_$(hostname)_* --repo kirodotdev/KiroCrew",
+                    "install -m 644 report_$(hostname)_*.log /w/kirocrew-scratch/archive/",
+                    # The Windows spellings: a PowerShell ``$()`` subexpression is the same opener.
+                    "Copy-Item report_$(hostname)_*.log \\\\nas\\kirocrew\\archive\\",
+                    "Move-Item logs_$(hostname)_*.log C:\\kirocrew-scratch\\archive\\",
+                    "Compress-Archive -Path logs_$(hostname)_*.log -DestinationPath C:\\kirocrew-scratch\\logs.zip",
+                    "Get-ChildItem logs_$(hostname)_*.log C:\\kirocrew-scratch\\logs",
+                ],
+            ),
+            *named_cases(
+                "test_a_wildcard_path_next_to_a_product_path_is_allowed",
+                "cmd",
+                [
+                    # A read-and-copy routine that ends by counting matches across the copies.
+                    "C=/h/.kiro/crew/workspace/kirocrew-session-captures/behavior-$(date -u +%Y%m%dT%H%M%SZ); "
+                    'mkdir -p "$C/transcripts" "$C/gateway" && chmod 700 "$C"; '
+                    "R='s/eyJ[A-Za-z0-9._-]{10,}/<jwt>/g'; "
+                    'sed -E "$R" /h/.kiro/crew/sessions/d.jsonl > "$C/transcripts/d.jsonl"; '
+                    'for f in /h/.kiro/crew/gateway.log*; do sed -E "$R" "$f" > "$C/gateway/$(basename "$f")"; done; '
+                    'echo "$C"; du -sh "$C" | cut -f1; find "$C" -type f | wc -l; '
+                    'grep -c -E \'eyJ[A-Za-z0-9._-]{10,}\' "$C"/transcripts/* "$C"/gateway/* '
+                    "| grep -v ':0$' || echo none",
+                    'C=/tmp/kirocrew-export; grep -c -E "a" "$C"/transcripts/* "$C"/gateway/*',
+                    "grep -e foo -e bar /tmp/a/* /w/kirocrew/state.json",
+                    "echo -e 'a b' /tmp/x/* /w/kirocrew/gateway.log",
+                    "cat -E /tmp/x/* /w/kirocrew/gateway.log",
+                    "tail -n 3 /tmp/x/?* /w/kirocrew/gateway.log",
+                ],
+            ),
         ],
     )
-    def test_a_quoted_brace_program_next_to_a_product_path_is_allowed(self, cmd):
+    def test_a_glob_or_brace_next_to_a_product_path_is_allowed(self, cmd):
         assert not argv_floor._is_self_kill(cmd.lower()), cmd
         assert _rule_of(cmd) is None, cmd
 
@@ -1111,54 +1173,53 @@ class TestAGlobArgumentIsNotAKillProgram:
     @pytest.mark.parametrize(
         "cmd",
         [
-            # Filesystem inspectors describe their arguments; a glob among them is a filename.
-            "ls -d /w/KiroCrew-ws/* /h/w/KiroCrew-ws/* 2>/dev/null",
-            "stat /w/kirocrew-wt-x/* | head",
-            "du -sh /w/kirocrew/*",
-            # A glob among a file mover's arguments is a path, whatever follows the
-            # operator glued to it.
-            "cp $KIROCREW_SCRATCH/retro/*; gh api repos/o/KiroCrew/issues/1/comments",
-            "S=$KIROCREW_SCRATCH; mkdir -p $S/r; cp /tmp/a.txt $S/r/*; git diff origin/main -- src/kiro_crew",
+            *named_cases(
+                "test_a_prefixed_substitution_whose_body_kills_is_denied",
+                "cmd",
+                [
+                    # The same shape with a kill in the BODY is still a kill: the payload walk
+                    # judges the body wherever in the word it sits.
+                    "tar czf x_$(pkill -f kirocrew).tgz .",
+                    "zip -q out.zip a_`pkill -f kirocrew`_*",
+                ],
+            ),
+            *named_cases(
+                "test_a_kill_through_a_wildcard_or_an_executor_is_still_denied",
+                "cmd",
+                [
+                    # A wildcard word that RUNS: in program position, or handed to a wrapper.
+                    "* -f kirocrew",
+                    "/usr/bin/* -f kirocrew",
+                    "?* -f kirocrew",
+                    "** -f kirocrew",
+                    "cd /usr/bin; * -f kirocrew",
+                    "sudo * -f kirocrew",
+                    "ls /tmp/*; * -f kirocrew",
+                    "p* -f kirocrew",
+                    "*kill -f kirocrew",
+                    "pk?ll -f kirocrew",
+                    "[p]kill -f kirocrew",
+                    # A kill after a benign wildcard read is judged on its own.
+                    "grep -E x /tmp/a/* /w/kirocrew/log; pkill -f kirocrew",
+                    "ls /w/kirocrew/* && killall kirocrew",
+                    "sh -c 'grep -e x /tmp/x/*; pk?ll -f kirocrew'",
+                    # sed's ``e`` command, and output piped into an executor, still withdraw it.
+                    "sed -e e /tmp/x/* /w/kirocrew/log",
+                    "sed -n 'p;e' /tmp/x/* /w/kirocrew/log",
+                    "sed --expression=e /tmp/x/* /w/kirocrew/log",
+                    "grep -e x /tmp/a/* /w/kirocrew/log | sh",
+                    "echo -e /usr/bin/* -f kirocrew | sh",
+                    "echo -e pkill -f kirocrew | xargs",
+                    "awk -e 'BEGIN{system(ARGV[1]\" -f \"ARGV[2])}' /usr/bin/* kirocrew",
+                    # sed's ``e`` command behind a custom-delimiter address (``-`` is the
+                    # delimiter here), which runs the matched file's text.
+                    r"sed '\-.-e' /tmp/x/* /w/kirocrew/log",
+                    r"sed '\- -e' /tmp/x/* /w/kirocrew/log",
+                ],
+            ),
         ],
     )
-    def test_glob_argument_next_to_a_product_path_is_allowed(self, cmd):
-        assert not argv_floor._is_self_kill(cmd.lower()), cmd
-        assert _rule_of(cmd) is None, cmd
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # A host-stamped filename -- literal text, then a substitution, then a glob --
-            # under a program that is NOT a data consumer, with a product-named path later
-            # in the same argv.  The word expands to something starting with its literal
-            # prefix, so it cannot be the verb; the body (``hostname``) is harmless.  Every
-            # row was confirmed newly-refused by the scope review of the revision that read
-            # the whole word as ``.*``.
-            "tar czf logs_$(hostname)_*.tar.gz -C /w/kirocrew-scratch/logs .",
-            "zip -q /tmp/bench.zip bench_`hostname`_*.json /w/kirocrew-scratch/notes.md",
-            "gh run download 12345678 --pattern coverage_$(hostname)_* --repo kirodotdev/KiroCrew",
-            "install -m 644 report_$(hostname)_*.log /w/kirocrew-scratch/archive/",
-            # The Windows spellings: a PowerShell ``$()`` subexpression is the same opener.
-            "Copy-Item report_$(hostname)_*.log \\\\nas\\kirocrew\\archive\\",
-            "Move-Item logs_$(hostname)_*.log C:\\kirocrew-scratch\\archive\\",
-            "Compress-Archive -Path logs_$(hostname)_*.log -DestinationPath C:\\kirocrew-scratch\\logs.zip",
-            "Get-ChildItem logs_$(hostname)_*.log C:\\kirocrew-scratch\\logs",
-        ],
-    )
-    def test_a_prefixed_substitution_glob_argument_is_a_filename(self, cmd):
-        assert not argv_floor._is_self_kill(cmd.lower()), cmd
-        assert _rule_of(cmd) is None, cmd
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # The same shape with a kill in the BODY is still a kill: the payload walk
-            # judges the body wherever in the word it sits.
-            "tar czf x_$(pkill -f kirocrew).tgz .",
-            "zip -q out.zip a_`pkill -f kirocrew`_*",
-        ],
-    )
-    def test_a_prefixed_substitution_whose_body_kills_is_denied(self, cmd):
+    def test_a_kill_hidden_in_a_glob_or_substitution_is_denied(self, cmd):
         assert _rule_of(cmd) == _KILL, cmd
 
     @pytest.mark.parametrize(
@@ -1313,65 +1374,6 @@ class TestAnOptionDashEIsNotSedsExecuteCommand:
         bare = _rule_of(" ".join(shape.format("").split()))
         for option in ("-e", "-E"):
             assert _rule_of(shape.format(option)) == bare, (shape, option)
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # A read-and-copy routine that ends by counting matches across the copies.
-            "C=/h/.kiro/crew/workspace/kirocrew-session-captures/behavior-$(date -u +%Y%m%dT%H%M%SZ); "
-            'mkdir -p "$C/transcripts" "$C/gateway" && chmod 700 "$C"; '
-            "R='s/eyJ[A-Za-z0-9._-]{10,}/<jwt>/g'; "
-            'sed -E "$R" /h/.kiro/crew/sessions/d.jsonl > "$C/transcripts/d.jsonl"; '
-            'for f in /h/.kiro/crew/gateway.log*; do sed -E "$R" "$f" > "$C/gateway/$(basename "$f")"; done; '
-            'echo "$C"; du -sh "$C" | cut -f1; find "$C" -type f | wc -l; '
-            'grep -c -E \'eyJ[A-Za-z0-9._-]{10,}\' "$C"/transcripts/* "$C"/gateway/* '
-            "| grep -v ':0$' || echo none",
-            'C=/tmp/kirocrew-export; grep -c -E "a" "$C"/transcripts/* "$C"/gateway/*',
-            "grep -e foo -e bar /tmp/a/* /w/kirocrew/state.json",
-            "echo -e 'a b' /tmp/x/* /w/kirocrew/gateway.log",
-            "cat -E /tmp/x/* /w/kirocrew/gateway.log",
-            "tail -n 3 /tmp/x/?* /w/kirocrew/gateway.log",
-        ],
-    )
-    def test_a_wildcard_path_next_to_a_product_path_is_allowed(self, cmd):
-        assert not argv_floor._is_self_kill(cmd.lower()), cmd
-        assert _rule_of(cmd) is None, cmd
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # A wildcard word that RUNS: in program position, or handed to a wrapper.
-            "* -f kirocrew",
-            "/usr/bin/* -f kirocrew",
-            "?* -f kirocrew",
-            "** -f kirocrew",
-            "cd /usr/bin; * -f kirocrew",
-            "sudo * -f kirocrew",
-            "ls /tmp/*; * -f kirocrew",
-            "p* -f kirocrew",
-            "*kill -f kirocrew",
-            "pk?ll -f kirocrew",
-            "[p]kill -f kirocrew",
-            # A kill after a benign wildcard read is judged on its own.
-            "grep -E x /tmp/a/* /w/kirocrew/log; pkill -f kirocrew",
-            "ls /w/kirocrew/* && killall kirocrew",
-            "sh -c 'grep -e x /tmp/x/*; pk?ll -f kirocrew'",
-            # sed's ``e`` command, and output piped into an executor, still withdraw it.
-            "sed -e e /tmp/x/* /w/kirocrew/log",
-            "sed -n 'p;e' /tmp/x/* /w/kirocrew/log",
-            "sed --expression=e /tmp/x/* /w/kirocrew/log",
-            "grep -e x /tmp/a/* /w/kirocrew/log | sh",
-            "echo -e /usr/bin/* -f kirocrew | sh",
-            "echo -e pkill -f kirocrew | xargs",
-            "awk -e 'BEGIN{system(ARGV[1]\" -f \"ARGV[2])}' /usr/bin/* kirocrew",
-            # sed's ``e`` command behind a custom-delimiter address (``-`` is the
-            # delimiter here), which runs the matched file's text.
-            r"sed '\-.-e' /tmp/x/* /w/kirocrew/log",
-            r"sed '\- -e' /tmp/x/* /w/kirocrew/log",
-        ],
-    )
-    def test_a_kill_through_a_wildcard_or_an_executor_is_still_denied(self, cmd):
-        assert _rule_of(cmd) == _KILL, cmd
 
 
 class TestTheOwnHostSeedIsInertHere:

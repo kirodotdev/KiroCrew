@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import mcp_cron
 from kiro_crew.mcp_cron import (
@@ -708,8 +709,27 @@ def test_long_prefix_never_hides_later_assignments(prefix, separator):
     assert _vet_shell_command(command) is not None
 
 
-@pytest.mark.parametrize("cmd", BENIGN_COMMANDS)
-def test_vet_shell_command_allows_benign(cmd):
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        *named_cases("test_vet_shell_command_allows_benign", "cmd", BENIGN_COMMANDS),
+        *named_cases(
+            "test_an_assignment_nothing_reads_is_ordinary",
+            "cmd",
+            [
+                # An assignment nothing reads, and reads of $HOME, stay ordinary.
+                "TZ=UTC date",
+                "TZ=UTC bash /home/u/report.sh",
+                "ssh -o ConnectTimeout=10 backup@host uptime",
+                "docker run --rm -e TZ=UTC alpine sh -c 'date'",
+                "A=hello; echo from cron",
+                "cd $HOME && ls",
+                "A='\\q'; echo x",
+            ],
+        ),
+    ],
+)
+def test_an_ordinary_command_is_allowed(cmd):
     assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
 
 
@@ -788,23 +808,6 @@ ASSIGNED_AND_READ_COMMANDS = [
 def test_a_variable_that_is_assigned_and_read_is_refused(cmd):
     err = _vet_shell_command(cmd)
     assert err is not None and err.startswith("Error:"), f"should refuse: {cmd!r}"
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        # An assignment nothing reads, and reads of $HOME, stay ordinary.
-        "TZ=UTC date",
-        "TZ=UTC bash /home/u/report.sh",
-        "ssh -o ConnectTimeout=10 backup@host uptime",
-        "docker run --rm -e TZ=UTC alpine sh -c 'date'",
-        "A=hello; echo from cron",
-        "cd $HOME && ls",
-        "A='\\q'; echo x",
-    ],
-)
-def test_an_assignment_nothing_reads_is_ordinary(cmd):
-    assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
 
 
 @pytest.mark.parametrize(
