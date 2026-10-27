@@ -51,6 +51,7 @@ from dashboard_updates_coverage_helpers import (  # noqa: F401 -- the autouse fi
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import ConfigReadError
 from kiro_crew.dashboard.handlers import updates
+from kiro_crew.platform import update_governance
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -194,7 +195,15 @@ class TestGitFetchTimeoutReapsTheHelper:
 
     def _stand_in_git(
         self, monkeypatch, tmp_path, *, with_helper: bool, short_waits: bool = True
-    ) -> Path:
+    ) -> tuple[Path, str]:
+        """Set up to drive the shared isolated-fetch helper with a hung stand-in git.
+
+        The fetch runs in :func:`fetch_and_pin_upstream`, which receives ``git``
+        as an argument; the stand-in is handed to it there. The helper also
+        resolves the remote URL via the module's own trusted git -- which the
+        stand-in only ever hangs -- so ``resolve_remote_url`` is stubbed to a URL
+        and only the FETCH reaches the stand-in. Returns ``(pidfile, git)``.
+        """
         pidfile = tmp_path / "helper.pid"
         bindir = tmp_path / "bin"
         bindir.mkdir()
@@ -209,12 +218,22 @@ class TestGitFetchTimeoutReapsTheHelper:
             encoding="utf-8",
         )
         git.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+        monkeypatch.setattr(
+            update_governance, "resolve_remote_url", lambda *_a, **_k: "file:///upstream"
+        )
         if short_waits:
             started = pidfile if with_helper else Path(f"{pidfile}.git")
-            waits = _TimedOutGitWaits(started)
-            monkeypatch.setattr(updates, "asyncio", waits)
-        return pidfile
+            # The helper's own module `asyncio`, so its fetch wait times out on
+            # the stand-in's start signal; the test's own bound stays real.
+            monkeypatch.setattr(update_governance, "asyncio", _TimedOutGitWaits(started))
+        return pidfile, str(git)
+
+    @staticmethod
+    async def _fetch(proj: str, git: str):
+        """Run the isolated fetch helper the way the check and apply do."""
+        return await update_governance.fetch_and_pin_upstream(
+            proj, "origin", "main", git=git, env=update_governance.git_command_env(), timeout=30
+        )
 
     @staticmethod
     def _gone(pid: int, identity: str) -> bool:
@@ -243,12 +262,11 @@ class TestGitFetchTimeoutReapsTheHelper:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
     @pytest.mark.asyncio
     async def test_a_fetch_timeout_returns_while_a_helper_holds_stderr(self, monkeypatch, tmp_path):
-        pidfile = self._stand_in_git(monkeypatch, tmp_path, with_helper=True)
+        pidfile, git = self._stand_in_git(monkeypatch, tmp_path, with_helper=True)
+        proj = _git_proj(monkeypatch, tmp_path)
         helper_exited = False
         try:
-            check = asyncio.ensure_future(
-                updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
-            )
+            check = asyncio.ensure_future(self._fetch(proj, git))
             try:
                 await await_until(check, what="the fetch timeout handler returning")
             except AssertionError as stalled:
@@ -257,7 +275,7 @@ class TestGitFetchTimeoutReapsTheHelper:
                     "the fetch timeout handler did not return: it killed git and then "
                     "waited on a stderr pipe the helper still holds open"
                 ) from stalled
-            assert updates._update_info["error_code"] == updates.ERR_GIT_FETCH_FAILED
+            assert check.result() is None
             helper = _recorded(pidfile)
             assert helper is not None, "the stand-in git never started its helper"
             helper_pid, helper_identity = helper
@@ -284,15 +302,13 @@ class TestGitFetchTimeoutReapsTheHelper:
     async def test_a_fetch_timeout_without_a_helper_is_still_a_failed_check(
         self, monkeypatch, tmp_path
     ):
-        pidfile = self._stand_in_git(monkeypatch, tmp_path, with_helper=False)
-        await await_until(
-            asyncio.ensure_future(
-                updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
-            ),
-            what="the fetch timeout handler returning",
-        )
-        assert updates._update_info["error_code"] == updates.ERR_GIT_FETCH_FAILED
-        assert updates._update_info["check_status"] == updates.CHECK_FAILED
+        pidfile, git = self._stand_in_git(monkeypatch, tmp_path, with_helper=False)
+        proj = _git_proj(monkeypatch, tmp_path)
+        fut = asyncio.ensure_future(self._fetch(proj, git))
+        await await_until(fut, what="the fetch timeout handler returning")
+        assert fut.result() is None
+        # with_helper=False: the stand-in records its own pid (`.git`) but never
+        # a helper, so the helper pidfile must not exist.
         assert not pidfile.exists()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -304,10 +320,11 @@ class TestGitFetchTimeoutReapsTheHelper:
         it, so the cancel arm is what stops it. Without that arm the
         cancellation leaves git and its helper running.
         """
-        pidfile = self._stand_in_git(monkeypatch, tmp_path, with_helper=True, short_waits=False)
-        task = asyncio.ensure_future(
-            updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
+        pidfile, git_bin = self._stand_in_git(
+            monkeypatch, tmp_path, with_helper=True, short_waits=False
         )
+        proj = _git_proj(monkeypatch, tmp_path)
+        task = asyncio.ensure_future(self._fetch(proj, git_bin))
         helper = git = None
         git_exited = helper_exited = False
         try:
@@ -384,17 +401,17 @@ class TestGitFetchTimeoutReapsTheHelper:
                 return
             real_kill(pid, sig)
 
-        check = updates._check_git_checkout
+        real_helper = update_governance.fetch_and_pin_upstream
 
-        async def check_then_mark(*args: object, **kwargs: object) -> None:
+        async def helper_then_mark(*args: object, **kwargs: object):
             nonlocal timed_out
             try:
-                await check(*args, **kwargs)
+                return await real_helper(*args, **kwargs)
             finally:
                 timed_out = True
 
         monkeypatch.setattr(os, "kill", recorder)
-        monkeypatch.setattr(updates, "_check_git_checkout", check_then_mark)
+        monkeypatch.setattr(update_governance, "fetch_and_pin_upstream", helper_then_mark)
         await self.test_a_fetch_timeout_returns_while_a_helper_holds_stderr(monkeypatch, tmp_path)
         assert not late, (
             f"the cleanup sent signal {late[0][1]} to pid {late[0][0]}, the helper's, after "
@@ -445,8 +462,23 @@ class TestGitCheckoutFailurePaths:
     ``checked`` flag was introduced to stop.
     """
 
-    async def _run(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
+    #: The OID the isolated fetch helper is stubbed to return. Distinct from the
+    #: HEAD the reads below report, so ``target_sha`` is the remote one.
+    _FETCH_OID = "b" * 40
+
+    async def _run(self, monkeypatch, tmp_path, procs, *, fetch_oid: str | None = _FETCH_OID):
+        """Drive the check with the upstream resolution and isolated fetch stubbed.
+
+        The network fetch runs through ``fetch_and_pin_upstream`` (its own tests
+        are in ``test_update_check_git_exec_neutralized``); here it is stubbed to
+        a fetched OID, or to ``None`` for a fetch failure. ``procs`` are the
+        checkout's own read spawns, in order: ``rev-parse HEAD``, the divergence
+        ``rev-list``, ``git show``, ``git diff``.
+        """
         argv = _sequence_procs(monkeypatch, procs)
+        monkeypatch.setattr(updates, "repo_exec_config_reason", lambda _proj: "")
+        monkeypatch.setattr(updates, "upstream_remote_and_branch", lambda _proj: ("origin", "main"))
+        monkeypatch.setattr(updates, "fetch_and_pin_upstream", AsyncMock(return_value=fetch_oid))
         await updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
         return argv
 
@@ -458,37 +490,23 @@ class TestGitCheckoutFailurePaths:
         assert updates._update_info["can_apply"] is True
 
     @pytest.mark.asyncio
-    async def test_fetch_timeout_is_a_failed_check_not_a_verdict(self, monkeypatch, tmp_path):
-        fetch = _FakeProc(time_out=True)
-        await self._run(monkeypatch, tmp_path, [fetch])
-        self._assert_failed_check(updates.ERR_GIT_FETCH_FAILED)
-        # Killed and then reaped, so no zombie is left behind.
-        assert fetch.killed is True
-        assert fetch.communicate_calls == 2
-
-    @pytest.mark.asyncio
-    async def test_a_process_that_already_exited_is_tolerated(self, monkeypatch, tmp_path):
-        """``kill()`` races the process exiting; ProcessLookupError is expected."""
-        fetch = _FakeProc(time_out=True, kill_raises=True)
-        await self._run(monkeypatch, tmp_path, [fetch])
+    async def test_a_failed_fetch_is_a_failed_check_not_a_verdict(self, monkeypatch, tmp_path):
+        """The isolated fetch returning None (refused URL, error, timeout) fails the check."""
+        await self._run(monkeypatch, tmp_path, [], fetch_oid=None)
         self._assert_failed_check(updates.ERR_GIT_FETCH_FAILED)
 
     @pytest.mark.asyncio
-    async def test_head_read_timeout(self, monkeypatch, tmp_path):
-        await self._run(
-            monkeypatch,
-            tmp_path,
-            [_FakeProc(), _FakeProc(time_out=True, kill_raises=True)],
-        )
+    async def test_no_tracked_upstream_is_a_failed_check(self, monkeypatch, tmp_path):
+        """A detached HEAD / no-upstream branch has nothing to compare against."""
+        _sequence_procs(monkeypatch, [])
+        monkeypatch.setattr(updates, "repo_exec_config_reason", lambda _proj: "")
+        monkeypatch.setattr(updates, "upstream_remote_and_branch", lambda _proj: None)
+        await updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
         self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
-    async def test_upstream_read_timeout(self, monkeypatch, tmp_path):
-        await self._run(
-            monkeypatch,
-            tmp_path,
-            [_FakeProc(), _FakeProc(out=b"aaa111\n"), _FakeProc(time_out=True, kill_raises=True)],
-        )
+    async def test_head_read_timeout(self, monkeypatch, tmp_path):
+        await self._run(monkeypatch, tmp_path, [_FakeProc(time_out=True, kill_raises=True)])
         self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
@@ -496,12 +514,7 @@ class TestGitCheckoutFailurePaths:
         await self._run(
             monkeypatch,
             tmp_path,
-            [
-                _FakeProc(),
-                _FakeProc(out=b"aaa111\n"),
-                _FakeProc(out=b"bbb222\n"),
-                _FakeProc(time_out=True, kill_raises=True),
-            ],
+            [_FakeProc(out=b"aaa111\n"), _FakeProc(time_out=True, kill_raises=True)],
         )
         self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
@@ -511,12 +524,7 @@ class TestGitCheckoutFailurePaths:
         await self._run(
             monkeypatch,
             tmp_path,
-            [
-                _FakeProc(),
-                _FakeProc(out=b"aaa111\n"),
-                _FakeProc(out=b"bbb222\n"),
-                _FakeProc(out=b"not a number\n"),
-            ],
+            [_FakeProc(out=b"aaa111\n"), _FakeProc(out=b"not a number\n")],
         )
         self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
@@ -526,17 +534,20 @@ class TestGitCheckoutFailurePaths:
             monkeypatch,
             tmp_path,
             [
-                _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
-                _FakeProc(out=b"bbb222\n"),
                 _FakeProc(out=b"0\t7\n"),
                 _FakeProc(time_out=True, kill_raises=True),
             ],
         )
         self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
-        # The version is read at the REMOTE sha when the two differ, not at HEAD:
-        # comparing HEAD against itself can never detect an update.
-        assert argv[-1] == ("git", "show", "bbb222:src/kiro_crew/__init__.py")
+        # The version is read at the fetched REMOTE sha when it differs from HEAD,
+        # not at HEAD: comparing HEAD against itself can never detect an update.
+        assert argv[-1] == (
+            platform_compat.trusted_git_bin(),
+            "show",
+            "--no-textconv",
+            f"{self._FETCH_OID}:src/kiro_crew/__init__.py",
+        )
 
     @pytest.mark.asyncio
     async def test_a_version_that_cannot_be_parsed_is_reported_as_such(self, monkeypatch, tmp_path):
@@ -549,9 +560,7 @@ class TestGitCheckoutFailurePaths:
             monkeypatch,
             tmp_path,
             [
-                _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
-                _FakeProc(out=b"bbb222\n"),
                 _FakeProc(out=b"0\t0\n"),
                 _FakeProc(out=b'__version__ = "not/a/version"\n'),
             ],
@@ -571,9 +580,7 @@ class TestGitCheckoutFailurePaths:
             monkeypatch,
             tmp_path,
             [
-                _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
-                _FakeProc(out=b"bbb222\n"),
                 _FakeProc(out=b"0\t7\n"),
                 _FakeProc(out=b'__version__ = "999.0.0"\n'),
                 _FakeProc(time_out=True, kill_raises=True),
@@ -601,9 +608,7 @@ class TestGitCheckoutFailurePaths:
             monkeypatch,
             tmp_path,
             [
-                _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
-                _FakeProc(out=b"bbb222\n"),
                 _FakeProc(out=b"0\t7\n"),
                 _FakeProc(out=b'__version__ = "999.0.0"\n'),
                 _FakeProc(out=diff),

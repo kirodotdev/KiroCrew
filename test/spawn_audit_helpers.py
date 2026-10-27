@@ -783,6 +783,18 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # sandbox-routed runner.
         "git_divergence.py::count_divergence",
         "git_divergence.py::count_divergence_sync",
+        # The shared isolated update fetch: a `git fetch <url> <branch>` into a
+        # throwaway bare git dir this function builds and owns, so the checkout's
+        # own config can name no hook that fires on the fetch's ref write. git is
+        # the trusted-bin absolute path the caller resolved (threaded as `git=`);
+        # the env is `git_command_env()` (trusted PATH, built-in transports only,
+        # every fixed-key exec vector pinned); the URL is the governance-validated
+        # `resolve_remote_url`, the branch git's own `branch.<b>.merge`. The
+        # spawn carries start_new_session and the shared kill-and-reap on timeout
+        # or cancellation. Same trust class as git_divergence.py::count_divergence;
+        # it replaced the inline fetch spawns in _check_git_checkout and
+        # _auto_apply_update.
+        "platform/update_governance.py::fetch_and_pin_upstream",
         "instances/diagnostics.py::_run_ok",
         "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",

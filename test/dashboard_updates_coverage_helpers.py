@@ -171,6 +171,9 @@ def _git_proj(monkeypatch, tmp_path) -> str:
     (git_dir / "objects").mkdir(parents=True)
     (git_dir / "refs").mkdir()
     (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    # A config file git can list: the update check refuses a checkout whose
+    # local config it cannot read (``repo_exec_config_reason``).
+    (git_dir / "config").write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
     monkeypatch.setattr(
         "kiro_crew.platform.update_capability.running_from_checkout",
         lambda root, **kw: True,

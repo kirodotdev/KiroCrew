@@ -18,13 +18,17 @@ against a local operator who could edit the checkout directly.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
+from collections.abc import Mapping
 from typing import Callable, Iterator
 
 from kiro_crew import platform_compat
@@ -34,6 +38,10 @@ from kiro_crew.subprocess_utf8 import utf8_path_stdout, utf8_stdout
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT_SECS = 10
+
+#: A 40- or 64-hex object id, so a fetched tip read from ``FETCH_HEAD`` is a
+#: commit id before it is ever written into the checkout's tracking ref.
+_OID_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 
 
 #: The ONLY branch names an unattended update may reset a checkout to.
@@ -302,6 +310,292 @@ def resolve_remote_url(
     return "" if url == remote else url
 
 
+def upstream_remote_and_branch(proj: str) -> tuple[str, str] | None:
+    """``(remote, branch)`` the current branch of *proj* tracks, or ``None``.
+
+    The pair ``@{u}`` resolves to, read straight from config rather than from
+    the ``origin/<name>`` short form (which cannot be split back into a remote
+    and a ref when either contains a ``/``). ``None`` for a detached HEAD or a
+    branch with no upstream -- there is nothing to compare against, exactly the
+    case the old bare ``git fetch`` + ``rev-parse @{u}`` reported as a failed
+    check.
+    """
+    branch = _git(proj, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch or branch == "HEAD":
+        return None
+    remote = _git(proj, "config", "--get", f"branch.{branch}.remote")
+    merge = _git(proj, "config", "--get", f"branch.{branch}.merge")
+    if not remote or not merge.startswith("refs/heads/"):
+        return None
+    return remote, merge[len("refs/heads/") :]
+
+
+def _local_fetch_url(proj: str, url: str) -> str:
+    """A local path *url* made absolute against *proj*; a scheme/scp URL unchanged.
+
+    The fetch runs with ``cwd=proj`` but ``GIT_DIR`` elsewhere, so a bare local
+    path has to be absolute or it resolves against the wrong base. A leading
+    ``~`` is expanded, and a relative path (and a relative ``proj``) is resolved
+    against the checkout -- both are supported remote spellings. A scheme URL
+    (``https://``) or an scp-like ``host:path`` is left exactly as configured.
+    """
+    first = url.split("/", 1)[0]
+    if "://" in url or ":" in first:  # scheme URL or scp-like host:path
+        return url
+    expanded = os.path.expanduser(url)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.abspath(os.path.join(os.path.abspath(proj), expanded))
+
+
+#: A git config key under ``http`` that carries an auth header, bare or
+#: URL-scoped (``http.extraHeader``, ``http.https://host/.extraHeader``). The
+#: URL-scoped form is what ``actions/checkout`` writes, so an exact-key lookup
+#: for the bare name alone breaks an authenticating checkout's update fetch.
+_HTTP_EXTRA_HEADER_RE = re.compile(r"^http\.(?:.+\.)?extraheader$", re.IGNORECASE)
+
+
+def _scratch_http_auth_pairs(proj: str) -> list[tuple[str, str]]:
+    """``(key, value)`` pairs re-applying the checkout's ``http.*.extraHeader`` auth.
+
+    A checkout that authenticates only through a repo-local ``http.extraHeader``
+    or ``http.<url>.extraHeader`` (the form ``actions/checkout`` writes) must
+    still fetch through the isolated git dir, whose own config carries none of
+    it. Every such key is forwarded, in config order. The caller applies them
+    through ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_n``/``GIT_CONFIG_VALUE_n``,
+    which git takes verbatim and NEVER re-splits -- unlike a ``-c key=value``
+    argument, which git splits at the first ``=`` so a subsection URL containing
+    ``=`` could smuggle a ``proxy``/``sslcainfo`` setting past the key filter and
+    redirect the transport. A value with a newline or NUL is dropped. A header is
+    DATA, never a program, so forwarding it is not an exec vector the isolation
+    exists to close, and the transport-trust keys (``http.sslVerify`` and the
+    CA/cert/proxy family) are refused upstream by :func:`repo_exec_config_reason`
+    before any fetch, so none reach here.
+    """
+    listing = _git_probe(proj, "config", "--get-regexp", r"^http\.")
+    if not listing:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for line in listing.splitlines():
+        key, _, value = line.partition(" ")
+        if _HTTP_EXTRA_HEADER_RE.match(key) and "\n" not in value and "\0" not in value:
+            pairs.append((key, value))
+    return pairs
+
+
+def _prepare_isolated_fetch(
+    proj: str, remote: str, branch: str
+) -> tuple[str, str, str, list[tuple[str, str]]] | None:
+    """Resolve the URL and build the throwaway git dir, off the event loop.
+
+    Returns ``(url, objects_dir, scratch, http_auth_pairs)`` or ``None`` when the
+    remote has no usable URL or the object store cannot be located.
+
+    The object store is asked of git (``rev-parse --git-path objects``), not
+    hard-coded to ``proj/.git``, so a linked worktree or a submodule -- whose
+    ``.git`` is a pointer file -- resolves to its real common object store. The
+    scratch dir is created under the sandbox-masked crew scratch root, NOT the
+    shared system tempdir: a same-UID sandboxed agent can write ``/tmp`` and
+    would race a hook into the scratch config, but the masked root it cannot
+    reach. The scratch repo inherits the checkout's OBJECT FORMAT (a SHA-256
+    checkout cannot be fetched through a SHA-1 scratch), but none of its
+    executable config. The filesystem work and git probes are grouped here so
+    the async caller runs them in one thread rather than touching disk on the
+    loop.
+    """
+    from kiro_crew import agent_scratch
+
+    url = resolve_remote_url(proj, fetch_env=git_command_env(), remote=remote)
+    if not url:
+        logger.warning("Update fetch: no usable URL for remote %s", remote)
+        return None
+    url = _local_fetch_url(proj, url)
+    objects_dir = _git(proj, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+    if not objects_dir or not os.path.isdir(objects_dir):
+        logger.warning("Update fetch: %s has no object store to fetch into", loggable_path(proj))
+        return None
+    object_format = _git(proj, "rev-parse", "--show-object-format") or "sha1"
+
+    root = agent_scratch.scratch_root()
+    os.makedirs(root, exist_ok=True)
+    scratch = tempfile.mkdtemp(prefix="kirocrew-update-fetch-", dir=str(root))
+    for sub in ("objects/info", "objects/pack", "refs/heads", "refs/tags", "refs/kirocrew-have"):
+        os.makedirs(os.path.join(scratch, sub), exist_ok=True)
+    with open(os.path.join(scratch, "HEAD"), "w", encoding="utf-8") as handle:
+        handle.write("ref: refs/heads/_kirocrew_update\n")
+    # SHA-256 needs repositoryformatversion=1 + the extensions entry; SHA-1 is
+    # the version-0 default. Only this non-executable setting is carried over.
+    if object_format == "sha256":
+        config = "[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
+    else:
+        config = "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+    with open(os.path.join(scratch, "config"), "w", encoding="utf-8") as handle:
+        handle.write(config)
+    # A shallow checkout's boundary commits live in its `shallow` file. The
+    # scratch repo shares the object store but not that file, so without it the
+    # negotiation walks past the boundary into missing parents and fails. Copied
+    # line by line, each one checked to be an object id.
+    shallow_src = _git(proj, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
+    if shallow_src and os.path.isfile(shallow_src):
+        with open(shallow_src, encoding="utf-8", errors="replace") as handle:
+            boundary = [line.strip() for line in handle if line.strip()]
+        if not all(_OID_RE.match(oid) for oid in boundary):
+            logger.warning("Update fetch: %s has an unreadable shallow file", loggable_path(proj))
+            shutil.rmtree(scratch, ignore_errors=True)
+            return None
+        with open(os.path.join(scratch, "shallow"), "w", encoding="utf-8") as handle:
+            handle.write("".join(oid + "\n" for oid in boundary))
+    # Seed the commits the checkout already has as scratch refs, so the fetch
+    # negotiation offers them as "have"s and the server sends only the delta.
+    # Without any ref the scratch repo would re-download the whole history into
+    # a fresh pack on every poll. The existing remote-tracking tip and HEAD both
+    # live in the common object store the fetch writes to, so they are valid
+    # haves. Written as loose refs in the scratch dir this owns (no proj write).
+    haves = [
+        _git(proj, "rev-parse", "--verify", "--quiet", "HEAD"),
+        _git(proj, "rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}"),
+    ]
+    for index, have in enumerate(haves):
+        if _OID_RE.match(have):
+            with open(os.path.join(scratch, "refs", "kirocrew-have", str(index)), "w") as handle:
+                handle.write(have + "\n")
+    return url, objects_dir, scratch, _scratch_http_auth_pairs(proj)
+
+
+def _read_fetched_commit(proj: str, scratch: str) -> str | None:
+    """The fetched COMMIT id, read from *scratch*'s ``FETCH_HEAD`` and verified.
+
+    The raw ``FETCH_HEAD`` id is peeled and checked to be a commit (``rev-parse
+    --verify <oid>^{commit}``) against *proj*'s object store, where the fetch
+    deposited it. Fetching ``refs/heads/<branch>`` already keeps a same-named
+    upstream TAG out of the answer; this is the belt-and-suspenders that a
+    non-commit id is never handed to ``reset --hard``. ``None`` when
+    ``FETCH_HEAD`` is unreadable or the id is not a commit.
+    """
+    try:
+        with open(os.path.join(scratch, "FETCH_HEAD"), encoding="utf-8", errors="replace") as fh:
+            first = fh.readline().split()
+    except OSError:
+        return None
+    oid = first[0].strip() if first else ""
+    if not _OID_RE.match(oid):
+        return None
+    commit = _git(proj, "rev-parse", "--verify", "--quiet", f"{oid}^{{commit}}")
+    return commit if _OID_RE.match(commit) else None
+
+
+async def fetch_and_pin_upstream(
+    proj: str,
+    remote: str,
+    branch: str,
+    *,
+    git: str,
+    env: Mapping[str, str],
+    timeout: float = 30.0,
+) -> str | None:
+    """Fetch ``<remote>/<branch>`` for *proj* and return the fetched commit id.
+
+    The one git operation in the update seam that WRITES a ref -- the fetch --
+    is the one the checkout's own config can hook: the ref update fires
+    ``reference-transaction``, and a ``hook.<name>.command`` raced into
+    ``.git/config`` after the exec-config preflight read it runs on the host.
+    No ``-c`` pin or fetch flag closes that (verified: even a ``FETCH_HEAD``-only
+    fetch opens a ref transaction).
+
+    So the fetch runs against a THROWAWAY git dir this builds and owns, whose
+    config carries only our pins and names no hook, while its objects are
+    deposited straight into *proj*'s own object store (``GIT_OBJECT_DIRECTORY``)
+    so the caller reads and resets against *proj*. The fetched tip is returned as
+    an OID the caller uses directly; no ref in *proj* is written, so there is no
+    ref transaction and no hook. (*proj*'s remote-tracking ref is left as the
+    last ``git fetch`` / ``kirocrew update`` set it -- ``kirocrew doctor`` already
+    says "as of last fetch". Refreshing it here from agent-controlled
+    ``remote``/``branch`` was tried and drew repeated path-traversal findings for
+    a cosmetic gain, so it is deliberately not done.) Returns the fetched COMMIT
+    id, or ``None`` on any failure (a refused source URL, a fetch error or
+    timeout, a tip that is not a commit).
+
+    ``refs/heads/<branch>`` is fetched explicitly so a same-named upstream TAG
+    cannot stand in for the branch tip, and the id is verified to be a commit.
+    The fetch runs with ``cwd=proj`` so a relative local remote resolves against
+    the checkout, while ``GIT_DIR`` keeps the fetch's own ref write in the
+    scratch dir. A repo-local ``http.*.extraHeader`` is forwarded through
+    ``GIT_CONFIG_*`` env (never a re-splittable ``-c``) so an authenticating
+    checkout still fetches.
+
+    The scratch dir is assembled in Python with no ``git`` subprocess, so the
+    only child this spawns is the network fetch itself -- the process a timeout
+    or a shutdown cancellation must kill and reap.
+    """
+    prepared = await asyncio.to_thread(_prepare_isolated_fetch, proj, remote, branch)
+    if prepared is None:
+        return None
+    url, objects_dir, scratch, http_auth_pairs = prepared
+    try:
+        fetch_env = dict(env)
+        fetch_env["GIT_DIR"] = scratch
+        fetch_env["GIT_OBJECT_DIRECTORY"] = objects_dir
+        # PATH is pinned for this fetch only (callers pass a trusted absolute
+        # git). git resolves a transport helper and `ssh` off PATH at exec time,
+        # and a gateway PATH can lead with an agent-writable directory. Not in
+        # git_command_env: callers there may spawn a bare `git` found on PATH.
+        trusted_path = platform_compat.trusted_system_path()
+        if trusted_path is not None:
+            fetch_env["PATH"] = trusted_path
+        # Forward the checkout's http auth headers at `-c` precedence via the
+        # GIT_CONFIG_* env (git never re-splits these), appended after the pins
+        # git_command_env already set.
+        count = int(fetch_env.get("GIT_CONFIG_COUNT", "0"))
+        for key, value in http_auth_pairs:
+            fetch_env[f"GIT_CONFIG_KEY_{count}"] = key
+            fetch_env[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+        fetch_env["GIT_CONFIG_COUNT"] = str(count)
+
+        proc = await asyncio.create_subprocess_exec(
+            git,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-auto-gc",
+            "--upload-pack=git-upload-pack",
+            "--",
+            url,
+            f"refs/heads/{branch}",
+            cwd=proj,
+            env=fetch_env,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+        )
+        try:
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            await platform_compat.kill_and_reap(proc)
+            raise
+        except asyncio.TimeoutError:
+            await platform_compat.kill_and_reap(proc)
+            logger.warning("Update fetch timed out")
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                "Update fetch failed (rc=%s): %s",
+                proc.returncode,
+                (err or b"").decode(errors="replace").strip(),
+            )
+            return None
+
+        commit = await asyncio.to_thread(_read_fetched_commit, proj, scratch)
+        if commit is None:
+            logger.warning("Update fetch: FETCH_HEAD is not a commit")
+            return None
+        return commit
+    finally:
+        await asyncio.to_thread(shutil.rmtree, scratch, ignore_errors=True)
+
+
 #: Repo-scoped config keys whose VALUE git may execute as a program, and whose
 #: KEY NAME is fixed so ``-c``/``GIT_CONFIG_*`` can pin it back to a safe value.
 #:
@@ -354,8 +648,9 @@ _GIT_EXEC_NEUTRALIZERS: tuple[tuple[str, str], ...] = (
     ("pull.verifySignatures", "false"),
     # Local/file transports exec the config-named pack programs directly, and
     # GIT_ALLOW_PROTOCOL does not gate them (they are not a protocol). Every
-    # update fetch uses the literal remote `origin`, so pinning these restores
-    # git's own defaults over anything in .git/config.
+    # update fetch uses the literal remote `origin`. NOT enough on its own: git
+    # keeps the FIRST value of these keys, which is .git/config's, so a repo-set
+    # value is refused by `_REPO_REMOTE_PACK_RE` instead.
     ("remote.origin.uploadpack", "git-upload-pack"),
     ("remote.origin.receivepack", "git-receive-pack"),
     # `ext::` remote URLs run an arbitrary command as the transport.
@@ -594,6 +889,18 @@ def git_command_env(*, human_transport: bool = False) -> dict[str, str]:
     env.update(git_neutralizer_env(skip=_HUMAN_TRANSPORT_KEYS if human_transport else frozenset()))
     if not human_transport:
         env.update(_git_home_config_isolation_env(env))
+        # A partial clone fetches a missing object on demand, through the
+        # checkout's own remote config, from inside any read (`show`, `diff`,
+        # `reset`). That is a fetch the isolated update fetch never sees, so a
+        # `remote.<name>.uploadpack` raced in after the preflight would run.
+        # Missing objects make the call fail instead (git 2.45+).
+        env["GIT_NO_LAZY_FETCH"] = "1"
+        # A `<helper>::<url>` remote runs an arbitrary program as the transport;
+        # only git's built-in transports may serve the call.
+        env["GIT_ALLOW_PROTOCOL"] = "file:git:ssh:http:https"
+        # `core.gitProxy` is multi-valued, so no `GIT_CONFIG_*` pin closes the
+        # repository's value; an empty `GIT_PROXY_COMMAND` is read instead.
+        env["GIT_PROXY_COMMAND"] = ""
     # A replace ref (`refs/replace/<oid>`) makes git serve DIFFERENT content for
     # a given object id, transparently and everywhere. That defeats the reason
     # the update path pins its reset target to an OID at all: "an OID cannot
@@ -837,7 +1144,30 @@ def _repo_exec_config_reason(proj: str, *, human_transport: bool) -> str:
     :func:`git_command_env` does not read them at all (see
     :func:`_git_home_config_isolation_env`); host git run without that env still
     does, and moving those callers onto it is the host-git sweep's job.
+
+    A ``commondir`` redirect is checked FIRST, because it moves the very scope
+    the listings below read: a ``commondir`` file inside a plain checkout's own
+    ``.git`` directory points git's COMMON git dir -- the source of ``--local``
+    config and of hooks -- at wherever it names. A sandboxed agent can CREATE
+    that file even under a bind seal (a seal only covers files that already
+    exist), so without this the scope reads below would be the attacker's own
+    config. A legitimate LINKED worktree also carries ``commondir``, but its
+    ``.git`` is a FILE pointing at the real git dir, never a directory, so the
+    redirect is exactly a ``commondir`` beside a ``.git`` DIRECTORY.
     """
+    git_dir = os.path.join(proj, ".git")
+    if os.path.isdir(git_dir):
+        # The file's mere presence is the tell, read structurally so the refusal
+        # does not depend on a git version honoring (or erroring on) it.
+        if os.path.exists(os.path.join(git_dir, "commondir")):
+            return "repository redirects its common git dir via .git/commondir"
+        # Belt and suspenders for a redirect reached another way: git's own
+        # resolved common dir must be this `.git`.
+        common = _git_probe(proj, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common is None:
+            return _EXEC_CONFIG_UNREADABLE
+        if not _same_dir(common.strip(), git_dir):
+            return f"common git dir is redirected to {common.strip()[:120]}"
     try:
         keys = _repo_scoped_config_keys(proj)
     except _NestedRepoLimit:
@@ -1419,6 +1749,7 @@ def min_version() -> str:
 
 __all__ = [
     "PRIMARY_BRANCHES",
+    "fetch_and_pin_upstream",
     "git_command_env",
     "git_neutralizer_env",
     "is_primary_branch",
@@ -1431,4 +1762,5 @@ __all__ = [
     "tracks_upstream",
     "update_blocked_reason",
     "update_required",
+    "upstream_remote_and_branch",
 ]

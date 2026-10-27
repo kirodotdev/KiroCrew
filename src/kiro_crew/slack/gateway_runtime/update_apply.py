@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         build_frontend_async,
         commits_ahead,
         dep_sync,
+        fetch_and_pin_upstream,
         git_command_env,
         hidden_worktree_edits,
         is_bundled_kiro_cli,
@@ -242,68 +243,33 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("pulling", "Fetching latest changes…")
 
-        fetch = await asyncio.create_subprocess_exec(
-            _git,
-            "fetch",
-            "origin",
-            branch,
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=platform_compat.IS_POSIX,
-        )
-        try:
-            await asyncio.wait_for(fetch.communicate(), timeout=60)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(fetch)
-            raise
-
-        if fetch.returncode != 0:
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-            return
-
-        # Capture the fetched commit as an OID, immediately after the fetch,
-        # and use that OID for the comparison AND the reset below. A ref name
-        # is re-resolved on every command, so `origin/<branch>` could be moved
-        # by a concurrent fetch between the decision and the reset — deciding
-        # against one commit and resetting to another. An OID cannot move.
+        # The fetch's ref write is the one git operation here a repo-defined
+        # hook can fire on (`reference-transaction` -> `hook.<name>.command`,
+        # which no `-c` pin or fetch flag closes), so it runs through the shared
+        # isolated helper: the fetch happens in a git dir the gateway owns and no
+        # repository hook exists there, while objects land in this checkout.
         #
-        # The ref is spelled in FULL (`refs/remotes/origin/...`) because the
-        # short form is ambiguous in the attacker's favour: rev-parse's
-        # disambiguation order checks `refs/tags/<name>` BEFORE
-        # `refs/remotes/<name>`, so a tag literally named `origin/main`
-        # resolves instead of the remote-tracking branch — and the update's
-        # own `git fetch` auto-follows tags, so publishing that tag upstream
-        # is enough to create it locally. git prints "refname is ambiguous"
-        # to stderr and still writes the TAG's OID to stdout, which is what
-        # this capture reads, so the short form fails silently here.
-        target_proc = await asyncio.create_subprocess_exec(
-            _git,
-            "rev-parse",
-            "--verify",
-            f"refs/remotes/origin/{branch}^{{commit}}",
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
+        # `target` is the OID the helper fetched, used for the comparison AND the
+        # reset below. It comes straight from the fetch, so it cannot be moved by
+        # a concurrent fetch between decision and reset, and the old
+        # `refs/remotes/origin/<branch>` tag-vs-ref ambiguity does not arise: no
+        # ref name is resolved to get it. The helper also pins that tracking ref
+        # to this OID (by a direct file write, firing no hook) for parity with a
+        # normal fetch.
+        fetched = await fetch_and_pin_upstream(
+            proj, "origin", branch, git=_git, env=_git_env, timeout=60
         )
-        try:
-            target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(target_proc)
-            raise
-        target = (target_out or b"").strip().decode()
-        if target_proc.returncode != 0 or not target:
-            logger.warning(
-                "Auto-update: skipping — could not resolve origin/%s to a commit",
-                branch,
-            )
+        if not fetched:
+            # Refused source URL, a failed or timed-out fetch, or an unreadable
+            # tip -- the helper logs which. Stop without touching the tree.
+            logger.warning("Auto-update: skipping — could not fetch origin/%s", branch)
             if self.dashboard_state:
                 self.dashboard_state.clear_update_progress()
             return
+        # Bound as a plain ``str`` (not ``str | None``) so the closures and
+        # spawns below that capture it type-check: mypy does not carry the
+        # ``if not fetched`` narrowing into a lambda.
+        target: str = fetched
 
         # Check if there are actually new commits
         diff_proc = await asyncio.create_subprocess_exec(

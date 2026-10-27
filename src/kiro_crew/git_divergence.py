@@ -116,6 +116,7 @@ async def count_divergence(
     upstream: str,
     *,
     timeout: float = DIVERGENCE_TIMEOUT_SEC,
+    git: str = "git",
     env: dict[str, str] | None = None,
 ) -> DivergenceCounts | DivergenceUnreadable:
     """Count HEAD's divergence from *upstream* in *repo*, off the event loop.
@@ -126,10 +127,11 @@ async def count_divergence(
     *env* is the environment the caller's OWN git commands use. An update path
     that strips ``GIT_DIR`` and its siblings for its reset must count with the
     same env, or an inherited redirect makes the guard judge another repository.
+    *git* is the binary to run; a hardened caller passes its trusted git.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git",
+            git,
             *divergence_count_args(upstream),
             cwd=repo,
             env=env,

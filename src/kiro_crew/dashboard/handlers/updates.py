@@ -190,12 +190,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import auto_update_effect  # noqa: F401
     from kiro_crew.platform.update_capability import bundled_by_desktop_app  # noqa: F401
     from kiro_crew.platform.update_capability import derive_capability  # noqa: F401
+    from kiro_crew.platform.update_governance import fetch_and_pin_upstream  # noqa: F401
     from kiro_crew.platform.update_governance import git_command_env  # noqa: F401
     from kiro_crew.platform.update_governance import min_version  # noqa: F401
     from kiro_crew.platform.update_governance import repo_exec_config_reason  # noqa: F401
     from kiro_crew.platform.update_governance import resolve_remote_url  # noqa: F401
     from kiro_crew.platform.update_governance import update_blocked_reason  # noqa: F401
     from kiro_crew.platform.update_governance import update_required  # noqa: F401
+    from kiro_crew.platform.update_governance import upstream_remote_and_branch  # noqa: F401
     from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases  # noqa: F401
     from kiro_crew.platform.update_layout import detect_install_layout  # noqa: F401
     from kiro_crew.platform.update_layout import set_release_channel  # noqa: F401

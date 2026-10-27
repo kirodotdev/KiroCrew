@@ -754,6 +754,15 @@ class TestAutoApplyUpdateGitPath:
         patches it again explicitly, and that inner patch wins.
         """
         with (
+            # The network fetch runs through the shared isolated helper; stub it
+            # to a fixed fetched OID so these tests keep their subject (the apply
+            # flow after the fetch). Its isolation is covered against real git in
+            # test_update_check_git_exec_neutralized. A fetch-failure test
+            # re-patches this to None, and that inner patch wins.
+            patch(
+                "kiro_crew.slack.gateway.fetch_and_pin_upstream",
+                new=AsyncMock(return_value="0" * 40),
+            ),
             patch("kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]),
             patch(
                 "kiro_crew.slack.gateway.repo_exec_config_reason",
@@ -796,14 +805,17 @@ class TestAutoApplyUpdateGitPath:
         orch.dashboard_state = ds
 
         record: list = []
-        _fake_exec = _git_exec_fake(fetch_rc=1, record=record)
+        _fake_exec = _git_exec_fake(record=record)
+        # The isolated fetch fails (bad source URL, fetch error, unreadable tip).
+        failed_fetch = AsyncMock(return_value=None)
 
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    await orch._auto_apply_update()
-        assert [args for args in record if "fetch" in args], "the fetch never ran"
-        assert not [args for args in record if "reset" in args]
+                with patch("kiro_crew.slack.gateway.fetch_and_pin_upstream", new=failed_fetch):
+                    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                        await orch._auto_apply_update()
+        failed_fetch.assert_awaited()
+        assert not [args for args in record if "reset" in args], "a failed fetch must not reset"
         ds.clear_update_progress.assert_called()
 
     @pytest.mark.asyncio
@@ -895,6 +907,15 @@ class TestAutoApplyUpdateVenvPath:
         patches it again explicitly, and that inner patch wins.
         """
         with (
+            # The network fetch runs through the shared isolated helper; stub it
+            # to a fixed fetched OID so these tests keep their subject (the apply
+            # flow after the fetch). Its isolation is covered against real git in
+            # test_update_check_git_exec_neutralized. A fetch-failure test
+            # re-patches this to None, and that inner patch wins.
+            patch(
+                "kiro_crew.slack.gateway.fetch_and_pin_upstream",
+                new=AsyncMock(return_value="0" * 40),
+            ),
             patch("kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]),
             patch(
                 "kiro_crew.slack.gateway.repo_exec_config_reason",

@@ -1831,13 +1831,30 @@ class TestGitCommandEnv:
         assert keys["core.fsmonitor"] == "false"
         assert keys["core.hooksPath"] == os.devnull
 
-    def test_unrelated_environment_survives(self, monkeypatch):
-        """PATH and friends must come through, or git does not run at all."""
-        monkeypatch.setenv("PATH", "/usr/bin")
+    def test_path_is_inherited_so_a_bare_git_still_resolves(self, monkeypatch):
+        """``git_command_env`` keeps PATH: some callers spawn a bare ``git``.
+
+        The isolated update fetch, whose git is a trusted absolute path, pins
+        PATH to the trusted system directories itself (see
+        test_update_check_git_exec_neutralized.test_a_git_shim_on_path_is_not_run).
+        """
+        monkeypatch.setenv("PATH", f"/somewhere/else{os.pathsep}/usr/bin")
         monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
         env = update_governance.git_command_env()
-        assert env["PATH"] == "/usr/bin"
+        assert env["PATH"] == f"/somewhere/else{os.pathsep}/usr/bin"
         assert env["SOME_UNRELATED_VAR"] == "keep-me"
+
+    def test_lazy_fetch_is_disabled(self):
+        """A partial clone's on-demand object fetch would bypass the isolated fetch."""
+        assert update_governance.git_command_env()["GIT_NO_LAZY_FETCH"] == "1"
+
+    def test_remote_helpers_and_git_proxy_are_closed(self, monkeypatch):
+        """Only built-in transports, and no repo-named git proxy, reach a fetch."""
+        monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+        monkeypatch.delenv("GIT_PROXY_COMMAND", raising=False)
+        env = update_governance.git_command_env()
+        assert env["GIT_ALLOW_PROTOCOL"] == "file:git:ssh:http:https"
+        assert env["GIT_PROXY_COMMAND"] == ""
 
     def test_a_merge_would_not_have_worked(self):
         """Documents WHY this builds instead of merging, as an assertion.
