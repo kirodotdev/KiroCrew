@@ -556,7 +556,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, approval_id: 'str', source: 'str', tool: 'str', *, tool_input: "
         "'str' = '', tool_purpose: 'str' = '', slot: 'str' = '', is_background: "
-        "'bool' = False) -> 'bool'",
+        "'bool' = False, contested: 'bool' = False) -> 'bool'",
     ),
     "request_question": (
         "function",

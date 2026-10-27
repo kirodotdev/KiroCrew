@@ -127,12 +127,22 @@ class _ApprovalPrompt:
     pending row nothing ever closes.
     """
 
-    def __init__(self, run: RunEventCoordinator, info: SubagentInfo) -> None:
+    def __init__(
+        self, run: RunEventCoordinator, info: SubagentInfo, root_session_key: str = ""
+    ) -> None:
         self._run = run
         self._info = info
+        self._root_session_key = root_session_key
 
     def opened(self, ask: Ask) -> tuple[str, tuple[str, int]]:
         info = self._info
+        # Labelled before the request is recorded, so the fold reads the same
+        # contested state the human is shown (a no-op under any other root).
+        from kiro_crew.subagent import (  # circular import: the facade imports this module
+            _label_contested_prompt,
+        )
+
+        _label_contested_prompt(ask.event, self._root_session_key)
         info._awaiting_approval = True
         approval_id = self._run._crew_log_approval_id(info, ask.request_id)
         origin = self._run._record_crew_log_tool_approval_requested(
@@ -274,6 +284,23 @@ class RunEventCoordinator(ManagerComponent):
 
     def running_agents_for_impl(self, parent_key: str) -> list[dict]:
         """Return summary dicts for agents belonging to *parent_key*."""
+        return self._running_summaries(
+            lambda a: a.parent_session_key == parent_key,
+        )
+
+    def running_agents_rooted_at_impl(self, root_key: str) -> list[dict]:
+        """Return summary dicts for every live agent in the tree rooted at *root_key*.
+
+        The per-slot list the dashboard shows for a tab: the tab's depth-one runs
+        AND every run nested beneath them, which is the set the per-run frames
+        are slotted to. ``running_agents_for`` is the parent's own wave (the
+        orchestration question) and stays parent-keyed.
+        """
+        return self._running_summaries(
+            lambda a: self._manager.root_session_key_for(a) == root_key,
+        )
+
+    def _running_summaries(self, keep: "Callable[[SubagentInfo], bool]") -> list[dict]:
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
         def _r(s: str) -> str:
@@ -293,7 +320,7 @@ class RunEventCoordinator(ManagerComponent):
                 "startedAt": a.started,
             }
             for a in self._manager._agents.values()
-            if not a.done and a.parent_session_key == parent_key
+            if not a.done and keep(a)
         ]
 
     def get_impl(self, agent_id: str) -> SubagentInfo | None:
@@ -915,6 +942,7 @@ class RunEventCoordinator(ManagerComponent):
         consult: Callable[[LLMEvent], object],
         sel: Callable[[], Any],
         log: _logging.Logger,
+        root_session_key: str = "",
     ) -> Policy:
         """The subagent surface's permission ladder for one run and its current agent.
 
@@ -931,6 +959,12 @@ class RunEventCoordinator(ManagerComponent):
         request still answered. *sel* and *log* are the facade's own bindings, so
         its audit and log seams see every row and line.
 
+        *root_session_key* is the run's trust root (``trust_root_for``): the
+        person is asked under THAT key, not the literal parent -- the approver
+        resolves the tab (and its trust) from it, and a ``subagent:<id>`` parent
+        names no tab -- and a prompt raised under a contested root is labelled
+        with the state its spawn prompt named.
+
         The facade's deny reasons are imported inside the body on purpose. This
         method does NOT end in ``_impl``, so it keeps this module's own globals.
         """
@@ -941,7 +975,7 @@ class RunEventCoordinator(ManagerComponent):
 
         manager = self._manager
         rows = SubagentRows(info.id)
-        prompt = _ApprovalPrompt(self, info)
+        prompt = _ApprovalPrompt(self, info, root_session_key)
 
         # Each approver is asked only while its responder reports it attached.
         def _factory_approver() -> Callable[[LLMEvent], Awaitable[object]]:
@@ -953,7 +987,8 @@ class RunEventCoordinator(ManagerComponent):
 
         def _ask_parent(event: LLMEvent) -> Awaitable[object]:
             approve = cast("ToolApprovalCallback", manager._on_tool_approval)
-            return approve(event, info.parent_session_key)
+            # The root chat's key, not the literal parent (see above).
+            return approve(event, root_session_key or info.parent_session_key)
 
         def _ask_for_child(event: LLMEvent) -> Awaitable[object]:
             if manager._on_tool_approval_factory:

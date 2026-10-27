@@ -65,9 +65,20 @@ def _forget_finished_live_state(self: RunEventCoordinator, info: SubagentInfo) -
 
 
 async def _write_state_off_loop_impl(
-    self: RunEventCoordinator, info: SubagentInfo, what: str, **fields: object
+    self: RunEventCoordinator,
+    info: SubagentInfo,
+    what: str,
+    record_id: str = "",
+    /,
+    **fields: object,
 ) -> bool:
     """Merge *fields* into this run's ``state.json``, off the event loop.
+
+    ``record_id`` names another run's record to merge into instead -- the
+    one use is a contested continuation writing the contest onto the
+    FOUNDER's record (the contest write in ``_run_inner_impl``), so it
+    survives a restart. The drain below then holds THAT run's conversation,
+    which is the conversation being written about.
 
     Every ``state.json`` writer inside a run goes off the loop and is
     drained through :meth:`_drain_state_writer_impl`, entering here or, for
@@ -102,6 +113,10 @@ async def _write_state_off_loop_impl(
     deadline because on Python 3.10 a second outer cancel can finalize the run
     mid-drain.
 
+    ``durable=True`` among *fields* is ``update_state``'s own switch, not a
+    state field: a live-only record's durable file is written too, for
+    provenance a restart must read back.
+
     Returns ``update_state``'s own report: True when the merge was written,
     False when it was SKIPPED because the state was unreadable — a caller
     with a durability contract (the pre-spawn provenance write)
@@ -109,8 +124,12 @@ async def _write_state_off_loop_impl(
     so such a retry loop ends on cancellation instead of adding a second
     writer for the same fields.
     """
-    writer = asyncio.ensure_future(asyncio.to_thread(update_state, info.id, **fields))
-    return await self._drain_state_writer_impl(info, what, writer)
+    record_id = record_id or info.id
+    durable = bool(fields.pop("durable", False))
+    writer = asyncio.ensure_future(
+        asyncio.to_thread(update_state, record_id, durable=durable, **fields)
+    )
+    return await self._drain_state_writer_impl(info, what, writer, record_id=record_id)
 
 
 async def _write_finished_result_off_loop_impl(
@@ -177,6 +196,7 @@ async def _drain_state_writer_impl(
     writer: "asyncio.Future[Any]",
     *,
     bound: float | None = None,
+    record_id: str = "",
 ) -> bool:
     """Await a state-writing worker, drained and bounded on cancellation.
 
@@ -185,8 +205,13 @@ async def _drain_state_writer_impl(
     :meth:`_write_finished_result_off_loop_impl`, the one caller that
     passes *bound*: a limit on the UNCANCELLED wait too, past which the
     worker is left to finish detached and False is returned. The
-    manager's ``_drain_state_writer`` forwards here unchanged.
+    manager's ``_drain_state_writer`` forwards here unchanged. *record_id*
+    names the record *writer* is writing when it is not this run's own
+    (the contest write onto the founder's record): the hold taken for a
+    detached worker is keyed on it, since that is the conversation the
+    write can roll back.
     """
+    record_id = record_id or info.id
     try:
         if bound is None:
             return bool(await asyncio.shield(writer))
@@ -201,10 +226,10 @@ async def _drain_state_writer_impl(
             info.id,
             bound,
         )
-        self._hold_for_detached_writer_impl(info, what, writer)
+        self._hold_for_detached_writer_impl(info, what, writer, record_id=record_id)
         return False
     except asyncio.CancelledError:
-        self._hold_for_detached_writer_impl(info, what, writer)
+        self._hold_for_detached_writer_impl(info, what, writer, record_id=record_id)
         # Latch for _run's recovery gate: on Python 3.10, wait_for's
         # _cancel_and_wait awaits a bare future that a SECOND outer cancel
         # can interrupt, delivering _run's CancelledError handler while this
@@ -224,7 +249,7 @@ async def _drain_state_writer_impl(
                         "abandoning worker (its stale whole-file rewrite may roll "
                         "back a recovery run's state)",
                         what,
-                        info.id,
+                        record_id,
                         _STATE_DRAIN_TIMEOUT,
                     )
                     # The abandoned worker is a live stale writer whose
@@ -252,9 +277,18 @@ async def _drain_state_writer_impl(
 
 
 def _hold_for_detached_writer_impl(
-    self: RunEventCoordinator, info: SubagentInfo, what: str, writer: "asyncio.Future[Any]"
+    self: RunEventCoordinator,
+    info: SubagentInfo,
+    what: str,
+    writer: "asyncio.Future[Any]",
+    *,
+    record_id: str = "",
 ) -> None:
-    """Hold this run's conversation until *writer* has landed.
+    """Hold the written record's conversation until *writer* has landed.
+
+    The record is this run's own unless *record_id* names another (the
+    contest write onto the founder's record), whose conversation is then
+    the one the hold protects.
 
     Taken for a worker no one awaits any more, and up front for the final
     result write of a run that is already ``done``. The hold counts
@@ -274,7 +308,8 @@ def _hold_for_detached_writer_impl(
     # worker does -- milliseconds on a healthy FS. Recorded on the
     # MANAGER, not on `info`: `evict_completed_agents` prunes completed
     # runs out of `_agents`, and an eviction must not release the hold.
-    held = self._manager._abandoned_state_writers.setdefault(info.id, set())
+    record_id = record_id or info.id
+    held = self._manager._abandoned_state_writers.setdefault(record_id, set())
     if writer in held:
         return
     held.add(writer)
@@ -282,7 +317,7 @@ def _hold_for_detached_writer_impl(
     def _settled(
         fut: "asyncio.Future[Any]",
         _mgr: Any = self._manager,
-        _aid: str = info.id,
+        _aid: str = record_id,
         _what: str = what,
     ) -> None:
         # The worker has landed (drained or abandoned). The conversation

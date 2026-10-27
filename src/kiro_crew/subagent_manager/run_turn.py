@@ -25,7 +25,8 @@ The manager fields this module uses. Writes: ``_agents``, ``_conversations``,
 ``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
 ``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
 ``_yield_for_infra_retry``, ``_yield_for_stop_recovery``, ``arm_report_in_flight``,
-``dependency_coordinator_async``, ``hook_store``.
+``dependency_coordinator_async``, ``hook_store``, ``root_approval_policy``,
+``trust_root_for``.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
         fire_tool_hooks,
         hook_gate_kwargs,
         invalidate_stale_kas_session,
+        is_contested_root,
         is_registered_agent_name,
         logger,
         provider_fallback_active,
@@ -205,7 +207,60 @@ async def _run_inner_impl(
         await _await_owned(publication)
     finally:
         info._state_drain_active = False
-    parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+    # Read from the ROOT of this run's spawn tree (stamped at admission): a
+    # nested run's parent key is ``subagent:<id>``, which the shared-runtime
+    # path never registers in the session store, so a direct read would drop
+    # the chat's trust at depth two -- and the parent record itself may be
+    # gone by now. A continuation of a CONTESTED conversation resolves to the
+    # conversation's marker instead of the chat that continued it: the turn
+    # it runs was authored under another chat's key, so the continuing chat's
+    # trust does not approve what it asks for. The liveness probe further
+    # down still reads the literal parent key on purpose: it asks whether
+    # THIS run's parent is alive.
+    root_session_key = self._manager.trust_root_for(info)
+    if info.conversation_key and is_contested_root(info.conversation_root_session_key):
+        # Write the contest onto the FOUNDER's durable record before this
+        # turn runs anything, so a continuation admitted after a restart
+        # (when no in-memory record of the conversation remains) reads the
+        # contest back instead of the founding root alone. The write is the
+        # only durable carrier of the contest, so it is a precondition of
+        # running: ``update_state`` reports False when the founder's record
+        # could not be read (missing, corrupt), and a turn allowed to run on
+        # that skip would leave a restart restoring the founding root and
+        # its trust. Retried once for a transient read, then refused.
+        # ``durable=True`` because the founder may be LIVE-ONLY here: a
+        # continuation in incognito or temporary mode tightens the founder's
+        # record into memory, where a plain merge would report success
+        # without touching the founder's ``state.json`` -- and a restart
+        # would read the founding root back from that untouched file.
+        founder_id = info.conversation_key[len("subagent:") :]
+        persisted = False
+        for _attempt in range(2):
+            persisted = await self._manager._write_state_off_loop(
+                info,
+                "conversation contest",
+                founder_id,
+                durable=True,
+                conversation_root=info.conversation_root_session_key,
+            )
+            if persisted:
+                break
+        if not persisted:
+            raise ValueError(
+                "memory_unavailable: could not persist the conversation contest "
+                f"on {info.conversation_key}; refusing to run a contested "
+                "continuation whose contest would not survive a restart"
+            )
+        # The retained founder record, if any, carries the contest too, so
+        # the in-memory view agrees with the durable one once this run's own
+        # record is evicted: a later same-root continuation compares against
+        # the founder's stamp first. The founder is not live (a continuation
+        # is admitted only while no run of the conversation is), so its own
+        # trust root changing to the marker governs nothing that still runs.
+        founder = self._manager._agents.get(founder_id)
+        if founder is not None:
+            founder.conversation_root_session_key = info.conversation_root_session_key
+    parent_policy = self._manager.root_approval_policy(root_session_key)
     # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
     if not parent_policy and info.approval_mode == "auto":
         parent_policy = "auto"
@@ -891,6 +946,7 @@ async def _run_inner_impl(
             consult=_consult_gate,
             sel=lambda: sel(),
             log=logger,
+            root_session_key=root_session_key,
         )
 
     _wire = tool_permission.AcpWire(client)

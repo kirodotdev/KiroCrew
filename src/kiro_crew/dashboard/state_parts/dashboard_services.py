@@ -407,6 +407,7 @@ async def request_approval(
     tool_purpose: str = "",
     slot: str = "",
     is_background: bool = False,
+    contested: bool = False,
 ) -> bool:
     """Request interactive approval and deny on timeout or cancellation."""
     return await _approvals_for(self).request(
@@ -420,6 +421,7 @@ async def request_approval(
         is_background=is_background,
         redact_url=redact_exfiltration_urls,
         redact_secret=redact_credentials,
+        contested=contested,
     )
 
 

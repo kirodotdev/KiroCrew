@@ -207,6 +207,7 @@ async def continue_conversation_async(
     _preassigned_id: str = "",
     _memory_mode: str | None = None,
     _crew_log_asked: "tuple[str, int] | None" = None,
+    _root_session_key: str = "",
 ) -> SubagentInfo | None:
     original, refusal = self._claim_continuation(conv_id, task, parent_session_key)
     if refusal is not None:
@@ -225,6 +226,7 @@ async def continue_conversation_async(
             _preassigned_id,
             _memory_mode,
             _crew_log_asked,
+            _root_session_key=_root_session_key,
         )
         raised = False
     finally:
@@ -248,6 +250,8 @@ def _continue_prelude(
     *,
     _execution_context=None,
     _captured_state=...,
+    _root_session_key: str = "",
+    _run_pin: "tuple[str, str] | None" = None,
 ) -> "SubagentInfo | dict[str, Any] | None":
     return self._continuation._continue_prelude_impl(
         conv_id,
@@ -262,11 +266,23 @@ def _continue_prelude(
         _crew_log_asked,
         _execution_context=_execution_context,
         _captured_state=_captured_state,
+        _root_session_key=_root_session_key,
+        _run_pin=_run_pin,
     )
 
 
 def recorded_cwd(self: SubagentManager, conv_id: str) -> str:
     return self._continuation.recorded_cwd_impl(conv_id)
+
+
+def founder_conversation_id(self: SubagentManager, conv_id: str, state: dict | None = None) -> str:
+    """The id of the run that founded the conversation *conv_id* belongs to.
+
+    A continuation's id resolves to its founder's (see
+    :meth:`ContinuationCoordinator.founder_conversation_id_impl`); the
+    founder's own id, or an id with no record, answers itself.
+    """
+    return self._continuation.founder_conversation_id_impl(conv_id, state)
 
 
 def _inherited_context_groups(self: SubagentManager, conv_id: str) -> tuple[bool, bool, bool]:
