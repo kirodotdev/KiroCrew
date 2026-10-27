@@ -138,6 +138,7 @@ from kiro_crew.mcp_core import (
     _session_token_header,
     require_strict_session_key,
 )
+from kiro_crew.mcp_instructions import COMPUTER as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError, validate_tool_args
 
@@ -900,4 +901,5 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        instructions=_INSTRUCTIONS,
     )

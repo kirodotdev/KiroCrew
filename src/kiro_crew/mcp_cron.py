@@ -69,6 +69,7 @@ from kiro_crew.mcp_cron_vet import (
     _vet_script_file,
     _vet_shell_command,
 )
+from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -1367,6 +1368,7 @@ def run_mcp_server() -> None:
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
         error_prefix_is_error=True,
+        instructions=_INSTRUCTIONS,
     )
 
 

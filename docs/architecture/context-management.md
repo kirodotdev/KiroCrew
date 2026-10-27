@@ -362,8 +362,13 @@ re-adds, once:
    session a contract it never agreed to, differing in a number it never chose.
    `{{COMPUTER_USE_BLOCK}}` is held the same way (`_session_computer_use_gate`),
    except that a resume re-takes the reading, because it starts a new backend
-   from the current spec: the full Computer Use section when that backend has
-   `kirocrew-computer` in its spec, the short pointer to Settings when it does not.
+   from the current spec: empty when that backend has `kirocrew-computer` in its
+   spec, the short pointer to Settings when it does not. The usage text of that
+   server, and of `kirocrew-cron`, `kirocrew-guide` and `kirocrew-dashboard`, is
+   not in this block at all: it is each server's MCP `instructions`, which the
+   harness keeps in its own system prompt, so a compaction does not drop it and
+   nothing here has to restore it ([mcp](mcp.md), "Server instructions travel with
+   the server").
    The Browser section between `{{BROWSER_BEGIN}}` and `{{BROWSER_END}}` is held
    like the cap figure, read at session start only: the full section while
    browsing is set up on the host (or that cannot be read), a short pointer while

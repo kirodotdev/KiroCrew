@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.context_assembly.sections import browser_section, computer_use_block
+from kiro_crew.mcp_instructions import COMPUTER, CRON
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
@@ -20,10 +21,11 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # A maintainer may raise a budget in a reviewed change when a new rule earns
 # its space. Preserve the operational clauses below rather than cutting them
 # to fit; their tests, not a size limit, check the retained text contracts.
-# Measured on the prompt with its Computer Use slot filled by the full section,
-# so the section's bytes still count against the budget after moving into
-# `context_assembly/sections.py`, and with its Browser section kept and its
-# markers gone, as a session with browsing set up gets it. The
+# Measured on the prompt with its Computer Use slot filled the larger way: the
+# pointer a session without `kirocrew-computer` gets (a mounted server carries
+# its own usage text as MCP `instructions`, `kiro_crew.mcp_instructions`), and
+# with its Browser section kept and its markers gone, as a session with browsing
+# set up gets it. The
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
 PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
@@ -55,10 +57,11 @@ def _require(text: str, *patterns: str) -> None:
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
 def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
     # Normalize checkout line endings so Windows measures the same shipped text.
-    size = len(_resolved(name, mounted=True).encode("utf-8"))
+    size = len(_resolved(name, mounted=False).encode("utf-8"))
     assert size <= PROMPT_BYTE_CEILINGS[name], (name, size, PROMPT_BYTE_CEILINGS[name])
-    assert len(_resolved(name, mounted=False).encode("utf-8")) < size
-    assert len(_resolved(name, browsing=False).encode("utf-8")) < size
+    # Mounted, the slot is empty: the server's own instructions carry the text.
+    assert len(_resolved(name, mounted=True).encode("utf-8")) < size
+    assert len(_resolved(name, mounted=False, browsing=False).encode("utf-8")) < size
 
 
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
@@ -140,20 +143,24 @@ def test_single_task_default_survives_prompt_compaction() -> None:
 
 
 def test_cron_modes_and_session_ownership_remain_explicit() -> None:
-    capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
+    # The cron bullets are kirocrew-cron's own MCP instructions now.
     _require(
-        capabilities,
+        CRON,
         r"no-LLM.*mutually exclusive `command`.*deterministic",
         r"`Skip\(\)` to retry.*`Done\(msg\)` to deliver/remove.*`Report\(msg\)` to deliver/keep",
         r"synchronous runner refuses `async def`",
         r"IANA `timezone`.*global config timezone, then UTC",
         r"THIS session's jobs only; empty does not mean none exist elsewhere",
         r"`timeout` bounds.*subprocess; `timeout_secs` bounds the whole wake",
-        r"BLOCKING in a dashboard session: the call waits for the user and the answers are its result",
     )
     for value in ("persistent_session=false", "minimal_context=true", "hide_in_chat=true"):
-        assert value in capabilities
-    assert "kirocrew cron preview <script:function> -m <message>" in capabilities
+        assert value in CRON
+    assert "kirocrew cron preview <script:function> -m <message>" in CRON
+    capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
+    _require(
+        capabilities,
+        r"BLOCKING in a dashboard session: the call waits for the user and the answers are its result",
+    )
 
 
 def test_injected_data_and_refusals_are_not_new_authority() -> None:
@@ -285,11 +292,12 @@ def test_browser_keeps_all_four_approval_groups_and_ownership_controls() -> None
 
 
 def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
-    # The section a session gets while its spec mounts `kirocrew-computer`.
-    desktop = _section(_resolved(mounted=True), "## Computer Use (native desktop apps)")
+    # What a session gets while its spec mounts `kirocrew-computer`: the server's
+    # own MCP instructions. Its "off by default" and "turned off after this
+    # session started" lines stayed behind: a mounted server is on, and a session
+    # whose server goes away loses its instructions with it and gets the pointer.
     _require(
-        desktop,
-        r"opt-in and off by default",
+        COMPUTER,
         r"Windows.*keyboard focus.*real cursor.*pass that on",
         r'"disabled" or "not supported" refusal is final',
         r"computer_get_state.*before any action",
@@ -297,8 +305,8 @@ def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
         r'click_method: "global".*ask for it BY NAME.*auto.*never picks it',
         r"Password fields.*<secure>.*never captured",
         r"own dashboard is refused, for reading as well as typing",
-        r"If no `computer_\*` tool is in your tool list.*turned off after this\s+session",
     )
+    assert "## Computer Use" not in _resolved(mounted=True)
 
 
 def test_computer_use_pointer_names_the_setting_and_the_skill() -> None:

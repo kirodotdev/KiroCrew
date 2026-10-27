@@ -429,10 +429,10 @@ def _resolve_prompt_templates(
     the model can actually fan out to: ``cap_figure`` when the caller holds
     that session's reading, otherwise a live one. Resolved for every
     transport (not just dashboard), before the widget-block branch.
-    ``{{COMPUTER_USE_BLOCK}}`` is the full Computer Use section only when the
-    agent spec mounts ``kirocrew-computer`` (``computer_use`` when the caller
-    holds that session's reading, otherwise a live one), and a short pointer
-    to the setting when it does not. The section marked by ``{{BROWSER_BEGIN}}``
+    ``{{COMPUTER_USE_BLOCK}}`` is empty when the agent spec mounts
+    ``kirocrew-computer`` (``computer_use`` when the caller holds that session's
+    reading, otherwise a live one), because the server's MCP ``instructions``
+    carry its usage text, and a short pointer to the setting when it does not. The section marked by ``{{BROWSER_BEGIN}}``
     and ``{{BROWSER_END}}`` stays while browsing is set up on this host
     (``browser``, or a live reading), and becomes a short pointer while it is not.
     """

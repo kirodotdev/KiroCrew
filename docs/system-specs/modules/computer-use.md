@@ -117,24 +117,27 @@ Both in-process checks stay, and they cover what the gate structurally cannot: t
 keystone flipping **off** mid-session, after the spec was written and the backend
 spawned. The gate covers what they cannot: the process existing.
 
-**The prompt section follows the same gate.** The default agent prompt
-(`config/prompt.md`) holds a `{{COMPUTER_USE_BLOCK}}` slot, not the section itself.
-`ContextBuilder._resolve_prompt_templates` fills it with the full section
+**The usage text follows the same gate.** How to call the `computer_*` tools is
+`kirocrew-computer`'s own MCP `instructions` (`kiro_crew.mcp_instructions.COMPUTER`),
+so it reaches a session exactly when the server is mounted, in the harness's own
+system prompt ([mcp.md](../../architecture/mcp.md), "Server instructions travel
+with the server"). The default agent prompt (`config/prompt.md`) holds a
+`{{COMPUTER_USE_BLOCK}}` slot for the other case only:
+`ContextBuilder._resolve_prompt_templates` leaves it empty
 (`context_assembly.sections.computer_use_block(True)`) when
-`_computer_use_spec_gate()` is open and with a short pointer to Settings →
-Computer Use when it is closed, so a session with no `computer_*` tool is not told
-how to call them. The reading is taken whenever the session's backend spawns -- at
-session start and again on a resume -- and reused by the post-compaction re-render,
-so the restored block matches the tools that backend mounted. A session open across an
-enable resumes its own transcript after the reset (the session map keeps its id),
-and a resume re-sends no contract, so the pointer also tells the model to read the
-`computer-use` skill if the tools turn up. The mirror case, a session open across a
-disable, resumes with the full section still in its transcript and no `computer_*`
-tool, so the section carries one sentence telling the model to point the user to
-Settings and call none; its next compaction restores the pointer. A user prompt override under the data
-home (`prompt.md` there) is the user's own text: one copied before the slot existed
-still carries the section inline and keeps it whatever the gate says. Pinned by
-`test_context_computer_use_block.py` and `test_prompt_compact_contract.py`.
+`_computer_use_spec_gate()` is open and fills it with a short pointer to Settings →
+Computer Use when it is closed. The reading is taken whenever the session's backend
+spawns -- at session start and again on a resume -- and reused by the
+post-compaction re-render, so the restored block matches the tools that backend
+mounted. A session open across an enable resumes its own transcript after the reset
+(the session map keeps its id), and a resume re-sends no contract, so the pointer
+also tells the model to read the `computer-use` skill if the tools turn up. The
+mirror case, a session open across a disable, holds no stale usage text: the
+instructions left with the server, and the next compaction restores the pointer.
+A user prompt override under the data home (`prompt.md` there) is the user's own
+text: one copied before the slot existed still carries the section inline and
+keeps it whatever the gate says. Pinned by `test_context_computer_use_block.py`,
+`test_prompt_compact_contract.py` and `test_mcp_instructions.py`.
 
 `tools` is **not** touched. The `@kirocrew-computer` ref the shipped
 `defaults.json` grants stays where it is: a ref resolves against the agent's own
@@ -2664,7 +2667,7 @@ computer use.
 | `website/src/pages/settings/ComputerUsePanel.tsx` | Settings → Computer Use |
 | `website/src/components/ComputerUseLiveView.tsx` | The floating live view (PiP) panel |
 | `website/src/hooks/useComputerUseFrame.ts` | Frame-stream subscription + session-title lookup |
-| `src/kiro_crew/builtin_skills/computer-use/SKILL.md` | The agent-facing workflow. **Bundled**, not in the top-level `skills/` dir: the agent prompt's Computer Use slot (`context_assembly/sections.py::computer_use_block`, both the section and the pointer) tells the model to read it by name, so per AGENTS.md it is load-bearing and must reach every pip/DMG install |
+| `src/kiro_crew/builtin_skills/computer-use/SKILL.md` | The agent-facing workflow. **Bundled**, not in the top-level `skills/` dir: `kirocrew-computer`'s MCP instructions (`mcp_instructions.COMPUTER`) and the agent prompt's closed-gate pointer (`context_assembly/sections.py::computer_use_block`) tell the model to read it by name, so per AGENTS.md it is load-bearing and must reach every pip/DMG install |
 
 Cross-references: [governance.md](governance.md) for why computer use is
 deliberately NOT governed; [security.md](security.md) for the keystone leaf and the

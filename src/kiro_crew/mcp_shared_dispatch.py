@@ -177,6 +177,7 @@ def _run_stdio_dispatch_loop(
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
     reports_inflight: bool = False,
+    instructions: str = "",
 ) -> bool:
     """Read/dispatch body of :func:`run_mcp_stdio_loop`.
 
@@ -601,14 +602,14 @@ def _run_stdio_dispatch_loop(
             if _experimental:
                 _caps["experimental"] = _experimental
             _client_wants_inflight = _sends_inflight and _declares_inflight_capability(params)
-            respond(
-                req_id,
-                {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": _caps,
-                    "serverInfo": {"name": server_name, "version": server_version},
-                },
-            )
+            _init_result: dict[str, Any] = {
+                "protocolVersion": "2024-11-05",
+                "capabilities": _caps,
+                "serverInfo": {"name": server_name, "version": server_version},
+            }
+            if instructions:
+                _init_result["instructions"] = instructions
+            respond(req_id, _init_result)
         elif method == "notifications/initialized":
             pass
         elif method == "notifications/cancelled":

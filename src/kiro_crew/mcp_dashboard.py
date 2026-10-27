@@ -82,6 +82,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from kiro_crew.mcp_instructions import SESSION_CONTROL as _INSTRUCTIONS
 from kiro_crew.mcp_shared import run_mcp_stdio_loop
 from kiro_crew.mcp_tools.table import Tool, ToolContext, ToolTable
 from kiro_crew.validation import MCP_DASHBOARD_SCHEMAS
@@ -947,6 +948,7 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        instructions=_INSTRUCTIONS,
     )
 
 

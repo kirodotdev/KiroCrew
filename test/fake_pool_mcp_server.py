@@ -167,6 +167,11 @@ def main() -> int:
                 "serverInfo": {"name": "fake-pool-mcp", "version": "1.0.0"},
             },
         }
+        # Optional MCP ``instructions``, stamped with this process's pid so a test
+        # can tell which backend produced the result a stub was replayed.
+        instructions = os.environ.get("FAKE_POOL_INSTRUCTIONS", "")
+        if instructions:
+            reply["result"]["instructions"] = f"{instructions} pid={os.getpid()}"
         sys.stdout.write(json.dumps(reply) + "\n")
         sys.stdout.flush()
     return 0

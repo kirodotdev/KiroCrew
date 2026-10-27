@@ -2507,6 +2507,54 @@ answers `tools/list` from):
   clear/dismiss), and the gateway admits only that one path for internal-secret
   callers, never the app's state-mutating routes
 
+### Server instructions travel with the server
+
+A Kiro Crew server can describe its own tools in its MCP `instructions`, the
+`initialize` result field the spec calls a hint the client MAY add to the system
+prompt. `mcp_shared.run_mcp_stdio_loop(..., instructions=...)` returns the text, and
+`kiro_crew/mcp_instructions.py` holds it, one entry per server in `BY_SERVER`:
+`kirocrew-cron`, `kirocrew-guide`, `kirocrew-dashboard` (session control) and
+`kirocrew-computer`. Text in `config/prompt.md` reaches only the default-named
+agents, whatever they mount; as instructions it reaches every agent that mounts
+the server, on every harness, and nothing reaches an agent that does not. The harness places it
+in its own system prompt, so it is not part of what a compaction drops and Kiro
+Crew re-injects.
+
+The prompt keeps only what a server cannot say about itself: that an expected
+server is missing. Today that is the Computer Use pointer, the slot a closed spec
+gate resolves to.
+
+Each text opens with a one-line summary of at most `MAX_SUMMARY_CHARS` (250) and
+stays within `MAX_INSTRUCTIONS_CHARS` (4,096), measured 2026-10-27 (#24859):
+
+| Harness | Where the text lands | Limit |
+|---|---|---|
+| KAS | system prompt, under `MCP SERVER INSTRUCTIONS (untrusted ...)` | not seen |
+| Claude Code | system message `# MCP Server Instructions` | 4,096 chars, then `… [truncated]` |
+| Codex | the tool namespace's description | not seen |
+| opencode | system prompt `<mcp_instructions>` | not seen |
+| goose | system prompt `### Instructions` | not seen |
+| DeepSeek Harness | system prompt `### MCP server: <name>` | 32,768 bytes, over it `session/new` fails |
+| pi | nowhere for a `direct` server (only the first line, for `deferred`/`codemode`) | 250 chars |
+| kiro-cli, v2 engine (`acp` without `--agent-engine v3`) | nowhere | — |
+
+The v2 engine is deprecated and gets no fallback: a session on it, including one a
+KAS default or member backend degrades to (`apply_kas_cli_floor`), runs without these
+servers' usage text. That is the maintainer's recorded decision on #24869.
+
+So pi is handed the text by Crew: `pi_mcp_handoff_payload` seals the entries of the
+servers the session mounts beside the servers themselves, and the pi gate extension
+appends them to each run's system prompt in `before_agent_start`, skipping a server
+pi's own `mcp.json` shadows. Text that is a rule rather than a tool's usage stays in
+the prompt: KAS frames instructions as untrusted hints that cannot override the
+agent's own rules.
+
+A pooled backend's `initialize` result is cached and replayed to every later stub
+(`backend_handshake._deliver_cached_initialize`), `instructions` included, and a
+respawned backend's result replaces the cache. Pinned by
+`test_pooled_stubs_get_the_backends_instructions_after_a_respawn_too` and
+`test_mcp_instructions.py`.
+
 ### A `kirocrew-core` tool has two halves
 
 Each tool is declared twice in the same per-domain module under

@@ -137,8 +137,13 @@ def run_mcp_stdio_loop(
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
     reports_inflight: bool = False,
+    instructions: str = "",
 ) -> None:
     """Generic MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout.
+
+    *instructions* is the server's MCP ``instructions``: returned in the
+    ``initialize`` result when non-empty, so every harness that mounts the server
+    gets its usage text (``kiro_crew.mcp_instructions``).
 
     Tool calls run in a worker thread so the main read loop stays responsive to
     ``notifications/cancelled`` messages from the gateway. A cancel for a call
@@ -201,6 +206,7 @@ def run_mcp_stdio_loop(
             advertise_caller_identity=advertise_caller_identity,
             error_prefix_is_error=error_prefix_is_error,
             reports_inflight=reports_inflight,
+            instructions=instructions,
         )
     finally:
         set_internal_caller(_prior_caller)
