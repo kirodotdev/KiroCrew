@@ -2,9 +2,12 @@
 """Whether a transcript holds a message the PERSON sent.
 
 Stricter than ``ConversationLog.has_messages``, which counts any row past the
-metadata line. A row the person sent is a ``user`` row that is not a
-``session_send`` relay. Gateway-authored turns write no ``user`` row: a welcome
-kickoff is hidden, a cron result is ``inject`` and an auto-nudge is ``nudge``.
+metadata line. A row the person sent is a ``user`` row that is neither a
+``session_send`` relay (``projection_workers._RELAY_PREFIX``) nor automation by
+the rule the session summary reads (``session_summary.is_injected_text``), so
+the roster and the summary agree on whether a person spoke. Gateway-authored
+turns mostly write no ``user`` row: a welcome kickoff is hidden, a cron result
+is ``inject`` and an auto-nudge is ``nudge``.
 
 The live file is read under the transcript's lock, then the archived segments a
 rotation moved older rows into, so a thread whose person-sent rows were rotated
@@ -20,12 +23,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.crew_log.projection_workers import _RELAY_PREFIX
 from kiro_crew.history_files import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER
 from kiro_crew.jsonl_util import UnreadableRecord, strict_records
-
-#: The opening of the envelope ``session_send`` puts on a message it relays
-#: (``session_messaging._SEND_PROVENANCE``): another session speaking.
-RELAYED_MESSAGE_PREFIX = "[sent by session "
+from kiro_crew.session_summary import is_injected_text
 
 
 def is_person_sent_row(row: object) -> bool:
@@ -33,7 +34,9 @@ def is_person_sent_row(row: object) -> bool:
     if not isinstance(row, dict) or row.get("role") != "user":
         return False
     content = row.get("content")
-    return not (isinstance(content, str) and content.startswith(RELAYED_MESSAGE_PREFIX))
+    if not isinstance(content, str):
+        return True
+    return not (content.lstrip().startswith(_RELAY_PREFIX) or is_injected_text(content))
 
 
 def _file_has_person_row(path: Path) -> bool:

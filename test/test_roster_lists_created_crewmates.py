@@ -22,12 +22,10 @@ from chat_test_helpers import _make_state
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+from kiro_crew.crew_log.projection_workers import _RELAY_PREFIX
 from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, _safe_key
 from kiro_crew.memory_stores import persist_member_config, provision_member_memory
-from kiro_crew.transcript_person_rows import (
-    RELAYED_MESSAGE_PREFIX,
-    transcript_has_person_message,
-)
+from kiro_crew.transcript_person_rows import is_person_sent_row, transcript_has_person_message
 
 
 @pytest.fixture(autouse=True)
@@ -192,4 +190,13 @@ def test_the_relay_prefix_is_the_one_session_send_writes():
     from kiro_crew.dashboard.session_control_parts import session_messaging
 
     stamped = session_messaging._SEND_PROVENANCE.format(caller="chat-1", via="session_send")
-    assert stamped.startswith(RELAYED_MESSAGE_PREFIX)
+    assert stamped.startswith(_RELAY_PREFIX)
+    assert is_person_sent_row({"role": "user", "content": stamped + "\n\nhi"}) is False
+
+
+def test_a_user_row_automation_wrote_is_not_person_sent():
+    """The roster reads the same automation rule the session summary does."""
+    assert is_person_sent_row({"role": "user", "content": "[cron notification] daily"}) is False
+    assert is_person_sent_row({"role": "user", "content": "[auto-nudge cycle 3]"}) is False
+    assert is_person_sent_row({"role": "user", "content": "hello"}) is True
+    assert is_person_sent_row({"role": "assistant", "content": "hello"}) is False

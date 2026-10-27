@@ -1536,8 +1536,10 @@ listed while open, and a remembered mate is restored even when the rule hides
 it. The reserved `default` member is never `dashboard_created`, whatever its
 record says, and is listed only on a stricter signal: `has_user_dm_message`,
 shipped on that row alone, true once its thread (live file, archived segments
-or the live slot) holds a message the person sent -- a `user` row that is not a
-`session_send` relay (`transcript_person_rows`). A welcome, a cron result
+or the live slot) holds a message the person sent -- a `user` row that is
+neither a `session_send` relay nor automation by the rule the session summary
+reads (`session_summary.is_injected_text`; `transcript_person_rows`), so the
+roster and the summary agree on whether a person spoke. A welcome, a cron result
 (`inject`), an auto-nudge (`nudge`) or a relayed message does not list it, so a
 fresh install's roster shows only Mate, and an upgraded install shows `default`
 only where the person talked to it. The rule is recorded in
