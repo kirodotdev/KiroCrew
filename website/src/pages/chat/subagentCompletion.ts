@@ -184,6 +184,10 @@ export interface ParsedSingleCompletion {
   agentName: string
   outcome: SubagentOutcome
   task: string
+  /** The run's short display name: the caller's `spawn_run` label, or the one
+   *  the gateway generated for an unlabelled run. '' when the run had none and
+   *  on the legacy prose path. The card names the run by it ahead of `task`. */
+  label: string
   /** Model the spawn requested (pinned), '' when none was pinned. Mirrors the
    *  backend `requestedModel` meta key (#3582). */
   requestedModel: string
@@ -300,6 +304,7 @@ function fromMeta(content: string, meta: Record<string, unknown> | undefined): P
       agentName: isStr(d.agentName) ? d.agentName : '',
       outcome: d.outcome as SubagentOutcome,
       task: isStr(d.task) ? d.task.trim() : '',
+      label: isStr(d.label) ? d.label.trim() : '',
       requestedModel: isStr(d.requestedModel) ? d.requestedModel : '',
       resolvedModel: isStr(d.resolvedModel) ? d.resolvedModel : '',
       body: keptNote ? [keptNote, body].filter(Boolean).join('\n\n') : body,
@@ -413,7 +418,9 @@ export function parseSubagentCompletion(
     agentName: m[2] || '',
     outcome: OUTCOME_BY_GLYPH[glyph[0]] || 'ok',
     task: (task?.[1] || '').trim(),
-    // Legacy scrollback prose never carried a model; the meta path supplies it.
+    // Legacy scrollback prose never carried a label or a model; the meta path
+    // supplies them.
+    label: '',
     requestedModel: '',
     resolvedModel: '',
     body: keptNote ? [keptNote, body].filter(Boolean).join('\n\n') : body,

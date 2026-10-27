@@ -1604,6 +1604,8 @@ class TerminalCoordinator(ManagerComponent):
 
             # Build failure message the LLM will see on next turn
             task_preview = _redact((info.task or "")[:100])
+            label_preview = _redact(info.label) if isinstance(info.label, str) else ""
+            name_line = f"Name: {label_preview}\n" if label_preview else ""
             result_hint = ""
             if info.result_path:
                 try:
@@ -1620,6 +1622,7 @@ class TerminalCoordinator(ManagerComponent):
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
+                f"{name_line}"
                 f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"
             )

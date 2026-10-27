@@ -271,6 +271,9 @@ class QueuedRun:
     ``state`` is the task-store state of the row it was read from (``queued``,
     ``retry_wait``, ``recovering``, ``admitted``), and empty for an entry held only
     in memory, which has no row.
+
+    ``label`` is the display name the spawn's caller gave it (``spawn_run``'s
+    ``label``), empty when it gave none.
     """
 
     id: str
@@ -283,6 +286,7 @@ class QueuedRun:
     reason_detail: str = ""
     resuming: str = ""
     state: str = ""
+    label: str = ""
 
 
 class QueuedReadUnavailable(Exception):

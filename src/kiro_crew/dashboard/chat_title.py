@@ -878,6 +878,26 @@ async def _generate_refreshed_title(
     return title
 
 
+async def title_for_text(state: DashboardState, text: str, *, session_key: str = "") -> str:
+    """Name a block of text that is not a chat transcript, such as a sub-agent's task.
+
+    Runs the same titling call a session's first title does, with each paragraph
+    of *text* given to the model as its own line. The titler keeps only the first
+    ``_TITLE_LINE_BUDGET`` characters of a line, and an orchestrator's task often
+    opens with boilerplate shared by every task it sends, so the whole text as one
+    line would show the model only that boilerplate. ``""`` means no name: the
+    text was empty, the model answered SKIP or prose, or nothing usable came back.
+    Errors from the background call propagate, as they do for a session title.
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text)]
+    messages = [{"role": "user", "content": p} for p in paragraphs if p]
+    if not messages:
+        return ""
+    return await _generate_title_via_kiro(
+        state, messages[:_TITLE_PROMPT_WINDOW], session_key=session_key
+    )
+
+
 async def _persist_title(
     state: DashboardState,
     slot: _ChatSlot,
