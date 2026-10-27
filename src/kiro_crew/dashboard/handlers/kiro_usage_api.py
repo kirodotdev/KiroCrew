@@ -924,6 +924,34 @@ def _map_response(data: dict) -> dict | None:
     return result
 
 
+#: Longest e-mail published, matching ``parse_whoami_output``'s bound.
+_MAX_EMAIL_CHARS = 254
+
+#: The ``_Attempt.reason`` of a request the service refused as malformed. The
+#: vault read retries once without ``isEmailRequired`` on exactly this answer.
+_EMAIL_REJECTED_REASON = "HTTP 400"
+
+
+def _user_email(data: object) -> str:
+    """``userInfo.email`` from a GetUsageLimits body asked with ``isEmailRequired``.
+
+    The body is untrusted: only a printable string with an ``@`` and within
+    :data:`_MAX_EMAIL_CHARS` is accepted, else ``""`` (the modal then shows the
+    profile name, as before).
+    """
+    info = data.get("userInfo") if isinstance(data, dict) else None
+    email = info.get("email") if isinstance(info, dict) else None
+    if (
+        isinstance(email, str)
+        and "@" in email
+        and len(email) <= _MAX_EMAIL_CHARS
+        and email.isprintable()
+        and not any(ch.isspace() for ch in email)
+    ):
+        return email
+    return ""
+
+
 class UsageResult(NamedTuple):
     """A usage read plus WHY it came back empty, when it did.
 
@@ -960,7 +988,14 @@ class _Attempt(NamedTuple):
     unauthorized: bool = False
 
 
-def _get_usage(token: str, arn: str | None, *, name_anchor: str | None, endpoint: str) -> _Attempt:
+def _get_usage(
+    token: str,
+    arn: str | None,
+    *,
+    name_anchor: str | None,
+    endpoint: str,
+    want_email: bool = False,
+) -> _Attempt:
     """THE GetUsageLimits request and response mapping, for one credential.
 
     Shared by :func:`fetch_usage_limits` (each discovered candidate) and
@@ -968,11 +1003,17 @@ def _get_usage(token: str, arn: str | None, *, name_anchor: str | None, endpoint
     payload, the 401-only ``AUTH_REJECTED`` rule and the CREDIT mapping have one
     copy. ``arn`` goes in the payload; ``name_anchor`` is the anchor the
     ListAvailableProfiles probe was asked about, which keys the display-name
-    cache. Raises nothing it does not raise today: callers wrap it.
+    cache. ``want_email`` asks the API for the account's e-mail
+    (``isEmailRequired``, as kiro-cli does) and maps ``userInfo.email`` onto
+    ``email``; only the vault path sets it, because there the credential is the
+    signed-in account's by construction and nothing else can name its address.
+    Raises nothing it does not raise today: callers wrap it.
     """
     payload: dict[str, object] = {"origin": "AI_EDITOR"}
     if arn:
         payload["profileArn"] = arn
+    if want_email:
+        payload["isEmailRequired"] = True
     try:
         r = _post(token, _TARGET_GET_USAGE, payload, endpoint=endpoint)
     except _RequestError as e:
@@ -1001,6 +1042,10 @@ def _get_usage(token: str, arn: str | None, *, name_anchor: str | None, endpoint
     account = _account_name(token, name_anchor)
     if account:
         mapped["account"] = account
+    if want_email:
+        email = _user_email(body)
+        if email:
+            mapped["email"] = email
     # Coupling metadata for the caller's identity check (private -- stripped
     # before the payload is cached or served). None for individual accounts.
     mapped["_profile_arn"] = arn
@@ -1169,7 +1214,14 @@ def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> U
         elif arn:
             # A discovered ARN names its own region; send the read there.
             endpoint = _rts_endpoint(arn)
-        attempt = _get_usage(token, arn, name_anchor=profile_arn, endpoint=endpoint)
+        attempt = _get_usage(
+            token, arn, name_anchor=profile_arn, endpoint=endpoint, want_email=True
+        )
+        if attempt.result is None and attempt.reason == _EMAIL_REJECTED_REASON:
+            # The e-mail is an extra, never a condition of the reading: a 400
+            # may be the service refusing ``isEmailRequired`` for this kind of
+            # sign-in, so ask once more without it before giving up.
+            attempt = _get_usage(token, arn, name_anchor=profile_arn, endpoint=endpoint)
     except Exception:  # noqa: BLE001 - never let an unexpected shape escape
         logger.debug("Kiro usage API: unexpected error for the vault credential", exc_info=True)
         return UsageResult(None, AUTH_OTHER)

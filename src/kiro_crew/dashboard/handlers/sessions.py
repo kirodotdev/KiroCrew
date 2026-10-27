@@ -672,9 +672,12 @@ async def _refresh_from_vault() -> None:
     as the after-fingerprint (:func:`vault_identity_snapshot`): once that
     fingerprint matches ``before``, the fields describe the account the
     credential was read for, as the kiro-cli path labels its reading from the
-    whoami adjacent to the publish. The vault stores no e-mail, so none is
-    published; the enterprise profile name rides in from the usage API as it
-    does for the kiro-cli path.
+    whoami adjacent to the publish. Those fields are the ones ``kirocrew kas
+    whoami`` prints (``account_type``, and ``start_url`` when the sign-in recorded
+    its Identity Center portal). The vault stores no e-mail; the e-mail comes
+    from the same GetUsageLimits answer (``isEmailRequired``, as kiro-cli asks),
+    so it describes the credential the fingerprints bracket. The enterprise
+    profile name rides in from the usage API as it does for the kiro-cli path.
     """
     # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
@@ -747,7 +750,7 @@ async def _refresh_from_vault() -> None:
         usage.pop("_profile_arn", None)
         # Whose reading this is: the vault's own claims, from the read whose
         # fingerprint just proved the account unchanged across the credential read.
-        usage.update(identity)
+        usage.update({k: _redact_strings(v) for k, v in identity.items()})
         _publish_usage(usage, vault_fp=before)
         logger.info(
             "Kiro usage refreshed (api, Crew sign-in): %s / %s credits",
