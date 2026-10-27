@@ -312,11 +312,15 @@ class TerminalCoordinator(ManagerComponent):
         # child's origin pin, which `_record_crew_log_terminal` holds until the
         # closer is handed to the writer. This flip stays ahead of the event for
         # the paths that reach a terminal without the run loop.
+        #
+        # Usage still pending here is settled before the closer reads
+        # `info.credits`, as the reap does before its tombstone, so the crew log,
+        # the tombstone and the WS frame all carry the same figure.
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         self._record_crew_log_terminal(info)
         self._record_terminal_metric(info)
         info.done = True
-        if info._credit_accounting is not None:
-            info._credit_accounting.settle()
         # Arm the done-but-unreported hold in the same synchronous block as
         # the flip, so the hold and the flip can never be observed apart: from
         # this line until the completion consumer lands the member's
