@@ -472,7 +472,25 @@ the key when the call ends), `judge:<uuid4 hex>` from `decisions/impl_llm.py`
 `dashboard/handlers/taskrunner.py`, `hook:default:<epoch s>-<token_hex(6)>` from
 `dashboard/handlers/hooks.py` (per-request default webhook key), or
 `wf-author:<wf_<n>>:a<attempt>` from `workflows/service.py` (destroyed in the
-finally block after authoring) -- never a caller-supplied `cwd`. The `memory-consolidation` key
+finally block after authoring), or one of the four issue-radar model-call keys
+`issue-radar-ai:<owner>/<repo>#<n>:<uuid4 hex>`,
+`issue-radar-pr-ai:<owner>/<repo>#<n>:<uuid4 hex>`,
+`issue-radar-reco:<owner>/<repo>:<uuid4 hex>` and
+`issue-radar-tagging:<owner>/<repo>:<uuid4 hex>` from
+`apps/builtins/issue_radar/backend/http_routes/{ai,recommendations,tagging}.py`
+(one tool-less call each, released and destroyed on return by
+`_run_oneshot_model`) -- never a caller-supplied `cwd`. An issue-radar `<owner>`
+may be a nested GitLab `group/sub` path, and each repository segment is limited
+to `[A-Za-z0-9._-]`, the set the GitHub and GitLab segment validators admit, so
+the key never holds `\`, `:` or a space; a key outside that set (an Azure
+segment with a space) stays long-lived and its folder is kept. Unlike the other
+shapes, an issue-radar key's folder is not just the key with `:` turned into `_`:
+`_safe_dir_name` also turns each `/` into `_` and keeps `#`, so
+`issue-radar-ai:o/r#7:<hex>` lives in `issue-radar-ai_o_r#7_<hex>`. Its entry in
+the shape table therefore carries a (key pattern, folder pattern) pair for the
+repository component instead of one regex shared by both forms. The four
+issue-radar shapes are reclaimable on both platforms' walks (the pinned walk and
+the by-name Windows walk). The `memory-consolidation` key
 counts as one-run only where the walk holds `.kiro` open; on the by-name walk
 (Windows) its folder is never marked, so neither the shutdown reclaim nor the sweep
 removes it, and its name is no sweep candidate. The doctor's census below still

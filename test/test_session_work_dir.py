@@ -282,6 +282,60 @@ class TestDisposableSessionKey:
             assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None, name
             assert session_work_dir._is_disposable_dir_name(name) is True, name
 
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            (f"issue-radar-ai:octo/hello#12:{'a' * 32}", True),
+            (f"issue-radar-pr-ai:octo/hello.js#7:{'a' * 32}", True),
+            (f"issue-radar-reco:octo/hello_world:{'a' * 32}", True),
+            (f"issue-radar-tagging:octo-org/hello-world:{'a' * 32}", True),
+            (f"issue-radar-ai:group/sub/project#3:{'a' * 32}", True),  # GitLab subgroup
+            (f"issue-radar-reco:group/sub/project:{'a' * 32}", True),
+            (f"issue-radar-ai:octo/hello:{'a' * 32}", False),  # no item number
+            (f"issue-radar-ai:octo/hello#-1:{'a' * 32}", False),  # negative number
+            (f"issue-radar-reco:octo/hello#12:{'a' * 32}", False),  # reco has no number
+            (f"issue-radar-reco:hello:{'a' * 32}", False),  # no owner
+            (f"issue-radar-reco:octo/hello:{'a' * 31}", False),  # short call id
+            (f"issue-radar-tagging:my org/hello:{'a' * 32}", False),  # space: Azure stays
+            ("issue-radar-ai:octo/hello#12", False),  # no call id
+            (f"issue-radar-other:octo/hello:{'a' * 32}", False),  # unknown surface
+        ],
+    )
+    def test_issue_radar_one_run_keys_and_their_directory_names(
+        self, key: str, expected: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The four ``_run_oneshot_model`` keys carry ``/`` and ``#``; their folder is
+        named by ``_session_work_dir``, which writes ``_`` for each ``/``."""
+        from kiro_crew.config import loader_locations
+
+        monkeypatch.setattr(loader_locations, "workspace_root", lambda: tmp_path)
+        name = loader_locations._session_work_dir(key).name
+        assert "/" not in name
+        assert session_work_dir.is_disposable_session_key(key) is expected
+        # The name filter only picks sweep candidates; the marker, written only for
+        # a disposable key, decides. So a refused key's name may still look like one.
+        if expected:
+            assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None
+            assert session_work_dir._is_disposable_dir_name(name) is True
+
+    def test_issue_radar_keys_as_the_routes_mint_them(self, tmp_path: Path, monkeypatch) -> None:
+        """Mirrors the f-strings in ``ai.py``, ``recommendations.py`` and ``tagging.py``."""
+        import uuid
+
+        from kiro_crew.config import loader_locations
+
+        monkeypatch.setattr(loader_locations, "workspace_root", lambda: tmp_path)
+        owner, repo, number = "octo-org", "hello-world", 23880
+        for key in (
+            f"issue-radar-ai:{owner}/{repo}#{int(number)}:{uuid.uuid4().hex}",
+            f"issue-radar-pr-ai:{owner}/{repo}#{int(number)}:{uuid.uuid4().hex}",
+            f"issue-radar-reco:{owner}/{repo}:{uuid.uuid4().hex}",
+            f"issue-radar-tagging:{owner}/{repo}:{uuid.uuid4().hex}",
+        ):
+            name = loader_locations._session_work_dir(key).name
+            assert session_work_dir.is_disposable_session_key(key) is True, key
+            assert session_work_dir._is_disposable_dir_name(name) is True, name
+
     def test_eval_keys_are_not_disposable(self) -> None:
         """eval/runner.py points every session at a shared workspace via
         shared_ws_factory, not a per-key derived directory, so no eval_ key
@@ -919,6 +973,28 @@ def _sweep(root: Path, *, retained=frozenset(), live=(), **kwargs) -> int:
     return session_work_dir.sweep_predecessor_work_dirs(
         root, retained_gateway_pids=retained, live_work_dirs=list(live), **kwargs
     )
+
+
+def test_the_sweep_reclaims_a_predecessors_issue_radar_folders(tmp_path: Path) -> None:
+    """A marked issue-radar folder left by a dead predecessor goes; an unmarked one stays."""
+    hexid = "0123456789abcdef" * 2
+    gone = [
+        _residue_dir(tmp_path, name, age_secs=7200, owner_pid=PREDECESSOR_PID)
+        for name in (
+            f"issue-radar-ai_octo_hello#12_{hexid}",
+            f"issue-radar-pr-ai_group_sub_project#3_{hexid}",
+            f"issue-radar-reco_octo_hello_world_{hexid}",
+            f"issue-radar-tagging_octo_hello_{hexid}",
+        )
+    ]
+    unmarked = _residue_dir(
+        tmp_path, f"issue-radar-reco_octo_other_{hexid}", age_secs=7200, marked=False
+    )
+
+    assert _sweep(tmp_path) == len(gone)
+
+    assert not any(p.exists() for p in gone)
+    assert unmarked.exists()
 
 
 class TestSweepBounds:
