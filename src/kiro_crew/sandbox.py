@@ -329,6 +329,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _cgroup_limits_from_config,
         _cgroup_scope_epoch,
         _cgroup_scope_session_fingerprint,
+        _cgroup_unavailable_effect,
         _compute_cgroup_scope_probe,
         _cpu_controller_delegated,
         _default_max_memory_mb,

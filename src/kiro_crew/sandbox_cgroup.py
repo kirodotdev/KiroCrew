@@ -218,12 +218,41 @@ def _warn_cgroup_unavailable(reason: str) -> None:
         return
     _CGROUP_WARNED = True
     logger.warning(
-        "SECURITY: cgroup v2 scope enforcement unavailable (%s); agent "
-        "subprocess fork-bomb / memory-DoS ceilings are NOT enforced on "
-        "this host. RLIMIT_NOFILE still applies. See "
+        "SECURITY: cgroup v2 scope enforcement unavailable (%s); %s See "
         "docs/architecture/resource-protection.md.",
         reason,
+        _cgroup_unavailable_effect(),
     )
+
+
+def _cgroup_unavailable_effect() -> str:
+    """What the warning says is and is not enforced, read from what is live here.
+
+    On Windows a per-spawn Job object (``apply_windows_resource_ceiling``) caps the
+    processes and memory of the ACP agent runtime and of pod gateways only; a pod's
+    descendants inherit its Job. Outside a pod, other subprocesses -- cron scripts,
+    app backends -- get no Job of their own, so the warning must not say "each agent
+    tree is capped". ``RLIMIT_NOFILE`` is named only where
+    the ``resource`` module exists to install it -- not on Windows.
+    """
+    try:
+        import resource  # noqa: F401 -- presence is the question: POSIX only
+    except ImportError:
+        rlimit_live = False
+    else:
+        rlimit_live = True
+    if platform_compat.IS_WINDOWS:
+        effect = (
+            "agent subprocess fork-bomb / memory-DoS ceilings are NOT enforced on this "
+            "host, except under a per-spawn Job object: it caps the ACP agent runtime's "
+            "processes and memory, and in a pod the gateway's Job also covers what it "
+            "launches; other subprocesses get no ceiling of their own."
+        )
+    else:
+        effect = "agent subprocess fork-bomb / memory-DoS ceilings are NOT enforced on this host."
+    if rlimit_live:
+        effect += " RLIMIT_NOFILE still applies."
+    return effect
 
 
 def _user_slice_controllers_path() -> str:

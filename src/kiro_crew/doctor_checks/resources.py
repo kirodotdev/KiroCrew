@@ -139,6 +139,40 @@ def _gateway_memory_lines() -> list[str]:
     return lines
 
 
+def _windows_inert_limit_lines() -> list[str]:
+    """The ``inert limits`` line: ``resource_limits`` keys Windows accepts but ignores.
+
+    Windows only; an empty list elsewhere. The key list is the one the startup
+    warning uses (``sandbox_slice._WINDOWS_INERT_RESOURCE_LIMIT_KEYS``): every key
+    whose only mechanism is a cgroup/systemd property or a POSIX rlimit. A key counts
+    when set to a non-zero value, as at startup -- and ``max_open_files`` also when
+    UNSET, because unset means the built-in 1024 default, which Windows never
+    installs either. Advisory: never added to ``issues``.
+    """
+    if not cli_doctor.platform_compat.IS_WINDOWS:
+        return []
+    try:
+        from kiro_crew.sandbox_slice import _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
+
+        limits = cli_doctor.KiroCrewConfig.load().resource_limits
+    except Exception:
+        return ["  inert limits:    ⚠  could not read resource_limits"]
+    named = [
+        f"resource_limits.{key}"
+        for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
+        if getattr(limits, key, None)
+    ]
+    if getattr(limits, "max_open_files", 0) is None:
+        named.append("resource_limits.max_open_files (default 1024)")
+    if not named:
+        return ["  inert limits:    ✅ no resource_limits key set that Windows ignores"]
+    return [
+        "  inert limits:    ⚠  set but not enforced on Windows: " + ", ".join(named),
+        "                   The Job object bounds only per-spawn max_processes and "
+        "max_memory_mb; these need a systemd user manager or POSIX rlimits.",
+    ]
+
+
 def _doctor_memory_pressure(issues: list[str]) -> None:
     """Report whether the host can degrade gracefully under memory pressure.
 
@@ -163,6 +197,8 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     # recycles at. Printed before the Linux-only freeze check so a Windows or
     # macOS operator still sees the numbers that matter for a runaway tree.
     for line in _gateway_memory_lines():
+        print(line)
+    for line in _windows_inert_limit_lines():
         print(line)
     if not sys.platform.startswith("linux"):
         print(

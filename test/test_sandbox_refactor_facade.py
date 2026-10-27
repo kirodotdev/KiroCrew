@@ -293,7 +293,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _agents_slice_name _default_max_memory_mb _CGROUP_SCOPE_PROBE
         _CGROUP_SCOPE_PROBE_SESSION _CGROUP_SCOPE_PROBE_AT _CGROUP_SCOPE_PROBE_TTL_SECONDS
         _CGROUP_SCOPE_PROBE_LOCK _CGROUP_WARNED _CGROUP_LINGER_REMEDY
-        _warn_cgroup_unavailable _user_slice_controllers_path _user_bus_socket_paths
+        _warn_cgroup_unavailable _cgroup_unavailable_effect _user_slice_controllers_path
+        _user_bus_socket_paths
         _stat_identity _cgroup_scope_session_fingerprint _user_bus_reachable
         _probe_cgroup_scope _log_cgroup_scope_transition _compute_cgroup_scope_probe
         _CPU_DELEGATED _cpu_controller_delegated _cgroup_limits_from_config
