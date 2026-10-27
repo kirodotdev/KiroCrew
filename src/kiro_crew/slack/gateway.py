@@ -560,6 +560,7 @@ from kiro_crew.slack.gateway_runtime.subagent_report import (
     _WaveDigest,
 )
 from kiro_crew.slack.gateway_runtime.subagent_wiring import (
+    _SUBAGENT_NAMING_COMPLETION_WAIT_SECS,
     _WORKFLOW_STEP_PREFIXES,
     _spawn_parent_slot,
     _subagent_batch_pending,

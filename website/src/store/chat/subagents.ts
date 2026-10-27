@@ -763,6 +763,27 @@ export const subagentReducers = {
       }
     }
   },
+  /** The name the gateway generated for a run its caller did not label. It is
+   *  sent once, shortly after the run starts, and can land after the run's done
+   *  frame, so a finished card takes it too. It only fills an empty label: a
+   *  label the caller gave, or one an earlier frame carried, is never replaced.
+   *  An id with no card is dropped rather than minted into a bare one, because
+   *  the run's done frame and any reconnect snapshot carry the same name. */
+  sseSubagentLabel(state: ChatState, action: PayloadAction<{ slot: string; id: string; label: string; batch_id?: string }>) {
+    const { slot, id, label } = action.payload
+    if (typeof label !== 'string' || !label || isUnsafeKey(slot) || isUnsafeKey(id)) return
+    let a = getSlotSub(state, slot, id)
+    if (!a) {
+      // Cross-slot fallback, as in sseSubagentDone: the card may live under a different slot key.
+      if (state.subagents[id]) a = state.subagents[id]
+      else {
+        for (const sa of Object.values(state.slotActivity)) {
+          if (sa.subagents[id]) { a = sa.subagents[id]; break }
+        }
+      }
+    }
+    if (a && !a.label) a.label = label
+  },
   sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
     const d = action.payload
     // A snapshot without an owning slot is an orphan, not evidence that it

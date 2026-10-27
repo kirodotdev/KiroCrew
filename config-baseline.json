@@ -100,6 +100,7 @@
         "subagent_max_turns": 1000,
         "subagent_timeout_secs": 10800,
         "subagent_stall_idle_secs": 120,
+        "subagent_auto_names": true,
         "completion_keep": "head",
         "completion_keep_chars": 3000,
         "subagent_result_ttl_secs": 3600,
@@ -1519,6 +1520,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 120
+    },
+    {
+      "path": "agent.subagent_auto_names",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SubAgent Auto Names",
+      "help": "Name a subagent run spawned without a label from its task, with the titler that names chat sessions: one background model call per such run, charged to the parent session, at most two at a time. False makes no call, and the task text names the run as it did before names existed. A label the caller gave is used either way. Read as each run starts, so an edit applies to the next run.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "agent.completion_keep",

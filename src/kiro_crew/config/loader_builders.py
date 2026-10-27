@@ -810,6 +810,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         ),
         subagent_timeout_secs=section.read("subagent_timeout_secs", _subagent_timeout_from),
         subagent_stall_idle_secs=section.read("subagent_stall_idle_secs", _safe_int),
+        subagent_auto_names=section.read("subagent_auto_names", _safe_bool),
         completion_keep=_validated_completion_keep(section.get("completion_keep")),
         completion_keep_chars=section.read(
             "completion_keep_chars", _safe_int, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX

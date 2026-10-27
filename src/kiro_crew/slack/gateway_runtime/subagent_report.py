@@ -76,6 +76,7 @@ class _SubagentReport(NamedTuple):
     result_path: str
     detail: str
     task_text: str
+    label_text: str
     usage: str
     body: str
     no_tools_note: str
@@ -155,6 +156,12 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     task_text, _ = redact_exfiltration_urls(info.task)
     task_text, _ = redact_credentials(task_text)
     task_text = task_text[:100]
+    # The run's display name (``spawn_run``'s label, or the one the gateway gave
+    # it), so the parent can refer to the run by it. Test doubles may carry a
+    # non-string here.
+    label_text = info.label if isinstance(getattr(info, "label", ""), str) else ""
+    label_text, _ = redact_exfiltration_urls(label_text)
+    label_text, _ = redact_credentials(label_text)
     usage = format_subagent_usage(info.credits, info.elapsed)
     body = f"{task_text}\n\nUsage: {usage}\n\n{detail}"
     title, _ = redact_exfiltration_urls(title)
@@ -176,12 +183,16 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     if single_outcome == OUTCOME_OK and not _flush_only and info.leaked_tool_call:
         _leak_note = f"⚠ Agent `{info.id}` {LEAKED_TOOL_CALL_NOTE}"
         no_tools_note = f"{no_tools_note}\n{_leak_note}" if no_tools_note else _leak_note
+    # Inside the header block, which the blank line after it closes: that blank
+    # line is where the dashboard splits the header from the payload.
+    name_line = f"Name: {label_text}\n" if label_text else ""
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"
         f"{f' ({info.agent})' if info.agent else ''}"
         f" {status} {emoji}\n"
-        f"Task: {task_text}\n\n"
+        f"Task: {task_text}\n"
+        f"{name_line}\n"
         f"Usage: {usage}\n\n"
         f"{detail}" + (f"\n\n{no_tools_note}" if no_tools_note else "")
     )
@@ -197,6 +208,7 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
         task=task_text,
         requested_model=info.requested_model or info.model or "",
         resolved_model=info.resolved_model or "",
+        label=label_text,
     )
 
     if _flush_only:
@@ -212,6 +224,7 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
         result_path=result_path,
         detail=detail,
         task_text=task_text,
+        label_text=label_text,
         usage=usage,
         body=body,
         no_tools_note=no_tools_note,
@@ -241,6 +254,8 @@ def _subagent_wave_digest(
     """
     status, emoji, detail = report.status, report.emoji, report.detail
     task_text, usage, result_path = report.task_text, report.usage, report.result_path
+    # A member is named by its label when it has one, else by its task's start.
+    member_name = report.label_text or task_text[:80]
     no_tools_note = report.no_tools_note
     announce, sub_meta = report.announce, report.sub_meta
     if _batch_id:
@@ -336,14 +351,14 @@ def _subagent_wave_digest(
             # completed but partial; the digest must say so.
             _kept = " (partial: backend failed to generate the final response)"
             bp["ok_lines"].append(
-                f"— `{info.id}` ✅{_kept if info.partial else ''} {task_text[:80]}"
+                f"— `{info.id}` ✅{_kept if info.partial else ''} {member_name}"
                 f"{_model_tag} · {usage}"
                 + (f"\n  → {result_path}" if result_path else "")
                 + (f"\n  {no_tools_note}" if no_tools_note else "")
             )
         else:
             bp["fail_lines"].append(
-                f"— `{info.id}` {status} {emoji} · {task_text[:80]}{_model_tag}\n"
+                f"— `{info.id}` {status} {emoji} · {member_name}{_model_tag}\n"
                 f"  Usage: {usage}\n"
                 f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
             )

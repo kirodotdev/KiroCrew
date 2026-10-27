@@ -44,6 +44,12 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     def _redact(text: str) -> str:
         return redact(text)
 
+    def _name(entry: Mapping[str, Any]) -> str:
+        # A run's label names it, as in the spawn receipt; without one the start
+        # of its task text does.
+        label = _redact(str(entry.get("label") or ""))
+        return label or _redact(str(entry.get("task") or ""))[:60]
+
     lines: list[str] = []
     not_started = False
     for q in queued:
@@ -51,10 +57,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             resuming = q.get("resuming") is True
             not_started = not_started or not resuming
             tag = "resuming" if resuming else "not started"
-            lines.append(
-                f"{q['id']}  [queued] ({tag}: {_queued_why(q)})  "
-                f"{_redact(str(q.get('task') or ''))[:60]}"
-            )
+            lines.append(f"{q['id']}  [queued] ({tag}: {_queued_why(q)})  {_name(q)}")
     if not_started:
         lines.append("(a not-started run you no longer need: cancel it with spawn_release)")
     if d.get("queued_truncated") is True:
@@ -93,7 +96,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
                 progress = f" ({', '.join(parts)})"
             _withheld = a.get("context_withheld") or []
             scope = f"  ctx-withheld: {','.join(_withheld)}" if _withheld else ""
-            lines.append(f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}")
+            lines.append(f"{a['id']}  [{status}]{err}{progress}{scope}  {_name(a)}")
     # Always append available agents (fresh read from disk). Same grammar filter and
     # redaction as the two bounded rosters (``_agent_roster_hint`` and the unknown-agent
     # refusal's), via the shared helper: this output is a
@@ -207,6 +210,11 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     result, _ = redact_exfiltration_urls(result)
     result, _ = redact_credentials(result)
 
+    # The run's name leads the answer, so the caller can tell it is reading the
+    # run it meant.
+    label = redact(str(d.get("label") or ""))
+    name_line = f"Name: {label}\n" if label else ""
+
     if isinstance(meta, dict) and meta:
         # Paged/grepped read — prepend a compact header so the LLM knows how
         # much it saw and how to continue, without re-reading the whole file.
@@ -240,7 +248,7 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         header = f"[{' · '.join(status)}]"
         header, _ = redact_exfiltration_urls(header)
         header, _ = redact_credentials(header)
-        return f"{header}\n{result}"
+        return f"{name_line}{header}\n{result}"
     if isinstance(meta, dict) and meta:
         out = result
     else:
@@ -249,4 +257,4 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         reason, _ = redact_exfiltration_urls(str(d["error"]))
         reason, _ = redact_credentials(reason)
         out = f"[ENDED WITH ERROR · {reason}]\n{out}"
-    return out
+    return f"{name_line}{out}"

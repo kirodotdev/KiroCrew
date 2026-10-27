@@ -98,7 +98,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
-  'subagent_injection_failed',
+  'subagent_injection_failed', 'subagent_label',
   // Slack-gateway driven, slot-scoped
   'autonudge_state', 'batch_finished', 'spawn_batch_started',
   // Workflows / misc
@@ -114,7 +114,7 @@ const WS_SUBAGENT_EVENTS = new Set([
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
-  'subagent_injection_failed',
+  'subagent_injection_failed', 'subagent_label',
 ])
 
 /** Global events — no `slot` field; each needs an explicit scope declaration. */

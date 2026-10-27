@@ -249,7 +249,7 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "subagent_snapshot", "subagent_status", "subagent_queued",
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
     "subagent_waiting", "subagent_resumed",
-    "subagent_injection_failed",
+    "subagent_injection_failed", "subagent_label",
     # Slack-gateway driven, slot-scoped
     "autonudge_state", "batch_finished", "spawn_batch_started",
     # Workflows / misc
@@ -261,7 +261,7 @@ _SUBAGENT_EVENTS = frozenset({
     "subagent_snapshot", "subagent_status", "subagent_queued",
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
     "subagent_waiting", "subagent_resumed",
-    "subagent_injection_failed",
+    "subagent_injection_failed", "subagent_label",
 })
 
 #: Coalesced subagent frames emitted above ``SubagentEventCoalescer`` threshold

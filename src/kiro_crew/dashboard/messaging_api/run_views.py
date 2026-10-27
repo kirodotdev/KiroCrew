@@ -194,6 +194,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
         return web.json_response({"error": "not found"}, status=404)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
+    label = getattr(info, "label", "") or ""
+    if label:
+        data["label"] = _redact(label)
     data["started"] = info.started
     if info.done:
         data["elapsed"] = info.elapsed
@@ -326,6 +329,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "agent": info.agent or info.crew,
             "started": info.started,
         }
+        label = getattr(info, "label", "") or ""
+        if label:
+            entry["label"] = _redact(label)
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""

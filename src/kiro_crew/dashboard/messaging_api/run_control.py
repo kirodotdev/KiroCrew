@@ -136,6 +136,9 @@ def _queued_run_payload(queued: QueuedRun) -> dict[str, object]:
         "queued": True,
         "agent": _redact(queued.agent),
     }
+    label = getattr(queued, "label", "") or ""
+    if label:
+        data["label"] = _redact(label)
     if queued.accepted_at > 0:
         data["started"] = queued.accepted_at
         data["elapsed"] = max(0, round(time.time() - queued.accepted_at))

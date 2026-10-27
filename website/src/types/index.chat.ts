@@ -467,9 +467,10 @@ export interface ChatSlotDetailResponse extends TurnIdentityFields {
 
 export interface SubagentActivity {
   id: string; task: string; agent: string
-  /** The caller's short display name for the run (`spawn_run`'s `label`),
-   *  folded from the spawn/done/snapshot frames. The task box shows it in place
-   *  of the task text; absent when the caller gave none. */
+  /** The run's short display name: the caller's `spawn_run` `label`, or the one
+   *  the gateway generates for an unlabelled run shortly after it starts.
+   *  Folded from the spawn/done/snapshot frames and the `subagent_label` frame.
+   *  The task box shows it in place of the task text; absent until one is known. */
   label?: string
   /** The wave this agent belongs to, absent for a solo spawn. Folded from the
    *  `batch_id` the gateway stamps on every spawn/done/snapshot frame; shown as

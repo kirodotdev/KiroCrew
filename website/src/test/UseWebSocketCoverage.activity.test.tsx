@@ -263,6 +263,17 @@ describe('useWebSocket frame router', () => {
     expect(chat().subagents['ag-fin']?.status).toBe('done')
   })
 
+  it('names an unlabelled run from a subagent_label frame, and drops one naming no card', () => {
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({ type: 'subagent_spawn', data: { slot: ACTIVE, id: 'ag-n', task: 'Read specs', agent: 'kirocrew' } })
+      ws.simulateMessage({ type: 'subagent_label', data: { slot: ACTIVE, id: 'ag-n', label: 'Spec reading' } })
+      ws.simulateMessage({ type: 'subagent_label', data: { slot: ACTIVE, id: 'ag-unknown', label: 'Nobody' } })
+    })
+    expect(chat().subagents['ag-n']?.label).toBe('Spec reading')
+    expect(chat().subagents['ag-unknown']).toBeUndefined()
+  })
+
   it('accepts the wave lifecycle markers and the heartbeat as no-ops', () => {
     const { ws } = mount()
     act(() => {

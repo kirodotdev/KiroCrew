@@ -1214,6 +1214,18 @@ class AgentConfig:
             "as 'stalled' in the running-card. 0 uses hardcoded default (120s).",
         ),
     )
+    subagent_auto_names: bool = field(
+        default=True,
+        metadata=_meta(
+            "SubAgent Auto Names",
+            "Name a subagent run spawned without a label from its task, with the "
+            "titler that names chat sessions: one background model call per such "
+            "run, charged to the parent session, at most two at a time. False "
+            "makes no call, and the task text names the run as it did before "
+            "names existed. A label the caller gave is used either way. Read as "
+            "each run starts, so an edit applies to the next run.",
+        ),
+    )
     completion_keep: str = field(
         default="head",
         metadata=_meta(

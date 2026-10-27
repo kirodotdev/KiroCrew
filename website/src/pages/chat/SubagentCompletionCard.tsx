@@ -39,12 +39,15 @@ function outcomeLabel(outcome: SubagentOutcome): string {
 /** Headline for the card: what happened, in the user's language. */
 export function headline(parsed: ParsedSubagentCompletion): string {
   if (parsed.kind === 'single') {
-    // The cap keeps one long task from pushing the chips and controls off the
+    // A labelled run is named by its label in place of its task: an
+    // orchestrator's task is a long prompt whose opening rarely says which job
+    // it is. The whole task stays one hover away (see `headlineTitle`).
+    // The cap keeps one long name from pushing the chips and controls off the
     // row. CSS `truncate` cannot supply the cue here — it only fires when the
     // text overflows its box, and a 120-character slice usually fits — so the
-    // ellipsis has to be added when the slice actually shortened the task.
-    const task = sanitizeLlmOutput(parsed.task)
-    if (task) return task.length > 120 ? `${task.slice(0, 120)}…` : task
+    // ellipsis has to be added when the slice actually shortened the name.
+    const name = sanitizeLlmOutput(parsed.label) || sanitizeLlmOutput(parsed.task)
+    if (name) return name.length > 120 ? `${name.slice(0, 120)}…` : name
     return i18nT('pages.chat.subagentCompletionCard.agent_id', { id: parsed.agentId })
   }
   // Only the final chunk knows the wave's outcome; earlier chunks report
@@ -62,6 +65,13 @@ export function headline(parsed: ParsedSubagentCompletion): string {
     done: parsed.delivered,
     total: parsed.total,
   })
+}
+
+/** Hover title for the headline: the whole task, when a label took its place.
+ *  An unlabelled run's headline already is its task, so it gets none. */
+function headlineTitle(parsed: ParsedSubagentCompletion): string | undefined {
+  if (parsed.kind !== 'single' || !sanitizeLlmOutput(parsed.label)) return undefined
+  return sanitizeLlmOutput(parsed.task) || undefined
 }
 
 const CHIP = 'shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded border'
@@ -178,7 +188,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           )}
         </span>
         <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
-        <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">{headline(parsed)}</span>
+        <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong" title={headlineTitle(parsed)}>{headline(parsed)}</span>
         {parsed.kind === 'single' ? (
           <span
             className={`${CHIP} ${

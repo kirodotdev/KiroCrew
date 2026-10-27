@@ -384,7 +384,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "task box and in this tool's result instead of the task text "
                             f"(one line, at most {SPAWN_LABEL_MAX_CHARS} characters; longer "
                             "is cut). Display only: the subagent still receives the task "
-                            "text. Batch-wide; a tasks[] object can set its own."
+                            "text. Batch-wide; a tasks[] object can set its own. Omitted, "
+                            "the gateway names the run from its task text once it starts "
+                            "(unless agent.subagent_auto_names is off), and spawn_list "
+                            "shows that name."
                         ),
                     },
                     "keep": {

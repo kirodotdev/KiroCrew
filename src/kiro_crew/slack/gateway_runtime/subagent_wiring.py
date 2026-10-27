@@ -55,6 +55,11 @@ if TYPE_CHECKING:
         subagent_event_slot,
     )
 
+#: How long a finished run's completion waits for a name still being generated.
+#: The titling call may take up to its own 30 s bound; the wait is far shorter
+#: because it delays the result the parent agent is waiting on.
+_SUBAGENT_NAMING_COMPLETION_WAIT_SECS = 3.0
+
 
 async def _subagent_work_pending(manager: Any, parent_session_key: str) -> bool:
     """Whether *parent_session_key* still has sub-agents running or QUEUED.
@@ -313,6 +318,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
 
         if not _flush_only:
             await _broadcast_subagent_status(info, "done", _injection_slot_name)
+            await _wait_for_naming(info)
         report = _compose_subagent_completion(info, _flush_only=_flush_only)
 
         # ── Batch accounting + wave digest (scale plumbing) ──
@@ -501,9 +507,123 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 total += depth
         return total
 
+    # Titling calls in flight at once for runs that got no label, so a wide wave
+    # does not open one background session per member at the same moment. Made
+    # on first use, inside the running loop.
+    _naming_slots: asyncio.Semaphore | None = None
+    _naming_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def _unique_label(name: str, info: SubagentInfo) -> str:
+        """*name*, or *name* plus a number when a sibling run already uses it.
+
+        Siblings are the runs of the same parent the manager still holds, so a
+        name stays a usable handle for the parent agent and for the person
+        reading the task box. Compared without case; the base is cut so the
+        numbered form stays within the label limit.
+        """
+        from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
+
+        taken = {
+            a.label.casefold()
+            for a in (self.subagent_mgr.all_agents if self.subagent_mgr else [])
+            if a is not info and a.parent_session_key == info.parent_session_key and a.label
+        }
+        if name.casefold() not in taken:
+            return name
+        number = 2
+        while True:
+            suffix = f" {number}"
+            candidate = name[: SPAWN_LABEL_MAX_CHARS - len(suffix)].rstrip() + suffix
+            if candidate.casefold() not in taken:
+                return candidate
+            number += 1
+
+    async def _name_unlabelled_run(info: SubagentInfo) -> None:
+        """Give a run its caller left unnamed a name from its task, and announce it.
+
+        The name comes from the titler that names chat sessions. A label set
+        while the call runs, by its caller or anyone else, is kept: this only
+        ever fills an empty one. The name lives on the run record in memory, so
+        a gateway restart names a recovered run again.
+        """
+        nonlocal _naming_slots
+        from kiro_crew.dashboard.chat_title import title_for_text
+        from kiro_crew.spawn_label import normalize_spawn_label
+
+        if _naming_slots is None:
+            _naming_slots = asyncio.Semaphore(2)
+        async with _naming_slots:
+            state = self.dashboard_state
+            if info.label or state is None:
+                return
+            try:
+                name = await title_for_text(state, info.task, session_key=info.parent_session_key)
+            except Exception:
+                logger.debug("Subagent %s: naming its run failed", info.id, exc_info=True)
+                return
+        name = normalize_spawn_label(name)
+        state = self.dashboard_state
+        if not name or info.label or state is None:
+            return
+        info.label = _unique_label(name, info)
+        frame = {"id": info.id, "slot": _event_slot(info.parent_session_key), "label": info.label}
+        batch_id = getattr(info, "batch_id", "")
+        if isinstance(batch_id, str) and batch_id:
+            frame["batch_id"] = batch_id
+        state.broadcast_ws("subagent_label", frame)
+
+    async def _wait_for_naming(info: SubagentInfo) -> None:
+        """Briefly wait for an in-flight generated name without cancelling it."""
+        naming = _naming_tasks.get(info.id)
+        if naming is None or naming.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(naming), _SUBAGENT_NAMING_COMPLETION_WAIT_SECS)
+        except asyncio.TimeoutError:
+            pass
+
+    def _auto_naming_on() -> bool:
+        """Whether ``agent.subagent_auto_names`` is on in the config in force now.
+
+        The live watcher's snapshot, so an edit reaches the next run without a
+        restart, else the config the gateway booted with. Only an explicit
+        ``False`` turns it off: the setting defaults on.
+        """
+        from kiro_crew.config import live
+
+        config = live.snapshot() or self._cfg
+        return getattr(getattr(config, "agent", None), "subagent_auto_names", True) is not False
+
+    def _start_naming(info: SubagentInfo) -> None:
+        """Name *info* in the background when its caller gave it no label."""
+        state = self.dashboard_state
+        label = getattr(info, "label", "")
+        task = getattr(info, "task", "")
+        if state is None or not isinstance(label, str) or label:
+            return
+        if not isinstance(task, str) or not task.strip() or info.id in _naming_tasks:
+            return
+        if not _auto_naming_on():
+            return
+        naming = asyncio.ensure_future(_name_unlabelled_run(info))
+        _naming_tasks[info.id] = naming
+        state._background_tasks.add(naming)
+
+        def _done(completed: asyncio.Task[None]) -> None:
+            if _naming_tasks.get(info.id) is completed:
+                _naming_tasks.pop(info.id, None)
+            state._background_tasks.discard(completed)
+
+        naming.add_done_callback(_done)
+
     async def _subagent_event(etype: str, info: SubagentInfo, extra: dict) -> None:
         if not self.dashboard_state:
             return
+        if etype == "subagent_spawn":
+            # Ahead of the coalescer below, which can absorb a frame and return.
+            # The name still reaches the client after the spawn frame: it is only
+            # broadcast once the titling call it waits on has answered.
+            _start_naming(info)
         slot_name = _event_slot(info.parent_session_key)
         base = {"id": info.id, "slot": slot_name}
         # Batch identity rides every frame when present so the UI can
@@ -527,6 +647,10 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 slot = self.dashboard_state.get_slot(slot_name)
             if slot:
                 task_preview = redact_and_truncate(info.task or "", 100)
+                label_text = info.label if isinstance(getattr(info, "label", ""), str) else ""
+                label_text, _ = redact_exfiltration_urls(label_text)
+                label_text, _ = redact_credentials(label_text)
+                name_line = f"Name: {label_text}\n" if label_text else ""
                 error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
                 error_text, _ = redact_credentials(error_text)
                 # The visible transcript card must state the run's real
@@ -539,7 +663,8 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                     "assistant",
                     f"{SUBAGENT_COMPLETION_PREFIX}\n"
                     f"Agent `{info.id}` ❌\n"
-                    f"Task: {task_preview}\n\n"
+                    f"Task: {task_preview}\n"
+                    f"{name_line}\n"
                     f"Usage: {usage}\n\n"
                     f"Error: {error_text}\n"
                     f"⚠️ Result delivery failed — {outcome_line}",
@@ -552,6 +677,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                             task=task_preview,
                             requested_model=info.requested_model or info.model or "",
                             resolved_model=info.resolved_model or "",
+                            label=label_text,
                         )
                     },
                 )

@@ -199,6 +199,9 @@ DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
     "done": NOT_DELIVERY_STATE,
     "elapsed": NOT_DELIVERY_STATE,
     "error": NOT_DELIVERY_STATE,
+    # The run's display name, which the dashboard handler fills in for a run its
+    # caller left unnamed. It says what to call the run, not where its outcome is.
+    "label": NOT_DELIVERY_STATE,
     "last_rss_gb": NOT_DELIVERY_STATE,
     # Owned continuation work is cancelled separately when a parent ends; its presence
     # says nothing about whether this run's terminal outcome reached that parent.
