@@ -113,10 +113,14 @@ async def _communicate_with_timeout(
     ``platform_compat.kill_and_reap``, which drains the pipes via
     ``communicate()`` under a bound so a killed child blocked writing into a
     full pipe cannot hang the caller.
+
+    A cancelled wait abandons the child exactly as a timeout does, and the
+    child leads its own session, so nothing else stops it: the cancel arm
+    kills and reaps the tree too before re-raising.
     """
     try:
         return await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         await platform_compat.kill_and_reap(proc)
         raise
 
@@ -197,6 +201,9 @@ async def _clone_origin_url(dest: Path) -> str | None:
     except asyncio.TimeoutError:
         await _kill_process_group(proc)
         return None
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
     if proc.returncode != 0:
         return None
     return origin_out.decode(errors="replace").strip()
@@ -1061,6 +1068,9 @@ async def _git_clone_or_pull(
                     "ok": False,
                     "error": "git pull timed out; not installing stale code",
                 }
+            except asyncio.CancelledError:
+                await _kill_process_group(proc)
+                raise
             return None
 
     # Fresh checkout.

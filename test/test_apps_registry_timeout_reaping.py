@@ -35,6 +35,7 @@ from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import registry
+from kiro_crew.testing.wait import await_until
 
 # A portable long-lived child: sleeps well past any test timeout without
 # relying on POSIX-only binaries (``sleep``/``bash`` are absent on native
@@ -583,3 +584,128 @@ async def test_install_script_on_native_windows_fails_clearly_without_spawning(
         for c in audit.log_api_access.call_args_list
         if c.kwargs.get("operation") == "app_install_script"
     ]
+
+
+# --------------------------------------------------------------------------
+# A cancelled wait abandons the detached child just as a timeout does
+# --------------------------------------------------------------------------
+class _BlockingProc:
+    """Fake subprocess whose first ``communicate()`` waits until cancelled.
+
+    ``waiting`` is set once that first call is parked, so a test cancels the
+    caller exactly while it is inside the wait. Any later ``communicate()`` is
+    the reap and returns at once.
+    """
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.communicate_calls = 0
+        self.waiting = asyncio.Event()
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        self.communicate_calls += 1
+        if self.communicate_calls == 1:
+            self.waiting.set()
+            await asyncio.Event().wait()
+        if self.returncode is None:
+            self.returncode = -9
+        return b"", b""
+
+
+def _fake_git_spawn(monkeypatch, proc: _BlockingProc) -> list[object]:
+    """Route the sandbox and spawn seams to *proc*; return the group-kill record."""
+    killed: list[object] = []
+
+    async def _wrap(argv, **kwargs):
+        return list(argv), None
+
+    async def _spawn(*argv, **kwargs):
+        return proc
+
+    async def _kill(target):
+        killed.append(target)
+
+    monkeypatch.setattr(registry, "wrap_argv_async", _wrap)
+    monkeypatch.setattr(registry, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(registry, "create_subprocess_limited", _spawn)
+    monkeypatch.setattr(registry, "_kill_process_group", _kill)
+    return killed
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_communicate_with_timeout_kills_and_reaps_the_real_subprocess():
+    """Cancelling the wait group-kills and reaps the child before re-raising."""
+    # flake-ok: real sleeper child whose only reaper is the code under test; it exits on its own after 60 s
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _SLEEP_SCRIPT,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+    )
+    pid = proc.pid
+    # Cancel only once the wait is entered: a task cancelled before its first
+    # step never reaches the wait, and so never reaches the arm under test.
+    waiting = asyncio.Event()
+    real_communicate = proc.communicate
+
+    async def _communicate(*args, **kwargs):
+        waiting.set()
+        return await real_communicate(*args, **kwargs)
+
+    proc.communicate = _communicate
+    try:
+        task = asyncio.create_task(registry._communicate_with_timeout(proc, timeout=60))
+        await await_until(waiting, what="the wait to reach communicate()")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=30)
+
+        assert proc.returncode is not None
+        assert not platform_compat.pid_exists(pid)
+    finally:
+        # A regression fails the asserts above with the sleeper still alive;
+        # stop it here so the failing run does not leave it behind.
+        await platform_compat.kill_and_reap(proc)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_origin_read_kills_the_git_child(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    proc = _BlockingProc()
+    killed = _fake_git_spawn(monkeypatch, proc)
+
+    task = asyncio.create_task(registry._clone_origin_url(tmp_path))
+    await await_until(proc.waiting, what="the git wait to start")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=30)
+
+    assert killed == [proc]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_pull_kills_the_git_child(tmp_path, monkeypatch):
+    dest = tmp_path / "slot" / "demo-app"
+    (dest / ".git").mkdir(parents=True)
+    url = "https://github.com/acme/demo-app.git"
+
+    async def _origin(path):
+        return url
+
+    monkeypatch.setattr(registry, "is_clone_host_trusted", lambda target: True)
+    monkeypatch.setattr(registry, "_clone_origin_url", _origin)
+    monkeypatch.setattr(registry, "_read_clone_branch", lambda path: "main")
+    proc = _BlockingProc()
+    killed = _fake_git_spawn(monkeypatch, proc)
+
+    task = asyncio.create_task(registry._git_clone_or_pull(url, "main", dest, []))
+    await await_until(proc.waiting, what="the git wait to start")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=30)
+
+    assert killed == [proc]
+    assert (dest / ".git").is_dir(), "a cancelled pull leaves the checkout in place"
