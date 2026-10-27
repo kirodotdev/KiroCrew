@@ -4,7 +4,11 @@ import os
 
 import pytest
 
+from kiro_crew.remote_session import workspace_tools
 from kiro_crew.remote_session.workspace_tools import Server, ToolError, Workspace
+
+#: The grep nesting bound, spelled here so the tests state the contract.
+GROUP_DEPTH_BOUND = 100
 
 
 def test_recursive_grep_skips_escaping_file_links(tmp_path):
@@ -61,6 +65,53 @@ def test_a_regex_that_overflows_is_a_tool_error_not_a_dead_server(tmp_path, patt
     assert (
         server.handle({"id": 2, "method": "tools/call", "params": ok})["result"]["isError"] is False
     )
+
+
+def test_a_pattern_nested_past_the_bound_is_refused_before_it_compiles(tmp_path):
+    # Compiling it would recurse to the interpreter's limit, where a finalizer
+    # the collector runs meanwhile overflows and is lost (#23382).
+    deep = "(" * (GROUP_DEPTH_BOUND + 1) + "a" + ")" * (GROUP_DEPTH_BOUND + 1)
+    with pytest.raises(ToolError, match=f"nested more than {GROUP_DEPTH_BOUND} deep"):
+        Workspace(str(tmp_path)).grep(deep, ".")
+
+
+def test_a_pattern_at_the_nesting_bound_still_searches(tmp_path):
+    (tmp_path / "f.txt").write_text("a\n")
+    pattern = "(" * GROUP_DEPTH_BOUND + "a" + ")" * GROUP_DEPTH_BOUND
+    assert Workspace(str(tmp_path)).grep(pattern, ".") == "f.txt:1: a"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "depth"),
+    [
+        ("a(b(c)d)e", 2),
+        ("(a)(b)(c)", 1),
+        (r"\(\(\(", 0),
+        ("[(((]", 0),
+        ("[]((]", 0),
+        ("[^]((]", 0),
+        (r"[\]((]", 0),
+        ("(?#((()(", 1),
+        (r"(?#\)(()(", 1),
+        ("(?x)(#)\n(", 3),
+        ("(?ix:(#)\n)", 2),
+        ("(?-x:(#))", 2),
+        ("(?(1)a)", 2),
+        (r"[\N{LEFT SQUARE BRACKET}]((", 2),
+    ],
+)
+def test_group_depth_skips_what_the_regex_parser_skips(pattern, depth):
+    assert workspace_tools._regex_group_depth(pattern) == depth
+
+
+def test_the_bound_the_tests_state_is_the_one_grep_applies():
+    assert workspace_tools.MAX_REGEX_GROUP_DEPTH == GROUP_DEPTH_BOUND
+
+
+def test_many_groups_side_by_side_are_not_nesting(tmp_path):
+    (tmp_path / "f.txt").write_text("ab\n")
+    pattern = "(a)" * 300 + "|(b)"
+    assert Workspace(str(tmp_path)).grep(pattern, ".") == "f.txt:1: ab"
 
 
 def test_an_unexpected_error_in_a_tool_is_returned_as_an_error(tmp_path, monkeypatch):
