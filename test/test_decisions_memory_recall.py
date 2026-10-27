@@ -276,21 +276,56 @@ class TestRefusals:
         spy.assert_not_awaited()
 
     def test_an_expired_budget_keeps_the_baseline(self, home, bg_loop, enabled, monkeypatch):
+        """A decision still running when the wait runs out is cancelled, not applied.
+
+        The budget clock starts only once ``decide`` is known to be running, so a
+        slow-to-schedule loop cannot turn this into the start-deadline refusal (a
+        different path with its own test) and leave ``decide`` never called.
+        """
         started = threading.Event()
+        cancelled = threading.Event()
 
         async def _slow(*_a, **_k):
             started.set()
-            await asyncio.sleep(5)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
             return _answers(("keep", 0.9))
 
+        real_keep_decision = mr.keep_decision
+        real_schedule = asyncio.run_coroutine_threadsafe
+
+        def _without_start_deadline(*args, **kwargs):
+            kwargs["deadline"] = None
+            return real_keep_decision(*args, **kwargs)
+
+        def _schedule_then_await_start(coro, loop):
+            # No assert here: kept_memories swallows anything raised inside it.
+            future = real_schedule(coro, loop)
+            started.wait(10)
+            return future
+
+        class _AsyncioForThePointOnly:
+            """The real ``asyncio`` with one function swapped, seen by the point alone."""
+
+            run_coroutine_threadsafe = staticmethod(_schedule_then_await_start)
+
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
         monkeypatch.setattr(mr.core, "decide", _slow)
+        monkeypatch.setattr(mr, "keep_decision", _without_start_deadline)
+        monkeypatch.setattr(mr, "asyncio", _AsyncioForThePointOnly())
         monkeypatch.setattr(mr, "MIN_WAIT_SECS", 0.05)
         monkeypatch.setattr(mr, "MAX_WAIT_SECS", 0.05)
         assert (
             mr.kept_memories([_episode("a")], "hi", session_key="s", loop=bg_loop, owner_turn=True)
             is None
         )
-        assert started.wait(10)
+        assert started.is_set(), "decide never started on the background loop"
+        assert cancelled.wait(10), "the expired decision was not cancelled"
 
     def test_a_scheduling_failure_closes_the_coroutine(self, home, bg_loop, enabled, monkeypatch):
         """A coroutine that never got scheduled is closed here.
