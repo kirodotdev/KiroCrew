@@ -94,6 +94,14 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # the draft-PR route could reuse it (the detector keys by the ENCLOSING function).
         "apps/builtins/auto_improvement/backend/commit.py::materialize_queued_diff",
         "apps/builtins/auto_improvement/backend/deps.py::_gh_authenticated",
+        # `<running interpreter> -m pytest --version` from an empty temp dir: a literal
+        # argv, no repo or agent input, so no conftest can load. It asks whether the gate's
+        # own interpreter has pytest before a run starts.
+        "apps/builtins/auto_improvement/backend/deps.py::gate_pytest_problem",
+        # Its test fixture: `python -m venv --without-pip` into tmp_path, then that bare
+        # interpreter's `-c "import pytest"`. Literal argv, nothing agent-influenced; the
+        # bare venv is the fixture (an interpreter without pytest, like the desktop bundle).
+        "apps/builtins/auto_improvement/tests/test_gate_pytest_preflight.py::python_without_pytest",
         "apps/builtins/auto_improvement/backend/deps.py::install_deps",
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_gh",
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_git",

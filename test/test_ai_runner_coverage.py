@@ -37,7 +37,7 @@ from auto_improvement_member_helpers import MEMBER_BUDGET_SECS
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.apps.builtins.auto_improvement import profiles as profiles_mod
-from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup, crew
+from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup, crew, deps
 from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 from kiro_crew.apps.builtins.auto_improvement.backend import store
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_discovery as discovery_mod
@@ -184,6 +184,12 @@ def _no_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess, "run", _refuse)
     monkeypatch.setattr(subprocess, "Popen", _refuse)
     monkeypatch.setattr(subprocess, "check_output", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def _gate_has_pytest(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the pytest preflight probe, the one spawn every start and calibration makes."""
+    _floor_monkeypatch.setattr(deps, "gate_pytest_problem", lambda: "")
 
 
 @pytest.fixture(autouse=True)

@@ -17,11 +17,16 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import sys
+import tempfile
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.sandbox_spawn import scrub_env
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+from ..spine.push_policy import strip_credential_env
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,38 @@ def _gh_authenticated() -> tuple[bool, str]:
     return True, "authenticated"
 
 
+def gate_pytest_problem() -> str:
+    """Why the gate's interpreter cannot run pytest, or ``""`` when it can.
+
+    Every gate step runs ``sys.executable -m pytest``. A packaged app's bundled
+    interpreter ships without pytest, so without this probe each candidate fails
+    "reproducing test does not collect" and the harness fault is reported as the
+    agent's. Run from an empty directory so no target conftest is loaded, with the
+    environment the gate's own runs get: the scrubbed host environment (so a
+    user-site pytest stays importable) with ``PYTEST_ADDOPTS`` cleared.
+    """
+    env = strip_credential_env(scrub_env())
+    env["PYTEST_ADDOPTS"] = ""
+    try:
+        with tempfile.TemporaryDirectory() as empty:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "--version"],
+                cwd=empty,
+                env=env,
+                capture_output=True,
+                timeout=_PROBE_TIMEOUT_S,
+                **UTF8_TEXT,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"could not run {sys.executable} -m pytest: {exc}"
+    if proc.returncode != 0:
+        return (
+            f"pytest is not installed in the interpreter the test gate uses ({sys.executable}), "
+            "so no test can run"
+        )
+    return ""
+
+
 def check_deps() -> dict[str, Any]:
     """Report every dependency, whether it is satisfied, and how to fix it.
 
@@ -63,6 +100,7 @@ def check_deps() -> dict[str, Any]:
     git_path = _which("git")
     gh_ok, gh_detail = _gh_authenticated()
     ruff_path = _which("ruff")
+    pytest_problem = gate_pytest_problem()
 
     deps: list[dict[str, Any]] = [
         {
@@ -81,6 +119,15 @@ def check_deps() -> dict[str, Any]:
             "ok": gh_ok,
             "detail": gh_detail,
             "fix": "install the GitHub CLI, then run `gh auth login`",
+            "installable": False,
+        },
+        {
+            "id": "pytest",
+            "name": "pytest (runs the target's tests)",
+            "required": True,
+            "ok": not pytest_problem,
+            "detail": pytest_problem or sys.executable,
+            "fix": "run Kiro Crew from a Python environment that has pytest installed",
             "installable": False,
         },
         {
