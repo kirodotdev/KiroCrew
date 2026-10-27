@@ -50,6 +50,7 @@ import {
   PREVIEW_FLAG_PREFIX,
   PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
+  PREVIEW_VISUAL_REFRESH,
   PREVIEW_WEBHOOKS,
   readPreviewFlag,
   setPreviewFlag,
@@ -555,7 +556,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(6)
+      expect(screen.getAllByRole('switch')).toHaveLength(7)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -571,9 +572,24 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(6) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(7) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
+  })
+
+  it('has a Visual refresh switch that starts off and writes only its own key', async () => {
+    // Off by default is the whole contract of this flag: a device that never
+    // flipped it must see the dashboard as it is on main.
+    expect(readPreviewFlag(PREVIEW_VISUAL_REFRESH)).toBe(false)
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^visual refresh$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    await act(async () => { toggle().click() })
+    expect(localStorage.getItem(PREVIEW_VISUAL_REFRESH)).toBe('1')
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    const written = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i) ?? '')
+      .filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))
+    expect(written).toEqual([PREVIEW_VISUAL_REFRESH])
   })
 
   it('has one Chat on a crew switch for both crew halves, and no second card', async () => {

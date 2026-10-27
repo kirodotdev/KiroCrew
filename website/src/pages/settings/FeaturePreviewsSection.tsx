@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -138,6 +138,7 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -316,6 +317,18 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
           checked={folderConductor}
           onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
+        />
+      </SettingsCard>
+      {/* The visual refresh: a restyle built behind this switch so it can land in
+          pieces. Toggle-only, like the layout harness: there is no page to open
+          (it restyles the pages already on screen) and no capture yet, because
+          the look is still being designed and a capture would go stale. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.visual_refresh')}
+          description={i18nT('pages.developer.featurePreviewsTab.visual_refresh_desc')}
+          checked={visualRefresh}
+          onChange={v => setPreviewFlag(PREVIEW_VISUAL_REFRESH, v)}
         />
       </SettingsCard>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch

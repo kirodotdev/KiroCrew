@@ -165,6 +165,22 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
+ * Visual refresh: an in-progress restyle of the dashboard, built behind this
+ * switch so it can land on `main` piece by piece without changing what anyone
+ * sees.
+ *
+ * Default OFF, and OFF must stay byte-for-byte the dashboard on `main`: every
+ * refreshed style or component is reached only when this key reads on, so a
+ * device that never flipped it renders exactly what it did before.
+ *
+ * Like {@link PREVIEW_FOLDER_CONDUCTOR}, and unlike the ingress-only flags,
+ * this one holds look, not a door. Removing it (shipping the refresh to
+ * everyone) changes what every reader sees by default, so that step needs a
+ * recorded decision, not just a polished surface.
+ */
+export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.
