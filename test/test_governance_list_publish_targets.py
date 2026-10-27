@@ -324,3 +324,30 @@ def test_deploy_web_id_skips_the_list_refusal_only_on_the_core_path(monkeypatch)
     monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, n: n != "regions")
     assert "regions" in (pg.publish_denied_reason(request, "deploy-web-aws") or "")
     assert pg.publish_denied_reason(request, "deploy-web-aws", lists_checked_by_caller=True) is None
+
+
+def test_session_denied_reason_skips_list_refusal_for_deploy_core_path(monkeypatch) -> None:
+    """session_denied_reason with lists_checked_by_caller=True skips the list gate."""
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        lambda *_a, **_k: SimpleNamespace(permitted=True),
+    )
+    monkeypatch.setattr(pg, "_read_allowed_destinations", lambda: ([], None))
+    monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, n: False)
+    assert (
+        pg.session_denied_reason("s", pg.DEPLOY_WEB_PROVIDER_ID, lists_checked_by_caller=True)
+        is None
+    )
+
+
+def test_session_denied_reason_enforces_list_refusal_without_flag(monkeypatch) -> None:
+    """session_denied_reason with lists_checked_by_caller=False (default) still refuses."""
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        lambda *_a, **_k: SimpleNamespace(permitted=True),
+    )
+    monkeypatch.setattr(pg, "_read_allowed_destinations", lambda: ([], None))
+    monkeypatch.setattr(pg, "publish_list_unrestricted", lambda _s, n: False)
+    reason = pg.session_denied_reason("s", pg.DEPLOY_WEB_PROVIDER_ID)
+    assert reason is not None
+    assert "only the public web deploy" in reason

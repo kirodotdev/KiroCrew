@@ -175,7 +175,11 @@ def publish_denied_reason(
     The request's only input is its ``X-Session-Key``; :func:`session_denied_reason`
     takes the decision.
     """
-    return session_denied_reason(request.headers.get("X-Session-Key") or "", provider_name)
+    return session_denied_reason(
+        request.headers.get("X-Session-Key") or "",
+        provider_name,
+        lists_checked_by_caller=lists_checked_by_caller,
+    )
 
 
 #: The session key of the request a publish send runs under, bound by
@@ -215,7 +219,9 @@ def dispatch_denied_reason(provider_name: str) -> str | None:
     return session_denied_reason(session_key, provider_name)
 
 
-def session_denied_reason(session_key: str, provider_name: str) -> str | None:
+def session_denied_reason(
+    session_key: str, provider_name: str, *, lists_checked_by_caller: bool = False
+) -> str | None:
     """Return a denial reason for publishing to ``provider_name``, else ``None``.
 
     Callers turn a non-``None`` reason into a 403 (or, for a provider *listing*,
