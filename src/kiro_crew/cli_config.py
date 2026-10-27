@@ -242,10 +242,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 print(f"❌ {key}: {list_error}", file=sys.stderr)
                 sys.exit(1)
             # A declared enum is checked on EVERY write, stored or not, and what is
-            # written is the enum's own spelling. The type check below runs only on
-            # a first write, because a stored value's type stands in for the
-            # declaration; an enum has no such stand-in, and the load path's answer
-            # to a value outside it is to degrade the setting with a WARNING nobody
+            # written is the enum's own spelling. The load path's answer to a
+            # value outside it is to degrade the setting with a WARNING nobody
             # reads. `stt.provider off` was accepted this way while `off` did not
             # exist, and the loader turned it into the one provider the user was
             # trying to escape (kirodotdev/KiroCrew#13179).
@@ -718,8 +716,11 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
     """Exit with ``Unknown key`` unless *key* is one the loaded config can hold.
 
     Validated before any lock is taken. A declared leaf counts as existing even
-    when it is not stored yet, but then its value is type-checked here: this is
-    its first write, so no stored value stands in for the declaration.
+    when it is not stored yet. Its value is type-checked on every write, stored
+    or not: the generic parser turns ``007`` into ``7`` and ``true`` into a bool,
+    so a stored string leaf would otherwise save a non-string
+    (kirodotdev/KiroCrew#24957). A ``null`` on a stored leaf keeps passing, as
+    it always has; the type check refuses it only on a first write.
 
     With *overlay* (``--local``) a ``<section>.<name>`` listed in
     ``_SECTION_KEYS_EMITTED_ELSEWHERE`` is also accepted: the loader reads it
@@ -734,15 +735,23 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
             _refuse_emitted_elsewhere_value(key, parts[0], parts[1], parsed)
             return
     d = KiroCrewConfig.load().to_dict()
-    if _dict_set(d, key, parsed):
-        return
+    stored = _dict_set(d, key, parsed)
     declared = _declared_entry(key)
     if declared is None:
+        if stored:
+            return
         print(f"❌ Unknown key: {key}", file=sys.stderr)
         sys.exit(1)
+    if stored and parsed is None:
+        return
     type_error = _declared_type_error(declared, parsed)
     if type_error:
         print(f"❌ {key}: {type_error}", file=sys.stderr)
+        if declared.type == "string":
+            print(
+                """   To store it as text, quote it as JSON, e.g. '"007"'.""",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
 
@@ -800,8 +809,7 @@ def _declared_entry(key: str) -> ConfigEntry | None:
     match a concrete path here, which leaves those keys exactly as they were.
 
     The entry itself is returned, not a bool, because the caller must also check
-    the value against the declared type: this is the key's FIRST write, so there
-    is no stored value whose type could stand in for the declaration.
+    the value against the declared type.
 
     Imported lazily to mirror ``config.validation``: the registry is built at
     import time, and the CLI's other verbs should not pay for it.
@@ -831,7 +839,7 @@ def _declared_enum_value(key: str, value: object) -> object:
     """*value* as the enum for *key* spells it, or *value* itself when *key* has no enum.
 
     Raises ``ValueError`` with the message to print when *value* is outside the
-    enum. Unlike :func:`_declared_type_error` this runs on every write, stored or
+    enum. Like :func:`_declared_type_error` this runs on every write, stored or
     not, because the load path degrades an out-of-enum value rather than rejecting
     it -- so the write is the last point at which the mistake is still attributable
     to the command that made it. A key that declares no enum, or is not declared at
@@ -894,14 +902,18 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
     ``max_sessions`` and does ``len(registry) >= max_sessions``). Refusing at the
     write is the only place the mistake is still attributable to the command.
 
-    Checked ONLY on the first write of a declared-but-unstored key, which is the
-    path :func:`_declared_entry` opens. A key that is already in the document
-    keeps its historical behaviour, type check included: widening this to every
-    ``config set`` is a larger, separate change.
+    Checked on every write of a declared key, stored or not. A scalar union
+    (``int | str``, declared ``integer`` with ``string`` in ``other_types``)
+    accepts a value of any of its types, so ``"auto"`` stays writable there.
     """
     expected = _DECLARED_VALUE_TYPES.get(entry.type)
     if expected is None:
         return None
+    for other in entry.other_types:
+        extra = _DECLARED_VALUE_TYPES.get(other)
+        if extra is None:
+            return None
+        expected = expected + extra
     if value is None and entry.nullable:
         return None
     # bool is a subclass of int, so an integer leaf would silently accept `true`.
