@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         pinned_parent_replace_supported,
         read_bounded_json,
         require_owner_dashboard_request,
+        sandbox_plan,
     )
 
 
@@ -427,7 +428,10 @@ def _resolve_project_relative(raw: str) -> tuple[str, str | None]:
         return "", "cannot_resolve"
     candidate = os.path.realpath(os.path.join(proj, raw))
     resolved_proj = os.path.realpath(proj)
-    if not (candidate == resolved_proj or candidate.startswith(resolved_proj + os.sep)):
+    # ``path_within``, not ``resolved_proj + os.sep``: a project at a drive root
+    # (``H:\``, or ``/``) keeps its trailing separator through ``realpath``, and
+    # the doubled separator would put every path below it outside.
+    if not sandbox_plan.path_within(candidate, resolved_proj):
         return "", "outside_project"
     return candidate, None
 
