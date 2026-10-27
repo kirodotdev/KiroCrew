@@ -481,7 +481,7 @@ async def _drive_object_keys(request: web.Request, account: str) -> tuple[set[st
     except AWSError as exc:
         return None, _safe_error(exc)
     if not bucket:
-        return None, "this account has no drive yet"
+        return None, storage_mod.no_drive_message(region)
     try:
         keys = await asyncio.to_thread(
             storage_mod.list_object_keys, profile, region, bucket, account=account

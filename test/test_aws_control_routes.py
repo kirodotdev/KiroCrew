@@ -217,8 +217,20 @@ class TestDriveStatus:
                     _request("GET", f"/drive/{ACCOUNT}", match_info={"account": ACCOUNT})
                 )
             )
-        assert _payload(resp) == {"exists": False}
+        # The drive is one per account but discovery searches one region, so "no
+        # drive" names the region it searched: a drive created from a profile in
+        # another region is invisible here, and the owner must be able to see why.
+        assert _payload(resp) == {"exists": False, "searched_region": "us-west-2"}
         usage.assert_not_called()
+
+    def test_an_empty_profile_region_reports_the_region_discovery_used(self):
+        # The status must name the region find_drive ACTUALLY queried, which is the
+        # default when the profile carries none -- not an empty string.
+        assert (
+            routes_mod.storage_mod.searched_region("")
+            == routes_mod.storage_mod.engine.DEFAULT_REGION
+        )
+        assert routes_mod.storage_mod.searched_region("eu-west-1") == "eu-west-1"
 
     def test_status_returns_bucket_and_usage_then_serves_cache(self):
         handlers = _registered()
@@ -319,6 +331,8 @@ class TestRequireDrive:
             )
         assert resp.status == 409
         assert _payload(resp)["code"] == "drive_missing"
+        # The refusal names the one region discovery searched.
+        assert "us-west-2" in _payload(resp)["error"]
 
     def test_list_surfaces_a_discovery_error_as_502(self):
         handlers = _registered()

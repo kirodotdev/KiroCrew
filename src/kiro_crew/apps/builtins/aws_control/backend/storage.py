@@ -1196,6 +1196,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         create_drive,
         find_drive,
         new_bucket_name,
+        no_drive_message,
+        searched_region,
     )
     from kiro_crew.apps.builtins.aws_control.backend.storage_staging import (  # noqa: F401
         _S3_INVALID_RANGE_CODE,

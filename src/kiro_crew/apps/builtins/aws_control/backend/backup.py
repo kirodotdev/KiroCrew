@@ -1052,7 +1052,7 @@ def make_job_runner(sdk: Any, kind: str) -> Any:
                 # scheduled run never reaches here with no drive; this guards the
                 # generic `_jobs` entry point, where it is an honest failure for a
                 # request that named a target with nowhere to push.
-                raise RuntimeError("this account has no drive yet; nothing was sent to AWS")
+                raise RuntimeError(f"{storage.no_drive_message(region)}; nothing was sent to AWS")
             # A scheduled run spends the owner's money with nobody present, so it
             # records that another install already backs up to this drive -- evidence
             # a later panel view cannot reconstruct, since the console's `others`

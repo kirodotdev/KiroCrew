@@ -49,6 +49,25 @@ def new_bucket_name() -> str:
 # --- discovery (stateless-by-tag) ------------------------------------------
 
 
+def searched_region(region: str) -> str:
+    """The one region :func:`find_drive` searches when asked with ``region``."""
+    return region or engine.DEFAULT_REGION
+
+
+def no_drive_message(region: str) -> str:
+    """What to tell the owner when :func:`find_drive` found no drive.
+
+    The drive is one per account, but the tagging API answers for one region only,
+    so "no drive" means "none in this region". Saying which region was searched is
+    what lets an owner whose drive was created from a profile in another region see
+    why it is missing, instead of creating a second one.
+    """
+    return (
+        f"this account has no drive yet in {searched_region(region)}; only that region "
+        "is searched, so a drive created from a profile in another region is not seen"
+    )
+
+
 def find_drive(profile: str, region: str, *, account: str) -> Optional[str]:
     """Resolve the account's drive bucket by tags, or None when absent.
 
@@ -75,7 +94,7 @@ def find_drive(profile: str, region: str, *, account: str) -> Optional[str]:
             "--resource-type-filters",
             "s3:bucket",
             "--region",
-            region or engine.DEFAULT_REGION,
+            searched_region(region),
             "--output",
             "json",
         ],
