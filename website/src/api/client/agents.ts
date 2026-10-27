@@ -7,6 +7,7 @@
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
+import { activeLocale } from '../../i18n/format'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -358,8 +359,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // turn only on the empty pinned thread of Mate or of a crewmate whose
     // create asked for it (`first_greeting`), at most once
     // ever, and answers every other case with the outcome that declined it.
+    // `X-UI-Lang` is the language this tab renders: the greeting has no user
+    // text to follow, so on a "follow the browser" install it is the only
+    // language the server can write the welcome in.
     memberGreet: (slug: string) =>
-      post('/api/members/' + encodeURIComponent(slug) + '/greet').then(j) as Promise<{ outcome: string }>,
+      post('/api/members/' + encodeURIComponent(slug) + '/greet', undefined, undefined, { 'X-UI-Lang': activeLocale() }).then(j) as Promise<{ outcome: string }>,
     // Fresh start on a crewmate's pinned thread: stop any turn, then drop the
     // conversation so the next turn starts clean. Same slot key; the
     // transcript stays. `reset_at` is the server's time of the reset; `outcome`

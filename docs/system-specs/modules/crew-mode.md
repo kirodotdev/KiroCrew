@@ -1328,7 +1328,14 @@ the roster and the switcher show the new name at once through the roster project
 with no reload and no confirm card. The kickoff says the user has typed nothing,
 frames it as the mate's first conversation with the user, so it greets as someone it is meeting for the first time, and allows a user name only when the User Preferences block
 or a memory result states one, never one inferred from a username, home path, email
-or host name. The route answers `{"outcome": ...}` (`started`, `already_greeted`,
+or host name. The kickoff carries exactly one language sentence: the preamble's
+"`[UI LANGUAGE]` when shown, else English" is swapped for one naming the tag to write
+in -- the configured `dashboard.language`, else the tab's `X-UI-Lang` header that
+`api.memberGreet` sends -- and left as it is for English or no usable tag
+(`mate_welcome.hidden_turn_language`, `with_language`;
+[config](config.md#the-tag-also-writes-a-crewmates-hidden-turns)); a goal check-in's
+`wake.preamble` sentence is swapped the same way, telling it to follow the user's
+language in the thread. The route answers `{"outcome": ...}` (`started`, `already_greeted`,
 `not_empty`, `busy`, `not_crewmate`, `no_thread`, `not_owed`). A welcome turn that
 fails surfaces through the ordinary turn error path once; the marker is already
 claimed, so it never loops, and the composer stays usable.
