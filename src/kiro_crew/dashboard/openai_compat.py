@@ -28,6 +28,7 @@ from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.mcp_grant_binding import bind_slot_to_request_user
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
@@ -554,6 +555,24 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 {"error": {"message": "slot owned by another app", "type": "forbidden"}},
                 status=403,
             )
+
+    # Before this turn can spawn the slot's engine: the one person whose persisted
+    # MCP sign-ins it may use, matching /api/chat (anyone else conflicts it).
+    await bind_slot_to_request_user(request, slot)
+    if slot_id and slot.running is True:
+        # The bind awaited: a concurrent request may have started a turn on this
+        # slot meanwhile. Re-admit with no suspension until the task is set below.
+        return web.json_response(
+            {
+                "error": {
+                    "message": f"slot {slot_id!r} is busy",
+                    "type": "slot_busy",
+                    "code": "slot_busy",
+                },
+                "code": "slot_busy",
+            },
+            status=409,
+        )
 
     # Drain stale pending from prior turns whose reader disconnected
     slot.drain()

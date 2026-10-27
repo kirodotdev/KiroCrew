@@ -217,7 +217,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("warm_task_brief.py", "_settled"),
                 ("warm_task_brief.py", "_still_current"),
                 ("warm_task_brief.py", "_wait_for_idle_turn"),
-                ("ws.py", "_handle_slot_focused"),
+                ("ws_focus.py", "_handle_slot_focused"),
             }
         },
         **{

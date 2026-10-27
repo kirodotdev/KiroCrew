@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         app_slot_is_local_user_session,
         attachment_meta,
         audit_app_slot_denial,
+        bind_slot_to_request_user,
         chat_message_frame,
         cron_creator_admission,
         cron_slot_creator,
@@ -452,6 +453,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     denied = await deny_app_session_control(request, request_app, slot, slot.key, "chat_send")
     if denied is not None:
         return denied
+    # Before this turn can spawn the session's engine: the one person whose
+    # persisted MCP sign-ins that process may use. A second user, an app or a
+    # cron conflicts it instead.
+    await bind_slot_to_request_user(request, slot, person=not cron_creator)
     # The dashboard user and the slot's owning app may change the slot's settings
     # through this route; the sessionApproval grant reaches a user's session to
     # send a turn and nothing else.

@@ -577,6 +577,11 @@ async def _answer_secret_request(
         except AcpRuntimeDead:
             pass
         return
+    # Re-checked right before the write: a vault value is withheld when the
+    # session was conflicted after the read. Past this point it only waits for
+    # the shared stdin lock, and every frame of another user's turn queues
+    # behind it on the same pipe.
+    result = server.release(params, result)
     try:
         await self.send_response(request_id, result)
     except AcpRuntimeDead:

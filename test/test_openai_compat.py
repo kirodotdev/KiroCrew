@@ -344,6 +344,57 @@ class TestApiCompletionsBlocking:
         assert data["choices"][0]["message"]["content"] == "hey there"
         assert data["choices"][0]["finish_reason"] == "stop"
 
+    async def test_the_caller_is_bound_before_the_turn_runs(self):
+        """A completion on a slot binds or conflicts its MCP grant user first, as /api/chat does."""
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {"id": "test-slot", "model": "x", "messages": [{"role": "user", "content": "hi"}]},
+            state,
+        )
+        order: list[str] = []
+
+        async def fake_run_chat(_s, _sl, _prompt, **_kwargs):
+            order.append("turn")
+            slot._pending.append({"role": "assistant", "content": "ok"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch(
+                "kiro_crew.dashboard.openai_compat.bind_slot_to_request_user",
+                new=AsyncMock(
+                    side_effect=lambda req, sl: order.append(("bind", req is request, sl is slot))
+                ),
+            ),
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+        ):
+            await api_completions(request)
+        assert order == [("bind", True, True), "turn"]
+
+    async def test_a_turn_started_during_the_bind_await_makes_this_request_busy(self):
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {"id": "test-slot", "model": "x", "messages": [{"role": "user", "content": "hi"}]},
+            state,
+        )
+
+        async def other_request_wins(_req, _slot):
+            slot.running = True  # a concurrent request set its task meanwhile
+
+        with (
+            patch(
+                "kiro_crew.dashboard.openai_compat.bind_slot_to_request_user",
+                new=AsyncMock(side_effect=other_request_wins),
+            ),
+            patch("kiro_crew.dashboard.openai_compat._run_chat") as run_chat,
+        ):
+            response = await api_completions(request)
+        assert response.status == 409
+        assert json.loads(response.body)["code"] == "slot_busy"
+        run_chat.assert_not_called()
+
     async def test_missing_messages_returns_400(self):
         slot = _make_slot()
         state = _make_state(slot)

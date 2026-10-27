@@ -285,7 +285,13 @@ class AcpRuntime:
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
         launch_agent: str = "",
+        mcp_grant_key: str = "",
     ):
+        # The session key this process is spawned for, from which the handshake
+        # reads the user its persisted MCP sign-ins belong to
+        # (``mcp_grant_principals.py``). Empty for a shared, pooled,
+        # background or companion process: it then never persists a sign-in.
+        self._mcp_grant_key = mcp_grant_key if isinstance(mcp_grant_key, str) else ""
         if work_dir:
             self._work_dir = Path(work_dir)
         else:

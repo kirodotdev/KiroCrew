@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _workspace_name_for_dir,
+        bind_slot_to_request_user,
         create_session_folder,
         cron_creator_admission,
         cron_slot_creator,
@@ -915,6 +916,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     #
     # Skipped for a relay archive: it never runs, so a spawned kiro-cli would
     # idle until it timed out.
+    # Before the eager spawn below: the one person whose persisted MCP sign-ins
+    # this session's engine may use (a cron or an app conflicts it instead).
+    await bind_slot_to_request_user(request, slot, person=not cron_creator)
     if slot.executor != "remote":
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     created = _created_slot_row(state, request, slot)

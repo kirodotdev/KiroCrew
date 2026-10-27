@@ -584,6 +584,9 @@ async def _start_kiro_runtime_impl(
         # subagent runs in, so the second window has to be mounted HERE.
         shared_scratch=self._shared_scratch,
         launch_agent=_launch_agent(self),
+        # The user this session's persisted MCP sign-ins belong to is read off
+        # this key at the handshake; a pooled worker's empty key persists none.
+        mcp_grant_key=self._owning_session_key(),
     )
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
@@ -809,6 +812,7 @@ async def _start_kiro_runtime_impl(
                     # joins it (above): its sessions' work is there.
                     shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
                     launch_agent=_launch_agent(self),
+                    mcp_grant_key=self._owning_session_key(),
                 )
                 if remote is not None:
                     await attach_remote_workspace(runtime)

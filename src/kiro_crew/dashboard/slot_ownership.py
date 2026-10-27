@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
+from kiro_crew.dashboard.mcp_grant_binding import bind_routed_slot
 from kiro_crew.dashboard.state import SlotOrigin, load_window_off_loop
 from kiro_crew.sel import sel
 
@@ -577,6 +578,14 @@ async def slot_route_denial(request: web.Request) -> web.Response | None:
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
+def _routed_slot(request: web.Request) -> Any:
+    """The live slot a per-slot route names, whoever the caller is; ``None`` otherwise."""
+    resource = request.match_info.route.resource
+    param = slot_route_param(resource.canonical if resource is not None else "")
+    name = request.match_info.get(param, "") if param is not None else ""
+    return getattr(request.app.get("state"), "_slots", {}).get(name) if name else None
+
+
 async def load_routed_slot_window(request: web.Request) -> None:
     """Load the window of the live slot a per-slot route names, off the loop.
 
@@ -612,5 +621,10 @@ async def slot_ownership_middleware(request: web.Request, handler: Handler) -> w
     denied = await slot_route_denial(request)
     if denied is not None:
         return denied
+    # Any admitted write to a slot can start a turn or respawn its engine: bind
+    # the caller as the user its persisted MCP sign-ins belong to, or conflict it.
+    # Resolved here for every caller: the app checkpoint above records the slot
+    # only for app tokens, and a dashboard user is the case this exists for.
+    await bind_routed_slot(request, _routed_slot(request))
     await load_routed_slot_window(request)
     return await handler(request)

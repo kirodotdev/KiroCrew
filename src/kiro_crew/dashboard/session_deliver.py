@@ -148,6 +148,15 @@ async def deliver(
     written and the answer is :data:`QUEUE_FULL`, which each cron caller turns into
     its out-of-session fallback.
     """
+    if origin.kind != ORIGIN_AUTOMATION:
+        # A peer session, an app or a cron is not the person the session's
+        # persisted MCP sign-ins belong to: before its text can start or queue a
+        # turn, the session stops using that vault (an automation wake is the
+        # session's own loop and leaves it).
+        from kiro_crew import mcp_grant_principals
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        mcp_grant_principals.conflict(effective_session_key(slot), record_unbound=True)
     if origin.kind == ORIGIN_PEER:
         return await _deliver_peer(state, slot, text, origin, admission, queue_meta)
     if slot.running:

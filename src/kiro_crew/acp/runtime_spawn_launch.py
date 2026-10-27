@@ -39,7 +39,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from kiro_crew import agent_scratch, member_essential_context, platform_compat
+from kiro_crew import agent_scratch, mcp_grant_principals, member_essential_context, platform_compat
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
@@ -1215,18 +1215,29 @@ async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -
     """*base*, plus ``_meta.kiro.secretStorage`` when this spawn keeps MCP sign-ins.
 
     Only a host that runs MCP sign-ins through Crew (``opens_external_urls``, KAS
-    today) can be asked, and only with ``agent.kas_persist_mcp_sign_in`` on. The
-    decision is made once per spawn and held on the runtime as the server that
-    answers this process's ``_kiro/secret/*`` requests, so the reader loop serves
-    them exactly when this handshake declared the capability, whatever config
-    says later.
+    today) can be asked, only with ``agent.kas_persist_mcp_sign_in`` on, and only
+    for a process spawned for a session key bound to exactly one authenticated
+    user (``mcp_grant_principals``). The engine's secret requests name no session
+    or user, so a process with no such user declares nothing and keeps every
+    grant in its own memory. The decision is made once per spawn and held on the
+    runtime as the server that answers this process's ``_kiro/secret/*``
+    requests, so the reader loop serves them exactly when this handshake
+    declared the capability, whatever config says later.
     """
     runtime._mcp_secret_server = None
     if not runtime._harness.opens_external_urls:
         return base
     if not await asyncio.to_thread(kas_secret_storage.persistence_enabled):
         return base
-    runtime._mcp_secret_server = kas_secret_storage.SecretStorageServer()
+    session_key = runtime._mcp_grant_key
+    principal = mcp_grant_principals.principal_for(session_key)
+    if principal is None:
+        logger.info(
+            "AcpRuntime handshake: remote MCP sign-ins stay in memory "
+            "(no single authenticated user for this process)"
+        )
+        return base
+    runtime._mcp_secret_server = kas_secret_storage.SecretStorageServer(principal, session_key)
     logger.info("AcpRuntime handshake: remote MCP sign-ins are kept in Crew's grant vault")
     return kas_secret_storage.with_secret_storage(base)
 
