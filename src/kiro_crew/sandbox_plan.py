@@ -193,6 +193,16 @@ class PlanHost:
     #: Every rename-sensitive ancestor of those targets (Seatbelt only): a path-based
     #: deny on the package directory does not hold if a parent can be renamed away.
     install_root_ancestor_guards: tuple[str, ...] = ()
+    #: The gateway's own checkouts' git directories, and every directory above a
+    #: checkout the agent could rename, bound read-write over themselves so none can be
+    #: moved aside (``sandbox_git_control``). Outermost first.
+    git_control_pins: tuple[str, ...] = ()
+    #: Those checkouts' git control files (``config``, ``hooks/``, ``info/`` ...),
+    #: sealed read-only.
+    git_control_readonly: tuple[str, ...] = ()
+    #: Seatbelt only: the directories whose rename the profile denies, the same role
+    #: the namespace launcher's pins play.
+    git_control_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -338,6 +348,9 @@ class ConfinementPlan:
     refusals: tuple[Refusal, ...]
     #: :attr:`SandboxRequest.exec_cwd`, carried to the namespace launcher.
     exec_cwd: str = ""
+    #: Namespace only: directories bound read-write over themselves BEFORE any seal, so
+    #: they cannot be renamed or removed (:attr:`PlanHost.git_control_pins`).
+    pins: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -859,6 +872,9 @@ def _namespace_plan(
     # liftable by ``extra_visible_dirs`` (that list lifts masks, never seals), and the
     # updater that legitimately writes it runs in the gateway process, unwrapped.
     readonly.extend(path for path in host.install_root_targets if path not in kept)
+    # The gateway's own checkouts' git control files: the gateway runs git there
+    # itself, unsandboxed, and git executes what they name.
+    readonly.extend(path for path in host.git_control_readonly if path not in kept)
     # The launcher re-applies a mask nested inside a private window after binding the
     # window, from a descriptor it already holds, so such a window is admitted here.
     windows, window_refusals = private_windows(
@@ -936,6 +952,7 @@ def _namespace_plan(
         cancellations=cancellations,
         refusals=tuple(window_refusals + carveout_refusals),
         exec_cwd=request.exec_cwd,
+        pins=tuple(path for path in dict.fromkeys(host.git_control_pins) if path not in kept),
     )
 
 
@@ -1015,6 +1032,7 @@ def _seatbelt_plan(
         + list(host.relocated_crew_readonly)
         + list(host.kiro_agents_targets)
         + list(host.install_root_targets)
+        + list(host.git_control_readonly)
     )
     caller_targets = list(
         dict.fromkeys(absolute(path, host.cwd) for path in request.extra_hidden_dirs)
@@ -1053,7 +1071,13 @@ def _seatbelt_plan(
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
+        dict.fromkeys(
+            (
+                *host.voice_runtime_ancestor_guards,
+                *host.install_root_ancestor_guards,
+                *host.git_control_guards,
+            )
+        )
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
@@ -1117,6 +1141,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "sensitive_dir_ids": {path: list(pair) for path, pair in ids.hidden_dir_ids.items()},
         "private_dirs": list(plan.windows),
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
+        "pin_dirs": list(plan.pins),
         "readonly_dirs": list(plan.readonly),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),

@@ -141,6 +141,9 @@ class Launch:
         self.sensitive_dir_ids = plan["sensitive_dir_ids"]
         self.private_dirs = plan["private_dirs"]
         self.private_dir_ids = plan["private_dir_ids"]
+        #: Directories bound read-write over themselves before any seal, so they cannot
+        #: be renamed or removed. Absent in an older payload -> pin nothing.
+        self.pin_dirs = plan.get("pin_dirs", ())
         self.readonly_dirs = plan["readonly_dirs"]
         self.writable_dirs = plan["writable_dirs"]
         self.sensitive_files = plan["sensitive_files"]
@@ -373,11 +376,13 @@ def _stand_in_mkstemp(launch):
 def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
-    Windows are staged before anything is masked, read-only seals land before the hides
+    The pins land first, under every other mount. Windows are staged before anything is
+    masked, read-only seals land before the hides
     placed on top of them, carve-outs after the seals they punch through, the exposed
     files are restored into their empty masks, and the single files and ``~/.ssh`` are
     masked last.
     """
+    pin_dirs(launch)
     stage_private_windows(launch)
     seal_readonly(launch)
     mask_sensitive(launch)
@@ -398,6 +403,7 @@ def run_child(launch, argv):
     check_crew_home_aliases(launch)
     preread_exposed_files(launch)
     place_masks(launch)
+    reenter_pinned_cwd(launch)
     confirm_crew_home_aliases(launch)
     scrub_env(launch)
     drop_privileges(launch)
@@ -489,7 +495,9 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     mask_sensitive,
     mask_sensitive_files,
     mask_ssh_keys,
+    pin_dirs,
     preread_exposed_files,
+    reenter_pinned_cwd,
     restore_exposed_files,
     seal_readonly,
     stage_private_windows,

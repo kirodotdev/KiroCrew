@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _MS_NOEXEC,
         _MS_NOSUID,
         _MS_RDONLY,
+        _MS_REC,
         _MS_REMOUNT,
         _PR_SET_DUMPABLE,
         _any_kind,
@@ -131,6 +132,65 @@ def preread_exposed_files(launch):
                     "(e.g. credential_process in ~/.aws/config) will fail." % (src_path, exc),
                     file=sys.stderr,
                 )
+
+
+def pin_dirs(launch):
+    """Bind each pinned directory read-write over itself, recursively, before any seal.
+
+    A mount point cannot be renamed or removed, so a pinned directory keeps its name for
+    the life of the sandbox while everything in it stays writable. The pins are the
+    gateway's own checkouts' git directories and every directory above a checkout the
+    agent could rename (``sandbox_git_control``): without them, a seal on ``.git/config``
+    is defeated by moving ``.git`` aside and building a fresh one at the old name, which
+    is the name the gateway's own ``git`` reads.
+
+    MUST run FIRST. A non-recursive bind placed later would hide every mount below it,
+    so every seal and mask lands on top of these binds; ``MS_REC`` keeps any mount the
+    host already has below a pinned directory. The bind changes no access, but every
+    seal below it holds only until a rename without it, so a failed bind refuses the
+    spawn like every other control.
+    """
+    for d in launch.pin_dirs:
+        target = d.encode()
+        _pin_fd, _pin_target = _pin_mount_path(launch, target, stat.S_ISDIR)
+        if _pin_target is None:
+            continue
+        try:
+            _mount_or_die(
+                launch, _pin_target, _pin_target, _MS_BIND | _MS_REC, "pinning directory %s" % d
+            )
+        finally:
+            os.close(_pin_fd)
+
+
+def reenter_pinned_cwd(launch):
+    """Re-enter the working directory by its name when it lies at or below a pin.
+
+    The process stands in a directory it entered before the namespace existed, so it
+    stands on the mount UNDER every pin: a relative ``.git/config`` from there reaches
+    the real file without crossing the seal placed on the pinned view. Entering the same
+    name again after every mount resolves it through them. A directory its name does not
+    reach ends the launch, since staying would leave every seal below the pin open to
+    relative paths.
+    """
+    if not launch.pin_dirs:
+        return
+    try:
+        cwd = os.getcwd()
+    except OSError as exc:
+        sys.exit("sandbox: FATAL — cannot read the working directory (%s)" % (exc.strerror or exc))
+    for d in launch.pin_dirs:
+        if cwd == d or cwd.startswith(d.rstrip("/") + "/"):
+            break
+    else:
+        return
+    try:
+        os.chdir(cwd)
+    except OSError as exc:
+        sys.exit(
+            "sandbox: FATAL — cannot re-enter the working directory through the sandbox's "
+            "mounts (%s)" % (exc.strerror or exc)
+        )
 
 
 def _pin_below_mask(root, leaf):

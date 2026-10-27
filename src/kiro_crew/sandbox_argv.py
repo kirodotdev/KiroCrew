@@ -348,6 +348,10 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if namespace
         else _literal_ancestor_guards(tuple(os.path.dirname(t) for t in install_root_targets))
     )
+    # Call-time import, so the facade's census of this module's names is unchanged.
+    from kiro_crew.sandbox_git_control import resolved_git_control_layout
+
+    git_control = resolved_git_control_layout()
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     host_paths = [
         home,
@@ -388,6 +392,9 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
         install_root_ancestor_guards=install_root_ancestor_guards,
+        git_control_pins=git_control.pins if namespace else (),
+        git_control_readonly=git_control.readonly,
+        git_control_guards=() if namespace else git_control.guards,
         carveout_probes=carveout_probes,
         uid=uid,
         gid=gid,

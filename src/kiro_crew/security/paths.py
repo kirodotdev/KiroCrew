@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.edition_install_fence import install_root_write as _install_root_write
+from kiro_crew.sandbox_git_control import git_control_write as _git_control_write
 
 from .diagnostics import annotate_refusal, refusal_diagnostic
 
@@ -391,6 +392,7 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
         ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
+        matched = matched or _git_control_write(path_str, base_dir)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     return f"Blocked: write to protected path: {path_str}" if matched else None
