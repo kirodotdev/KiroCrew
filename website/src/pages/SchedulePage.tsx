@@ -865,7 +865,13 @@ export default function SchedulePage() {
                 />
               )}
               {selectedIds.size > 0 && (
-                <div className="flex items-center gap-2 shrink-0">
+                // The selection group can wrap its own controls: with the
+                // Move-to-folder trigger now carrying a visible label the group's
+                // natural width exceeds a ~390px phone, and the outer toolbar only
+                // wraps whole groups, not their children. flex-wrap + max-w-full
+                // lets Clear / Move / Delete reflow onto a second line within the
+                // group's own box instead of pushing Delete off the right edge.
+                <div className="flex flex-wrap items-center gap-2 max-w-full">
                   <span className="text-[13px] text-muted whitespace-nowrap">{selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
                   <CronJobMoveMenu
