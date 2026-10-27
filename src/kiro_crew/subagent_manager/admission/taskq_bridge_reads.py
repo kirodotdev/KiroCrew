@@ -24,6 +24,7 @@ import functools as _functools
 import logging as _logging
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
+from kiro_crew.spawn_label import normalize_spawn_label
 from kiro_crew.subagent_wait_reasons import RESUMING_AFTER_RESTART, RESUMING_RETRY
 
 from .types import QueuedReadUnavailable, QueuedRun, QueuedRunListing
@@ -596,6 +597,7 @@ def _queued_run(
         reason=reason,
         reason_detail=detail,
         resuming=resuming,
+        label=normalize_spawn_label(params.get("label")),
     )
 
 
