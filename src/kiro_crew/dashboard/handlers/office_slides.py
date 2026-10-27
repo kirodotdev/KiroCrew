@@ -712,6 +712,13 @@ async def _run_soffice(argv: list[str], work: _Staging | Path) -> None:
             except asyncio.TimeoutError:  # pragma: no cover - defensive
                 logger.warning("office_slides: soffice did not exit after SIGKILL")
         raise _ConvertFailed(f"soffice timed out after {CONVERT_TIMEOUT_SEC:.0f}s")
+    except asyncio.CancelledError:
+        # soffice runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     finally:
         if cleanup:
             await asyncio.get_running_loop().run_in_executor(
