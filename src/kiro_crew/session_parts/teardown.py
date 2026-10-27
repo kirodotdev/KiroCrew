@@ -46,6 +46,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -69,6 +70,7 @@ async def reset(
             refuse_only_on_active_turn=refuse_only_on_active_turn,
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
+            stop_shared_children=stop_shared_children,
             scope=opened,
         )
 

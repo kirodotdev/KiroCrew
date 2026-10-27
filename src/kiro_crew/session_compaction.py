@@ -20,7 +20,6 @@ such as guarded reset and queue retirement.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -956,14 +955,14 @@ class CompactionCoordinator:
                 # claims a missing capability the harness has.
                 self.state.uncompactable_recycles.discard(key)
 
-    def _live_cotenants(self, runs: Any, key: str) -> list[str]:
-        """Ids of *key*'s runs that are live on a process they share with it."""
-        return [
-            info.id
-            for info in runs.running
-            if info.parent_session_key == key
-            and runs.has_live_shared_session(info.conversation_key or f"subagent:{info.id}")
-        ]
+    @staticmethod
+    def _live_cotenants(lifecycle: Any, key: str) -> list[str]:
+        """Ids of *key*'s runs that are live on a process they share with it.
+
+        The same selection a hard Stop's reset stops (``_select_shared_children``),
+        so the two cannot disagree about which runs share the process.
+        """
+        return [info.id for info in lifecycle._select_shared_children(key)]
 
     async def _await_cotenants(
         self, key: str, pct: float, *, stopped: Callable[[], bool] | None = None
@@ -975,8 +974,8 @@ class CompactionCoordinator:
         them with no report.
         The restart polls (the manager's per-key completion event is shared, so another
         waiter may release it) for at most ``cotenant_wait_secs``. Past that it stops
-        those runs with the ordinary cancel, bounded, so each reports "stopped" into
-        the conversation, which carries on after the restart.
+        those runs through the shared stop step, which returns once their reaps have
+        started; each "stopped" report lands in the conversation after the restart.
 
         *stopped* is polled on every tick: a user Stop that lands during the wait has
         already reset the parent, and this task's restart is then stale -- cancelling
@@ -986,7 +985,7 @@ class CompactionCoordinator:
         lifecycle = self._owner._lifecycle_boundary()
         # The ``SubagentManager`` registered as the parent-end teardown handler.
         runs = lifecycle._child_teardown
-        if runs is None or not self._live_cotenants(runs, key):
+        if runs is None or not self._live_cotenants(lifecycle, key):
             return True
         self._deps.logger.warning("Session %s restart held: sub-agents share its process", key)
         callback = self.state.on_compacted
@@ -999,20 +998,16 @@ class CompactionCoordinator:
                 self._deps.logger.exception("Compact callback failed for %s", key)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._deps.cotenant_wait_secs
-        while ids := self._live_cotenants(runs, key):
+        while self._live_cotenants(lifecycle, key):
             if stopped is not None and stopped():
                 return False
             remaining = deadline - loop.time()
             if remaining <= 0:
-                self._deps.logger.warning("Session %s: stopping sub-agents %s", key, ids)
-                for info in runs.running:
-                    if info.id in ids and not info._stop_origin:
-                        info._stop_origin = "stopped at a context restart"
-                task = asyncio.ensure_future(asyncio.gather(*(runs.cancel(i) for i in ids)))
-                self._owner._background_tasks.add(task)
-                task.add_done_callback(self._owner._background_tasks.discard)
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(asyncio.shield(task), timeout=20.0)
+                await lifecycle._stop_shared_children(
+                    key,
+                    lifecycle._select_shared_children(key),
+                    origin="stopped at a context restart",
+                )
                 return True
             await asyncio.sleep(min(remaining, self._deps.cotenant_poll_secs))
         return not (stopped is not None and stopped())
