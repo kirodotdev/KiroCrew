@@ -100,6 +100,10 @@ class TestSubagentPostToolUseHook:
             f"stripped, got {kwargs['tool_name']!r}"
         )
         assert kwargs["tool_response"] == {"output": "hello world"}
+        # The child's own key, for per-session attribution, beside the
+        # parent's key that marks the event as a subagent's.
+        assert kwargs["session_key"] == "subagent:t01"
+        assert kwargs["parent_session_key"] == "slack:C:T"
 
     @pytest.mark.asyncio
     async def test_post_tool_use_truncates_long_output(self) -> None:

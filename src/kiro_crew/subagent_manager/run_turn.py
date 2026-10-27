@@ -1530,6 +1530,9 @@ async def _run_inner_impl(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
                         tool_response={"output": _out},
+                        # This child's own key, for per-session attribution;
+                        # parent_session_key below names who spawned it.
+                        session_key=session_key,
                         subagent_id=info.id,
                         parent_session_key=info.parent_session_key or None,
                         agent_role=info.agent or None,
