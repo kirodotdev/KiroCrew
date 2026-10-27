@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         delivery_confirmed,
         display_safe_for,
         logger,
+        redact_via_context,
         render_options_as_text,
         sole_direct_target,
     )
@@ -206,10 +207,11 @@ async def _deliver_channel_dm(
         # strip would otherwise leave a trailing tag hiding the trailer. The two
         # legs below do the same.
         render_options_as_text(
-            display_safe_for(text, live_transport.capabilities),
+            display_safe_for(text, live_transport.capabilities, redactor=redact_via_context),
             live_transport.capabilities,
         ),
         live_transport.capabilities,
+        redactor=redact_via_context,
     )
     try:
         for unit in units:
@@ -367,7 +369,7 @@ async def _deliver_to_channel(
     # fence sealing, and collapsing them would silently retune one of the two.
     parts = chunk_text(
         render_options_as_text(
-            display_safe_for(text, transport.capabilities),
+            display_safe_for(text, transport.capabilities, redactor=redact_via_context),
             transport.capabilities,
         ),
         transport.capabilities.max_message_chars,
@@ -487,10 +489,11 @@ async def _send_to_channel_target(
     parts = await asyncio.to_thread(
         chunk_for_transport,
         render_options_as_text(
-            display_safe_for(text, transport.capabilities),
+            display_safe_for(text, transport.capabilities, redactor=redact_via_context),
             transport.capabilities,
         ),
         transport.capabilities,
+        redactor=redact_via_context,
     )
     try:
         for index, part in enumerate(parts):

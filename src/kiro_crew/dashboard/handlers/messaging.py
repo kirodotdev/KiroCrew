@@ -323,6 +323,7 @@ from kiro_crew.notifications.bus import (  # noqa: F401
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.platform.context import redact_via_context  # noqa: F401
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY  # noqa: F401
 from kiro_crew.platform_compat import IS_MACOS  # noqa: F401
 from kiro_crew.security import (  # noqa: F401

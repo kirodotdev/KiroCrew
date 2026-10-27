@@ -1160,6 +1160,35 @@ def test_the_mode_tripwire_is_gated_on_the_read_back_predicate() -> None:
         assert client._kill_process.await_count == 0, backend
 
 
+def test_the_mode_tripwire_log_scrubs_the_reported_mode(caplog) -> None:
+    """The error line carries the same scrubbed mode the audit row does, not the raw id."""
+    import asyncio
+
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    client = _stub()
+    client._session_id = "goose-session-1"
+
+    async def _kill(force: bool = False) -> None:
+        return None
+
+    client._kill_process = _kill  # type: ignore[method-assign]
+    frame = JsonRpcMessage(
+        method="session/update",
+        params={
+            "sessionId": "goose-session-1",
+            "update": {"sessionUpdate": "current_mode_update", "currentModeId": secret},
+        },
+    )
+    with caplog.at_level(logging.ERROR), pytest.raises(AcpToolGateUnroutable):
+        asyncio.run(client._tripwire_goose_mode(frame))
+
+    lines = [r.getMessage() for r in caplog.records if "mid-session" in r.getMessage()]
+    assert lines, caplog.text
+    assert all(secret not in line for line in lines), lines
+
+
 def test_the_codex_rawinput_channel_still_answers_first() -> None:
     """codex resolves through ``rawInput``, and that path must not have moved."""
     from kiro_crew.acp.client import _identified_mcp_call

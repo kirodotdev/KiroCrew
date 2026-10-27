@@ -789,7 +789,7 @@ async def _tripwire_goose_mode(self: AcpClient, msg: JsonRpcMessage) -> None:
     logger.error(
         "goose routing: session reported mode %r mid-session, which is not the "
         "required one; stopping the harness before it approves on its own [session=%s]",
-        observed,
+        _scrub_observed(observed),
         self._session_id,
     )
     try:
