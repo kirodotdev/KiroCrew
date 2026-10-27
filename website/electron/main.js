@@ -13,6 +13,14 @@ const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createLaunchLog } = require("./launch-log");
+
+// First, so the stdio 'error' listeners are attached before anything writes to
+// the console: a write to a dead tty must not become an uncaughtException that
+// the safety net mirrors back to the same tty (#15950).
+const launchLog = createLaunchLog({
+  append: (entry) => fs.appendFileSync(gatewayLogPath(), entry),
+});
 
 const { findConfiguredDashboardPort } = require("./data-home");
 const { defaultedPort } = require("./gateway-auth-hint");
@@ -219,27 +227,17 @@ function gatewayLogPath() {
   return path.join(directory, "gateway-launch.log");
 }
 
+// The console mirror stops once stdio is dead; see launch-log.js.
 function glog(line) {
-  const entry = "[" + new Date().toISOString() + "] " + line + "\n";
-  try {
-    fs.appendFileSync(gatewayLogPath(), entry);
-  } catch (error) {
-    // Preserve the diagnostic when the file sink itself is unavailable.
-    console.error(
-      "[gateway-launch] " + line + " (log write failed: "
-        + (error && error.message ? error.message : error) + ")",
-    );
-  }
+  launchLog.glog(line);
 }
 
 function gwarn(line) {
-  glog(line);
-  console.warn("[gateway-launch] " + line);
+  launchLog.gwarn(line);
 }
 
 function gerror(line) {
-  glog(line);
-  console.error("[gateway-launch] " + line);
+  launchLog.gerror(line);
 }
 
 /**

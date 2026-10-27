@@ -218,6 +218,7 @@
       "gpu-crash-fallback.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
+      "launch-log.js",
       "frame-load-log.js",
       "pane-asset-journal.js",
       "cage-trace.js",
