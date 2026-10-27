@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _workspace_name_for_dir,
+        bind_slot_to_request_user,
         create_session_folder,
         cron_creator_admission,
         cron_slot_creator,
@@ -1174,6 +1175,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # A NEW owner chat starts on the default session environment when one is set,
     # unprewarmed: a local spawn would run on the wrong machine, a remote one would
     # start billed compute for a chat that may never send a message.
+    # Before the eager spawn below: the one person whose persisted MCP sign-ins
+    # this session's engine may use (a cron or an app conflicts it instead).
+    await bind_slot_to_request_user(request, slot, person=not cron_creator)
     bound_remote = False
     if slot.executor != "remote" and existing_slot is None and is_owner_dashboard_request(request):
         from kiro_crew.dashboard.handlers.session_environments import (

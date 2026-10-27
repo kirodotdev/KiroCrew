@@ -998,7 +998,7 @@ def test_a_slot_action_arms_its_eager_spawn_by_who_asked(request_fields, expecte
 @pytest.mark.parametrize(
     ("path", "function"),
     [
-        ("dashboard/ws.py", "_handle_slot_focused"),
+        ("dashboard/ws_focus.py", "_handle_slot_focused"),
         ("dashboard/chat_api/session_relaunch.py", "reload_slot_session"),
         # An agent's session_create: the caller is a model, no person waits.
         ("dashboard/session_control_parts/session_create.py", "create_session"),
