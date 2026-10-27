@@ -419,6 +419,11 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_kind,
 )
+from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
+from kiro_crew.slack.code_channels.binding import notify_turn_end as notify_code_channel_turn_end
+from kiro_crew.slack.code_channels.binding import (
+    notify_turn_start as notify_code_channel_turn_start,
+)
 from kiro_crew.slack.handler import post_linked_approval
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export

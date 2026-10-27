@@ -909,6 +909,25 @@ class TestOnEventDispatch:
         assert route.await_args.kwargs["is_mention"] is False
 
     @pytest.mark.asyncio
+    async def test_envelope_enterprise_id_is_the_events_enterprise(self):
+        orch = _socket_orch()
+        on_event = await _install_on_event(orch, ev.SeenCache())
+        event = {
+            "type": "message",
+            "user": "U1",
+            "channel": "C1",
+            "text": "hi",
+            "enterprise": "E0X",
+        }
+        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            payload = {"event": dict(event), "team_id": "T1", "enterprise_id": "E0ORG"}
+            await on_event(_client(), _req("events_api", payload))
+            await on_event(_client(), _req("events_api", {"event": dict(event), "team_id": "T1"}))
+        grid, plain = (call[0][1] for call in route.await_args_list)
+        assert grid["enterprise"] == "E0ORG"  # the envelope's, like the team
+        assert plain["enterprise"] == ""  # no Enterprise Grid org
+
+    @pytest.mark.asyncio
     async def test_app_mention_sets_is_mention(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())

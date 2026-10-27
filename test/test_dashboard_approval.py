@@ -1400,6 +1400,53 @@ class TestHostPreDeclinedRowIsBornResolved:
         state.slack_client.delete_message.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", [True, False], ids=["code-channel", "linked-thread"])
+    async def test_slack_approval_goes_top_level_in_a_bound_code_channel(self, tmp_path, bound):
+        """A code channel's own session asks where it replies: the channel itself.
+
+        Its slot's ``_slack_thread_ts`` is the channel's anchor (kickoff) message,
+        so threading the card under it hides the prompt in a thread nobody reads.
+        The mirror's own rule (``code_channel_post_thread``) decides; an ordinary
+        linked thread still gets the card in its thread.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.slack.code_channels import binding as cc_binding
+
+        anchor = "1700000000.000100"
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        state.slack_client = AsyncMock()
+        state.sessions.get_slack_link = MagicMock(return_value=("", ""))
+        slot = _make_slot()
+        slot._slack_linked = True
+        slot._slack_channel = "C0CODE"
+        slot._slack_thread_ts = anchor
+        _set_stream(client, [_permission_event(), _complete_event()])
+
+        async def _post_blocks(_chan, _blocks, _text, _thread_ts=None):
+            await _answer_approval(slot, "req-1", "approved")
+            return "1700000000.000999"
+
+        state.slack_client.post_blocks = AsyncMock(side_effect=_post_blocks)
+
+        def _active(channel_id, thread_ts):
+            if bound and (channel_id, thread_ts) == ("C0CODE", anchor):
+                return SimpleNamespace(channel_id=channel_id)
+            return None
+
+        with _patch_stats(), patch.object(cc_binding, "active_binding", _active):
+            await _run_chat(state, slot, "hello")
+
+        (call,) = [
+            c
+            for c in state.slack_client.post_blocks.await_args_list
+            if c.args[2] == "Manual approval required"
+        ]
+        assert call.args[0] == "C0CODE"
+        assert call.args[3] == (None if bound else anchor)
+        client.approve_tool.assert_awaited_once_with("req-1")
+
+    @pytest.mark.asyncio
     async def test_slack_linked_no_budget_row_is_not_mirrored_and_its_future_is_settled(
         self, tmp_path
     ):

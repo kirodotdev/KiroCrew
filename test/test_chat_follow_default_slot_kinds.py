@@ -114,6 +114,11 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ("dashboard/workflow_inject.py", "inject_bound_workflow_result"): (
         "excluded: linked_session_key=origin at birth"
     ),
+    ("slack/code_channels/binding.py", "create_bound_session"): (
+        "person: a code channel an allowed Slack user's request opened; model=spec.model is "
+        "the Slack Code default model ('' when unset, so it follows the default); a set one "
+        "is a kept pick the press counts and clears, like a New chat tab's"
+    ),
     ("slack/gateway_runtime/result_egress.py", "_deliver_result"): (
         "no kept model: a heartbeat delivery appends one assistant row and runs no turn, so "
         "slot.model stays '' until a person picks one"

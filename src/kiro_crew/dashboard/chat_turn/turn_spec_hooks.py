@@ -485,6 +485,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     """The Stop hook, the continuations it and a tool refusal queue, the reply's Slack and cross-surface legs."""
     _answer_text = turn._answer_text
     _mirror_chan = turn._mirror_chan
+    _mirror_post_ts = turn._mirror_post_ts
     _mirror_thread = turn._mirror_thread
     _refusal_notices = turn._refusal_notices
     _refusal_notices_settled = turn._refusal_notices_settled
@@ -738,7 +739,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                     break
 
             for _part in render_for_slack(_mirror_body):
-                await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
             if _mirror_options:
                 # Keep the ts this posts: the control has to be spendable
                 # later, and discarding the ts is what leaves a superseded
@@ -768,7 +769,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                     _mirror_chan,
                     _mirror_blocks,
                     "Options",
-                    _mirror_thread,
+                    _mirror_post_ts,
                 )
                 if _mirror_ts:
                     _owner = (

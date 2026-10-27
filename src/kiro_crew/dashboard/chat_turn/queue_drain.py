@@ -887,8 +887,10 @@ async def _start_next_queued_turn(
     # A drop-notice address names the one sender whose text the notice quotes.
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
-    # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY):
+    # last writer would be quoted another sender's words. A code channel's
+    # Slack sender (``slack_sender``) names the person whose words the row
+    # holds, so it follows the same rule.
+    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "slack_sender"):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)

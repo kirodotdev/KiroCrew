@@ -112,6 +112,10 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        user_meta=turn.user_meta,
+        # A pinned answer is delivered to its slot rather than run natively, so
+        # an action button's payload must ride along (unpinned keeps today's path).
+        turn_context=turn.action_context if route_pinned else None,
     ):
         return False
 

@@ -13,12 +13,15 @@ from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        STOP_REASON_CANCELLED,
+        STOP_REASON_END_TURN,
         DashboardState,
         _ChatSlot,
         _pending_reset_retries,
         effective_session_key,
         expire_slack_options,
         logger,
+        notify_code_channel_turn_end,
         subagents_attached_async,
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
@@ -310,6 +313,7 @@ async def _consume_pending_reset(
 async def _turn_release_session(turn: _ChatTurn) -> None:
     """Hand the session back: OPTIONS expiry, mirror close, reset or discard, permit."""
     _acquired = turn._acquired
+    _code_channel_turn = turn._code_channel_turn
     _deferred_options_expiry = turn._deferred_options_expiry
     _mirror_active_task = turn._mirror_active_task
     _mirror_active_task_title = turn._mirror_active_task_title
@@ -335,6 +339,29 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
     # clears it. The nested try/finally makes the release unconditional
     # while preserving the reset-then-release ordering.
     try:
+        if _code_channel_turn:
+            # Exactly one end per start, on every exit path: the channel's
+            # status goes back to ready and subscribers settle the turn.
+            # First in this block and shielded, so a cancel landing in the
+            # cleanup below still lets it finish.
+            _code_channel_turn = False
+            turn._code_channel_turn = _code_channel_turn
+            try:
+                await asyncio.shield(
+                    notify_code_channel_turn_end(
+                        _mirror_chan,
+                        _mirror_thread,
+                        session_key,
+                        source="slack" if slot._turn_channel_origin else "dashboard",
+                        outcome=(
+                            "stopped"
+                            if turn._stop_reason == STOP_REASON_CANCELLED
+                            else "ok" if turn._stop_reason == STOP_REASON_END_TURN else "error"
+                        ),
+                    )
+                )
+            except Exception:
+                logger.debug("code channel turn-end hooks failed", exc_info=True)
         if _deferred_options_expiry:
             _deferred_options_expiry = False
             turn._deferred_options_expiry = _deferred_options_expiry

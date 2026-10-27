@@ -595,7 +595,12 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+#: ``slack_sender`` names the Slack person a code channel's row came from
+#: (``slack.code_channels.creation.slack_sender``); only the Slack routing writes
+#: it, so a dashboard send cannot pass a row off as a Slack user's.
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, "slack_sender"}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the

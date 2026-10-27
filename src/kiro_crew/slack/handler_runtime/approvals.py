@@ -213,7 +213,7 @@ def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager 
 async def post_linked_approval(
     slack: SlackClientOps,
     channel: str,
-    thread_ts: str,
+    thread_ts: str | None,
     request_id: str | int,
     session_key: str,
     title: str,
@@ -224,6 +224,8 @@ async def post_linked_approval(
     Posts Approve / Reject buttons threaded under ``thread_ts`` and registers a
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
+    ``thread_ts=None`` posts top-level: a Slack Code channel's own session
+    replies in the channel itself, so its prompts go there too.
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``

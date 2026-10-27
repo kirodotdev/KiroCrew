@@ -928,6 +928,7 @@ async def handle_message(
     spool_attachments: int = 0,
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -1036,6 +1037,7 @@ async def handle_message(
         spool_attachments=spool_attachments,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
+        user_meta=user_meta,
         _t0=_t0,
         reply_ts=reply_ts,
         session_key=session_key,

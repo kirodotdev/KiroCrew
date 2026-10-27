@@ -723,3 +723,129 @@ class TestImportThreadToSlot:
         ds.link_slack.assert_called_once_with("slot-1", "1700000000.000100", "C1")
         saved.assert_awaited_once_with(ds, slot)
         ds.push_slots_update.assert_called_once_with()
+
+
+# ---------------------------------------------------------------------------
+# A code channel's button answers carry the clicker as the row's Slack sender
+# ---------------------------------------------------------------------------
+
+
+class TestCodeChannelAnswerSender:
+    """The ``slack_sender`` contract (rfc-slack-code-channels, sender attribution)."""
+
+    SENDER = {"team_id": "T1ABC", "enterprise_id": "E0ORG1", "user_id": "UOWNER1"}
+
+    @pytest.fixture
+    def bound(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from kiro_crew.slack.code_channels import routing
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        monkeypatch.setattr(routing, "code_channels_on", lambda _cfg: self.on)
+        self.on = True
+        store = CodeChannelStore(tmp_path / "s.json")
+        store.put_binding(
+            Binding(channel_id="C0CODE", team_id="T1ABC", session_key="chat-1-1", anchor_ts="1.0")
+        )
+        set_store(store)
+        yield store
+        set_store(None)
+
+    def _as_clicker(self, payload: dict) -> dict:
+        return {
+            **payload,
+            "user": {"id": "UOWNER1"},
+            "team": {"id": "T1ABC"},
+            "enterprise": {"id": "E0ORG1"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_choice_in_a_code_channel_names_the_clicker(
+        self, orch: MagicMock, turns: AsyncMock, forget: MagicMock, bound: Any
+    ) -> None:
+        payload, action = _click(["A", "B"], 1)
+        await ix._handle_options(self._as_clicker(payload), action, "C0CODE", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["user_meta"] == {"slack_sender": self.SENDER}
+
+    @pytest.mark.asyncio
+    async def test_a_submit_in_a_code_channel_names_the_clicker(
+        self, orch: MagicMock, turns: AsyncMock, forget: MagicMock, bound: Any
+    ) -> None:
+        await ix._handle_options_submit(
+            self._as_clicker(_submit(["A", "B"], ["B"])), "C0CODE", "m1"
+        )
+        await _join(orch)
+        assert turns.await_args.kwargs["user_meta"] == {"slack_sender": self.SENDER}
+
+    @pytest.mark.asyncio
+    async def test_an_action_button_in_a_code_channel_names_the_clicker(
+        self, orch: MagicMock, turns: AsyncMock, bound: Any
+    ) -> None:
+        action = {"action_id": "act1", "value": 'action::{"k": 1}', "text": {"text": "Go"}}
+        payload = self._as_clicker({"message": {"ts": "m1", "thread_ts": "t1", "blocks": []}})
+        await ix._handle_options(payload, action, "C0CODE", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["user_meta"] == {"slack_sender": self.SENDER}
+
+    @pytest.mark.asyncio
+    async def test_an_action_answer_in_a_code_channel_reaches_the_bound_session(
+        self, orch: MagicMock, turns: AsyncMock, bound: Any
+    ) -> None:
+        """A top-level action button has no linked thread: the answer is pinned to
+        the channel's own session, and its label posts top-level."""
+        action = {"action_id": "act1", "value": 'action::{"k": 1}', "text": {"text": "Go"}}
+        payload = self._as_clicker({"message": {"ts": "m1", "blocks": []}})
+        await ix._handle_options(payload, action, "C0CODE", "m1")
+        await _join(orch)
+        kw = turns.await_args.kwargs
+        assert kw["target_slot_name"] == "chat-1-1" and kw["route_pinned"] is True
+        assert orch.slack.post_message.await_args.args[2] is None
+        # An action element (the action_id carries the payload) is pinned too.
+        element = {
+            "action_id": 'action::{"k": 2}',
+            "type": "static_select",
+            "selected_option": {"value": "v", "text": {"text": "V"}},
+        }
+        await ix._handle_options(payload, element, "C0CODE", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["target_slot_name"] == "chat-1-1"
+
+    @pytest.mark.asyncio
+    async def test_an_action_answer_elsewhere_is_not_pinned(
+        self, orch: MagicMock, turns: AsyncMock, bound: Any
+    ) -> None:
+        action = {"action_id": "act1", "value": 'action::{"k": 1}', "text": {"text": "Go"}}
+        payload = self._as_clicker({"message": {"ts": "m1", "thread_ts": "t1", "blocks": []}})
+        await ix._handle_options(payload, action, "C1", "m1")
+        await _join(orch)
+        kw = turns.await_args.kwargs
+        assert kw["target_slot_name"] is None and kw["route_pinned"] is False
+        assert orch.slack.post_message.await_args.args[2] == "t1"
+        self.on = False
+        await ix._handle_options(payload, action, "C0CODE", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["route_pinned"] is False
+
+    @pytest.mark.asyncio
+    async def test_outside_a_code_channel_or_with_bad_ids_there_is_no_sender(
+        self, orch: MagicMock, turns: AsyncMock, forget: MagicMock, bound: Any
+    ) -> None:
+        payload, action = _click(["A", "B"], 1)
+        await ix._handle_options(self._as_clicker(payload), action, "C1", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["user_meta"] is None
+        payload, action = _click(["A", "B"], 0)
+        bad = {**self._as_clicker(payload), "team": {"id": "not-a-team"}}
+        await ix._handle_options(bad, action, "C0CODE", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["user_meta"] is None
+
+    @pytest.mark.asyncio
+    async def test_with_code_channels_off_a_stale_binding_names_no_one(
+        self, orch: MagicMock, turns: AsyncMock, forget: MagicMock, bound: Any
+    ) -> None:
+        self.on = False
+        payload, action = _click(["A", "B"], 1)
+        await ix._handle_options(self._as_clicker(payload), action, "C0CODE", "m1")
+        await _join(orch)
+        assert turns.await_args.kwargs["user_meta"] is None

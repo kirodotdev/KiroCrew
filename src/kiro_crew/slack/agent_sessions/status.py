@@ -157,8 +157,16 @@ class AgentSessionStatus:
         notify: Callable[[], Callable[..., Any] | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        own_latch: bool = False,
     ) -> None:
         self._client = client
+        #: Whether a capability refusal latches only THIS driver (its status
+        #: writes stop; no feature changes) instead of thread agent sessions.
+        #: Code channels set it: their status is decoration on a turn that runs
+        #: either way, so a refusal must neither turn thread sessions off nor
+        #: turn the code-channel feature off.
+        self._own_latch = own_latch
+        self._latched_code = ""
         #: Whether the Slack setting is on (and the install can run it), read on
         #: every call so a toggle applied live takes effect on the next status.
         self._gate = gate
@@ -175,7 +183,10 @@ class AgentSessionStatus:
         try:
             from kiro_crew.slack import features
 
-            if features.AGENT_SESSIONS in features.latched():
+            if self._own_latch:
+                if self._latched_code:
+                    return False
+            elif features.AGENT_SESSIONS in features.latched():
                 return False
             return self._gate() is True
         except Exception:
@@ -190,15 +201,28 @@ class AgentSessionStatus:
             return False
         return await self.set_status(channel, thread_ts, lifecycle_for_text(text))
 
+    def _may_settle_processing(self, key: tuple[str, str | None]) -> bool:
+        """Whether a settle to ``active`` may go through with the gate now closed.
+
+        The gate can close mid-turn (the toggle read live, or an own-latch), and
+        the turn-end settle deliberately skips it. A channel this driver left on
+        ``processing`` would otherwise stay on Slack's loader until Slack's own
+        timeout, so a settle is let through when THIS driver's own record for the
+        key is ``processing``; a ``processing`` write still needs the gate.
+        """
+        record = self._records.get(key)
+        return record is not None and record.status == SESSION_STATUS_PROCESSING
+
     async def set_status(self, channel: str, thread_ts: str | None, status: str) -> bool:
         """Move one session to *status*; False when the old path should run instead.
 
         *thread_ts* ``None`` addresses a whole-channel session (a code channel),
         where Slack refuses a ``thread_ts``. Never raises.
         """
-        if not self.active or not channel or status not in SESSION_STATUSES:
-            return False
         key = (channel, thread_ts or None)
+        _settle_stuck = status == SESSION_STATUS_ACTIVE and self._may_settle_processing(key)
+        if (not self.active and not _settle_stuck) or not channel or status not in SESSION_STATUSES:
+            return False
         record = self._records.get(key)
         now = self._clock()
         if status == SESSION_STATUS_ACTIVE and (record is None or record.status in ("", status)):
@@ -215,7 +239,7 @@ class AgentSessionStatus:
             self._arm_keepalive(key, record)
             return True
         ok = await self._send_status(channel, thread_ts, status)
-        if not ok or not self.active:
+        if not ok or (not self.active and not _settle_stuck):
             # Refused: this call goes the old way (and a latch, every later one).
             return False
         if ok:
@@ -294,7 +318,10 @@ class AgentSessionStatus:
         record = self._records.get(key)
         if record is not None:
             self._disarm(record)
-        if not self.active or not channel:
+        # A settle clears Slack's loader, so it goes through with the gate now
+        # closed when this driver left the channel on ``processing`` (see
+        # :meth:`_may_settle_processing`).
+        if (not self.active and not self._may_settle_processing(key)) or not channel:
             return
         if await self._send_status(channel, thread_ts, SESSION_STATUS_ACTIVE):
             record = self._track(key)
@@ -394,14 +421,20 @@ class AgentSessionStatus:
         return True
 
     def _latch(self, code: str) -> bool:
-        """Latch agent sessions off on a capability refusal; False for any other code.
+        """Latch agent sessions (or only this driver) off on a capability refusal; False otherwise.
 
         The shared latch (``features.latch_unavailable``) logs one line, pushes the
         one dashboard notification and shows on the settings page.
         """
         from kiro_crew.slack import features
 
-        if not features.latch_unavailable(features.AGENT_SESSIONS, code):
+        if self._own_latch:
+            if code not in features.LATCH_ERRORS:
+                return False
+            if not self._latched_code:
+                logger.warning("code channel status writes stopped: Slack answered %s", code)
+            self._latched_code = code
+        elif not features.latch_unavailable(features.AGENT_SESSIONS, code):
             return False
         for record in self._records.values():
             self._disarm(record)
