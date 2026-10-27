@@ -1445,6 +1445,24 @@ class TestEpisodicCRUD:
         # Count numbered entry lines, not every ". ": the header holds sentences too.
         assert sum(1 for line in ctx.splitlines() if line[:1].isdigit()) <= 2
 
+    def test_oversized_episode_is_skipped_not_a_stop(
+        self, tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Rank 2 does not fit the cap; rank 3 after it does and must still appear.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.algorithm_version != "v2"
+        ranked = [
+            {"id": "a", "text": "first short episode"},
+            {"id": "b", "text": "y" * 1200},
+            {"id": "c", "text": "third short episode"},
+        ]
+        monkeypatch.setattr(store, "search_episodic", lambda **_kw: ranked)
+        ctx = store.get_episodic_context(query_text="anything", cap=500)
+        assert "y" * 1200 not in ctx
+        assert "1. first short episode" in ctx
+        assert "3. third short episode" in ctx
+
 
 class TestEpisodicInjectionScreening:
     """Episodic writes are injection-scanned (XPIA persistence, security-review 696671aa)."""
