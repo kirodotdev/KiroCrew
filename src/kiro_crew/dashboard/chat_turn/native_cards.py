@@ -1,5 +1,6 @@
-"""kiro-cli native sub-agent Activity cards and the native AskUserQuestion card a dashboard turn
-shows, and the stream's native sub-agent arms (``_on_subagent_list``, ``_on_subagent_activity``)."""
+"""Harness-native sub-agent Activity cards (kiro-cli's, KAS's and Claude Code's) and the native
+AskUserQuestion card a dashboard turn shows, and the stream's native sub-agent arms
+(``_on_subagent_list``, ``_on_subagent_activity``)."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         NATIVE_SUBAGENT_DONE_RESULT_CAP,
         NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
+        STOP_REASON_CANCELLED,
         _redact_tool_field,
         logger,
         redact_credentials,
@@ -392,12 +394,9 @@ async def _on_subagent_list(turn: _ChatTurn, event) -> None:
 
 async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     """A native sub-agent's activity."""
-    _native_card_output = turn._native_card_output
-    _native_card_output_len = turn._native_card_output_len
     _native_tc_card = turn._native_tc_card
     _native_tracker = turn._native_tracker
     slot = turn.slot
-    state = turn.state
     # kiro-cli's _kiro.dev/session/update tags a sub-agent's inner
     # tool call with its sessionId. This ALWAYS arrives before the
     # corresponding flat tool_call/tool_call_update, so building the
@@ -405,6 +404,10 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     # the full tool title AND the real output) attribute to the
     # right sub-agent card.
     _sid = event.sub_session_id
+    if _sid and event.tool_call_id:
+        # A child's call whether or not it has a card: the directive refusal
+        # reads this set, as the messaging driver's reads its own.
+        turn._native_child_tc.add(event.tool_call_id)
     if _sid in _native_tracker and event.tool_call_id:
         _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
     # Permission-rejection notices (the handle's own "⛔ …" lines,
@@ -419,14 +422,50 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     # Some kiro-cli builds also stream the sub-agent's own text via
     # agent_message_chunk on this channel — surface it on the card.
     if _sid in _native_tracker and event.text:
-        _card_id = f"native:{_redact_tool_field(_sid)}"
-        _txt = redact(event.text)
-        _native_card_output_len[_card_id] = _append_native_output(
-            _native_card_output.setdefault(_card_id, []),
-            _txt,
-            _native_card_output_len.get(_card_id, 0),
-        )
-        state.broadcast_ws(
-            "subagent_chunk",
-            {"id": _card_id, "slot": slot.key, "text": _txt},
-        )
+        _native_card_text(turn, _sid, event.text)
+
+
+def _native_card_text(turn: _ChatTurn, sid: str, text: str) -> None:
+    """Append a sub-agent's *text* to its open card's feed and stream it to the card."""
+    _native_card_output = turn._native_card_output
+    _native_card_output_len = turn._native_card_output_len
+    _card_id = f"native:{_redact_tool_field(sid)}"
+    _txt = redact(text)
+    _native_card_output_len[_card_id] = _append_native_output(
+        _native_card_output.setdefault(_card_id, []),
+        _txt,
+        _native_card_output_len.get(_card_id, 0),
+    )
+    turn.state.broadcast_ws(
+        "subagent_chunk",
+        {"id": _card_id, "slot": turn.slot.key, "text": _txt},
+    )
+
+
+def _native_flush_cut_short(turn: _ChatTurn) -> None:
+    """Put the text a Claude child's redactor still holds on its card, for a turn cut short.
+
+    A turn cancelled (Stop, the timeout ceiling, a closed tab) or ended with no
+    completion (a provider error) while a card is still open gets no roster that
+    would flush a child's tail, and its release closes the cards next. A turn that
+    ends normally keeps the text held: a background child keeps running into the
+    next turn, where its redactor still needs it. So does a turn that never opened
+    a card. Only claude's ``AcpClient`` holds child text; another client either
+    lacks the method or holds nothing. It never suspends, as the release phase that
+    calls it must not.
+    """
+    if getattr(turn, "_stop_reason", "") not in ("", STOP_REASON_CANCELLED):
+        return
+    if all(info.get("done") for info in turn._native_tracker.values()):
+        return
+    flush = getattr(turn.slot._acp_client, "flush_native_child_text", None)
+    if not callable(flush):
+        return
+    try:
+        held = list(flush())
+    except Exception:
+        logger.debug("native child text flush failed", exc_info=True)
+        return
+    for event in held:
+        if event.sub_session_id in turn._native_tracker and event.text:
+            _native_card_text(turn, event.sub_session_id, event.text)

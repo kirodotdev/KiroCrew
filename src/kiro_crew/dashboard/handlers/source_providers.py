@@ -571,9 +571,20 @@ def _provider_error_response(
     _audit_source_api(request, operation, "failed", reason)
     # ``loginCommand`` is set only from the gateway's own allowlisted host, never
     # parsed from provider text, so the client can show it as the remedy as-is.
+    # ``secretName`` is the vault name the message tells the reader to store,
+    # admitted only in a Bitbucket Server token-name shape and only while the
+    # scrubbed message still names it. The value came through a provider, so it
+    # ships only when it is also a name Bitbucket Server code derives from the
+    # operator's allowlist: a shape alone cannot tell a name from an opaque token.
+    # The two remedies come from different providers (a sign-in for a CLI-backed
+    # one, a stored token for a REST-backed one), so a body carries one of them.
     if exc.login_command:
         return web.json_response(
             {"error": str(exc), "code": code, "loginCommand": exc.login_command}, status=503
+        )
+    if exc.secret_name and exc.secret_name in _submodule("bitbucket_server").token_secret_names():
+        return web.json_response(
+            {"error": str(exc), "code": code, "secretName": exc.secret_name}, status=503
         )
     return web.json_response({"error": str(exc), "code": code}, status=503)
 

@@ -6588,6 +6588,13 @@
       "copy": "{{label}} {{branch}} をコピー",
       "copy_2": "{{label}} をコピー"
     },
+    "secretNameCopy": {
+      "label": "このトークンは、設定 > シークレットにこの名前で保存してください",
+      "copy": "名前をコピー",
+      "copied": "コピーしました",
+      "copy_failed": "コピーに失敗しました。上の名前を選択して手動でコピーしてください。",
+      "ask_agent_about_copy": "失敗したコピーについてエージェントに質問"
+    },
     "detailPanel": {
       "close_panel": "パネルを閉じる",
       "resize_panel": "パネルのサイズを変更"

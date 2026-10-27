@@ -321,12 +321,45 @@ def _plugin_setup_error(
     # `setup_message()` is edition-authored operator guidance, but the `str(exc)`
     # fallback is plugin RUNTIME text, so the whole message goes through the same
     # redaction a built-in's stderr does rather than only the fallback branch.
-    return SourceProviderError(
-        sanitize._safe_error_text(
-            message or str(exc),
-            fallback=f"{plugin.id} is not configured.",
-        )
+    # The secret name rides along only while the guidance still names it: a
+    # `setup_message()` that replaces the plugin's own guidance may not. On the
+    # fallback the shown text IS that guidance, already cut to its display
+    # length by `_plugin_errors`, so the name is checked on its own instead.
+    text = sanitize._safe_error_text(
+        message or str(exc), fallback=f"{plugin.id} is not configured."
     )
+    if message:
+        carried = _carried_secret_name(exc, message)
+    else:
+        carried = exc.secret_name if _secret_name_survives_scrub(exc.secret_name) else ""
+    return SourceProviderError(text, secret_name=carried)
+
+
+def _secret_name_survives_scrub(name: str) -> bool:
+    """Whether *name* comes through the error scrub unchanged on its own.
+
+    The field is the one piece of a plugin's error the client shows outside the
+    scrubbed sentence, so a name the scrub would alter (an identifier-shaped
+    credential) is never shipped as one.
+    """
+    return bool(name) and sanitize._scrubbed_error_text(name) == name
+
+
+def _carried_secret_name(exc: SourceProviderError, source: str) -> str:
+    """*exc*'s secret name when it survives the scrub and *source* names it, else ``""``.
+
+    *source* is the plugin's own text before it is cut to its display length: a
+    long per-host name can run past that cut, and the field is then the only
+    place the reader gets the name whole. The name must still appear, whole, in
+    the scrubbed text, so the field always names what the sentence names.
+    """
+    name = exc.secret_name
+    if not _secret_name_survives_scrub(name):
+        return ""
+    scrubbed = sanitize._scrubbed_error_text(source)
+    if not re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", scrubbed):
+        return ""
+    return name
 
 
 @contextlib.contextmanager
@@ -349,7 +382,10 @@ def _plugin_errors(plugin_id: str) -> Iterator[None]:
     503 body on exactly that path.
 
     The exception TYPE is preserved so each caller's own handling, and the
-    status code each maps to, are unchanged; only the message is scrubbed.
+    status code each maps to, are unchanged; only the message is scrubbed. A
+    ``secret_name`` is carried over only while it survives the scrub on its own
+    and the scrubbed text still names it (`_carried_secret_name`), so the field
+    never shows the client text the scrub removed from the sentence.
 
     Deliberately NOT ``except Exception``: an unlisted type (a plugin's bare
     ``RuntimeError``, ``KeyError``, its own class) propagates to a generic 500
@@ -362,17 +398,19 @@ def _plugin_errors(plugin_id: str) -> Iterator[None]:
     try:
         yield
     except SourceProviderNotConfigured as exc:
+        message = sanitize._safe_error_text(str(exc), fallback=f"{plugin_id} is not configured")
         raise SourceProviderNotConfigured(
-            sanitize._safe_error_text(str(exc), fallback=f"{plugin_id} is not configured")
+            message, secret_name=_carried_secret_name(exc, str(exc))
         ) from exc
     except SourceCapacityError as exc:
         raise SourceCapacityError(
             sanitize._safe_error_text(str(exc), fallback="provider is busy")
         ) from exc
     except SourceProviderError as exc:
-        raise SourceProviderError(
-            sanitize._safe_error_text(str(exc), fallback=f"the {plugin_id} source provider failed")
-        ) from exc
+        message = sanitize._safe_error_text(
+            str(exc), fallback=f"the {plugin_id} source provider failed"
+        )
+        raise SourceProviderError(message, secret_name=_carried_secret_name(exc, str(exc))) from exc
     except ConfirmationRequired as exc:
         # A ``ValueError`` subclass with response semantics: it is what makes
         # `_owner_mutation_response` add ``confirmationRequired: True`` to the

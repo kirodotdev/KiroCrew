@@ -6588,6 +6588,13 @@
       "copy": "复制 {{label}} {{branch}}",
       "copy_2": "复制 {{label}}"
     },
+    "secretNameCopy": {
+      "label": "在“设置 > 密钥”中以此名称保存令牌",
+      "copy": "复制名称",
+      "copied": "已复制",
+      "copy_failed": "复制失败。请选中上方名称并自行复制。",
+      "ask_agent_about_copy": "向智能体询问此次复制失败"
+    },
     "detailPanel": {
       "close_panel": "关闭面板",
       "resize_panel": "调整面板大小"

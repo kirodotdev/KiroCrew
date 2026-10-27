@@ -33,7 +33,8 @@ function sameDay(a: Date, b: Date): boolean {
     && a.getDate() === b.getDate()
 }
 
-function localMidnight(d: Date): number {
+/** Epoch ms of `d`'s local midnight, for counting calendar days between dates. */
+export function localMidnight(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 

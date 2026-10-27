@@ -6818,6 +6818,13 @@
       "copy": "Copier {{label}} {{branch}}",
       "copy_2": "Copier {{label}}"
     },
+    "secretNameCopy": {
+      "label": "Enregistre le jeton sous ce nom dans Paramètres > Secrets",
+      "copy": "Copier le nom",
+      "copied": "Copié",
+      "copy_failed": "Échec de la copie. Sélectionne le nom ci-dessus et copie-le toi-même.",
+      "ask_agent_about_copy": "Demander à l’agent à propos de la copie échouée"
+    },
     "detailPanel": {
       "close_panel": "Fermer le panneau",
       "resize_panel": "Redimensionner le panneau"

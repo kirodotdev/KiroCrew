@@ -435,6 +435,42 @@ describe('WhatsAppPanel: groups', () => {
     )
   })
 
+  // A cooldown of 0 means "no rate limit at all", so an emptied field must put
+  // the stored value back rather than reach the gate as `Number('')`, which is 0.
+  it.each(['', '   '])(
+    'puts the stored cooldown back when the field is cleared (%j)',
+    async cleared => {
+      const save = vi
+        .spyOn(api, 'saveWhatsAppConfig')
+        .mockResolvedValue({ ok: true, restart_required: false })
+      seed({ groups: [{ ...GROUP, mode: 'rules' }] })
+      renderWithProviders(<WhatsAppPanel />)
+      const field = (await screen.findByLabelText(
+        'Seconds between unprompted replies',
+      )) as HTMLInputElement
+      fireEvent.change(field, { target: { value: cleared } })
+      fireEvent.blur(field)
+      await waitFor(() => expect(field.value).toBe('120'))
+      expect(save).not.toHaveBeenCalled()
+    },
+  )
+
+  it('still commits a cooldown the operator typed, including an explicit 0', async () => {
+    const save = vi
+      .spyOn(api, 'saveWhatsAppConfig')
+      .mockResolvedValue({ ok: true, restart_required: false })
+    seed({ groups: [{ ...GROUP, mode: 'rules' }] })
+    renderWithProviders(<WhatsAppPanel />)
+    const field = await screen.findByLabelText('Seconds between unprompted replies')
+    fireEvent.change(field, { target: { value: '0' } })
+    fireEvent.blur(field)
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        groups: [{ ...GROUP, mode: 'rules', cooldown_s: 0 }],
+      }),
+    )
+  })
+
   it('keeps the rules field out of the way in mention mode', async () => {
     seed({ groups: [GROUP] })
     renderWithProviders(<WhatsAppPanel />)

@@ -6818,6 +6818,13 @@
       "copy": "Copiar {{label}} {{branch}}",
       "copy_2": "Copiar {{label}}"
     },
+    "secretNameCopy": {
+      "label": "Guarda el token con este nombre en Ajustes > Secretos",
+      "copy": "Copiar nombre",
+      "copied": "Copiado",
+      "copy_failed": "Error al copiar. Selecciona el nombre de arriba y cópialo tú mismo.",
+      "ask_agent_about_copy": "Preguntar al agente sobre la copia fallida"
+    },
     "detailPanel": {
       "close_panel": "Cerrar el panel",
       "resize_panel": "Redimensionar el panel"

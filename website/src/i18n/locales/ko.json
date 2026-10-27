@@ -6588,6 +6588,13 @@
       "copy": "{{label}} {{branch}} 복사",
       "copy_2": "{{label}} 복사"
     },
+    "secretNameCopy": {
+      "label": "토큰을 설정 > 시크릿에 이 이름으로 저장하세요",
+      "copy": "이름 복사",
+      "copied": "복사했습니다",
+      "copy_failed": "복사에 실패했습니다. 위 이름을 선택해 직접 복사하세요.",
+      "ask_agent_about_copy": "실패한 복사에 대해 에이전트에게 문의"
+    },
     "detailPanel": {
       "close_panel": "패널 닫기",
       "resize_panel": "패널 크기 조절"

@@ -1406,6 +1406,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"capabilities_of\(": (
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/slash_commands.py",
+        "dashboard/chat_turn/tool_approval.py",
         "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_spec_hooks.py",

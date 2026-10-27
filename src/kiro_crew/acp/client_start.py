@@ -41,6 +41,7 @@ from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_FORK_POINT_MIN_VERSION,
     _adapter_version_at_least,
 )
+from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
     KIRO_CLI_BIN,
     KIRO_CLI_SUBCMD,
@@ -77,7 +78,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
-    ACP_CLIENT_CAPABILITIES,
     KIRO_CLI_CLIENT_APPLICATION,
     METHOD_INITIALIZE,
     METHOD_SESSION_FORK,
@@ -719,7 +719,7 @@ def _initialize_params(self: AcpClient) -> dict[str, Any]:
     return {
         "protocolVersion": protocol_version,
         "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
-        "clientCapabilities": ACP_CLIENT_CAPABILITIES,
+        "clientCapabilities": client_capabilities_for(self.backend),
     }
 
 

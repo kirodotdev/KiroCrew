@@ -183,12 +183,13 @@ function usedAgo(ts: number | null | undefined): string {
 function durationLabel(ms: number): string {
   if (!ms) return '—'
   if (ms < 1000) return fmtUnit(ms, 'millisecond')
-  if (ms < 60_000) {
+  // Round to whole seconds once, before the minute test and the split, so 59.6s
+  // reads `1m 0s` (not `60s`) and 119.6s reads `2m 0s` (not `1m 60s`).
+  const secs = Math.round(ms / 1000)
+  if (secs < 60) {
     return fmtUnit(ms / 1000, 'second', { maximumFractionDigits: ms < 10_000 ? 1 : 0 })
   }
-  return fmtDuration(
-    [[Math.floor(ms / 60_000), 'minute'], [Math.round((ms % 60_000) / 1000), 'second']],
-  )
+  return fmtDuration([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']])
 }
 
 function sizeLabel(chars: number): string {

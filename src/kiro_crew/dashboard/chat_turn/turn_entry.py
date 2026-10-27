@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _discard_stale_decision
     from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes_off_loop
     from kiro_crew.dashboard.chat_turn.native_cards import (
+        _native_flush_cut_short,
         _native_subagent_close_all,
         _retain_terminal_native,
     )
@@ -711,6 +712,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # sub-agent's tool calls stream onto its own card.
     _native_tc_card: dict[str, str] = {}
     turn._native_tc_card = _native_tc_card
+    # Every tool_call_id an activity event names as a native sub-agent's, carded
+    # or not: the session-directive refusal reads this, so a child with no card
+    # (past a bound, or not listed yet) cannot act on this turn's own session.
+    _native_child_tc: set[str] = set()
+    turn._native_child_tc = _native_child_tc
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.
@@ -946,6 +952,12 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
     # tracker for replay, so reading the tracker afterwards would blame
     # long-completed children for a later ceiling timeout.
     _children_unfinished_final = any(not _i.get("done") for _i in _native_tracker.values())
+    # A turn cut short gets no roster that flushes a Claude child's held text,
+    # so it goes onto the card here, before the card closes.
+    try:
+        _native_flush_cut_short(turn)
+    except Exception:
+        logger.debug("native child text flush at release failed", exc_info=True)
     try:
         _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
     finally:
