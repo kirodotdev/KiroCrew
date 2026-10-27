@@ -84,6 +84,19 @@ def test_unpooled_server_env_is_never_transmitted(tmp_path):
     assert "s3cr3t" not in json.dumps(pooled_session_servers(overlay, "kirocrew"))
 
 
+@pytest.mark.parametrize("vendor", ["creds-agent", "local-creds-agent-mcp"])
+def test_a_stale_overlay_never_injects_a_credential_vendor(tmp_path, vendor):
+    """An overlay written before the vendors joined ``UNPOOLABLE_SERVERS`` (or kept
+    by a failed regeneration) can still hold a vendor's stub. Injecting it would
+    run the vendor's shared backend outside the chat sandbox, so the reader skips
+    it and the session resolves the vendor from its agent spec instead. The
+    vendor is left out of ``injection_server_names`` too, or the spec's own copy
+    would be withheld and the session would get no vendor at all."""
+    overlay = _write_overlay(tmp_path, "kirocrew", {vendor: _stub(), "pooled": _stub()})
+    assert [e["name"] for e in pooled_session_servers(overlay, "kirocrew")] == ["pooled"]
+    assert injection_server_names(overlay, "kirocrew") == frozenset({"pooled"})
+
+
 def test_stub_name_is_preserved_so_it_shadows_the_spec_entry(tmp_path):
     """The injected name must equal the original server name — that identity is
     what suppresses the agent spec's own copy (and keeps tool ids stable)."""

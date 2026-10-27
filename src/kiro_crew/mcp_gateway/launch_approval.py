@@ -466,7 +466,15 @@ class LaunchApprovals:
         return set(identities)
 
     def admits_launch(self, stem: str, command_hash: str, derived_env_hash: str) -> bool:
-        """Whether one exact command/effective-environment pair was approved."""
+        """Whether one exact command/effective-environment pair was approved.
+
+        A never-pooled server (a credential vendor) is refused whatever its
+        recorded approval: this is the check ``gatewayd`` runs before it spawns
+        a shared backend, so an approval written before the name was listed
+        cannot let it run outside every chat sandbox.
+        """
+        if stem in _unpoolable_stems():
+            return False
         return launch_pair(command_hash, derived_env_hash) in self.approved_pairs.get(stem, ())
 
     def admits_command(self, stem: str, command_hash: str) -> bool:
@@ -1336,10 +1344,19 @@ def filter_target_env(
     """
     kept: dict[str, str] = {}
     dropped: set[str] = set()
+    # A never-pooled server is dropped whatever its approval says: an approval
+    # or sidecar written before the name was listed must not let gatewayd spawn
+    # it outside every chat sandbox. Not recorded as a refusal: nothing is
+    # waiting on the person to approve it.
+    denied = _unpoolable_stems()
+    never: set[str] = set()
     for key, spec in target_env.items():
         stem = target_env_stem(key)
         if stem is None:
             kept[key] = spec
+            continue
+        if stem in denied:
+            never.add(stem)
             continue
         try:
             parts = shlex.split(spec)
@@ -1363,7 +1380,22 @@ def filter_target_env(
             stem, approvals.names.get(stem, stem)
         ):
             approvals.refused.setdefault(stem, REFUSED_UNAPPROVED)
-    return kept, sorted(dropped)
+    return kept, sorted(dropped | never)
+
+
+def _unpoolable_stems() -> frozenset[str]:
+    """Target stems of the servers the rewriter never pools.
+
+    Imported lazily: the rewriter imports this module, so a module-level import
+    would be a cycle.
+    """
+    from kiro_crew.mcp_gateway import rewriter_spec
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    names = rewriter_spec.UNPOOLABLE_SERVERS
+    return frozenset(target_stem(n) for n in names) | frozenset(
+        target_stem(mcp_server_alias(n)) for n in names
+    )
 
 
 def launch_approved(server_name: str, command_hash: str, derived_env_hash: str) -> bool:
