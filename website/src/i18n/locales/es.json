@@ -17398,7 +17398,7 @@
         "channel_apps": "Actualizaciones de apps",
         "push_section": "Notificaciones push",
         "push_toggle_label": "Avísame aunque {{productName}} esté cerrado",
-        "push_toggle_description": "Envía alertas a este dispositivo incluso después de cerrar {{productName}}. Las notificaciones del sistema solo aparecen mientras está abierto.",
+        "push_toggle_description": "Envía alertas a este dispositivo incluso después de cerrar {{productName}}. Las notificaciones del sistema se detienen en cuanto lo cierras.",
         "push_turning_on": "Activando…",
         "push_turning_off": "Desactivando…",
         "push_blocked_hint": "Bloqueadas en tu navegador — ver arriba.",

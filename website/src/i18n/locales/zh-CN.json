@@ -16850,7 +16850,7 @@
         "channel_apps": "应用更新",
         "push_section": "推送通知",
         "push_toggle_label": "即使 {{productName}} 已关闭也通知我",
-        "push_toggle_description": "即使你关闭了 {{productName}}，也会向此设备发送提醒。系统通知只在它打开时显示。",
+        "push_toggle_description": "即使你关闭了 {{productName}}，也会向此设备发送提醒。关闭它后，系统通知就会停止。",
         "push_turning_on": "正在开启…",
         "push_turning_off": "正在关闭…",
         "push_blocked_hint": "已被浏览器阻止 — 见上方。",

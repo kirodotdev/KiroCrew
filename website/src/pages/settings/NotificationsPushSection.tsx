@@ -22,8 +22,11 @@ import { i18nT } from '../../i18n/t'
  * and a one-line status under it says which way it is going. The hook only
  * sets `busy` inside those two calls and leaves `subscribed` untouched until
  * the call ends, so `busy && !subscribed` is "turning on" and
- * `busy && subscribed` is "turning off" with no extra state. `role="status"`
- * makes it a polite live region so assistive tech hears the change too.
+ * `busy && subscribed` is "turning off" with no extra state. While busy the
+ * switch already shows the position it is going to, so the switch and the
+ * line under it never disagree. The `role="status"` container stays mounted
+ * and empty when idle, and only its text changes: a live region that appears
+ * already holding its text is not announced by every screen reader.
  *
  * Its own file so the settings registry maps it to the `alerts` rail page
  * (settingsExtract FILE map) instead of the bare Notifications tab.
@@ -51,18 +54,22 @@ export function PushSection() {
         <SettingsToggle
           label={i18nT('pages.settings.notificationsPanel.push_toggle_label')}
           description={i18nT('pages.settings.notificationsPanel.push_toggle_description')}
-          checked={push.subscribed}
+          checked={push.busy ? !push.subscribed : push.subscribed}
           disabled={push.busy || blocked}
           describedBy={blocked ? blockedHintId : undefined}
           onChange={v => { if (v) void push.subscribe(); else void push.unsubscribe() }}
         />
-        {push.busy && (
-          <div role="status" data-testid="push-busy-status" className="text-[12px] text-muted">
-            {push.subscribed
-              ? i18nT('pages.settings.notificationsPanel.push_turning_off')
-              : i18nT('pages.settings.notificationsPanel.push_turning_on')}
-          </div>
-        )}
+        <div
+          role="status"
+          data-testid="push-busy-status"
+          className={push.busy ? 'text-[12px] text-muted' : 'sr-only'}
+        >
+          {push.busy
+            ? (push.subscribed
+                ? i18nT('pages.settings.notificationsPanel.push_turning_off')
+                : i18nT('pages.settings.notificationsPanel.push_turning_on'))
+            : null}
+        </div>
         {blocked && (
           <div id={blockedHintId} data-testid="push-blocked-hint" className="text-[12px] text-muted">
             {i18nT('pages.settings.notificationsPanel.push_blocked_hint')}

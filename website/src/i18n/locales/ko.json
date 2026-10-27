@@ -16862,7 +16862,7 @@
         "channel_apps": "앱 업데이트",
         "push_section": "푸시 알림",
         "push_toggle_label": "{{productName}}이(가) 닫혀 있어도 알림 받기",
-        "push_toggle_description": "{{productName}}을(를) 닫은 뒤에도 이 기기로 알림을 보냅니다. 시스템 알림은 열려 있을 때만 표시됩니다.",
+        "push_toggle_description": "{{productName}}을(를) 닫은 뒤에도 이 기기로 알림을 보냅니다. 시스템 알림은 닫으면 멈춥니다.",
         "push_turning_on": "켜는 중…",
         "push_turning_off": "끄는 중…",
         "push_blocked_hint": "브라우저에서 차단되었습니다 — 위를 참조하세요.",

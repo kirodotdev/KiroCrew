@@ -409,6 +409,8 @@ describe('NotificationsPanel', () => {
       render(<NotificationsPanel />, 'alerts')
       const toggle = screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
       expect(toggle.getAttribute('aria-disabled')).toBe('true')
+      // The switch shows where it is going, matching the line under it.
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
       const status = screen.getByRole('status')
       expect(status.textContent).toBe('Turning on…')
     } finally {
@@ -423,7 +425,7 @@ describe('NotificationsPanel', () => {
       render(<NotificationsPanel />, 'alerts')
       const toggle = screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
       expect(toggle.getAttribute('aria-disabled')).toBe('true')
-      expect(toggle.getAttribute('aria-checked')).toBe('true')
+      expect(toggle.getAttribute('aria-checked')).toBe('false')
       const status = screen.getByRole('status')
       expect(status.textContent).toBe('Turning off…')
     } finally {
@@ -432,9 +434,31 @@ describe('NotificationsPanel', () => {
     }
   })
 
-  it('shows no status line under the push toggle when nothing is in flight', () => {
+  it('keeps an empty status region under the push toggle when nothing is in flight', () => {
     render(<NotificationsPanel />, 'alerts')
     screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
-    expect(screen.queryByTestId('push-busy-status')).toBeNull()
+    expect(screen.getByTestId('push-busy-status').textContent).toBe('')
+  })
+
+  // A live region that mounts already holding its text is not announced by
+  // every screen reader, so the same element must exist before it is filled.
+  it('fills the already-mounted status region when a subscribe starts', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = () => (
+      <MemoryRouter initialEntries={['/settings?tab=notifications&sub=alerts']}>
+        <QueryClientProvider client={qc}><NotificationsPanel /></QueryClientProvider>
+      </MemoryRouter>
+    )
+    const view = rtlRender(tree())
+    const before = screen.getByTestId('push-busy-status')
+    mockPush.busy = true
+    try {
+      view.rerender(tree())
+      const after = screen.getByTestId('push-busy-status')
+      expect(after).toBe(before)
+      expect(after.textContent).toBe('Turning on…')
+    } finally {
+      mockPush.busy = false
+    }
   })
 })

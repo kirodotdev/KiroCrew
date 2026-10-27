@@ -17124,7 +17124,7 @@
         "channel_apps": "App-Aktualisierungen",
         "push_section": "Push-Benachrichtigungen",
         "push_toggle_label": "Benachrichtige mich auch, wenn {{productName}} geschlossen ist",
-        "push_toggle_description": "Sendet Benachrichtigungen an dieses Gerät, auch nachdem du {{productName}} geschlossen hast. Systembenachrichtigungen erscheinen nur, solange es geöffnet ist.",
+        "push_toggle_description": "Sendet Benachrichtigungen an dieses Gerät, auch nachdem du {{productName}} geschlossen hast. Systembenachrichtigungen enden, sobald du es schließt.",
         "push_turning_on": "Wird eingeschaltet…",
         "push_turning_off": "Wird ausgeschaltet…",
         "push_blocked_hint": "Im Browser blockiert — siehe oben.",

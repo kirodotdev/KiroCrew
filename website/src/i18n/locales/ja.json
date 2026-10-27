@@ -16850,7 +16850,7 @@
         "channel_apps": "アプリのアップデート",
         "push_section": "プッシュ通知",
         "push_toggle_label": "{{productName}} を閉じていても通知する",
-        "push_toggle_description": "{{productName}} を閉じた後もこの端末に通知を送ります。システム通知は開いている間だけ表示されます。",
+        "push_toggle_description": "{{productName}} を閉じた後もこの端末に通知を送ります。システム通知は閉じると止まります。",
         "push_turning_on": "オンにしています…",
         "push_turning_off": "オフにしています…",
         "push_blocked_hint": "ブラウザーでブロックされています — 上記を参照してください。",

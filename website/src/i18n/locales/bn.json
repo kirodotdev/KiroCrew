@@ -17124,7 +17124,7 @@
         "channel_apps": "অ্যাপ আপডেট",
         "push_section": "পুশ বিজ্ঞপ্তি",
         "push_toggle_label": "{{productName}} বন্ধ থাকলেও আমাকে জানাও",
-        "push_toggle_description": "{{productName}} বন্ধ করার পরেও এই ডিভাইসে অ্যালার্ট পাঠায়। সিস্টেম বিজ্ঞপ্তি শুধু এটি খোলা থাকলেই দেখা যায়।",
+        "push_toggle_description": "{{productName}} বন্ধ করার পরেও এই ডিভাইসে অ্যালার্ট পাঠায়। এটি বন্ধ করলেই সিস্টেম বিজ্ঞপ্তি থেমে যায়।",
         "push_turning_on": "চালু হচ্ছে…",
         "push_turning_off": "বন্ধ হচ্ছে…",
         "push_blocked_hint": "তোমার ব্রাউজার আটকে দিয়েছে — উপরে দেখো।",
