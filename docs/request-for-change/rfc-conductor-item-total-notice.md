@@ -1,11 +1,11 @@
 ---
 title: The goal conductor keeps its item total out of round reports and says it once past the cap
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by adlio
 created: 2026-10-20
-last-audited: 2026-10-20
-audited-at: 6432cad9ea
-doc-pr: null
+last-audited: 2026-10-27
+audited-at: ab57fba809
+doc-pr: 22427
 implementation-prs: [22417]
 tracking-issues: [22415]
 supersedes: []
@@ -14,12 +14,12 @@ superseded-by: []
 
 # RFC: The goal conductor keeps its item total out of round reports and says it once past the cap
 
-Status: accepted once this document merges. adlio (repository admin) made the
-decision in the conductor chat on 2026-10-20 and asked for it to land as its own
-RFC first; the approving maintainer's merge records acceptance. The
-implementation is open as
-[#22417](https://github.com/kirodotdev/KiroCrew/pull/22417) and rebases onto the
-base that carries this document. Every code reference below was read at
+Status: implemented. adlio (repository admin) made the decision in the
+conductor chat on 2026-10-20; it was accepted when
+[#22427](https://github.com/kirodotdev/KiroCrew/pull/22427) merged on
+2026-10-21, and
+[#22417](https://github.com/kirodotdev/KiroCrew/pull/22417) implements it,
+verified at `ab57fba809`. The design references below were read at
 `6432cad9ea`.
 
 This document lands on its own because it changes what the goal conductor says
@@ -71,14 +71,19 @@ Two constraints from the conductor's existing round-close rule shape how:
   every reset until the user replied.
 - **"Once" has to survive that reset.** The conductor's memory of having said it
   goes with the chat, so the state lives in its session ledger as an
-  `item_cap_notice` artifact. Every round-close `session_ledger_record` writes it:
-  `told the user at N` while `cap_exceeded` is true, `none` while it is false.
-  A `goal` write that sets `new_goal=true` or changes `item_cap` also writes
-  `none`, in the same turn and before any dispatch. The notice fires only on a
-  round where `cap_exceeded` is true and the stored value does not start with
-  `told`.
+  `item_cap_notice` artifact that records delivery, not cap state. Every
+  round-close `session_ledger_record` re-records it: `none` if a fresh
+  `work_ledger_read` shows `cap_exceeded` false; `told the user at N` only if
+  that turn's report gave the notice; otherwise the stored value, carried
+  forward unchanged. The turn that gives the notice also records `told the
+  user at N` in that same turn, whether or not it closes a round: a report
+  that pauses for no progress asks the user and closes no round, and the
+  reset after the user's reply would otherwise lose the notice. A `goal`
+  write that sets `new_goal=true` or changes `item_cap` also writes `none`, in
+  the same turn and before any dispatch. The notice fires in a round report whose read shows `cap_exceeded` true while the
+  stored value does not start with `told`.
 
-Rewriting the key every round matters for two reasons:
+Rewriting the key every round matters for three reasons:
 
 - **The artifacts map is bounded.** It keeps at most 32 keys
   (`_MAX_ARTIFACTS` in `src/kiro_crew/session_ledger_layout.py`) and the ledger
@@ -94,6 +99,13 @@ Rewriting the key every round matters for two reasons:
   both cases the old `told` would suppress the notice the new goal or new cap
   deserves. Clearing on the `goal` write itself means the next report past the
   cap names the cap the user now has.
+- **The cap is usually crossed after the report.** Items are created at
+  dispatch, which follows the round report in the same turn. A goal at 19 of
+  20 reports, dispatches to 23, and its round-close read already shows
+  `cap_exceeded` true although no notice was given. Writing `told` from cap
+  state there would suppress the notice for good; carrying the stored `none`
+  forward leaves it to the next round's report, which gives it once and
+  records `told the user at 23`.
 
 Unchanged: `item_cap`, `concurrency_cap` and their defaults (20 and 6);
 `goal_items_used` and `cap_exceeded` on `work_ledger_read`'s `conductor` block,
@@ -115,19 +127,22 @@ expected total is what gives the conductor a signal to surface.
 
 One PR, [#22417](https://github.com/kirodotdev/KiroCrew/pull/22417):
 
-- the conductor prompt in `agent.py` and the goal-conductor skill carry §2's
+- the conductor prompt in `agent_parts/spec_prompts.py` and the goal-conductor skill carry §2's
   rule, in the same words;
 - `src/kiro_crew/docs/work-ledger.md`, the `cap_exceeded` docstring in
   `src/kiro_crew/work_ledger_records.py` and the read comment in
-  `src/kiro_crew/dashboard/handlers/work_ledger.py` describe it;
+  `src/kiro_crew/dashboard/handlers/work_ledger_read.py` describe it;
 - `test/test_conductor_agent.py::test_back_to_back_rounds_keep_a_spend_bound`
-  pins both copies: the marker, its `none` mirror, and the absence of the
+  pins both copies: the delivery-based marker, and the absence of the
   per-report line and of a "keep going?" question.
 
 **Exit criteria:** neither the prompt nor the skill contains
-`items used: N of` or "in every round report"; both name the `item_cap_notice`
-marker, its `none` mirror at round close, and its clearing on a `goal` write
-that sets `new_goal=true` or changes `item_cap`; the test above passes.
+`items used: N of`, "in every round report" or a rule that writes `told` while
+`cap_exceeded` is true; both name the `item_cap_notice` marker, its re-record at
+every round close (`none` when `cap_exceeded` is false, `told the user at N`
+only when that turn's report gave the notice, otherwise carried forward), and
+its clearing on a `goal` write that sets `new_goal=true` or changes
+`item_cap`; the test above passes.
 
 ## 5. Backward compatibility
 
