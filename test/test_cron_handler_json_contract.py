@@ -269,7 +269,7 @@ async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
             )
             assert with_scope.status == 200
             app["state"].lessons.remove.assert_called_once_with(
-                "run the gate", "src/pkg", exact=False
+                "run the gate", "src/pkg", exact=False, keep_one=False
             )
 
             app["state"].lessons.remove.reset_mock()
@@ -279,7 +279,9 @@ async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert no_scope.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", None, exact=False)
+            app["state"].lessons.remove.assert_called_once_with(
+                "run the gate", None, exact=False, keep_one=False
+            )
 
 
 async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global() -> None:
@@ -356,7 +358,9 @@ async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global()
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert whitespace_selector.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", "   ", exact=False)
+            app["state"].lessons.remove.assert_called_once_with(
+                "run the gate", "   ", exact=False, keep_one=False
+            )
 
 
 # ── A damaged member store answers 503, not 500 ─────────────────────────────

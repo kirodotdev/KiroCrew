@@ -225,6 +225,16 @@ def schemas() -> list[dict[str, Any]]:
                             "scope='workspace'."
                         ),
                     },
+                    "keep_one": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional, default false. Remove only the extra "
+                            "copies: of the matching lessons, those with the "
+                            "same stored rule, NOT clause, tier and scope are collapsed to the "
+                            "oldest one. Different lessons are never removed "
+                            "in this mode, so use it to clean up duplicates."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -722,6 +732,10 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     for key, value in (("scope", tier_scope), ("workspace", workspace)):
         if isinstance(value, str) and value:
             payload[key] = value
+    # Forwarded only when set, so a call without it sends today's body.
+    keep_one = args.get("keep_one") is True
+    if keep_one:
+        payload["keep_one"] = True
     d = mcp_core._delete("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
@@ -752,7 +766,11 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     # removal would tell a remove-then-re-add consolidation its old lesson is
     # gone while it is still injected. A reply without the key reads as removed.
     if d.get("ok") is False:
+        if keep_one:
+            return f"No lessons were removed: no extra copies match: {query}"
         return f"No lessons were removed: nothing matches: {query}"
+    if keep_one:
+        return f"Removed extra copies of lessons matching: {query} (one of each kept)"
     return f"Removed lessons matching: {query}"
 
 

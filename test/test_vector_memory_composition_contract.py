@@ -347,7 +347,7 @@ _STORE_SIGNATURES = {
     "count_lessons": "(self) -> 'int'",
     "db": "(self) -> 'sqlite3.Connection'",
     "delete_episodic": "(self, mem_id: 'str', source: 'str' = 'user_explicit') -> 'bool'",
-    "delete_lesson": "(self, rule_substring: 'str', repo_scope: 'str | None' = None, *, exact: 'bool' = False) -> 'bool'",
+    "delete_lesson": "(self, rule_substring: 'str', repo_scope: 'str | None' = None, *, exact: 'bool' = False, keep_one: 'bool' = False) -> 'bool'",
     "delete_semantic": "(self, key: 'str', source: 'str', *, expect_value_json: 'str | None' = None, superseded_by: 'str | None' = None, supersede_reason: 'str | None' = None) -> 'bool'",
     "embed_episodic": "(self, text: 'str') -> 'list[float] | None'",
     "embed_lesson": "(self, rule: 'str') -> 'list[float] | None'",

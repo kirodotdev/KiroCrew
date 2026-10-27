@@ -1321,10 +1321,17 @@ class VectorMemoryStore:
         return _lessons.has_any_decodable_lesson(self)
 
     def delete_lesson(
-        self, rule_substring: str, repo_scope: str | None = None, *, exact: bool = False
+        self,
+        rule_substring: str,
+        repo_scope: str | None = None,
+        *,
+        exact: bool = False,
+        keep_one: bool = False,
     ) -> bool:
         """Delete lessons whose value contains rule_substring."""
-        return _lessons.delete_lesson(self, rule_substring, repo_scope, exact=exact)
+        return _lessons.delete_lesson(
+            self, rule_substring, repo_scope, exact=exact, keep_one=keep_one
+        )
 
     def get_lessons_context(
         self,
