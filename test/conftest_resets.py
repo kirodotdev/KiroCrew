@@ -239,6 +239,21 @@ def _reset_degraded_config_observations():
 
 
 @pytest.fixture(autouse=True)
+def _forget_sandbox_launch_mark():
+    """Forget that an entry point saw the sandbox marker.
+
+    ``sandbox_launch_mark`` never forgets within a process, by design. A test that sets
+    ``KIROCREW_SANDBOX_ACTIVE`` and runs ``cli.main`` would otherwise make every later
+    enterprise test in the worker boot as a sandboxed child.
+    """
+    from kiro_crew import sandbox_launch_mark
+
+    sandbox_launch_mark._launched_in_sandbox = False
+    yield
+    sandbox_launch_mark._launched_in_sandbox = False
+
+
+@pytest.fixture(autouse=True)
 def _reset_channel_turn_ceiling():
     """Forget the channel turn ceiling's process-global per-conversation counts.
 

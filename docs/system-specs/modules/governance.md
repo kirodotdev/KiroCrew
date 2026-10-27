@@ -1506,6 +1506,18 @@ flagging that child would refuse to start an app on a host running perfectly wel
 skip the tier and drop it to a local ceiling — the failure cache-only mode exists to
 prevent.
 
+### Sandboxed processes in an enterprise build
+
+An enterprise build always enters the central tier, and that includes a Kiro Crew MCP server kiro-cli starts inside the agent sandbox (`mcp_entry.slim_server` → `boot_platform`). That process cannot reach the Kiro sign-in, so it can never fetch. It runs in cache-only mode instead, with no flag:
+
+| Part | Behaviour | Where |
+|---|---|---|
+| Child | `cache_only()` is true for any enterprise process the sandbox launcher started, so it resolves the ceiling through `_load_cache_only`: no fetch, no sign-in, and a refusal when the cache is missing, torn, for another source, unusable or past the staleness bound. `refresh_now` returns rejected without fetching. | `policy_distribution_source.cache_only` |
+| Marker | "Started by the launcher" is `KIROCREW_SANDBOX_ACTIVE`. `cli.main` and `mcp_entry` drop it at start, so they note it first. It picks where the ceiling comes from, never whether one applies: a child that clears it tries to fetch, which the sandbox denies. | `sandbox_launch_mark` |
+| Sandbox | Every sandboxed spawn of an enterprise build lifts `policy_cache` the way an app backend's spawn does, and the plan keeps a lifted cache read-only (`sandbox_plan.is_policy_cache_dir`). The vault, `kas` and every other credential path stay hidden. `policy_cache` is pre-created, so its seal has a target before the first fetch. | `sandbox_tiers.enterprise_policy_cache_view`, `sandbox_wrap.wrap_argv` |
+
+The cache holds no credential: `policy.json` is the document the agent is already governed by, `policy.meta.json` carries a digest of the build's fixed source plus the fetch validators, and `policy.lock` is empty. A long-running child keeps the ceiling it booted with until its session restarts. An oss build is unchanged: the cache stays hidden and nothing is cache-only without the flag.
+
 ## Policy authenticity (`identity.signature`)
 
 Without a signature check, a policy's integrity rests entirely on **filesystem

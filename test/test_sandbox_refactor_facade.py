@@ -166,6 +166,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _bundled_kas_targets_cached
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
         crew_home_visible_spellings carveout_chain_has_planted_link
+        enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
+        _policy_cache_meta_names_its_source
         carveout_shadowed_by_foreign_mask _STRICT_DIRS _STANDARD_DIRS _CC_DIRS _resolves_to
         _crew_home_alias_roots _relocated_crew_targets _POD_OS_HOME_GRANT_STORE_LEAVES
         _POD_OS_HOME_MASKED_SUBLEAVES _pod_os_home_targets _relocated_policy_cache_dirs

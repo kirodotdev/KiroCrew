@@ -451,8 +451,19 @@ def cache_only() -> bool:
     The recorded-source check is skipped in this mode, and that is sound rather than a
     relaxation: there is one cache, the parent wrote it, and the parent applied the
     repoint rule when it did. The child is inheriting a decision, not making one.
+
+    **An enterprise build puts every sandboxed process in this mode too**, with no flag:
+    a Kiro Crew MCP server kiro-cli starts inside the agent sandbox enters the central
+    tier (RFC D2) but can reach neither the sign-in nor the control plane, and the
+    sandbox shows it the cache read-only (``sandbox_tiers.enterprise_policy_cache_view``).
+    "Sandboxed" is the launcher's marker, which the entry points note before they drop it
+    (``sandbox_launch_mark``).
     """
-    return os.environ.get(POLICY_CACHE_ONLY_ENV, "").strip().lower() in ENV_TRUTHY
+    if os.environ.get(POLICY_CACHE_ONLY_ENV, "").strip().lower() in ENV_TRUTHY:
+        return True
+    from kiro_crew import sandbox_launch_mark
+
+    return _is_enterprise() and sandbox_launch_mark.launched_in_sandbox()
 
 
 def _env_number(name: str, *, whole: bool) -> Optional[float]:

@@ -643,6 +643,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _PACKAGED_INSTALL_DIR_NAMES,
         _POD_OS_HOME_GRANT_STORE_LEAVES,
         _POD_OS_HOME_MASKED_SUBLEAVES,
+        _POLICY_CACHE_META_LEAF,
         _PYTHON_ENV_PREFIXES,
         _SANDBOX_MODE_ALIASES,
         _SANDBOX_MODE_FALLBACK,
@@ -651,6 +652,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _STRICT_DIRS,
         _TIER_ORDINALS,
         _bundled_kas_targets_cached,
+        _caller_mask_contains,
         _clamp_sandbox_mode,
         _clamp_sandbox_mode_to_floor,
         _crew_home_alias_roots,
@@ -661,6 +663,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _install_root_targets_with,
         _mode_to_level,
         _pod_os_home_targets,
+        _policy_cache_meta_names_its_source,
         _relocated_crew_targets,
         _relocated_policy_cache_dirs,
         _resolved_install_root_targets,
@@ -673,6 +676,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         configured_sandbox_mode,
         crew_home_visible_spellings,
         effective_sandbox_mode,
+        enterprise_policy_cache_view,
         install_root_targets_for,
     )
     from kiro_crew.sandbox_unavailable import (  # noqa: F401
