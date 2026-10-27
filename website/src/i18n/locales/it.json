@@ -8323,7 +8323,9 @@
       "answer_at_limit_other": "Risposta troncata a {{count}} caratteri",
       "previous_question": "Domanda precedente",
       "question_x_of_y": "Domanda {{current}} di {{total}}",
-      "submit": "Invia"
+      "submit": "Invia",
+      "select_one_rule": "Scegli un’opzione. Sceglila di nuovo per annullarla.",
+      "select_many_rule": "Scegli una o più opzioni."
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "Annulla e torna all'input",

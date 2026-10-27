@@ -8190,7 +8190,9 @@
       "answer_at_limit_other": "उत्तर {{count}} वर्ण पर कट गया",
       "previous_question": "पिछला प्रश्न",
       "question_x_of_y": "प्रश्न {{current}} / {{total}}",
-      "submit": "सबमिट करें"
+      "submit": "सबमिट करें",
+      "select_one_rule": "एक विकल्प चुनो। साफ़ करने के लिए उसे फिर से चुनो।",
+      "select_many_rule": "एक या अधिक विकल्प चुनो।"
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "रद्द करें और इनपुट पर वापस जाएँ",

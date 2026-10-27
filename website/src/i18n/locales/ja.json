@@ -8057,7 +8057,9 @@
       "answer_at_limit_other": "回答は {{count}} 文字で切り詰められました",
       "previous_question": "前の質問",
       "question_x_of_y": "質問 {{current}} / {{total}}",
-      "submit": "送信"
+      "submit": "送信",
+      "select_one_rule": "オプションを1つ選択してください。もう一度選択すると解除されます。",
+      "select_many_rule": "オプションを1つ以上選択してください。"
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "キャンセルして入力に戻る",

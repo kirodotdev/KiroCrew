@@ -3958,7 +3958,9 @@
       "chars_left_one": "{{count}} character left",
       "chars_left_other": "{{count}} characters left",
       "answer_at_limit_one": "Answer cut at {{count}} character",
-      "answer_at_limit_other": "Answer cut at {{count}} characters"
+      "answer_at_limit_other": "Answer cut at {{count}} characters",
+      "select_one_rule": "Choose one option. Choose it again to clear it.",
+      "select_many_rule": "Choose one or more options."
     },
     "restartRequiredBadge": {
       "label": "changes need a restart",

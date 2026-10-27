@@ -8057,7 +8057,9 @@
       "answer_at_limit_other": "回答已截断至 {{count}} 个字符",
       "previous_question": "上一个问题",
       "question_x_of_y": "问题 {{current}} / {{total}}",
-      "submit": "提交"
+      "submit": "提交",
+      "select_one_rule": "选择一个选项。再次选择可清除。",
+      "select_many_rule": "选择一个或多个选项。"
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "取消并退回到输入框",

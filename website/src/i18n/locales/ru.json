@@ -8456,7 +8456,9 @@
       "answer_at_limit_other": "Ответ обрезан до {{count}} символа",
       "previous_question": "Предыдущий вопрос",
       "question_x_of_y": "Вопрос {{current}} из {{total}}",
-      "submit": "Отправить"
+      "submit": "Отправить",
+      "select_one_rule": "Выбери один вариант. Выбери его ещё раз, чтобы снять выбор.",
+      "select_many_rule": "Выбери один или несколько вариантов."
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "Отменить и вернуть в поле ввода",

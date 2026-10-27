@@ -8323,7 +8323,9 @@
       "answer_at_limit_other": "Resposta cortada em {{count}} caracteres",
       "previous_question": "Pergunta anterior",
       "question_x_of_y": "Pergunta {{current}} de {{total}}",
-      "submit": "Enviar"
+      "submit": "Enviar",
+      "select_one_rule": "Escolha uma opção. Escolha-a de novo para limpá-la.",
+      "select_many_rule": "Escolha uma ou mais opções."
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "Cancelar e voltar para a entrada",

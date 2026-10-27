@@ -8190,7 +8190,9 @@
       "answer_at_limit_other": "Antwort bei {{count}} Zeichen abgeschnitten",
       "previous_question": "Vorherige Frage",
       "question_x_of_y": "Frage {{current}} von {{total}}",
-      "submit": "Absenden"
+      "submit": "Absenden",
+      "select_one_rule": "Wähle eine Option. Wähle sie erneut, um die Auswahl aufzuheben.",
+      "select_many_rule": "Wähle eine oder mehrere Optionen."
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "Abbrechen und zur Eingabe zurückkehren",

@@ -8057,7 +8057,9 @@
       "answer_at_limit_other": "답변이 {{count}}자에서 잘렸습니다",
       "previous_question": "이전 질문",
       "question_x_of_y": "질문 {{current}} / {{total}}",
-      "submit": "제출"
+      "submit": "제출",
+      "select_one_rule": "옵션을 하나 선택하세요. 다시 선택하면 해제됩니다.",
+      "select_many_rule": "옵션을 하나 이상 선택하세요."
     },
     "queueStack": {
       "cancel_and_move_back_to_input": "취소하고 입력창으로 되돌리기",
