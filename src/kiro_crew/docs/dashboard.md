@@ -68,7 +68,7 @@ Create and manage cron jobs, organize them in folders, and switch between list, 
 
 ### Developer (`/settings/developer`)
 
-**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**.
+**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**. MCP Management is no longer a Developer page: `/developer?tab=mcp-pool` and `/settings/developer/mcp-pool` redirect to **Customize → Connections → MCP Servers**, where it is a section below the servers list.
 
 ### Logs (`/logs`)
 

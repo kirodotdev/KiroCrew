@@ -2,8 +2,9 @@ import { useEffect } from 'react'
 import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { settingsPath } from '../components/settingsPath'
 import { AGENT_HARNESS_SETTINGS_TAB } from './developer/kiroSignInLink'
-import { DEVELOPER_FEATURE_PREVIEWS_SUB, DEVELOPER_SUBS } from './settings/developerSubs'
+import { DEVELOPER_FEATURE_PREVIEWS_SUB, DEVELOPER_SUBS, LEGACY_DEVELOPER_MCP_POOL_SUB } from './settings/developerSubs'
 import { FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from './settings/FeaturePreviewsSection'
+import { MCP_MANAGEMENT_PATH } from './overview/McpShareRefusedNotice'
 
 /** The tab key the coding-agent switch had on this route. It lives in
  *  Settings > Agent Harness. */
@@ -34,6 +35,11 @@ export default function DeveloperPage() {
     if (tab === LEGACY_AGENT_BACKEND_TAB) {
       const highlight = qs.get('highlight') ?? undefined
       navigate(settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB, highlight }), { replace: true })
+      return
+    }
+    // MCP Management left Developer for Customize → Connections → MCP Servers.
+    if (tab === LEGACY_DEVELOPER_MCP_POOL_SUB) {
+      navigate(MCP_MANAGEMENT_PATH, { replace: true })
       return
     }
     const sub = tab && DEVELOPER_SUBS.includes(tab) ? tab : null

@@ -32,8 +32,8 @@ rewriter's own resolution (:mod:`kiro_crew.mcp_gateway.launch_resolve`), and
 records exactly that launch -- so an agent that edits a spec after the click,
 before the next gateway start rewrites the overlays, gets its launch refused.
 A store that does not exist or is empty approves no launch. Existing stubs
-require an operator approval through Settings → MCP Management before the daemon
-may run their backends outside the sandbox.
+require an operator approval through MCP Management (Customize → Connections →
+MCP Servers) before the daemon may run their backends outside the sandbox.
 
 Standard library only (plus the shared hashing leaf and ``config.paths``), for
 the same reason as :mod:`kiro_crew.mcp_gateway.hashing`: the rewriter sits on

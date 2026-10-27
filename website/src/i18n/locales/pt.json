@@ -13725,6 +13725,7 @@
       "connection_unreachable": "Não foi possível contactar {{provider}} para verificar esta conexão.",
       "connection_views": "Visualizações de conexões",
       "connections": "Conexões",
+      "mcp_management_heading": "Gerenciamento de MCP",
       "could_not_load_status": "Não foi possível carregar o status das conexões. Os cartões podem estar desatualizados.",
       "disconnect": "Desconectar",
       "disconnect_census_incomplete": "A autorização armazenada foi mantida porque não foi possível ler uma fonte de configuração para descartar que outro servidor a use. Verifique a configuração do seu servidor e desconecte novamente.",
@@ -14514,9 +14515,6 @@
         "logs": {
           "label": "Logs"
         },
-        "mcpPool": {
-          "label": "Gerenciamento de MCP"
-        },
         "memory": {
           "label": "Memória"
         },
@@ -15268,6 +15266,7 @@
       "diff_env_removed": "Env removida: {{names}}",
       "remove_mark": "Remover",
       "footprint_failed": "Não foi possível ler quanta memória os servidores MCP usam.",
+      "footprint_owner_only": "Apenas o proprietário da crew vê os números de memória.",
       "review_what_approve_does": "Aprovar: uma só cópia executa isto para todos os chats, fora do sandbox deles. Pular: continua rodando dentro de cada chat.",
       "share_risk": "Fora do sandbox, um servidor compartilhado pode ler e alterar os seus arquivos, como um programa que você mesmo inicia.",
       "review_when_safe": "Aprove um servidor se você mesmo o adicionou e o comando mostrado é o que você espera."

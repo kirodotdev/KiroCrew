@@ -13217,6 +13217,7 @@
       "connection_unreachable": "{{provider}}에 연결 상태를 확인하기 위해 접근할 수 없었습니다.",
       "connection_views": "연결 보기",
       "connections": "연결",
+      "mcp_management_heading": "MCP 관리",
       "could_not_load_status": "연결 상태를 불러올 수 없습니다. 카드가 최신 정보가 아닐 수 있습니다.",
       "disconnect": "연결 해제",
       "disconnect_census_incomplete": "구성 소스를 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 서버 구성을 확인한 후 다시 연결 해제하세요.",
@@ -13988,9 +13989,6 @@
         "logs": {
           "label": "로그"
         },
-        "mcpPool": {
-          "label": "MCP 관리"
-        },
         "memory": {
           "label": "메모리"
         },
@@ -14710,6 +14708,7 @@
       "diff_env_removed": "제거된 환경 변수: {{names}}",
       "remove_mark": "제거",
       "footprint_failed": "MCP 서버의 메모리 사용량을 읽을 수 없습니다.",
+      "footprint_owner_only": "메모리 수치는 크루 소유자만 볼 수 있습니다.",
       "review_what_approve_does": "승인: 복사본 하나가 모든 채팅을 위해 이것을, 각 채팅의 샌드박스 밖에서 실행합니다. 건너뛰기: 각 채팅 안에서 계속 실행됩니다.",
       "share_risk": "샌드박스 밖에서는 공유 서버가 직접 실행한 프로그램처럼 파일을 읽고 변경할 수 있습니다.",
       "review_when_safe": "직접 추가한 서버이고 표시된 명령이 예상한 것과 같다면 승인하세요."

@@ -13471,6 +13471,7 @@
       "connection_unreachable": "{{provider}} konnte zur Prüfung dieser Verbindung nicht erreicht werden.",
       "connection_views": "Verbindungsansichten",
       "connections": "Verbindungen",
+      "mcp_management_heading": "MCP-Verwaltung",
       "could_not_load_status": "Der Verbindungsstatus konnte nicht geladen werden. Die Karten sind möglicherweise veraltet.",
       "disconnect": "Trennen",
       "disconnect_census_incomplete": "Die gespeicherte Berechtigung wurde beibehalten, weil eine Konfigurationsquelle nicht gelesen werden konnte, um auszuschließen, dass ein anderer Server sie verwendet. Überprüfen Sie Ihre Serverkonfiguration und trennen Sie erneut.",
@@ -14251,9 +14252,6 @@
         "logs": {
           "label": "Protokolle"
         },
-        "mcpPool": {
-          "label": "MCP-Verwaltung"
-        },
         "memory": {
           "label": "Erinnerung"
         },
@@ -14989,6 +14987,7 @@
       "diff_env_removed": "Env entfernt: {{names}}",
       "remove_mark": "Entfernen",
       "footprint_failed": "Der Speicherverbrauch der MCP-Server konnte nicht gelesen werden.",
+      "footprint_owner_only": "Die Speicherwerte sieht nur der Crew-Eigentümer.",
       "review_what_approve_does": "Freigeben: Eine Kopie führt dies für alle Chats aus, außerhalb ihrer Sandbox. Überspringen: Es läuft weiter in jedem Chat.",
       "share_risk": "Außerhalb der Sandbox kann ein geteilter Server deine Dateien lesen und ändern, wie ein Programm, das du selbst startest.",
       "review_when_safe": "Gib einen Server frei, wenn du ihn selbst hinzugefügt hast und der angezeigte Befehl deiner Erwartung entspricht."

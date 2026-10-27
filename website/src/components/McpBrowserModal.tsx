@@ -193,6 +193,11 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
       setInstalledOverride(prev => new Set(prev).add(key))
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
       queryClient.invalidateQueries({ queryKey: ['mcp-discover'] })
+      // MCP Management (#24920) shares the MCP Servers panel and reads
+      // ['mcpGatewayServers'] under staleTime: Infinity, so a registry install
+      // otherwise leaves the new server without a Management row / stub control
+      // until a reload. Same refresh the custom-add, edit and apply paths do.
+      queryClient.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
     },
     onError: (err, server) => {
       const key = serverKey(server)
