@@ -44,6 +44,34 @@ def test_parse_gitlab_issue_url_with_nested_group() -> None:
     assert ref.url == "https://gitlab.com/acme/platform/service/-/issues/42"
 
 
+def test_parse_gitlab_work_item_url_is_an_issue() -> None:
+    ref = source.parse_source_url("https://gitlab.com/acme/platform/service/-/work_items/42")
+    assert ref.provider == "gitlab"
+    assert ref.project == "acme/platform/service"
+    assert ref.number == 42
+    assert ref.kind == "issue"
+    assert ref.url == "https://gitlab.com/acme/platform/service/-/work_items/42"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/groups/acme/-/work_items/5",
+        "https://gitlab.com/Groups/acme/sub/-/work_items/5",
+    ],
+)
+def test_parse_gitlab_group_work_item_is_not_an_issue(url: str) -> None:
+    """A group work item is an epic: the project issues API cannot fetch it."""
+    with pytest.raises(ValueError):
+        source.parse_source_url(url)
+
+
+def test_parse_gitlab_project_named_like_groups_still_parses_work_item() -> None:
+    ref = source.parse_source_url("https://gitlab.com/acme/groups/-/work_items/7")
+    assert ref.project == "acme/groups"
+    assert ref.kind == "issue"
+
+
 def test_parse_gitlab_merge_request_still_reports_change_kind() -> None:
     ref = source.parse_source_url("https://gitlab.com/acme/platform/-/merge_requests/9")
     assert ref.kind == "change"

@@ -574,6 +574,15 @@ describe('parseSourceLinkUrl', () => {
       .toMatchObject({ provider: 'gitlab', number: 4, repo: 'service', kind: 'change' })
     expect(parseSourceLinkUrl('https://gitlab.com/acme/service/-/issues/8'))
       .toMatchObject({ provider: 'gitlab', number: 8, repo: 'service', kind: 'issue' })
+    expect(parseSourceLinkUrl('https://gitlab.com/acme/service/-/work_items/9'))
+      .toMatchObject({ provider: 'gitlab', number: 9, repo: 'service', kind: 'issue' })
+  })
+
+  it('rejects a GitLab group work item (an epic), which no issue fetch can load', () => {
+    expect(parseSourceLinkUrl('https://gitlab.com/groups/acme/-/work_items/5')).toBeNull()
+    expect(parseSourceLinkUrl('https://gitlab.com/Groups/acme/sub/-/work_items/5')).toBeNull()
+    expect(parseSourceLinkUrl('https://gitlab.com/acme/groups/-/work_items/7'))
+      .toMatchObject({ provider: 'gitlab', number: 7, repo: 'groups', kind: 'issue' })
   })
 
   it('canonicalises the url, dropping query, fragment and www', () => {

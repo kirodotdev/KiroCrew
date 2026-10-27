@@ -516,11 +516,12 @@ class TestChatSlot:
         issue = "https://github.com/acme/widgets/issues/13"
         mr = "https://gitlab.com/acme/widgets/-/merge_requests/14"
         gitlab_issue = "https://gitlab.com/acme/widgets/-/issues/15"
-        slot.append("assistant", f"{pr} {issue} {mr} {gitlab_issue}")
+        work_item = "https://gitlab.com/acme/widgets/-/work_items/16"
+        slot.append("assistant", f"{pr} {issue} {mr} {gitlab_issue} {work_item}")
 
         payload = slot.to_dict()
 
-        assert payload["source_links_total"] == 4
+        assert payload["source_links_total"] == 5
         # Order-insensitive on purpose: this pins the kind MAPPING, and the
         # recency ordering has its own tests below. Asserting a sequence here
         # made it a second, accidental ordering oracle.
@@ -529,8 +530,16 @@ class TestChatSlot:
             issue: "issue",
             mr: "change",
             gitlab_issue: "issue",
+            work_item: "issue",
         }
         assert all("kind" in link for link in payload["source_links"])
+
+    def test_group_work_item_link_yields_no_chip(self):
+        slot = _ChatSlot("s1")
+        slot.append("assistant", "epic https://gitlab.com/groups/acme/-/work_items/5")
+
+        assert slot._pr_source_links() == []
+        assert slot.to_dict()["source_links_total"] == 0
 
     def test_issue_links_never_inherit_a_chip_status(self, monkeypatch):
         """The chip-status cache is pull-request-only, so an issue entry must

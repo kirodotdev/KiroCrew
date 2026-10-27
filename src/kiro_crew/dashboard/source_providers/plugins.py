@@ -200,7 +200,7 @@ def source_link_path_markers() -> tuple[str, ...]:
     Bounded per plugin and validated, since a marker of ``"/"`` would defeat the
     prefilter it exists to be.
     """
-    markers = ["/pull/", "/merge_requests/", "/issues/", "/browse/"]
+    markers = ["/pull/", "/merge_requests/", "/issues/", "/work_items/", "/browse/"]
     # Bitbucket Server pull requests live under ``/pull-requests/``, which no
     # other marker covers. Offered only while a Server host is listed, so a
     # transcript scan with no such host does exactly the work it always did.
