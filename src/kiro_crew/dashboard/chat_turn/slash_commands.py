@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACT_FAIL_REASON_MAX_CHARS,
+        COMPACT_FRESH_SESSION_NOTICE,
         COMPACT_REPLAY_PENDING_NOTICE,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -761,6 +762,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
     client = turn.client
     first_word = turn.first_word
     saw_compaction = turn.saw_compaction
+    session_key = turn.session_key
     slot = turn.slot
     state = turn.state
     # /compact acknowledged but compaction deferred — send a lightweight
@@ -810,6 +812,20 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
             # whole compaction timeout. Nothing was compacted, so skills
             # context is not re-armed and the lease stays for the next prompt.
             _append_compaction_notice(state, slot, COMPACT_REPLAY_PENDING_NOTICE)
+        elif (
+            not capabilities_of(client).compacts_inline
+            and state.sessions.first_turn_history_owed_pending(session_key) is True
+        ):
+            # A FRESH provider session (a brand-new chat) that no ordinary
+            # prompt has reached yet: the first-turn history debt is armed at
+            # admission and only a kept non-slash turn settles it, so the
+            # native session holds no conversation. kiro-cli ends this turn
+            # with "Conversation too short to compact." and sends no
+            # compaction status, the same shape as the replay case
+            # above. Answer now rather than wait out the compaction timeout;
+            # nothing was compacted, so the debt and skills context stay as
+            # they are for the next prompt.
+            _append_compaction_notice(state, slot, COMPACT_FRESH_SESSION_NOTICE)
         elif capabilities_of(client).compacts_inline:
             _restore_skills_context_after_compaction(turn)
             msg = "✅ Conversation compacted."
