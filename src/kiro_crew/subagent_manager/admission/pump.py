@@ -1684,6 +1684,7 @@ class _PumpMixin(ManagerComponent):
             # settles the failure before allocating a provider, for every store.
             info.error = "memory_unavailable: could not persist this run's memory binding"
             return
+        info._folder_seeded = True
 
         # Written HERE, past the folder write, for the reason the stat below is:
         # this is the point a start is confirmed. A run whose memory binding

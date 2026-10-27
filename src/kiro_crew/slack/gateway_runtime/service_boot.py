@@ -889,11 +889,20 @@ async def run(self: GatewayOrchestrator) -> None:
     self._init_mcp_discovery()
     self._init_subagents()
     self._init_task_runner()
-    if not self._no_dashboard:
-        await self._init_dashboard()
-        self._announce_cron_quarantine()
-    else:
-        await self._init_api_server()
+    try:
+        if not self._no_dashboard:
+            await self._init_dashboard()
+            self._announce_cron_quarantine()
+        else:
+            await self._init_api_server()
+    finally:
+        # The surface the boot orphan sweep's notices go to is up: the dashboard
+        # has restored the parents' tabs, or the API-only server (no tabs) is
+        # listening. A start that failed releases them too, so the sweep can
+        # still send the owner DM digest; if the process exits first, the runs
+        # stay untombstoned and the next start announces them.
+        if self.subagent_mgr is not None:
+            self.subagent_mgr.release_orphan_notices()
     # The socket is bound. Move the boot heap into the permanent generation so
     # later full collections stop re-scanning it (~150k objects, a 50 ms
     # stop-the-world pass on the event loop), then turn cyclic GC back on:

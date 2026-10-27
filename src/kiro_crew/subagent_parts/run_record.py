@@ -313,6 +313,19 @@ class SubagentInfo:
     # returns, so this is the only sign the parent was never told, and the run
     # loop writes no ``delivered`` tombstone while it is set.
     _report_undelivered: bool = False
+    # True when the shutdown cancelled this run and left it for the next start:
+    # its parent is a dashboard chat, so no ``cancelled`` tombstone was written.
+    # The report skips ``_on_done`` and marks nothing delivered, so held wave
+    # siblings and owed reports stay visible to the next start's orphan sweep,
+    # which announces the run in that tab, with a resume hint while its
+    # conversation survives. A report made now could only queue in a slot that
+    # does not survive the restart or start a turn the shutdown refuses.
+    _left_for_next_start: bool = False
+    # True once ``create_agent_folder`` wrote this run's ``state.json``: the file
+    # the next start's orphan sweep finds runs by. Kept in memory so the shutdown
+    # can decide which runs to leave to that sweep without reading the disk on
+    # the event loop.
+    _folder_seeded: bool = False
     # True when the gateway QUEUED this completion's injection because the
     # parent's slot was busy. Delivery is not consumption: the announce sits in
     # the slot queue until a turn drains it, and that wait is bounded only by the

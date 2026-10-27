@@ -718,6 +718,10 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # that yield is ``run()``'s memory barrier. Hold the pump until
         # ``_start_subagent_dispatch_after_memory_ready`` opens it.
         defer_queue_dispatch=True,
+        # The boot orphan sweep starts with the reaper below, before the dashboard
+        # has restored the tabs its notices belong in. ``run()`` releases them
+        # once the dashboard or API server start has returned or failed.
+        hold_orphan_notices=True,
     )
     # A parent that ends takes its children with it, on every backend. The
     # session lifecycle owns the boundary and drives both halves at each of its

@@ -463,6 +463,8 @@ class TerminalCoordinator(ManagerComponent):
             # Owed only to the parent that ended, so this skip settles it.
             info._report_delivered = True
             return True
+        if info._left_for_next_start:  # reported by the next start's orphan sweep
+            return True
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further

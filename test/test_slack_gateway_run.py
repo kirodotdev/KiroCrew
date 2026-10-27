@@ -11,6 +11,7 @@ import asyncio
 import logging
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -528,6 +529,90 @@ class TestRunFreezesBootHeap:
         orch = _make_orchestrator(no_dashboard=True)
         freezes = await self._run_and_record_freezes(orch, monkeypatch)
         assert freezes == [(0, 1, False)]
+
+
+class _BootStopsHere(BaseException):
+    """Ends ``run()`` at the release, so no boot step after it needs a fake."""
+
+
+class TestOrphanNoticeRelease:
+    """``run()`` releases the boot orphan sweep's held notices once the surface is up.
+
+    The sweep starts with the subagent manager, before the dashboard has restored
+    the tabs its notices go to. The release must follow the dashboard (or API-only
+    server) start, and must also run when that start raises, so the owner DM digest
+    still goes out.
+    """
+
+    @staticmethod
+    def _booting(*, no_dashboard: bool, start_raises: bool):
+        orch = _make_orchestrator(no_dashboard=no_dashboard)
+        events: list[str] = []
+
+        def _release() -> None:
+            events.append("release")
+            raise _BootStopsHere()
+
+        def _init_subagents() -> None:
+            orch.subagent_mgr = SimpleNamespace(release_orphan_notices=_release)
+            events.append("subagents")
+
+        async def _start_surface() -> None:
+            events.append("surface")
+            if start_raises:
+                raise RuntimeError("the dashboard port is taken")
+
+        orch._init_services = AsyncMock()
+        orch._start_embeddings = AsyncMock()
+        orch._auto_migrate_memory = AsyncMock()
+        orch._init_cron = AsyncMock()
+        orch._init_heartbeat = AsyncMock()
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = _init_subagents
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = _start_surface
+        orch._init_api_server = _start_surface
+        orch._announce_cron_quarantine = MagicMock()
+        orch._init_autonudge = AsyncMock()
+        orch._check_for_updates = AsyncMock()
+        orch._shutdown = AsyncMock()
+        return orch, events
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("no_dashboard", [False, True], ids=["dashboard", "api-only"])
+    @pytest.mark.parametrize("start_raises", [False, True], ids=["started", "start-raised"])
+    async def test_the_release_follows_the_surface_start(self, no_dashboard, start_raises):
+        import kiro_crew
+
+        orch, events = self._booting(no_dashboard=no_dashboard, start_raises=start_raises)
+        # Set like the other boot tests: a run() that never reaches the release
+        # leaves at the shutdown wait instead of blocking there.
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(loop, "add_signal_handler"))
+                for target in (
+                    "kiro_crew.platform_compat.raise_nofile_soft_limit",
+                    "kiro_crew.slack.events.init_socket_mode",
+                    "kiro_crew.slack.interactions.init",
+                    "kiro_crew.slack.events.SeenCache",
+                    "kiro_crew.session.cleanup_orphaned_sessions",
+                    "os._exit",
+                ):
+                    stack.enter_context(patch(target))
+                stack.enter_context(
+                    patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+                )
+                with pytest.raises(_BootStopsHere) as stopped:
+                    await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+
+        assert events == ["subagents", "surface", "release"]
+        if start_raises:
+            # The release ran while the start's own error was propagating.
+            assert isinstance(stopped.value.__context__, RuntimeError)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

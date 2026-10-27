@@ -522,7 +522,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "__getattr__": ("method", "(self, name: 'str') -> 'Any'"),
     "__init__": (
         "method",
-        "(self, sessions: 'SessionManager', ctx_builder: 'ContextBuilder', on_done: 'AnnounceCallback | None' = None, max_concurrent: 'int' = 3, default_turn_limit: 'int' = 1000, default_timeout: 'int' = 10800, startup_timeout: 'int' = 0, stall_idle_secs: 'int' = 120, on_tool_approval: 'ToolApprovalCallback | None' = None, on_tool_approval_factory: \"Callable[['SubagentInfo'], Callable[[LLMEvent], Awaitable[bool]]] | None\" = None, on_spawn_approval: 'SpawnApprovalCallback | None' = None, is_yolo: 'Callable[[], bool] | None' = None, on_event: 'SubagentEventCallback | None' = None, on_orphan_notify: 'Callable[..., Awaitable[bool | str]] | None' = None, on_orphan_dm: 'Callable[[str], Awaitable[bool]] | None' = None, completion_keep: 'str' = 'head', completion_keep_chars: 'int' = 3000, memory_mode_for_session: 'Callable[[str], str] | None' = None, defer_queue_dispatch: 'bool' = False)",
+        "(self, sessions: 'SessionManager', ctx_builder: 'ContextBuilder', on_done: 'AnnounceCallback | None' = None, max_concurrent: 'int' = 3, default_turn_limit: 'int' = 1000, default_timeout: 'int' = 10800, startup_timeout: 'int' = 0, stall_idle_secs: 'int' = 120, on_tool_approval: 'ToolApprovalCallback | None' = None, on_tool_approval_factory: \"Callable[['SubagentInfo'], Callable[[LLMEvent], Awaitable[bool]]] | None\" = None, on_spawn_approval: 'SpawnApprovalCallback | None' = None, is_yolo: 'Callable[[], bool] | None' = None, on_event: 'SubagentEventCallback | None' = None, on_orphan_notify: 'Callable[..., Awaitable[bool | str]] | None' = None, on_orphan_dm: 'Callable[[str], Awaitable[bool]] | None' = None, completion_keep: 'str' = 'head', completion_keep_chars: 'int' = 3000, memory_mode_for_session: 'Callable[[str], str] | None' = None, defer_queue_dispatch: 'bool' = False, hold_orphan_notices: 'bool' = False)",
     ),
     "_admit_released_start": ("async method", "(self, info: 'SubagentInfo') -> 'str'"),
     "_after_dispatch": (
@@ -908,6 +908,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "recorded_cwd": ("method", "(self, conv_id: 'str') -> 'str'"),
     "release_conversation": ("method", "(self, conv_id: 'str') -> 'tuple[bool, str]'"),
     "release_conversation_async": ("async method", "(self, conv_id: 'str') -> 'tuple[bool, str]'"),
+    "release_orphan_notices": ("method", "(self) -> 'None'"),
     "release_queue_dispatch": ("method", "(self) -> 'None'"),
     "release_teardown_fence": (
         "method",

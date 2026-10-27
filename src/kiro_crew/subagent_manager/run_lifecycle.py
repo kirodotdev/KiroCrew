@@ -440,7 +440,30 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                 if not info.result and info.streaming_text:
                     info.result = info.streaming_text
                 Stats().inc_subagent_failed()
-                self._manager._write_tombstone(info, "cancelled")
+                if (
+                    self._manager._shutting_down
+                    and not info.user_stopped
+                    and info.memory_mode == "persistent"
+                    and info._folder_seeded
+                    and info.parent_session_key.startswith(("dashboard:", "dashboard_"))
+                ):
+                    # The shutdown stopped it and its parent is a dashboard chat.
+                    # The report this run makes now would be queued in that slot's
+                    # memory or start a turn the shutdown refuses, and the
+                    # tombstone would keep the next start's orphan sweep from
+                    # announcing it. So none is written, the report skips the
+                    # parent, and the sweep announces it in the tab as cut off
+                    # by the restart, with a resume hint while its conversation
+                    # survives. Only a run whose folder was written is left to
+                    # the sweep, which finds runs by that folder. A channel-born
+                    # parent keeps the report even with its tab open: the next
+                    # start rebuilds channel tabs in a background pass that the
+                    # sweep's release does not wait for, so the sweep may not
+                    # find it.
+                    info._left_for_next_start = True
+                    logger.info("Subagent %s left for the next start's orphan sweep", info.id)
+                else:
+                    self._manager._write_tombstone(info, "cancelled")
         if info._ending_claimed:
             logger.info("Subagent %s completed before a cancel ended the run", info.id)
         else:
