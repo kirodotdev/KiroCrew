@@ -2983,7 +2983,10 @@ draws Unsend, Edit and Queue instead from that mark alone, and the
 without settling their rows, and a gateway restart mid-turn leaves them as saved,
 so a row can keep the mark after its turn is over: each top-level turn starts by
 withdrawing it (`withdraw_stale_offers`) from every `written` row that still
-carries it, unless a steer is pending or a take-back is armed.
+carries it, unless a steer is pending or a take-back is armed. Such a row also
+gets `steerRetractExpired: true`, so a page still holding a take-back of it reads
+the turn as over rather than as a refusal: an Edit or a Queue instead gets its
+text back in the composer, as when a turn ends with the steer unread.
 `POST /api/chat/slots/{slot}/steers/{mid}/retract`
 with `{action}` arms the take-back on the slot (`_steer_retract`, plus
 `_steer_clear` for the clear in flight and the steers it can drop) and writes

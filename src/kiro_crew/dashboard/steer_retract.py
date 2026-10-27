@@ -70,6 +70,11 @@ RETRACT_ACTIONS = frozenset({RETRACT_UNSEND, RETRACT_EDIT, RETRACT_QUEUE})
 #: the text.
 RETRACT_ACTION_META = "steerRetractAction"
 
+#: Set beside ``steerRetract: false`` when :func:`withdraw_stale_offers` withdrew
+#: the offer because the steer's turn ended without settling it. A page holding a
+#: take-back of that row reads the turn as over, not as a refusal.
+RETRACT_EXPIRED_META = "steerRetractExpired"
+
 # What :func:`begin` answers.
 RETRACT_ACCEPTED = "accepted"
 RETRACT_NOT_PENDING = "not_pending"
@@ -338,7 +343,10 @@ def withdraw_stale_offers(state: "DashboardState", slot: "_ChatSlot") -> None:
     gateway restart mid-turn leaves them as persisted. The row would then offer
     Queue instead, Edit and Unsend for every later turn, and each click would be
     refused with ``steer_not_pending``. So each such row stops offering it here, its
-    state and text unchanged.
+    state and text unchanged, and is marked expired (``RETRACT_EXPIRED_META``): a
+    page holding a take-back on it then hands an Edit's or a Queue instead's text
+    back as for any turn that ended with the steer unread, instead of reporting
+    that the agent refused.
 
     Only while nothing is pending or being taken back: then no row still offered
     can belong to the turn starting now. Any page holding a take-back on one of
@@ -357,8 +365,9 @@ def withdraw_stale_offers(state: "DashboardState", slot: "_ChatSlot") -> None:
         and isinstance(meta.get("mid"), str)
         and meta["mid"]
     ]
+    expired = {STEER_RETRACTABLE_META: False, RETRACT_EXPIRED_META: True}
     for mid in stale:
-        _patch_row_meta(state, slot, mid, {STEER_RETRACTABLE_META: False})
+        _patch_row_meta(state, slot, mid, expired)
     if stale:
         logger.info(
             "steer take-back withdrawn from %d ended steer(s) on slot %s", len(stale), slot.key

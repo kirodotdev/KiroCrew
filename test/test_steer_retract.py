@@ -251,6 +251,7 @@ class TestTheRoute:
         (row,) = _steer_rows(harness.slot)
         assert row["meta"]["steerState"] == STEER_STATE_WRITTEN
         assert row["meta"][STEER_RETRACTABLE_META] is False
+        assert "steerRetractExpired" not in row["meta"], "a refusal is not an expiry"
         assert harness.slot._steer_retract is None
         assert harness.slot._steer_clear is None
         assert harness.slot._pending_steers == ["use the blue fleet"]
@@ -1260,10 +1261,12 @@ class TestAnEndedTurnsOffer:
         await _run_chat(state, slot, "the next turn")
 
         assert _offer_of(slot, mid) is False
+        assert row["meta"].get("steerRetractExpired") is True
         assert row["meta"]["steerState"] == STEER_STATE_WRITTEN
         assert row["content"] == "use the blue fleet"
         patch = next(f for f in _frames(state, "chat_message_update") if f.get("mid") == mid)
         assert patch["meta"][STEER_RETRACTABLE_META] is False
+        assert patch["meta"].get("steerRetractExpired") is True
         assert patch["meta"]["steerState"] == STEER_STATE_WRITTEN
         assert "content" not in patch
 
@@ -1283,11 +1286,13 @@ class TestAnEndedTurnsOffer:
 
         (row,) = _steer_rows(harness.slot)
         assert row["meta"][STEER_RETRACTABLE_META] is False
+        assert row["meta"].get("steerRetractExpired") is True
         assert row["meta"]["steerState"] == STEER_STATE_WRITTEN
         assert row["content"] == "use the blue fleet"
         patch = _frames(harness.state, "chat_message_update")[-1]
         assert patch["mid"] == mid
         assert patch["meta"][STEER_RETRACTABLE_META] is False
+        assert patch["meta"].get("steerRetractExpired") is True
 
     @pytest.mark.asyncio
     async def test_a_steer_of_the_new_turn_keeps_its_offer(self, harness):

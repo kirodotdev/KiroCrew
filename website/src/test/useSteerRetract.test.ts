@@ -675,6 +675,73 @@ describe('useSteerRetract', () => {
     expect(hook.result.current.refusals).toEqual({ 'm-1': 'unsupported' })
   })
 
+  it.each(['edit', 'queue'] as const)('keeps a refused %s as a refusal, with nothing put in the composer', (action) => {
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', action) })
+
+    hook.rerender({ messages: [row({ steerState: 'written', steerRetract: false })] })
+
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(hook.result.current.refusals).toEqual({ 'm-1': 'unsupported' })
+  })
+
+  const expiredOffer = () => row({ steerState: 'written', steerRetract: false, steerRetractExpired: true })
+
+  it.each(['edit', 'queue'] as const)('hands a %s back when a later turn withdrew its stopped turn offer', (action) => {
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', action) })
+
+    // A hard Stop left the row written, and the next turn, still running, withdrew the offer.
+    hook.rerender({ messages: [expiredOffer()] })
+
+    expect(restoreDraft).toHaveBeenCalledTimes(1)
+    expect(restoreDraft.mock.calls[0][0]).toBe('read @notes.md')
+    expect(hook.result.current.refusals).toEqual({})
+    expect(hook.result.current.pending).toEqual({})
+    expect(storedTakeBacks()).not.toHaveProperty('test')
+  })
+
+  it('settles an unsend whose stopped turn offer a later turn withdrew, with no refusal', () => {
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', 'unsend') })
+
+    hook.rerender({ messages: [expiredOffer()] })
+
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(hook.result.current.refusals).toEqual({})
+    expect(hook.result.current.pending).toEqual({})
+  })
+
+  it('hands an Edit back on returning to its chat after a hard Stop and a newer turn there', () => {
+    retractSteer.mockImplementation(() => new Promise(() => {}))
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', 'edit') })
+
+    hook.rerender({ slot: 'other', messages: [row({ mid: 'm-9', steerState: 'consumed' }, 'elsewhere')] })
+    expect(restoreDraft).not.toHaveBeenCalled()
+
+    hook.rerender({ slot: 'test', messages: [expiredOffer()] })
+
+    expect(restoreDraft).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.refusals).toEqual({})
+    expect(hook.result.current.pending).toEqual({})
+  })
+
+  it('hands a stored Edit back after a reload once a later turn withdrew its stopped turn offer', async () => {
+    retractSteer.mockImplementationOnce(() => new Promise(() => {}))
+    const first = setup([row({ steerState: 'written' })])
+    act(() => { first.hook.result.current.onSteerAction('m-1', 'edit') })
+    first.hook.unmount()
+
+    __resetSteerTakeBacksForTests()
+    const second = setup([expiredOffer()], false)
+
+    await waitFor(() => expect(second.restoreDraft).toHaveBeenCalledTimes(1), { timeout: 500 })
+    expect(second.restoreDraft.mock.calls[0][0]).toBe('read @notes.md')
+    expect(second.hook.result.current.refusals).toEqual({})
+    expect(storedTakeBacks()).not.toHaveProperty('test')
+  })
+
   it.each(['edit', 'queue'] as const)('hands a %s back to the composer when a hard stop discarded the steer', (action) => {
     const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
     act(() => { hook.result.current.onSteerAction('m-1', action) })
