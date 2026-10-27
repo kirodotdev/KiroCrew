@@ -277,12 +277,13 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
 
         import kiro_crew.config.loader as loader
 
-        # Drain any cyclic garbage created by the previous test before this one
-        # starts.  The workspace-aware tests below (_workspace_declares path)
-        # can leave a reference cycle involving a PosixPath; if the cycle is
-        # only collected during *this* test's body the unraisable exception is
-        # blamed on the innocent victim here rather than on the actual leaker.
-        # Two passes cover chains of cycles.
+        # Drain cyclic garbage accumulated by the preceding test in this module.
+        # The workspace-aware tests in this class can leave a PosixPath reference
+        # cycle; without an explicit pass the finalizer fires inside the next
+        # test here and attributes the unraisable exception to the wrong test.
+        # The root _drain_gc_cycles fixture covers cross-module cycles; this
+        # finer-grained drain covers within-module cycles in this class.
+        # Two passes cover chains of two-level cycles.
         gc.collect()
         gc.collect()
 
