@@ -16,6 +16,12 @@ export type SteerRetractAction = 'unsend' | 'edit' | 'queue'
 /** Why a take-back did not happen, when the row itself does not already say so. */
 export type SteerRetractRefusal = 'busy' | 'unsupported' | 'failed'
 
+/** One row's refused take-back: why, and which action was picked, so the notice names that action. */
+export interface SteerRetractRefusalNotice {
+  refusal: SteerRetractRefusal
+  action: SteerRetractAction
+}
+
 /** A take-back in flight: what was asked, and the row as it stood when asked, so
  *  an Edit can put the text back in the composer once the row says it was taken. */
 interface PendingTakeBack {
@@ -102,7 +108,7 @@ export interface SteerRetract {
   /** The action in flight for each row `mid`. */
   pending: Readonly<Record<string, SteerRetractAction>>
   /** Why the last take-back of each row `mid` did not happen. */
-  refusals: Readonly<Record<string, SteerRetractRefusal>>
+  refusals: Readonly<Record<string, SteerRetractRefusalNotice>>
   /** Rows whose take-back request failed before its outcome was known. */
   requestFailures: Readonly<Record<string, true>>
 }
@@ -252,7 +258,7 @@ function without<T>(record: Readonly<Record<string, T>>, key: string): Readonly<
  */
 export function useSteerRetract({ slot, messages, transcriptAuthoritative = true, slotRunning, restoreDraft, stagedFiles, project }: SteerRetractOptions): SteerRetract {
   const [pending, setPending] = useState<Readonly<Record<string, SteerRetractAction>>>(() => pendingForSlot(slot))
-  const [refusals, setRefusals] = useState<Readonly<Record<string, SteerRetractRefusal>>>({})
+  const [refusals, setRefusals] = useState<Readonly<Record<string, SteerRetractRefusalNotice>>>({})
   const [requestFailures, setRequestFailures] = useState<Readonly<Record<string, true>>>(() => requestFailuresForSlot(slot))
   const slotRef = useRef(slot)
   slotRef.current = slot
@@ -278,7 +284,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
     }
     if (slotRef.current !== taken.slot) return
     setPending(prev => without(prev, taken.mid))
-    setRefusals(prev => (refusal ? { ...prev, [taken.mid]: refusal } : without(prev, taken.mid)))
+    setRefusals(prev => (refusal ? { ...prev, [taken.mid]: { refusal, action: taken.action } } : without(prev, taken.mid)))
     setRequestFailures(prev => without(prev, taken.mid))
   }, [])
 
@@ -307,7 +313,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
     // Without a cross-tab lock another tab can overwrite the record that holds the only copy of an Edit's text.
     if (action === 'edit' && !takeBackLocks()) {
       setPending(prev => without(prev, mid))
-      setRefusals(prev => ({ ...prev, [mid]: 'failed' }))
+      setRefusals(prev => ({ ...prev, [mid]: { refusal: 'failed', action } }))
       setRequestFailures(prev => without(prev, mid))
       return
     }
@@ -321,9 +327,9 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
       if (outstanding) {
         // A stored take-back may hold the only copy of an Edit's text, so refuse before replacing it:
         // busy while it settles, failed once this page could not save that text to the message box.
-        const refusal = attemptedRecovery.has(recoveryKey(outstanding)) ? 'failed' : 'busy'
+        const refusal: SteerRetractRefusal = attemptedRecovery.has(recoveryKey(outstanding)) ? 'failed' : 'busy'
         setPending(prev => without(prev, mid))
-        setRefusals(prev => ({ ...prev, [mid]: refusal }))
+        setRefusals(prev => ({ ...prev, [mid]: { refusal, action } }))
         setRequestFailures(prev => without(prev, mid))
         return
       }
@@ -340,7 +346,7 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
       if (action === 'edit' && !initiallyStored) {
         pendingTakeBackBySlot.delete(slot)
         setPending(prev => without(prev, mid))
-        setRefusals(prev => ({ ...prev, [mid]: 'failed' }))
+        setRefusals(prev => ({ ...prev, [mid]: { refusal: 'failed', action } }))
         setRequestFailures(prev => without(prev, mid))
         return
       }

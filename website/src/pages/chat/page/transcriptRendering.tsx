@@ -37,7 +37,7 @@ import { fmtMessageTime, fmtMessageTimeFull } from '../messageTime'
 import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
-import type { SteerRetractAction, SteerRetractRefusal } from '../../../hooks/useSteerRetract'
+import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
@@ -129,7 +129,7 @@ interface TranscriptRenderingOptions {
   /** Unsend, Edit and Queue instead on a steer the running turn has not read yet. */
   handleSteerAction: (mid: string, action: SteerRetractAction) => void
   steerActionPending: Readonly<Record<string, SteerRetractAction>>
-  steerActionRefusals: Readonly<Record<string, SteerRetractRefusal>>
+  steerActionRefusals: Readonly<Record<string, SteerRetractRefusalNotice>>
   steerActionRequestFailures: Readonly<Record<string, true>>
 }
 

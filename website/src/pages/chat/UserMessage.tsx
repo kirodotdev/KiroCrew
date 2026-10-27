@@ -24,12 +24,30 @@ import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type Messa
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { readSteerRecord } from './decisionRecord'
 import { revealComposer } from './composerFocus'
-import type { SteerRetractAction, SteerRetractRefusal } from '../../hooks/useSteerRetract'
+import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../hooks/useSteerRetract'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
 // persists for the app session — each steered message animates exactly once.
 const animatedSteers = new Set<string>()
+
+/* Each take-back notice names the action that was picked. The keys stay full
+ * literals so the dead-key and dynamic-key checks can see every one of them. */
+const STEER_UNSUPPORTED_KEY: Record<SteerRetractAction, string> = {
+  unsend: 'pages.chat.userMessage.steer_unsend_unsupported',
+  edit: 'pages.chat.userMessage.steer_edit_unsupported',
+  queue: 'pages.chat.userMessage.steer_queue_unsupported',
+}
+const STEER_FAILED_KEY: Record<SteerRetractAction, string> = {
+  unsend: 'pages.chat.userMessage.steer_unsend_failed',
+  edit: 'pages.chat.userMessage.steer_edit_failed',
+  queue: 'pages.chat.userMessage.steer_queue_failed',
+}
+const STEER_UNCONFIRMED_KEY: Record<SteerRetractAction, string> = {
+  unsend: 'pages.chat.userMessage.steer_unsend_unconfirmed',
+  edit: 'pages.chat.userMessage.steer_edit_unconfirmed',
+  queue: 'pages.chat.userMessage.steer_queue_unconfirmed',
+}
 
 interface UserMessageProps {
   content: string
@@ -110,7 +128,7 @@ interface UserMessageProps {
   /** The take-back in flight for this row: its controls give way to a progress line. */
   steerActionPending?: SteerRetractAction
   /** Why this row's last take-back did not happen. */
-  steerActionRefusal?: SteerRetractRefusal
+  steerActionRefusal?: SteerRetractRefusalNotice
   /** The take-back request failed before its outcome was known. */
   steerActionRequestFailed?: boolean
 }
@@ -730,13 +748,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                   ruling as the copy-failure notice below). */}
               <ErrorNotice
                 message={steerActionPending && steerActionRequestFailed
-                  ? i18nT('pages.chat.userMessage.steer_take_back_unconfirmed')
+                  ? i18nT(STEER_UNCONFIRMED_KEY[steerActionPending])
                   : steerActionRefusal && !steerActionPending
-                    ? steerActionRefusal === 'busy'
+                    ? steerActionRefusal.refusal === 'busy'
                       ? i18nT('pages.chat.userMessage.steer_take_back_busy')
-                      : steerActionRefusal === 'unsupported'
-                        ? i18nT('pages.chat.userMessage.steer_take_back_unsupported')
-                        : i18nT('pages.chat.userMessage.steer_take_back_failed')
+                      : steerActionRefusal.refusal === 'unsupported'
+                        ? i18nT(STEER_UNSUPPORTED_KEY[steerActionRefusal.action])
+                        : i18nT(STEER_FAILED_KEY[steerActionRefusal.action])
                     : null}
                 variant="inline"
                 className="mt-1"

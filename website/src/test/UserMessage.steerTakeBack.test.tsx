@@ -49,6 +49,13 @@ describe('taking back a steer the running turn has not read', () => {
     expect(screen.getByTestId('content').textContent).toBe('use the blue fleet')
   })
 
+  it('labels the Edit menu item with where the text goes', () => {
+    renderSteer(pending, { onSteerAction: vi.fn() })
+
+    openMore()
+    expect(screen.getByTestId('steer-edit').textContent?.trim()).toBe('Edit in message box')
+  })
+
   it('renders each take-back control through the shared Btn primitive', () => {
     const view = renderSteer(pending, { onSteerAction: vi.fn() })
 
@@ -75,25 +82,27 @@ describe('taking back a steer the running turn has not read', () => {
   })
 
   it('replaces the controls with a progress line while a take-back is in flight', () => {
-    renderSteer(pending, { onSteerAction: vi.fn(), steerActionPending: 'edit', steerActionRefusal: 'busy' })
+    renderSteer(pending, { onSteerAction: vi.fn(), steerActionPending: 'edit', steerActionRefusal: { refusal: 'busy', action: 'edit' } })
 
     expect(screen.queryByTestId('steer-take-back')).toBeNull()
     expect(screen.getByRole('status').textContent).toContain('Taking it back')
     expect(screen.queryByRole('alert'), 'an earlier refusal is not shown over a new attempt').toBeNull()
   })
 
-  it('shows an unconfirmed request failure under the progress line until the take-back settles', () => {
+  it.each([
+    ['unsend', "Couldn't confirm it was unsent. This updates when the agent reaches it."],
+    ['edit', "Couldn't confirm it moved back to your message box. This updates when the agent reaches it."],
+    ['queue', "Couldn't confirm it moved to the queue. This updates when the agent reaches it."],
+  ] as const)('shows an unconfirmed %s request failure under the progress line until the take-back settles', (action, text) => {
     const onSteerAction = vi.fn()
     const view = renderSteer(pending, {
       onSteerAction,
-      steerActionPending: 'unsend',
+      steerActionPending: action,
       steerActionRequestFailed: true,
     })
 
     expect(screen.getByRole('status').textContent).toContain('Taking it back')
-    expect(screen.getByRole('alert').textContent).toContain(
-      "Couldn't confirm it was taken back. This updates when the agent reaches it.",
-    )
+    expect(screen.getByRole('alert').textContent).toBe(text)
 
     view.rerender(
       <UserMessage
@@ -117,13 +126,17 @@ describe('taking back a steer the running turn has not read', () => {
   })
 
   it.each([
-    ['busy', 'Another message is still on its way'],
-    ['unsupported', "can't take back"],
-    ['failed', "Couldn't take it back"],
-  ] as const)('says why a %s take-back did not happen, as an error notice', (refusal, text) => {
-    renderSteer(pending, { onSteerAction: vi.fn(), steerActionRefusal: refusal })
+    ['busy', 'queue', 'Another message is still on its way. Try again.'],
+    ['unsupported', 'unsend', "This agent can't unsend it."],
+    ['unsupported', 'edit', "This agent can't move it back to your message box."],
+    ['unsupported', 'queue', "This agent can't move it to the queue."],
+    ['failed', 'unsend', "Couldn't unsend it."],
+    ['failed', 'edit', "Couldn't move it back to your message box."],
+    ['failed', 'queue', "Couldn't move it to the queue."],
+  ] as const)('says why a %s %s take-back did not happen, naming that action', (refusal, action, text) => {
+    renderSteer(pending, { onSteerAction: vi.fn(), steerActionRefusal: { refusal, action } })
 
-    expect(screen.getByRole('alert').textContent).toContain(text)
+    expect(screen.getByRole('alert').textContent).toBe(text)
   })
 
   it('shows no error notice while nothing was refused', () => {
