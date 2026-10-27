@@ -105,8 +105,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     // while renaming in THIS column (rename is per-column via editScope) so
     // the inline input stays usable.
     const focusBoardFolderRow = () => {
-      const col = document.querySelector<HTMLElement>(`[data-testid="col-${columnId}-folder-${folder.id}"]`)
-      ;(col?.querySelector<HTMLElement>('[role="button"][tabindex],button') ?? col)?.focus({ preventScroll: true })
+      // The header row itself, like the list view's `focusListFolderRow`.
+      document.querySelector<HTMLElement>(`[data-board-folder-row="${columnId}:${folder.id}"]`)?.focus({ preventScroll: true })
     }
     const draggable = !!dragHandleProps && !(editingId === folder.id && editScope === columnId)
     return (
@@ -155,7 +155,13 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
          *  pointer cursor, no expanded state and no handler. It stays draggable,
          *  because reordering a folder is an action an empty folder can honour. */}
         <div
-          className={`group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : emptyBody ? 'cursor-default' : 'cursor-pointer'} text-[12px] text-muted transition-all${emptyBody ? '' : ' hover:text-text hover:bg-bg-hover'}`}
+          // The focus target after a rename closes, the board's counterpart to
+          // the tree's `data-folder-row`. Column-scoped, because a root folder
+          // renders once per column and focus must land in the column the
+          // rename happened in. A dedicated marker rather than `data-testid`
+          // (#22769): test ids are not a runtime contract.
+          data-board-folder-row={`${columnId}:${folder.id}`}
+          className={`focus-ring-accent-inset group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : emptyBody ? 'cursor-default' : 'cursor-pointer'} text-[12px] text-muted transition-all${emptyBody ? '' : ' hover:text-text hover:bg-bg-hover'}`}
           style={{ paddingLeft: '6px' }}
           {...(draggable ? dragHandleProps : {})}
           // The collapse props go AFTER the drag spread, and the order is
@@ -176,7 +182,10 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               tabIndex: 0,
               'aria-label': i18nT('pages.chatSidebar.folder_2', { name: folder.name }),
               'aria-roledescription': i18nT('pages.chatSidebar.drag_to_reorder'),
-            } : {})
+            // Inert row: still no tab stop, but `tabIndex: -1` lets the rename
+            // close hand focus back to it - the list row's own contract.
+            // Without it the focus call is a no-op and focus drops to <body>.
+            } : { tabIndex: -1 })
             : {
               role: 'button',
               tabIndex: 0,
