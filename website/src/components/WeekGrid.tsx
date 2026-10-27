@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useState } from 'react'
 import type { CronJob } from '../types'
-import { convertCronTime, hourFractionInTz, todayCronDowInTz } from '../utils/tz'
+import { browserTimeZone, convertCronTime, hourFractionInTz, todayCronDowInTz } from '../utils/tz'
 import { fmtDateFields, fmtWeekday } from '../i18n/format'
 
 /** Grid columns, Monday-first. `DAY_COUNT` carries the index contract that
@@ -153,7 +153,7 @@ interface Props {
 }
 
 export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props) {
-  const tz = renderTz || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const tz = renderTz || browserTimeZone()
   const slots = useMemo(() => {
     const all: (Slot & { color: string })[] = []
     jobs.forEach((j, idx) => {

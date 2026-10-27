@@ -59,6 +59,7 @@ import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
+import { browserTimeZone, isValidTimeZone } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -383,11 +384,13 @@ export default function SchedulePage() {
   const [renderTz, setRenderTz] = useState<string>(() => {
     try {
       const stored = localStorage.getItem(RENDER_TZ_STORAGE_KEY)
-      if (stored) return stored
+      // A stored zone may be junk ("undefined" from an earlier build that
+      // saved a missing browser zone): keep only names Intl accepts.
+      if (isValidTimeZone(stored)) return stored
     } catch {
       // localStorage unavailable (private mode) — fall through to default
     }
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
+    return browserTimeZone()
   })
   useEffect(() => {
     try {

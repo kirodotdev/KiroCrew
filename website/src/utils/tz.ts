@@ -10,6 +10,31 @@
  * authored.
  */
 
+/** True when `tz` is a zone name this browser's Intl accepts. */
+export function isValidTimeZone(tz: unknown): tz is string {
+  if (typeof tz !== 'string' || !tz) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The browser's own IANA zone, or 'UTC' when it cannot name one.
+ *
+ *  Intl can report no zone at all: on Windows, a new Windows-only zone ID
+ *  (e.g. "British Columbia Standard Time") that the bundled ICU cannot map
+ *  makes `resolvedOptions().timeZone` undefined. */
+export function browserTimeZone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return isValidTimeZone(tz) ? tz : 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
 /** Current-week Monday in the given timezone (returns a UTC Date whose
  *  `toLocaleString(..., timeZone=tz)` parts are that Monday at 12:00).
  *

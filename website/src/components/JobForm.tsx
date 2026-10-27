@@ -14,6 +14,7 @@ import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
+import { browserTimeZone } from '../utils/tz'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -411,7 +412,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [intUnit, setIntUnit] = useState(init.intUnit)
   const [weekDays, setWeekDays] = useState(init.weekDays)
   const [weekTime, setWeekTime] = useState(init.weekTime)
-  const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : Intl.DateTimeFormat().resolvedOptions().timeZone)
+  const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : browserTimeZone())
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
