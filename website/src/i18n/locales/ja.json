@@ -200,6 +200,8 @@
     "nav_forward": "進む",
     "nav_forward_title": "進む · Ctrl+→",
     "nav_forward_title_mac": "進む · ⌘→",
+    "nav_back_history": "戻る履歴",
+    "nav_forward_history": "進む履歴",
     "n_more_other": "ほか{{count}}件",
     "notification_count_other": "{{count}} 件の通知",
     "resource_critical": "Critical",

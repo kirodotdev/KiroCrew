@@ -230,6 +230,8 @@
     "nav_forward": "Вперёд",
     "nav_forward_title": "Вперёд · Ctrl+→",
     "nav_forward_title_mac": "Вперёд · ⌘→",
+    "nav_back_history": "История назад",
+    "nav_forward_history": "История вперёд",
     "n_more_few": "ещё {{count}}",
     "n_more_many": "ещё {{count}}",
     "n_more_one": "ещё {{count}}",

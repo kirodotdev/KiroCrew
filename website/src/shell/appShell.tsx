@@ -39,6 +39,7 @@ import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, s
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
+import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
 import { useUpdateFlow } from './updates/updateFlow'
 import { useUpdateSubscription, usePolicyGovernedNotification } from '../hooks/useUpdateSubscription'
@@ -844,6 +845,14 @@ export function useAppShell() {
     const base = titleLabel ? i18nT('app.tab_title', { label: titleLabel, productName: botName }) : botName
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
   }, [totalAttention, botName, titleLabel])
+  // Name the history entry on screen for the Back/Forward arrows' history
+  // menu (#17453): the session on chat, the page anywhere else, and nothing on
+  // a route with no rail row, so that entry is left out of the list. Re-run on
+  // every entry, because the name belongs to the entry, not to the route.
+  const historyLabel = isChat ? (activeSessionTitle || chatPanelLabel) : titleLabel
+  useEffect(() => {
+    labelCurrentRouteEntry(historyLabel)
+  }, [historyLabel, location.key])
   // Phone chat page: the header is ONE bar for both the shell and the
   // conversation. The chat page fills `#mobile-topbar-slot` (sessions toggle,
   // session title + menu) and `#mobile-topbar-trail-slot` (its overflow menu)

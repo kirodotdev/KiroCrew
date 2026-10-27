@@ -200,6 +200,8 @@
     "nav_forward": "前进",
     "nav_forward_title": "前进 · Ctrl+→",
     "nav_forward_title_mac": "前进 · ⌘→",
+    "nav_back_history": "后退历史",
+    "nav_forward_history": "前进历史",
     "n_more_other": "还有 {{count}} 个",
     "notification_count_other": "{{count}} 条通知",
     "resource_critical": "Critical",

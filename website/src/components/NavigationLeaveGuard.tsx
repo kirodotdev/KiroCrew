@@ -262,13 +262,20 @@ const addressOf = (l: { pathname: string; search: string; hash: string }): strin
  * so Forward from one is unreachable and the same predicate serves both
  * directions.
  */
-export function useGuardedHistoryStep(): (delta: -1 | 1, onStep?: () => void) => void {
+export function useGuardedHistoryStep(): (delta: number, onStep?: () => void) => void {
   const navigate = useNavigate()
   const mayLeave = useMayLeaveForNavigation()
-  return React.useCallback((delta: -1 | 1, onStep?: () => void) => {
+  // `delta` may be more than one step: the arrows' history menu jumps straight
+  // to an entry (#17453). The trap below is built for that — it tells a pop
+  // that sailed past it from one that landed on it by stack position.
+  return React.useCallback((delta: number, onStep?: () => void) => {
     // Read at click time, from the platform — the trap is pushed and consumed
     // outside React's render cycle, so a rendered value could be stale.
-    if (!isTrapEntry(routerEntry().state) && !mayLeave()) return
+    // The trap asks only for the ONE pop that lands exactly under it; a jump
+    // past it reads as "page already gone" there and asks nothing, so any
+    // other move is asked about here.
+    const trapWillAsk = delta === -1 && isTrapEntry(routerEntry().state)
+    if (!trapWillAsk && !mayLeave()) return
     // Runs only once the step is allowed, so work tied to the step (a timed
     // one-shot) neither starts during the confirm nor leaks from a veto.
     onStep?.()

@@ -210,6 +210,8 @@
     "nav_forward": "Vorwärts",
     "nav_forward_title": "Vorwärts · Strg+→",
     "nav_forward_title_mac": "Vorwärts · ⌘→",
+    "nav_back_history": "Verlauf zurück",
+    "nav_forward_history": "Verlauf vorwärts",
     "n_more_one": "{{count}} weitere",
     "n_more_other": "{{count}} weitere",
     "notification_count_one": "{{count}} Benachrichtigung",

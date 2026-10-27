@@ -210,6 +210,8 @@
     "nav_forward": "সামনে যান",
     "nav_forward_title": "সামনে যান · Ctrl+→",
     "nav_forward_title_mac": "সামনে যান · ⌘→",
+    "nav_back_history": "পেছনের ইতিহাস",
+    "nav_forward_history": "সামনের ইতিহাস",
     "n_more_one": "আরও {{count}}টি",
     "n_more_other": "আরও {{count}}টি",
     "notification_count_one": "{{count}}টি বিজ্ঞপ্তি",

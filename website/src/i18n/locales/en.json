@@ -25,6 +25,8 @@
     "nav_forward": "Forward",
     "nav_forward_title": "Forward · Ctrl+→",
     "nav_forward_title_mac": "Forward · ⌘→",
+    "nav_back_history": "Back history",
+    "nav_forward_history": "Forward history",
     "notifications": "Notifications",
     "notifications_failed_to_load": "Notifications failed to load",
     "open_inbox": "Open inbox",

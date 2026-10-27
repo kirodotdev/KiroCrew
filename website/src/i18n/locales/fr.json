@@ -220,6 +220,8 @@
     "nav_forward": "Suivant",
     "nav_forward_title": "Suivant · Ctrl+→",
     "nav_forward_title_mac": "Suivant · ⌘→",
+    "nav_back_history": "Historique précédent",
+    "nav_forward_history": "Historique suivant",
     "n_more_many": "{{count}} de plus",
     "n_more_one": "{{count}} de plus",
     "n_more_other": "{{count}} de plus",
