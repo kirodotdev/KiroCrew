@@ -6,15 +6,13 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Final
 
 # Reads the work-unit listing (``work_crew_log_units``) from ``session_ledger``.
 from kiro_crew import session_ledger
 from kiro_crew.crew_log.entry_types import WORK_CHARGE_ENTRY_TYPE, WORK_ENTRY_TYPE
-from kiro_crew.crew_log.projection_catalogue import KNOWN_TYPES
-from kiro_crew.crew_log.projection_session_log import open_session_log
 from kiro_crew.crew_log.projection_usage import _CREDIT_SOURCE_OF, _credit_charge
 from kiro_crew.crew_log.projection_values import TEXT_LIMIT, _as_id, _as_int, _as_str, _rows_in
 from kiro_crew.crew_log.projection_work import (
@@ -25,7 +23,6 @@ from kiro_crew.crew_log.projection_work import (
     _work_iso,
     _work_stamp,
     _work_text,
-    _work_units,
 )
 from kiro_crew.crew_log.schema import Entry
 
@@ -1011,130 +1008,6 @@ def _workstreams_rows(state: Mapping[str, Any]) -> int:
             if isinstance(row, Mapping):
                 rows += _rows_in(row.get("series"))
     return rows
-
-
-def _workstreams_binds_in(unit_ids: Iterable[str]) -> "tuple[str, ...]":
-    """Every ``worker_session_key`` bound in *unit_ids*, for ANY board, in order.
-
-    Not filtered to one board, which is the difference from :func:`_work_units`: this
-    fold shows every workstream the slot reaches, including a bound worker that is
-    itself a conductor, so the boards it must cost include that worker's own. The
-    binds for those are in the sub-conductor's log, which this fold already reads.
-    """
-    workers: list[str] = []
-    seen: set[str] = set()
-    for unit_id in unit_ids:
-        handle = open_session_log(unit_id)
-        if handle is None:
-            continue
-        for entry in handle.iter_from(1, known=KNOWN_TYPES):
-            if entry.type != WORK_ENTRY_TYPE or entry.data.get("action") != "bind":
-                continue
-            worker = entry.data.get("worker_session_key")
-            if isinstance(worker, str) and worker and worker not in seen:
-                seen.add(worker)
-                workers.append(worker)
-    return tuple(workers)
-
-
-def _board_closure_units(slot: str) -> "tuple[tuple[str, ...], int]":
-    """Every unit of the board tree rooted at *slot*, oldest first, and how many were
-    refused for want of room.
-
-    THE WALK, with the workstreams fold taken out of it. :func:`_workstreams_units` is
-    one caller and keeps the part that is about that fold -- handing the refused count to
-    its render through a side map, because a slot fold's render cannot be passed a number
-    the selection discovered. The TREE-keyed fold's own unit resolver renders the count
-    directly and needs no such map;
-    the two must not share one, because the map is read-and-cleared and whichever of them
-    read it second would get zero while the other's number was thrown away.
-
-    The conductor's units lead, which is what :func:`_work_units` establishes and what
-    makes a bind known before the worker's own entries are read; the workers follow in
-    the order their binds were recorded. A worker's units are the ones carrying its
-    ``usage`` entries -- the same files: one session appends its work records and its
-    turn closers to one crew log, so ``work_crew_log_units`` lists exactly the units
-    this fold needs for both halves.
-
-    THEN the nested boards. A bound worker can be a conductor of its own board, and
-    this fold shows that board (its entries are in a log already being read), so it
-    must be able to COST it: the sub-board's own workers are reached by following the
-    binds recorded in the logs already collected. A board the fold shows with no
-    reachable spend reports ``credits_reported: false`` honestly, but it reports
-    nothing a reader can act on, and the bind that would fix it is already in hand.
-
-    The walk runs to closure, NOT a fixed number of rounds, because a round count
-    cannot express the invariant: a board becomes VISIBLE when its conductor's units are
-    read, and becomes COSTABLE one round later, when that conductor's own workers are
-    read. Any fixed depth therefore has a last round whose boards it shows and cannot
-    cost -- the exact state this walk exists to prevent. :data:`WORKSTREAMS_UNIT_LIMIT`
-    is the bound instead, and it is the real one: a cycle is excluded by the dedupe, and
-    a round that adds no unit ends the walk, so the rounds cannot outnumber the units.
-
-    THE BOUND IS APPLIED AT ADMISSION, on every unit this function retains, including
-    the conductor's own and its direct workers'. A limit tested only between rounds
-    bounds the WALK and not the population: the first round is a whole slot's listing
-    plus every bound worker's, so a conductor with ten thousand units had ten thousand
-    in the list before the first test ran, and the bound it was given described a state
-    the list had already left.
-    """
-    units: list[str] = []
-    known: set[str] = set()
-    dropped = 0
-
-    def admit(candidate: "Sequence[str]") -> list[str]:
-        """Take units until the bound is reached, and COUNT the rest.
-
-        A unit refused for want of room is counted, because a snapshot that silently
-        shows fewer boards than the record holds reads as a complete answer. A unit
-        refused as a duplicate is not: it is already in.
-        """
-        nonlocal dropped
-        taken: list[str] = []
-        for unit_id in candidate:
-            if unit_id in known:
-                continue
-            if len(units) >= WORKSTREAMS_UNIT_LIMIT:
-                dropped += 1
-                continue
-            known.add(unit_id)
-            units.append(unit_id)
-            taken.append(unit_id)
-        return taken
-
-    # The conductor's own units and its direct workers', through the same gate as the
-    # nested boards below rather than as a list built first and measured after.
-    def refused(count: int) -> None:
-        nonlocal dropped
-        dropped += count
-
-    frontier = tuple(
-        admit(
-            _work_units(
-                slot,
-                session_ledger.work_crew_log_units(slot),
-                limit=WORKSTREAMS_UNIT_LIMIT,
-                on_drop=refused,
-            )
-        )
-    )
-    # The ceiling is NOT the loop's exit condition. Stopping on it leaves the round
-    # that would have been refused unoffered, and a unit never offered is a unit never
-    # counted -- the snapshot would then call a truncated read complete. `admit`
-    # refuses once full, so a full walk runs one more round, counts what it cannot
-    # take, and ends on that round adding nothing.
-    while frontier:
-        added = admit(
-            [
-                unit_id
-                for worker in _workstreams_binds_in(frontier)
-                for unit_id in session_ledger.work_crew_log_units(worker)
-            ]
-        )
-        if not added:
-            break
-        frontier = tuple(added)
-    return tuple(units), dropped
 
 
 def _own_board_units(slot: str) -> "tuple[tuple[str, ...], int]":

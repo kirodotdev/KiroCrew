@@ -542,7 +542,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _work_start,
         _work_step,
         _work_text,
-        _work_units,
         work_slots_naming_board,
     )
     from kiro_crew.crew_log.projection_workers import (  # noqa: F401
@@ -604,12 +603,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         WORKSTREAMS_SPENDER_LIMIT,
         WORKSTREAMS_TASK_LIMIT,
         WORKSTREAMS_UNIT_LIMIT,
-        _board_closure_units,
         _own_board_units,
         _workstreams_advanced,
         _workstreams_bill,
         _workstreams_bind_slot,
-        _workstreams_binds_in,
         _workstreams_board_of,
         _workstreams_bound_tasks,
         _workstreams_bump,

@@ -416,21 +416,40 @@ def test_a_cold_prime_copies_the_fold_state_a_fixed_number_of_times(meter):
     assert meter.copies <= 4, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="savepoint resume re-reads the log prefix: _resume_slot_fold / "
-    "checkpoint.resumed_prefix_still_verifies re-hash or re-walk every folded record; "
-    "fixed by the PR that changes crew_log/projection_slot_memo.py _resume_slot_fold and "
-    "crew_log/checkpoint.py",
-)
+def _savepoint_bytes(handle: CrewLog, fold: str) -> bytes:
+    """The slot savepoint *fold* keeps at *handle*'s unit, or ``b""`` when there is none."""
+    from kiro_crew.crew_log import checkpoint
+
+    path = checkpoint.slot_checkpoint_path(lg.KIND_SESSION, handle.id, fold)
+    return path.read_bytes() if path.exists() else b""
+
+
+def _earn_a_savepoint_write(handle: CrewLog, read: Any, fold: str) -> None:
+    """Append enough for the next warm read to rewrite the savepoint, and check it did.
+
+    A savepoint moves only once a fold is ``MIN_ADVANCE_ENTRIES`` past the saved seq, so
+    a smaller gap leaves it where the cold read put it and a restart bound would measure
+    the write interval instead of the resume.
+    """
+    from kiro_crew.crew_log import checkpoint
+
+    before = _savepoint_bytes(handle, fold)
+    _append_work(handle, checkpoint.MIN_ADVANCE_ENTRIES + 4, "earn")
+    read()  # warm, moves the savepoint on
+    assert (
+        _savepoint_bytes(handle, fold) != before
+    ), "setup did not earn a savepoint write (append >= checkpoint.MIN_ADVANCE_ENTRIES)"
+
+
 def test_a_baseline_after_restart_resumes_from_the_savepoint(meter):
     """A new process (no warm cell) with a savepoint on disk reads the gap, not the log."""
     # The ledger fold: its units come from the header index, so what this measures is
     # the fold and its savepoint, not the work fold's unit resolution.
     units = _board_slot()
     crew_log.read_slot_projection(BOARD, RESUME_FOLD)  # cold fold, writes a savepoint
-    _append_work(units[-1], 60, "earn")
-    crew_log.read_slot_projection(BOARD, RESUME_FOLD)  # warm, moves the savepoint on
+    _earn_a_savepoint_write(
+        units[-1], lambda: crew_log.read_slot_projection(BOARD, RESUME_FOLD), RESUME_FOLD
+    )
     # The restart: every in-memory cell is gone, only the files remain.
     crew_log.forget_slot_folds()
     crew_log.forget_session_folds()
@@ -438,6 +457,32 @@ def test_a_baseline_after_restart_resumes_from_the_savepoint(meter):
     with meter.measure():
         crew_log.read_slot_projection(BOARD, RESUME_FOLD)
     assert meter.entries + meter.hashed <= ENTRY_SLACK + 3, meter
+
+
+def test_a_worktree_board_read_with_no_new_entry_reads_no_old_entries(meter):
+    """A second ``worktree`` read over a log that has not grown reads nothing old."""
+    _board_slot()
+    crew_log.read_tree_projection(BOARD, "worktree")  # the one cold fold this process pays
+    with meter.measure():
+        crew_log.read_tree_projection(BOARD, "worktree")
+    assert meter.entries == 0, meter
+    assert meter.hashed == 0, meter
+
+
+def test_a_worktree_read_after_restart_resumes_from_the_savepoint(meter):
+    """After a restart the ``worktree`` fold reads the gap past its savepoint, not the log."""
+    units = _board_slot()
+    crew_log.read_tree_projection(BOARD, "worktree")  # cold fold, writes a savepoint
+    _earn_a_savepoint_write(
+        units[-1], lambda: crew_log.read_tree_projection(BOARD, "worktree"), "worktree"
+    )
+    crew_log.forget_slot_folds()
+    crew_log.forget_session_folds()
+    _append_work(units[-1], 3, "gap")
+    with meter.measure():
+        value = crew_log.read_tree_projection(BOARD, "worktree").value
+    assert meter.entries + meter.hashed <= ENTRY_SLACK + 3, meter
+    assert [row["board"] for row in value["boards"]] == [BOARD]
 
 
 # --------------------------------------------------------------------------- #

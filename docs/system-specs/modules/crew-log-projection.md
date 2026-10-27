@@ -54,9 +54,9 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_dashboard.py` | the `panel`, `agentic` and `mistakes` slot folds |
 | `crew_log/projection_crewmate.py` | the `goal` and `waiting` slot folds, a crewmate's own record |
 | `crew_log/projection_workers.py` | the `workers` slot fold (the worker sessions a mate created) and its internal per-worker part `worker` (what one worker is doing), merged at read |
-| `crew_log/projection_work.py` | the `work` slot fold, the `worktree` walk's unit join (`_work_units`) and the rebuild's `work_slots_naming_board` |
+| `crew_log/projection_work.py` | the `work` slot fold and the rebuild's `work_slots_naming_board` |
 | `crew_log/work_relay.py` | copies a bound worker's charges, and a sub-board's records, into the parent board's own log |
-| `crew_log/projection_workstreams.py` | the `workstreams` slot fold and its board closure |
+| `crew_log/projection_workstreams.py` | the `workstreams` slot fold and the own-units selection both board folds read (`_own_board_units`) |
 | `crew_log/projection_worktree.py` | the `worktree` tree fold |
 | `crew_log/projection_registry.py` | `_FOLDS`: what each fold touches, copies and retains, its eager or lazy posture, and the import-time checks over the registry |
 | `crew_log/projection_kernel.py` | `Checkpoint` and the pure fold API (`require_name`, `fold_state_version`, `initial`, `advance`, `projection_of`, `fold`) |
@@ -502,7 +502,11 @@ log renders `summary: "waiting for next report"` (`WORK_AWAITING_REPORT`) until 
 worker reports again, and a closed item renders its own state with no worker summary.
 `_work_step` still filters every entry by the bound board slot, so a relayed
 sub-board entry folds only into the sub-board's own row of the project report. The
-lazy `worktree` tree fold keeps its bind walk (`_board_closure_units`).
+`worktree` tree fold reads the same units (`tree_fold_units` returns
+`_own_board_units(root)`): each nested board reaches it as the copies relayed into
+the root's log, so no bind is walked and no other board's log is opened.
+`read_tree_projection` folds them in the root's warm slot cell, so a read with no new
+entry reads none and a restart resumes from the savepoint.
 
 `_Fold.bind_slot` is the optional fourth fold operation. The `work` fold registers
 `_work_bind_slot`, and `fold_slot_checkpoint` invokes it before the first entry.

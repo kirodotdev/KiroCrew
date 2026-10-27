@@ -36,7 +36,7 @@ from kiro_crew.crew_log.projection_workers import (
     workers_children,
     workers_units,
 )
-from kiro_crew.crew_log.projection_workstreams import _board_closure_units, _workstreams_units
+from kiro_crew.crew_log.projection_workstreams import _own_board_units, _workstreams_units
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.session_tree import OpenedRecord, log_rank_of
 from kiro_crew.crew_log.store import (
@@ -442,12 +442,10 @@ def tree_fold_units(root: str, name: str) -> "tuple[tuple[str, ...], int]":
     """The units *name* is folded over for the tree rooted at *root*, and how many the
     selection refused.
 
-    THE THIRD KEY KIND'S unit resolver, and the reason it is a third kind: this answer is
-    not a property of the key. It walks what the record SAYS -- the root's own units,
-    every worker those units recorded a bind for, and every board those workers conduct,
-    to closure (:func:`_board_closure_units`) -- so a bind appended after the last read
-    changes the population with nothing about *root* having changed. A slot fold's units
-    come from the store's listing for one slot and cannot do that.
+    The root board's OWN units only (:func:`_own_board_units`). A nested board's records
+    are relayed up into its parent's log by the gateway (``work_relay``), so each board
+    of the tree is already in the root's units and no bind is walked and no other
+    board's log is opened to find them.
     """
     if require_name(name) not in TREE_PROJECTION_NAMES:
         # The same refusal shape ``require_name`` raises for a name the registry does not
@@ -460,7 +458,7 @@ def tree_fold_units(root: str, name: str) -> "tuple[tuple[str, ...], int]":
             code=CODE_BAD_DATA,
             field="name",
         )
-    return _board_closure_units(root)
+    return _own_board_units(root)
 
 
 def fold_tree_checkpoint(name: str, root: str) -> Checkpoint:
@@ -502,21 +500,28 @@ def fold_tree_checkpoint(name: str, root: str) -> Checkpoint:
 def read_tree_projection(root: str, name: str) -> Projection:
     """One tree-keyed projection for the tree rooted at *root*. The read a block gets.
 
-    COLD every time, and that is the posture the key kind earns rather than an omission:
-    a warm cell would be invalidated by growth in ANY member's log, including a member
-    the cell did not know existed, and there is no publisher for that event. So this fold
-    is lazy, has no bus scope, and belongs on a page load and on a refetch -- which the
-    controller contract already covers, since a gap triggers a full refetch anyway.
+    Folded over the root's own units (:func:`tree_fold_units`) in the root's warm cell,
+    the same cell a slot fold uses: a read with nothing new appended reads no entry, and
+    after a restart the fold resumes from its savepoint.
 
     Its production caller is the dashboard controller:
     :meth:`kiro_crew.dashboard.handlers.member_dashboard_fields.LivePage._read_trees`,
     reached from ``GET /api/members/{slug}/dashboard`` when the page's model binds a
-    tree fold, and again from that route's refetch. The controller calls it on arm and
-    on refetch and never from the fold worker, which is what keeps this read off the
-    thread that folds.
+    tree fold, and again from that route's refetch. It is never called from the fold
+    worker.
 
     BOTH routes that take a fold name -- the owner's per-session read and the internal
     per-unit one -- REFUSE a tree-keyed name rather than folding the one unit they
     address, so this is the only way in.
     """
-    return projection_of(fold_tree_checkpoint(require_name(name), root))
+    fold_name = require_name(name)
+    units, dropped = tree_fold_units(root, fold_name)
+    checkpoint, revision = fold_slot_warm_revised(fold_name, list(units), slot=root)
+    projected = projection_of(checkpoint, revision=revision)
+    if dropped and isinstance(projected.value, dict):
+        # The refused count belongs to this read's selection, not to the cell's state.
+        value = {**projected.value, "dropped": int(projected.value.get("dropped", 0)) + dropped}
+        projected = Projection(
+            name=projected.name, seq=projected.seq, value=value, revision=projected.revision
+        )
+    return projected
