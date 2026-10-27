@@ -59,6 +59,9 @@ const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.guideLay
 async function untilPressWatched() {
   await screen.findByTestId('guide-target-outline')
   await act(async () => {})
+  // Flush the useEffect that attaches the click listener on the target element;
+  // the listener registration runs after the render that shows the outline.
+  await act(async () => {})
 }
 let calls: Call[]
 let pending: Guide[]
@@ -652,7 +655,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(writes('/api/guide/progress')).toHaveLength(1)
     fireEvent.click(screen.getByTestId('older-sessions'))
     // The control still does its own thing, and the guide ends on the press.
-    expect(onOlder).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onOlder).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(writes('/api/guide/progress')).toHaveLength(2), { timeout: 4000 })
     expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 1, outcome: 'observed' })
     expect((await screen.findByTestId('guide-result')).textContent).toContain(L('finished_completed'))
@@ -682,7 +685,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
       expect(writes('/api/guide/progress')).toHaveLength(1)
       fireEvent.click(screen.getByTestId('older-sessions'))
       // The control does its own thing; the guide does not end on the press.
-      expect(onOlder).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(onOlder).toHaveBeenCalledTimes(1))
       await act(async () => { await Promise.resolve() })
       expect(writes('/api/guide/progress')).toHaveLength(1)
       // Done still ends it.
@@ -1398,7 +1401,7 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
       expect(await screen.findByText(L('select_app'))).toBeTruthy()
       // Another app's menu: the choice stays open, pointing at the app named.
       fireEvent.click(screen.getByTestId('menu-Secretary'))
-      expect(screen.getByTestId('uninstall-Secretary')).toBeTruthy()
+      expect(await screen.findByTestId('uninstall-Secretary')).toBeTruthy()
       for (let i = 0; i < 8; i++) {
         pass(GUIDE_TARGET_WAIT_MS / 4)
         expect(outlineTop()).not.toBe('596px')
@@ -1453,7 +1456,7 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
       expect(screen.getByTestId('guide-step-caution')).toBeTruthy()
       // The press closes the menu: the item is gone, the confirm stays open.
       fireEvent.click(screen.getByTestId('uninstall-Command Bar'))
-      expect(screen.queryByTestId('uninstall-Command Bar')).toBeNull()
+      await waitFor(() => expect(screen.queryByTestId('uninstall-Command Bar')).toBeNull())
       expect(screen.getByRole('dialog')).toBeTruthy()
       for (let i = 0; i < 6; i++) pass(GUIDE_TARGET_WAIT_MS / 4)
       // Waited out well past every missing bound: never missing, never back.

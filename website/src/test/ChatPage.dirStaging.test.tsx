@@ -442,7 +442,7 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove')
     const taA2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(taA2.value).toContain('@src/main.ts')
+    await waitFor(() => expect(taA2.value).toContain('@src/main.ts'))
   })
 
   it('sending in one slot does not blank another slot\'s recorded file token (pickedFileTokens is not wiped wholesale)', async () => {
@@ -1774,7 +1774,7 @@ describe('ChatPage terminal session identity', () => {
     act(() => store.dispatch(sseSlots([row])))
     const box = screen.getByRole('textbox', { name: 'Message input' })
     fireEvent.change(box, { target: { value: '! pwd' } })
-    expect(screen.getByText('Terminal commands are unavailable for sessions on another server. Remove the leading ! to return to chat.')).toBeVisible()
+    await waitFor(() => expect(screen.getByText('Terminal commands are unavailable for sessions on another server. Remove the leading ! to return to chat.')).toBeVisible())
     act(() => store.dispatch(sseSlots([])))
     expect(store.getState().chat.activeSlot).toBe('retained-remote')
     expect(store.getState().dashboard.slots).toHaveLength(0)
