@@ -602,6 +602,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SYNTHESIS_UNKNOWN,
         _attached_verdict,
         _queued_depth_off_loop,
+        _slot_holds_delivery,
         chat_done_payload,
         chunk_generation,
         subagents_attached,

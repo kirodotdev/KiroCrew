@@ -11,6 +11,7 @@ import logging
 import uuid
 from typing import Any
 
+from kiro_crew.dashboard.chat_utils_injected_rows import SUBAGENT_DELIVERY_KINDS
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key, effective_session_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -142,10 +143,13 @@ async def synthesis_fire_verdict(state: DashboardState, slot: _ChatSlot) -> str:
     """Whether the post-fan-out synthesis may fire for *slot* now.
 
     The ONE place the synthesis decision reads the task store (the arm in the
-    gateway's completion path is in-memory only). Four terms, each on the
+    gateway's completion path is in-memory only). The registry terms read the
     slot's real session key (:func:`effective_session_key`, which a channel- or
     cron-born tab does not spell ``dashboard:<slot>``):
 
+    * a result waiting in the slot's own queue: a sign-in hold keeps the queue
+      while still allowing a successor, and synthesis would then claim a
+      result was processed before its turn ran;
     * a RUNNING child, or a result still being delivered to the slot;
     * the in-memory pending work ``has_pending_work_for`` adds: a spawn in the
       dispatch window, a run whose report still waits on its teardown, a live
@@ -161,12 +165,14 @@ async def synthesis_fire_verdict(state: DashboardState, slot: _ChatSlot) -> str:
     subs = getattr(state, "subagents", None)
     if subs is None:
         return SYNTHESIS_HELD
+    if _slot_holds_delivery(slot):
+        return SYNTHESIS_HELD
     key = effective_session_key(slot)
     try:
         running = subs.running_agents_for(key)
         if running is None:
             return SYNTHESIS_UNKNOWN
-        if running or getattr(slot, "_subagent_deliveries_inflight", 0):
+        if running:
             return SYNTHESIS_HELD
         if subs.has_in_memory_pending_work_for(key) is True:
             return SYNTHESIS_HELD
@@ -176,7 +182,21 @@ async def synthesis_fire_verdict(state: DashboardState, slot: _ChatSlot) -> str:
         return SYNTHESIS_UNKNOWN
     if queued is None:
         return SYNTHESIS_UNKNOWN
-    return SYNTHESIS_HELD if int(queued) > 0 else SYNTHESIS_CLEAR
+    # Read the slot again after the store await: a child that finished during
+    # it is now delivering to the slot or queued in it.
+    if int(queued) > 0 or _slot_holds_delivery(slot):
+        return SYNTHESIS_HELD
+    return SYNTHESIS_CLEAR
+
+
+def _slot_holds_delivery(slot: _ChatSlot) -> bool:
+    """A sub-agent result is being delivered to *slot* or waits in its queue."""
+    if getattr(slot, "_subagent_deliveries_inflight", 0):
+        return True
+    return any(
+        entry.get("kind") in SUBAGENT_DELIVERY_KINDS
+        for entry in getattr(slot, "_queue", None) or ()
+    )
 
 
 async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
