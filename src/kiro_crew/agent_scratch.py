@@ -89,7 +89,7 @@ import shutil
 import stat
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 from typing import Literal
 
@@ -814,6 +814,50 @@ def scratch_env(path: Path, *, shared: Path | None = None) -> dict[str, str]:
     if _CAN_CAP_LOGS:
         env[KIRO_CHAT_LOG_FILE_ENV] = str(path / KIRO_CLI_LOG_SUBDIR / KIRO_CLI_CHAT_LOG_NAME)
     return env
+
+
+#: Every key :func:`scratch_env` can write. The same set is what a child must
+#: never INHERIT: each names a directory under the managed root, and only the
+#: process the marker names may rely on that directory staying.
+SCRATCH_ENV_KEYS = ("TMPDIR", "TMP", "TEMP", "KIROCREW_SCRATCH", KIRO_CHAT_LOG_FILE_ENV)
+
+
+def drop_inherited_scratch_env(env: MutableMapping[str, str]) -> tuple[str, ...]:
+    """Remove from *env* every scratch export that names a tree under the managed root.
+
+    The gateway's own environment can carry the whole :func:`scratch_env` set
+    of whichever agent shell started it -- a restart run from inside a session
+    hands the gateway that session's ``TMPDIR``/``TMP``/``TEMP``,
+    ``KIROCREW_SCRATCH`` and ``KIRO_CHAT_LOG_FILE``. Those name a directory
+    owned by a pid this gateway is not, which the hourly sweep reclaims once
+    that owner is dead and the tree idle; a child that inherits them names a
+    dead path for its whole life. A spawn whose own allocation succeeds
+    overwrites every key (:func:`scratch_env`); one whose allocation FAILS
+    spawns "with inherited temp", and without this step the inherited temp is
+    that dead tree: ``tempfile`` raises ``ENOENT`` and npm spins. The cron
+    child has the same guard on the same keys
+    (``cron_script_child_env._clean_cron_env``).
+
+    Dropped, not re-pointed: with the key absent the child falls to its own
+    platform default (``/tmp``, ``%SystemRoot%\\Temp``), the same place a spawn
+    with no inherited temp already lands, and nothing here has to know what
+    the platform default is. A value OUTSIDE the managed root is the operator's
+    own temp directory and is kept: it is the right inheritance when scratch
+    cannot be allocated. Lexical, like every other path rule on a scratch
+    name; the root itself counts as under it. Mutates *env*; returns the keys
+    dropped, in :data:`SCRATCH_ENV_KEYS` order.
+    """
+    root = scratch_root()
+    dropped: list[str] = []
+    for key in SCRATCH_ENV_KEYS:
+        value = env.get(key)
+        if not value:
+            continue
+        path = Path(value)
+        if path == root or root in path.parents:
+            del env[key]
+            dropped.append(key)
+    return tuple(dropped)
 
 
 def cap_kiro_cli_logs(
