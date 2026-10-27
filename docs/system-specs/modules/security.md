@@ -2,6 +2,18 @@
 
 ## Overview
 
+### Native Windows Codex profile and host tools
+
+The default Crew-owned Codex profile (`<data home>/codex`) is a hidden Crew
+secret directory. Only its Codex runtime receives an exact visibility lift;
+other harnesses and ordinary file tools retain the floor, including the auth
+file, its temporary siblings and private conversation rollouts. OAuth state is
+not copied from Codex Desktop. The existing credential mask still withholds
+the SEL key, audit log and session credentials from Codex and its descendants.
+The explicit Windows setup routes core/cron tools to gatewayd instead of
+unmasking those credentials. Its verified managed backends audit on the host;
+the confined stdio relay needs no SEL key. See the Windows installation guide.
+
 Kiro Crew implements defense-in-depth security across multiple layers: OS-level process isolation, credential path protection, input/output validation, authentication, authorization, and audit logging. This document consolidates all security controls and the vulnerabilities they address.
 
 ### MCP launch authorization leaves
@@ -805,6 +817,77 @@ Security properties:
 
 ### OS-Level Sandbox (`sandbox.py`)
 
+#### Experimental native Windows renderer
+
+The opt-in `windows-mxc` backend uses an operator-selected
+`kirocrew-windows-sandbox.exe` (`KIROCREW_WINDOWS_SANDBOX_EXE`), built from
+`native/windows-sandbox`. It calls Microsoft's MXC SDK directly, pinned to
+`b21120168d70befe12356411423266bfef168446`. It never loads Codex configuration,
+chooses a legacy backend, edits host ACLs or performs administrator setup.
+Codex keeps its normal agent configuration inside the confined workload.
+
+`sandbox_windows_policy` serializes the complete `ConfinementPlan` as versioned
+JSON. No configuration layer or inherited profile can add grants. The native
+helper checks SHA-256, version, allowed fields, file identity and size. Its SDK
+request disables DACL fallback, inherits no default environment, uses only the
+already scrubbed environment and owns the workload's kill-on-close job.
+Implicit volume-root grants expand their current immediate children because MXC
+volume-root grants are nonrecursive. Inaccessible implicit volumes are omitted;
+explicit paths undergo fail-closed object-identity normalization before and after
+expansion, retaining the most restrictive intent for aliases.
+
+Admission requires a real synthetic probe: hidden reads/writes, a future denied
+directory, readable but immutable governance, a private window, a nested remask
+and inherited denial in a child process must all hold. The probe runs off the
+event loop, is bounded and kills its owned process tree on timeout. Failure keeps
+the capability cache cold and never admits an enforced adapter.
+
+Large launch metadata is stored in the policy document's `launch` member so the
+complete credential roster survives Windows command-line limits. One checksum
+authenticates both the policy and launch inputs; the native helper consumes the
+policy and the isolated Python launcher reconstructs the native command from
+the launch inputs. The single file stays pinned through workload exit and is
+also the cleanup path for cancelled preparation or a failed spawn. The launcher inherits
+the actual caller working directory. Wrapper provenance recognizes its exact
+interpreter and launcher shape; this grants no nested passthrough.
+
+The Windows planner normalizes path spellings before applying the immutable
+READONLY disposition. An adapter credential roster cannot hide a governance
+ceiling; such overlaps remain readable and immutable. Private windows cannot
+make these floors writable. Ordinary credential masks keep their denied access.
+Before emitting a writable grant, and again after pinning boundaries in the
+launcher, existing immutable roots are compared by filesystem identity against
+the writable directory and every ancestor. An 8.3 alias therefore cannot hide
+an immutable parent from the lexical planner. Carveable runtime parents are
+excluded unless they independently carry an immutable governance disposition.
+Windows ceiling creation atomically renames complete temporary documents without
+replacing a concurrent writer's file.
+
+The stdlib-only `sandbox_windows_launcher` holds a read-shared policy handle,
+checks SHA-256, rejects reparse points and hard links, and pins existing policy
+objects and their ancestors against rename. Carried identities are rechecked
+after pinning. Reconstructed argv must retain the policy-file and digest arguments.
+The helper directory, Python installation and venv roots, and launcher package are read-only through
+the common planner's install-root facts. Both resident wrapper generations are
+included in Codex RSS accounting.
+
+Exposures are existing, unlinked regular files granted literal read-only access.
+Missing exposures, including SSH known_hosts, are omitted. Private and writable
+windows must be real directories with carried identities. UNC/device paths,
+wildcard names, NTFS stream spellings, inode-only aliases, refused plans and sealed-empty `exec_cwd`
+handshakes are unsupported. Pins may prevent host-side atomic replacement of
+protected objects until exit. No environment marker alone admits nested passthrough.
+The PID-tagged `kirocrew_native_*.json` run-dir family is cleaned on normal exit;
+the standard stale-artifact sweep covers crashes.
+
+This is experimental, not a claim of Windows release support.
+`scripts/check_windows_sandbox.py` uses synthetic data without starting an agent
+or changing Crew settings. An outer executor can expose MXC APIs yet prevent native
+creation. An ordinary-terminal probe, ACP startup, approval routing, loopback MCP,
+cancellation and orphan cleanup require validation before rollout.
+
+#### Shared confinement planning and renderers
+
 `kiro_crew.sandbox` is the import and patch surface. What one spawn masks, seals and
 re-opens is decided once, by `sandbox_plan.plan_confinement(request, host)`: a pure
 function of a `SandboxRequest` (the tier and the caller's extra paths and observed
@@ -990,7 +1073,7 @@ On macOS the marker must additionally **agree with the kernel**, and the two cov
 
 **Delegation is reported, not just logged.** Delegation changes which paths the agent can reach — kiro-cli's profile scopes file access to the session workspace, so reading a *pre-existing* file outside it (`~/Desktop`, a project elsewhere) fails with `Operation not permitted` while files the session created stay readable. That presents as a macOS privacy (TCC) problem and is not one: Full Disk Access cannot affect a Seatbelt profile, so an operator who is told only "permission denied" grants FDA, relaunches, and observes no change (#11623). Two surfaces close that: the once-per-process `SECURITY` warning names the settings file and key that decided it, and `kirocrew doctor`'s **Sandbox** section prints a `kiro-cli:` line after the backend verdict (`_doctor_kiro_internal_sandbox`), naming the switch via `kiro_internal_sandbox_switch()`, ruling out Full Disk Access explicitly, and giving the config-level remedy — set the key to `false` so Kiro Crew's own profile owns isolation, which *keeps* isolation rather than weakening it. Reporting only the backend is a false reassurance here, because `backend: ✅ seatbelt` describes a wrap that a delegated kiro-cli spawn never runs under. The line is **not** counted as an issue: delegation is a working, audited configuration, and `kirocrew doctor` must not exit non-zero on a correctly configured host. **The remedy is conditional on the tier Kiro Crew would actually apply** (`effective_sandbox_mode(configured_sandbox_mode())`, which includes the governance clamp): under `agent.sandbox="off"` no profile is built, so recommending the internal sandbox off would remove the *only* layer confining the spawn and make `~/.aws` and `~/.ssh` readable. The two settings correlate rather than being independently unlikely — `"off"` exists to defer isolation to kiro-cli — so that branch names the order instead (`agent.sandbox` to `"auto"` first, then either layer owns isolation), and a tier that cannot be read gets the cautious wording rather than the bare recommendation.
 
-**Windows Kiro internal-sandbox delegation**: Kiro Crew has no native Windows OS wrapper, but the official Kiro CLI backend has its own sandbox. `wrap_argv()` therefore delegates before backend detection when, and only when, the reviewed caller passes `is_kiro_cli=True`. This is a positive capability grant from `ACP_BACKENDS_INTERNAL_SANDBOX`; `_spawns_kiro_cli()` basename inference and `is_kiro_cli=None` never grant it on Windows. The main ACP client/runtime and the three fixed one-shot Kiro reads pass the classification explicitly. Extra Kiro Crew path restrictions (`extra_hidden_dirs` / `extra_visible_dirs`) disable delegation because Kiro's sandbox cannot prove it enforces them. Every delegation is `outcome="delegated"`, `critical=True`; an SEL failure returns to normal Windows no-backend policy and raises. All other ACP backends, scripts, hooks, third-party MCP probes, Papyrus/Polly commands and future unclassified spawns take the ordinary Windows no-backend path, which the platform default permits unless the operator declared `agent.sandbox_allow_unsandboxed_exec=false` or a governance `sandbox.min_level` floor is pinned; they are audited `unconfined` rather than delegated, since nothing confines them. Because Windows cannot prefix `env -u`, every delegated production spawn passes `scrub_agent_subprocess_env()` as its explicit child environment.
+**Windows Kiro internal-sandbox delegation**: without the experimental MXC opt-in, Kiro Crew has no native Windows OS wrapper, but the official Kiro CLI backend has its own sandbox. `wrap_argv()` therefore delegates before backend detection when, and only when, the reviewed caller passes `is_kiro_cli=True`. This is a positive capability grant from `ACP_BACKENDS_INTERNAL_SANDBOX`; `_spawns_kiro_cli()` basename inference and `is_kiro_cli=None` never grant it on Windows. The main ACP client/runtime and the three fixed one-shot Kiro reads pass the classification explicitly. Extra Kiro Crew path restrictions (`extra_hidden_dirs` / `extra_visible_dirs`) disable delegation because Kiro's sandbox cannot prove it enforces them. Every delegation is `outcome="delegated"`, `critical=True`; an SEL failure returns to normal Windows no-backend policy and raises. All other ACP backends, scripts, hooks, third-party MCP probes, Papyrus/Polly commands and future unclassified spawns take the ordinary Windows no-backend path, which the platform default permits unless the operator declared `agent.sandbox_allow_unsandboxed_exec=false` or a governance `sandbox.min_level` floor is pinned; they are audited `unconfined` rather than delegated, since nothing confines them. Because Windows cannot prefix `env -u`, every delegated production spawn passes `scrub_agent_subprocess_env()` as its explicit child environment.
 
 **Boot must isolate the fail-closed raise**: because the `RuntimeError` above can fire per-spawn, callers that launch multiple child processes at boot must catch it. `start_enabled_app_backends()` (`apps/backend_runtime/startup.py`) wraps each `start_app_backend()` in try/except so one app that cannot be sandboxed is logged + `error`-audited + **skipped** (never spawned unsandboxed), and the gateway (Slack + dashboard + every session) still boots — matching the fail-isolated posture of the admission re-vet and MCP reconcile branches in the same loop.
 
@@ -3800,3 +3883,14 @@ keep the existing factory. The adapter does not change argv, environment scrub,
 sandbox policy, suspended flags, resource Job settings or POSIX semantics.
 Cleanup bounds, borrowed-handle lifetime and the supported-transport limitation
 are specified in [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
+
+
+Native Windows missing-path lowering: the pure planner projects an absent nested
+seal to its first missing component beneath an existing directory. PSEC accepts
+future leaf names but cannot resolve a path through missing intermediate parents.
+The host snapshot creates no credential/provider directories. This can constrain
+future siblings within the still-absent subtree more strictly until a fresh
+launch. Coalescing absent hidden and read-only descendants preserves the hidden
+disposition. Existing readable governance rules remain exact; writable windows
+are never promoted to a broader ancestor. The synthetic admission probe also
+checks creation denial for a missing tree whose original target was nested.

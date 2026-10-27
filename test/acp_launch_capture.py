@@ -656,6 +656,9 @@ def _capture_runtime_served(
             patch.object(
                 codex_harness_mod, "resolve_spawn_masks", new=AsyncMock(return_value=((), ()))
             ),
+            # This capture pins the common launch. Native Windows profile
+            # preparation is exercised separately in test_codex_private_home.
+            patch.object(codex_harness_mod, "prepare_codex_home", return_value=None),
             patch.object(codex_harness_mod, "_sandbox_wrapper_generations", return_value=0),
         ]
     )

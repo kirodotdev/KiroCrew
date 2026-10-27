@@ -216,6 +216,36 @@ class _PendingWindowsTreeCleanup:
 _PENDING_WINDOWS_TREE_CLEANUPS: dict[tuple[int, int], _PendingWindowsTreeCleanup] = {}
 _PENDING_WINDOWS_TREE_CLEANUPS_LOCK = threading.RLock()
 _WINDOWS_TREE_ADMISSIONS: set[_PendingWindowsTreeCleanup] = set()
+_WINDOWS_START_FENCE: object | None = None
+
+
+def block_windows_tree_starts(owner: object) -> bool:
+    """Serialize settings retirement with the pre-spawn reservation boundary."""
+    global _WINDOWS_START_FENCE
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if _WINDOWS_START_FENCE is not None and _WINDOWS_START_FENCE is not owner:
+            return False
+        _WINDOWS_START_FENCE = owner
+        return True
+
+
+def unblock_windows_tree_starts(owner: object) -> None:
+    global _WINDOWS_START_FENCE
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if _WINDOWS_START_FENCE is owner:
+            _WINDOWS_START_FENCE = None
+
+
+def windows_tree_admissions_pending() -> int:
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        return len(_WINDOWS_TREE_ADMISSIONS)
+
+
+def _reserve_windows_start() -> _PendingWindowsTreeCleanup:
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        if _WINDOWS_START_FENCE is not None:
+            raise WindowsCleanupCapacityError("Windows starts are paused for a settings transition")
+        return reserve_windows_tree_cleanup()
 
 
 def reserve_windows_tree_cleanup(
@@ -334,7 +364,7 @@ async def create_windows_cleanup_owned_process(factory: Any) -> asyncio.subproce
     """
     if not IS_WINDOWS:
         return await factory()
-    state = reserve_windows_tree_cleanup()
+    state = _reserve_windows_start()
 
     async def launch() -> asyncio.subprocess.Process:
         process = await factory(windows_cleanup_owner=state)

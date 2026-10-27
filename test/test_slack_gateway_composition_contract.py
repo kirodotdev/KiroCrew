@@ -268,7 +268,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, target_env: 'dict[str, str]', *, force: 'bool' = False) -> 'dict[str, str]'",
         ),
         ("_refresh_mcp_resolutions", "async method", "(self) -> 'dict'"),
-        ("_stop_mcp_broker", "async method", "(self) -> 'None'"),
+        # Native settings publication additionally requires verified retirement.
+        ("_stop_mcp_broker", "async method", "(self, *, strict: 'bool' = False) -> 'None'"),
         (
             "_refresh_mcp_overlays",
             "async method",

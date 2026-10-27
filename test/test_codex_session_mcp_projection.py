@@ -1135,17 +1135,18 @@ def test_granted_dashboard_is_rebuilt_and_bound(agents_dir, monkeypatch):
 
 
 @pytest.mark.parametrize("restricted", [False, True])
-def test_dashboard_broker_mount_keeps_spec_restrictions(agents_dir, restricted):
+@pytest.mark.parametrize("server", ["kirocrew-dashboard", "kirocrew-work"])
+def test_managed_broker_mount_keeps_spec_restrictions(agents_dir, restricted, server):
     entry = {"command": "/unused"}
     if restricted:
         entry["disabledTools"] = ["session_send"]
-    _write_spec(agents_dir, servers={"kirocrew-dashboard": entry}, tools=["@kirocrew-dashboard"])
+    _write_spec(agents_dir, servers={server: entry}, tools=[f"@{server}"])
     projected = codex_projection(
         "kirocrew",
-        stub_server_names=("kirocrew-dashboard",),
-        stub_elements=[_stub("kirocrew-dashboard")],
+        stub_server_names=(server,),
+        stub_elements=[_stub(server)],
     )
-    assert ("kirocrew-dashboard" in _by_name(projected.params["mcpServers"])) is not restricted
+    assert (server in _by_name(projected.params["mcpServers"])) is not restricted
 
 
 @pytest.mark.parametrize(
@@ -1155,16 +1156,18 @@ def test_dashboard_broker_mount_keeps_spec_restrictions(agents_dir, restricted):
         (["@kirocrew-dashboard"], {"command": "/unused", "disabled": True}),
     ],
 )
-def test_dashboard_grant_is_not_created_by_identity(agents_dir, tools, entry):
-    _write_spec(agents_dir, servers={"kirocrew-dashboard": entry}, tools=tools)
+@pytest.mark.parametrize("server", ["kirocrew-dashboard", "kirocrew-work"])
+def test_managed_grant_is_not_created_by_identity(agents_dir, tools, entry, server):
+    tools = [tool.replace("kirocrew-dashboard", server) for tool in tools]
+    _write_spec(agents_dir, servers={server: entry}, tools=tools)
     projected = codex_projection(
         "kirocrew",
         session_key="dashboard:owner",
         session_token="owner-token",
-        stub_server_names=("kirocrew-dashboard",),
-        stub_elements=[_stub("kirocrew-dashboard")],
+        stub_server_names=(server,),
+        stub_elements=[_stub(server)],
     )
-    assert "kirocrew-dashboard" not in _by_name(projected.params["mcpServers"])
+    assert server not in _by_name(projected.params["mcpServers"])
 
 
 @pytest.mark.parametrize("ambient", [None, "false"])

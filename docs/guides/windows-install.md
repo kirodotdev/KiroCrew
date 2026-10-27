@@ -294,8 +294,81 @@ spawned.
 
 ## Kiro sandbox delegation and the unsandboxed-exec opt-in
 
-Windows has no Kiro Crew OS sandbox backend. The official Kiro CLI does have its
-own sandbox, so Kiro Crew delegates the Kiro CLI chat backend, model list, account
+### Experimental native MXC backend in this source branch
+
+The opt-in `native/windows-sandbox` helper uses Microsoft's MXC SDK directly.
+It needs no WSL and performs no administrator setup or host ACL edits.
+Its pinned JSON policy contains the complete Crew rules; Codex configuration is
+never merged into that policy.
+
+Set `KIROCREW_WINDOWS_SANDBOX_EXE` to the absolute
+`kirocrew-windows-sandbox.exe` path before starting this source build.
+This is separate from `codex.exe` and `codex-acp.cmd`.
+Admission requires a successful synthetic confinement probe.
+Launch metadata uses authenticated files rather than a large command-line argument.
+
+Native Windows Codex sessions default to a persistent private profile at
+`<Crew data home>\codex`. This keeps Crew chats and background helper requests
+out of the Codex desktop sidebar while allowing Crew to resume them across
+runtime restarts. Its entire directory is hidden from other agent harnesses;
+Codex receives a visibility lift only for this exact directory.
+
+Prepare and sign in to the independent profile from this source checkout:
+
+```powershell
+python scripts/configure_windows_codex_home.py --configure --login --device-auth --codex 'C:\path\to\codex.exe'
+```
+
+This reuses an existing private profile. It imports configuration once and copies
+only the old Codex rollouts identified by Crew's own session map. It leaves the
+desktop history unchanged. It does not copy authentication tokens: each profile
+has its own sign-in and refresh state. Existing desktop sidebar entries are left
+alone. A deliberately configured `CODEX_HOME` selects the operator's profile
+instead of this default; pointing it at the desktop home restores shared history.
+
+`--configure` explicitly sets `mcp_gateway.stub_overrides` for `kirocrew-core`
+and `kirocrew-cron` to `true`. Their stdio relays reach a host-owned gatewayd
+backend through a runner-mediated handle channel. Only the outside helper opens
+the existing owner-only Windows named pipe; MXC clients cannot open that endpoint
+directly. The backend performs
+SEL auditing and session authentication outside Codex's sandbox. Sharing stays
+as configured (`mcp_gateway.enabled` need not be enabled); unrelated server
+choices and disabled tools stay intact. Restart Crew after this setup.
+Direct Crew stdio tools inside the sandbox cannot read `trust/sel_hmac.key`
+and fail audit-or-deny calls such as `skill_search`. Keep the key and audit log
+masked: do not grant them to Codex to work around that error.
+
+Run from an ordinary PowerShell terminal outside another sandbox:
+
+```powershell
+python scripts/check_windows_sandbox.py --runner 'C:\path\to\kirocrew-windows-sandbox.exe' --report native-check.json
+```
+
+This starts no model, changes no Crew settings, uses synthetic files and removes
+its policy. `not_available` is a refusal, not permission to disable masking.
+A passing check still needs ACP approval, MCP loopback and process lifecycle
+validation before selecting this experimental backend.
+
+Build with Rust's Windows GNU toolchain and Windows SDK resources:
+
+```powershell
+cargo +stable-x86_64-pc-windows-gnu test --locked --manifest-path native/windows-sandbox/Cargo.toml
+cargo +stable-x86_64-pc-windows-gnu build --release --locked --manifest-path native/windows-sandbox/Cargo.toml
+```
+
+GNU builds need `RC_PATH` pointing at the Windows SDK's x64 `rc.exe` and SDK
+headers on `INCLUDE`. The lockfile pins dependencies. At runtime the compiled
+helper uses system DLLs and needs no Rust installation.
+
+UNC/device paths, wildcards, inode-only aliases, reparse points and sealed empty
+execution directories are unsupported. Pins may hold protected objects against
+host-side atomic replacement until exit. The following defaults describe
+installations without this opt-in.
+
+### Default Windows policy
+
+Without the experimental opt-in, Windows has no Kiro Crew OS sandbox backend.
+The official Kiro CLI does have its own sandbox, so Kiro Crew delegates the Kiro CLI chat backend, model list, account
 identity and usage reads to it automatically.
 
 **The default chat harness, KAS, runs UNCONFINED on Windows.** KAS has no OS
@@ -923,6 +996,67 @@ supervision is a separate piece of work, proposed in
   response instead of crashing. The web terminal itself works here on a
   ConPTY shell; only its tab title, completions and the live cwd handed to chat are POSIX-only (see
   the per-feature table).
+
+## Native Codex routing operations and recovery
+
+Build the native helper from the same source revision as Crew, then launch Crew
+from a shell which sets `KIROCREW_WINDOWS_SANDBOX_EXE` to that helper. An older
+helper without the process-descriptor protocol cannot serve this MCP channel.
+Close Crew fully before running the private-profile setup command above. The
+profile requires its own sign-in; existing desktop chats are not deleted.
+
+Validate the real ACP path with `scripts/check_windows_native_mcp.py --runner
+<helper.exe> --codex <codex.exe> --adapter <codex-acp/dist/index.js> --node
+<node.exe>`. It uses synthetic credentials, an isolated Codex profile and loopback
+fixtures, checks all four managed server catalogs, then calls `skill_search` and
+`cron_list` through ACP approval. Native session creation and resume wait up to
+15 seconds for server startup. A successful bare broker probe alone does not
+establish that a live Codex session has the tools.
+
+In **Settings → MCP**, routing and backend sharing are separate choices. The
+effective routed set includes `stub_overrides` and local configuration layers;
+an empty authored `stub_servers` list does not mean routing is disabled.
+On native Codex, a routing change first requests explicit restart confirmation.
+It reports running foreground/background work and leaves the change unsaved
+until confirmation. The controlled sequence is stop whole owned trees, verify
+retirement and released pins, save atomically, rebuild, start the broker, then
+admit new sessions. No delete-sharing permission is added to protected files.
+
+If activation fails, read both the failed step and the save result. Retry restart
+to activate the CURRENT saved settings. A change reported unsaved must be
+submitted again; restart does not replay it. If startup cannot validate its saved
+generation, close Crew and run this source-checkout recovery command, then start
+Crew again:
+
+```powershell
+python scripts/recover_windows_native_routing.py
+```
+
+Recovery refuses live native readers or unreleased legacy pins. It does not kill
+foreign processes, change launch approvals, replace keys, or roll back files.
+For rollback, fully stop Crew, restore the operator's backed-up routing settings,
+and run the recovery command before starting the matching prior build/helper.
+Leave the private Codex profile intact to preserve Crew history; deliberately
+selecting the desktop `CODEX_HOME` makes future histories shared again.
+
+The opt-in integration tests use temporary homes and synthetic secrets only:
+
+```powershell
+$env:KIROCREW_TEST_WINDOWS_RUNNER = 'C:\path\to\kirocrew-windows-sandbox.exe'
+$env:KIROCREW_TEST_CODEX_EXE = 'C:\path\to\codex.exe'
+python -m pytest -n 2 test/test_windows_native_mcp_integration.py
+```
+
+They exercise real MXC, gatewayd, Core, Cron, Work and Dashboard tool lists,
+including the native final-session routing, and the supplied Codex executable.
+The Codex leg uses a local synthetic Responses provider with custom-model
+fallback metadata; no account or real model provider is contacted. It checks
+completed `skill_search`/`cron_list` calls, signed session headers, key denial,
+WinError 5 on direct pipe connection, rejected clients/scopes/approvals, bounded
+refusal lifetime, live file-publication exclusion and physical-start fencing.
+This proves that transport path, not whole-app GUI restart or real-provider
+authentication. The measured host was Windows `10.0.26200` with Codex `0.164.0`.
+Other Windows builds and Linux/macOS still require their repository CI lanes.
 
 ## Related
 

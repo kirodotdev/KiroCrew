@@ -381,14 +381,26 @@ def _build_caller_block(channel_id: Optional[str]) -> dict[str, str]:
     }
 
 
-def build_register_payload(args: argparse.Namespace) -> dict:
+def build_register_payload(
+    args: argparse.Namespace,
+    *,
+    session_token: str | None = None,
+    caller: dict[str, str] | None = None,
+) -> dict:
     """Compute every PoolKey field and assemble the Register frame.
 
     The result is accepted verbatim by :meth:`PoolKey.from_register` —
     callers do not post-process."""
 
     target_args = _resolve_target_args(args)
-    binary_version, stub_code_fingerprint = _pool_binary_identity(args.target_command, target_args)
+    binary_version, local_fingerprint = _pool_binary_identity(args.target_command, target_args)
+    stub_code_fingerprint: str | None = local_fingerprint
+    if session_token is None and os.environ.get("KIROCREW_NATIVE_MCP_SCOPE_TOKEN"):
+        from kiro_crew.mcp_gateway.native_scope import runtime_identity
+
+        binary_version, stub_code_fingerprint = runtime_identity(
+            os.environ["KIROCREW_NATIVE_MCP_SCOPE_TOKEN"], binary_version, stub_code_fingerprint
+        )
     # Prefer --env-json when present (commas/equals round-trip intact);
     # fall back to the legacy --env CSV for overlay files written by a
     # pre-JSON rewriter that may still be on disk during the transition.
@@ -407,12 +419,24 @@ def build_register_payload(args: argparse.Namespace) -> dict:
     except OSError:
         work_dir = str(args.work_dir)
 
-    caller = _build_caller_block(channel_id)
+    if caller is None:
+        if os.environ.get("KIROCREW_NATIVE_MCP_SCOPE_TOKEN"):
+            # The broker derives identity from its kernel-attested outside
+            # peer and the host-published session token. No SEL read in MXC.
+            caller = {
+                "session_key": "",
+                "session_type": "unknown",
+                "principal_id": "",
+                "channel_id": "",
+            }
+        else:
+            caller = _build_caller_block(channel_id)
     # Per-session token from the injected ACP entry's own env
     # (``session_servers.attach_stub_session_token``). Absent for a stub
     # launched from a hand-written config or an overlay predating the token: the
     # field is then omitted below and gatewayd keeps its PID-keyed behavior.
-    session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
+    if session_token is None:
+        session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
 
     payload = {
         "type": "register",

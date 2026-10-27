@@ -662,6 +662,8 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
+            for name, value in plan.env_defaults.items():
+                env.setdefault(name, value)
             # A host that keeps private state may prepare it in scratch before
             # the child exists; one more blocking file copy, so it rides here.
             _seed_private_state(env, plan, self._scratch_dir)
@@ -716,6 +718,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # credential homes.
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_expose_files=plan.extra_expose_files,
+            extra_visible_dirs=plan.extra_visible_dirs,
             internal_sandbox=self._harness.internal_sandbox,
             pod_home_remap=self._harness.pod_home_remap,
             guard_scratch_hops=True,

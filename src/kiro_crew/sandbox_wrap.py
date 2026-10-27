@@ -66,6 +66,12 @@ from kiro_crew.sandbox_unavailable import (
     _warn_mode_off_unconfined,
     refuse_unaudited_on_dead_fs,
 )
+from kiro_crew.sandbox_windows import (
+    WINDOWS_BACKEND,
+    probe_windows_sandbox,
+    windows_sandbox_argv,
+    windows_sandbox_executable,
+)
 
 # Logged under the sandbox's name, which operator log filters, level settings
 # and the tests' caplog scopes key on.
@@ -147,6 +153,16 @@ def _record_probe_failure(transient: bool, reason: str, remedy: str = "") -> Non
 def _background_warm() -> None:
     """Run the probe off-loop and populate the cache. Thread target."""
     global _backend, _last_unshare_failure
+    if sys.platform == "win32":
+        if probe_windows_sandbox():
+            _backend = WINDOWS_BACKEND
+            _last_unshare_failure = None
+        else:
+            # A timeout, resource failure or policy error does not prove that
+            # this host permanently lacks MXC. Leave the capability cache cold.
+            _backend = None
+            _record_probe_failure(True, "native Windows MXC confinement probe unavailable")
+        return
     for attempt in (1, 2):
         ok, transient, reason, remedy = _probe_unshare_once()
         if ok:
@@ -193,8 +209,10 @@ def prewarm_backend() -> None:
     call the blocking ``warm_backend`` instead, which waits for the probe so the
     cache is warm before any on-loop spawn path reaches detect_backend().
     """
-    if sys.platform != "linux":
-        return  # probes are Linux-only
+    if sys.platform not in {"linux", "win32"}:
+        return
+    if sys.platform == "win32" and windows_sandbox_executable() is None:
+        return
     _kick_background_warm()
 
 
@@ -218,8 +236,10 @@ def warm_backend(timeout: float = _WARM_JOIN_TIMEOUT_SECS) -> None:
     ``await asyncio.to_thread(warm_backend)``; synchronous callers (CLI paths)
     may call it directly.
     """
-    if sys.platform != "linux":
-        return  # probes are Linux-only
+    if sys.platform not in {"linux", "win32"}:
+        return
+    if sys.platform == "win32" and windows_sandbox_executable() is None:
+        return
     _kick_background_warm()
     thread = _warm_thread
     if thread is not None and thread.is_alive():
@@ -410,6 +430,15 @@ def detect_backend(config_mode: str = "auto") -> str:
         return "none"
     if _backend is not None:
         return _backend
+    if sys.platform == "win32" and windows_sandbox_executable() is not None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            _background_warm()
+            return _backend or "none"
+        _kick_background_warm()
+        _record_probe_failure(True, "native Windows probe deferred off the event loop")
+        return "none"
     if userns_available():
         _backend = "namespace"
     elif _probe_sandbox_exec():
@@ -843,6 +872,23 @@ def wrap_argv(
 
     backend = detect_backend(config_mode=mode)
 
+    if backend == WINDOWS_BACKEND:
+        return windows_sandbox_argv(
+            argv,
+            sandbox_level,
+            strip_python_env=strip_python_env,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
+            extra_hidden_dirs=extra_hidden_dirs,
+            seal_hidden_dirs=seal_hidden_dirs,
+            extra_hidden_dir_ids=extra_hidden_dir_ids,
+            extra_alias_credential_ids=extra_alias_credential_ids,
+            extra_visible_dirs=extra_visible_dirs,
+            extra_private_dirs=extra_private_dirs,
+            extra_private_dir_ids=extra_private_dir_ids,
+            extra_writable_dirs=extra_writable_dirs,
+            extra_expose_files=extra_expose_files,
+            exec_cwd=exec_cwd,
+        )
     if backend == "namespace":
         if (
             extra_hidden_dirs

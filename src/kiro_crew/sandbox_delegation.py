@@ -132,6 +132,19 @@ def wrapped_by_crew_sandbox(argv: "Sequence[str]") -> bool:
     scrub flags), so this is False for both, which is the point: on those paths
     the only sandbox left in the chain belongs to the harness.
     """
+    # This records the wrapper chosen by trusted wrap_argv; it grants no
+    # nested passthrough and is not a kernel-attestation API.
+    if (
+        len(argv) in (5, 7)
+        and (len(argv) == 5 or argv[4] == "--request-file")
+        and all(isinstance(token, str) for token in argv)
+        and tuple(argv[1:3]) == ("-I", "-S")
+        and os.path.normcase(os.path.abspath(argv[0]))
+        == os.path.normcase(os.path.abspath(sys.executable))
+        and os.path.normcase(os.path.abspath(argv[3]))
+        == os.path.normcase(os.path.join(os.path.dirname(__file__), "sandbox_windows_launcher.py"))
+    ):
+        return True
     marker = f"{_IN_SANDBOX_MARKER}="
     for token in argv:
         if not isinstance(token, str):

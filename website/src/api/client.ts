@@ -167,6 +167,8 @@ export type {
   McpShareRecommendation,
   McpMeasureProgress,
   McpManagedServer,
+  NativeSettingsConsent,
+  NativeRoutingStatus,
 } from './client/mcp'
 export type {
   CrewmateExportChoices,

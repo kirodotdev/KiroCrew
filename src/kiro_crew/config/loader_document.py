@@ -424,6 +424,17 @@ def _aws_project_profiles_on_disk(path: Path) -> object:
 
 
 def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> None:
+    """Publish a permission-preserving document under native runtime admission."""
+    if platform_compat.IS_WINDOWS:
+        from kiro_crew.windows_settings import guarded_config_write
+
+        with guarded_config_write(path):
+            _write_config_atomically(path, data, fsync=fsync)
+    else:
+        _write_config_atomically(path, data, fsync=fsync)
+
+
+def _write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> None:
     """Write a config dict to *path* atomically, PRESERVING its permissions.
 
     The companion to :func:`read_config_for_update`. Two properties matter:

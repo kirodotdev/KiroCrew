@@ -155,12 +155,16 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     # Auto-install agent config so MCP servers are always up to date
     try:
         from kiro_crew.agent import rebuild_agent_config  # circular import
+        from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
+        from kiro_crew.windows_settings import permitted
 
         # Off-loop, with the fork refresh deferred: the rebuild gates
         # readiness, and per-fork work scales with fork count.
         # rebuild_agent_config owns the deferral (skip + background
         # schedule together), so this caller cannot get half the pair.
-        path = await asyncio.to_thread(rebuild_agent_config, refresh_forks="defer")
+        path = await drained_to_thread(
+            lambda: rebuild_agent_config(refresh_forks=True if permitted() else "defer")
+        )
         logger.info("Agent config installed: %s", path)
 
         # Deliver shim + one-time stale-MCP purge automatically — the
@@ -865,19 +869,19 @@ async def run(self: GatewayOrchestrator) -> None:
     await cautious_boot.initialize()
 
     seen = SeenCache()
-    await self._init_services()
+    from kiro_crew.dashboard.native_settings import activation_boot
 
-    # Wire in-process embeddings (always-on) and kick background model download
-    await self._start_embeddings()
+    async with activation_boot(self._cfg):
+        await self._init_services()
 
-    # Auto-migration starts only after deferred restore and memory init.
+        # Wire in-process embeddings and kick background model download.
+        await self._start_embeddings()
 
-    # Start MCP gateway sidecar before any ACP session can spawn.  The
-    # rewriter writes the agent-JSON overlay first so kiro-cli picks up
-    # the broker-wired MCP entries the moment a session starts.  No-op
-    # when ``mcp_gateway.enabled`` is False.
-    await cautious_boot.pause_before("MCP gateway sidecar")
-    await self._init_mcp_gateway()
+        # The normal rebuild, provider factory and broker all consume the
+        # same protected settings generation before native starts reopen.
+        # Routing decides whether a broker is needed; enabled is sharing.
+        await cautious_boot.pause_before("MCP gateway sidecar")
+        await self._init_mcp_gateway()
 
     # Loading the cron scheduler reads and reconciles durable jobs. Under
     # cautious boot this pause keeps that work out of the app/MCP launch

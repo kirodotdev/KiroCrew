@@ -36,6 +36,7 @@ from kiro_crew.dashboard.handlers.core_config_view import (
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.metrics import provider as _metrics_provider
+from kiro_crew.windows_settings import NativeSettingsRestartRequired
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
@@ -486,6 +487,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         except ValueError as exc:
             _log_sel("error", f"{path_key}=section_not_dict")
             return web.json_response({"error": str(exc)}, status=500)
+        except NativeSettingsRestartRequired as exc:
+            _log_sel("denied", f"{path_key}=native_restart_required")
+            return web.json_response(exc.response(), status=409)
         except OSError:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)

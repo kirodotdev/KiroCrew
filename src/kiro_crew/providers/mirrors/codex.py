@@ -70,6 +70,7 @@ from typing import Any, Mapping
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
 from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+from kiro_crew.mcp_cleanup import WORK_LEDGER_SERVER
 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors.base import (
     AgentConfigMirror,
@@ -270,7 +271,7 @@ def codex_elements(
     appearing unusable -- :func:`codex_withheld_servers` drops them upstream of
     this function. The projection additionally reconstructs an explicitly granted
     dashboard entry before attaching identity; its broker stub may carry verified
-    per-call identity instead. The work ledger remains withheld.
+    per-call identity instead. The work ledger requires a broker stub.
 
     A folded name is still claimed only once, first writer keeping it: two spec
     entries CAN legitimately fold together (``"my server"`` and ``"my_server"``),
@@ -391,10 +392,10 @@ def codex_projection(
         if not isinstance(stub, Mapping):
             continue
         name = stub.get("name")
-        # A dashboard stub is produced by the gateway rewriter, which rebuilds
+        # A managed stub is produced by the gateway rewriter, which rebuilds
         # managed launches and verifies each caller. Keep the spec restrictions.
         if name in withheld and not (
-            name == MEMBER_DISPATCH_SERVER
+            name in (MEMBER_DISPATCH_SERVER, WORK_LEDGER_SERVER)
             and name not in projection.restricted
             and name not in projection.disabled_servers
         ):
@@ -459,10 +460,11 @@ class CodexMirror(AgentConfigMirror):
                 "inherits nothing; that credential rides ONLY kirocrew-core and "
                 "kirocrew-cron, the two entries the translation replaces from the "
                 "managed source, so no part of a hand-editable spec reaches a child "
-                "holding it. Every OTHER managed Crew server is withheld rather than "
+                "holding it. Other direct managed Crew launches are withheld rather than "
                 "mounted credential-less, since it would answer not_bound to every "
                 "call, and that set is DERIVED as the managed servers minus the "
-                "control plane -- see _identity_bound_crew_servers. The array and "
+                "control plane -- see _identity_bound_crew_servers. Granted, unrestricted "
+                "dashboard and work broker stubs carry host-verified per-call identity. The array and "
                 "the withhold set come from ONE parse of the spec "
                 "(session_mcp_projection), so a narrowing that lands between two "
                 "reads of a user-writable file cannot leave a narrowed server "

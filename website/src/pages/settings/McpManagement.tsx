@@ -40,6 +40,7 @@ import {
 } from './mcpManagementModel'
 import { RefusalPanel } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
+import { NativeRoutingState, useNativeRoutingRestart } from './McpNativeRoutingRestart'
 
 /**
  * MCP Management — two decisions, one per layer, and nothing else.
@@ -120,6 +121,7 @@ function Switch({
 
 export function McpManagement() {
   const qc = useQueryClient()
+  const nativeRestart = useNativeRoutingRestart()
   const [confirmSharing, setConfirmSharing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -143,6 +145,7 @@ export function McpManagement() {
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
     queryFn: () => api.mcpGatewayStatus(),
+    refetchInterval: query => nativeRestart.shouldPoll(query.state.data) ? 1500 : false,
   })
   const serversQ = useQuery<{ servers: McpManagedServer[] }>({
     queryKey: ['mcpGatewayServers'],
@@ -239,6 +242,7 @@ export function McpManagement() {
       }
     },
     onError: (error, vars) => {
+      if (nativeRestart.capture(error, consent => api.mcpGatewaySetStub(vars.name, vars.stub, vars.expectedLaunch, false, consent))) return
       invalidate()
       setError(i18nT(stubErrorKey(error), { name: vars.name }))
     },
@@ -254,7 +258,10 @@ export function McpManagement() {
         setError(i18nT('pages.mcpManagement.sharing_not_live'))
       }
     },
-    onError: onApplyError('pages.mcpManagement.sharing_failed'),
+    onError: (error, enabled) => {
+      if (nativeRestart.capture(error, consent => api.mcpGatewayEnable(enabled, consent))) return
+      onApplyError('pages.mcpManagement.sharing_failed')()
+    },
   })
 
   // Pre-resolving an npm-launcher server lets its launch exec the installed
@@ -312,7 +319,7 @@ export function McpManagement() {
     },
   })
 
-  const busy = setStub.isPending || setSharing.isPending || previewLaunch.isPending
+  const busy = setStub.isPending || setSharing.isPending || previewLaunch.isPending || nativeRestart.shouldPoll(status)
   // An unsupported platform must never TRAP an operator in a state they cannot
   // leave: a config carried over from another machine can arrive with sharing on
   // or servers stubbed, so turning things OFF stays available and only turning
@@ -644,6 +651,9 @@ export function McpManagement() {
       {/* Hand-off is safe here: this page is switches only, every input is
           already persisted before any of these errors can show. */}
       <ErrorNotice message={error} askAgent onDismiss={() => setError(null)} />
+      {nativeRestart.dialog}
+      <NativeRoutingState status={status} onRestart={nativeRestart.recovery}
+        pending={nativeRestart.recoveryPending} requestError={nativeRestart.recoveryError} />
 
       {restartNotice && (
         <div

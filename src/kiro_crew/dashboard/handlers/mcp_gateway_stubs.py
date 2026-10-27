@@ -228,7 +228,9 @@ def _stub_eligibility(
     return eligible, skipped
 
 
-async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
+async def api_mcp_gateway_set_stub(
+    request: web.Request, *, _body_override: dict | None = None
+) -> web.Response:
     """POST /api/mcp-gateway/servers/stub — toggle servers' stub flag.
 
     Body ``{"name": "slack-mcp", "stub": true}`` for one server, or
@@ -271,7 +273,9 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         update_config_locked,
     )
 
-    body, body_err = await read_bounded_json(request)
+    body, body_err = (
+        await read_bounded_json(request) if _body_override is None else (_body_override, None)
+    )
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
@@ -463,6 +467,26 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         if over_cap:
             return _launch_over_cap_response(over_cap)
 
+    # Refuse an unchanged overlay/launch problem BEFORE asking the operator to
+    # interrupt work. The bounded handler reruns all of these checks at commit.
+    overlay = await asyncio.to_thread(_local_overlay_section)
+    shadowed = _overlay_shadowed_keys(overlay, ("stub_servers", "stub_overrides"))
+    if shadowed:
+        return web.json_response(
+            {
+                "error": "config.local.json owns these routing decisions; edit that file instead",
+                "code": "overlay_owns_stub_servers",
+            },
+            status=409,
+        )
+    from kiro_crew.dashboard.native_settings import maybe_restart
+
+    native_response = await maybe_restart(
+        request, body, lambda: api_mcp_gateway_set_stub(request, _body_override=dict(body))
+    )
+    if native_response is not None:
+        return native_response
+
     path = config_path()
     # ``_MCP_GATEWAY_APPLY_LOCK`` outermost, in the SAME order the sharing toggle
     # takes it, so the two handlers serialize against each other in THIS process
@@ -628,6 +652,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             )
         except OSError as exc:
             await _restore_revoked()
+            from kiro_crew.windows_settings import NativeSettingsRestartRequired
+
+            if isinstance(exc, NativeSettingsRestartRequired):
+                return web.json_response(exc.response(), status=409)
             # OSError can carry a filesystem path; keep it server-side and send
             # the client a generic message (rendered verbatim into a localized UI).
             logger.warning("mcp config lock failed: %s", exc)

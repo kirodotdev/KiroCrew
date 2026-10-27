@@ -950,6 +950,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # agent-facing spawns inside it go through the normal chokepoints.
         "pod/windows.py::supervise_gateway",
         "sandbox_probe.py::_probe_sandbox_exec",
+        # Native MXC capability test: operator-selected executable, fixed test
+        # program and synthetic fixtures under a fresh Crew run directory.
+        # No model command or model-selected cwd reaches this probe.
+        "sandbox_windows.py::probe_windows_sandbox",
         "sandbox_argv.py::_ssh_supports_accept_new",
         # The aggregate slice-ceiling apply: `systemctl --user set-property
         # --runtime kirocrew-agents.slice MemoryMax=<N>M MemorySwapMax=0

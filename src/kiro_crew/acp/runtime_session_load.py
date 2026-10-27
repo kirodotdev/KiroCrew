@@ -11,7 +11,7 @@ Instance fields written: ``_session_cwds``, ``_session_inits_in_flight``, ``_ses
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_remote_workspace_agents``, ``_scratch_dir``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import platform_compat
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.mcp_session_report import (
@@ -45,6 +46,7 @@ from kiro_crew.acp.session_mcp import (
     settings_server_names,
 )
 from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_LOAD, JsonRpcMessage
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
@@ -216,6 +218,22 @@ async def load_session(
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
     await self._write_remote_token()
+    native_codex = (
+        platform_compat.IS_WINDOWS
+        and self.acp_backend == ACP_BACKEND_CODEX
+        and getattr(self, "_scratch_dir", None) is not None
+    )
+    if native_codex:
+        from kiro_crew.mcp_gateway.native_session import finalize
+
+        mcp_servers, stub_token = await finalize(
+            self,
+            mcp_servers,
+            agent_name=active_agent,
+            work_dir=session_work_dir,
+            session_key=session_key or member_session_key,
+            token=stub_token,
+        )
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
@@ -233,6 +251,8 @@ async def load_session(
         # a transcript path on KAS deliberately, and a per-host gate deletes
         # the only way to construct that collision.
         load_params["_meta"] = {"_kiro.dev/session_file": session_file}
+    if native_codex and wire_servers:
+        load_params.setdefault("_meta", {})["mcpStartupAwaitTimeoutMs"] = 15_000
     # Re-inject the agent definition, for the same reason create_session()
     # does: KAS registers client agents per session and has no --agent flag,
     # so a resumed session that is not handed them again advertises only the
