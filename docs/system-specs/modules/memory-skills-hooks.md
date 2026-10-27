@@ -4479,7 +4479,10 @@ fingerprint; a new loader can reuse both without reading unchanged skill files.
 Metadata also stores a digest of the complete global skill file. Ranked search
 uses that digest to collapse byte-identical mirrors without reopening their bodies;
 paginated listing and exact-key reads retain every key. Schema changes rebuild this
-disposable index. Short-lived consumers close their loader's SQLite handle before
+disposable index. Each connection sets `journal_size_limit` (`_WAL_SIZE_LIMIT_BYTES`,
+4 MiB), so the `-wal` file shrinks back to that cap after SQLite's automatic
+checkpoint instead of staying at its largest transaction until the process exits.
+Short-lived consumers close their loader's SQLite handle before
 returning or removing an owned temporary data home.
 Enumeration and stat checks still run, so zero reads does not mean zero filesystem
 work. Cold body refresh is incremental (250 ms per query), with a separately bounded
