@@ -15,6 +15,7 @@ gave up waiting for the cancelled turn drains the flush before it archives.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import shutil
 import tempfile
@@ -24,7 +25,15 @@ from unittest.mock import patch
 
 import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
-from turn_harness import Do, Raise, SlotSpec, TurnContext, TurnRecord, TurnScript, run_turn
+from turn_harness import (
+    Do,
+    Raise,
+    SlotSpec,
+    TurnContext,
+    TurnRecord,
+    TurnScript,
+    run_turn,
+)
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -87,14 +96,19 @@ class _HeldRead:
     def __init__(self) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
-        # The loop learns of the start through a callback, not a parked pool
-        # thread: the flush under test needs a pool thread of its own.
-        self._loop = asyncio.get_running_loop()
-        self._started_on_loop = asyncio.Event()
+        # Use a concurrent.futures.Future so the worker thread can signal
+        # loop-agnostically: set_result is thread-safe, and asyncio.wrap_future
+        # binds to whatever loop awaits it rather than the construction-time loop.
+        # The asyncio.Event + call_soon_threadsafe(self._loop.set) pattern breaks
+        # when this object is constructed on the pytest-asyncio loop but the
+        # actual turn runs on the harness's _VirtualTimeLoop: the stored loop is
+        # blocked waiting for run_turn to join, so the notification never lands.
+        self._started_cf: concurrent.futures.Future[None] = concurrent.futures.Future()
 
     def __call__(self, path: str) -> _Snapshot:
         self.started.set()
-        self._loop.call_soon_threadsafe(self._started_on_loop.set)
+        if not self._started_cf.done():
+            self._started_cf.set_result(None)
         # Only a loop task sets this. A read running ON the loop would wait out
         # the ceiling, and the test asserting on it names the stall.
         self.release.wait(_LOST_RUN_CEILING_SECS)
@@ -102,8 +116,11 @@ class _HeldRead:
 
     async def wait_started(self) -> None:
         try:
-            await asyncio.wait_for(self._started_on_loop.wait(), _LOST_RUN_CEILING_SECS)
-        except asyncio.TimeoutError:
+            await asyncio.wait_for(
+                asyncio.wrap_future(self._started_cf),
+                _LOST_RUN_CEILING_SECS,
+            )
+        except TimeoutError:
             raise AssertionError("the after-content read was never started") from None
 
 
