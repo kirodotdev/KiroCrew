@@ -1468,11 +1468,29 @@ jobs:
             confirm_head
             find_existing
             if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat "${RUNNER_TEMP:-/tmp}/ai-override-note.md")" >/dev/null \
-                || echo "::warning::Could not replace comment #$existing with the human override note for $HEAD. Re-run this lane to record the note."
+              # The head was confirmed BEFORE the slot lookup, whose backoff can outlast a
+              # push; a newer run on the moved head may have published into this slot in
+              # that gap. Re-read the head right before replacing it, as the skip arm does.
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat "${RUNNER_TEMP:-/tmp}/ai-override-note.md")" >/dev/null \
+                  || echo "::warning::Could not replace comment #$existing with the human override note for $HEAD. Re-run this lane to record the note."
+              fi
             elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
-              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ai-override-note.md" \
-                || echo "::warning::Could not post the human override note for $HEAD. Re-run this lane to record the note."
+              # The slot read answered empty, but the head check before it and its own
+              # backoff can outlast a push or a second run on this head that fills the
+              # slot. Ask both again right before adding a comment: a moved head, or an
+              # occupant that arrived, means this note would be a second one in the slot.
+              confirm_head
+              find_existing
+              if [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ] && { [ -z "$existing" ] || [ "$existing" = "null" ]; }; then
+                gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ai-override-note.md" \
+                  || echo "::warning::Could not post the human override note for $HEAD. Re-run this lane to record the note."
+              elif [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+                echo "::warning::This lane's slot was filled while the override note for $HEAD was pending, so no second comment was added. Re-run this lane to record the override."
+              elif [ "$lookup_ok" -eq 0 ]; then
+                echo "::warning::This lane's slot was unreadable after 6 attempts on the re-check, so the override note for $HEAD was not posted. Re-run this lane to record the override."
+              fi
             elif [ "$lookup_ok" -eq 0 ]; then
               echo "::warning::This lane's slot was unreadable after 6 attempts, so the human override note for $HEAD was not posted. Creating one here can leave two comments in the slot, and the one a later lookup does not pick keeps its own blocking line. Re-run this lane to record the override."
             fi

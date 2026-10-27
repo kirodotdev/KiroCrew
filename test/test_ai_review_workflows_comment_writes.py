@@ -16,6 +16,7 @@ from ai_review_workflows_helpers import (
     _GUARDED_LANES,
     _GUARDED_OVERRIDE_LANES,
     _bash,
+    _child_env,
     _shell_function,
     _step_script,
     _workflow,
@@ -77,6 +78,12 @@ class TestNoticeSlotLookupLicensesEveryCreate:
     UNREADABLE = 'elif [ "$lookup_ok" -eq 0 ]; then'
     PATCH_GATE = (
         'if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then'
+    )
+    #: The override note's CREATE asks the head and the slot again right before
+    #: it posts, because both reads above it can be a minute old by then.
+    CREATE_RECHECK = (
+        'if [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ] && '
+        '{ [ -z "$existing" ] || [ "$existing" = "null" ]; }; then'
     )
 
     def _notice_script(self, workflow: str, step: str) -> str:
@@ -145,7 +152,19 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         else:
             assert notice_creates, workflow
         for n, line in notice_creates:
-            assert lines[n - 1].strip() == self.GATE, (workflow, line, lines[n - 1])
+            before = lines[n - 1].strip()
+            if before == self.CREATE_RECHECK:
+                # The override note's create sits one level deeper: the gate opens
+                # the arm, then the head and the slot are asked again right before
+                # the post, which needs both still to hold and the slot still empty.
+                asked = [x.strip() for x in lines[: n - 1] if not x.lstrip().startswith("#")]
+                assert asked[-3:] == [self.GATE, "confirm_head", "find_existing"], (
+                    workflow,
+                    line,
+                    asked[-3:],
+                )
+                continue
+            assert before == self.GATE, (workflow, line, lines[n - 1])
         if defines:
             # Every branch that reads the slot accounts for the unreadable case:
             # either it gates a create, or it says the notice did not land.
@@ -265,38 +284,40 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         heads = [n for n, line in enumerate(bare) if line.strip() == "confirm_head"]
         reads = [n for n, line in enumerate(bare) if line.strip() == "find_existing"]
         assert heads and reads, workflow
-        creating = replacing = 0
+        creating = replacing = rechecked = 0
         consumed: set[int] = set()
         for n in heads:
             if n in consumed:
                 continue
             following = bare[n + 1].strip()
+            if bare[n - 1].strip() == self.GATE:
+                # The override CREATE's re-check: head, then slot, then a post that
+                # needs both to still hold and the slot to still be empty.
+                assert following == "find_existing", (workflow, following)
+                assert bare[n + 2].strip() == self.CREATE_RECHECK, (workflow, bare[n + 2])
+                rechecked += 1
+                continue
             if following == "find_existing":
                 # Head first, then slot: only legitimate where the arm can create.
                 assert bare[n + 2].strip() == self.PATCH_GATE, (workflow, bare[n + 2])
                 tail = "\n".join(bare[n : n + 16])
                 assert self.GATE in tail, (workflow, "reads last but never creates", tail)
-                # The PATCH overwrites, so a skip-notice arm RE-CONFIRMS the head
-                # after the slot read, immediately before the write: the arm's
-                # body opens with a second `confirm_head` and the destructive
-                # write sits behind an `if head_unchanged` of its own. The
-                # human-override arm predates this rule and writes a different
-                # body (`ai-override-note.md`); it is the one creating arm not
-                # held to the re-confirm, so a false negative there is a known
-                # pre-existing gap, not one this enumeration introduces.
-                is_override = "ai-override-note.md" in tail
-                if not is_override:
-                    recheck = bare[n + 3].strip()
-                    assert recheck == "confirm_head", (
-                        workflow,
-                        "skip-notice patch does not re-confirm",
-                        recheck,
-                    )
-                    assert bare[n + 4].strip() == 'if [ "$head_unchanged" -eq 1 ]; then', (
-                        workflow,
-                        bare[n + 4],
-                    )
-                    consumed.add(n + 3)
+                # The PATCH overwrites, so every creating arm -- the skip notice
+                # and the human-override note alike -- RE-CONFIRMS the head after
+                # the slot read, immediately before the write: the arm's body
+                # opens with a second `confirm_head` and the destructive write
+                # sits behind an `if head_unchanged` of its own.
+                recheck = bare[n + 3].strip()
+                assert recheck == "confirm_head", (
+                    workflow,
+                    "notice patch does not re-confirm",
+                    recheck,
+                )
+                assert bare[n + 4].strip() == 'if [ "$head_unchanged" -eq 1 ]; then', (
+                    workflow,
+                    bare[n + 4],
+                )
+                consumed.add(n + 3)
                 creating += 1
                 continue
             # Otherwise the head check sits inside the occupant test, which the
@@ -315,7 +336,7 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         # Every `find_existing` is matched by exactly one arm; the re-confirm
         # `confirm_head` the PATCH adds is paired to its opener above, not a new
         # read, so a creating arm shows two heads and one read.
-        assert creating + replacing == len(reads), (workflow, heads, reads)
+        assert creating + replacing + rechecked == len(reads), (workflow, heads, reads)
         # And every notice write arm states its own licence rather than
         # inheriting one from an enclosing branch. The verdict writes in the
         # same step are not notices: they route through retry_comment_write and
@@ -671,8 +692,9 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         assert (calls_dir / "patch-calls.txt").read_text(encoding="utf-8").splitlines() == [
             "repos/o/r/issues/comments/4242"
         ]
-        # It took three attempts to get there, and no second comment was made.
-        assert len((calls_dir / "head-calls.txt").read_text(encoding="utf-8").splitlines()) == 3
+        # Three attempts to open the arm, then one re-read that licenses the
+        # PATCH; no second comment was made.
+        assert len((calls_dir / "head-calls.txt").read_text(encoding="utf-8").splitlines()) == 4
         assert not (calls_dir / "create-calls.txt").exists()
         # A retried blip is not reported as a withheld notice.
         stdout = result.stdout.decode()
@@ -681,6 +703,270 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         assert (tmp_path / "gh-output.txt").read_text(encoding="utf-8").count(
             "verdict=OVERRIDE"
         ) == 1
+
+    @pytest.mark.parametrize(
+        ("workflow", "step"),
+        [
+            ("design-review.yml", "Post design review summary"),
+            ("first-principles-review.yml", "Post first-principles review summary"),
+            ("ux-review.yml", "Post UX review summary"),
+            ("fork-ux-review.yml", "Post UX review summary"),
+        ],
+    )
+    def test_an_override_note_never_replaces_the_slot_after_the_head_moved(
+        self, tmp_path: Path, workflow: str, step: str
+    ) -> None:
+        # The head holds when the override arm opens, and moves while the slot
+        # read runs: a newer revision's run may have published into the slot in
+        # that gap. The override note must not replace it.
+        #
+        # `gh` and `sleep` are shell FUNCTIONS sourced through `BASH_ENV`, not
+        # scripts on `PATH`, and they keep their call counts in files rather than
+        # piping through `jq` or `wc`: Git for Windows' bash prepends its own
+        # `bin` to `PATH`, which would shadow a `PATH` stub, and the step itself
+        # pipes nothing through `jq`. So this runs on the Windows shard too.
+        bash = _bash()
+        # No skip: these cases pin the override arm, and a run without them
+        # would pass without checking it. Every CI runner ships a Bash.
+        assert bash is not None, "notice slot-lookup test requires a native-path Bash"
+
+        head = "f" * 40
+        moved = "9" * 40
+        calls_dir = tmp_path / "calls"
+        calls_dir.mkdir()
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
+
+        stubs = tmp_path / "stubs.sh"
+        stubs.write_text(
+            "# The first head read answers with this run's head; every later one\n"
+            "# answers with a newer head. The slot holds an occupant.\n"
+            "gh() {\n"
+            '  if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PATCH" ]; then\n'
+            '    printf \'%s\\n\' "$4" >> "$STUB_CALLS/patch-calls.txt"\n'
+            "    return 0\n"
+            "  fi\n"
+            '  if [ "$1" = "api" ] && [ "$2" = "repos/o/r/pulls/1" ]; then\n'
+            "    printf 'head\\n' >> \"$STUB_CALLS/head-calls.txt\"\n"
+            '    if [ -e "$STUB_CALLS/head-seen" ]; then\n'
+            f'      echo "{moved}"\n'
+            "    else\n"
+            '      : > "$STUB_CALLS/head-seen"\n'
+            f'      echo "{head}"\n'
+            "    fi\n"
+            "    return 0\n"
+            "  fi\n"
+            '  if [ "$1" = "api" ]; then\n'
+            "    echo '4242'\n"
+            "    return 0\n"
+            "  fi\n"
+            '  if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then\n'
+            "    printf 'create\\n' >> \"$STUB_CALLS/create-calls.txt\"\n"
+            "    return 0\n"
+            "  fi\n"
+            "  return 0\n"
+            "}\n"
+            "sleep() { return 0; }\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        script_file = tmp_path / "step.sh"
+        script_file.write_text(self._notice_script(workflow, step), encoding="utf-8", newline="\n")
+        env = _child_env(
+            {
+                "PATH": os.environ.get("PATH", ""),
+                "BASH_ENV": stubs.as_posix(),
+                "STUB_CALLS": calls_dir.as_posix(),
+                "RUNNER_TEMP": runner_temp.as_posix(),
+                "GITHUB_OUTPUT": (tmp_path / "gh-output.txt").as_posix(),
+                "GH_TOKEN": "stub",
+                "REPO": "o/r",
+                "PR": "1",
+                "HEAD": head,
+                "HUMAN_OVERRIDE": "true",
+                "OVERRIDE_ACTOR": "someone",
+                # fork-ux-review.yml reads it under `set -u`; any value opens the arm.
+                "OVERRIDE_SOURCE": "1",
+                "ACTOR": "someone",
+                "EXEC_FILE": "",
+                "SURFACE": "true",
+                "CONTRACT": "true",
+                "REVIEW_OUTCOME": "success",
+            }
+        )
+        result = subprocess.run(
+            [bash, script_file.as_posix()],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        # The newer revision's comment stands: no PATCH, and no second comment.
+        assert not (calls_dir / "patch-calls.txt").exists(), workflow
+        assert not (calls_dir / "create-calls.txt").exists(), workflow
+        # The head was asked twice: once to open the arm, once to license the PATCH.
+        heads = (calls_dir / "head-calls.txt").read_text(encoding="utf-8").splitlines()
+        assert len(heads) >= 2, (workflow, heads)
+
+    _OVERRIDE_LANES = [
+        ("design-review.yml", "Post design review summary"),
+        ("first-principles-review.yml", "Post first-principles review summary"),
+        ("ux-review.yml", "Post UX review summary"),
+        ("fork-ux-review.yml", "Post UX review summary"),
+    ]
+
+    def _run_override_create(
+        self,
+        tmp_path: Path,
+        workflow: str,
+        step: str,
+        *,
+        head_moves: bool,
+        slot_fills: bool,
+        slot_fails: bool = False,
+    ) -> tuple[subprocess.CompletedProcess, Path]:
+        """Run one override arm whose first head read and first slot read answer
+        "same head, empty slot". Later reads answer a moved head when *head_moves*
+        and an occupant when *slot_fills*. Stubs are BASH_ENV functions, as in the
+        PATCH test above, so this also runs on the Windows shard."""
+        bash = _bash()
+        # No skip: these cases pin the override arm, and a run without them
+        # would pass without checking it. Every CI runner ships a Bash.
+        assert bash is not None, "notice slot-lookup test requires a native-path Bash"
+        head = "c" * 40
+        moved = "d" * 40
+        calls_dir = tmp_path / "calls"
+        calls_dir.mkdir()
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
+        later_head = moved if head_moves else head
+        later_slot = "    echo '4242'\n" if slot_fills else ""
+        if slot_fails:
+            later_slot = "    return 1\n"
+        stubs = tmp_path / "stubs.sh"
+        stubs.write_text(
+            "gh() {\n"
+            '  if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PATCH" ]; then\n'
+            "    printf 'patch\\n' >> \"$STUB_CALLS/patch-calls.txt\"\n"
+            "    return 0\n"
+            "  fi\n"
+            '  if [ "$1" = "api" ] && [ "$2" = "repos/o/r/pulls/1" ]; then\n'
+            "    printf 'head\\n' >> \"$STUB_CALLS/head-calls.txt\"\n"
+            '    if [ -e "$STUB_CALLS/head-seen" ]; then\n'
+            f'      echo "{later_head}"\n'
+            "    else\n"
+            '      : > "$STUB_CALLS/head-seen"\n'
+            f'      echo "{head}"\n'
+            "    fi\n"
+            "    return 0\n"
+            "  fi\n"
+            '  if [ "$1" = "api" ]; then\n'
+            "    printf 'read\\n' >> \"$STUB_CALLS/read-calls.txt\"\n"
+            '    if [ -e "$STUB_CALLS/slot-seen" ]; then\n'
+            f"{later_slot}"
+            "    :\n"
+            "    else\n"
+            '      : > "$STUB_CALLS/slot-seen"\n'
+            "    fi\n"
+            "    return 0\n"
+            "  fi\n"
+            '  if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then\n'
+            "    printf 'create\\n' >> \"$STUB_CALLS/create-calls.txt\"\n"
+            "    return 0\n"
+            "  fi\n"
+            "  return 0\n"
+            "}\n"
+            "sleep() { return 0; }\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        script_file = tmp_path / "step.sh"
+        script_file.write_text(self._notice_script(workflow, step), encoding="utf-8", newline="\n")
+        env = _child_env(
+            {
+                "PATH": os.environ.get("PATH", ""),
+                "BASH_ENV": stubs.as_posix(),
+                "STUB_CALLS": calls_dir.as_posix(),
+                "RUNNER_TEMP": runner_temp.as_posix(),
+                "GITHUB_OUTPUT": (tmp_path / "gh-output.txt").as_posix(),
+                "GH_TOKEN": "stub",
+                "REPO": "o/r",
+                "PR": "1",
+                "HEAD": head,
+                "HUMAN_OVERRIDE": "true",
+                "OVERRIDE_ACTOR": "someone",
+                "OVERRIDE_SOURCE": "1",
+                "ACTOR": "someone",
+                "EXEC_FILE": "",
+                "SURFACE": "true",
+                "CONTRACT": "true",
+                "REVIEW_OUTCOME": "success",
+            }
+        )
+        result = subprocess.run(
+            [bash, script_file.as_posix()],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            check=False,
+        )
+        return result, calls_dir
+
+    @pytest.mark.parametrize(("workflow", "step"), _OVERRIDE_LANES)
+    def test_an_override_note_is_created_once_when_head_and_slot_hold(
+        self, tmp_path: Path, workflow: str, step: str
+    ) -> None:
+        result, calls = self._run_override_create(
+            tmp_path, workflow, step, head_moves=False, slot_fills=False
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        assert (calls / "create-calls.txt").read_text(encoding="utf-8").splitlines() == ["create"]
+        assert not (calls / "patch-calls.txt").exists()
+        # Head asked twice and slot read twice: once each to open the arm, once
+        # each right before the post.
+        assert len((calls / "head-calls.txt").read_text(encoding="utf-8").splitlines()) == 2
+        assert len((calls / "read-calls.txt").read_text(encoding="utf-8").splitlines()) == 2
+
+    @pytest.mark.parametrize(("workflow", "step"), _OVERRIDE_LANES)
+    def test_an_override_note_is_not_created_after_the_head_moved(
+        self, tmp_path: Path, workflow: str, step: str
+    ) -> None:
+        # The slot answered empty, then a push moved the head: the run for the new
+        # head owns the slot, so a note for the old head would be a second comment.
+        result, calls = self._run_override_create(
+            tmp_path, workflow, step, head_moves=True, slot_fills=False
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "create-calls.txt").exists(), workflow
+        assert not (calls / "patch-calls.txt").exists(), workflow
+
+    @pytest.mark.parametrize(("workflow", "step"), _OVERRIDE_LANES)
+    def test_an_override_note_is_not_created_beside_an_occupant_that_arrived(
+        self, tmp_path: Path, workflow: str, step: str
+    ) -> None:
+        # Same head, but another run filled the slot after the first read.
+        result, calls = self._run_override_create(
+            tmp_path, workflow, step, head_moves=False, slot_fills=True
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "create-calls.txt").exists(), workflow
+        assert "filled while the override note" in result.stdout.decode(), workflow
+
+    @pytest.mark.parametrize(("workflow", "step"), _OVERRIDE_LANES)
+    def test_an_override_note_whose_re_check_cannot_read_the_slot_says_so(
+        self, tmp_path: Path, workflow: str, step: str
+    ) -> None:
+        # The first read answered empty, then the re-check read failed every
+        # attempt: nothing is posted, and the run log says to re-run the lane.
+        result, calls = self._run_override_create(
+            tmp_path, workflow, step, head_moves=False, slot_fills=False, slot_fails=True
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "create-calls.txt").exists(), workflow
+        assert "unreadable after 6 attempts on the re-check" in result.stdout.decode(), workflow
 
     def test_a_skip_arm_with_an_empty_slot_creates_a_head_stamped_notice(
         self, tmp_path: Path
@@ -898,10 +1184,11 @@ class TestNoticeSlotLookupLicensesEveryCreate:
             "repos/o/r/issues/comments/4242"
         ]
         # And the order is the reason: the head was asked before the slot, and the
-        # slot read that decided the write came after the retries.
+        # slot read that decided the write came after the retries. The fourth head
+        # read is the re-confirm that licenses the PATCH.
         heads = (calls_dir / "head-calls.txt").read_text(encoding="utf-8").splitlines()
         reads = (calls_dir / "read-calls.txt").read_text(encoding="utf-8").splitlines()
-        assert len(heads) == 3, heads
+        assert len(heads) == 4, heads
         assert len(reads) == 1, reads
 
     def test_a_replace_arm_still_writes_from_a_head_read_taken_before_the_write(self) -> None:
@@ -933,7 +1220,12 @@ class TestNoticeSlotLookupLicensesEveryCreate:
                     continue  # a creating arm, covered by the test above
                 # The replacing arm: no read sits between the head answer and the
                 # write, so the head answer is as old as its own backoff.
-                window = bare[n + 1 : n + 10]
+                window = []
+                for entry in bare[n + 1 : n + 10]:
+                    # The arm ends at its own `fi` or the next branch.
+                    if entry.strip() == "fi" or entry.strip().startswith("elif "):
+                        break
+                    window.append(entry)
                 assert not any(entry.strip() == "find_existing" for entry in window), (
                     workflow,
                     window,
