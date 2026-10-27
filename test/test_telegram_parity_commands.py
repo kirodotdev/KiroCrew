@@ -570,8 +570,8 @@ class TestAgentPicker:
     def test_a_bound_crew_copy_is_labelled_by_the_crew_not_its_hex_id(self) -> None:
         """The reported harm: a crew's private copy is named ``crew-<hex>`` and
         the button showed that id. A copy its crew is still bound to shows the
-        crew's display name (else its name); an orphaned copy and a shared
-        template keep their own names."""
+        crew's display name (else its name); a copy no crew is bound to says
+        reads "No crew"; a shared template keeps its own name."""
         from kiro_crew.agent_discovery import AgentInfo
         from kiro_crew.config import loader
         from kiro_crew.telegram import transport_dispatch as td
@@ -611,7 +611,41 @@ class TestAgentPicker:
             "crew-3cc49292d162a41643f706a9": "finance",
             "crew-aaaaaaaaaaaaaaaaaaaaaaaa": "Tax",
             "crew-cccccccccccccccccccccccc": "x" * 47 + "…",
+            "crew-684020c058dd1862549784a6": "No crew (crew-6840…)",
+            "crew-bbbbbbbbbbbbbbbbbbbbbbbb": "No crew (crew-bbbb…)",
         }
+
+    @pytest.mark.asyncio
+    async def test_a_crewless_copy_is_labelled_and_still_selects_its_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``crew-<hex>`` copy no crew is bound to -- with or without its
+        ``private_to`` record -- shows as "No crew" instead of a bare hash,
+        stays pickable, and a press still stores the exact id. A user's own spec
+        that merely starts with ``crew-`` keeps its name."""
+        from test_telegram import _press
+
+        from kiro_crew.agent_discovery import AgentInfo
+        from kiro_crew.config import loader
+        from kiro_crew.telegram import transport_dispatch as td
+
+        orphan = "crew-6f74da5cdcb1d25e0b608f92"
+        roster = [
+            AgentInfo(name=orphan, filename=f"{orphan}.json", description="", model="auto"),
+            AgentInfo(name="crew-notes", filename="crew-notes.json", description="", model="auto"),
+        ]
+        monkeypatch.setattr(td, "list_agents", lambda: roster)
+        monkeypatch.setattr(
+            loader.KiroCrewConfig, "load", staticmethod(lambda: SimpleNamespace(agents={}))
+        )
+        dispatcher, client, _ = _dispatcher({1})
+        await dispatcher.handle_message(_msg("/agent"))
+        _text, markup = client.sent[-1]
+        labels = [row[0]["text"] for row in markup["inline_keyboard"]]
+        assert labels[1:] == ["No crew (crew-6f74…)", "crew-notes"]
+
+        await dispatcher.on_callback(_press("g:1", uid=1))
+        assert dispatcher._agent_picks.get(("direct", "1")) == orphan
 
     def test_an_unreadable_config_falls_back_to_the_ids(self) -> None:
         from kiro_crew.config import loader

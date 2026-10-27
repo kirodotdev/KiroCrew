@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -375,16 +376,43 @@ def _agent_labels() -> dict[str, str]:
     except Exception:
         logger.warning("telegram /agent: config unreadable, showing agent ids", exc_info=True)
         return {}
+    bound = {crew.kiro_agent for crew in crews.values()}
     labels: dict[str, str] = {}
     for info in facade.list_agents():
         crew = crews.get(info.private_to) if info.private_to else None
-        if crew is None or crew.kiro_agent != info.name:
+        if crew is not None and crew.kiro_agent == info.name:
+            label = (crew.display_name or "").strip() or info.private_to
+        elif _is_crewless_copy(info.name, info.private_to, bound):
+            label = f"No crew ({_short_id(info.name)})"
+        else:
             continue
-        label = (crew.display_name or "").strip() or info.private_to
         if len(label) > _AGENT_LABEL_MAX:
             label = label[: _AGENT_LABEL_MAX - 1] + "…"
         labels[info.name] = label
     return labels
+
+
+#: The name ``agent_capabilities`` gives a crew's private copy of a template.
+_PRIVATE_COPY_NAME = re.compile(r"crew-[0-9a-f]{24}")
+
+
+def _is_crewless_copy(name: str, private_to: str, bound: set[str]) -> bool:
+    """Whether *name* is a crew's private copy that no crew is bound to.
+
+    A copy records its crew in ``private_to``; one whose sidecar entry is gone
+    is still recognisable by the ``crew-<24 hex>`` name it was published
+    under. Either way it counts only when no crew's ``kiro_agent`` names it.
+    That is all this checks: a chat pick or a cron may still name the copy,
+    so the label says "no crew", never "unused".
+    """
+    if name in bound:
+        return False
+    return bool(private_to) or _PRIVATE_COPY_NAME.fullmatch(name) is not None
+
+
+def _short_id(name: str) -> str:
+    """``crew-3cc49292…`` -> ``crew-3cc4…``: enough of the id to tell copies apart."""
+    return name if len(name) <= 9 else name[:9] + "…"
 
 
 def _agent_choices(
