@@ -1036,9 +1036,9 @@ def _sync_kill_provider(provider: object) -> None:
     # subagent takes its turn's tenancy on the event loop, and between here and the
     # first signal sit a start-id read, a group resolution and an unbounded
     # descendant walk. A claim landing in that window is invisible to the verdict,
-    # so the epoch is captured here and re-checked immediately before every signal
-    # below -- the only place the check is worth anything, since narrowing the gap
-    # is the entire point.
+    # so the epoch is captured here and handed to ``_commit_teardown``, which checks
+    # it and closes the pid to new tenants in one step immediately before the first
+    # signal.
     tenancy_token = tenancy_epoch(pid)
     # Deny-by-default on the ROOT's own identity -- but only where the pid can go
     # stale. ``_client._pid`` is a RECORDED number that outlives a failed start, so
@@ -1332,15 +1332,25 @@ def _commit_teardown(pid: int, token: int) -> bool:
     gateway.
 
     Logged at WARNING when it declines, because an abandoned kill leaves a process
-    alive that a drain decided to end: the next drain revisits it, and until then
-    this line is the only record of why the teardown did not happen.
+    alive that a drain decided to end. When a live tenant is the reason, the
+    refusal is recorded on its claim, so the last tenant to leave is handed the
+    runtime to tear down; this line is the record of why the teardown waited.
     """
     if commit_runtime_teardown(pid, token):
+        return True
+    # Refused on the epoch alone -- a turn came and went since the verdict -- is a
+    # leak here, unlike in the reconciler: this provider is already out of every
+    # registry, so no later drain will revisit it. Ask once more, idle-only: the
+    # live-claim check and the barrier happen in one critical section with no epoch
+    # read between them, so a turn that comes and goes in the gap cannot refuse it
+    # again. A tenant still on the pid refuses, with the debt recorded on its
+    # claim; no tenant means the process is idle and the kill proceeds.
+    if commit_runtime_teardown(pid, token, idle_only=True):
         return True
     logger.warning(
         "_sync_kill_provider: ABANDONING the authorized kill of pid %d -- a tenant "
         "claimed this process after the gate allowed it, so the signal would land "
-        "on a live turn; the next drain revisits it",
+        "on a live turn; the last tenant to leave is handed the runtime",
         pid,
     )
     return False
