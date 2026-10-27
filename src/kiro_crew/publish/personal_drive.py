@@ -132,6 +132,11 @@ SITE_TAG_VALUE = "kirocrew-personal-drive"
 BUCKET_PREFIX = f"{engine.BUCKET_PREFIX}pub-"
 _BUCKET_RE = re.compile(rf"^{re.escape(BUCKET_PREFIX)}[0-9a-f]{{12}}$")
 
+#: The S3 origin the drive's distribution is built with (``engine.create_distribution``).
+_ORIGIN_RE = re.compile(
+    r"^(?P<bucket>[a-z0-9.-]+)\.s3\.(?P<region>[a-z]{2}(?:-[a-z]+)+-\d)\.amazonaws\.com$"
+)
+
 #: Objects under this prefix are the only ones the distribution may read.
 PUBLIC_PREFIX = "public/"
 
@@ -521,6 +526,14 @@ class PersonalDriveProvider(PublishProvider):
         """
         bucket = self._find_bucket(profile, region)
         dist_id, dist_arn = self._find_distribution(profile, region)
+        if not bucket and dist_id:
+            # The drive is one per ACCOUNT, but the tag query above saw only this
+            # profile's region. A second install whose profile points elsewhere finds the
+            # (global) distribution and misses the (regional) bucket, which is not a
+            # half-present drive at all. The distribution's origin names the bucket's
+            # region, so look there too -- and still require the drive tag and the naming
+            # scheme there, so the origin alone never decides which bucket is trusted.
+            bucket = self._find_bucket_at_origin(profile, region, dist_id)
         if not bucket:
             if dist_id:
                 # A drive-tagged distribution with no matching bucket is a PARTIAL drive,
@@ -586,6 +599,33 @@ class PersonalDriveProvider(PublishProvider):
                 "console, then publish again."
             )
         return buckets[0] if buckets else ""
+
+    def _find_bucket_at_origin(self, profile: str, region: str, dist_id: str) -> str:
+        """The drive's bucket in the region the distribution's origin names, or "".
+
+        Returns a bucket only when the tag query IN THAT REGION reports the same bucket
+        the origin points at. An origin in the profile's own region was already searched,
+        and an origin that is not a drive-scheme S3 bucket is not this drive's.
+        """
+        out = engine._checked(
+            ["cloudfront", "get-distribution", "--id", dist_id, "--output", "json"],
+            profile,
+            action="cloudfront:GetDistribution",
+        )
+        try:
+            dist = json.loads(out or "{}").get("Distribution") or {}
+        except json.JSONDecodeError:  # pragma: no cover - malformed API output
+            return ""
+        origins = ((dist.get("DistributionConfig") or {}).get("Origins") or {}).get("Items") or []
+        for origin in origins:
+            match = _ORIGIN_RE.match(str(origin.get("DomainName", "")))
+            if not match or not _BUCKET_RE.match(match["bucket"]):
+                continue
+            if match["region"] == region:
+                continue
+            if self._find_bucket(profile, match["region"]) == match["bucket"]:
+                return match["bucket"]
+        return ""
 
     def _find_distribution(self, profile: str, region: str) -> tuple[str, str]:
         """The drive's distribution, as (id, arn), or ("", "").

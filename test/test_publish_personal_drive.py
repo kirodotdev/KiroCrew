@@ -284,6 +284,34 @@ def test_an_orphaned_distribution_without_a_bucket_raises_and_creates_nothing(mo
     assert spy.created_distributions == [], "a half-present drive must not be rebuilt"
 
 
+def test_a_drive_built_in_another_region_is_shared_not_refused(monkeypatch, payload):
+    """The drive is one per ACCOUNT, so a second install whose profile region (us-west-2)
+    differs from the region the drive was built in (us-east-1) must find the SAME drive.
+    Its regional tag query cannot see the bucket, but the distribution's origin names the
+    bucket's region; reading the drive as half-present there would refuse every publish
+    from that install, with no way out."""
+    _stub_profiles(monkeypatch, ["alpha"])  # profile region us-west-2
+    spy = _EngineSpy(bucket_region="us-east-1")
+    spy.install(monkeypatch)
+    _publish(pd.PersonalDriveProvider(), payload)
+    assert spy.created_buckets == [], "the account's drive must be shared, not rebuilt"
+    assert spy.created_distributions == [], "the account's drive must be shared, not rebuilt"
+
+
+def test_an_untagged_bucket_at_the_origin_is_still_a_half_present_drive(monkeypatch, payload):
+    """The origin only says WHERE to look. The bucket there must still carry the drive tag,
+    so an origin pointing at a bucket the tag query does not report is the same
+    half-present refusal as before, and nothing is built."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(bucket_region="us-east-1", buckets=[])
+    spy.install(monkeypatch)
+    with pytest.raises(PublishError) as exc:
+        _publish(pd.PersonalDriveProvider(), payload)
+    assert "bucket is missing" in str(exc.value)
+    assert spy.created_buckets == []
+    assert spy.created_distributions == []
+
+
 def test_total_absence_no_bucket_no_distribution_still_creates(monkeypatch, payload):
     """A1's other half -- the distinction that must stay sharp. When NEITHER a bucket NOR
     a drive-tagged distribution exists, this is genuine total absence, not a partial
