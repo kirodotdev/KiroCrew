@@ -19,6 +19,7 @@ while CLI and MCP-stdio callers can import the leaf directly and skip the
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 
@@ -29,7 +30,6 @@ import re
 # helpers in ``urls``.
 import socket  # noqa: F401
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 # Re-exported so every name this module owns stays importable from it.
 from kiro_crew.dashboard.urls import (  # noqa: F401
@@ -229,6 +229,72 @@ def request_is_unix_socket(request: web.Request) -> bool:
 AUDIT_CLAIMED_KEY = "_kc_audit_claimed"
 
 
+def _split_authority(authority: str) -> tuple[str, str] | None:
+    """Split ``host[:port]`` (IPv6 in brackets) into ``(host, ":port" or "")``.
+
+    Strict on purpose: ``None`` (refuse) for an unclosed or non-IPv6 bracket, a
+    bare IPv6 literal, an empty or non-digit port, or anything after ``]`` that
+    is not ``:port``. The port is returned as written, so callers compare it
+    exactly (``:80`` is not the same as no port).
+    """
+    a = (authority or "").strip()
+    if a.startswith("["):
+        end = a.find("]")
+        if end == -1:
+            return None
+        host, rest = a[1:end], a[end + 1 :]
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return None
+        if rest and not (rest.startswith(":") and rest[1:].isascii() and rest[1:].isdigit()):
+            return None
+        return host, rest
+    if a.count(":") > 1:
+        return None
+    host, sep, port = a.partition(":")
+    if sep and not (port.isascii() and port.isdigit()):
+        return None
+    return host, sep + port
+
+
+def _canonical_host(host: str) -> str:
+    """The one canonical spelling of a host name or IP literal.
+
+    Lower-cases, compresses an IP literal (``0:0:0:0:0:0:0:1`` -> ``::1``), and
+    drops ONE trailing root dot from a DNS name (``localhost.`` -> ``localhost``).
+    Anything else is returned lower-cased and unchanged, so it can only match
+    itself: ``localhost..`` stays ``localhost..``, and an IP literal with a dot
+    (``127.0.0.1.``) is not treated as a name.
+    """
+    h = (host or "").lower()
+    try:
+        return str(ipaddress.ip_address(h))
+    except ValueError:
+        pass
+    if len(h) > 1 and h.endswith(".") and not h.endswith(".."):
+        stem = h[:-1]
+        try:
+            ipaddress.ip_address(stem)
+        except ValueError:
+            return stem
+    return h
+
+
+def _canonical_origin(origin: str) -> tuple[str, str, str] | None:
+    """``(scheme, canonical host, ":port" or "")`` for ``scheme://authority``."""
+    scheme, sep, authority = (origin or "").partition("://")
+    if not sep or not scheme or "/" in authority:
+        return None
+    parts = _split_authority(authority)
+    if parts is None:
+        return None
+    host = _canonical_host(parts[0])
+    if not host:
+        return None
+    return scheme, host, parts[1]
+
+
 def mark_audit_claimed(request: web.Request) -> None:
     """Declare that this request's refusal is already audited.
 
@@ -278,13 +344,20 @@ def check_origin(
     # ``localhost:9999``) while the Host is the gateway's port, so they differ
     # and this branch rejects it. Browsers forbid scripts from forging either
     # the Origin or Host header, so the equality is a sound CSRF boundary.
-    if origin_base:
-        parsed = urlparse(origin_base)
-        if is_loopback(parsed.hostname or ""):
-            req_host = request.headers.get("Host", "")
-            origin_hostport = origin_base.split("://", 1)[-1]
-            if req_host and origin_hostport == req_host:
-                return True
+    #
+    # Both checks compare canonical spellings: the host goes
+    # through ``_canonical_host`` on both sides, the scheme and port must match
+    # exactly. So only a different spelling of an allowed origin newly passes.
+    canon = _canonical_origin(origin_base)
+    if canon is not None:
+        if any(_canonical_origin(a) == canon for a in allowed):
+            return True
+        _scheme, canon_host, canon_port = canon
+        if is_loopback(canon_host):
+            req = _split_authority(request.headers.get("Host", ""))
+            if req is not None and req[0]:
+                if (_canonical_host(req[0]), req[1]) == (canon_host, canon_port):
+                    return True
     # NOTE (CSE SEC-016): we deliberately do NOT blanket-trust every loopback
     # origin regardless of port. A browser always sends an Origin header, so a
     # malicious local web page on an arbitrary port would otherwise pass this
@@ -339,8 +412,16 @@ def check_host(request: web.Request) -> bool:
     # Derive the host allowlist live from allowed_origins (the SAME set the
     # tunnel adds to / discards from at connect / disconnect) so the Host check
     # and the CSRF Origin check can never drift out of sync.
-    allowed = build_allowed_hosts(allowed_origins)
-    host = _host_without_port(raw_host).lower()
+    # Both sides go through the same canonicalizer, so a long-form
+    # IPv6 literal or a root-dot name matches its short form and nothing else. A
+    # malformed authority (unclosed bracket, bracketed non-IPv6, bad port) is refused.
+    parts = _split_authority(raw_host)
+    if parts is None:
+        return False
+    host = _canonical_host(parts[0])
+    if not host:
+        return False
+    allowed = {_canonical_host(h) for h in build_allowed_hosts(allowed_origins)}
     return host in allowed
 
 

@@ -12,6 +12,7 @@ from kiro_crew.dashboard.origin import (
     bind_address_for,
     build_allowed_origins,
     build_dashboard_url,
+    check_host,
     check_origin,
     dashboard_origin,
     format_dashboard_urls,
@@ -1049,6 +1050,128 @@ class TestCheckHost:
         request.headers = {"Host": "localhost:5476"}
         request.app = {}  # dict.get("allowed_origins") -> None
         assert check_host(request) is False
+
+
+class TestCanonicalHostSpellings:
+    """A different spelling of an allowed loopback host passes,
+    and nothing else does. Both checks canonicalize the request side and the
+    allowed side with the same helper; ports in Origin still match exactly."""
+
+    _ALLOWED = frozenset(
+        {"http://localhost:5476", "http://127.0.0.1:5476", "http://[::1]:5476", "http://localhost"}
+    )
+
+    def _req(self, *, host: str | None = None, origin: str = "", remote: str = "127.0.0.1"):
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        headers = {}
+        if host is not None:
+            headers["Host"] = host
+        if origin:
+            headers["Origin"] = origin
+        request.headers = headers
+        request.remote = remote
+        request.app = {"allowed_origins": set(self._ALLOWED)}
+        return request
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "[0:0:0:0:0:0:0:1]:5476",
+            "[0:0:0:0:0:0:0:1]",
+            "[0000::0001]:5476",
+            "localhost.:5476",
+            "localhost.",  # default port 80, no port in Host
+            "LOCALHOST.:80",
+        ],
+    )
+    def test_check_host_accepts_canonical_spellings(self, host: str) -> None:
+        assert check_host(self._req(host=host)) is True
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "localhost..:5476",
+            "localhost..",
+            ".:5476",
+            "[::2]:5476",
+            "[0:0:0:0:0:0:0:2]:5476",
+            "[::ffff:10.0.0.1]:5476",  # IPv4-mapped, not loopback
+            "[::ffff:127.0.0.2]:5476",  # mapped, not in the allowed set
+            "[::1:5476",  # unclosed bracket
+            "[0:0:0:0:0:0:0:1",
+            "[localhost]:5476",  # bracketed non-IPv6
+            "[::1]x:5476",
+            "[::1]:",
+            "[::1]:54a6",
+            "0:0:0:0:0:0:0:1",  # bare IPv6
+            "localhost:",
+            "localhost:abc",
+            "127.0.0.1.:5476",  # IP literal with a dot is not a DNS name
+            "127.000.000.001:5476",
+            "10.0.0.1:5476",
+            "evil.com.:5476",
+            ":5476",
+            "[::1%eth0]:5476",
+        ],
+    )
+    def test_check_host_still_refuses(self, host: str) -> None:
+        assert check_host(self._req(host=host)) is False
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://[0:0:0:0:0:0:0:1]:5476",
+            "http://localhost.:5476",
+            "http://LOCALHOST.:5476",
+            "http://127.0.0.1:5476",
+            "http://localhost.",  # matches allowed "http://localhost" (port 80)
+        ],
+    )
+    def test_check_origin_accepts_canonical_spellings(self, origin: str) -> None:
+        assert check_origin(self._req(origin=origin)) is True
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://localhost..:5476",
+            "http://localhost.:80",  # ports match exactly: ":80" is not "no port"
+            "http://localhost.:5477",
+            "https://localhost.:5476",  # scheme must match
+            "http://[0:0:0:0:0:0:0:2]:5476",
+            "http://[::ffff:10.0.0.1]:5476",
+            "http://[::1:5476",
+            "http://[localhost]:5476",
+            "http://evil.com.:5476",
+            "http://10.0.0.1:5476",
+            "http://127.0.0.1.:5476",
+            "http://:5476",
+        ],
+    )
+    def test_check_origin_still_refuses(self, origin: str) -> None:
+        assert check_origin(self._req(origin=origin)) is False
+
+    def test_same_origin_fallback_canonical(self) -> None:
+        """Origin == Host on an unlisted loopback port, spelled differently."""
+        req = self._req(origin="http://[0:0:0:0:0:0:0:1]:7779", host="[::1]:7779")
+        assert check_origin(req) is True
+        req = self._req(origin="http://localhost.:7779", host="localhost:7779")
+        assert check_origin(req) is True
+
+    @pytest.mark.parametrize(
+        "origin, host",
+        [
+            ("http://localhost.:7779", "localhost:7780"),  # port differs
+            ("http://localhost.:7779", "localhost"),
+            ("http://localhost..:7779", "localhost..:7779"),  # not loopback
+            ("http://[::ffff:10.0.0.1]:7779", "[::ffff:10.0.0.1]:7779"),
+            ("http://[::1]:7779", "[::1:7779"),  # malformed Host
+            ("http://evil.com.:7779", "evil.com:7779"),
+        ],
+    )
+    def test_same_origin_fallback_still_refuses(self, origin: str, host: str) -> None:
+        assert check_origin(self._req(origin=origin, host=host)) is False
 
 
 class TestFrameAncestorsValue:
