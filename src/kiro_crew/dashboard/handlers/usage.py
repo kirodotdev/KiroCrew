@@ -885,6 +885,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
