@@ -673,7 +673,12 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras(vault_identity=vault_identity)
 
-        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, Any]]:
+        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, Any], tuple[int, bool]]:
+            # Taken before the gate and every read below: the spec this host is
+            # handed is read by name here, after the gate resolved it, so an
+            # unreadable-main-spec episode open at either end, or begun in between,
+            # refuses the session (require_main_spec_launch_bound, below).
+            episode = agent_mod.main_spec_episode()
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -736,6 +741,9 @@ class KasHarness(MembershipHarness):
                     # Refused, never the bare base: what could not be read may
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
+            # Refused while an episode is open, as every start is: the main spec
+            # may be what this read by name returned.
+            agent_mod.require_main_spec_launch_bound(agent, work_dir, before=episode)
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
@@ -797,15 +805,16 @@ class KasHarness(MembershipHarness):
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
             managed = kas_agents_mod.resolve_managed_entries(custom_agents, agent)
-            return custom_agents, snapshot, managed
+            return custom_agents, snapshot, managed, episode
 
         try:
-            built, built_from, managed_entries = await asyncio.to_thread(_build)
+            built, built_from, managed_entries, built_on = await asyncio.to_thread(_build)
             return SessionExtras(
                 custom_agents=built,
                 derived_spec_snapshot=built_from,
                 vault_identity=vault_identity,
                 managed_entries=managed_entries,
+                main_spec_episode=built_on,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

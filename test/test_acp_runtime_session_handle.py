@@ -726,6 +726,78 @@ async def test_handle_set_mode():
 
 
 @pytest.mark.asyncio
+async def test_handle_set_mode_refused_by_the_start_gate_sends_nothing():
+    """A switched-to agent passes the spawn's start gate; a refusal sends no set_mode."""
+    from kiro_crew.agent import ForkGovernanceUnresolved
+
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    gate = MagicMock(side_effect=ForkGovernanceUnresolved("agent 'custom-main' may not start"))
+    with patch("kiro_crew.agent.require_main_spec_projected", gate):
+        with pytest.raises(AcpRuntimeError, match="may not start"):
+            await handle.set_mode("custom-main")
+    assert gate.call_args.args[0] == "custom-main"
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_set_mode_outside_an_unreadable_episode_reads_no_sidecar(monkeypatch):
+    """A switch runs only the main-spec check, which is bounded to the episode.
+
+    With the spec readable, a switch reads no lineage sidecar, resolves no spec,
+    waits on no fork refresh and runs no rebuild, so it cannot refuse. Fork
+    gating at ``set_mode`` is outside this check.
+    """
+    import kiro_crew.agent as agent_mod
+    from kiro_crew import agent_state
+    from kiro_crew.agent_materialization import fork_refresh
+
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    sidecar = MagicMock(side_effect=AssertionError("sidecar read"))
+    resolve = MagicMock(side_effect=AssertionError("spec resolved"))
+    rebuild = MagicMock(side_effect=AssertionError("rebuild"))
+    settled = MagicMock()
+    settled.wait.side_effect = AssertionError("fork refresh wait")
+    with (
+        patch.object(agent_state, "get_fork_info", sidecar),
+        patch.object(agent_mod, "agent_spec_path", resolve),
+        patch.object(agent_mod, "rebuild_agent_config_reporting", rebuild),
+        patch.object(fork_refresh, "_fork_refresh_settled", settled),
+    ):
+        await handle.set_mode("a-fork")
+    sidecar.assert_not_called()
+    resolve.assert_not_called()
+    settled.wait.assert_not_called()
+    proc.stdin.write.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_set_mode_with_no_view_is_refused_during_the_episode(
+    unreadable_main_episode, monkeypatch
+):
+    """A mid-session switch with no projection reaches kiro-cli as the bare name.
+
+    The gate admits ``helper`` (a readable spec declares it), and the switch is
+    still refused while the episode is open, since kiro-cli resolves that name
+    itself. Mutation pin: running only the gate sends ``set_mode``.
+    """
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "require_main_spec_projected", lambda *a: None)
+    rt, _, proc = _make_runtime()
+    rt._native_skill_projection = None
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await handle.set_mode("helper")
+    assert audited == ["helper"]
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_handle_set_model():
     rt, _, proc = _make_runtime()
     q = _register(rt, "sA")

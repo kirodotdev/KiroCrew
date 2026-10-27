@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from kiro_crew.agent import (
         OWNED_KIRO_AGENT_FILES,
         SKILL_URI_PREFIX,
+        _AgentSpecUnreadable,
         _atomic_json_write,
         _conflicting_spec_for,
         _load_json,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
         kiro_hooks,
         loads_user_json,
         logger,
+        read_bytes_with_retry,
         sel,
         worker_agent,
     )
@@ -67,20 +69,43 @@ def _claim_propagated_model(config: dict, name: str) -> None:
         )
 
 
+def _read_existing_spec(path: Path) -> bytes | None:
+    """The bytes of the spec at *path*, or ``None`` when there is no file.
+
+    Read through :func:`read_bytes_with_retry`, so a Windows sharing violation
+    is retried first. Any other read failure raises
+    :class:`_AgentSpecUnreadable`: the file is there, and what it holds is
+    unknown.
+    """
+    try:
+        return read_bytes_with_retry(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _AgentSpecUnreadable(f"{type(exc).__name__}: {exc}") from exc
+
+
 def _load_existing_config(
     path: Path, *, gated_off: "frozenset[str] | None" = None
 ) -> tuple[dict, bool]:
     """Load and refresh an existing kirocrew.json.
 
     Returns (config, fresh_install).  Falls back to build_agent_config()
-    when the file is corrupt or refresh fails.
+    when the file is missing, invalid JSON, or refresh fails. The read goes
+    through :func:`read_bytes_with_retry`, so a Windows sharing violation while
+    another writer replaces the file is retried first; a read that still fails
+    on a present file raises :class:`_AgentSpecUnreadable`, because defaults
+    persisted on that path would erase the user's spec.
 
     *gated_off* is the caller's spec-gate snapshot, forwarded so whichever branch
     runs reads the same decision the caller's audit will report.
     """
+    raw = _read_existing_spec(path)
     try:
-        config = loads_user_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        config = None if raw is None else loads_user_json(raw.decode("utf-8"))
+    except ValueError:
+        # Invalid UTF-8 (UnicodeDecodeError) or invalid JSON: the file was
+        # read and is damaged, so the rebuild starts from defaults as before.
         config = None
     if not isinstance(config, dict):
         return build_agent_config(gated_off=gated_off), True
