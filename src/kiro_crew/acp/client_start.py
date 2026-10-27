@@ -8,13 +8,15 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
-``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``, ``_can_load_session``, ``_child_pids``,
-``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``, ``_kill_sent``,
-``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
-``_mode_frame_superseded``, ``_model``, ``_native_skill_projection``, ``_pid``,
-``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
-``_resume_session_id``, ``_resumed``, ``_session_id``, ``_session_mcp_cache``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``,
+``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_fork_request``,
+``_jsonl_pos``, ``_kill_sent``, ``_last_activity``, ``_last_substitution_model``,
+``_launch_unbound``, ``_launch_view_source``,
+``_mode_frame_awaited``, ``_mode_frame_superseded``, ``_model``,
+``_native_skill_projection``, ``_pid``, ``_process``, ``_process_instance``,
+``_process_tree_confirmed_dead``, ``_resume_session_id``, ``_resumed``, ``_session_id``,
+``_session_mcp_cache``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
 ``_extra_env``, ``_modes_advertised``, ``_sandbox_mode``, ``_scratch_dir``,
@@ -96,6 +98,7 @@ from kiro_crew.agent import (
     ensure_agent_materialized,
     require_fork_governance,
     require_fresh_derived_spec,
+    require_main_spec_launch_bound,
     require_shared_template_within_ceiling,
     require_unchanged_derived_spec,
 )
@@ -351,11 +354,26 @@ async def _spawn(self: AcpClient) -> None:
             # start must find the launch agent's mode in availableModes even
             # with no prepared view (see NativeSkillProjection.frame).
             self._native_skill_projection.advertised_launch_name = self._agent
+        self._launch_unbound = self._native_skill_projection is None or not (
+            self._native_skill_projection.decides(self._agent)
+        )
+        self._launch_view_source = None
+        if self._launch_unbound:
+            # No view to hand kiro-cli, so it resolves the bare name itself
+            # after the gate above: bound to the unreadable-main-spec episode.
+            try:
+                await asyncio.to_thread(require_main_spec_launch_bound, self._agent, self._work_dir)
+            except ForkGovernanceUnresolved as exc:
+                raise AcpError(str(exc)) from exc
         launch_name = (
             self._resolve_spawn_agent_argv()
             if self._native_skill_projection is not None
             else self._agent
         )
+        if not self._launch_unbound and self._native_skill_projection is not None:
+            # The process runs this view for life, so every session open on it
+            # is checked as a view's (_send_request), as on the shared runtime.
+            self._launch_view_source = self._native_skill_projection.view_source(launch_name)
         # A harness that may read the spec file's own grants is refused on a
         # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
         # rewrites such a file. Judged on the name kiro-cli is handed: a skill view is

@@ -807,7 +807,13 @@ class KasHarness(MembershipHarness):
             dict[str, dict[str, Any]],
             frozenset[str],
             str,
+            tuple[int, bool],
         ]:
+            # Taken before the gate and every read below: the spec this host is
+            # handed is read by name here, after the gate resolved it, so an
+            # unreadable-main-spec episode open at either end, or begun in between,
+            # refuses the session (require_main_spec_launch_bound, below).
+            episode = agent_mod.main_spec_episode()
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -870,6 +876,9 @@ class KasHarness(MembershipHarness):
                     # Refused, never the bare base: what could not be read may
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
+            # Refused while an episode is open, as every start is: the main spec
+            # may be what this read by name returned.
+            agent_mod.require_main_spec_launch_bound(agent, work_dir, before=episode)
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
@@ -949,7 +958,7 @@ class KasHarness(MembershipHarness):
                 custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
             )
             notice = withheld_credentials_notice(withheld)
-            return custom_agents, snapshot, managed, apps, withdrawn, notice
+            return custom_agents, snapshot, managed, apps, withdrawn, notice, episode
 
         try:
             (
@@ -959,6 +968,7 @@ class KasHarness(MembershipHarness):
                 app_launches,
                 withdrawn_stubs,
                 withheld_notice,
+                built_on,
             ) = await asyncio.to_thread(_build)
             return SessionExtras(
                 custom_agents=built,
@@ -968,6 +978,7 @@ class KasHarness(MembershipHarness):
                 app_launches=app_launches,
                 withdrawn_stub_names=withdrawn_stubs,
                 withheld_credentials_notice=withheld_notice,
+                main_spec_episode=built_on,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

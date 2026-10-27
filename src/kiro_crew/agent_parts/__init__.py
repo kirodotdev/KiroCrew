@@ -26,8 +26,8 @@ file was. Consequences:
 * What stays in ``kiro_crew.agent``: the forwarding machinery, the managed MCP server table (its invocation lambdas
   read this namespace), the hook and config paths a test fixture pins by module, the
   bundled config directory (computed from ``__file__``), the skill-path scan, the
-  dynamic-field refresh, the knowledge, research and heartbeat prompts, and the two
-  exception classes.
+  dynamic-field refresh, the knowledge, research and heartbeat prompts, the exception
+  classes, and the early retry's running marker: no owner defines a class.
 
 The owners, and where new work for each goes:
 
@@ -41,6 +41,8 @@ The owners, and where new work for each goes:
 * :mod:`~kiro_crew.agent_parts.spec_prompts` -- the installed agents' system prompts
 * :mod:`~kiro_crew.agent_parts.spec_rebuild` -- ``rebuild_agent_config``, what runs it, and keeping the specs' grants in
   step with the governance ceiling
+* :mod:`~kiro_crew.agent_parts.spec_unreadable` -- the unreadable-main-spec episode: keeping a spec the rebuild could
+  not read, the start gate's part for it, its early retry and its SEL denials
 * :mod:`~kiro_crew.agent_parts.spec_upgrades` -- migrations, model pins and the startup hook repair of the specs already on
   disk
 """
