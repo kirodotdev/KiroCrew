@@ -454,6 +454,11 @@ restricted execution cannot persist learning from its work.
 
 Scheduled job execution with three schedule types: `every` (interval, min 60s), `at` (one-shot timestamp), `cron` (5-field expression). Supports natural language parsing via `parse_time_string()`.
 
+An overdue interval or one-shot job blocked by a skipped local date waits for the
+normal timer poll before another attempt. This leaves its run timestamp unchanged
+and preserves other jobs' earlier wake deadlines. It can run when its local skip
+date ends; a skipped day never causes zero-delay store rescans.
+
 Interval descriptions preserve the exact duration, using whole hours, whole minutes, or seconds (`5400s` displays as `every 90m`).
 
 The editor and week grid prefer `every_secs`; their fallback schedule parsers accept `s`, `m`, and `h` suffixes when the numeric interval is unavailable.
