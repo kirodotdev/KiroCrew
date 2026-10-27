@@ -543,7 +543,9 @@ def safe_join(root: Path, rel_path: str) -> Path:
         raise ApiError("path escapes vault", 400, code="path_escapes_vault")
     root_resolved = os.path.realpath(str(root))
     resolved = os.path.realpath(os.path.join(root_resolved, candidate.as_posix()))
-    if resolved != root_resolved and not resolved.startswith(root_resolved + os.sep):
+    # A drive-root vault (``D:\\``, or ``/``) keeps its trailing separator through
+    # realpath, so strip it before adding one, as ``sandbox_plan.path_within`` does.
+    if resolved != root_resolved and not resolved.startswith(root_resolved.rstrip(os.sep) + os.sep):
         raise ApiError("path escapes vault", 400, code="path_escapes_vault")
     return Path(resolved)
 

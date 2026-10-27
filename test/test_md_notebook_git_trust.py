@@ -385,6 +385,17 @@ def test_safe_join_allows_a_nested_note(fixtures, tmp_path: Path) -> None:
     assert server_mod.safe_join(tmp_path, "sub/dir/note.md") == tmp_path / "sub/dir/note.md"
 
 
+def test_safe_join_admits_a_note_below_a_drive_root_vault(fixtures, tmp_path: Path) -> None:
+    """A vault at a drive root (``D:\\``, or ``/``) keeps its trailing separator
+    through realpath, so ``root + os.sep`` would put every note outside it."""
+    server_mod, _remote, _seed = fixtures
+    note = tmp_path / "sub" / "note.md"
+    real = os.path.realpath(str(note))
+    drive_root = os.path.splitdrive(real)[0] + os.sep
+    rel = os.path.relpath(real, drive_root).replace(os.sep, "/")
+    assert server_mod.safe_join(Path(drive_root), rel) == Path(real)
+
+
 @pytest.mark.parametrize(
     "url",
     [
