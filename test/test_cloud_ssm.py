@@ -195,6 +195,15 @@ class TestOpenPortForward:
             fake_aws.write_text("#!/bin/sh\n")
             fake_aws.chmod(0o755)
         install_dir = tmp_path / "install"
+        install_dir.mkdir()
+        # The PATH wiring is under test here, not the directory check, which has
+        # its own tests in test_deploy_web_engine.py and refuses the Windows CI
+        # runner's temp directory.
+        from kiro_crew import github_runner
+
+        monkeypatch.setattr(
+            github_runner, "validate_provider_directory", lambda candidate: candidate
+        )
         monkeypatch.setenv("PATH", str(inherited))
         monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install_dir),))
         monkeypatch.setattr(ssm, "require_session_manager_plugin", lambda: None)

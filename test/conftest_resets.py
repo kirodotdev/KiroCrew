@@ -304,6 +304,24 @@ def _restore_autonudge_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
+    """Start each test with the deploy engine's empty fallback-directory trust state.
+
+    ``deploy.engine`` keeps two process globals for the AWS tooling dirs: the
+    ``_TRUSTED_AWS_BIN_DIRS`` snapshot that every resolver walk, ``run_aws`` and
+    ssh spawn republishes, and ``_WARNED_AWS_BIN_DIR_REFUSALS``, the refusals
+    already logged. A test that builds a child env from an absolute head reads
+    the snapshot, so one an earlier test on the same worker left would decide
+    what that child's PATH holds. Patched only when the module is already
+    imported: importing it here would load the deploy engine into every test.
+    """
+    engine = sys.modules.get("kiro_crew.deploy.engine")
+    if engine is not None:
+        _floor_monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+        _floor_monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+
+
+@pytest.fixture(autouse=True)
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 

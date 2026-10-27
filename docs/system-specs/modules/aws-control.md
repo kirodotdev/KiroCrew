@@ -53,6 +53,17 @@ within it — healthy first, the default preferred only among the healthy ones,
 which is exactly what `_resolve_target` gives a request-driven operation. The
 nightly backup loop (`hooks.py::_run_once`) calls it and skips the wake on None,
 because a caller about to spend money must read "no working key" as "not now".
+When a nightly IS scheduled (any account has the snapshot or sessions grant on),
+that skip is not silent: the loop records an INSTALL-GLOBAL
+`nightly.record_nightly_no_key_skip` entry the accounts read serves as
+`nightlyNoKeySkip`, and warns once per skip STREAK rather than once per
+half-hourly wake. The record is install-global, not account-keyed, because the
+skip is decided before any account resolves, so there is no account to key it
+under; it carries `since` (the day the streak began), `at` (the latest wake) and
+`consecutive`, and `nightly.clear_nightly_no_key_skip` drops it the moment a key
+resolves again. An install with no nightly scheduled stays silent, and a no-key
+wake there also clears any standing record, so a nightly turned on later starts
+a fresh streak that warns.
 `accounts.resolve_consent_target` is the DISPLAY form the consent handler
 (`dashboard/handlers/aws_consent.py::_effective_target`) calls for S3 and Cost
 Explorer: same resolution, but with no working key it names the registry default
@@ -68,7 +79,11 @@ default has no account to confirm, `Confirm and enable` requires one, and the
 account's healthy sibling key keeps serving every operation — a working account
 with no way to authorize it. The same read in the unattended loop is worse than a
 dead end, because the grant names the healthy key while the loop resolves the
-broken one, so the backup skips on every wake with only a log line.
+broken one, so the backup skips on every wake. That skip is recorded and warned
+once per streak (above): the gateway log carries one WARNING per skip streak and
+the accounts read reports it as `nightlyNoKeySkip`, so an owner who enabled a
+nightly can learn of it before the host loss the backup exists to survive. No
+console panel renders `nightlyNoKeySkip`; the surface is HTTP only.
 `test_aws_control_app.py::TestConsentTargetTracksTheOperation` pins the shared
 resolution as an equality against `resolve_account_profile`, the key the nightly
 loop gates on, the fallback scrub, and each degraded state.
@@ -100,6 +115,16 @@ AWS Control reaches AWS through deploy-engine helpers: account inspection uses
 `deploy.engine.run_aws`, while storage uses `deploy.engine._checked`. The engine
 constructs fixed AWS CLI argument vectors with a profile name and runs the CLI
 through the standard subprocess sandbox. The app does not import an AWS SDK.
+
+The CLI is found on the inherited `PATH`, then in `/opt/homebrew/bin` and
+`/usr/local/bin`. A fallback directory reaches a credential-bearing child's
+`PATH` only when a resolver walk verifies its complete component and link chain
+under the provider executable trust policy; the child receives the verified
+canonical path. Missing, uncheckable, or refused fallback directories stay off
+the child `PATH`. This lets the CLI find a bare `credential_process` helper by
+name when a desktop-launched gateway's minimal `PATH` holds neither fallback.
+Per-user dirs such as `~/.local/bin` are reached only through the inherited
+`PATH`.
 
 ## Drive and destructive operations
 

@@ -26,7 +26,7 @@ import re
 import shutil
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.deploy.engine import tool_spawn_env
+from kiro_crew.deploy.engine import _refresh_aws_bin_dir_trust, tool_spawn_env
 from kiro_crew.instances.constants import (
     DEFAULT_MINT_TIMEOUT_SECS,
     DEFAULT_SSM_MINT_TIMEOUT_SECS,
@@ -475,6 +475,7 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     PATH scan; call it via ``asyncio.to_thread`` from async code.
     """
     head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
+    _refresh_aws_bin_dir_trust()
     return [head, *argv[1:]], tool_spawn_env(head)
 
 

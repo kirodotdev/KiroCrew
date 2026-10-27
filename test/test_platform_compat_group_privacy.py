@@ -16,6 +16,7 @@ import os
 import shutil
 import struct
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from group_privacy_helpers import (
@@ -316,6 +317,42 @@ class TestGroupWriteAdmitsAnotherAccount:
         monkeypatch.setattr(platform_compat, "_group_shared_with_another_account", lambda gid: None)
         assert platform_compat.group_write_admits_another_account(tmp_path, 20) is None
 
+    @pytest.mark.parametrize("membership", ["supplementary", "primary"])
+    def test_root_membership_is_ignored_only_when_requested(
+        self, monkeypatch, tmp_path, membership
+    ):
+        if os.name != "posix":
+            pytest.skip("POSIX group databases")
+        if os.geteuid() == 0:
+            pytest.skip("the gateway account and root must be distinct")
+        import grp
+        import pwd
+
+        me = pwd.getpwuid(os.geteuid())
+        gid = me.pw_gid + 1000
+        root = SimpleNamespace(
+            pw_name="superuser",
+            pw_uid=0,
+            pw_gid=gid if membership == "primary" else gid + 1,
+        )
+        group = _FakeGroup("admin", [root.pw_name] if membership == "supplementary" else [])
+        group.gr_gid = gid
+        monkeypatch.setattr(grp, "getgrgid", lambda requested: group)
+        monkeypatch.setattr(grp, "getgrall", lambda: [group])
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: root if uid == 0 else me)
+        monkeypatch.setattr(pwd, "getpwall", lambda: [me, root])
+        monkeypatch.setattr(
+            platform_compat,
+            "_acl_admits_another_account",
+            lambda node, mine, *, trust_root=False: None,
+        )
+
+        default = platform_compat.group_write_admits_another_account(tmp_path, gid)
+        trusted = platform_compat.group_write_admits_another_account(tmp_path, gid, trust_root=True)
+
+        assert default is not None and "1 other account" in default
+        assert trusted is None
+
     @pytest.mark.parametrize(
         ("access", "default", "members", "expected"),
         [
@@ -387,3 +424,124 @@ class TestGroupWriteAdmitsAnotherAccount:
             assert answer is None, answer
         else:
             assert answer is not None and expected in answer, answer
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX group databases")
+class TestMacosAdministratorsCountLikeRoot:
+    """With *trust_root*, macOS's ``admin`` group counts like root, because stock
+    sudoers lets its members use sudo. Homebrew leaves its bin ``<user>:admin``
+    group-writable, so a second administrator must not read as a foreign writer.
+    Off macOS, without *trust_root*, or when the group cannot be read, it counts
+    as anyone else does."""
+
+    DIR_GID = 1500
+    ADMIN_GID = 80
+
+    def _host(self, monkeypatch, *, platform, dir_members, users, admin_members=None):
+        import grp
+        import pwd
+
+        monkeypatch.setattr(os, "geteuid", lambda: 501)
+        me = SimpleNamespace(pw_name="gateway", pw_uid=501, pw_gid=20)
+        root = SimpleNamespace(pw_name="superuser", pw_uid=0, pw_gid=0)
+        shared = _FakeGroup("brew-bin", dir_members)
+        shared.gr_gid = self.DIR_GID
+        admin = _FakeGroup(
+            "admin", ["gateway", "other-admin"] if admin_members is None else admin_members
+        )
+        admin.gr_gid = self.ADMIN_GID
+        monkeypatch.setattr(platform_compat.sys, "platform", platform)
+        monkeypatch.setattr(grp, "getgrgid", lambda gid: {self.DIR_GID: shared}[gid])
+        monkeypatch.setattr(grp, "getgrall", lambda: [shared, admin])
+        monkeypatch.setattr(grp, "getgrnam", lambda name: {"admin": admin}[name])
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: root if uid == 0 else me)
+        monkeypatch.setattr(pwd, "getpwall", lambda: [me, root, *users])
+        return grp
+
+    def _ask(self, *, trust_root=True):
+        return platform_compat._group_shared_with_another_account(
+            self.DIR_GID, trust_root=trust_root
+        )
+
+    @pytest.mark.parametrize("admin_by", ["supplementary", "primary"])
+    def test_another_administrator_counts_like_root(self, monkeypatch, admin_by):
+        other_admin = SimpleNamespace(
+            pw_name="other-admin",
+            pw_uid=502,
+            pw_gid=self.ADMIN_GID if admin_by == "primary" else 20,
+        )
+        self._host(
+            monkeypatch,
+            platform="darwin",
+            dir_members=["gateway", "superuser", "other-admin"],
+            users=[other_admin],
+            admin_members=["gateway"] if admin_by == "primary" else None,
+        )
+
+        assert self._ask() is None
+
+    def test_an_account_outside_admin_is_still_another_account(self, monkeypatch):
+        self._host(
+            monkeypatch,
+            platform="darwin",
+            dir_members=["gateway", "superuser", "other-admin", "outsider"],
+            users=[SimpleNamespace(pw_name="outsider", pw_uid=503, pw_gid=20)],
+        )
+
+        answer = self._ask()
+
+        assert answer is not None and "'brew-bin'" in answer and "1 other account" in answer
+
+    def test_off_macos_an_admin_group_trusts_nobody_extra(self, monkeypatch):
+        self._host(
+            monkeypatch,
+            platform="linux",
+            dir_members=["gateway", "superuser", "other-admin"],
+            users=[],
+        )
+
+        answer = self._ask()
+
+        assert answer is not None and "1 other account" in answer
+
+    def test_an_unreadable_admin_group_trusts_nobody_extra(self, monkeypatch):
+        grp = self._host(
+            monkeypatch,
+            platform="darwin",
+            dir_members=["gateway", "superuser", "other-admin"],
+            users=[],
+        )
+
+        def _missing(name):
+            raise KeyError(name)
+
+        monkeypatch.setattr(grp, "getgrnam", _missing)
+
+        answer = self._ask()
+
+        assert answer is not None and "1 other account" in answer
+
+    def test_without_trust_root_an_administrator_is_another_account(self, monkeypatch):
+        self._host(
+            monkeypatch,
+            platform="darwin",
+            dir_members=["gateway", "superuser", "other-admin"],
+            users=[],
+        )
+
+        answer = self._ask(trust_root=False)
+
+        assert answer is not None and "2 other account" in answer
+
+    def test_the_primary_group_half_trusts_only_administrators(self, monkeypatch):
+        other_admin = SimpleNamespace(pw_name="other-admin", pw_uid=502, pw_gid=self.DIR_GID)
+        self._host(monkeypatch, platform="darwin", dir_members=[], users=[other_admin])
+
+        assert self._ask() is None
+
+        outsider = SimpleNamespace(pw_name="outsider", pw_uid=503, pw_gid=self.DIR_GID)
+        self._host(monkeypatch, platform="darwin", dir_members=[], users=[other_admin, outsider])
+
+        answer = self._ask()
+
+        assert answer is not None and "the primary group of 1 other account" in answer

@@ -4,12 +4,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import threading
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from kiro_crew.deploy import engine
+from kiro_crew.testing.wait import default_timeout
 
 
 class FakeAWS:
@@ -213,6 +216,7 @@ def test_aws_spawn_env_omits_a_refused_dir_while_widening_for_a_good_one(monkeyp
         return candidate
 
     monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse_only_bad)
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda candidate: candidate)
 
     aws_bin = engine.resolve_aws_bin()
     child_path = engine.aws_spawn_env(aws_bin)["PATH"].split(os.pathsep)
@@ -325,6 +329,7 @@ def test_aws_pass_does_not_clear_a_refused_plugin_in_the_same_dir(monkeypatch, t
         return candidate
 
     monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse_mixed_plugin)
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda candidate: candidate)
 
     # Resolve the plugin: refused in the mixed dir, accepted in the good dir.
     assert engine.resolve_aws_tool_bin("session-manager-plugin") == str(
@@ -489,10 +494,305 @@ def test_aws_spawn_env_appends_install_dirs_after_inherited_path(monkeypatch, tm
     brew, pkg = tmp_path / "brew", tmp_path / "pkg"
     monkeypatch.setenv("PATH", os.pathsep.join([str(system), str(extra_system)]))
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(brew), str(pkg)))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(brew), str(brew)), (str(pkg), str(pkg))))
 
     parts = engine.aws_spawn_env(str(pkg / "aws"))["PATH"].split(os.pathsep)
 
     assert parts == [str(system), str(extra_system), str(brew), str(pkg)]
+
+
+def test_resolver_excludes_untrusted_candidate_free_dir_from_spawn_path(monkeypatch, tmp_path):
+    inherited = tmp_path / "sysbin"
+    inherited.mkdir()
+    aws = inherited / ("aws.cmd" if os.name == "nt" else "aws")
+    aws.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n")
+    if os.name != "nt":
+        aws.chmod(0o755)
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    monkeypatch.setenv("PATH", str(inherited))
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".cmd")
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+
+    from kiro_crew import github_runner
+
+    def _refuse_directory(candidate):
+        assert candidate == str(fallback)
+        raise ValueError("directory is owned by another account")
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", _refuse_directory)
+
+    assert engine.resolve_aws_bin() == str(aws)
+    assert engine.aws_spawn_env(str(aws))["PATH"] == str(inherited)
+
+
+def test_resolver_admits_trusted_candidate_free_dir_to_spawn_path(monkeypatch, tmp_path):
+    inherited = tmp_path / "sysbin"
+    inherited.mkdir()
+    aws = inherited / ("aws.cmd" if os.name == "nt" else "aws")
+    aws.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n")
+    if os.name != "nt":
+        aws.chmod(0o755)
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    monkeypatch.setenv("PATH", str(inherited))
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".cmd")
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+
+    from kiro_crew import github_runner
+
+    checked = []
+
+    def _accept_directory(candidate):
+        checked.append(candidate)
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", _accept_directory)
+
+    assert engine.resolve_aws_bin() == str(aws)
+    assert checked == [str(fallback)]
+    assert engine.aws_spawn_env(str(aws))["PATH"].split(os.pathsep) == [
+        str(inherited),
+        str(fallback),
+    ]
+
+
+def test_trust_refresh_keeps_the_previous_snapshot_visible_until_publish(monkeypatch, tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    directories = (str(first), str(second))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", directories)
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", tuple((directory, directory) for directory in directories))
+    monkeypatch.setenv("PATH", str(tmp_path / "sysbin"))
+    from kiro_crew import github_runner
+
+    snapshots = []
+
+    def _accept_directory(candidate):
+        snapshots.append(engine.tool_spawn_env(str(tmp_path / "ssh"))["PATH"].split(os.pathsep))
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", _accept_directory)
+
+    engine._refresh_aws_bin_dir_trust()
+
+    assert snapshots == [
+        [str(tmp_path / "sysbin"), *directories],
+        [str(tmp_path / "sysbin"), *directories],
+    ]
+    assert engine._TRUSTED_AWS_BIN_DIRS == tuple((directory, directory) for directory in directories)
+
+
+def test_trust_refresh_serializes_validation_and_publish(monkeypatch, tmp_path):
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+    from kiro_crew import github_runner
+
+    first_validation_started = threading.Event()
+    second_refresh_started = threading.Event()
+    second_refresh_done = threading.Event()
+    release_first = threading.Event()
+    errors = []
+
+    def _validate(candidate):
+        assert candidate == str(fallback)
+        if threading.current_thread().name == "trust-refresh-first":
+            first_validation_started.set()
+            assert release_first.wait(default_timeout())
+            return candidate
+        raise ValueError("directory trust refused")
+
+    def _run_refresh(started=None, done=None):
+        if started is not None:
+            started.set()
+        try:
+            engine._refresh_aws_bin_dir_trust()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+        finally:
+            if done is not None:
+                done.set()
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", _validate)
+    first = threading.Thread(target=_run_refresh, name="trust-refresh-first")
+    second = threading.Thread(
+        target=_run_refresh,
+        args=(second_refresh_started, second_refresh_done),
+        name="trust-refresh-second",
+    )
+
+    first.start()
+    assert first_validation_started.wait(default_timeout())
+    second.start()
+    assert second_refresh_started.wait(default_timeout())
+    # Negative check: a short bound can only let it pass early, never fail it.
+    assert not second_refresh_done.wait(0.2), "the second refresh must wait for the first refresh's lock"
+
+    release_first.set()
+    first.join(timeout=default_timeout())
+    second.join(timeout=default_timeout())
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert engine._TRUSTED_AWS_BIN_DIRS == ()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_trust_refresh_publishes_a_fallback_symlinks_canonical_target(monkeypatch, tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    fallback = tmp_path / "fallback"
+    fallback.symlink_to(target, target_is_directory=True)
+    inherited = tmp_path / "sysbin"
+    monkeypatch.setenv("PATH", str(inherited))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(github_runner.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "check_provider_path_component", lambda *a, **kw: None)
+
+    engine._refresh_aws_bin_dir_trust()
+
+    assert engine._TRUSTED_AWS_BIN_DIRS == ((str(fallback), str(target)),)
+    assert engine.tool_spawn_env(str(inherited / "aws"))["PATH"].split(os.pathsep) == [
+        str(inherited),
+        str(target),
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_retargeting_a_fallback_link_does_not_change_the_child_path(monkeypatch, tmp_path):
+    first_target = tmp_path / "first-target"
+    second_target = tmp_path / "second-target"
+    first_target.mkdir()
+    second_target.mkdir()
+    fallback = tmp_path / "fallback"
+    fallback.symlink_to(first_target, target_is_directory=True)
+    inherited = tmp_path / "sysbin"
+    monkeypatch.setenv("PATH", str(inherited))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(github_runner.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "check_provider_path_component", lambda *a, **kw: None)
+
+    engine._refresh_aws_bin_dir_trust()
+    fallback.unlink()
+    fallback.symlink_to(second_target, target_is_directory=True)
+
+    child_path = engine.tool_spawn_env(str(inherited / "aws"))["PATH"].split(os.pathsep)
+    assert child_path == [str(inherited), str(first_target)]
+    assert str(second_target) not in child_path
+
+
+@pytest.mark.parametrize("present", ["original", "canonical"])
+def test_spawn_env_deduplicates_original_and_canonical_spellings(monkeypatch, tmp_path, present):
+    original = str(tmp_path / "fallback-link")
+    canonical = str(tmp_path / "fallback-target")
+    inherited = original if present == "original" else canonical
+    monkeypatch.setenv("PATH", inherited)
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((original, canonical),))
+
+    assert engine.tool_spawn_env(str(tmp_path / "aws"))["PATH"] == inherited
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX resolver walk")
+def test_provider_directory_refuses_an_inconsistent_resolver_walk(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "trusted"
+    directory.mkdir()
+    monkeypatch.setattr(github_runner.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "traversed_components_and_links",
+        lambda _path: ([tmp_path / "different"], []),
+    )
+
+    with pytest.raises(ValueError, match="directory path did not resolve consistently"):
+        github_runner.validate_provider_directory(str(directory))
+
+
+def test_missing_fallback_directory_does_not_warn(monkeypatch, tmp_path, caplog):
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(missing),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(missing), str(missing)),))
+
+    engine._refresh_aws_bin_dir_trust()
+
+    assert engine._TRUSTED_AWS_BIN_DIRS == ()
+    assert not [record for record in caplog.records if record.levelname == "WARNING"]
+
+
+def test_existing_refused_fallback_directory_warns_once(monkeypatch, tmp_path, caplog):
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+    from kiro_crew import github_runner
+
+    def _refuse_directory(_candidate):
+        raise ValueError("directory trust refused")
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", _refuse_directory)
+    caplog.set_level("WARNING", logger=engine.logger.name)
+
+    engine._refresh_aws_bin_dir_trust()
+    engine._refresh_aws_bin_dir_trust()
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == engine.logger.name and record.levelname == "WARNING"
+    ]
+    assert warnings == [
+        f"not appending AWS tooling directory {fallback} to child PATH: directory trust refused"
+    ]
+
+
+def test_aws_spawn_env_excludes_a_never_checked_dir(monkeypatch, tmp_path):
+    inherited = tmp_path / "sysbin"
+    fallback = tmp_path / "fallback"
+    monkeypatch.setenv("PATH", str(inherited))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+
+    assert engine.aws_spawn_env(str(inherited / "aws"))["PATH"] == str(inherited)
+
+
+def test_aws_spawn_env_reads_no_filesystem(monkeypatch, tmp_path):
+    inherited = tmp_path / "sysbin"
+    fallback = tmp_path / "fallback"
+    monkeypatch.setenv("PATH", str(inherited))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(fallback), str(fallback)),))
+
+    def _filesystem_call(*_args, **_kwargs):
+        raise AssertionError("spawn env touched the filesystem")
+
+    monkeypatch.setattr(engine.os, "access", _filesystem_call)
+    monkeypatch.setattr(engine.os, "stat", _filesystem_call)
+    monkeypatch.setattr(engine.shutil, "which", _filesystem_call)
+
+    assert engine.aws_spawn_env(str(inherited / "aws"))["PATH"].split(os.pathsep) == [
+        str(inherited),
+        str(fallback),
+    ]
 
 
 def test_aws_spawn_env_refuses_to_widen_for_a_bare_argv_head(monkeypatch, tmp_path):
@@ -526,6 +826,7 @@ def test_aws_spawn_env_is_inert_when_dirs_are_already_on_path(monkeypatch, tmp_p
     inherited = os.pathsep.join([str(tmp_path / "sysbin"), str(brew), str(pkg)])
     monkeypatch.setenv("PATH", inherited)
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(brew), str(pkg)))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(brew), str(brew)), (str(pkg), str(pkg))))
 
     assert engine.aws_spawn_env(str(pkg / "aws"))["PATH"] == inherited
 
@@ -536,6 +837,7 @@ def test_aws_spawn_env_with_empty_inherited_path_has_no_leading_separator(monkey
     brew, pkg = tmp_path / "brew", tmp_path / "pkg"
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(brew), str(pkg)))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(brew), str(brew)), (str(pkg), str(pkg))))
 
     path = engine.aws_spawn_env(str(pkg / "aws"))["PATH"]
 
@@ -551,6 +853,7 @@ def test_aws_spawn_env_preserves_the_rest_of_the_environment(monkeypatch, tmp_pa
     monkeypatch.setenv("PATH", str(system))
     monkeypatch.setenv("AWS_PROFILE", "kauai")
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(pkg),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(pkg), str(pkg)),))
 
     env = engine.aws_spawn_env(str(pkg / "aws"))
 
@@ -560,6 +863,331 @@ def test_aws_spawn_env_preserves_the_rest_of_the_environment(monkeypatch, tmp_pa
     assert {k: v for k, v in env.items() if k != "PATH"} == {
         k: v for k, v in os.environ.items() if k != "PATH"
     }
+
+
+def _isolate_provider_directory_walk(monkeypatch, directory):
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(github_runner.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: False)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "traversed_components_and_links",
+        lambda _path: ([directory], []),
+    )
+    monkeypatch.setattr(
+        github_runner,
+        "check_provider_path_component",
+        lambda path, *, label, uid, strict: None,
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_provider_directory_translates_a_cyclic_symlink_to_value_error(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    first = tmp_path / "cycle-first"
+    second = tmp_path / "cycle-second"
+    first.symlink_to(second, target_is_directory=True)
+    second.symlink_to(first, target_is_directory=True)
+    _isolate_provider_directory_walk(monkeypatch, first)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "group_write_admits_another_account",
+        lambda path, gid, *, trust_root=False: None,
+    )
+
+    with pytest.raises(ValueError, match="path does not resolve"):
+        github_runner.validate_provider_directory(str(first))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_trust_refresh_skips_a_cyclic_symlink_and_publishes_good_directory(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    first = tmp_path / "cycle-first"
+    second = tmp_path / "cycle-second"
+    first.symlink_to(second, target_is_directory=True)
+    second.symlink_to(first, target_is_directory=True)
+    good = tmp_path / "good"
+    good.mkdir()
+    _isolate_provider_directory_walk(monkeypatch, good)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "group_write_admits_another_account",
+        lambda path, gid, *, trust_root=False: None,
+    )
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(first), str(good)))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+
+    engine._refresh_aws_bin_dir_trust()
+
+    assert engine._TRUSTED_AWS_BIN_DIRS == ((str(good), str(good)),)
+    assert all(original != str(first) for original, _canonical in engine._TRUSTED_AWS_BIN_DIRS)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group-write semantics")
+def test_provider_directory_refuses_a_group_shared_component(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "shared"
+    directory.mkdir(mode=0o775)
+    directory.chmod(0o775)
+    _isolate_provider_directory_walk(monkeypatch, directory)
+    asked = []
+
+    def _admits(path, gid, *, trust_root=False):
+        asked.append((path, gid, trust_root))
+        return "group 'admin', shared with 1 other account(s)"
+
+    monkeypatch.setattr(
+        github_runner.platform_compat, "group_write_admits_another_account", _admits
+    )
+
+    with pytest.raises(ValueError, match="group 'admin', shared with 1 other account"):
+        github_runner.validate_provider_directory(str(directory))
+
+    assert asked == [(directory, directory.stat().st_gid, True)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group-write semantics")
+def test_provider_directory_accepts_a_group_holding_the_user_and_root(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "single-admin"
+    directory.mkdir(mode=0o775)
+    directory.chmod(0o775)
+    _isolate_provider_directory_walk(monkeypatch, directory)
+    asked = []
+
+    def _admits(path, gid, *, trust_root=False):
+        asked.append((path, gid, trust_root))
+        return None
+
+    monkeypatch.setattr(
+        github_runner.platform_compat, "group_write_admits_another_account", _admits
+    )
+
+    assert github_runner.validate_provider_directory(str(directory)) == str(directory)
+    assert asked == [(directory, directory.stat().st_gid, True)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group-write semantics")
+def test_provider_directory_skips_the_membership_question_for_a_sticky_parent(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import github_runner
+
+    parent = tmp_path / "sticky"
+    parent.mkdir(mode=0o1777)
+    parent.chmod(0o1777)
+    directory = parent / "bin"
+    directory.mkdir(mode=0o755)
+    directory.chmod(0o755)
+    _isolate_provider_directory_walk(monkeypatch, directory)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "traversed_components_and_links",
+        lambda _path: ([parent, directory], []),
+    )
+
+    def _not_asked(*args, **kwargs):
+        raise AssertionError("a sticky parent does not need a group membership check")
+
+    monkeypatch.setattr(
+        github_runner.platform_compat, "group_write_admits_another_account", _not_asked
+    )
+
+    assert github_runner.validate_provider_directory(str(directory)) == str(directory)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group-write semantics")
+def test_provider_directory_asks_about_a_sticky_group_writable_path_entry(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "sticky-entry"
+    directory.mkdir(mode=0o1775)
+    directory.chmod(0o1775)
+    _isolate_provider_directory_walk(monkeypatch, directory)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "group_write_admits_another_account",
+        lambda path, gid, *, trust_root=False: "group 'staff', shared with 2 other account(s)",
+    )
+
+    with pytest.raises(ValueError, match="group 'staff', shared with 2 other account"):
+        github_runner.validate_provider_directory(str(directory))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX world-write semantics")
+def test_provider_directory_refuses_a_sticky_world_writable_path_entry(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "shared-tmp"
+    directory.mkdir(mode=0o1777)
+    directory.chmod(0o1777)
+    _isolate_provider_directory_walk(monkeypatch, directory)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "group_write_admits_another_account",
+        lambda path, gid, *, trust_root=False: None,
+    )
+
+    with pytest.raises(ValueError, match="writable by every account"):
+        github_runner.validate_provider_directory(str(directory))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group-write semantics")
+def test_provider_directory_refuses_an_unresolvable_group(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "unknown-group"
+    directory.mkdir(mode=0o775)
+    directory.chmod(0o775)
+    _isolate_provider_directory_walk(monkeypatch, directory)
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "group_write_admits_another_account",
+        lambda path, gid, *, trust_root=False: f"a group (gid {gid}) this host cannot resolve",
+    )
+
+    with pytest.raises(ValueError, match="group .* cannot resolve"):
+        github_runner.validate_provider_directory(str(directory))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group-write semantics")
+def test_trust_refresh_keeps_a_group_shared_dir_off_the_child_path(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    inherited = tmp_path / "sysbin"
+    inherited.mkdir()
+    fallback = tmp_path / "shared"
+    fallback.mkdir(mode=0o775)
+    fallback.chmod(0o775)
+    _isolate_provider_directory_walk(monkeypatch, fallback)
+    monkeypatch.setenv("PATH", str(inherited))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(fallback),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+    monkeypatch.setattr(
+        github_runner.platform_compat,
+        "group_write_admits_another_account",
+        lambda path, gid, *, trust_root=False: "group 'admin', shared with 1 other account(s)",
+    )
+
+    engine._refresh_aws_bin_dir_trust()
+
+    assert engine._TRUSTED_AWS_BIN_DIRS == ()
+    assert engine.tool_spawn_env(str(inherited / "ssh"))["PATH"] == str(inherited)
+
+
+def test_provider_directory_uses_posix_component_policy(monkeypatch, tmp_path):
+    if os.name == "nt":
+        pytest.skip("POSIX ownership semantics")
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "trusted"
+    directory.mkdir()
+    checked = []
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner.os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(github_runner.os, "getuid", lambda: 4242)
+
+    def _check(path, *, label, uid, strict):
+        checked.append((path, label, uid, strict))
+
+    monkeypatch.setattr(github_runner, "check_provider_path_component", _check)
+    monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: True)
+
+    assert github_runner.validate_provider_directory(str(directory)) == str(directory)
+    assert checked
+    assert checked[-1][0] == directory
+    assert all(
+        label == "directory" and uid == 4242 and strict
+        for _path, label, uid, strict in checked
+    )
+
+
+def test_provider_directory_uses_windows_acl_policy(monkeypatch, tmp_path):
+    from kiro_crew import github_runner
+
+    directory = tmp_path / "trusted"
+    directory.mkdir()
+    checked = []
+    monkeypatch.setattr(github_runner.sys, "platform", "win32")
+    monkeypatch.setattr(github_runner.platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+
+    def _check(path, *, label, me_sid, strict):
+        checked.append((path, label, me_sid, strict))
+
+    monkeypatch.setattr(github_runner, "check_provider_path_component_windows", _check)
+
+    assert github_runner.validate_provider_directory(str(directory)) == str(directory)
+    assert checked
+    assert checked[0][0] == directory
+    assert all(
+        label == "directory" and sid == "S-1-5-21-me" and not strict
+        for _path, label, sid, strict in checked
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_run_aws_passes_the_widened_spawn_env_to_the_child(monkeypatch, tmp_path):
+    """``deploy.engine.run_aws`` hands the child the widened spawn env.
+
+    The AWS CLI finds a profile's bare ``credential_process`` helper by name on
+    the child's PATH. AWS Control's drive and backup calls and ``aws configure
+    list-profiles`` spawn the CLI through this chokepoint, and a desktop-app
+    gateway's PATH is the minimal launchd one, so the child needs
+    ``aws_spawn_env(argv[0])``, the env ``cloud.aws.run_aws`` passes too.
+    ``run_limited`` forwards kwargs untouched to ``subprocess.run`` and sets no
+    PATH of its own, so the env captured here is the one the child gets.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_run_limited(argv, **kwargs):  # noqa: ANN001
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env")
+
+        class _P:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        return _P()
+
+    # wrap_argv/cgroup_scope_argv touch the real sandbox; stub them to identity
+    # so the test asserts only the env threading, like the cloud/aws test does.
+    monkeypatch.setattr(engine, "wrap_argv", lambda argv, **kw: (list(argv), None))
+    monkeypatch.setattr(engine, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(engine, "run_limited", fake_run_limited)
+    # Resolve aws to an absolute head so aws_spawn_env is allowed to widen.
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    aws = pkg / "aws"
+    aws.write_text("#!/bin/sh\n")
+    aws.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path / "emptybin"))
+    (tmp_path / "emptybin").mkdir()
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(pkg),))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda candidate: candidate)
+
+    rc, out, err = engine.run_aws(["sts", "get-caller-identity"], "kauai")
+
+    assert rc == 0
+    env = captured["env"]
+    assert env is not None, "run_aws must pass env= so the child's PATH is widened"
+    # The resolved absolute aws is the argv head; its install dir is on the env.
+    assert str(pkg) in env["PATH"].split(os.pathsep)
 
 
 def test_random_bucket_name_format():

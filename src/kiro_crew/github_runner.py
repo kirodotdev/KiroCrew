@@ -744,6 +744,109 @@ def _report_resolved_launch(
     )
 
 
+def validate_provider_directory(candidate: str) -> str:
+    """Return a fallback directory after applying the provider path policy.
+
+    The directory and every component in its resolution path must satisfy the same
+    ownership, write-access, agent-tree, strict-mode, and Windows ACL checks as
+    a provider executable. Strict mode follows :func:`strict_provider_bins`. The
+    returned path is canonical; callers may retain the original spelling only as
+    the PATH entry whose chain was checked.
+    """
+    if not os.path.isabs(candidate):
+        raise ValueError("path must be absolute")
+
+    windows = sys.platform == "win32"
+    uid = -1
+    me_sid = ""
+    if windows:
+        me_sid = platform_compat.current_user_sid() or ""
+        if not me_sid:
+            raise ValueError(
+                "provider execution is disabled: the gateway user's SID is unverifiable"
+            )
+    else:
+        getuid = getattr(os, "getuid", None)
+        geteuid = getattr(os, "geteuid", getuid)
+        if getuid is None or geteuid is None:
+            raise ValueError("filesystem ownership checks are unavailable")
+        if geteuid() == 0:
+            raise ValueError("provider execution is disabled for a root gateway")
+        uid = geteuid()
+    strict = strict_provider_bins()
+
+    def _check(target: Path, *, label: str) -> None:
+        if windows:
+            check_provider_path_component_windows(target, label=label, me_sid=me_sid, strict=strict)
+        else:
+            check_provider_path_component(target, label=label, uid=uid, strict=strict)
+
+    original = Path(candidate)
+    try:
+        resolved = original.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        message = "path does not exist" if isinstance(exc, OSError) else "path does not resolve"
+        raise ValueError(message) from exc
+    same_path = (
+        original.as_posix().casefold() == resolved.as_posix().casefold()
+        if windows
+        else original == resolved
+    )
+    if strict and not same_path:
+        raise ValueError("path must be canonical and contain no symlinks")
+    try:
+        if not stat.S_ISDIR(resolved.stat().st_mode):
+            raise ValueError("path is not a directory")
+    except OSError as exc:
+        raise ValueError("directory hierarchy is not accessible") from exc
+
+    if not strict:
+        for root in agent_writable_roots():
+            if resolved == root or root in resolved.parents:
+                raise ValueError(f"directory is inside the agent-writable tree {root}")
+
+    if windows:
+        components = [resolved, *path_parents(resolved)]
+        if not strict and not same_path:
+            components += [p for p in [original, *path_parents(original)] if p not in components]
+    else:
+        walk = platform_compat.traversed_components_and_links(original)
+        if walk is None:
+            raise ValueError("directory hierarchy is not accessible")
+        components, _links = walk
+        if components[-1] != resolved:
+            raise ValueError("directory path did not resolve consistently")
+    for component in components:
+        try:
+            component_stat = component.stat()
+            if not stat.S_ISDIR(component_stat.st_mode):
+                raise ValueError("directory hierarchy contains a non-directory component")
+        except OSError as exc:
+            raise ValueError("directory hierarchy is not accessible") from exc
+        _check(component, label="directory")
+        if windows or strict:
+            continue
+        mode = component_stat.st_mode
+        # The PATH entry itself must keep every other account from ADDING a file:
+        # the child looks a helper up by name, and a sticky bit only stops another
+        # account replacing an entry, not creating a name the child has not found
+        # yet. Above the entry a sticky bit is enough, because nobody but an
+        # entry's owner can swap the next directory down.
+        path_entry = component == resolved
+        if path_entry and mode & stat.S_IWOTH:
+            raise ValueError("directory is writable by every account")
+        if mode & stat.S_IWGRP and (path_entry or not mode & stat.S_ISVTX):
+            # Root and the accounts that can become root by default (on macOS the
+            # admin group, the group Homebrew's bin belongs to) are not another
+            # account here.
+            admitted = platform_compat.group_write_admits_another_account(
+                component, component_stat.st_gid, trust_root=True
+            )
+            if admitted is not None:
+                raise ValueError(f"directory is writable by {admitted}")
+    return str(resolved)
+
+
 def validate_provider_executable(candidate: str, *, require_protected: bool = False) -> str:
     """Return the path a provider CLI is launched by, or raise.
 

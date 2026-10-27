@@ -17,7 +17,8 @@ the authorization so no network or live STS is ever reached.
 This module keeps the ``_authorize_upload`` branches and the two push paths. The
 other cases are in sibling modules: the unpinned-walk refusal, ``list_remote_backups``
 and the ``restore_download`` guard in ``test_aws_control_backup_ownership.py``;
-``due_for_nightly``'s bad stamp and the retry backoff in
+``due_for_nightly``'s bad stamp, the retry backoff and the no-working-key skip
+record in
 ``test_aws_control_backup_retry_backoff.py``; the ``costs`` cache and the run state
 in ``test_aws_control_backup_run_state.py``; the Layer B gate in
 ``test_aws_control_backup_layer_b.py`` and ``test_aws_control_backup_layer_b_mid_build.py``;
