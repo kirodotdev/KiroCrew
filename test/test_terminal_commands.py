@@ -489,6 +489,15 @@ class TestSanitizedPath:
         assert tc._within(str(inside), roots) is True
         assert tc._within(str(root), roots) is True
 
+    def test_a_drive_root_contains_every_path_below_it(self, tmp_path):
+        # A project dir at a drive root (`H:\`, or `/`) keeps its trailing separator
+        # through `realpath`; `root + os.sep` would then prefix nothing, and every
+        # agent-writable PATH entry below it would count as outside.
+        inside = tmp_path / "repo" / "bin"
+        inside.mkdir(parents=True)
+        drive_root = os.path.splitdrive(os.path.realpath(str(tmp_path)))[0] + os.sep
+        assert tc._within(str(inside), (drive_root,)) is True
+
     def test_an_undetermined_root_set_refuses_every_entry(self, tmp_path, monkeypatch):
         # Fail CLOSED: a lookup that failed must not quietly drop the root it could
         # not resolve, because that admits exactly the tree the filter exists for.
