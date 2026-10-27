@@ -660,6 +660,9 @@ async def _run_inner_impl(
         provider_type=self._manager._provider_label_of(client),
         model_window=_sub_window,
         context_groups=_groups,
+        # Triggers read only the task the parent wrote, not the sub-agent
+        # prefix, the resume preamble or the MCP notice prepended above.
+        skill_trigger_text=raw_task,
         blocks_reads=info.memory_mode == "temporary",
         context_provider=client,
         agent=agent or None,
