@@ -292,6 +292,28 @@ class TestSuspendResearchLoopsWhileDisabled:
         assert research_slot._trust is False
 
     @pytest.mark.asyncio
+    async def test_clears_the_session_policy_children_read(self, monkeypatch):
+        """Turn admission caches ``_trust`` as the session's ``approval_policy``; the
+        spawn gate and each child's tool approval read that, not the flag."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+        svc = MagicMock()
+        svc.update = AsyncMock()
+        svc.list_all.return_value = [
+            SimpleNamespace(id="loopR", slot_key="research-a1b2c3d4", active=True)
+        ]
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        slot = SimpleNamespace(key="research-a1b2c3d4", _trust=True)
+        policies = {effective_session_key(slot): "auto"}
+        sessions = SimpleNamespace(set_approval_policy=policies.__setitem__)
+        state = SimpleNamespace(_slots={slot.key: slot}, sessions=sessions)
+
+        await h._suspend_research_loops_while_disabled(state)
+
+        assert policies == {effective_session_key(slot): ""}
+
+    @pytest.mark.asyncio
     async def test_idempotent_when_already_inactive_and_untrusted(self, monkeypatch):
         from kiro_crew.apps.builtins.auto_research import handlers as h
 

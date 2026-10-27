@@ -757,6 +757,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         reject_if_slot_under_construction,
         replacement_shares_transcript,
         restore_replacement_if_handover_did_not_land,
+        revoke_slot_trust,
         session_key_for,
         slot_history_key,
         slot_transcript_key,

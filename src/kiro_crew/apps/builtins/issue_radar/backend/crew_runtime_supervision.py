@@ -112,7 +112,9 @@ async def revoke_crew_execution(state: Any, crew: dict[str, Any], reason: str = 
         # runs unprompted every cycle and so must leave a human's choice alone — this
         # runs only because a human or the watchdog decided the crew must not run.
         if getattr(slot, "_trust", False):
-            slot._trust = False
+            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+            revoke_slot_trust(state, slot)
             revoked = True
     svc = _autonudge_instance() if _autonudge_instance is not None else None
     if svc is not None:
@@ -802,7 +804,9 @@ def revoke_crew_grants(state: Any) -> int:
             slot._trust_scope = ""
             touched = True
         if getattr(slot, "_trust", False):
-            slot._trust = False
+            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+            revoke_slot_trust(state, slot)
             touched = True
         if touched:
             cleared += 1
