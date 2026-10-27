@@ -275,6 +275,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, slot_key: 'str', payload: 'dict') -> 'None'",
     ),
+    "broadcast_slot_fold": (
+        "function",
+        False,
+        False,
+        "(self, slot: 'str', legacy: 'WsPayload', delta: 'WsPayload | None') -> 'None'",
+    ),
     "broadcast_ws": (
         "function",
         False,
@@ -332,6 +338,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "ensure_dynamic_card_store": ("function", False, False, "(self) -> 'Any'"),
     "finish_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
     "flush_slot_now": ("function", False, False, "(self, slot: '_ChatSlot') -> 'None'"),
+    "fold_apply_watch": ("function", False, False, "(self) -> 'frozenset[str]'"),
     "fold_watch_routing": (
         "function",
         False,
@@ -650,6 +657,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "served_bundle_id": ("staticmethod", False, False, "(index: 'Path | None' = None) -> 'str'"),
     "serving_loop": ("property", False, False, "(self) -> \"'asyncio.AbstractEventLoop | None'\""),
     "set_dynamic_cards_enabled": ("function", False, False, "(self, enabled: 'bool') -> 'None'"),
+    "set_fold_apply_capable": (
+        "function",
+        False,
+        False,
+        "(self, ws: 'web.WebSocketResponse', capable: 'bool') -> 'bool'",
+    ),
     "set_fold_delta_capable": (
         "function",
         False,

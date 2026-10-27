@@ -38,6 +38,7 @@ import {
 } from './websocket/slotProjection'
 import { useSocketConnection } from './websocket/connection'
 import { createFoldWatch, FOLD_HELLO_FRAME, type FoldWatch } from './websocket/foldWatch'
+import { applySlotFoldFrame, readSlotFoldFrame, resetWorkDeltaBases, SLOT_DELTA_FRAME, type SlotFoldFrame, type SlotFoldOutcome } from './websocket/workDelta'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
@@ -192,6 +193,8 @@ export function useWebSocket() {
       // from the previous socket are not comparable with this one's: carried over,
       // a restarted gateway's frames would all read as stale.
       resetSlotProjectionRevisions()
+      // Same reason for the work boards' delta bases: the next read re-labels them.
+      resetWorkDeltaBases(queryClient)
       // The crew-log panel's cached read carries the PREVIOUS process's revisions,
       // which a restarted gateway's frames would all fall below. One re-read per
       // connection re-bases it on the process now serving.
@@ -715,6 +718,36 @@ export function useWebSocket() {
             // reconnect invalidates the whole `command-center` prefix, and the
             // work board pulls on its own timer besides.
             break
+          case SLOT_DELTA_FRAME: {
+            // A work board's advance as a delta on a base revision, sent instead
+            // of `slot_projection` to a tab that declared `fold_delta.2` and
+            // watches the board. Applied on the cached board when its base is the
+            // one held; otherwise the board is re-read (see workDelta.ts).
+            if (typeof data.slot !== 'string') break
+            const frame = readSlotFoldFrame(data)
+            if (!frame) break
+            const roots = teamRoots(store.getState().dashboard.slots, data.slot)
+            const pull = (next: SlotFoldFrame, outcome: SlotFoldOutcome, all: readonly string[]) => {
+              if (outcome === 'stale') return
+              // The frame's own board needs a read only when the delta could not
+              // be applied. An ancestor reads ITS OWN board over a different unit
+              // set, so it is re-read on every frame, exactly as for
+              // `slot_projection`.
+              for (const root of all) {
+                if (root === next.slot && outcome !== 'snapshot' && outcome !== 'ignored') continue
+                const key = ['command-center', root, 'work']
+                const inFlight = queryClient.getQueryCache().find({ queryKey: key, exact: true })
+                if (inFlight?.state.fetchStatus === 'fetching' && inFlight.promise) {
+                  void inFlight.promise.catch(() => undefined).finally(() => { void queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false }) })
+                } else queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
+              }
+            }
+            // A held frame replayed after a read pulls only its own board: the
+            // ancestors were re-read when it first arrived.
+            const outcome = applySlotFoldFrame(queryClient, frame, (next, replayed) => pull(next, replayed, [next.slot]))
+            pull(frame, outcome, roots)
+            break
+          }
           case 'slot_projection': {
             // A slot's crew log grew. A work board folds its conductor's units
             // with its bound workers', so the boards that move are this slot's

@@ -29,8 +29,8 @@ fold and its memo are untouched. The cost is that the publisher holds the last
 published render per board (bounded, see ``eager``).
 
 HOW A DELTA IS APPLIED. :func:`apply_work` is the receiver rule, written once here so
-the in-process receivers and the tests share it (the browser gets a TypeScript twin in
-a later change, tested against the same fixtures). The result holds EXACTLY the ids in
+the in-process receivers and the tests share it (the browser's TypeScript twin,
+``website/src/hooks/websocket/workDelta.ts``, runs the same fixtures). The result holds EXACTLY the ids in
 ``header.order``: an id the receiver holds that ``order`` does not name is dropped even
 when ``remove`` does not list it, and an id ``order`` names that the receiver neither
 holds nor received is an inconsistency, answered with ``None`` so the receiver pulls a
@@ -56,6 +56,31 @@ REASON_NO_BASE: Final[str] = "no_base"
 REASON_GENERATION: Final[str] = "generation"
 REASON_REVISION: Final[str] = "revision_not_rising"
 REASON_SHAPE: Final[str] = "shape"
+#: Set by a RECEIVER, never by the publisher: the delta's base is not the revision the
+#: receiver holds, so applying it would draw a board with holes in it.
+REASON_GAP: Final[str] = "gap"
+
+
+def chained(event: Any, held: int) -> Any:
+    """*event* as a receiver holding revision *held* must take it.
+
+    The receiver rule (RFC section 2.4) for the one case a receiver cannot apply: a
+    ``delta`` whose ``base_revision`` is not *held*. That event comes back as
+    ``snapshot_needed`` with reason :data:`REASON_GAP`, everything else as it is. The
+    whole value an event still carries during the migration is kept, so a receiver
+    that can use it need not read.
+
+    Duplicates (``revision <= held``) are not this function's business: the bus floor
+    and every receiver drop those before asking.
+    """
+    if getattr(event, "kind", KIND_VALUE) != KIND_DELTA:
+        return event
+    if int(getattr(event, "base_revision", 0) or 0) == held:
+        return event
+    replace = getattr(event, "_replace", None)
+    if replace is None:  # pragma: no cover - every bus event is a NamedTuple
+        return event
+    return replace(kind=KIND_SNAPSHOT_NEEDED, base_revision=0, delta={"reason": REASON_GAP})
 
 
 def _item_id(item: Any) -> str:

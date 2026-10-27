@@ -33,6 +33,21 @@ FOLD_DELTA_WS_FLAG = "_fold_delta"
 #: Socket attribute holding the boards a capable tab watches, a ``frozenset``.
 FOLD_WATCH_WS_KEY = "_fold_watch"
 
+#: Capability a tab declares in ``?caps=``, BESIDE :data:`FOLD_DELTA_CAPABILITY`, when
+#: its bundle applies ``slot_fold`` delta frames. A separate token, because a bundle
+#: that shipped ``fold_delta.1`` reads only ``slot_projection``: it watches boards but
+#: cannot apply a delta, and must keep receiving whole values.
+FOLD_APPLY_CAPABILITY = "fold_delta.2"
+
+#: Socket attribute recording that declaration. Only ever set on a socket that also
+#: carries :data:`FOLD_DELTA_WS_FLAG`.
+FOLD_APPLY_WS_FLAG = "_fold_apply"
+
+#: The frame a delta-applying socket gets for a ``work`` advance instead of that
+#: board's ``slot_projection`` frame. Same string as
+#: ``dashboard.handlers.crew_log.DELTA_FRAME``.
+SLOT_DELTA_FRAME = "slot_fold"
+
 #: The frame type whose fan-out the watch sets route. Same string as
 #: ``dashboard.handlers.crew_log.SLOT_FRAME``, spelled here so the hub imports no
 #: handler module.
@@ -52,9 +67,18 @@ MAX_FOLD_WATCH_KEY_LEN = 256
 _MAX_ANCESTOR_DEPTH = 32
 
 
-def fold_hello_payload() -> dict[str, Any]:
-    """The ``data`` of :data:`FOLD_HELLO_FRAME`: schema version and routed folds."""
-    return {"v": 1, "folds": ["work"]}
+def fold_hello_payload(ws: Any = None) -> dict[str, Any]:
+    """The ``data`` of :data:`FOLD_HELLO_FRAME`: schema version and routed folds.
+
+    ``delta`` lists the folds this socket will get as ``slot_fold`` deltas, and is
+    present only for a socket that declared :data:`FOLD_APPLY_CAPABILITY`. A tab reads
+    its absence as "this gateway sends whole values", which is also what a gateway
+    from before the key answers.
+    """
+    payload: dict[str, Any] = {"v": 1, "folds": ["work"]}
+    if ws is not None and ws.get(FOLD_APPLY_WS_FLAG, False):
+        payload["delta"] = ["work"]
+    return payload
 
 
 def board_key(slot: str) -> str:
@@ -697,9 +721,42 @@ class WebSocketHub:
             for ws in list(self._owner._owner_ws_clients)
         )
 
-    def _send_slot_fold(self, msg: str, slot: str) -> None:
+    def broadcast_slot_fold(self, slot: str, legacy: WsPayload, delta: "WsPayload | None") -> None:
+        """Send one board's ``work`` advance in the form each owner socket reads.
+
+        *legacy* is the ``slot_projection`` data every socket has always read; *delta*
+        is the ``slot_fold`` data, sent INSTEAD of it to each socket that declared
+        :data:`FOLD_APPLY_CAPABILITY` and watches the board. ``None`` (or no such socket
+        open) sends exactly what :meth:`broadcast_ws_owners` sends. Each frame is
+        serialized at most once.
+        """
+        if not getattr(self._owner, "_owner_ws_clients", None):
+            return
+        apply_open = delta is not None and any(
+            not ws.closed and ws.get(FOLD_APPLY_WS_FLAG, False)
+            for ws in list(self._owner._owner_ws_clients)
+        )
+        if not apply_open:
+            self.broadcast_ws_owners(SLOT_FOLD_FRAME, legacy)
+            return
+        msg = json.dumps({"type": SLOT_FOLD_FRAME, "data": legacy})
+        apply_msg = json.dumps({"type": SLOT_DELTA_FRAME, "data": delta})
+        self._send_slot_fold(msg, slot, apply_msg)
+
+    def set_fold_apply_capable(self, ws: web.WebSocketResponse, capable: bool) -> bool:
+        """Record whether *ws* declared :data:`FOLD_APPLY_CAPABILITY`; returns the flag.
+
+        Only a socket already carrying :data:`FOLD_DELTA_WS_FLAG` can: the delta frame
+        goes only to the boards a socket watches, and only a watching socket has a set.
+        """
+        flag = bool(capable) and bool(ws.get(FOLD_DELTA_WS_FLAG, False))
+        ws[FOLD_APPLY_WS_FLAG] = flag
+        return flag
+
+    def _send_slot_fold(self, msg: str, slot: str, apply_msg: "str | None" = None) -> None:
         """Send one board's slot frame: every legacy owner socket, and each capable
-        one that watches *slot* or one of its ancestors."""
+        one that watches *slot* or one of its ancestors. A watching socket that applies
+        deltas gets *apply_msg* instead of *msg* when one is given."""
         dead: list[web.WebSocketResponse] = []
         spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
         remove = self._owner_method("_remove_ws", self._remove_ws)
@@ -717,7 +774,10 @@ class WebSocketHub:
                 if watched.isdisjoint(chain):
                     continue
             try:
-                spawn(ws, msg)
+                if apply_msg is not None and ws.get(FOLD_APPLY_WS_FLAG, False):
+                    spawn(ws, apply_msg)
+                else:
+                    spawn(ws, msg)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -838,6 +898,18 @@ class WebSocketHub:
             else:
                 legacy = True
         return legacy, capable, frozenset(watched)
+
+    def fold_apply_watch(self) -> frozenset[str]:
+        """The union of the watch sets of the open sockets that apply ``slot_fold`` deltas.
+
+        Those are the only sockets a ``work`` delta is sent to, so a board outside this
+        set (and outside every board created under one in it) needs no delta base.
+        """
+        watched: set[str] = set()
+        for ws in list(self._owner._owner_ws_clients):
+            if not ws.closed and ws.get(FOLD_APPLY_WS_FLAG, False):
+                watched.update(ws.get(FOLD_WATCH_WS_KEY) or ())
+        return frozenset(watched)
 
     def ws_client_count(self) -> int:
         return len(self._owner._ws_clients)

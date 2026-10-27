@@ -1016,6 +1016,16 @@ def set_fold_delta_capable(self: DashboardState, ws: web.WebSocketResponse, capa
     return _websocket_for(self).set_fold_delta_capable(ws, capable)
 
 
+def set_fold_apply_capable(self: DashboardState, ws: web.WebSocketResponse, capable: bool) -> bool:
+    return _websocket_for(self).set_fold_apply_capable(ws, capable)
+
+
+def broadcast_slot_fold(
+    self: DashboardState, slot: str, legacy: WsPayload, delta: WsPayload | None
+) -> None:
+    _websocket_for(self).broadcast_slot_fold(slot, legacy, delta)
+
+
 def set_fold_watch(
     self: DashboardState, ws: web.WebSocketResponse, slots: object
 ) -> frozenset[str]:
@@ -1024,6 +1034,10 @@ def set_fold_watch(
 
 def fold_watch_routing(self: DashboardState) -> tuple[bool, bool, frozenset[str]]:
     return _websocket_for(self).fold_watch_routing()
+
+
+def fold_apply_watch(self: DashboardState) -> frozenset[str]:
+    return _websocket_for(self).fold_apply_watch()
 
 
 def add_fold_watch_listener(

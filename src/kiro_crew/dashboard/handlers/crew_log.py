@@ -56,7 +56,7 @@ import os
 import sys as _sys
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Final
 
@@ -147,6 +147,19 @@ SLOT_FRAME = "slot_projection"
 #: still reads its own baseline, and sending values for every slot this gateway has folded
 #: would push a payload nobody asked for at exactly the moment a tab is slowest.
 SLOT_SUBSCRIBED_FRAME = "slot_projection/subscribed"
+
+#: The ``work`` advance as a delta, sent only to a tab that declared ``fold_delta.2``
+#: and watches the board, INSTEAD of that board's ``slot_projection`` frame:
+#: ``{v, slot, fold, kind, revision, base_revision, ops?}``. ``kind`` is ``delta``
+#: (``ops`` holds ``fold_delta`` ops on ``base_revision``) or ``snapshot_needed`` (no
+#: ops; re-read the board). A new frame type rather than new fields on
+#: ``slot_projection``, so a bundle that predates it can never misread a delta as a
+#: value. ``v`` is the frame's schema version; a tab treats one it does not know as
+#: ``snapshot_needed``.
+DELTA_FRAME: Final[str] = "slot_fold"
+DELTA_FRAME_VERSION: Final[int] = 1
+DELTA_KIND: Final[str] = "delta"
+SNAPSHOT_KIND: Final[str] = "snapshot_needed"
 
 #: Units whose owning slot is remembered. A unit's header is written once and
 #: never rewritten, so the answer never goes stale; the bound only caps memory.
@@ -408,6 +421,7 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
         # each unit it reaches.
         return _tree_keyed_refusal(name)
     unit_id, _ = _unit_id(request, session_id)
+    published: "int | None" = None
     try:
         if name in projections.SLOT_PROJECTION_NAMES:
             # SLOT-keyed: this fold joins every unit the slot ran under, so it is
@@ -415,7 +429,7 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
             # folded from that one unit. Routed through the same resolution as the
             # per-unit read above, so a caller holding a slot key reaches its own
             # record either way.
-            result = await asyncio.to_thread(_read_slot_fold, unit_id, name)
+            result, published = await asyncio.to_thread(_read_slot_fold_labelled, unit_id, name)
         else:
             # SESSION-keyed, which is what is LEFT: a registered name that is not the
             # owner-served slot fold, not tree-keyed and not slot-keyed. Every
@@ -433,7 +447,13 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
     # TOGETHER, this route has no caller that reads them, and the settle they need
     # is a wait charged to every request. The resolution itself stays -- a slot-key
     # read of this route folds the session's unit like any other.
-    return web.json_response({"session_id": session_id, **result.to_dict()})
+    payload = {"session_id": session_id, **result.to_dict()}
+    if published is not None:
+        # A delta fold's snapshot label: the base a tab applies the next pushed
+        # ``slot_fold`` delta on (see ``_read_slot_fold_labelled``). An extra key, so
+        # an older bundle reading this route sees the response it always saw.
+        payload["published_revision"] = published
+    return web.json_response(payload)
 
 
 async def api_session_crew_log_projections(request: web.Request) -> web.Response:
@@ -560,8 +580,30 @@ def _read_slot_fold(unit_id: str, name: str) -> Any:
     read off that unit's own header -- a slot key handed straight to the header lookup
     would miss and answer with the empty fold.
     """
+    return _read_slot_fold_labelled(unit_id, name)[0]
+
+
+def _read_slot_fold_labelled(unit_id: str, name: str) -> "tuple[Any, int | None]":
+    """:func:`_read_slot_fold` and, for a delta fold, its ``published_revision``. Blocking.
+
+    ``published_revision`` is the base the next pushed delta applies on. The value and
+    the label come from ``eager.read_labelled``, which folds outside the publisher's
+    lock and checks the label under it, so the label is the revision of the value served: a publish read earlier and sent later
+    reaches the tab as stale, never as a delta on this newer value. ``None`` for a fold
+    that publishes no deltas, which carries no such field.
+    """
+    from kiro_crew.crew_log import eager, fold_delta
+
     projections = _crew_log()
-    return projections.read_slot_projection(projections.slot_of_session(unit_id), name)
+    slot = projections.slot_of_session(unit_id)
+    if name not in fold_delta.DELTA_FOLDS:
+        return projections.read_slot_projection(slot, name), None
+    if not slot:
+        return projections.read_slot_projection(slot, name), 0
+    folded, label = eager.read_labelled(
+        slot, name, lambda: projections.read_slot_projection(slot, name)
+    )
+    return folded, label
 
 
 def _crew_log_refusal(exc: "CrewLogError") -> web.Response:
@@ -956,6 +998,7 @@ class CrewLogPublisher:
         with self._slot_sub_lock:
             subs, self._slot_subs = self._slot_subs, {}
             crew_log_bus.set_slot_folds_on_demand(False)
+            crew_log_bus.set_delta_boards(None)
         for dispose in subs.values():
             dispose()
 
@@ -979,6 +1022,28 @@ class CrewLogPublisher:
             return None
         if legacy or not capable:
             return None
+        return self._expand_boards(watched)
+
+    def _delta_boards(self) -> "frozenset[str] | None":
+        """The boards whose ``work`` publishes should hold a delta base, or ``None``: all.
+
+        The boards watched by an open socket that applies ``slot_fold`` deltas, plus
+        every board created under one, expanded as :meth:`_watched_boards` expands its
+        own set. ``None`` (hold a base for every board, the bounded default) whenever
+        that cannot be computed.
+        """
+        union = getattr(self._state, "fold_apply_watch", None)
+        if not callable(union):
+            return None
+        try:
+            watched = union()
+        except Exception:
+            logger.debug("fold apply watch could not be read", exc_info=True)
+            return None
+        return self._expand_boards(frozenset(watched))
+
+    def _expand_boards(self, watched: "frozenset[str]") -> "frozenset[str] | None":
+        """*watched* as fold keys plus every board created under one, or ``None``."""
         if not watched:
             return frozenset()
         try:
@@ -1047,6 +1112,7 @@ class CrewLogPublisher:
         from kiro_crew.crew_log import bus as crew_log_bus
 
         boards = self._watched_boards()
+        delta_boards = self._delta_boards()
         if boards is None:
             want: "set[tuple[str, str]]" = {("*", "*")}
         else:
@@ -1077,6 +1143,9 @@ class CrewLogPublisher:
             # Turned on only once the keyed subscriptions exist, and off before the
             # wildcard one is the only one left, so no wanted fold is ever skipped.
             crew_log_bus.set_slot_folds_on_demand(boards is not None)
+            # A delta base (a whole board render) is held only for a board some tab
+            # that applies deltas watches. Narrowed or widened with the watch sets.
+            crew_log_bus.set_delta_boards(delta_boards)
         for dispose in removed:
             dispose()
 
@@ -1118,9 +1187,10 @@ class CrewLogPublisher:
         if unpacked is None or loop is None:
             return
         key, fold, revision, _seq, value = unpacked
+        delta = self._delta_frame(event, key, fold, revision)
         try:
             self._record_revision(key, fold, revision)
-            loop.call_soon_threadsafe(self._push_fold, key, fold, revision, value)
+            loop.call_soon_threadsafe(self._push_fold, key, fold, revision, value, delta)
         except RuntimeError:
             logger.debug("crew log fold for %s/%s arrived after the loop closed", key, fold)
 
@@ -1154,6 +1224,37 @@ class CrewLogPublisher:
         if not key or not fold or revision <= 0 or not isinstance(value, dict):
             return None
         return key, fold, revision, seq, value
+
+    @staticmethod
+    def _delta_frame(event: Any, slot: str, fold: str, revision: int) -> "dict[str, Any] | None":
+        """The ``slot_fold`` data for *event* (:data:`DELTA_FRAME`), or ``None``.
+
+        Only a ``work`` event the publisher labelled ``delta`` or ``snapshot_needed``
+        has one. A ``snapshot_needed`` frame carries no ops: the tab pulls the snapshot
+        over REST, which is the one read that labels a value with the base the next
+        delta applies on. Ops that are not a mapping make the frame a
+        ``snapshot_needed`` too, so a tab is never handed something it cannot apply.
+        """
+        if fold != WORK_FOLD:
+            return None
+        kind = getattr(event, "kind", "value")
+        if kind not in (DELTA_KIND, SNAPSHOT_KIND):
+            return None
+        ops = getattr(event, "delta", None)
+        base = int(getattr(event, "base_revision", 0) or 0)
+        data: dict[str, Any] = {
+            "v": DELTA_FRAME_VERSION,
+            "slot": slot,
+            "fold": fold,
+            "kind": SNAPSHOT_KIND,
+            "revision": int(revision),
+            "base_revision": 0,
+        }
+        if kind == DELTA_KIND and base > 0 and isinstance(ops, Mapping):
+            data["kind"] = DELTA_KIND
+            data["base_revision"] = base
+            data["ops"] = ops
+        return data
 
     def on_tree_advanced(self, event: Any) -> None:
         """The session tree moved. Called on whichever thread changed it.
@@ -1200,7 +1301,14 @@ class CrewLogPublisher:
         except Exception:
             logger.debug("session lineage push failed", exc_info=True)
 
-    def _push_fold(self, slot: str, fold: str, revision: int, value: "dict[str, Any]") -> None:
+    def _push_fold(
+        self,
+        slot: str,
+        fold: str,
+        revision: int,
+        value: "dict[str, Any]",
+        delta: "dict[str, Any] | None" = None,
+    ) -> None:
         """Broadcast one slot fold's advance. On the loop.
 
         Only the ``work`` fold's frame carries its value: it is the one fold the browser
@@ -1217,6 +1325,12 @@ class CrewLogPublisher:
         data: dict[str, Any] = {"slot": slot, "fold": fold, "revision": int(revision)}
         if fold == _WORK_FOLD:
             data["value"] = value
+        broadcast_slot_fold = getattr(self._state, "broadcast_slot_fold", None)
+        if delta is not None and callable(broadcast_slot_fold):
+            # A tab that applies deltas and watches this board gets *delta* instead;
+            # every other socket gets *data*, exactly as before (websocket_hub).
+            broadcast_slot_fold(slot, data, delta)
+            return
         self._state.broadcast_ws_owners(SLOT_FRAME, data)
 
     def _schedule_session(

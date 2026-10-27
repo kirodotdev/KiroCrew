@@ -67,6 +67,7 @@ const OWNER_MODULES = [
   'streamBuffers.ts',
   'turnCompletion.ts',
   'voicePlayback.ts',
+  'workDelta.ts',
   'workflowRuns.ts',
 ]
 

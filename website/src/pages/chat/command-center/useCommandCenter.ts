@@ -13,7 +13,10 @@ import type { SubagentActivity } from '../../../types'
 import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
 /** The work board as its route serves it: the folded value plus its revision. */
-type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number }
+// `published_revision` is the read's delta base: the revision of the gateway's last
+// work publish, read before the fold. Kept on the cached entry, because a pushed
+// `slot_fold` delta applies only on exactly that base (hooks/websocket/workDelta.ts).
+type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number; published_revision?: number }
 
 /** How often the panel re-reads the work board on its own.
  *
@@ -189,6 +192,8 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     // let a high read revision reject newer pushes, dropping them silently until
     // the clock pull. The module's rule is "the ledger holds only revisions a
     // frame applied"; a read records none, so the next frame always applies.
+    // `published_revision` stays: it is comparable to a delta frame's base by
+    // construction, and is the base the next `slot_fold` delta applies on.
     queryFn: async (): Promise<WorkProjection> => {
       const { revision: _ignored, ...rest } = (await api.sessionWorkProjection(root!)) as WorkProjection
       return rest

@@ -80,7 +80,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any, Final, NamedTuple
 
@@ -950,7 +950,18 @@ def _publish_fold(slot: str, name: str, folded: Any) -> None:
     # Under the lock from the diff to the publish, so the fold worker and a background
     # prime publishing the same cell cannot hand a subscriber two deltas off one base.
     with _published_lock:
-        event = _delta_event(slot, name, revision, value, seq)
+        if not bus.delta_wanted(slot):
+            # No open tab that applies deltas watches this board, so nothing reads a
+            # delta the carried value does not already replace. Hold no base (a whole
+            # board render) and publish the plain value, exactly as before deltas.
+            # When a watcher arrives, the first publish has no base and is
+            # ``snapshot_needed``, which is what that tab starts from anyway.
+            _published.pop((slot, name), None)
+            event = bus.FoldAdvanced(
+                scope=bus.SCOPE_SLOT, key=slot, fold=name, revision=revision, value=value, seq=seq
+            )
+        else:
+            event = _delta_event(slot, name, revision, value, seq)
         bus.publish(bus.FOLD_ADVANCED, event)
 
 
@@ -1017,12 +1028,54 @@ def _delta_event(slot: str, name: str, revision: int, value: dict[str, Any], seq
 def published_revision(slot: str, name: str) -> int:
     """The revision of the last publish of *slot*'s delta fold *name*, 0 when none.
 
-    What a snapshot read labels itself with, so a receiver can apply the next delta
-    on it (its base is this revision). No I/O.
+    The base the next delta applies on. A snapshot labels itself through
+    :func:`read_labelled`, which reads the value and this number under one lock. No I/O.
     """
     with _published_lock:
         base = _published.get((slot, name))
         return base[0] if base is not None else 0
+
+
+def read_labelled(slot: str, name: str, read: "Callable[[], Any]") -> "tuple[Any, int]":
+    """``(folded, label)``: a snapshot of *slot*'s *name* and the base its next delta uses.
+
+    *read* folds the cell (the caller's own read path, possibly cold) and runs OUTSIDE
+    ``_published_lock``, so a slow fold never stalls a publish of any board. The lock is
+    then taken only to compare the value's revision with the recorded base:
+
+    - equal: the value is the last publish; label it with that revision;
+    - newer: the read folded past the last publish, so that render is PUBLISHED here as
+      a delta on the recorded base (a diff, no read) before the lock is released, and
+      labelled with its own revision. A publish the fold worker read earlier and sends
+      later is then older than the recorded base and goes out as ``snapshot_needed``
+      (reason ``revision_not_rising``), which a receiver holding this snapshot drops as
+      stale -- never a delta applied on a newer value;
+    - older: a publish landed while *read* ran. Read once more (the cell is warm now);
+      if it is still older, label the value with its own revision, so the next delta,
+      whose base is not that revision, reaches the receiver as a gap.
+
+    So the label is always the revision of the value returned (0 when it has none).
+    """
+    from kiro_crew.crew_log import bus, fold_delta
+
+    folded: Any = None
+    revision = 0
+    for _attempt in range(2):
+        folded = read()
+        revision = max(int(getattr(folded, "revision", 0) or 0), 0)
+        value = getattr(folded, "value", None)
+        if name not in fold_delta.DELTA_FOLDS or revision <= 0:
+            return folded, revision
+        with _published_lock:
+            base = _published.get((slot, name))
+            if base is None or revision == base[0]:
+                return folded, revision
+            if revision > base[0]:
+                if isinstance(value, dict) and bus.delta_wanted(slot):
+                    seq = int(getattr(folded, "seq", 0) or 0)
+                    bus.publish(bus.FOLD_ADVANCED, _delta_event(slot, name, revision, value, seq))
+                return folded, revision
+    return folded, revision
 
 
 def _forget_published(slot: str) -> None:

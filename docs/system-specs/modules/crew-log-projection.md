@@ -1195,6 +1195,29 @@ baseline: [`rfc-crew-log-wake`, amendment 2026-10-02](../../request-for-change/r
 records the decision that the eager folder only folds and publishes, and consumers
 subscribe.
 
+**The `work` fold also publishes a delta.**
+[`rfc-fold-delta-push`](../../request-for-change/rfc-fold-delta-push.md) section 4
+splits the work; PR (c+d), #24749, ships this part. A `work` `FoldAdvanced` also carries
+`kind` (`delta` or `snapshot_needed`), `base_revision` and `delta`, and STILL carries the
+whole `value`, so a receiver that ignores the new fields behaves as before. The delta
+base is a RENDER DIFF: eager holds the last published render per board (at most 64,
+narrowed to the boards delta-capable tabs watch while the dashboard exporter runs) and `fold_delta.diff_work` compares the new
+render with it item by item. The fold step and the memo cell are untouched. With no
+base held, or a revision that does not rise, the event is `snapshot_needed`.
+`fold_delta.apply_work` is the one apply rule; `website/src/hooks/websocket/workDelta.ts`
+is its TypeScript twin, and both run `website/src/test/fixtures/work-delta-cases.json`.
+`eager.read_labelled` labels a snapshot with the base its next delta applies on: it
+folds OUTSIDE `_published_lock`, then compares the value's revision with the recorded
+base under the lock. The receivers on this path are the bus (each keyed subscriber
+gets a delta only on the revision it took last; any other is relabelled
+`snapshot_needed`), `conductor_wake` (restamps only the items a delta changed), the WS
+exporter (a `slot_fold` frame to a tab that declared `fold_delta.2` and watches the
+board, instead of its `slot_projection` frame), the browser, and the REST board read
+(`published_revision`). Moved to PR (e): change marks in the fold step and the memo
+cell in place of the held render (RFC section 2.1), the `DashboardFeed` delta apply,
+and value-less self-reads (`conductor_wake` reading its own board, receivers rebuilding
+the value with `value_after`). Until (e), `DashboardFeed` reads the whole `value`.
+
 **Why that needed a revision, and why `seq` could not be it.** A slot fold's `last_seq` is
 the NEWEST unit's own seq by contract, and conductor units are folded before worker units.
 So a conductor-side change on a board with any worker bound leaves that number unmoved, and

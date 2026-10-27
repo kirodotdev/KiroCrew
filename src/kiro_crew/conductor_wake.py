@@ -148,6 +148,32 @@ class _Registry:
         self.boards[board] = stamps
         return first, reported
 
+    def observe_delta(
+        self, board: str, changed: "list[_Item]", order: "list[str]"
+    ) -> "tuple[bool, list[tuple[str, str]]]":
+        """Record a ``work`` DELTA for *board*: the *changed* items and the ids in *order*.
+
+        The same answer :meth:`observe` gives for the whole render the delta leads to.
+        An item the delta does not send rendered exactly as before, so its stamp is the
+        one already held; a held id *order* does not name is gone from the board. So only
+        the changed items are stamped, and the rest of the table is the held one cut to
+        *order*. With nothing held for *board* this is first sight, as for a whole value,
+        and the items the delta did not send are learned as their own changes arrive.
+        """
+        previous = self.boards.get(board)
+        first = previous is None
+        held = previous or {}
+        stamps = {item_id: held[item_id] for item_id in order if item_id in held}
+        reported: list[tuple[str, str]] = []
+        for item_id, stamp, status in changed:
+            if not item_id:
+                continue
+            stamps[item_id] = stamp
+            if not first and stamp and held.get(item_id) != stamp:
+                reported.append((item_id, status))
+        self.boards[board] = stamps
+        return first, reported
+
     def sweep(self, watched: "Callable[[str], bool]") -> None:
         """Forget every retained board for which *watched* answers ``False``."""
         for board in [b for b in self.boards if not watched(b)]:
@@ -220,12 +246,36 @@ def _report_stamp(item: "dict[str, Any]") -> str:
     return f"{stamp}|{hashlib.sha256(blob.encode()).hexdigest()[:16]}"
 
 
+def _event_news(event: Any) -> "tuple[list[_Item], list[str] | None]":
+    """``(items, order)`` for :func:`_observe_board` out of one ``work`` event.
+
+    A ``delta`` the bus handed over is on the revision this subscriber took last (the
+    bus relabels any other as ``snapshot_needed``), so its changed items and its
+    ``order`` are the whole news. Anything else is read whole from the value it carries,
+    and every event carries the whole value.
+    """
+    if getattr(event, "kind", "value") == "delta":
+        ops = getattr(event, "delta", None)
+        header = ops.get("header") if isinstance(ops, dict) else None
+        changed = ops.get("items") if isinstance(ops, dict) else None
+        order = header.get("order") if isinstance(header, dict) else None
+        if isinstance(changed, dict) and isinstance(order, list):
+            ids = [item_id for item_id in order if isinstance(item_id, str)]
+            return _board_items({"items": list(changed.values())}), ids
+    return _board_items(getattr(event, "value", None)), None
+
+
 def _watched(svc: Any) -> "Callable[[str], bool]":
     """The sweep predicate: whether *board*'s conductor has an active work-ledger loop."""
     return lambda board: bool(work_ledger_loop_id(svc, board))
 
 
-async def _observe_board(svc: Any, board: str, items: "list[_Item]") -> None:
+async def _observe_board(
+    svc: Any,
+    board: str,
+    items: "list[_Item]",
+    order: "list[str] | None" = None,
+) -> None:
     """Fold *board*'s latest stamps into the registry and fire for what moved.
 
     ON THE EVENT LOOP. A board whose conductor has no active work-ledger loop is dropped
@@ -251,12 +301,19 @@ async def _observe_board(svc: Any, board: str, items: "list[_Item]") -> None:
     would buy a cycle the gate then answers quiet. Those quiet cycles are not free: each
     runs the probe, counts against ``max_cycles``, and advances the quiet streak whose
     floor delivers a turn anyway.
+
+    TWO SHAPES OF NEWS. *items* with *order* ``None`` is the whole board. *items*
+    with an *order* is a ``work`` delta: only the changed items, and the ids the board
+    now holds (:meth:`_Registry.observe_delta`).
     """
     _registry.sweep(_watched(svc))
     if not work_ledger_loop_id(svc, board):
         _drop(board)
         return
-    _first, reported = _registry.observe(board, items)
+    if order is not None:
+        _first, reported = _registry.observe_delta(board, items, order)
+    else:
+        _first, reported = _registry.observe(board, items)
     for item_id, status in reported:
         if status.strip() not in WORK_WAKE_STATUSES:
             continue
@@ -447,7 +504,7 @@ def _observe_event(event: Any) -> "Any | None":
         board = str(getattr(event, "key", "") or "")
         if not board:
             return None
-        items = _board_items(getattr(event, "value", None))
+        items, order = _event_news(event)
         from kiro_crew import autonudge
 
         svc = autonudge.get_instance()
@@ -456,7 +513,7 @@ def _observe_event(event: Any) -> "Any | None":
         running = _service_loop(svc)
         if running is None:
             return None
-        future = asyncio.run_coroutine_threadsafe(_observe_board(svc, board, items), running)
+        future = asyncio.run_coroutine_threadsafe(_observe_board(svc, board, items, order), running)
     except Exception:  # pragma: no cover - the fold worker must not see this
         logger.debug("conductor wake: could not schedule a board observation")
         return None

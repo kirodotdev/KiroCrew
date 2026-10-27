@@ -9,6 +9,11 @@ import { markGatewayDisconnected } from './gatewayConnectivity'
  *  `foldWatch.ts`). A wire token, not copy. */
 export const foldDeltaCapability = 'fold_delta.1'
 
+/** Declared beside `fold_delta.1`: this bundle applies `slot_fold` delta frames
+ *  for the work board (see `workDelta.ts`). A separate token, because a bundle
+ *  that declared only `fold_delta.1` reads whole values alone. */
+export const foldApplyCapability = 'fold_delta.2'
+
 export type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
 /** First reconnect delay; each consecutive failure doubles it. */
@@ -81,8 +86,9 @@ export function useSocketConnection(): SocketConnection {
       // applies.
       // `fold_delta.1`: this bundle sends `fold_watch` once the gateway says
       // `fold_hello` (see `foldWatch.ts`). An older gateway ignores it and
-      // keeps sending every board's slot-fold frames.
-      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch,${foldDeltaCapability}`)
+      // keeps sending every board's slot-fold frames. `fold_delta.2`: send the
+      // work board as `slot_fold` deltas; a gateway without it sends whole values.
+      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch,${foldDeltaCapability},${foldApplyCapability}`)
       wsRef.current = ws
       return ws
     },

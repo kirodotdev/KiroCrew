@@ -861,6 +861,8 @@ async def _serve_ws(
     )
     # ``fold_delta.1``: send this tab only the boards it watches (dashboard users only).
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
+    # ``fold_delta.2`` beside it: this tab applies ``slot_fold`` deltas for ``work``.
+    state.set_fold_apply_capable(ws, _ws_hub.FOLD_APPLY_CAPABILITY in declared_caps)
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -965,7 +967,7 @@ async def _serve_ws(
         await ws.send_str(snapshot_payload)
         # After the snapshot (the first frame by contract): ask a capable tab for its watch.
         if ws.get(_ws_hub.FOLD_DELTA_WS_FLAG, False):
-            hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload()}
+            hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload(ws)}
             await ws.send_str(json.dumps(hello))
         # One-shot per-member event-log baseline, to THIS socket only, right
         # after the connect snapshot and before any later broadcast can reach

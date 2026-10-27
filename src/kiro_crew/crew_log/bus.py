@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, NamedTuple
 
 logger = logging.getLogger(__name__)
@@ -184,6 +184,7 @@ class _Subscriber:
                 revision = int(getattr(event, "revision", 0) or 0)
                 if revision <= self.floor:
                     return
+                event = _chained(event, self.floor)
                 self.floor = revision
             self.callback(event)
 
@@ -225,6 +226,12 @@ def subscribe(
     the read are held, and once the baseline is delivered the held ones are replayed
     through the same revision floor. A fold with no minted revision yet delivers no
     baseline and the floor stays at 0.
+
+    DELTAS ON A BASELINE. For a fold that publishes deltas (``fold_delta.DELTA_FOLDS``)
+    the floor is also the revision the subscriber holds, so a pushed or held ``delta``
+    whose ``base_revision`` is not the floor is handed over as ``snapshot_needed``
+    (reason ``gap``). A baseline subscriber can therefore apply every ``delta`` it is
+    handed on the value it took last, and pull a snapshot on everything else.
 
     A SLOT baseline never folds cold. With no warm cell and no usable savepoint the
     subscriber gets no baseline (as for a fold with no revision), one background prime
@@ -299,8 +306,29 @@ def _release_baseline(sub: _Subscriber, current: "FoldAdvanced | None") -> None:
             revision = int(getattr(event, "revision", 0) or 0)
             if sub.floor is not None and revision <= sub.floor:
                 continue
+            if sub.floor is not None:
+                event = _chained(event, sub.floor)
             sub.floor = revision
             _call(sub, event)
+
+
+def _chained(event: Any, floor: int) -> Any:
+    """*event* re-labelled for a subscriber whose last delivered revision is *floor*.
+
+    A baseline subscriber's floor is exactly the revision it holds, so a ``delta``
+    whose base is anything else reaches it as ``snapshot_needed``
+    (:func:`kiro_crew.crew_log.fold_delta.chained`). The replay of held events after a
+    baseline runs through here too: a held delta on the baseline's revision applies, any
+    other one is a gap. Never raises; an event this cannot read passes unchanged.
+    """
+    if getattr(event, "kind", "value") != "delta":
+        return event
+    try:
+        from kiro_crew.crew_log import fold_delta
+
+        return fold_delta.chained(event, floor)
+    except Exception:  # pragma: no cover - a relabel must never cost the delivery
+        return event
 
 
 def _call(sub: _Subscriber, event: Any) -> None:
@@ -357,9 +385,10 @@ def _read_baseline(scope: str, key: str, fold: str) -> "FoldAdvanced | None":
     """
     from kiro_crew.crew_log import projection
 
+    label = 0
     if scope == SCOPE_SLOT:
         try:
-            folded = projection.read_slot_projection(key, fold, cold=False)
+            folded, label = _read_slot_labelled(key, fold)
         except projection.SlotFoldNotReady:
             # No warm cell and no usable savepoint: the value would cost a fold of every
             # unit the slot ran under, on this caller's thread. Answer "no baseline yet"
@@ -379,10 +408,30 @@ def _read_baseline(scope: str, key: str, fold: str) -> "FoldAdvanced | None":
         scope=scope,
         key=key,
         fold=fold,
-        revision=revision,
+        # A delta fold's baseline is labelled by ``eager.read_labelled``, so the label
+        # is the revision of this very value and the next delta's base (RFC 2.3,
+        # "The snapshot").
+        revision=label or revision,
         value=value,
         seq=int(getattr(folded, "seq", 0) or 0),
     )
+
+
+def _read_slot_labelled(key: str, fold: str) -> "tuple[Any, int]":
+    """One slot fold's current value, never cold, and its delta label (0: none).
+
+    A delta fold reads through ``eager.read_labelled``, so the value and the base the
+    next delta applies on describe one render. Imported here, not at module level:
+    :mod:`kiro_crew.crew_log.eager` imports this one.
+    """
+    from kiro_crew.crew_log import eager, fold_delta, projection
+
+    def read() -> Any:
+        return projection.read_slot_projection(key, fold, cold=False)
+
+    if fold not in fold_delta.DELTA_FOLDS:
+        return read(), 0
+    return eager.read_labelled(key, fold, read)
 
 
 def _matching(kind: str, event: Any) -> "list[_Subscriber]":
@@ -491,6 +540,26 @@ def slot_fold_wanted(key: str, fold: str) -> bool:
     return has_subscriber(FOLD_ADVANCED, scope=SCOPE_SLOT, key=key, fold=fold)
 
 
+#: The boards whose ``work`` publishes hold a delta base, or ``None`` for every board.
+#: ``None`` by default, so a process with no dashboard -- and every test -- keeps the
+#: bounded base for any board. Only the dashboard's WS exporter narrows it, to the
+#: boards some open tab that applies ``slot_fold`` deltas watches: the base is a whole
+#: board render, and nothing else reads a delta that the carried value cannot replace.
+_delta_boards: "frozenset[str] | None" = None
+
+
+def set_delta_boards(boards: "Iterable[str] | None") -> None:
+    """Hold a delta base only for *boards* (``None``: for every board)."""
+    global _delta_boards
+    _delta_boards = None if boards is None else frozenset(boards)
+
+
+def delta_wanted(key: str) -> bool:
+    """Whether a ``work`` publish for board *key* should hold a base and diff against it."""
+    boards = _delta_boards
+    return boards is None or key in boards
+
+
 def subscriber_count(kind: str) -> int:
     """How many subscribers *kind* has, across every filter. For a test and a log line."""
     with _lock:
@@ -505,7 +574,7 @@ def reset_for_tests() -> None:
     that is already gone. Every forgotten subscriber is marked disposed, so a publish
     already holding it calls nothing.
     """
-    global _slot_folds_on_demand
+    global _slot_folds_on_demand, _delta_boards
     with _lock:
         for buckets in _subscribers.values():
             for listed in buckets.values():
@@ -513,6 +582,7 @@ def reset_for_tests() -> None:
                     sub.active = False
         _subscribers.clear()
         _slot_folds_on_demand = False
+        _delta_boards = None
 
 
 def _log_exc(message: str, *args: Any) -> None:
