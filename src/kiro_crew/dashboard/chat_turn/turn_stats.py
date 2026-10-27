@@ -49,7 +49,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
     from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
-    from kiro_crew.dashboard.chat_turn.native_cards import _native_subagent_close_all
+    from kiro_crew.dashboard.chat_turn.native_cards import (
+        NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        _native_subagent_close_all,
+    )
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -516,8 +519,17 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     _children_unfinished = any(not _i.get("done") for _i in _native_tracker.values())
     # Safety net: complete any native subagent cards still marked
     # running at turn end (in case a terminal status was missed),
-    # so cards don't stay stuck "running".
-    _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+    # so cards don't stay stuck "running". Only a raw end_turn counts
+    # as a normal landing; a cancel, refusal or synthesized completion
+    # cut its children off, so their cards close as interrupted.
+    _landed_normally = event.stop_reason == STOP_REASON_END_TURN and not event.synthetic_completion
+    _native_subagent_close_all(
+        state,
+        slot,
+        _native_tracker,
+        _native_card_output,
+        error=None if _landed_normally else NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+    )
     _u = event.usage
     if monitor_completion is not None and is_monitor_completion_evidence(
         event.stop_reason,

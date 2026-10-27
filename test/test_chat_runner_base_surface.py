@@ -528,7 +528,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_native_subagent_close_all",
             "function",
-            "(state, slot, tracker, card_output=None) -> 'None'",
+            "(state, slot, tracker, card_output=None, error: 'str | None' = None) -> 'None'",
         ),
         (
             "_retain_terminal_native",

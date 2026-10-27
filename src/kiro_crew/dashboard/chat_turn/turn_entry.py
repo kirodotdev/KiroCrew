@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _discard_stale_decision
     from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes_off_loop
     from kiro_crew.dashboard.chat_turn.native_cards import (
+        NATIVE_SUBAGENT_INTERRUPTED_ERROR,
         _native_flush_cut_short,
         _native_subagent_close_all,
         _retain_terminal_native,
@@ -958,8 +959,17 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         _native_flush_cut_short(turn)
     except Exception:
         logger.debug("native child text flush at release failed", exc_info=True)
+    # Every normal landing already closed its cards in _on_complete, so a
+    # card still open here belongs to a turn that was stopped, timed out or
+    # crashed before its terminal event.
     try:
-        _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+        _native_subagent_close_all(
+            state,
+            slot,
+            _native_tracker,
+            _native_card_output,
+            error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        )
     finally:
         slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
         slot._native_subagent_output = {}
