@@ -466,6 +466,37 @@ _BAD_CRON_WARNED_MAX = 1024
 _BAD_CRON_REFUSED = [0]  # evaluations the full memo refused a row
 
 
+def _next_cron_epoch(iterator: croniter, expr: str, tz: tzinfo) -> float:
+    """Advance an aware iterator without double-shifting an existing wall time.
+
+    Across an offset change, croniter's aware result can include an extra DST
+    adjustment. A naive iteration supplies the expression's wall time instead.
+    Missing wall times keep croniter's resolution; a valid earlier aware result
+    wins so a repeated hour keeps its existing chronological ordering.
+    """
+    from kiro_crew import cron as seams
+
+    base = iterator.get_current(seams.datetime)
+    result = iterator.get_next(float)
+    if not math.isfinite(result):
+        return result
+    local = seams.datetime.fromtimestamp(result, tz=tz)
+    if base.utcoffset() == local.utcoffset():
+        return result
+    wall = croniter(expr, base.replace(tzinfo=None)).get_next(seams.datetime)
+    candidate = wall.replace(tzinfo=tz).timestamp()
+    if (
+        candidate > base.timestamp()
+        and seams.datetime.fromtimestamp(candidate, tz=tz).replace(tzinfo=None) == wall
+    ):
+        if result > base.timestamp() and seams.cron_expr_matches(expr, local):
+            result = min(result, candidate)
+        else:
+            result = candidate
+        iterator.set_current(result)
+    return result
+
+
 def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
     """Return the immediate next cron boundary as a UTC epoch, ignoring skip_dates.
 
@@ -486,7 +517,7 @@ def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
     try:
         tz = _job_tz(job)
         base = seams.datetime.fromtimestamp(now, tz=tz)
-        nxt = croniter(sched.cron_expr, base).get_next(float)
+        nxt = _next_cron_epoch(croniter(sched.cron_expr, base), sched.cron_expr, tz)
     except Exception as exc:  # CroniterBadDateError for an unsatisfiable expression
         # Re-armed every poll: warn once per job+expression; a full memo refuses rows, said once.
         key, val = hash(job.id), hash(sched.cron_expr)
@@ -533,7 +564,7 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
             # safety ceiling against a pathological all-skipped sub-minute config.
             horizon = now + _MAX_SKIP_DATE_HORIZON_SECS
             for _ in range(_MAX_SKIP_DATE_LOOKAHEAD):
-                nxt = cron.get_next(float)
+                nxt = _next_cron_epoch(cron, sched.cron_expr, tz)
                 if not job.skip_dates:
                     return nxt
                 if nxt > horizon:
