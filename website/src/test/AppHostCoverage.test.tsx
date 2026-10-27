@@ -180,13 +180,17 @@ describe('AppHost — guard surfaces', () => {
 })
 
 describe('AppHost — hosting a real bundle', () => {
-  it('shows a named loading skeleton while the bundle is in flight', async () => {
+  it('paints no loading skeleton in the first frame of a load', async () => {
     renderHost(appRecord())
 
-    const line = screen.getByText(
+    // The fallback waits out a short window before drawing anything, so a fast
+    // bundle never flashes a placeholder. The named skeleton a SLOW bundle gets
+    // after that window, and its manifest-declared shapes, are pinned in
+    // AppHostLoading.test.tsx, where the import settles on the test's clock.
+    expect(screen.queryByTestId('app-loading-fallback')).toBeNull()
+    expect(screen.queryByText(
       (_content, el) => el?.tagName === 'P' && (el.textContent ?? '').startsWith('Loading'),
-    )
-    expect(line.textContent).toContain('Ledger Lens')
+    )).toBeNull()
 
     await settleBundle()
   })

@@ -237,11 +237,41 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.sidebar.order` | number | `10` | Sort order within section |
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
+| `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
 | `contributes.sessionControls[].icon` | string | | Icon name. Only `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`, `AudioLines` and `Mic` are rendered; any other name falls back to `Package`. Use `AudioLines` for a control that starts a voice conversation and `Mic` only for voice input: the composer's own dictation button already draws `Mic`, so a conversation chip with that glyph reads as a second dictation button |
 | `contributes.sessionControls[].statusPath` | string | | Optional backend route reporting per-session chip state (see below) |
+
+### `ui.loading` — Loading Placeholder Shape
+
+While your bundle downloads, the dashboard shows a placeholder. Nothing appears
+for the first 300 ms, so a fast load (the usual case on a local gateway) shows no
+placeholder at all. After that, the placeholder takes the shape you declare, so
+your page doesn't jump when it mounts:
+
+```json
+{
+  "ui": {
+    "entry": "dist/index.mjs",
+    "loading": { "layout": "rail" }
+  }
+}
+```
+
+| `layout` | Shape |
+|----------|-------|
+| `"page"` | Title bar, subtitle bar and content rows. The default |
+| `"rail"` | A 232px left column of list rows beside the main content |
+| `"centered"` | One narrow card in the middle of the page, e.g. a composer or a sign-in |
+| `"split"` | Two panes side by side, e.g. a list and a detail view |
+
+The shapes are drawn by the dashboard from its own skeleton pieces. You pick a
+name; you can't supply markup or styles. The match is exact: a missing or `null`
+`loading`, a non-object, a non-string `layout`, or an unknown name (including a
+different case, like `"Rail"`) all fall back to `"page"`. An invalid value is
+not an install error; it is dropped.
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
 

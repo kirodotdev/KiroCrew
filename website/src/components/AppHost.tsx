@@ -15,7 +15,9 @@ import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
 import { AppApiProvider, type AppUpdate } from '../app-sdk'
-import { ContentSkeleton, Btn, PageHeader } from './ui'
+import { Btn, PageHeader } from './ui'
+import AppLoadingFallback from './AppLoadingFallback'
+import { importAppBundle } from './appBundleImport'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 
@@ -47,6 +49,10 @@ export interface AppHostProps {
       ui?: {
         entry?: string
         pages?: { route: string; label: string; icon?: string }[]
+        /** Placeholder shape while the bundle loads, e.g. `{ layout: 'rail' }`.
+         *  Typed `unknown` on purpose: it is read straight from `app.json` and
+         *  `AppLoadingFallback` validates it against a closed set. */
+        loading?: unknown
       }
       permissions?: {
         api?: string[]
@@ -150,21 +156,6 @@ function AppCrashFallback({
 }
 
 // ---------------------------------------------------------------------------
-// Loading skeleton
-// ---------------------------------------------------------------------------
-
-function AppLoadingSkeleton({ appName }: { appName: string }) {
-  return (
-    <div className="px-6 pt-6 pb-8">
-      <div className="skeleton h-7 w-48 rounded mb-2" />
-      <div className="skeleton h-4 w-72 rounded mb-6" />
-      <ContentSkeleton rows={6} />
-      <p className="text-[12px] text-muted mt-4">{i18nT('components.appHost.loading')} {appName}…</p>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Not found / not enabled
 // ---------------------------------------------------------------------------
 
@@ -256,7 +247,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   // Dynamically import the app bundle. Keyed on resetKey so retry works.
   const LazyApp = useMemo(
     () => lazy(() =>
-      import(/* @vite-ignore */ bundlePath).catch(err => {
+      importAppBundle(bundlePath).catch(err => {
         // eslint-disable-next-line no-console -- surface bundle load failures for debugging
         console.error(`[AppHost] Failed to load ${app.name} from ${bundlePath}:`, err)
         // Return a module with a default export that shows the error
@@ -324,7 +315,12 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         notifyFn={notifyFn}
         sessionKey={sessionKey}
       >
-        <Suspense fallback={<AppLoadingSkeleton appName={appDisplayName(app)} />}>
+        {/* Delayed and shaped: nothing for the first 300 ms, then the layout the
+            manifest declares in `ui.loading` (default "page"). See AppLoadingFallback. */}
+        {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
+            its own bundle (`entry` override) in a narrow panel, so it keeps the
+            default shape rather than borrowing the page's rail or split. */}
+        <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
           <LazyApp />
         </Suspense>
       </AppApiProvider>

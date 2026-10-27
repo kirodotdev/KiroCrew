@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from kiro_crew.apps.manifest_names import KEBAB_RE
 
@@ -353,11 +353,25 @@ class UIConfig:
     pages: list[UIPage] = field(default_factory=list)
     overlays: list[UIOverlay] = field(default_factory=list)
     sidebar: UISidebar = field(default_factory=UISidebar)
+    # Placeholder shape the dashboard shows while the bundle loads, from
+    # ``"loading": {"layout": "<name>"}``. A closed set of names the dashboard
+    # draws from its own skeleton pieces (``AppLoadingFallback.tsx``); an app never
+    # supplies markup or styles. Empty means undeclared, which the dashboard
+    # renders as "page", the skeleton every app had before the field existed.
+    loading_layout: str = ""
+
+    # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
+    # ``website/src/components/AppLoadingFallback.tsx``.
+    LOADING_LAYOUTS: ClassVar[frozenset[str]] = frozenset({"page", "rail", "centered", "split"})
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
         if self.entry:
             d["entry"] = self.entry
+        if self.loading_layout:
+            # Emitted only when declared, so a manifest without it keeps producing
+            # the identical dict (and the identical signed payload).
+            d["loading"] = {"layout": self.loading_layout}
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -386,7 +400,27 @@ class UIConfig:
             pages=pages,
             overlays=overlays,
             sidebar=sidebar,
+            loading_layout=cls._parse_loading_layout(data.get("loading")),
         )
+
+    @classmethod
+    def _parse_loading_layout(cls, raw: Any) -> str:
+        """Return the declared loading layout, or ``""`` for anything not exactly valid.
+
+        Total, like the rest of ``from_dict``: a hand-edited manifest can hold
+        ``null``, a string, a list, or a layout in the wrong case, and none of those
+        may raise out of install validation. Each one is dropped, which the dashboard
+        reads as the default "page" skeleton. Matching is exact (no case folding or
+        trimming) so the stored value is always one the dashboard recognises verbatim.
+        """
+        if not isinstance(raw, dict):
+            return ""
+        layout = raw.get("layout")
+        # Exact type, not isinstance: a str subclass can override __eq__/__hash__
+        # and pass a set lookup with a value the dashboard would not recognise.
+        if type(layout) is str and layout in cls.LOADING_LAYOUTS:
+            return layout
+        return ""
 
 
 @dataclass
