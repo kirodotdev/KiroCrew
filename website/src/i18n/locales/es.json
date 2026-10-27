@@ -14995,6 +14995,7 @@
         "import_memory_title": "Importar memoria",
         "import_failed": "Importación fallida",
         "importing": "Importando…",
+        "checking_archive": "Comprobando el archivo... Un archivo grande puede tardar unos minutos.",
         "invalid_archive": "Archivo comprimido no válido",
         "kb": "KB",
         "memory_db": "BD de memoria:",

@@ -14513,6 +14513,7 @@
         "import_memory_title": "メモリをインポート",
         "import_failed": "インポートに失敗しました",
         "importing": "インポート中…",
+        "checking_archive": "アーカイブを確認しています… 大きなファイルは数分かかることがあります。",
         "invalid_archive": "無効なアーカイブ",
         "kb": "KB",
         "memory_db": "メモリ DB:",

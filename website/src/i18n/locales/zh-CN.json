@@ -14513,6 +14513,7 @@
         "import_memory_title": "导入记忆",
         "import_failed": "导入失败",
         "importing": "正在导入…",
+        "checking_archive": "正在检查归档文件… 大文件可能需要几分钟。",
         "invalid_archive": "压缩包无效",
         "kb": "KB",
         "memory_db": "记忆数据库：",

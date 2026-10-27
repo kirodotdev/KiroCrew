@@ -7044,6 +7044,7 @@
         "import": "Import",
         "import_failed": "Import failed",
         "importing": "Importing...",
+        "checking_archive": "Checking the archive... A large file can take a few minutes.",
         "invalid_archive": "Invalid archive",
         "network_error": "Network error",
         "network_error_during_preview": "Network error during preview",

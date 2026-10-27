@@ -14754,6 +14754,7 @@
         "import_memory_title": "मेमोरी इम्पोर्ट करो",
         "import_failed": "इंपोर्ट विफल",
         "importing": "इंपोर्ट हो रहा है...",
+        "checking_archive": "आर्काइव की जाँच हो रही है... बड़ी फ़ाइल में कुछ मिनट लग सकते हैं।",
         "invalid_archive": "अमान्य आर्काइव",
         "kb": "KB",
         "memory_db": "मेमोरी DB:",

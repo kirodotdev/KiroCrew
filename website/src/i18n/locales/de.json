@@ -14754,6 +14754,7 @@
         "import_memory_title": "Erinnerungen importieren",
         "import_failed": "Import fehlgeschlagen",
         "importing": "Wird importiert...",
+        "checking_archive": "Archiv wird geprüft... Bei einer großen Datei kann das einige Minuten dauern.",
         "invalid_archive": "Ungültiges Archiv",
         "kb": "KB",
         "memory_db": "Erinnerungs-DB:",

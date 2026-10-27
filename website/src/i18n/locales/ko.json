@@ -14513,6 +14513,7 @@
         "import_memory_title": "메모리 가져오기",
         "import_failed": "가져오기에 실패했습니다",
         "importing": "가져오는 중…",
+        "checking_archive": "아카이브를 확인하는 중… 큰 파일은 몇 분 걸릴 수 있습니다.",
         "invalid_archive": "잘못된 아카이브",
         "kb": "KB",
         "memory_db": "메모리 DB:",
