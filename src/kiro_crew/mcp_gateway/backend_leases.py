@@ -63,7 +63,7 @@ _ORPHANED_LEASES_MAX = 1024
 # URIs retain gigabytes of dictionary keys. Real resource URIs are short;
 # 8 KiB is far beyond any legitimate identifier. Overlong URIs are refused
 # locally before any table stores them.
-_RESOURCE_URI_MAX_LEN = 8192
+RESOURCE_URI_MAX_LEN = 8192
 
 
 # MCP resource-subscription wire methods and the notification they scope.
@@ -290,7 +290,7 @@ async def _handle_resource_subscription(
     if not isinstance(uri, str) or not uri:
         return False
     original_id = msg.get("id")
-    if len(uri) > _RESOURCE_URI_MAX_LEN:
+    if len(uri) > RESOURCE_URI_MAX_LEN:
         # The per-stub cap bounds subscription COUNT, not bytes: 1024
         # accepted near-frame-limit URIs would retain gigabytes of
         # dictionary keys. Refuse locally before any table stores the

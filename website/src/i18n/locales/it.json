@@ -12502,7 +12502,8 @@
         "agent_switch_blocked_crew_mode": "Il passaggio a {{agent}} è stato bloccato — questa chat è in Crew Mode, che resta sul suo direttore. Il turno successivo riparte sul direttore.",
         "crew_name_undispatchable": "Il nome della crew di questo thread non può essere usato. Rinomina o ricrea il membro della crew.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
-        "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare."
+        "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare.",
+        "resource_wake_budget_paused": "L’abbonamento alla risorsa {{subscription}} su {{server}} ha raggiunto i suoi {{limit}} risvegli per il {{day}} (UTC) ed è in pausa fino al prossimo giorno UTC. Gli aggiornamenti nel frattempo vengono riuniti in un unico risveglio dopo la pausa."
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} passaggi precedenti",

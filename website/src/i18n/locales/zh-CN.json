@@ -12078,7 +12078,8 @@
         "agent_switch_blocked_crew_mode": "已阻止切换到 {{agent}} — 此聊天处于 Crew Mode，会保持在其指挥者上。下一轮将在指挥者上重新开始。",
         "crew_name_undispatchable": "无法使用此话题的团队名称。请重命名或重新创建该团队成员。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",
-        "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。"
+        "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。",
+        "resource_wake_budget_paused": "{{server}} 上的资源订阅 {{subscription}} 已达到 {{day}}（UTC）的 {{limit}} 次唤醒上限，将暂停到下一个 UTC 日。期间的更新会在暂停结束后合并为一次唤醒。"
       },
       "turnBlock": {
         "earlier_step_other": "之前的 {{count}} 个步骤",

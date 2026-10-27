@@ -170,6 +170,24 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
+    # MCP resource subscriptions (rfc-mcp-resource-subscriptions §4.9.3): feature-
+    # flagged, so the handlers module loads on first request, never at boot.
+    app.router.add_get(
+        "/api/resource-subscriptions",
+        _deferred("resource_subscriptions", "api_resource_subscriptions_list"),
+    )
+    app.router.add_post(
+        "/api/resource-subscriptions",
+        _deferred("resource_subscriptions", "api_resource_subscribe"),
+    )
+    app.router.add_post(
+        "/api/resource-subscriptions/remove",
+        _deferred("resource_subscriptions", "api_resource_unsubscribe"),
+    )
+    app.router.add_post(
+        "/api/resource-subscriptions/operator",
+        _deferred("resource_subscriptions", "api_resource_subscriptions_operator"),
+    )
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))

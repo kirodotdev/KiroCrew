@@ -102,6 +102,7 @@ const NOTICE_FAMILIES = {
   crew_name_undispatchable: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
+  resource_wake_budget_paused: { role: 'notice', card: 'notice', tone: 'info' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -169,6 +170,7 @@ const COPY_KEY = {
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
+  resource_wake_budget_paused: 'pages.chat.gatewayNotice.resource_wake_budget_paused',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -371,6 +373,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
+  },
+  {
+    re: /^⏸\uFE0F? Resource subscription (?<subscription>\S+) on (?<server>.+?) reached its (?<limit>\d+) wakes for (?<day>\S+) \(UTC\) and is paused until the next UTC day\. Updates meanwhile are folded into one wake after the pause\.$/u,
+    token: 'resource_wake_budget_paused',
   },
 ]
 

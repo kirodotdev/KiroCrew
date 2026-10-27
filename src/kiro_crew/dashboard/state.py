@@ -193,6 +193,8 @@ from kiro_crew.dashboard.state_parts.injected_turns import (  # noqa: E402,F401 
     SUBAGENT_SYNTHESIS_PREFIX,
     SUBAGENT_SYNTHESIS_PROMPT,
     TOOL_STALL_RECOVERY_PREFIX,
+    WEBHOOK_WAKE_END,
+    WEBHOOK_WAKE_PREFIX,
     build_infra_retry_prompt,
     build_refusal_recovery_prompt,
     build_stale_recovery_prompt,

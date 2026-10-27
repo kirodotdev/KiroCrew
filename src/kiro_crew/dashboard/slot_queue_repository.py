@@ -852,15 +852,20 @@ class SlotQueueRepository:
             # land as an `inject` row labelled with the app, actor `app`, and
             # the linked-thread mirror suppressed, so a human on the mirrored
             # channel never sees what the user typed. Refused, not re-kinded:
-            # the entry is not a user prompt to begin with. Scoped to the app
-            # kind alone: other system kinds (queued cron text among them)
-            # were editable before this endpoint existed, and taking that
-            # away is not this feature's call. The frontend pencil gate
-            # (`isAppMessageQueued`) withholds exactly this same set.
+            # the entry is not a user prompt to begin with. Scoped to the
+            # server-written kinds alone: other system kinds (queued cron text
+            # among them) were editable before this endpoint existed, and taking
+            # that away is not this feature's call. The frontend pencil gate
+            # (`isServerWrittenQueued`) withholds exactly the set refused below.
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
-            from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+            from kiro_crew.dashboard.chat_utils_injected_rows import (
+                AUTOMATION_STEER_META,
+                RESOURCE_WAKE_KIND,
+            )
 
-            if item.get("kind") == MCP_APP_MESSAGE_KIND:
+            # A resource wake is server-written for the same reason, and newer
+            # than the edit endpoint, so it is withheld from the start.
+            if item.get("kind") in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND):
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors

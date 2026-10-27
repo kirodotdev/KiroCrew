@@ -235,8 +235,7 @@ class Backend:
     # these into one fresh forwarded subscribe (first parker as forwarder,
     # the rest as riders); a refusal means the server retained the lease, so
     # they join the still-live entry locally.
-    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(
-        default_factory=dict)
+    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(default_factory=dict)
     # Identity-capable servers only: the caller whose subscribe the server
     # GRANTED, keyed ``(uri, stub_uuid)`` and recorded at response time — the
     # only moment the grant principal is known for certain. A release for a
@@ -244,8 +243,7 @@ class Backend:
     # teardown, and never a last-writer map: a claim rekey after the grant
     # makes both identify the wrong principal and revoke a co-tenant's live
     # subscription). Dropped when the grant is released or the entry pruned.
-    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(
-        default_factory=dict)
+    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(default_factory=dict)
     # URIs whose upstream subscription is known RETAINED with no subscriber
     # left to route to — a gateway-originated release was refused. Updates for
     # these are dropped WITHOUT recording a hazard: the frames are a
@@ -873,10 +871,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ORPHANED_LEASES_MAX,
         _RELEASE_STUB_SENTINEL,
         _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
-        _RESOURCE_URI_MAX_LEN,
         _RESOURCES_SUBSCRIBE_METHOD,
         _RESOURCES_UNSUBSCRIBE_METHOD,
         _RESOURCES_UPDATED_NOTIFICATION,
+        RESOURCE_URI_MAX_LEN,
         _is_success_response,
     )
     from kiro_crew.mcp_gateway.backend_liveness import (  # noqa: F401

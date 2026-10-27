@@ -150,6 +150,9 @@ and the captured `initialize` is `captured_init`, a local of `_handle_connection
 connection. The subscription record keeps them, so the holder can register again
 after a restart with no kiro-cli present. Persisting a Register is not new:
 prewarm already writes Register payloads, token removed, to `hot-keys.json`.
+The record lives under the data home's hidden, write-protected
+`mcp-resource-subscriptions/` directory, so its server-defined URI, lock sidecar
+and atomic-write temporaries are unavailable to sandboxed sessions.
 
 The holder's identity is the session key, not a stored token. Kiro Crew mints a
 stub token for the holder and pushes a `claim` frame that binds it to the stored
@@ -193,11 +196,36 @@ Each failure has an owner:
 | The backend process dies | The holder forwards an MCP `ping` request every 60 s, and the forward raises `BackendGone` | The daemon's existing respawn path rebuilds the backend, re-primes it from the holder's captured `initialize` and replays the holder's subscriptions (the `BackendGone` handler in `_handle_connection`). |
 | The daemon or the Kiro Crew server restarts | The holder's socket reaches end of file, or the server starts with stored subscriptions | The holder reconnects once the manager has a daemon, registers from the stored Register under a fresh `stub_uuid`, carrying the stored session key and `channel_id` as an inline caller (§4.10), sends the stored `initialize` and subscribes to every URI again. |
 | Updates are lost during a gap | Any re-subscribe | One "may have changed" event per URI, because updates sent while nobody held the subscription are gone. |
-| The backend cannot be started again | Registering or subscribing fails, for example because the launch approval changed | The subscription pauses with the reason, and the pause is reported. |
+| The backend cannot be started again | Registering or subscribing fails, for example because the launch approval changed | The subscription pauses with the reason, and the pause is reported once, however many URIs the holder held. |
+
+A subscribe that starts a new holder for a paused subscription keeps it paused
+in memory and on disk until that subscribe commits, so no wake starts for it
+meanwhile and a failed retry leaves it paused.
 
 The daemon answers its own in-band `ping` frame without touching the backend, so
 that frame cannot detect a dead backend. The MCP `ping` request is forwarded to
-the backend, so it can.
+the backend, so it can. A URI is pending before its subscribe request is sent. An
+update arriving before the successful response is applied is held once and then
+emitted to the service. The service publishes it, and any other update or "may
+have changed" event that arrives before the subscription is saved, as one event
+once the save lands; a refusal, a connection loss or a failed save discards it. A
+"may have changed" outranks an update, because it also says updates were lost. A
+subscribe or unsubscribe that times out has an unknown outcome upstream, so the
+holder ends that connection and reconnects, subscribing only the URIs it holds.
+Any holder request can instead be answered by the daemon itself, with code
+`-32000`, saying the backend died, restarted, or was replaced after its tool set
+changed. That answer is about the connection, not the server's verdict, so the
+holder ends the connection before any caller reads it and reconnects: an
+`initialize` or a re-subscribe answered that way reconnects instead of pausing,
+a direct subscribe is refused with `gateway_unavailable`, and a ping sends no
+second request. A server's own error, even one that mentions those phrases or
+uses another code, keeps the request's refusal behavior. The daemon's replay
+after a backend restart does not tell the holder which URIs the replacement
+refused, so the holder reconnects after the current reconnect delay and
+subscribes every URI it holds again before it is live, so no subscribe can land
+while those verdicts are applied. It then reports one "may have changed" for
+each URI it still holds. A URI the replacement refuses pauses with its reason,
+and a holder whose every URI is refused pauses.
 
 ### 4.4 Sharing a grant with the session's own stub
 
@@ -312,14 +340,22 @@ Two things depart from the webhook RFC, and this RFC records them as decisions:
 
 ### 4.6 Limits
 
-- 20 resource subscriptions per session. Beyond that, a subscribe is refused.
+- 20 resource subscriptions per session, counting live and paused URIs together.
+  Beyond that, a subscribe is refused.
 - Coalescing per key, using the webhook RFC's `window_secs`. Proposed default:
   60 s.
 - `budget.wakes_per_day`. Proposed default: 48. A subscription that exhausts it
   pauses and reports, as the webhook RFC §13 requires.
 - The gateway's own limits still apply: 1,024 subscriptions per stub
   (`_RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB`) and 8,192 characters per URI
-  (`_RESOURCE_URI_MAX_LEN`), both in `backend_leases.py`.
+  (`RESOURCE_URI_MAX_LEN`), both in `backend_leases.py`.
+- Each retained Register and `initialize` container is at most 256 KiB, measured as
+  compact JSON with every non-ASCII character escaped, as the store writes it. A
+  Register is measured without `stub_uuid` and `stub_session_token`, which are not
+  kept. The daemon measures a live connection's Register and `initialize`
+  before it keeps either and keeps neither past the bound, so `describe-session`
+  for that connection answers with the reason. Startup drops a stored record that
+  exceeds it.
 - A holder keeps its backend's refcount above zero, so the backend is never evicted
   while subscribed. A backend with refcount above zero is never an eviction
   target, and a spawn into a full pool is refused with a `capacity` rejection
@@ -340,8 +376,18 @@ A session's resource subscriptions and holders are removed when the session is
 closed, trashed or emptied. The cleanup sits beside `_retire_slot_nudge_loop` in
 `_close_slot` (`src/kiro_crew/dashboard/chat_api/slot_lifecycle.py`) and in the
 session-storage routes. A conversation reset keeps the session key, so it keeps
-the subscriptions. A wake for a session that can no longer be resolved deletes the
-subscription.
+the subscriptions. After open tabs are restored at process start, a stored dashboard
+session with neither an open slot nor a live runtime is removed before any holder is
+restored, but only when a readable persisted `closed` flag proves the close committed.
+A tab the restore skipped for its budget, or a close whose history save failed, has no
+committed flag, so it keeps its subscriptions. A failed removal is logged and still restores no holder; a non-dashboard
+key or missing evidence is never retired by this startup check. A wake never rebuilds a
+tab whose close is recorded in this process. It deletes the subscription only on the
+persisted `closed` flag, and only while no open slot or live runtime carries the
+session's key, so a close that has not saved yet drops only that wake, and the close
+retires the subscriptions once its save lands. A session a wake simply cannot resolve has
+missing evidence, not closure, and keeps its subscriptions: then only that wake is
+dropped, and the next one says the resource may have changed.
 
 ### 4.8 Surfaces
 
@@ -417,7 +463,17 @@ queue entry has its own kind, `resource_wake`. Its row is an `inject` row with a
 resource chip that names the server. And its queue entry carries the
 containment snapshot (`session_control.containment_meta`) as an app message's
 does, so the drain drops it if a channel or mirror link appeared while it waited
-(`_drop_stale_admissions` in `dashboard/chat_turn/steer_queue.py`). The turn is
+(`_drop_stale_admissions` in `dashboard/chat_turn/steer_queue.py`). In the same
+sweep the drain drops a queued wake whose subscription it cannot find under the
+slot's effective session key, or whose holder or URI is paused, and it checks
+the wakes again after its last await before the dequeue. So a wake never
+starts after a removal, a pause, a resubscribe under a new id, a tab rebound to
+another session, or the service stopping. A wake dropped while `_fire` is still
+delivering it is refunded and stays owed while its subscription exists, also
+when the same drain starts another message queued ahead of it: `deliver` then
+answers `queued`, and `_fire` finds the wake gone from the queue. One dropped
+later keeps its charge. A resubscribe in place keeps the id, so a wake
+already queued still runs the instruction it was queued with. The turn is
 started with `_directive_user_origin=False`, `_synthetic_payload=True` and
 `_turn_actor="resource"`, so it never reads as the person's own speech. Today
 `deliver` sets `_synthetic_payload` only for `ORIGIN_APP`, and
@@ -429,7 +485,9 @@ linked channel as the person's words.
 **Coalescing.** The holder keeps one in-memory coalescer per
 (session, server, URI). The first update opens a 60 s window (§4.6). Later
 updates inside the window fold into it. When the window closes, one wake is
-delivered. While a wake for that key is still queued, a new update folds into
+delivered. At most one wake for a key is in flight. An update that arrives
+during it is covered when that wake is delivered and opens a fresh window when
+it is not. While a wake for that key is still queued, a new update folds into
 the queued entry rather than adding a second one. A full queue leaves the wake
 owed. An owed wake opens a fresh window on its own, with no new update needed,
 and is tried again when that window closes. It stays owed until it is delivered,
@@ -495,7 +553,7 @@ caller with `mcp_core.require_strict_session_key` and acts only on that key.
 |---|---|---|
 | `resource_subscribe` | `server`, `uri`, `instruction` | The subscription id and the server's answer to the subscribe. The same (session, server, URI) again returns the existing subscription with its instruction replaced |
 | `resource_subscriptions` | none | The caller's own subscriptions: id, server, full URI, instruction, state (`active` or `paused` with its reason), wakes today |
-| `resource_unsubscribe` | `subscription_id` | Removed, or `not_found` |
+| `resource_unsubscribe` | `subscription_id` | Removed, `not_found`, or `gateway_unavailable` when a running service cannot commit the removal |
 
 `resource_subscribe` refuses, with a reason the session can read:
 
@@ -510,13 +568,41 @@ caller with `mcp_core.require_strict_session_key` and acts only on that key.
 | `pinned_backends` | The subscribe would pin one more backend than `max_pinned_backends` (§4.6) |
 | `uri_too_long` | The URI is over `_RESOURCE_URI_MAX_LEN` (§4.6) |
 | `server_refused` | The server answered the subscribe with an error, which is returned |
+| `gateway_unavailable` | The gateway cannot carry the subscribe now: its connection is not live, the service is closed, or the subscribe could not finish inside its bound (below). Nothing is subscribed |
 
 An id that belongs to another session is answered `not_found` by
 `resource_unsubscribe`, and never appears in `resource_subscriptions`. A session
-cannot learn that another session's subscription exists. Pausing and resuming
+cannot learn that another session's subscription exists. A removal acts only on
+the subscription the id names: if that id was replaced meanwhile, the answer is
+`not_found` and the replacement stays. When the named subscription still exists
+but the running service cannot commit its removal, `resource_unsubscribe` and the
+operator route return `gateway_unavailable` with retry guidance, and neither
+reports a removal. `kirocrew resource-subs remove` edits the store directly when
+the gateway's connection is refused or its reply says `running: false`. The
+gateway makes its service active before the service loads the store, so a service
+built between that answer and the edit would keep serving a subscription the file
+no longer lists. The command therefore sends the same request once more after the
+edit, holding no store lock. No service or `not_found` means the edit stands, and
+a removal means the running service has let go too. A service that is still
+starting is asked again inside the command's 30 s bound. Any other answer exits
+non-zero and says the store entry is gone but a running service may still hold
+it. Pausing and resuming
 are not tools in the first version: a budget pause ends at the UTC day, and a
 liveness pause (§4.3) is cleared by calling `resource_subscribe` again with the
 same arguments.
+
+Each call answers inside a bound below its tool's own timeout, the waits for the
+service's two locks included: 120 s for a subscribe, whose tool waits 150 s, and
+20 s for a removal, whose tool and `kirocrew resource-subs remove` wait 30 s. So
+no call is reported as failed while its change goes on to commit. A call that
+cannot take a lock inside its bound, because another subscription change still
+holds it, is refused with `gateway_unavailable` before anything moves, and may be
+retried. A store write starts only while its call still has time left. A refused
+subscribe finishes undoing what it started before it answers; only closing the
+connection of a holder it already detached may finish afterwards. A removal that
+commits is answered as removed even when the holder's unsubscribe does not finish
+inside the bound: the holder then ends its gateway session and reconnects holding
+only the subscriptions that remain.
 
 #### 4.9.4 Moving onto the webhook RFC
 

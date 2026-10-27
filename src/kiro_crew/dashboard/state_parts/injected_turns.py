@@ -19,6 +19,12 @@ from kiro_crew.deny_guidance import remediation_for
 # owns the complete envelope; every delivery surface passes it through unchanged.
 MONITOR_WAKE_PREFIX = "[Monitor wake]"
 
+# A wake for a subscription: an MCP resource subscription today
+# (rfc-mcp-resource-subscriptions.md §4.9.2), the webhook subscriptions'
+# ``session`` consumer once rfc-webhook-subscriptions PR 1 lands and reuses it.
+WEBHOOK_WAKE_PREFIX = "[Webhook wake]"
+WEBHOOK_WAKE_END = "[End of webhook wake]"
+
 
 # Cron notification wrapper format — used by handlers.py (create), chat.py (detect), transcriptRendering.tsx (render)
 CRON_NOTIFY_PREFIX = "[Cron notification from "

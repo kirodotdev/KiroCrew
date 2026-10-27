@@ -12290,7 +12290,8 @@
         "agent_switch_blocked_crew_mode": "Der Wechsel zu {{agent}} wurde blockiert — dieser Chat ist im Crew Mode, der bei seinem Dirigenten bleibt. Die nächste Runde startet neu auf dem Dirigenten.",
         "crew_name_undispatchable": "Der Crew-Name dieses Threads kann nicht verwendet werden. Benenne das Crew-Mitglied um oder erstelle es neu.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
-        "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren."
+        "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren.",
+        "resource_wake_budget_paused": "Das Ressourcenabo {{subscription}} auf {{server}} hat seine {{limit}} Weckaufrufe für {{day}} (UTC) erreicht und pausiert bis zum nächsten UTC-Tag. Updates aus der Zwischenzeit werden nach der Pause zu einem Weckaufruf zusammengefasst."
       },
       "turnBlock": {
         "earlier_step_one": "{{count}} früherer Schritt",

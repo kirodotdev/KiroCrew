@@ -85,6 +85,7 @@ _ACTOR_TO_TRIGGER: dict[str, str] = {
     "cron": TRIGGER_CRON,
     "autonudge": TRIGGER_MONITOR,
     "subagent": TRIGGER_SUBAGENT,
+    "resource": TRIGGER_WEBHOOK,
     "gateway": TRIGGER_SYSTEM,
     "other": TRIGGER_OTHER,
 }

@@ -121,6 +121,7 @@ export const selectProjectChipLocked = (state: RootState, slot: string | null): 
 const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
   cron: true,
   mcp_app: true,
+  resource: true,
   recovery: true,
   synthesis: true,
   user_replay: true,

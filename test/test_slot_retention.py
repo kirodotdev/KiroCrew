@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from chat_test_helpers import _make_state
+from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import slot_retention
 from kiro_crew.dashboard.chat_persistence import (
@@ -25,6 +27,12 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
+from kiro_crew.mcp_gateway.resource_subscription_store import (
+    STORE_DIR_LEAF,
+    STORE_LEAF,
+    HolderRecord,
+    ResourceSubscriptionStore,
+)
 
 # ── Restore budget ──
 
@@ -154,6 +162,200 @@ def _sweep_state(tmp_path, monkeypatch, *, fill_to: int):
         filler.append("user", "msg", ts=fresh)
         filler.drain()
     return state, never_done
+
+
+# ── Resource subscriptions ──
+
+#: The idle tab whose session the rows subscribe, and an idle tab none subscribes.
+_SUBSCRIBED_TAB = "idle"
+_FREE_TAB = "idle-other"
+_KEPT = {_SUBSCRIBED_TAB}
+_BOTH_ARCHIVED = [_SUBSCRIBED_TAB, _FREE_TAB]
+
+
+def _holder(session_key: str) -> HolderRecord:
+    return HolderRecord(
+        session_key=session_key,
+        channel_id="",
+        server="files",
+        register={},
+        initialize={},
+        uris=["file:///watched"],
+    )
+
+
+class _ServiceDouble:
+    """What the idle selection reads off ``ResourceSubscriptionService``."""
+
+    def __init__(self, *, started: bool, store_unreadable: bool, subscribed: bool) -> None:
+        self.started = started
+        self.store_unreadable = store_unreadable
+        self._records = [_holder(f"dashboard:{_SUBSCRIBED_TAB}")] if subscribed else []
+
+    def records(self) -> list[HolderRecord]:
+        return list(self._records)
+
+
+def _subscription_world(tmp_path, monkeypatch, *, enabled: bool, store: str):
+    """Set the switch, and leave the data home's store absent, empty, holding a record or unreadable."""
+    from kiro_crew.config import live
+
+    config = MagicMock()
+    config.mcp_gateway.resource_subscriptions.enabled = enabled
+    monkeypatch.setattr(live, "snapshot", lambda: config)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_api.slot_lifecycle._retire_resource_subscriptions",
+        AsyncMock(),
+    )
+    home = tmp_path / "data-home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    path = home / STORE_DIR_LEAF / STORE_LEAF
+    if store == "unreadable":
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xff not a subscription store")
+    elif store in ("empty", "record"):
+        disk = ResourceSubscriptionStore(path)
+        disk.put(_holder(f"dashboard:{_SUBSCRIBED_TAB}"))
+        if store == "empty":
+            disk.remove(f"dashboard:{_SUBSCRIBED_TAB}")
+
+
+def _idle_tab(state, name: str) -> None:
+    slot = state.get_or_create_slot(name)
+    slot.append("user", "msg", ts=(_NOW - timedelta(days=30)).isoformat())
+    slot.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module_loaded", "enabled", "service", "store", "expected_keys", "expected_archived"),
+    [
+        pytest.param(False, False, "", "record", set(), _BOTH_ARCHIVED, id="module-absent"),
+        pytest.param(True, False, "", "record", set(), _BOTH_ARCHIVED, id="switch-off"),
+        pytest.param(True, True, "started", "absent", _KEPT, [_FREE_TAB], id="started-service"),
+        pytest.param(True, True, "", "record", _KEPT, [_FREE_TAB], id="no-service-store-record"),
+        pytest.param(True, True, "", "empty", set(), _BOTH_ARCHIVED, id="no-service-store-empty"),
+        pytest.param(True, True, "", "absent", set(), _BOTH_ARCHIVED, id="no-service-no-store"),
+        pytest.param(True, True, "", "unreadable", None, [], id="no-service-store-unreadable"),
+        pytest.param(True, True, "starting", "record", _KEPT, [_FREE_TAB], id="service-starting"),
+        pytest.param(
+            True, True, "unreadable-start", "record", _KEPT, [_FREE_TAB], id="unreadable-start"
+        ),
+        pytest.param(False, True, "", "record", _KEPT, [_FREE_TAB], id="module-absent-switch-on"),
+    ],
+)
+async def test_resource_subscription_state_controls_idle_archival(
+    tmp_path, monkeypatch, module_loaded, enabled, service, store, expected_keys, expected_archived
+):
+    """Archival never takes a tab whose session holds a stored subscription.
+
+    A started service that read its store answers from memory. Otherwise, with
+    the switch on, the store on disk answers, and only a store that cannot be
+    read keeps every tab. With the switch off nothing is imported or read.
+    """
+    _subscription_world(tmp_path, monkeypatch, enabled=enabled, store=store)
+    module_name = slot_retention._RESOURCE_SUBSCRIPTIONS_MODULE
+    if module_loaded:
+        from kiro_crew.mcp_gateway import resource_subscriptions
+
+        double = None
+        if service:
+            double = _ServiceDouble(
+                started=service != "starting",
+                store_unreadable=service == "unreadable-start",
+                subscribed=service == "started",
+            )
+        monkeypatch.setattr(resource_subscriptions, "active_service", lambda: double)
+    else:
+        import kiro_crew.mcp_gateway as mcp_gateway
+
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+        monkeypatch.delattr(mcp_gateway, "resource_subscriptions", raising=False)
+
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    _idle_tab(state, _FREE_TAB)
+    subscribed = await slot_retention.resource_subscribed_slot_keys()
+    if not enabled:
+        assert (module_name in sys.modules) is module_loaded
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+
+    assert archived == expected_archived
+    for name in _BOTH_ARCHIVED:
+        assert (name in state._slots) is (name not in expected_archived)
+    assert subscribed == expected_keys
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_a_tab_subscribed_after_the_selection(tmp_path, monkeypatch):
+    """A service that starts mid-pass and takes a subscribe is read again before the pop."""
+    from kiro_crew.mcp_gateway import resource_subscriptions
+
+    _subscription_world(tmp_path, monkeypatch, enabled=True, store="absent")
+    services: list[_ServiceDouble | None] = [None]
+    monkeypatch.setattr(resource_subscriptions, "active_service", lambda: services[0])
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    real_select = slot_retention.select_idle_slot_keys
+
+    def _select_then_subscribe(*args, **kwargs):
+        picked = real_select(*args, **kwargs)
+        services[0] = _ServiceDouble(started=True, store_unreadable=False, subscribed=True)
+        return picked
+
+    monkeypatch.setattr(slot_retention, "select_idle_slot_keys", _select_then_subscribe)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == []
+    assert _SUBSCRIBED_TAB in state._slots
+
+
+@pytest.mark.asyncio
+async def test_cleanup_selects_with_the_stored_subscriptions_while_no_service_runs(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.mcp_gateway import resource_subscriptions
+
+    _subscription_world(tmp_path, monkeypatch, enabled=True, store="record")
+    monkeypatch.setattr(resource_subscriptions, "active_service", lambda: None)
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    _idle_tab(state, _FREE_TAB)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post(
+            "/api/chat/slots/cleanup", json={"max_inactive_days": 3, "dry_run": True}
+        )
+        data = await resp.json()
+    never_done.cancel()
+    assert _FREE_TAB in data["keys"]
+    assert _SUBSCRIBED_TAB not in data["keys"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_keeps_a_tab_subscribed_after_the_selection(tmp_path, monkeypatch):
+    """A subscribe that commits while Clean up archives other tabs is read before each pop."""
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.mcp_gateway import resource_subscriptions
+
+    _subscription_world(tmp_path, monkeypatch, enabled=True, store="absent")
+    services: list[_ServiceDouble | None] = [None]
+    monkeypatch.setattr(resource_subscriptions, "active_service", lambda: services[0])
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    _idle_tab(state, _FREE_TAB)
+    real_select = chat_handlers.select_idle_slot_keys
+
+    def _select_then_subscribe(*args, **kwargs):
+        picked = real_select(*args, **kwargs)
+        services[0] = _ServiceDouble(started=True, store_unreadable=False, subscribed=True)
+        return picked
+
+    monkeypatch.setattr(chat_handlers, "select_idle_slot_keys", _select_then_subscribe)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
+        data = await resp.json()
+    never_done.cancel()
+    assert _FREE_TAB in data["keys"]
+    assert _SUBSCRIBED_TAB not in data["keys"]
+    assert _SUBSCRIBED_TAB in state._slots
 
 
 @pytest.mark.asyncio
@@ -336,7 +538,9 @@ def _select(state, **kwargs) -> list[str]:
 def _recheck_keeps(state, name: str) -> bool:
     from kiro_crew.dashboard.chat_handlers import SlotCloseError
 
-    check = slot_retention._still_idle_check(state, state._slots[name], name, _CUTOFF)
+    check = slot_retention._still_idle_check(
+        state, state._slots[name], name, _CUTOFF, subscribed=set()
+    )
     try:
         check()
     except SlotCloseError:

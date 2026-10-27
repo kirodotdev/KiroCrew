@@ -635,7 +635,11 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#:
+#: Raised by 2, from 33,723, for the ``mcp-resource-subscriptions`` leaf in
+#: ``paths_lists`` (the resource-subscription holder store): the leaf and its
+#: one-line reason. No rule changed.
+_PACKAGE_LINE_BUDGET = 33_725
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

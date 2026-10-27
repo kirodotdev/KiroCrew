@@ -76,7 +76,9 @@ _UNCLASSIFIED_LABELS = frozenset({""})
 #: A reader never gates on this field, so a producer landing later widens the
 #: set without breaking a reader built against the narrower one -- unlike an
 #: entry TYPE, which aborts reconstruction when a reader does not know it.
-ACTORS = frozenset({"user", "app", "crew", "cron", "autonudge", "subagent", "gateway", "other"})
+ACTORS = frozenset(
+    {"user", "app", "crew", "cron", "autonudge", "subagent", "resource", "gateway", "other"}
+)
 
 
 def close_open_tool_calls(
