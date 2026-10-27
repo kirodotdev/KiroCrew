@@ -194,6 +194,9 @@ class TestSetSlackLinkEvictsPriorOwner:
         with patch.object(session_map, "_save") as mock_save:
             session_map.set_slack_link("dash:b", "ts-1", "C-1")
             assert mock_save.call_count == 1
+        # The one save carries both halves: the old owner evicted, the new one indexed.
+        assert session_map.get_slack_link("dash:a") == (None, None)
+        assert session_map.get_session_for_thread("ts-1") == "dash:b"
 
     def test_prior_owner_missing_entry_is_tolerated(self, session_map):
         """A dangling reverse-index entry (no backing _data entry) must not crash."""

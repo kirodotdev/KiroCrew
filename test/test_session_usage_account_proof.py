@@ -122,6 +122,9 @@ class TestCredentialSelectionIsAnchored:
         ):
             await sessions_mod._fetch_usage_bg()
         assert fetch.call_args.kwargs.get("expected_arn") == self.ARN
+        # The anchored read is the one published, labelled with that same account.
+        assert sessions_mod._usage_cache.get("credits_used") == 1.0
+        assert sessions_mod._usage_cache.get("email") == "me@corp.com"
 
     @pytest.mark.asyncio
     async def test_api_branch_re_resolves_whoami_adjacent_to_the_publish(self):

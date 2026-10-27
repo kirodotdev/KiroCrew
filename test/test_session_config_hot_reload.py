@@ -429,9 +429,11 @@ class TestCleanupLoopRereadsPolicy:
         mgr, _ = _make_manager(timeout_secs=30)
         cleanup = mgr._cleanup_boundary()
         with patch.object(cleanup._deps.logger, "warning") as warn:
-            cleanup._adopt_idle_policy()
-            cleanup._adopt_idle_policy()
-            cleanup._adopt_idle_policy()
+            timeouts = []
+            for _ in range(3):
+                cleanup._adopt_idle_policy()
+                timeouts.append(cleanup.state.idle_timeout)
+        assert timeouts == [60, 60, 60]  # every tick still clamps; only the log is once
         assert warn.call_count == 1
 
     @pytest.mark.asyncio

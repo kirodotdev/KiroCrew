@@ -325,6 +325,9 @@ class TestPoolAgentResolvesLikeASession:
         await mgr._fill_warm_pool()
 
         assert factory.call_args.kwargs.get("agent") == "kirocrew"
+        claimed = mgr._claim_from_pool("kirocrew")
+        assert claimed is not None
+        assert mgr._warm_pool.qsize() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +586,9 @@ class TestGetOrCreatePoolIntegration:
         )
 
         # Pool skipped
+        assert provider is not pooled
+        assert is_new is True
+        assert mgr._warm_pool.qsize() == 1
         mgr._drain_and_claim.assert_not_awaited()
         # Factory called for cold start, cwd forwarded
         factory.assert_called_once()
@@ -598,8 +604,13 @@ class TestGetOrCreatePoolIntegration:
         mgr._warm_pool.put_nowait((pooled, time.monotonic()))
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
 
-        await mgr.get_or_create("side:parent:1", agent="kirocrew", side_read_only=True)
+        provider, is_new, _ = await mgr.get_or_create(
+            "side:parent:1", agent="kirocrew", side_read_only=True
+        )
 
+        assert provider is not pooled
+        assert is_new is True
+        assert mgr._warm_pool.qsize() == 1  # the pooled child is left for a later claim
         mgr._drain_and_claim.assert_not_awaited()
         factory.assert_called_once()
         assert factory.call_args.kwargs.get("side_read_only") is True
