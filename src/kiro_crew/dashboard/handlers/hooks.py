@@ -767,6 +767,8 @@ async def _run_hook_inner(
             message,
             is_new,
             session_key,
+            # Unattended: a webhook turn has no user reading it live.
+            interactive=False,
             agent=agent,
             resumed=resumed,
             # Fallback label only: with the session's provider passed below,

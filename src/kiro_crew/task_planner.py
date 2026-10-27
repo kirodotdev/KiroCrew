@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
+from kiro_crew.context_assembly.budget import window_for_provider_client
 from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import _extract_json_of_type, _steer_host_deny
@@ -319,9 +320,12 @@ async def decompose(
                 prompt,
                 is_new,
                 session_key,
+                # Headless: no user reads the decomposition turn live.
+                interactive=False,
                 agent=agent or None,
                 project=work_dir or None,
                 memory_store=memory_store,
+                model_window=window_for_provider_client(client),
                 context_provider=client,
                 resumed=_resumed,
             )
