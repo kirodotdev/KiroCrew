@@ -198,9 +198,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         preserved_data_awaits,
     )
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
+        _RMTREE_BACKOFF_SECONDS,
+        _RMTREE_MAX_ATTEMPTS,
+        _SHARING_VIOLATION_WINERRORS,
         _drop_trust_grant,
         _has_trust_grant,
         _restore_trust_grant,
+        _rmtree_app_dir,
         _trust_grant_local,
         _trust_grant_repository,
         trust_grant_removal_blocked,
@@ -270,6 +274,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,
+        on_event_loop,
     )
     from kiro_crew.config.loader import (  # noqa: F401
         ConfigReadError,
