@@ -156,6 +156,9 @@ class Launch:
         self.sensitive_dir_ids = plan["sensitive_dir_ids"]
         self.private_dirs = plan["private_dirs"]
         self.private_dir_ids = plan["private_dir_ids"]
+        #: Directories bound read-write over themselves before any seal, so they cannot
+        #: be renamed or removed. Absent in an older payload -> pin nothing.
+        self.pin_dirs = plan.get("pin_dirs", ())
         self.readonly_dirs = plan["readonly_dirs"]
         self.parent_pins = plan["parent_pins"]
         #: The ``apps/<app>`` folder of each credential-masking app, pinned after every mask.
@@ -524,13 +527,15 @@ def _stand_in_mkstemp(launch):
 def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
-    Windows are staged before anything is masked, the operator's read-only layer lands
-    next so every crew rule is placed on top of it, the seals' parents are pinned before
-    the seals, read-only seals land before the hides placed on top of them, carve-outs
-    after the seals they punch through, the exposed files are restored into their empty
-    masks, the single files and ``~/.ssh`` are masked, and the folder of each app that
-    declares a credential mask is pinned last, over masks already in place.
+    The pins land first, under every other mount. Windows are staged before anything
+    is masked, the operator's read-only layer lands next so every crew rule is placed
+    on top of it, the seals' parents are pinned before the seals, read-only seals land
+    before the hides placed on top of them, carve-outs after the seals they punch
+    through, the exposed files are restored into their empty masks, the single files
+    and ``~/.ssh`` are masked, and the folder of each app that declares a credential
+    mask is pinned last, over masks already in place.
     """
+    pin_dirs(launch)
     stage_private_windows(launch)
     seal_operator_readonly(launch)
     pin_seal_parents(launch)
@@ -556,6 +561,7 @@ def run_child(launch, argv):
     stage_stand_ins_privately(launch)
     place_masks(launch)
     retire_stand_in_stage(launch)
+    reenter_pinned_cwd(launch)
     confirm_crew_home_aliases(launch)
     scrub_env(launch)
     drop_privileges(launch)
@@ -657,9 +663,11 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     mask_sensitive,
     mask_sensitive_files,
     mask_ssh_keys,
+    pin_dirs,
     pin_mask_parents,
     pin_seal_parents,
     preread_exposed_files,
+    reenter_pinned_cwd,
     restore_exposed_files,
     seal_operator_readonly,
     seal_readonly,

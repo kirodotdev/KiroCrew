@@ -16,7 +16,8 @@ Never edit the live checkout or start/stop the live gateway from a feature sessi
 ```bash
 # From the main clone; skip creation when already in the assigned worktree.
 git fetch origin main
-git worktree add ../kirocrew-wt-<name> -b feat/<name> origin/main
+# --no-track: the sandbox seals the main clone's .git/config, which tracking writes.
+git worktree add --no-track ../kirocrew-wt-<name> -b feat/<name> origin/main
 # A pod worktree never goes under $KIROCREW_SCRATCH: pod_up can't see it.
 cd ../kirocrew-wt-<name>
 python3 -m venv .venv

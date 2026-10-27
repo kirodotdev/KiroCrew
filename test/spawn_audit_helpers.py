@@ -284,6 +284,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``require_crew_sandbox``, so the file an agent may have planted is run
         # inside Kiro Crew's own sandbox or not at all. No process is created here.
         "kiro_cli_path_probe.py::_sandboxed_version",
+        # The sandbox's own pre-spawn gather of the gateway checkout's git control
+        # files: ``git config --file <f> --includes --path --show-origin -z
+        # --get-regexp <fixed keys>``. The binary is the host's git and the argv is
+        # fixed; the only paths are the checkout's own config files and the include
+        # files they name. Listing config executes nothing a config names, GIT_DIR /
+        # GIT_COMMON_DIR are pinned (no repository discovery, no ``commondir``), and
+        # system and global config are off. It runs in the gateway BEFORE the sandbox
+        # exists, to decide what to seal, so it cannot route through it.
+        "sandbox_git_control.py::_config_closure",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's

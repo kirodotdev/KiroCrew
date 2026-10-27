@@ -602,6 +602,11 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if guard in caller_after_masks:
             app_dir_pins.setdefault(os.path.realpath(guard), guard)
     caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
+
+    # Call-time import, so the facade's census of this module's names is unchanged.
+    from kiro_crew.sandbox_git_control import resolved_git_control_layout
+
+    git_control = resolved_git_control_layout()
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
@@ -683,6 +688,9 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         readonly_ancestor_guards=readonly_ancestor_guards,
         caller_ancestor_guards=caller_ancestor_guards,
         mask_parent_pins=mask_parent_pins,
+        git_control_pins=git_control.pins if namespace else (),
+        git_control_readonly=git_control.readonly,
+        git_control_guards=() if namespace else git_control.guards,
         carveout_probes=carveout_probes,
         operator_readonly_probes=operator_readonly_probes,
         operator_exception_probes=operator_exception_probes,

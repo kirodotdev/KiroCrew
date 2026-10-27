@@ -55,6 +55,28 @@ def _no_host_ssh_probe(monkeypatch):
 
 TIERS = ("standard", "cc", "strict")
 
+
+@pytest.fixture(autouse=True)
+def _plain_gateway_checkout(_floor_monkeypatch):
+    """Pin the gateway checkout's git layout to one plain checkout.
+
+    The live layout follows whatever checkout runs the tests (a plain clone in CI, a
+    linked worktree on a developer host), so the population would differ by host.
+    """
+    from kiro_crew import sandbox_git_control as gc
+
+    gitdir = "/srv/checkout/.git"
+    layout = gc.GitControlLayout(
+        pins=("/srv/checkout", gitdir),
+        readonly=tuple(
+            f"{gitdir}/{leaf}"
+            for leaf in ("hooks", "info", "config", "config.worktree", "commondir")
+        ),
+        guards=(),
+    )
+    _floor_monkeypatch.setattr(gc, "resolved_git_control_layout", lambda: layout)
+
+
 #: Protected names held by an ENCLOSING stand-in mask today. The scratch
 #: index stays behind the whole scratch-root mask for the namespace lifetime,
 #: including after the gateway atomically republishes the index.
@@ -316,6 +338,14 @@ class TestLeafOnlyNamesHaveNoBetterHold:
             "~/.config/gcloud",
             "~/.config/gh",
             "~/.kiro/crew-auth-staging",
+            # The gateway checkout's git control files, as ``_plain_gateway_checkout``
+            # pins them: they sit in the git directory beside the index, objects and
+            # refs that in-sandbox commits write, so no enclosing mask can hold them.
+            "/srv/checkout/.git/commondir",
+            "/srv/checkout/.git/config",
+            "/srv/checkout/.git/config.worktree",
+            "/srv/checkout/.git/hooks",
+            "/srv/checkout/.git/info",
         }
     )
 
