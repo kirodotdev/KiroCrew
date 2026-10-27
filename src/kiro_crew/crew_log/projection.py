@@ -328,12 +328,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.crew_log.projection_session import (  # noqa: F401
         SessionProjections,
+        _above,
         _cells_as_checkpoints,
+        _custody_kept,
         _drive_session,
         _fold_attempt,
         _HeldCheckpoints,
         _note_session_fold_origin,
         _persisted,
+        _reached_point,
         _resume_from_disk,
         _session_registry,
         _SessionFold,
@@ -695,6 +698,11 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
     )
     from kiro_crew.crew_log.otel_session_tree_fold import (  # noqa: F401
         depth_observation,
+    )
+    from kiro_crew.crew_log.prefix_extent import (  # noqa: F401
+        PrefixExtent,
+        extent_at,
+        extent_holds,
     )
     from kiro_crew.crew_log.schema import (  # noqa: F401
         KIND_SESSION,
