@@ -6,7 +6,7 @@ import { setUpdateProgress } from './store/dashboardSlice'
 // module below that reads it (`shell/nav/navItems.ts` computes `NAV_ITEMS`).
 import './surfaces/builtins'
 import { surfaceLabel } from './surfaces/registry'
-import { setAgentSwitchNotice } from './store/chatSlice'
+import AgentSwitchNoticeBanner from './components/AgentSwitchNoticeBanner'
 import { GuideProvider } from './guide/GuideContext'
 import { metricColor } from './utils/metricColor'
 import { railWidthFor } from './hooks/useRailWidth'
@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './shell/nav/mobileConnect'
@@ -301,7 +301,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, dispatch, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, updateAvailable, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -692,12 +692,7 @@ export default function App() {
 
       <ShellHeader shell={shell} />
 
-      {agentSwitchNotice && (
-        <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-          <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
-          <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
-        </div>
-      )}
+      {agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
 
       {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
       <ReportProblemModal open={reportProblemOpen} onClose={() => setReportProblemOpen(false)} />

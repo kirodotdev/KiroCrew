@@ -19220,7 +19220,9 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "当前有一轮对话正在进行 — 等它结束后再试。",
-      "model_deferred": "{{model}} 从你的下一条消息开始接手。这条回复会用开始时的模型完成。"
+      "model_deferred": "{{model}} 从你的下一条消息开始接手。这条回复会用开始时的模型完成。",
+      "member_needs_new_chat": "{{name}} 有自己的记忆，只能开始新的聊天。此聊天保留当前代理。",
+      "new_chat_with": "与 {{name}} 新建聊天"
     },
     "channelOrigin": {
       "direct_message": "私信"

@@ -19840,7 +19840,9 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "Um turno está em andamento — tente novamente quando ele terminar.",
-      "model_deferred": "{{model}} assume a partir da sua próxima mensagem. Esta resposta termina com o modelo com que começou."
+      "model_deferred": "{{model}} assume a partir da sua próxima mensagem. Esta resposta termina com o modelo com que começou.",
+      "member_needs_new_chat": "{{name}} tem memória própria, por isso só pode iniciar um novo chat. Este chat mantém o agente atual.",
+      "new_chat_with": "Novo chat com {{name}}"
     },
     "channelOrigin": {
       "direct_message": "Mensagem direta"

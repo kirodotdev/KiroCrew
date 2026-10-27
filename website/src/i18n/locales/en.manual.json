@@ -9262,7 +9262,9 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "A turn is running — try again when it finishes.",
-      "model_deferred": "{{model}} takes over from your next message. This reply finishes on the model it started with."
+      "model_deferred": "{{model}} takes over from your next message. This reply finishes on the model it started with.",
+      "member_needs_new_chat": "{{name}} has its own memory, so it can only start a new chat. This chat keeps its current agent.",
+      "new_chat_with": "New chat with {{name}}"
     },
     "cronUtils": {
       "create": "Create",

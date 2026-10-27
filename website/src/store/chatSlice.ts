@@ -28,6 +28,7 @@ import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { initialState, type ChatState } from './chat/state'
+import type { AgentSwitchNotice } from '../utils/agentSwitchFeedback'
 import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
 import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
@@ -923,10 +924,11 @@ const chatSlice = createSlice({
      *  showing that slot appends it to the live draft; passing null clears the
      *  field after it is consumed. */
     stageToMainComposer(state, action: PayloadAction<{ slot: string; text: string } | null>) { state.mainComposerAppend = action.payload },
-    setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
+    setAgentSwitchNotice(state, action: PayloadAction<string | AgentSwitchNotice | null>) {
       // Always create a fresh value so repeating the same refusal restarts the
       // App shell's expiry effect instead of inheriting the previous timer.
-      state.agentSwitchNotice = action.payload === null ? null : { message: action.payload }
+      const p = action.payload
+      state.agentSwitchNotice = p === null ? null : typeof p === 'string' ? { message: p } : { ...p }
     },
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoicePreparing(state, action: PayloadAction<boolean>) { state.voicePreparing = action.payload },

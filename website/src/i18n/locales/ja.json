@@ -19220,7 +19220,9 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。",
-      "model_deferred": "{{model}} は次のメッセージから引き継ぎます。この返答は開始時のモデルのまま完了します。"
+      "model_deferred": "{{model}} は次のメッセージから引き継ぎます。この返答は開始時のモデルのまま完了します。",
+      "member_needs_new_chat": "{{name}} には専用のメモリがあるため、新しいチャットでのみ使用できます。このチャットのエージェントは変更されません。",
+      "new_chat_with": "{{name}} と新しいチャット"
     },
     "channelOrigin": {
       "direct_message": "ダイレクトメッセージ"

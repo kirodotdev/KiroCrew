@@ -3,7 +3,7 @@ import { useMutation, useQuery, type QueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { useAppDispatch } from '../../store'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
-import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice } from '../../utils/agentSwitchFeedback'
 
 /* The per-session auto-compact threshold behind the context popover's slider:
    read lazily on open, written through one per-slot chain so writes commit in
@@ -72,9 +72,9 @@ export function useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClien
       // intent unapplied with no explanation — and with the popover closed,
       // no visible change at all. The toast is transient feedback only; the
       // in-popover ErrorNotice (autoCompactError) is the error surface.
-      const msg = agentSwitchFailureMessage(err)
-      dispatch(setAgentSwitchNotice(msg))
-      setAutoCompactError(msg)
+      const notice = agentSwitchErrorNotice(err)
+      dispatch(setAgentSwitchNotice(notice))
+      setAutoCompactError(notice.message)
     },
   })
   const pushAutoCompact = useCallback((pct: number | null) => {
@@ -119,7 +119,7 @@ export function useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClien
         // The component is gone but the store is not: surface the failure
         // like the sibling settings do, or the user's last change before
         // navigating away silently never applies.
-        dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(err)))
+        dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(err)))
       })
     }
   }, [queryClient, enqueueAutoCompactWrite, dispatch])

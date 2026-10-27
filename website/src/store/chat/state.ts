@@ -8,6 +8,7 @@ import type { SubagentQueuedReason } from '../../pages/chat/subagentQueuedReason
 import type { McpAppRenderPayload } from '../../lib/mcpAppSrcdoc'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { ErrorReport } from '../../utils/errorReport'
+import type { AgentSwitchNotice } from '../../utils/agentSwitchFeedback'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
 import type { ParkedThinking } from './thinking'
 
@@ -418,7 +419,7 @@ export interface ChatState {
   /** Transient feedback for agent-rebind failures shared by the picker and
    *  global cycle shortcuts, and for a new chat that could not get its own
    *  session folder. The App shell owns rendering and expiry. */
-  agentSwitchNotice: { message: string } | null
+  agentSwitchNotice: AgentSwitchNotice | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean

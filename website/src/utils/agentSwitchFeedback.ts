@@ -28,6 +28,56 @@ export function isTurnInFlightError(error: unknown): boolean {
 }
 
 /**
+ * Whether *error* is the gateway's refusal to move a conversation that already
+ * has messages onto a crewmate with its own memory (HTTP 409,
+ * `member_memory_requires_new_conversation`). Same structural match as
+ * `isTurnInFlightError`.
+ */
+export function isMemberNeedsNewChatError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { status, body } = error as { status?: unknown; body?: unknown }
+  return (
+    status === 409
+    && typeof body === 'string'
+    && parseErrorCode(body) === 'member_memory_requires_new_conversation'
+  )
+}
+
+/** What the shared switch notice shows. `newChatAgent` names a crewmate the
+ *  notice offers to open a new chat with. `error` marks a failure or refused
+ *  request, which the notice renders through ErrorNotice with its agent
+ *  hand-off; without it the message is plain status text. */
+export interface AgentSwitchNotice {
+  message: string
+  newChatAgent?: string
+  error?: true
+}
+
+/** The notice for a failed agent, model, effort or setting write: the
+ *  `agentSwitchFailureMessage` copy, marked as an error. */
+export function agentSwitchErrorNotice(error: unknown): AgentSwitchNotice {
+  return { message: agentSwitchFailureMessage(error), error: true }
+}
+
+/**
+ * The notice for a failed pick of *name*. A crewmate refused because this chat
+ * already has messages gets copy that names it, says the chat kept its agent,
+ * and carries the crewmate so the notice can offer a new chat with it. The pick
+ * was still refused, so the notice is an error. Any other failure is
+ * `agentSwitchErrorNotice`.
+ */
+export function agentSwitchFailureNotice(error: unknown, name: string): AgentSwitchNotice {
+  if (isMemberNeedsNewChatError(error) && name) {
+    return {
+      message: i18nT('utils.agentSwitchFeedback.member_needs_new_chat', { name }),
+      newChatAgent: name,
+      error: true,
+    }
+  }
+  return agentSwitchErrorNotice(error)
+}
+
+/**
  * Convert an agent-switch failure into copy the chat surface can show.
  *
  * A `turn_in_flight` 409 gets its own copy first: the dropdown picker is

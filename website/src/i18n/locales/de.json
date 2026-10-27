@@ -19530,7 +19530,9 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "Ein Zug läuft gerade — versuche es erneut, sobald er abgeschlossen ist.",
-      "model_deferred": "{{model}} übernimmt ab deiner nächsten Nachricht. Diese Antwort wird mit dem Modell beendet, mit dem sie begonnen hat."
+      "model_deferred": "{{model}} übernimmt ab deiner nächsten Nachricht. Diese Antwort wird mit dem Modell beendet, mit dem sie begonnen hat.",
+      "member_needs_new_chat": "{{name}} hat ein eigenes Gedächtnis und kann nur einen neuen Chat beginnen. Dieser Chat behält seinen aktuellen Agenten.",
+      "new_chat_with": "Neuer Chat mit {{name}}"
     },
     "channelOrigin": {
       "direct_message": "Direktnachricht"

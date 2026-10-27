@@ -58,6 +58,7 @@ vi.mock('../pages/chat/composerFocus', async (importOriginal) => ({
 import { setActiveSlot } from '../store/chatSlice'
 import { usePaletteActions } from '../components/commandPalette/paletteActions'
 import { useShellKeyboard } from '../shell/shortcuts/shellKeyboard'
+import { setAgentSwitchNotice } from '../store/chatSlice'
 import EmbedTabStrip from '../components/EmbedTabStrip'
 
 const ORIGIN = 'chat-a'
@@ -244,6 +245,29 @@ describe('Alt+Shift+N', () => {
     press()
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(2))
     await act(async () => { held.resolve({ key: NEW }) })
+  })
+})
+
+describe('agent-switch notice expiry', () => {
+  function harness() {
+    const store = makeStore(ORIGIN)
+    renderHook(() => useShellKeyboard({
+      toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
+      isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+    }), { wrapper: wrapper(store) })
+    return store
+  }
+  afterEach(() => { vi.useRealTimers() })
+
+  it('clears a plain notice after 6 s but keeps one that offers a new chat', () => {
+    vi.useFakeTimers()
+    const store = harness()
+    act(() => { store.dispatch(setAgentSwitchNotice({ message: 'refused', error: true })) })
+    act(() => { vi.advanceTimersByTime(6000) })
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
+    act(() => { store.dispatch(setAgentSwitchNotice({ message: 'new chat?', newChatAgent: 'writer' })) })
+    act(() => { vi.advanceTimersByTime(60000) })
+    expect(store.getState().chat.agentSwitchNotice).toEqual({ message: 'new chat?', newChatAgent: 'writer' })
   })
 })
 

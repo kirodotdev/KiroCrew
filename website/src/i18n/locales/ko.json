@@ -19220,7 +19220,9 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "턴이 진행 중입니다 — 완료된 후 다시 시도하세요.",
-      "model_deferred": "{{model}}이(가) 다음 메시지부터 이어받습니다. 이 답변은 시작할 때의 모델로 마무리됩니다."
+      "model_deferred": "{{model}}이(가) 다음 메시지부터 이어받습니다. 이 답변은 시작할 때의 모델로 마무리됩니다.",
+      "member_needs_new_chat": "{{name}}은(는) 자체 메모리가 있어 새 채팅에서만 시작할 수 있습니다. 이 채팅은 현재 에이전트를 유지합니다.",
+      "new_chat_with": "{{name}}과(와) 새 채팅"
     },
     "channelOrigin": {
       "direct_message": "다이렉트 메시지"

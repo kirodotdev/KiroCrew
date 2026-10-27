@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
-import { agentSwitchFailureMessage, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -209,9 +209,9 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       // performAgentSlotSwitch mirrors exactly what the response names.
       await performAgentSlotSwitch(slotKey, name, dispatch, kind)
     } catch (e) {
-      const msg = agentSwitchFailureMessage(e)
-      dispatch(setAgentSwitchNotice(msg))
-      setSwitchError(msg)
+      const notice = agentSwitchFailureNotice(e, name)
+      dispatch(setAgentSwitchNotice(notice))
+      setSwitchError(notice.message)
     }
   }, [dispatch, slotKey])
   const switchModel = useCallback(async (name: string) => {
@@ -272,9 +272,9 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       // Same failure surface as switchAgent above: the shared notice toast,
       // plus the in-pane notice (the toast alone would be the only report of
       // a write that did not persist).
-      const msg = agentSwitchFailureMessage(e)
-      dispatch(setAgentSwitchNotice(msg))
-      setSwitchError(msg)
+      const notice = agentSwitchErrorNotice(e)
+      dispatch(setAgentSwitchNotice(notice))
+      setSwitchError(notice.message)
       // Keep the rejected backend value available in developer diagnostics.
       // eslint-disable-next-line no-console
       console.error('[ChatPane] switchModel failed', e)
