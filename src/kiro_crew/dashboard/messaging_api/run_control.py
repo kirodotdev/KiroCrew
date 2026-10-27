@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _run_belongs_to_caller,
         _sel,
         _spawn_on_loop,
+        _stopped_before_start,
         body_int,
         dashboard_slot_key,
         effective_session_key,
@@ -596,6 +597,11 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
         )
     if info.done and info.error:
         return web.json_response({"error": info.error}, status=400)
+    # Stopped before it started: nothing ran, so the claim is left pending for
+    # the caller's ``finally`` to release and the failed run stays retryable.
+    stopped = _stopped_before_start(info)
+    if stopped is not None:
+        return stopped
     state.subagents.settle_retry(old, info.id)
     logger.info("Subagent %s retried as %s (POST /api/spawn/{id}/retry)", agent_id, info.id)
     return web.json_response({"id": info.id, "retried_from": agent_id, "status": "spawned"})

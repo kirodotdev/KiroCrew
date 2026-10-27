@@ -75,7 +75,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
-from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS
+from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS, stopped_before_start
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import edge
     from kiro_crew.cron import CronService
@@ -871,6 +871,8 @@ async def spawn_task_reply(
         # would stack a second clause on "was not started: ".
         reason = refusal.removeprefix("spawn refused: ").removeprefix("never started: ")
         return f"⚠️ Subagent `{info.id}` was not started: {_redact(reason)}"
+    if stopped_before_start(info):
+        return f"⚠️ Subagent `{info.id}` was stopped before it started; nothing ran."
     # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
     # accepted under its id but not running, and may not run for a long time;
     # say so with the gate's own sentence instead of announcing a start. The

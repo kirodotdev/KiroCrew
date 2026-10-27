@@ -4274,6 +4274,19 @@ and `subagent.AGENT_INTERNAL_CODE`, returned by `_validate_agent`, and
 forwarded by the handler without being respelled there, so each value has exactly
 one spelling in the tree.
 
+**Stopped before it started.** A row `spawn()` accepted whose claim the store then
+refuses because the run was stopped while it waited (`CLAIM_REFUSED`) comes back as a
+terminal placeholder: `queued`, `done` and `user_stopped`, with no `error`. Nothing
+runs and no card or completion event follows. `subagent_wait_reasons.stopped_before_start`
+is the one test for that record; a live run stopped during its start is not `queued`
+and keeps its id. Every surface that starts a run reads it: `POST /api/spawn`,
+`POST /api/spawn/{id}/continue` and `POST /api/spawn/{id}/retry` answer `409` with
+`code: "stopped_before_start"` instead of `status: "spawned"` (`POST /api/spawn`
+adds `counted: true`, since the submission was counted, and the retry route releases
+its claim, so the failed run stays retryable); the channel `spawn` command replies that
+the subagent was stopped before it started; and the app spawn SDK raises `SpawnError`
+instead of returning an id that never runs.
+
 `spawn_run` switches on those codes for the wave short-circuit (#4842): once the
 gateway has refused an agent name, the remaining members of a wave sharing it are
 not re-posted. Fail-soft in both version directions — an old client still
