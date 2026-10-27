@@ -181,13 +181,43 @@ class _WatchedLock:
         self._lock.release()
 
 
+class _SteppedClock:
+    """A ``time`` stand-in whose ``monotonic`` the test moves forward by hand.
+
+    ``started`` is set on the first ``monotonic`` call, which is the handler
+    setting its body deadline, so a test can act after that point instead of
+    guessing it from sleeps.
+    """
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self._offset = 0.0
+        self._lock = threading.Lock()
+
+    def monotonic(self) -> float:
+        with self._lock:
+            now = time.monotonic() + self._offset
+        self.started.set()
+        return now
+
+    def advance(self, secs: float) -> None:
+        with self._lock:
+            self._offset += secs
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
 def _plumb_gate(
-    handler: type, wait_secs: float, body_wait: float = _BOUND_SECS
+    handler: type,
+    wait_secs: float,
+    body_wait: float = _BOUND_SECS,
+    clock: Any = time,
 ) -> tuple[type, _WatchedLock]:
     watched = _WatchedLock()
     namespace = {
         "io": io,
-        "time": time,
+        "time": clock,
         "threading": SimpleNamespace(Lock=lambda: watched),
         "DECIDE_PATH": _DECIDE,
         "_BODY_MAX_BYTES": 1 << 20,
@@ -361,19 +391,22 @@ def test_plumb_a_trickled_body_is_cut_off_at_its_deadline() -> None:
 
 def test_plumb_a_body_finished_after_its_deadline_is_dropped() -> None:
     inference = _Inference()
-    handler, _ = _plumb_gate(_jevk5_shaped_handler(inference), 0.05, body_wait=2.0)
+    clock = _SteppedClock()
+    handler, _ = _plumb_gate(
+        _jevk5_shaped_handler(inference), 0.05, body_wait=_BOUND_SECS, clock=clock
+    )
     with _Server(handler) as server:
         late = _partial_post(server.port, length=14)
-        # Every gap is inside a single read's timeout (2 s), so only the body's
-        # one deadline can refuse it; the last byte lands 1 s past that deadline,
-        # which leaves a second of slack for a server thread that starts late.
-        gaps = ((0.5, b'"'), (0.5, b"x"), (0.5, b'"'), (1.5, b"}"))
-        for pause, data in gaps:
-            time.sleep(pause)
-            try:
-                late.sendall(data)
-            except OSError:
-                break
+        late.sendall(b'"x"')
+        # Once the handler has set its deadline, move its clock past it; the
+        # last byte then arrives well inside any real socket timeout, so only
+        # the body's one deadline can refuse it.
+        assert clock.started.wait(_BOUND_SECS)
+        clock.advance(_BOUND_SECS + 1.0)
+        try:
+            late.sendall(b"}")
+        except OSError:
+            pass
         assert _closed_by_server(late) == b""
 
     assert inference.calls == 0
@@ -478,7 +511,7 @@ def test_laya_refuses_a_decision_that_cannot_start_in_time_with_503() -> None:
         app = _AsgiInference()
         gate = _LayaGate(app, 0.01)
         first = asyncio.create_task(_call(gate, _DECIDE))
-        await app.entered.wait()
+        await await_until(app.entered, what="first inference entered")
         refused = await asyncio.gather(_call(gate, _DECIDE), _call(gate, _DECIDE))
         health = await _call(gate, "/health")
         app.release.set()
@@ -495,7 +528,7 @@ def test_laya_admits_a_decision_that_waited_and_releases_on_failure() -> None:
         app = _AsgiInference()
         gate = _LayaGate(app, _BOUND_SECS)
         first = asyncio.create_task(_call(gate, _DECIDE))
-        await app.entered.wait()
+        await await_until(app.entered, what="first inference entered")
         second = asyncio.create_task(_call(gate, _DECIDE))
         # The second decision is queued on the held gate, not running.
         await async_wait_until(lambda: bool(gate.lock._waiters))
@@ -550,7 +583,7 @@ def test_laya_bounds_buffered_bodies_and_refuses_bad_ones_before_the_gate() -> N
         app = _AsgiInference()
         gate = _LayaGate(app, _BOUND_SECS, slots=1)
         first = asyncio.create_task(_call(gate, _DECIDE))
-        await app.entered.wait()
+        await await_until(app.entered, what="first inference entered")
         # The one read-ahead slot is in use, so another decision is refused at once.
         no_slot = await _call(gate, _DECIDE)
         app.release.set()
