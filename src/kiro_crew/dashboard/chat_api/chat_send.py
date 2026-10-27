@@ -832,8 +832,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # keyword this handler passes for an IMMEDIATE send cannot carry the
             # actor here. It rides the entry's meta instead, which is what
             # `_actor_for_queue_items` reads; unstamped, the drain falls back to
-            # `user` and files an app's send as a person's.
-            turn_actor="app" if request_app else "",
+            # `user` and files an app's send as a person's. A script cron's
+            # `send_to_session` is attested the same way (`cron_creator`).
+            turn_actor="app" if request_app else ("cron" if cron_creator else ""),
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
             quote=quote_meta(user_meta).get("quote"),
@@ -891,6 +892,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # Same reason as the busy-slot queue above: this entry is drained
             # later, so only its meta can name the actor.
             _hold_meta[TURN_ACTOR_META_KEY] = "app"
+        elif cron_creator:
+            # A script cron's send, as on the other two arms.
+            _hold_meta[TURN_ACTOR_META_KEY] = "cron"
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
@@ -1157,6 +1161,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
         if request_app:
             _turn_kwargs["_turn_actor"] = "app"
+        elif cron_creator:
+            # A script cron's `ctx.send_to_session`, attested by the transport:
+            # the cron's turn, not a person's, so it is neither filed under
+            # `user` nor quoted into a linked thread as if someone typed it.
+            _turn_kwargs["_turn_actor"] = "cron"
         if _accepted_attachments:
             _turn_kwargs["_attachments"] = _accepted_attachments
             # Typed form for the refusal replay: keeps ``dirs`` entries as folders.

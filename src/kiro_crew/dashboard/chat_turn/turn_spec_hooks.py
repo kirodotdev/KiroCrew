@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.recipient import (
         _cross_surface_reply_text,
         _deliver_cross_surface_reply,
+        _retire_mirror_thinking,
         cross_surface_withheld,
         slack_publication_withheld,
     )
@@ -742,6 +743,11 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 if not _these_options:
                     break
 
+            # The answer starts here, so the "Thinking…" placeholder (still
+            # up on a turn that ran no tool) goes before the answer lands.
+            turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+            )
             for _part in render_for_slack(_mirror_body):
                 await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
             if _mirror_options:
