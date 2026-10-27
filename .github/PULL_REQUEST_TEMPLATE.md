@@ -137,11 +137,8 @@
        `github.com/user-attachments/assets/<uuid>` URLs that render cross-repo;
        embed those here and keep that issue as a reusable upload holder (GitHub
        retains unlinked media only ~30 days and whether deleting the source
-       issue orphans the asset is undocumented, so keep the holder). Or push the
-       files to your fork on an UNRELATED branch (e.g. `pr-assets`), off the
-       contributed code path, and reference their raw
-       `raw.githubusercontent.com/<you>/<fork>/<branch>/<path>` URLs
-       (branch-mutable, not pinned). Dragging the file into this box in the web
+       issue orphans the asset is undocumented, so keep the holder). Dragging
+       the file into this box in the web
        UI works too, but is not always available -- device, network, or
        application-managed policy can block a browser upload. Committing is the
        last resort -- `git add -f temp-screenshots/<topic>/after.png`, forced
