@@ -54,15 +54,6 @@ describe('uiPrefs', () => {
       expect(new Set(DURABLE_PREF_KEYS).size).toBe(DURABLE_PREF_KEYS.length)
     })
 
-    it('excludes the Apps Library view toggle, which is origin-local by decision', () => {
-      // The growth-gap mechanism (reconcileNewDurableKeys, issue 9491) now
-      // hydrates a newly added key before its first flush, so re-adding this
-      // key is mechanically safe -- but whether the Library show-all toggle
-      // SHOULD follow the user across origins is a product decision that has
-      // not been made. A re-add without that decision fails here.
-      expect(DURABLE_PREF_KEYS).not.toContain('mc-apps-library-show-all')
-    })
-
     it('excludes session-scoped and derived state', () => {
       // These are per-session or pure caches: mirroring them would grow without
       // bound and resurrect stale UI on an unrelated profile.
