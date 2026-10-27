@@ -109,19 +109,19 @@ def _path_in_home_dirs(
     implementation means the symlink/casefold hardening below cannot drift
     between the two gates.
 
-    ── Symlink robustness ──
+    â”€â”€ Symlink robustness â”€â”€
     A workspace symlink pointing at ``~/.aws/credentials`` (absolute OR relative
     ``../../.aws/credentials`` traversal) must NOT be readable through the link.
     We therefore check MULTIPLE candidate forms of the input and return True if
     ANY of them lands in a matched location:
 
       1. the fully symlink-RESOLVED canonical target (``realpath`` /
-         ``Path.resolve`` — follows every symlink in the chain, including
+         ``Path.resolve`` â€” follows every symlink in the chain, including
          intermediate directories and the final component).  This is what
          defeats the symlink bypass: the resolved target of the link is
          ``~/.aws/credentials`` even though the link's own name is benign.
       2. the LEXICALLY-normalized path (no symlink following) and the raw
-         expanded string — so a path that *textually* names a matched dir is
+         expanded string â€” so a path that *textually* names a matched dir is
          still caught when resolution fails (dangling link, permission error).
 
     ``base_dir`` anchors a *relative* input against the caller's known working
@@ -153,13 +153,13 @@ def _path_in_home_dirs(
         return True
 
     # Case-fold both sides for the membership test.  On a case-insensitive
-    # filesystem (macOS APFS/HFS+ default — a supported platform) the OS opens
+    # filesystem (macOS APFS/HFS+ default â€” a supported platform) the OS opens
     # ``~/.kirocrew/Security_Policy.json`` and ``~/.kirocrew/security_policy.json``
     # as the SAME file, so a byte-exact comparison would let the agent write its
     # own governance ceiling via an alternate-case path. Folding is strictly more
     # protective (it can only ever over-match an alternate-case variant of an
     # already-sensitive path, which is itself suspicious), so it is safe on
-    # case-sensitive Linux too — matching the IGNORECASE bash-read matcher.
+    # case-sensitive Linux too â€” matching the IGNORECASE bash-read matcher.
     for cand in candidates:
         cand_cf = cand.casefold()
         for sensitive_path in sensitive_targets:
@@ -223,7 +223,7 @@ def _is_keystone_publish_artifact(
 # depth and covers those two dirs whole. `path_contains_sensitive()` supplies the
 # complementary ancestor/root protection. Owned here so every consumer
 # (design_critique's local-target guard, design_tweak's project-folder guard)
-# screens against the same set — a credential directory added for one app is
+# screens against the same set â€” a credential directory added for one app is
 # automatically denied by the others.
 DENIED_ROOT_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker"})
 
@@ -429,8 +429,8 @@ def path_contains_sensitive(
 
     The REVERSE direction of :func:`is_sensitive_path`: that gate answers "is
     this path inside a protected location?", this one answers "does this
-    directory CONTAIN one?". A bulk operation rooted at *dir_str* — e.g. the
-    Notes builtin's ``git add -A`` over an attached vault — sweeps every file
+    directory CONTAIN one?". A bulk operation rooted at *dir_str* â€” e.g. the
+    Notes builtin's ``git add -A`` over an attached vault â€” sweeps every file
     below the root, so a root that is an ANCESTOR of a credential store (the
     home directory itself, or a parent of ``~/.ssh``) would stage and push the
     credentials wholesale even though the root is not itself a sensitive path.
@@ -462,7 +462,7 @@ def path_contains_sensitive(
     for cand in candidates:
         # Normalize away a trailing separator so `/home/u/` and `/home/u`
         # produce the same prefix (a bare `/` or `C:\` root rstrips to ""/"C:",
-        # whose prefix form still matches everything under it — correct: every
+        # whose prefix form still matches everything under it â€” correct: every
         # sensitive path is inside the filesystem root).
         cand_cf = cand.casefold().rstrip(os.sep)
         prefix = cand_cf + os.sep
@@ -482,7 +482,7 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
     PLUS the write-only-protected runtime config files
     (:data:`_WRITE_PROTECTED_HOME_PATHS`), which stay readable but must not be
     written by the agent. Enforced at the file-edit tool gate
-    (``hooks.on_tool_call`` on the ACP ``edit`` kind) — see
+    (``hooks.on_tool_call`` on the ACP ``edit`` kind) â€” see
     :data:`_WRITE_PROTECTED_HOME_PATHS` for the rationale.
 
     The publish-artifact clause is repeated from :func:`is_sensitive_path` rather than
@@ -499,7 +499,7 @@ def sensitive_home_dirs() -> tuple[str, ...]:
 
     Lets the security-posture surface (``security_posture_controls.py``) enumerate what
     :func:`is_sensitive_path` actually blocks without coupling to the private
-    ``_SENSITIVE_HOME_DIRS`` name — the same rationale as
+    ``_SENSITIVE_HOME_DIRS`` name â€” the same rationale as
     :func:`get_credential_patterns`. Returned as a tuple so a caller cannot
     mutate the live blocklist.
     """
@@ -509,7 +509,7 @@ def sensitive_home_dirs() -> tuple[str, ...]:
 def write_protected_home_paths() -> tuple[str, ...]:
     """Public, read-only view of the write-only-protected home-relative paths.
 
-    Companion to :func:`sensitive_home_dirs` — these stay readable but must not
+    Companion to :func:`sensitive_home_dirs` â€” these stay readable but must not
     be written by an agent tool.
     """
     return tuple(_WRITE_PROTECTED_HOME_PATHS)
@@ -657,7 +657,7 @@ def is_sensitive_bash_command(
     from .denied_rules import _check_env_credential_access
     from .exfil import _check_imds_access
 
-    # ── Pass 0: size ceiling ──
+    # â”€â”€ Pass 0: size ceiling â”€â”€
     # Both detectors below are linear in the subject, and this bound is what makes
     # that a wall-clock ceiling: the gate runs synchronously on the event loop,
     # so its worst case IS the loop's worst case. An oversized subject is

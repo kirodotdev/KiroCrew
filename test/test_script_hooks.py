@@ -90,6 +90,27 @@ class TestScriptHook:
         assert hook.matcher == "fs_*"
 
 
+class TestHookStoreIsKeystone:
+    """``hooks.json`` holds executable state, so agent file tools must not reach it.
+
+    The store fires hook commands as the gateway user; a planted entry is
+    persistent code execution. The gateway's own writers open the path
+    directly, so fencing costs them nothing.
+    """
+
+    def test_hooks_json_is_fenced_on_both_home_spellings(self) -> None:
+        from kiro_crew.security import _CREW_SECRET_LEAVES, is_sensitive_path
+
+        assert "hooks.json" in _CREW_SECRET_LEAVES
+        assert is_sensitive_path("~/.kiro/crew/hooks.json") is True
+        assert is_sensitive_path("~/.kirocrew/hooks.json") is True
+
+    def test_hooks_json_artifacts_are_fenced(self) -> None:
+        from kiro_crew.security import is_sensitive_path
+
+        assert is_sensitive_path("~/.kiro/crew/hooks.json.lock") is True
+
+
 class TestScriptHookStore:
     """Test ScriptHookStore CRUD operations."""
 

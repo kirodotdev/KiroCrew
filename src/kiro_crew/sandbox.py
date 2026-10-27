@@ -16,12 +16,12 @@ platform-native isolation, per tier:
   ``~/.config/gh``, with a read-only copy of ``~/.aws/config`` exposed for
   Bedrock auth.
 
-- **Linux**: fork → ``unshare(CLONE_NEWUSER)`` → parent writes identity
-  UID/GID map → ``unshare(CLONE_NEWNS)`` → bind-mount empty dirs → exec.
+- **Linux**: fork â†’ ``unshare(CLONE_NEWUSER)`` â†’ parent writes identity
+  UID/GID map â†’ ``unshare(CLONE_NEWNS)`` â†’ bind-mount empty dirs â†’ exec.
   The child retains the real UID so all toolchains work normally.
 - **macOS**: ``sandbox-exec`` with a Seatbelt profile that denies reads
 
-The parent KiroCrew process is completely unaffected — isolation applies
+The parent KiroCrew process is completely unaffected â€” isolation applies
 only to the spawned child.  Falls back gracefully to no sandbox when the
 OS mechanism is unavailable (logged as warning).
 
