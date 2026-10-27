@@ -114,6 +114,7 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
         "dashboard/agentic_refused",
         "dashboard/goal_recorded",
         "dashboard/waiting_changed",
+        "dashboard/custom_value",
         # The ``workers`` fold: a crewmate's creates, and each worker's own turns,
         # replies and end, which it reads from the worker's log and routes to the
         # crewmate's cell (:func:`_creator_slot`).

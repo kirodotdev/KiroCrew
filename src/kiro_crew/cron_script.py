@@ -1107,6 +1107,8 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         ScriptContext,
         Skip,
         SkipError,
+        _redact_deep,
+        _redact_pair,
         _refusal_code,
         logger,
     )
@@ -1182,6 +1184,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.security import (  # noqa: F401
         _REDACTED_CREDENTIAL_TAG,
         _STREAM_HOLDBACK_JWT_MAX,
+        REDACTED_CREDENTIAL_TAG,
         is_unverifiable_path_refusal,
         sensitive_path_refusal,
     )

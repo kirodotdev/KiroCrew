@@ -336,6 +336,13 @@ CANONICAL: dict[str, dict] = {
             }
         ]
     },
+    "dashboard/custom_value": {
+        "type": "stock_check",
+        "data": {"symbol": "AMZN", "price": 187.4, "checked_at": "2026-10-26T18:00:00+00:00"},
+        "writer": "cron:stock-poll",
+        "member": "trader",
+        "crew_key": "9f2c" + "0" * 60,
+    },
     "guide/finished": {"guide_id": "g_0a1b2c3d4e5f", "status": "completed"},
     # A whole working set lost at once: of sixteen listed tabs none comes back, and
     # all sixteen stay in the reopen seed. ``kept`` counts the SET rather than this
@@ -428,7 +435,11 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     #
     # The one past those is ``context/measured``: the agent engine's own measurement of
     # a turn's context, which the ``usage`` fold attaches to that turn's composition row.
-    assert len(SESSION_ENTRY_TYPES) == 49
+    #
+    # The one past that is ``dashboard/custom_value``: a record a script cron appends
+    # for its crewmate through the record door, which the ``custom`` fold keeps the
+    # latest of per type.
+    assert len(SESSION_ENTRY_TYPES) == 50
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

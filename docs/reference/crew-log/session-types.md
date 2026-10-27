@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Forty-seven types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -67,6 +67,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
 | [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
+| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron appended for its crewmate, stamped with who wrote it. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -1647,6 +1648,26 @@ an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
 | --- | --- | --- |
 | `items` | array of `{kind, text, options, options_total, asked_at}` | newest first; `kind` is `options`, `question` or `card`; at most `CREWMATE_WAITING_LIMIT`, each with at most `CREWMATE_OPTION_LIMIT` choices and `options_total` counting them all |
 | `total` | integer | how many items wait in all, including any past `items` |
+
+#### `dashboard/custom_value`
+
+Kind `session`, `src` `gateway`. Written when a script cron bound to this crewmate
+calls `ctx.crew_log_append(type, data)`, through
+`POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`).
+The body carries `type` and `data` only; `writer`, `member` and `crew_key` are stamped
+by the gateway from the job's attested identity, so a script cannot choose who it
+writes as or whose log it writes. A job bound to no crewmate is refused. Folded as
+`custom`, which keeps the latest record per `type`, so a Dashboard page binds
+`custom.latest.<type>.data.<key>`. The data is the script's own words: a page draws it
+as text, and nothing frames it as an instruction to an agent.
+
+| field | type | notes |
+| --- | --- | --- |
+| `type` | string | the record type the script named: one plain name, at most `CUSTOM_TYPE_NAME_LIMIT` characters |
+| `data` | object | the record, at most `CUSTOM_RECORD_BYTES` serialized and `CUSTOM_RECORD_DEPTH` deep; its members are the script's own |
+| `writer` | string | `cron:<job id>`, stamped by the gateway |
+| `member` | string | the slug of the crewmate the job is bound to, stamped by the gateway |
+| `crew_key` | string | digest of that crewmate's exact name, for ownership on a shared slot |
 
 ## Change cards and guides
 
