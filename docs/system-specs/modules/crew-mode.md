@@ -3562,11 +3562,22 @@ run under one cross-process lock (`mates/owners.lock`), so two instances
 writing one name at once cannot both pass the check
 (`test/test_mate_owned_config.py`). So a crewmate's first chat, the goal-setup turn included, is
 already on the conductor. A name the set does not know at all (a file another
-process wrote) is rescanned before the answer off the loop, and on the loop a
-rescan is scheduled. A `member` record whose `template_id` names the crewmate's
+process wrote) is rescanned before the answer off the loop. On the loop a rescan
+is scheduled and the answer is two file stats, never a directory scan
+(`mate_worker._mate_file_on_disk`): mate-owned when `~/.kiro/mates/agents/<name>.json`
+exists and `~/.kiro/agents/<name>.json` does not, so a crewmate created a moment
+ago chats on the conductor, never on its own file, and a user-level agent of that
+name stays itself. A `member` record whose `template_id` names the crewmate's
 own file is read as the conductor (`mate_worker.member_chat_template`) by the
 chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
-(`test/test_mate_conductor_every_create_path.py`). The three parts:
+(`test/test_mate_conductor_every_create_path.py`). With the config at hand, the
+chat and `is_conductor_execution` also read the member's CURRENT bound
+`kiro_agent` (`mate_worker.member_record_template`): when that binding owns a
+crewmate file the record is the conductor, whatever older `template_id` it kept
+(the pre-conductor `kirocrew-conductor`), with no record rewritten. Any other
+member keeps the template its record names, so a shared-agent crewmate's thread
+runs the agent it recorded. A `template` record (a worker included) stays exact
+(`test/test_mate_chat_agent_resolution.py`). The three parts:
 
 - **The conductor**, `kirocrew-mate-conductor`, is what its own chat runs on.
   `mate_worker.member_chat_agent` maps the binding to it, and it is the one rule

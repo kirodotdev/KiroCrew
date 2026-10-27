@@ -350,6 +350,11 @@ Discovery of a same-named member cannot reinterpret an existing template session
 Resolved dispatch bindings use the canonical `default` name for Global memory,
 including when restored from a captured execution record. Equivalent aliases
 therefore compare equally without changing the selected conversation identity.
+A `template` record's provider template is dispatched exactly. A `member`
+record runs the crewmate conductor whenever the member's current `kiro_agent`
+binding owns a crewmate file, even when the record kept an older template; any
+other member runs its recorded template
+([crew-mode](crew-mode.md), `mate_worker.member_record_template`).
 
 Admission captures the record before asynchronous work and passes it directly to
 provider allocation and prompt construction. Automatic selection publication
