@@ -2296,6 +2296,33 @@ timeout, or caller cancellation. Only the bounded verdict and tool count leave
 the Connections layer; raw command data and tool descriptions do not reach the
 HTTP response.
 
+### Per-prompt identity metadata
+
+ACP prompt producers accept an optional `telemetry_context: Mapping[str, str]`;
+its values are identity strings only. `AcpClient.stream_events()` and
+`AcpSessionHandle.prompt()` copy a non-empty context into
+`params._meta.kirocrew` only for `session/prompt` requests. Prompt blocks, tool
+arguments and outputs never enter this namespace. KAS's existing prompt profile
+metadata remains alongside `kirocrew`; `/compact` stays metadata-free, including
+the prompt-transport form.
+
+An OpenCode concurrent-prompt steer inherits the context from its active prompt
+record, not reusable client state. Closing or cancelling that record drops the
+context; a later prompt cannot inherit it. ACP informational tool hooks carry the
+native `tool_call_id`, the ACP `session_id`, and applicable active
+`workflow_run_id`, `agent_id` and `turn_id`. The firing session's `session_key`
+remains distinct from `parent_session_key`; the existing audit-source gate keeps
+chat hooks from firing twice and hook failures remain non-fatal.
+
+Workflow agent prompts compose those identity strings per send from the
+workflow run, the `a<call_index>` agent, the root parent session key and that
+agent call's turn ID. The session-binding callback is separate from
+`telemetry_context`: after a workflow provider has an ACP session ID, it reports
+that ID to the workflow event stream as `agent_session_bound`. Neither value is
+stored on a reusable ACP provider, named session handle or pooled worker. The
+prompt metadata contains no workflow content, and the five-key workflow event
+envelope remains unchanged (see [workflows](workflows.md#run-event-stream)).
+
 ### Extension Notifications
 
 `stream_events()` yields events for kiro-cli extension notifications:

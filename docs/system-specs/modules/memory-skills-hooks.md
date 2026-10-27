@@ -5981,14 +5981,22 @@ a hook is therefore **not portable across platforms**. `ScriptHookStore.fire` al
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
-**Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
-event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
-`assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
-supplies them, so a hook reads them with a default:
+**Identity and attribution keys in the stdin JSON.** Beyond `hook_event_name`,
+`cwd` and the event's own fields (`prompt`, `tool_name`, `tool_input`,
+`tool_response`, `assistant_text`), `ScriptHookStore.fire()` always stamps
+`event_id` (using `uuid.uuid4().hex` when the caller does not supply one) and
+stamps the other identities only when the caller supplies them, so a hook reads
+optional keys with a default:
 
 | key | meaning |
 |---|---|
+| `event_id` | this firing's identity; a caller-supplied value is preserved verbatim, while an omitted value gets a 32-character lowercase UUID hex string; a caller re-delivering one event supplies the same value again |
+| `tool_call_id` | the caller's identity for one logical tool call, shared by that call's notifications |
 | `session_key` | the firing session's **own** key (`dashboard:<slot>`, a channel key) — the field for per-session attribution and the governance scope on a top-level turn |
+| `workflow_run_id` | the workflow run identity, when applicable and supplied by its caller |
+| `agent_id` | the agent identity, when applicable and supplied by its caller |
+| `acp_session_id` | the ACP session identity, when applicable and supplied by its caller |
+| `turn_id` | the turn identity, when applicable and supplied by its caller |
 | `subagent_id` | present **only** on an event fired by a spawned subagent; its id |
 | `parent_session_key` | present only on a subagent's event: the session that spawned it (it is that session's governance scope) |
 | `agent_role` | the agent template the firing session runs |

@@ -577,6 +577,63 @@ class TestScriptHookStoreFire:
         monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
 
     @pytest.mark.asyncio
+    async def test_fire_emits_event_id_and_preserves_correlation_fields(
+        self, hook_store: ScriptHookStore
+    ):
+        hook_store.create(
+            {
+                "name": "identity-hook",
+                "event": HOOK_EVENT_PRE_TOOL_USE,
+                "command": "echo test",
+            }
+        )
+        result = SimpleNamespace(
+            hook_name="identity-hook",
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=1,
+        )
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = result
+            await hook_store.fire(
+                HOOK_EVENT_PRE_TOOL_USE,
+                tool_name="ReadFile",
+                event_id="caller-event-id",
+                tool_call_id="call-1",
+                workflow_run_id="workflow-1",
+                agent_id="agent-1",
+                acp_session_id="acp-1",
+                turn_id="turn-1",
+                session_key="dashboard:own-session",
+                parent_session_key="dashboard:parent-session",
+            )
+            await hook_store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="ReadFile")
+
+        first_event = mock_run.await_args_list[0].args[2]
+        second_event = mock_run.await_args_list[1].args[2]
+        assert first_event["event_id"] == "caller-event-id"
+        assert first_event["tool_call_id"] == "call-1"
+        assert first_event["workflow_run_id"] == "workflow-1"
+        assert first_event["agent_id"] == "agent-1"
+        assert first_event["acp_session_id"] == "acp-1"
+        assert first_event["turn_id"] == "turn-1"
+        assert first_event["session_key"] == "dashboard:own-session"
+        assert first_event["parent_session_key"] == "dashboard:parent-session"
+        assert first_event["session_key"] != first_event["parent_session_key"]
+        assert len(second_event["event_id"]) == 32
+        int(second_event["event_id"], 16)
+        assert not {
+            "tool_call_id",
+            "workflow_run_id",
+            "agent_id",
+            "acp_session_id",
+            "turn_id",
+            "session_key",
+            "parent_session_key",
+        }.intersection(second_event)
+
+    @pytest.mark.asyncio
     async def test_fire_enabled_hooks(self, hook_store: ScriptHookStore):
         hook1 = hook_store.create(
             {

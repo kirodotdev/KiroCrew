@@ -2203,6 +2203,14 @@ surface. The modules of
 | `turn_ledgers` | what a turn records about itself: its consumption reports, the recovery it queues (`_queue_recovery`) and the completion it owes, the terminal directive and the coding-activity cadence |
 | `turn_locals` | the per-turn state `_ChatTurn` that `_run_chat`, the owner functions it calls with the turn and its phases share, and `_Flow`, the exit a phase hands back to `_run_chat` |
 
+For an ordinary non-slash chat prompt, `_run_chat` uses the ACP-only
+`stream_with_metadata` capability when the provider exposes it, forwarding the
+turn's existing `_recovery_turn_id` as `turn_id` and its own effective
+`session_key`. The prompt, tool, and Stop hook events use that same turn ID.
+Generic providers retain the metadata-free `.stream()` call, and slash commands
+retain their command path. The identity mapping is per-send metadata, not state
+retained on a reusable provider.
+
 `chat_turn.compose` composes the package's modules (`chat_turn.owner_modules()`):
 it binds on `chat_runner` every name an owner binds that the runner lacks, so
 `chat_runner.<name>` resolves for each owner function, class and constant without a

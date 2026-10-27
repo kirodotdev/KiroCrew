@@ -35,11 +35,14 @@ from kiro_crew.acp.runtime import (
     AcpRuntimeError,
     AcpSessionHandle,
 )
+from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
     METHOD_COMMANDS_EXECUTE,
+    METHOD_PROMPT,
     METHOD_SESSION_TERMINATE,
     METHOD_SESSION_UPDATE,
     METHOD_SET_CONFIG_OPTION,
@@ -588,6 +591,89 @@ async def test_handle_session_id_property():
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
     assert handle.session_id == "sA"
+
+
+@pytest.mark.asyncio
+async def test_handle_prompt_identity_metadata_is_scoped_to_one_prompt():
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    send = _replying_send(lambda params: q[params["sessionId"]])
+    rt.send_request = send
+    handle = AcpSessionHandle("sA", q["sA"], rt, session_key="own-session")
+    telemetry_context = {
+        "turn_id": "turn-9",
+        "workflow_run_id": "workflow-4",
+        "agent_id": "agent-2",
+        "session_key": "own-session",
+        "parent_session_key": "parent-session",
+    }
+
+    async for _ in handle.prompt("first", timeout=3.0, telemetry_context=telemetry_context):
+        pass
+    async for _ in handle.prompt("second", timeout=3.0):
+        pass
+
+    first_params = send.await_args_list[0].args[1]
+    second_params = send.await_args_list[1].args[1]
+    assert first_params["_meta"]["kirocrew"] == telemetry_context
+    assert "prompt" not in first_params["_meta"]["kirocrew"]
+    assert "_meta" not in second_params
+    assert not hasattr(handle, "_telemetry_context")
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_prompt_stays_metadata_free():
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    send = _replying_send(lambda params: q[params["sessionId"]])
+    rt.send_request = send
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+
+    async for _ in handle.prompt("/compact", timeout=3.0, telemetry_context={"turn_id": "turn-9"}):
+        pass
+
+    assert send.await_args.args[0] == METHOD_PROMPT
+    assert "_meta" not in send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_session_provider_forwards_telemetry_context_to_handle_prompt():
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    send = _replying_send(lambda params: q[params["sessionId"]])
+    rt.send_request = send
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    provider = AcpSessionProvider(handle, rt, owns_runtime=True)
+    telemetry_context = {"turn_id": "turn-9", "workflow_run_id": "workflow-4"}
+
+    events = [
+        event
+        async for event in provider.stream_events("question", telemetry_context=telemetry_context)
+    ]
+
+    assert any(event.kind == EVENT_COMPLETE for event in events)
+    assert send.await_args.args[1]["_meta"]["kirocrew"] == telemetry_context
+
+
+@pytest.mark.asyncio
+async def test_kas_prompt_identity_metadata_keeps_profile_metadata():
+    from kiro_crew.acp import kas_profile
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    q = _register(rt, "sA")
+    send = _replying_send(lambda params: q[params["sessionId"]])
+    rt.send_request = send
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    telemetry_context = {"turn_id": "turn-9"}
+
+    async for _ in handle.prompt("question", timeout=3.0, telemetry_context=telemetry_context):
+        pass
+
+    assert send.await_args.args[1]["_meta"] == {
+        **kas_profile.PROMPT_META,
+        "kirocrew": telemetry_context,
+    }
 
 
 @pytest.mark.asyncio

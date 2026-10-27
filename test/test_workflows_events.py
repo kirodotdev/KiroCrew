@@ -58,11 +58,28 @@ def test_every_event_type_has_a_builder_and_validates() -> None:
         s.run_finished(TS, result={"x": 1}, duration_s=3.0),
         s.run_failed(TS, error="boom", where="exec"),
         s.run_cancelled(TS, reason="user"),
+        s.agent_session_bound(TS, agent_id="a1", acp_session_id="acp-1"),
     ]
     produced_types = {e.type for e in built}
     assert produced_types == set(wf.EVENT_TYPES)
     for e in built:
         validate_event(e)  # must not raise
+
+
+def test_agent_session_bound_builder_and_required_data() -> None:
+    event = _full_stream().agent_session_bound(
+        TS, agent_id="a2", acp_session_id="acp-session-2"
+    )
+
+    assert event.type == "agent_session_bound"
+    assert event.data == {"agent_id": "a2", "acp_session_id": "acp-session-2"}
+    validate_event(event)
+
+    missing_session = wf.WorkflowEvent(
+        run_id="wf_test", seq=0, ts=TS, type="agent_session_bound", data={"agent_id": "a2"}
+    )
+    with pytest.raises(ValueError, match="acp_session_id"):
+        validate_event(missing_session)
 
 
 def test_seq_is_monotonic_from_zero() -> None:

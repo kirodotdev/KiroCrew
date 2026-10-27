@@ -60,6 +60,7 @@ EXPECTED_EVENT_TYPES = (
     "run_finished",
     "run_failed",
     "run_cancelled",
+    "agent_session_bound",
 )
 
 # Data attributes declared on the WorkflowContext Protocol (annotations, not
@@ -354,7 +355,13 @@ def test_event_round_trips_through_json() -> None:
 
 def test_event_envelope_keys_exact() -> None:
     """The on-wire envelope is exactly run_id/seq/ts/type/data."""
-    ev = wf.WorkflowEvent(run_id="wf_x", seq=0, ts="t", type="run_started")
+    ev = wf.WorkflowEvent(
+        run_id="wf_x",
+        seq=0,
+        ts="t",
+        type="agent_session_bound",
+        data={"agent_id": "a0", "acp_session_id": "acp-0"},
+    )
     assert set(ev.to_json()) == {"run_id", "seq", "ts", "type", "data"}
 
 

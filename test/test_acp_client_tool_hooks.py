@@ -746,6 +746,36 @@ class TestAcpClientToolHooks:
             return []
 
     @pytest.mark.asyncio
+    async def test_hooks_forward_native_call_and_active_turn_identity(self, monkeypatch):
+        store = self._Store()
+        monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
+        client = AcpClient(
+            session_key="own-session", agent="worker-template", audit_source="subagent"
+        )
+        client._session_id = "acp-session-7"
+        active_context = {
+            "workflow_run_id": "workflow-4",
+            "agent_id": "agent-2",
+            "turn_id": "turn-9",
+            "parent_session_key": "parent-session",
+        }
+        client._steer_turn = types.SimpleNamespace(telemetry_context=active_context)
+
+        await client._maybe_fire_pre_tool_hooks(self._call_ev())
+        client._observed_tool_calls["tc1"] = ("Reading /x/SKILL.md", "read")
+        await client._maybe_fire_post_tool_hooks(self._result_ev())
+
+        pre, post = store.calls
+        for call in (pre, post):
+            assert call["tool_call_id"] == "tc1"
+            assert call["workflow_run_id"] == "workflow-4"
+            assert call["agent_id"] == "agent-2"
+            assert call["acp_session_id"] == "acp-session-7"
+            assert call["turn_id"] == "turn-9"
+            assert call["session_key"] == "own-session"
+            assert call["parent_session_key"] == "parent-session"
+
+    @pytest.mark.asyncio
     async def test_pre_and_post_fire_when_audit_source_set(self, monkeypatch):
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)

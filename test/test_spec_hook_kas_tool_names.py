@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import (
+    HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
     ScriptHook,
     ScriptHookResult,
@@ -352,6 +353,24 @@ def _blocking_runner(monkeypatch) -> list:
     return ran
 
 
+def _successful_runner(monkeypatch) -> list[tuple[str, dict]]:
+    """Record native hook payloads and allow every call to continue."""
+    hook_events: list[tuple[str, dict]] = []
+
+    async def fake_run(hook, context="", hook_event=None):
+        hook_events.append((hook.id, hook_event))
+        return ScriptHookResult(
+            hook_id=hook.id,
+            hook_name=hook.name,
+            event=hook.event,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    return hook_events
+
+
 def _turn_state(tmp_path, backend: str):
     sessions = MagicMock(count=0)
     sessions.get_pid = MagicMock(return_value=None)
@@ -536,6 +555,84 @@ async def test_kas_a_gated_chat_call_runs_its_hook_once_on_the_permission_reques
     assert ran == ["page"]
     informational.assert_not_awaited()
     client.reject_tool.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_kas_native_pre_and_post_hooks_include_call_and_turn_identity(
+    tmp_path, agents_dir, monkeypatch
+):
+    from kiro_crew.providers.base import EVENT_TOOL_RESULT
+
+    hook_events = _successful_runner(monkeypatch)
+    _write_spec(agents_dir, "web_fetch")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_KAS)
+    state._hook_store._hooks = {
+        "pre": ScriptHook(
+            id="pre",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            matcher="*",
+            command="pre-hook",
+        ),
+        "post": ScriptHook(
+            id="post",
+            event=HOOK_EVENT_POST_TOOL_USE,
+            matcher="*",
+            command="post-hook",
+        ),
+    }
+    client.context_window_tokens = MagicMock(return_value=0)
+    client.context_used_tokens = MagicMock(return_value=0)
+    client.mcp_session_report = MagicMock(return_value=None)
+    client.available_models = MagicMock(return_value=[])
+    client.client._model = ""
+    client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
+    client.settings_withheld_cause = MagicMock(return_value="")
+    native_tool_call_id = "native-kas-call-7"
+
+    await _one_turn(
+        state,
+        client,
+        [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Fetch URL",
+                tool_call_id=native_tool_call_id,
+                tool_input='{"url":"https://example.test"}',
+            ),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="Fetch URL",
+                request_id="request-7",
+                tool_call_id=native_tool_call_id,
+                harness_tool_id="web_fetch",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                title="Fetch URL",
+                tool_call_id=native_tool_call_id,
+                tool_output="fetched",
+                tool_final=True,
+                tool_status="completed",
+            ),
+        ],
+    )
+
+    spec_pre_event = next(
+        event
+        for hook_id, event in hook_events
+        if hook_id.startswith("spec:") and event["hook_event_name"] == HOOK_EVENT_PRE_TOOL_USE
+    )
+    post_event = next(
+        event for _, event in hook_events if event["hook_event_name"] == HOOK_EVENT_POST_TOOL_USE
+    )
+    assert spec_pre_event["tool_call_id"] == native_tool_call_id
+    assert post_event["tool_call_id"] == native_tool_call_id
+    assert spec_pre_event["turn_id"] == post_event["turn_id"]
+    assert len(spec_pre_event["turn_id"]) == 32
+    assert spec_pre_event["session_key"] == "dashboard:chat-1-spec-kas"
+    assert post_event["session_key"] == "dashboard:chat-1-spec-kas"
+    assert "parent_session_key" not in spec_pre_event
+    assert "parent_session_key" not in post_event
 
 
 @pytest.mark.asyncio

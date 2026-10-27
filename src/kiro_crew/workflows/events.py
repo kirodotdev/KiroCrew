@@ -36,6 +36,7 @@ REQUIRED_DATA_KEYS: dict[str, tuple[str, ...]] = {
     "run_finished": ("result", "duration_s"),
     "run_failed": ("error", "where"),
     "run_cancelled": ("reason",),
+    "agent_session_bound": ("agent_id", "acp_session_id"),
 }
 
 
@@ -153,6 +154,15 @@ class EventStream:
                 "ok": ok,
                 "error": error,
             },
+        )
+
+    def agent_session_bound(
+        self, ts: str, *, agent_id: str, acp_session_id: str
+    ) -> WorkflowEvent:
+        return self._emit(
+            ts,
+            "agent_session_bound",
+            {"agent_id": agent_id, "acp_session_id": acp_session_id},
         )
 
     # --- approval ---

@@ -915,6 +915,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             HOOK_EVENT_POST_TOOL_USE,
             tool_name=_tool_name,
             tool_response={"output": _redacted_out_bounded},
+            tool_call_id=event.tool_call_id,
         )
     except Exception:
         logger.debug("PostToolUse hook error", exc_info=True)

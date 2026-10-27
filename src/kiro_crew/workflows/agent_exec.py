@@ -31,6 +31,7 @@ import asyncio
 import itertools
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
@@ -126,6 +127,22 @@ async def vet_step_spawn(
     return resolved
 
 
+def _notify_session_bound(provider: Any, callback: Any) -> None:
+    """Report the current ACP session to this workflow call, when available."""
+    if not callable(callback):
+        return
+    try:
+        session_id = getattr(provider, "session_id", None)
+    except Exception:
+        return
+    if not isinstance(session_id, str) or not session_id:
+        return
+    try:
+        callback(session_id)
+    except Exception as exc:  # noqa: BLE001 - telemetry must not fail the agent call
+        logger.debug("workflow session binding callback failed: %s", type(exc).__name__)
+
+
 def build_agent_fn(
     sessions: Any,
     *,
@@ -189,6 +206,7 @@ def build_agent_fn(
             from kiro_crew.messaging.identity import publish_turn_identity
 
             await publish_turn_identity(sessions, key)
+            _notify_session_bound(provider, opts.get("on_session_bound"))
             if memory_scope is not None:
                 prompt = await memory_scope.prompt(
                     context_builder,
@@ -200,12 +218,14 @@ def build_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=step_cwd or cwd,
                 )
-            text = await stream_and_collect(
-                provider,
-                prompt,
-                approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
-                max_turns=_MAX_TURNS_PER_STEP,
-            )
+            stream_kwargs: dict[str, Any] = {
+                "approval_policy": ToolApprovalPolicy.AUTO_APPROVE,
+                "max_turns": _MAX_TURNS_PER_STEP,
+            }
+            telemetry_context = opts.get("telemetry_context")
+            if isinstance(telemetry_context, Mapping):
+                stream_kwargs["telemetry_context"] = telemetry_context
+            text = await stream_and_collect(provider, prompt, **stream_kwargs)
             # ── Per-turn usage row: attribute workflow spend. ──
             # Best-effort analytics that must never break the workflow run — but
             # the guards are deliberately NARROW. A single wide try around the

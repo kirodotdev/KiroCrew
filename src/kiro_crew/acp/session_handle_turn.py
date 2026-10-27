@@ -34,7 +34,7 @@ import asyncio
 import copy
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_profile
@@ -141,7 +141,12 @@ async def wait_turn_done(self: AcpSessionHandle, timeout: float = 30.0) -> bool:
 
 
 async def prompt(
-    self: AcpSessionHandle, message: str, timeout: float | None = None, *, allow_image: bool = True
+    self: AcpSessionHandle,
+    message: str,
+    timeout: float | None = None,
+    *,
+    allow_image: bool = True,
+    telemetry_context: Mapping[str, str] | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Send session/prompt and yield AcpEvent objects until the turn completes.
 
@@ -203,6 +208,13 @@ async def prompt(
             # (see ``kas_profile``). Positive KAS gate: no other harness is sent a
             # ``_meta`` it never defined.
             params["_meta"] = copy.deepcopy(kas_profile.PROMPT_META)
+        first_word = message.strip().split(None, 1)
+        is_compact_prompt = bool(first_word and first_word[0] == "/compact")
+        if telemetry_context and not is_compact_prompt:
+            # Preserve harness-owned metadata (KAS) and add only the caller's
+            # identity strings under Crew's namespace.
+            metadata = params.setdefault("_meta", {})
+            metadata["kirocrew"] = dict(telemetry_context)
         return METHOD_PROMPT, params
 
     # Explicit aclose in a finally: abandoning THIS wrapper (gen.aclose()

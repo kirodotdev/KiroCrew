@@ -339,6 +339,7 @@ async def _fire(
     tool_id: str | None = None,
     tool_identity: str = "",
     mcp_server: str = "",
+    tool_call_id: str | None = None,
 ) -> list[str]:
     """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
 
@@ -349,7 +350,9 @@ async def _fire(
     hook matches the title and those names both, so a ``web_fetch`` hook meets
     KAS's "Fetch URL" too. ``tool_identity`` and ``mcp_server`` are the call's
     canonical name and trusted MCP server, and join both, as on the subagent
-    gate (``hooks.pre_tool_match_names``).
+    gate (``hooks.pre_tool_match_names``). ``tool_call_id`` is the native
+    logical call identity for correlation; it is separate from the harness
+    matcher id in ``tool_id``.
     """
     session_key = turn.session_key
     slot = turn.slot
@@ -385,6 +388,8 @@ async def _fire(
             # session that spawned a subagent, and a hook reading it as
             # such would take every dashboard turn for a subagent's.
             session_key=session_key,
+            tool_call_id=tool_call_id,
+            turn_id=turn._recovery_turn_id,
             hook_continuation_count=hook_continuation_count,
             extra_hooks=turn._spec_hooks,
             extra_hooks_cwd=turn._spec_hooks_cwd,

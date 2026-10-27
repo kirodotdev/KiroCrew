@@ -31,6 +31,7 @@ from kiro_crew.llm_helpers import (
     save_conversation_turn,
     stream_and_collect,
 )
+from kiro_crew.llm_helpers_parts import turn_stream
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, EVENT_TOOL_CALL, LLMEvent
 
 
@@ -560,6 +561,123 @@ class TestAcpErrorIsTransient:
         # Non-AcpError (no .transient attr) → string classifier.
         assert acp_error_is_transient(RuntimeError("ServiceUnavailableException"))
         assert not acp_error_is_transient(RuntimeError("AccessDeniedException"))
+
+
+class TestStreamAndCollectTelemetryContext:
+    @pytest.mark.asyncio
+    async def test_metadata_context_is_reused_on_transient_retry(self) -> None:
+        class _Provider:
+            def __init__(self):
+                self.metadata_calls = []
+                self.stream_calls = 0
+
+            async def stream_with_metadata(self, message, *, telemetry_context, allow_image=True):
+                self.metadata_calls.append((message, telemetry_context, allow_image))
+                if len(self.metadata_calls) == 1:
+                    raise AcpError(
+                        "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"
+                    )
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+            async def stream(self, message, timeout=None, *, allow_image=True):
+                self.stream_calls += 1
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = _Provider()
+        telemetry_context = {
+            "turn_id": "turn-9",
+            "workflow_run_id": "workflow-4",
+            "agent_id": "agent-2",
+            "session_key": "own-session",
+            "parent_session_key": "parent-session",
+        }
+
+        result = await stream_and_collect(
+            provider,
+            "question",
+            allow_image=False,
+            telemetry_context=telemetry_context,
+        )
+
+        assert result == "ok"
+        assert provider.metadata_calls == [
+            ("question", telemetry_context, False),
+            ("question", telemetry_context, False),
+        ]
+        assert provider.stream_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_generic_provider_keeps_stream_call_shape(self) -> None:
+        class _GenericProvider:
+            def __init__(self):
+                self.calls = []
+
+            async def stream(self, message, timeout=None, *, allow_image=True):
+                self.calls.append((message, timeout, allow_image))
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = _GenericProvider()
+        result = await stream_and_collect(
+            provider,
+            "question",
+            allow_image=False,
+            telemetry_context={"turn_id": "turn-9"},
+        )
+
+        assert result == "ok"
+        assert provider.calls == [("question", None, False)]
+
+    @pytest.mark.asyncio
+    async def test_tool_hook_receives_native_and_prompt_identity(self, monkeypatch) -> None:
+        class _Store:
+            def __init__(self):
+                self.calls = []
+
+            async def fire(self, event, **kwargs):
+                self.calls.append({"event": event, **kwargs})
+                return []
+
+        class _Provider:
+            async def stream_with_metadata(self, message, *, telemetry_context, allow_image=True):
+                yield LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="native-tool",
+                    tool_call_id="tool-call-14",
+                )
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+            async def stream(self, message, timeout=None, *, allow_image=True):
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+        store = _Store()
+        monkeypatch.setattr(turn_stream, "get_global_hook_store", lambda: store)
+        monkeypatch.setattr(turn_stream, "_sel", lambda: MagicMock())
+        telemetry_context = {
+            "workflow_run_id": "workflow-4",
+            "agent_id": "agent-2",
+            "acp_session_id": "acp-session-7",
+            "turn_id": "turn-9",
+            "parent_session_key": "parent-session",
+        }
+
+        await stream_and_collect(
+            _Provider(),
+            "question",
+            session_key="own-session",
+            telemetry_context=telemetry_context,
+        )
+
+        assert len(store.calls) == 1
+        hook = store.calls[0]
+        assert hook["tool_call_id"] == "tool-call-14"
+        assert hook["workflow_run_id"] == "workflow-4"
+        assert hook["agent_id"] == "agent-2"
+        assert hook["acp_session_id"] == "acp-session-7"
+        assert hook["turn_id"] == "turn-9"
+        assert hook["session_key"] == "own-session"
+        assert hook["parent_session_key"] == "parent-session"
 
 
 class TestStreamAndCollectTransient:

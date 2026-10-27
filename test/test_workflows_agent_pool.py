@@ -26,6 +26,7 @@ class _FakeProvider:
         self.tag = tag
         self.new_conversation_calls = 0
         self.alive = True
+        self.session_id = f"acp-session:{tag}:0"
 
     async def new_conversation(self) -> None:
         # Cheap warm reset — the win. No cold start here.
@@ -35,6 +36,7 @@ class _FakeProvider:
         sink = getattr(self, "order_sink", None)
         if sink is not None:
             sink.append("new_conversation")
+        self.session_id = f"acp-session:{self.tag}:{self.new_conversation_calls}"
 
     def is_process_alive(self) -> bool:
         return self.alive
@@ -1119,3 +1121,105 @@ async def test_the_cheap_reuse_path_still_ends_the_previous_conversations_childr
         "the reused worker kept the previous conversation's children, so one of them can "
         "inject into the next task's conversation"
     )
+
+
+@pytest.mark.asyncio
+async def test_workflow_metadata_is_scoped_to_each_pooled_and_named_send(monkeypatch):
+    import kiro_crew.workflows.agent_pool as agent_pool
+
+    sessions = _FakeSessions()
+    sent = []
+    order = []
+
+    async def publish(_sessions, _key):
+        return None
+
+    async def stream(provider, prompt, **kwargs):
+        sent.append((prompt, kwargs.get("telemetry_context"), provider.session_id))
+        order.append(("stream", provider.session_id))
+        return prompt
+
+    monkeypatch.setattr(agent_pool, "publish_turn_identity", publish)
+    monkeypatch.setattr(agent_pool, "stream_and_collect", stream)
+    agent_fn, pool = build_pooled_agent_fn(
+        sessions, run_id="metadata", max_workers=1, max_identities=1
+    )
+
+    contexts = [
+        {
+            "workflow_run_id": "metadata",
+            "agent_id": f"a{i}",
+            "parent_session_key": "chat:root",
+            "turn_id": f"metadata:a{i}",
+        }
+        for i in range(5)
+    ]
+    bound = [[] for _ in contexts]
+    sends = [
+        (None, contexts[0]),
+        (None, contexts[1]),
+        ("named", contexts[2]),
+        ("named", contexts[3]),
+    ]
+    try:
+        for index, (session, context) in enumerate(sends):
+            def on_bound(session_id, *, target=bound[index]):
+                assert session_id
+                target.append(session_id)
+                order.append(("bound", session_id))
+
+            opts = {"telemetry_context": context, "on_session_bound": on_bound}
+            if session is not None:
+                opts["session"] = session
+            await agent_fn(f"prompt-{index}", opts)
+
+        # One identity fills the only specialist sub-pool; the next one uses the
+        # create-run-destroy path while keeping its own telemetry context.
+        await agent_fn("prompt-fill-subpool", {"model": "m1"})
+
+        def on_overflow_bound(session_id):
+            assert session_id
+            bound[4].append(session_id)
+            order.append(("bound", session_id))
+
+        await agent_fn(
+            "prompt-overflow",
+            {
+                "model": "m2",
+                "telemetry_context": contexts[4],
+                "on_session_bound": on_overflow_bound,
+            },
+        )
+
+        # A call without metadata follows the existing send_message/stream shape and
+        # cannot inherit the prior call's identities or binding callback.
+        await agent_fn("prompt-plain", {})
+
+        assert [context for _prompt, context, _session_id in sent] == [
+            *contexts[:4],
+            None,
+            contexts[4],
+            None,
+        ]
+        assert all(ids for ids in bound)
+        assert [ids[0] for ids in bound] == [session_id for _, _, session_id in sent[:4]] + [
+            sent[5][2]
+        ]
+        assert len({bound[0][0], bound[1][0]}) == 2  # reused worker reset the ACP session
+        assert bound[2][0] == bound[3][0]  # named chain kept its ACP session
+        assert [kind for kind, _session_id in order] == [
+            "bound",
+            "stream",
+            "bound",
+            "stream",
+            "bound",
+            "stream",
+            "bound",
+            "stream",
+            "stream",
+            "bound",
+            "stream",
+            "stream",
+        ]
+    finally:
+        await pool.shutdown()

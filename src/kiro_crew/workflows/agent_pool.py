@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
@@ -55,6 +56,7 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     WorkflowSpawnRefused,
+    _notify_session_bound,
     vet_step_spawn,
 )
 
@@ -75,7 +77,13 @@ def _log_unpooled_teardown_failure(action: str, exc: BaseException) -> None:
     )
 
 
-async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = None) -> str:
+async def _run_step(
+    provider: Any,
+    prompt: str,
+    *,
+    timeout: Optional[float] = None,
+    telemetry_context: Optional[Mapping[str, str]] = None,
+) -> str:
     """Stream one workflow agent step through ``provider`` and redact its output.
 
     Single source of truth for the per-step contract shared by the pooled worker
@@ -87,12 +95,13 @@ async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = No
     credential or exfiltration-URL leakage into workflow results stored in
     history / injected into parent chat).
     """
-    coro = stream_and_collect(
-        provider,
-        prompt,
-        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
-        max_turns=_MAX_TURNS_PER_STEP,
-    )
+    stream_kwargs: dict[str, Any] = {
+        "approval_policy": ToolApprovalPolicy.AUTO_APPROVE,
+        "max_turns": _MAX_TURNS_PER_STEP,
+    }
+    if isinstance(telemetry_context, Mapping):
+        stream_kwargs["telemetry_context"] = telemetry_context
+    coro = stream_and_collect(provider, prompt, **stream_kwargs)
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     return redact(text)
 
@@ -143,6 +152,32 @@ class _WorkflowSessionWorker:
         self._provider = provider
 
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
+        return await self._send_message(prompt, timeout=timeout)
+
+    async def send_message_with_metadata(
+        self,
+        prompt: str,
+        timeout: float = 1800.0,
+        *,
+        telemetry_context: Optional[Mapping[str, str]] = None,
+        on_session_bound: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """Send with one call's identities; neither value is retained on the worker."""
+        return await self._send_message(
+            prompt,
+            timeout=timeout,
+            telemetry_context=telemetry_context,
+            on_session_bound=on_session_bound,
+        )
+
+    async def _send_message(
+        self,
+        prompt: str,
+        *,
+        timeout: float,
+        telemetry_context: Optional[Mapping[str, str]] = None,
+        on_session_bound: Optional[Callable[[str], None]] = None,
+    ) -> str:
         if self._provider is None:
             await self.start()
         # Publish this turn's session identity so managed MCP tools resolve
@@ -154,6 +189,7 @@ class _WorkflowSessionWorker:
         # process (new pid). One shared writer lives in messaging.identity; it
         # is fail-safe by contract, so it can never break the turn.
         await publish_turn_identity(self._sessions, self._key)
+        _notify_session_bound(self._provider, on_session_bound)
         # Honor the pool's per-task timeout: a wedged turn is terminated here
         # instead of holding a _task_sema permit until the run-level ceiling.
         if self._memory_scope is not None:
@@ -167,7 +203,12 @@ class _WorkflowSessionWorker:
                 agent=self._agent,
                 cwd=self._cwd,
             )
-        result = await _run_step(self._provider, prompt, timeout=timeout)
+        result = await _run_step(
+            self._provider,
+            prompt,
+            timeout=timeout,
+            telemetry_context=telemetry_context,
+        )
         if self._memory_scope is not None:
             await self._memory_scope.validate()
         self._is_new = False
@@ -378,6 +419,7 @@ def build_pooled_agent_fn(
             # and the identity-cap overflow session both run on their own
             # kiro-cli process with no ambient session key.
             await publish_turn_identity(sessions, key)
+            _notify_session_bound(provider, opts.get("on_session_bound"))
             if memory_scope is not None:
                 prompt = await memory_scope.prompt(
                     context_builder,
@@ -389,7 +431,11 @@ def build_pooled_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=opts.get("cwd") or cwd,
                 )
-            result = await _run_step(provider, prompt)
+            result = await _run_step(
+                provider,
+                prompt,
+                telemetry_context=opts.get("telemetry_context"),
+            )
             if memory_scope is not None:
                 await memory_scope.validate()
             return result
@@ -436,7 +482,11 @@ def build_pooled_agent_fn(
         target = _pool_for(opts.get("agent"), opts.get("model"), opts.get("cwd"))
         if target is None:
             return await _run_unpooled(prompt, opts)
-        return await target.send(prompt)
+        return await target.send(
+            prompt,
+            telemetry_context=opts.get("telemetry_context"),
+            on_session_bound=opts.get("on_session_bound"),
+        )
 
     pool = _AggregatePool(default_pool, subpools)
     return agent_fn, pool

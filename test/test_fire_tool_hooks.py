@@ -14,6 +14,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     ScriptHook,
+    ScriptHookResult,
     ScriptHookStore,
     fire_tool_hooks,
     get_global_hook_store,
@@ -168,6 +169,50 @@ class TestFireToolHooks:
                 parent_session_key="dashboard:slot-1",
                 agent_role="utility",
             )
+
+    @pytest.mark.asyncio
+    async def test_fire_tool_hooks_forwards_tool_and_session_identity(
+        self, hook_store: ScriptHookStore
+    ):
+        hook_store.create(
+            {
+                "name": "identity-hook",
+                "event": HOOK_EVENT_PRE_TOOL_USE,
+                "command": "echo test",
+            }
+        )
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ScriptHookResult(
+                hook_id="identity-hook",
+                hook_name="identity-hook",
+                event=HOOK_EVENT_PRE_TOOL_USE,
+            )
+            await fire_tool_hooks(
+                hook_store,
+                "ReadFile",
+                event_tool_input='{"path": "README.md"}',
+                subagent_id="subagent-1",
+                parent_session_key="dashboard:parent",
+                agent_role="utility",
+                event_id="event-1",
+                tool_call_id="tool-call-1",
+                workflow_run_id="workflow-1",
+                agent_id="agent-1",
+                acp_session_id="acp-session-1",
+                turn_id="turn-1",
+                session_key="dashboard:own",
+            )
+        hook_event = mock_run.await_args.args[2]
+        assert hook_event["tool_name"] == "ReadFile"
+        assert hook_event["tool_input"] == {"path": "README.md"}
+        assert hook_event["event_id"] == "event-1"
+        assert hook_event["tool_call_id"] == "tool-call-1"
+        assert hook_event["workflow_run_id"] == "workflow-1"
+        assert hook_event["agent_id"] == "agent-1"
+        assert hook_event["acp_session_id"] == "acp-session-1"
+        assert hook_event["turn_id"] == "turn-1"
+        assert hook_event["session_key"] == "dashboard:own"
+        assert hook_event["parent_session_key"] == "dashboard:parent"
 
 
 class TestScriptHookStoreFire:

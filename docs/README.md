@@ -8,6 +8,12 @@ docs live in [`../website/docs/`](../website/docs/README.md).
 New here? Start with [guides/install.md](guides/install.md), then
 [architecture/overview.md](architecture/overview.md).
 
+For optional chat and workflow traces sent through an external AWS Collector,
+see [the OTLP trace guide](guides/telemetry-otlp-traces-aws-evaluations.md).
+The companion integration repository owns Collector configuration and
+deployment, AWS evaluation data and runners, and Spec Builder-only legacy
+validation; this repository documents the adapter-to-Collector contract only.
+
 ## Where things live
 
 | Directory | What it is for |

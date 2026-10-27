@@ -20,7 +20,7 @@ import asyncio
 import pytest
 
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
-from kiro_crew.workflows.runner import WorkflowRunner
+from kiro_crew.workflows.runner import WorkflowRunner, _call_fingerprint
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -65,6 +65,34 @@ def _checkpoint_sink():
             fingerprints[call_index] = fingerprint
 
     return sink, fingerprints
+
+
+async def test_telemetry_identity_and_binding_do_not_change_replay_fingerprint() -> None:
+    base = {"model": "m1"}
+    first = {
+        **base,
+        "telemetry_context": {
+            "workflow_run_id": "run-a",
+            "agent_id": "a0",
+            "parent_session_key": "chat:a",
+            "turn_id": "run-a:a0",
+        },
+        "on_session_bound": lambda _session_id: None,
+    }
+    second = {
+        **base,
+        "telemetry_context": {
+            "workflow_run_id": "run-b",
+            "agent_id": "a0",
+            "parent_session_key": "chat:b",
+            "turn_id": "run-b:a0",
+        },
+        "on_session_bound": lambda _session_id: None,
+    }
+
+    assert _call_fingerprint("same prompt", first, (0,)) == _call_fingerprint(
+        "same prompt", second, (0,)
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -20,6 +20,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
+from typing import Mapping as _Mapping
 
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import (
@@ -27,6 +28,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
+    AcpEvent,
 )
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.providers.base import CancelOutcome, LLMEvent
@@ -173,6 +175,27 @@ async def stream(
     ) as events:
         async for e in events:
             yield self._to_llm_event(e)
+
+
+async def stream_with_metadata(
+    self: AcpProvider,
+    message: str,
+    *,
+    telemetry_context: _Mapping[str, str] | None = None,
+    allow_image: bool = True,
+) -> AsyncIterator[AcpEvent]:
+    """Stream one ACP prompt with caller-supplied identity strings."""
+    await self._ready_confirmed_session()
+    send = self._client.stream_events
+    if telemetry_context is not None:
+        send = functools.partial(send, telemetry_context=telemetry_context)
+    if not allow_image:
+        send = functools.partial(send, allow_image=False)
+    async with aclosing(
+        self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+    ) as events:
+        async for event in events:
+            yield self._to_llm_event(event)
 
 
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:

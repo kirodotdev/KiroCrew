@@ -448,7 +448,14 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # the permission request is where the hooks run; firing here too
     # would run each twice.
     if not capabilities_of(client).crew_fires_spec_hooks:
-        await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
+        await fire_tool_hooks(
+            state._hook_store,
+            event.title,
+            event.tool_input,
+            tool_call_id=event.tool_call_id,
+            session_key=session_key,
+            turn_id=turn._recovery_turn_id,
+        )
     # Mirror tool call to linked Slack stream. Fenced like the reply
     # legs: a tool's purpose line is the peer's steer showing through in
     # what the model chose to do next, published to a thread whose owner

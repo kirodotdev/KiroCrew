@@ -171,14 +171,19 @@ def describe_agent_error(exc: BaseException) -> str:
 def _call_fingerprint(prompt: str, opts: dict, position: tuple) -> str:
     """Identity of one agent call for replay: its *position* in the run (see
     :class:`_CallScope`), the prompt, and every option that reaches the model,
-    without the display-only ``label`` and ``phase``.
+    without the display-only ``label`` and ``phase`` or transport-only
+    ``telemetry_context`` / ``on_session_bound`` metadata.
 
     The position keeps apart two branches that make the same call with the same
     options: each replays the answer its own call got, not the other branch's.
     Returns "" when the options cannot be serialized; a call without a
     fingerprint is never replayed and always runs live.
     """
-    keyed = {k: v for k, v in opts.items() if k not in ("label", "phase")}
+    keyed = {
+        k: v
+        for k, v in opts.items()
+        if k not in ("label", "phase", "telemetry_context", "on_session_bound")
+    }
     try:
         blob = json.dumps(
             {"position": list(position), "prompt": prompt, "opts": keyed},
@@ -522,6 +527,17 @@ class _RunContext:
             "cwd": cwd,
             "session": session,
             "nudge": nudge,
+            "telemetry_context": {
+                "workflow_run_id": self._run_id,
+                "agent_id": agent_id,
+                "parent_session_key": self._session_key,
+                "turn_id": f"{self._run_id}:{agent_id}",
+            },
+            "on_session_bound": lambda acp_session_id: self._record(
+                self._stream.agent_session_bound(
+                    self.now, agent_id=agent_id, acp_session_id=acp_session_id
+                )
+            ),
         }
         fingerprint = _call_fingerprint(prompt, opts, position)
         replay_index = self._replay_indices.pop(fingerprint, None) if fingerprint else None
