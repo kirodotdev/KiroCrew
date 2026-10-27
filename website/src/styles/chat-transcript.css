@@ -370,6 +370,14 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
   --diffs-font-family:var(--mono);
   --diffs-header-font-family:var(--mono);
   --diffs-font-size:13px;
+  /* Pierre's editor places the caret, selections and click targets at
+     column x the canvas width of '0' in the root's font, which knows nothing
+     of spacing. Tracking inherited from a host (the Files app root sets
+     -.02em) would make the rendered text narrower than that grid, so the
+     caret drifts further from the text the longer the line. Code is a fixed
+     grid on every surface, so the spacing is pinned here rather than per host. */
+  letter-spacing:normal;
+  word-spacing:normal;
 }
 /* Pin Pierre's canvas to the app theme's surface token. Must target the HOST
    element from the outer tree: the Shiki theme injects --diffs-*-bg in a

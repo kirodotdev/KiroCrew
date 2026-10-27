@@ -18,7 +18,7 @@ import { useDiffSplit } from '../hooks/useDiffSplit'
 import { countLines } from './FileChangeChips'
 import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
 import { detectFileType, BinaryFileCard } from './FileRenderers'
-import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
+import { ContentRenderer, MD_EXTS, BYTE_BACKED_FILE_TYPES, extOf, langFor, wrapCode } from './ContentRenderer'
 import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
@@ -173,25 +173,6 @@ import { pathBasename } from '../utils/pathBasename'
  */
 const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'video', 'audio', 'sheet', 'office']
 
-/**
- * The subset of {@link RICH_FILE_TYPES} whose viewer reads the FILE, not the
- * buffer -- each of these fetches from `filePath` (`/api/file-raw`,
- * `/api/file-stream`, `/api/file-sheet`, `/api/file-office-preview`) and never
- * looks at `content`.
- *
- * That distinction is what decides who gets the binary card. The rest of
- * `RICH_FILE_TYPES` -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` --
- * renders FROM the content string, so a file whose bytes could not be decoded
- * leaves those viewers with `''`: an empty table, an empty tree, a blank frame.
- * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
- * belongs on the card exactly as a `.zip` does.
- *
- * Named by mechanism rather than by "is rich", because the reason a viewer may
- * skip the card is that it can still show the real bytes -- not that it happens
- * to be a viewer.
- */
-const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
-
 const HINT_KEY = 'kirocrew:comment-hint-dismissed'
 
 /** Below this panel width the browser rail overlays the content instead of
@@ -227,19 +208,16 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // line-count correspondence anyway). So `README.md:42` opens the raw markdown at
   // line 42 rather than a paragraph that may contain it.
   //
-  // Rich types are excluded, and that is a deliberate scope line rather than an
-  // oversight. They have exactly ONE renderer by design — `isRichType` gates the
-  // source/preview toggle, the line-number controls,
-  // and the Cmd+S handler — so forcing one into an editor creates a file that is in
-  // source mode with none of the chrome that makes source mode usable, including no
-  // way back to its own viewer and no visible Save for a buffer the user has
-  // edited. Making that coherent means teaching every one of those gates about a
-  // rich-file-in-source-mode state, i.e. making rich files editable as text, which
-  // is a larger feature than a citation jump. So `data.json:42` opens the JSON
-  // viewer and drops the line: strictly better than the inert chip it used to be,
-  // and it strands nothing.
-  const revealTargetsSource = !RICH_FILE_TYPES.includes(detectFileType(filePath))
-  // Markdown (and other preview-capable types) opens in its viewer; everything
+  // The text-backed rich types (json, csv, html, ...) follow markdown: they open
+  // in their viewer and Edit switches them to source, so `data.json:42` opens the
+  // source at line 42 with Preview as the way back. The byte-backed rich types
+  // (image, pdf, ...) have no source, so a line on one of them is dropped and the
+  // viewer opens as usual -- as it does for a rich file whose buffer is partial,
+  // which never gets a source editor (see `richHasSource`).
+  const fileType = detectFileType(filePath)
+  const isRichType = RICH_FILE_TYPES.includes(fileType)
+  const revealTargetsSource = !isRichType || (!BYTE_BACKED_FILE_TYPES.has(fileType) && !partial)
+  // Markdown and the text-backed rich types open in their viewer; everything
   // else editable opens straight in the Pierre editor — there is no separate
   // read-only source mode for code files.
   const [editing, setEditing] = useState(() => {
@@ -374,9 +352,17 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const fullscreenPreviewRef = useRef<HTMLDivElement>(null)
   const fullscreenBodyRef = useRef<HTMLDivElement>(null)
   const ext = extOf(filePath)
-  const fileType = detectFileType(filePath)
   const isMarkdown = MD_EXTS.has(ext)
-  const isRichType = RICH_FILE_TYPES.includes(fileType)
+  // A rich type whose viewer renders from the buffer, so Edit can show that
+  // buffer as source. Byte-backed rich types stay view-only, and so does a
+  // PARTIAL buffer -- cut at the read cap or with credentials redacted: a save
+  // writes the buffer over the whole file, which would drop the unread tail or
+  // replace the real secrets with their redaction placeholders.
+  const richPartial = isRichType && !BYTE_BACKED_FILE_TYPES.has(fileType) && !!partial
+  const richHasSource = isRichType && !BYTE_BACKED_FILE_TYPES.has(fileType) && !partial
+  // The partial verdict can land after mount (a restored tab hears it from its
+  // hydration read), so a source view opened before it is closed here.
+  useEffect(() => { if (richPartial) setEditing(false) }, [richPartial])
   // A text diff needs the file as text. The content-backed rich types (json,
   // csv, html, ...) are text with a viewer on top, so they diff like code; only
   // the byte-backed ones have no text to diff. A wtdiff tab opens locked to
@@ -477,11 +463,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   // Discard pending edits (matches the artifact detail page's Cancel button).
   // Re-reads the file from disk into the buffer, clearing dirty. Confirms first
-  // because edits are gone for good. Only markdown-ish files have a preview to
-  // return to; code files stay in source mode (Cancel just discards edits).
-  // Also gates Cancel's "return to preview" — there is no preview to return
-  // to, and no buffer to discard.
-  const canPreview = isMarkdown && !showBinaryCard
+  // because edits are gone for good. Only markdown-ish files and the text-backed
+  // rich types have a preview to return to; code files stay in source mode
+  // (Cancel just discards edits). Also gates Cancel's "return to preview" — a
+  // binary card has no preview to return to, and no buffer to discard.
+  const canPreview = (isMarkdown || richHasSource) && !showBinaryCard
   const handleCancel = useCallback(async () => {
     if (!dirty) { if (canPreview) setEditing(false); return }
     if (!(await confirm({
@@ -962,6 +948,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
    *  read that puts the just-written text back over it. */
   const editGenRef = useRef(0)
   const handleSave = useCallback(async () => {
+    // A partial rich buffer is never written back (see `richPartial`). Edits
+    // typed before the verdict landed stay in the buffer -- nothing is
+    // discarded -- but the write is refused and says why.
+    if (richPartial) { setSaveError(i18nT('components.markdownPanel.partial_copy_read_only')); return }
     setSaving(true); setSaveError(null)
     const editGen = editGenRef.current
     try {
@@ -977,7 +967,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')) }
     finally { setSaving(false) }
-  }, [filePath, content, onSave, qc, evictFileRead])
+  }, [filePath, content, onSave, qc, evictFileRead, richPartial])
 
   const handleSaveRef = useRef(handleSave)
   useEffect(() => { handleSaveRef.current = handleSave }, [handleSave])
@@ -1186,8 +1176,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title={i18nT('components.markdownPanel.toggle_line_numbers')} aria-label={i18nT('components.markdownPanel.toggle_line_numbers')}><Hash size={14} /></button>
     )}
+    {/* The full-screen header row is capped and must not grow, so a rich
+        file's Edit/Preview takes the artifact button's slot (the artifact
+        action stays in ⋯). Its editor options live in ⋯ and its Save/Cancel
+        on the unsaved-changes row below. */}
     {canPreview && !readOnly && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }} aria-pressed={richHasSource ? editing : undefined}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
     )}
     {readOnly && (
       <span className="px-2 py-1 text-[12px] font-medium text-muted select-none" aria-label={i18nT('components.markdownPanel.read_only')}>{i18nT('components.markdownPanel.read_only')}</span>
@@ -1196,6 +1190,22 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty} onClick={handleSave}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
     )}
   </>)
+
+  // The unsaved-changes row: slides open while the buffer is dirty and holds
+  // the buffer's Cancel and Save. Its own row, so it never adds to a header.
+  const unsavedBar = (className: string) => (
+    <div className={`grid transition-[grid-template-rows] duration-200 ease-out shrink-0 ${className}`} style={{ gridTemplateRows: dirty ? '1fr' : '0fr' }} aria-hidden={!dirty}>
+      <div className="overflow-hidden min-h-0">
+        <div className="flex items-center gap-2 h-[40px] px-3 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border-b border-[color-mix(in_srgb,var(--warn)_30%,transparent)]">
+          <TriangleAlert size={13} className="text-warn shrink-0" />
+          <span className="text-[12px] text-text truncate">{i18nT('components.markdownPanel.unsaved_changes')}</span>
+          <span className="flex-1" />
+          <button className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors disabled:opacity-40 shrink-0" onClick={handleCancel} disabled={refreshing} title={i18nT('components.markdownPanel.cancel_discard_unsaved_edits')} tabIndex={dirty ? 0 : -1}>{i18nT('components.markdownPanel.cancel')}</button>
+          <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-40 shrink-0" disabled={saving || richPartial} title={richPartial ? i18nT('components.markdownPanel.partial_copy_read_only') : undefined} onClick={handleSave} tabIndex={dirty ? 0 : -1}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
+        </div>
+      </div>
+    </div>
+  )
 
   // Diff-mode +N/-N stats over the same original/modified pair the diff view shows.
   const diffStats = useMemo(
@@ -1266,7 +1276,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {richDiffChip}
             <span className="flex-1 min-w-[8px]" />
-            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
+            {/* Rich-source Edit/Preview takes the artifact button's slot so
+                this capped row does not grow; the artifact action stays in ⋯. */}
+            {!showBinaryCard && !richHasSource && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const kExt = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(kExt)
@@ -1282,6 +1294,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {readOnly && (
               <span className="px-2.5 h-[26px] inline-flex items-center text-[11.5px] font-medium text-muted select-none shrink-0" aria-label={i18nT('components.markdownPanel.read_only')}>{i18nT('components.markdownPanel.read_only')}</span>
+            )}
+            {/* Where Edit would be: says why a partial rich file has none. */}
+            {richPartial && !readOnly && !showBinaryCard && (
+              <span
+                className="px-2.5 h-[26px] inline-flex items-center text-[11.5px] font-medium text-muted select-none shrink-0"
+                title={i18nT('components.markdownPanel.partial_copy_read_only')}
+                aria-label={i18nT('components.markdownPanel.partial_copy_read_only')}
+                data-testid="markdown-panel-partial-read-only"
+              >{i18nT('components.markdownPanel.read_only')}</span>
             )}
             {!isRichType && !showBinaryCard && !readOnly && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>
@@ -1327,17 +1348,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               column only (the header keeps its height and the browser rail
               never moves). 40px + the negative right margin over the grip
               keep its divider continuous with the rail header's. */}
-          <div className={`grid transition-[grid-template-rows] duration-200 ease-out shrink-0 ${railOpen ? '-mr-1' : ''}`} style={{ gridTemplateRows: dirty ? '1fr' : '0fr' }} aria-hidden={!dirty}>
-            <div className="overflow-hidden min-h-0">
-              <div className="flex items-center gap-2 h-[40px] px-3 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border-b border-[color-mix(in_srgb,var(--warn)_30%,transparent)]">
-                <TriangleAlert size={13} className="text-warn shrink-0" />
-                <span className="text-[12px] text-text truncate">{i18nT('components.markdownPanel.unsaved_changes')}</span>
-                <span className="flex-1" />
-                <button className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors disabled:opacity-40 shrink-0" onClick={handleCancel} disabled={refreshing} title={i18nT('components.markdownPanel.cancel_discard_unsaved_edits')} tabIndex={dirty ? 0 : -1}>{i18nT('components.markdownPanel.cancel')}</button>
-                <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-40 shrink-0" disabled={saving} onClick={handleSave} tabIndex={dirty ? 0 : -1}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
-              </div>
-            </div>
-          </div>
+          {unsavedBar(railOpen ? '-mr-1' : '')}
           {lastCopy && <MissingFileBanner onDownload={downloadLastCopy} onCopy={() => { void copyLastCopy() }} copied={lastCopyCopied} partial={partialCopy} />}
           {/* In markdown preview the scroll box runs flush to the panel's right
               border so the outline rail sits on that edge; pr-6 keeps the text
@@ -1414,7 +1425,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           </div>
           <div className="flex items-center gap-1.5">
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
+            {!showBinaryCard && !richHasSource && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(ext)
@@ -1423,10 +1434,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             })()}
             {editorToolbarButtons}
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined}
+              wordWrap={wordWrap} onToggleWordWrap={richHasSource && editing ? () => setWordWrap(!wordWrap) : undefined}
+              lineNums={lineNums} onToggleLineNums={richHasSource && editing ? () => setLineNums(!lineNums) : undefined}
               diffView={diffMode} onToggleDiffView={canToggleRichDiff ? toggleDiffMode : undefined} />
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => { void guardDraft(() => setFullscreen(false)) }} title={i18nT('components.markdownPanel.exit_full_screen_esc')} aria-label={i18nT('components.markdownPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>
+        {/* Code and markdown keep their Save in the header; a rich file in
+            source mode has none there, so its Save rides this row instead. */}
+        {richHasSource && unsavedBar('')}
         {panelNotices && <div className="px-16">{panelNotices}</div>}
         {isMarkdown && !editing && onSubmitComments && !hintDismissed && <div className="px-16"><CommentHint onDismiss={dismissHint} /></div>}
         {lastCopy && <div className="px-4 sm:px-16"><MissingFileBanner onDownload={downloadLastCopy} onCopy={() => { void copyLastCopy() }} copied={lastCopyCopied} partial={partialCopy} /></div>}

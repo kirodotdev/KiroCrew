@@ -7644,6 +7644,7 @@
       "failed_to_add_source": "No se pudo añadir la fuente",
       "file_not_found_last_copy": "No se encontró el archivo en el disco — nada más conserva su contenido; descárgalo o guárdalo en otro lugar para conservarlo.",
       "file_not_found_partial_copy": "No se encontró el archivo en el disco — esta pestaña solo tiene una parte (la copia se cortó o se ocultaron credenciales); descarga lo que hay aquí para conservarlo.",
+      "partial_copy_read_only": "Solo lectura: esta pestaña solo tiene una parte del archivo (la copia se cortó o se ocultaron credenciales), así que guardarlo sobrescribiría lo que quedó fuera.",
       "close_last_copy": "¿Descartar el contenido que queda del archivo?",
       "close_last_copy_dirty_body": "{{name}} no está en el disco y esta pestaña tiene cambios sin guardar; nada más conserva su contenido. Para conservarlo, descárgalo primero.",
       "close_partial_copy_body": "{{name}} no está en el disco y esta pestaña solo tiene una parte (la copia se cortó o se ocultaron credenciales); nada más conserva ni eso. Para conservar lo que hay aquí, descárgalo primero.",

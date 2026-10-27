@@ -7644,6 +7644,7 @@
       "failed_to_add_source": "Échec de l’ajout de la source",
       "file_not_found_last_copy": "Fichier introuvable sur le disque — rien d’autre ne conserve son contenu ; télécharge-le ou enregistre-le ailleurs pour le conserver.",
       "file_not_found_partial_copy": "Fichier introuvable sur le disque — cet onglet n’en contient qu’une partie (la copie a été tronquée ou des identifiants ont été masqués) ; télécharge ce qui est ici pour le conserver.",
+      "partial_copy_read_only": "Lecture seule : cet onglet ne contient qu’une partie du fichier (la copie a été tronquée ou des identifiants ont été masqués), donc l’enregistrer écraserait ce qui a été laissé de côté.",
       "close_last_copy": "Abandonner le contenu restant du fichier ?",
       "close_last_copy_dirty_body": "{{name}} n’est pas sur le disque et cet onglet contient des modifications non enregistrées ; rien d’autre ne conserve son contenu. Pour le conserver, télécharge-le d’abord.",
       "close_partial_copy_body": "{{name}} n’est pas sur le disque et cet onglet n’en contient qu’une partie (la copie a été tronquée ou des identifiants ont été masqués) ; rien d’autre ne conserve même cela. Pour conserver ce qui est ici, télécharge-le d’abord.",

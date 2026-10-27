@@ -27,6 +27,30 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 export const MD_EXTS = new Set(['.md', '.markdown', '.mdx', '.txt', ''])
 
+/**
+ * The rich file types whose viewer reads the FILE, not the buffer -- each of
+ * these fetches from `filePath` (`/api/file-raw`, `/api/file-stream`,
+ * `/api/file-sheet`, `/api/file-office-preview`) and never looks at `content`.
+ *
+ * That distinction is what decides who gets the binary card. The rest of
+ * the rich types -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` --
+ * renders FROM the content string, so a file whose bytes could not be decoded
+ * leaves those viewers with `''`: an empty table, an empty tree, a blank frame.
+ * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
+ * belongs on the card exactly as a `.zip` does.
+ *
+ * Named by mechanism rather than by "is rich", because the reason a viewer may
+ * skip the card is that it can still show the real bytes -- not that it happens
+ * to be a viewer.
+ */
+export const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
+
+/** Highlighting for a rich type in source mode, where the file extension's own
+ *  mapping has none (an `.excalidraw` scene is JSON). */
+function sourceLangFor(fileType: string, lang: string): string {
+  return fileType === 'excalidraw' ? 'json' : lang
+}
+
 export function extOf(fp: string): string {
   const i = fp.lastIndexOf('.')
   return i >= 0 ? fp.slice(i).toLowerCase() : ''
@@ -157,6 +181,7 @@ export const ContentRenderer = memo(function ContentRenderer({
                     onChange={onChange}
                     onSave={onSave}
                     flush={flush}
+                    editorRef={editorRef}
                     filePath={filePath}
                   />
                 </div>
@@ -165,20 +190,20 @@ export const ContentRenderer = memo(function ContentRenderer({
           </div>
         ) : <SvgViewer content={content} />
       )}
-      {isRichType && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
-      {isRichType && fileType === 'json' && <JsonViewer content={content} />}
-      {isRichType && fileType === 'jsonl' && <JsonlViewer content={content} />}
-      {isRichType && fileType === 'html' && <HtmlViewer content={content} />}
+      {isRichType && !editing && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
+      {isRichType && !editing && fileType === 'json' && <JsonViewer content={content} />}
+      {isRichType && !editing && fileType === 'jsonl' && <JsonlViewer content={content} />}
+      {isRichType && !editing && fileType === 'html' && <HtmlViewer content={content} />}
       {isRichType && fileType === 'pdf' && filePath && <PdfViewer filePath={filePath} />}
       {isRichType && fileType === 'sheet' && filePath && <SheetViewer filePath={filePath} />}
       {isRichType && fileType === 'office' && filePath && <OfficeViewer filePath={filePath} />}
       {isRichType && fileType === 'video' && filePath && <MediaPlayer filePath={filePath} kind="video" />}
       {isRichType && fileType === 'audio' && filePath && <MediaPlayer filePath={filePath} kind="audio" />}
-      {isRichType && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
-      {!isRichType && editing && (
+      {isRichType && !editing && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
+      {editing && (!isRichType || (!BYTE_BACKED_FILE_TYPES.has(fileType) && fileType !== 'svg')) && (
         <CodeEditor
           content={content}
-          lang={lang}
+          lang={sourceLangFor(fileType, lang)}
           lineNums={lineNums}
           wordWrap={wordWrap}
           onChange={onChange}

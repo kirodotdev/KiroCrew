@@ -7519,6 +7519,7 @@
       "failed_to_add_source": "Quelle konnte nicht hinzugefügt werden",
       "file_not_found_last_copy": "Datei auf dem Datenträger nicht gefunden — sonst hält nichts ihren Inhalt; lade sie herunter oder speichere sie an anderer Stelle, um sie zu behalten.",
       "file_not_found_partial_copy": "Datei auf dem Datenträger nicht gefunden — dieser Tab hält nur einen Teil davon (die Kopie wurde gekürzt oder Zugangsdaten wurden geschwärzt); lade herunter, was hier ist, um es zu behalten.",
+      "partial_copy_read_only": "Schreibgeschützt: Dieser Tab hält nur einen Teil der Datei (die Kopie wurde gekürzt oder Zugangsdaten wurden geschwärzt), daher würde Speichern das Ausgelassene überschreiben.",
       "close_last_copy": "Den verbliebenen Inhalt der Datei verwerfen?",
       "close_last_copy_dirty_body": "{{name}} ist nicht auf dem Datenträger und dieser Tab hält ungespeicherte Änderungen; sonst hält nichts ihren Inhalt. Um sie zu behalten, lade sie zuerst herunter.",
       "close_partial_copy_body": "{{name}} ist nicht auf dem Datenträger und dieser Tab hält nur einen Teil davon (die Kopie wurde gekürzt oder Zugangsdaten wurden geschwärzt); sonst hält nichts auch nur das. Um zu behalten, was hier ist, lade es zuerst herunter.",

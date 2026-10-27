@@ -7644,6 +7644,7 @@
       "failed_to_add_source": "Falha ao adicionar a fonte",
       "file_not_found_last_copy": "Arquivo não encontrado no disco — nada mais guarda seu conteúdo; baixe-o ou salve-o em outro lugar para mantê-lo.",
       "file_not_found_partial_copy": "Arquivo não encontrado no disco — esta aba tem apenas parte dele (a cópia foi cortada ou teve credenciais ocultadas); baixe o que está aqui para mantê-lo.",
+      "partial_copy_read_only": "Somente leitura: esta aba tem apenas parte do arquivo (a cópia foi cortada ou teve credenciais ocultadas), então salvá-lo sobrescreveria o que ficou de fora.",
       "close_last_copy": "Descartar o conteúdo restante do arquivo?",
       "close_last_copy_dirty_body": "{{name}} não está no disco e esta aba tem alterações não salvas; nada mais guarda seu conteúdo. Para mantê-lo, baixe-o primeiro.",
       "close_partial_copy_body": "{{name}} não está no disco e esta aba tem apenas parte dele (a cópia foi cortada ou teve credenciais ocultadas); nada mais guarda nem isso. Para manter o que está aqui, baixe-o primeiro.",

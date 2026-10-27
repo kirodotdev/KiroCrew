@@ -7644,6 +7644,7 @@
       "failed_to_add_source": "Impossibile aggiungere l’origine",
       "file_not_found_last_copy": "File non trovato sul disco — nient’altro ne conserva il contenuto; scaricalo o salvalo altrove per conservarlo.",
       "file_not_found_partial_copy": "File non trovato sul disco — questa scheda ne contiene solo una parte (la copia è stata troncata o sono state oscurate credenziali); scarica quel che c’è qui per conservarlo.",
+      "partial_copy_read_only": "Sola lettura: questa scheda contiene solo una parte del file (la copia è stata troncata o sono state oscurate credenziali), quindi salvarlo sovrascriverebbe ciò che è rimasto fuori.",
       "close_last_copy": "Scartare il contenuto rimasto del file?",
       "close_last_copy_dirty_body": "{{name}} non è sul disco e questa scheda contiene modifiche non salvate; nient’altro ne conserva il contenuto. Per conservarlo, scaricalo prima.",
       "close_partial_copy_body": "{{name}} non è sul disco e questa scheda ne contiene solo una parte (la copia è stata troncata o sono state oscurate credenziali); nient’altro conserva nemmeno quella. Per conservare quel che c’è qui, scaricalo prima.",

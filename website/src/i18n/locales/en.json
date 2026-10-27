@@ -4839,6 +4839,7 @@
       "exit_full_screen_esc": "Exit full screen (Esc)",
       "file_not_found_last_copy": "File not found on disk — nothing else holds its contents; download it or save it elsewhere to keep it.",
       "file_not_found_partial_copy": "File not found on disk — this tab holds only part of it (the copy was cut short or had credentials redacted); download what is here to keep it.",
+      "partial_copy_read_only": "Read-only: this tab holds only part of the file (the copy was cut short or had credentials redacted), so saving it would overwrite what was left out.",
       "close_last_copy": "Discard the file’s remaining contents?",
       "close_last_copy_dirty_body": "{{name}} is not on disk and this tab holds unsaved edits; nothing else holds its contents. To keep it, download it first.",
       "close_partial_copy_body": "{{name}} is not on disk and this tab holds only part of it (the copy was cut short or had credentials redacted); nothing else holds even that. To keep what is here, download it first.",
