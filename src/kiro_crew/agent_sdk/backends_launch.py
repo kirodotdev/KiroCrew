@@ -44,9 +44,11 @@ from kiro_crew.agent_sdk.backends import (
 # a layer that does not exist. See :mod:`kiro_crew.acp.kas_transport`.
 #
 # codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
-# is the only OS confinement a codex session gets. The Codex sandbox modes the
-# adapter can apply are in-process policy, not an OS sandbox that Crew's would
-# nest inside.
+# is the only OS confinement Crew applies to a codex session. codex-acp is NOT
+# sandbox-free, though: on macOS Codex applies its OWN Seatbelt (``sandbox-exec``)
+# per command, which cannot nest inside Crew's -- so a codex session Crew's macOS
+# Seatbelt would wrap is refused before the spawn (``acp/harness/codex.py``),
+# rather than delegated to like kiro-cli's internal sandbox.
 #
 # opencode is excluded, and here the exclusion is load-bearing rather than
 # conservative: Crew's own sandbox layer carries the credential mask that is the

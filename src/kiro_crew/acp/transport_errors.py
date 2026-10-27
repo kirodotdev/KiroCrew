@@ -268,6 +268,46 @@ class AcpSandboxInitFailed(AcpError):  # noqa: N818
         )
 
 
+class AcpCodexNestedSandbox(AcpError):  # noqa: N818
+    """On macOS, Kiro Crew's Seatbelt would wrap a Codex session that applies its own.
+
+    Refused BEFORE the spawn. On macOS Codex enforces its own sandbox policy by
+    running each command under ``sandbox-exec`` (a Seatbelt profile), and codex is
+    not in ``ACP_BACKENDS_INTERNAL_SANDBOX``, so Crew wraps the ``codex-acp``
+    process in its OWN Seatbelt. macOS refuses a second ``sandbox_apply`` inside an
+    active Seatbelt sandbox, so every command would die with
+    ``sandbox-exec: sandbox_apply: Operation not permitted`` / exit 71 -- nothing
+    to retry and no command that could succeed. Known from the platform and the
+    resolved backend before any process exists, so it is refused up front.
+
+    Non-retryable, and DISTINCT from :class:`AcpSandboxInitFailed`: that class is
+    classified from a dead child's stderr after a spawn and its remedy points at
+    the host-sandbox check, whereas here Crew's sandbox is working as intended and
+    the nesting is the harness's own second layer. Deliberately NOT answered by
+    loosening a sandbox -- the message names choices (another harness on macOS, or
+    a host where Crew's macOS sandbox is not applied to Codex) that keep both
+    sandboxes intact. It is NOT tagged ``session_start_failed``: that tag renders
+    the start-timeout card (Resume / restart the gateway), which would contradict
+    this message's own "Retrying cannot fix this" -- the same reason
+    :class:`AcpDelegateLaunchFailed` avoids it. The plain ``user_worded`` terminal
+    row is correct.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "the Codex backend cannot run under Kiro Crew's macOS sandbox: Codex "
+            "applies its own Seatbelt sandbox (sandbox-exec) to every command, and "
+            "macOS refuses a sandbox nested inside Kiro Crew's own Seatbelt, so "
+            "every command would fail with 'sandbox-exec: sandbox_apply: Operation "
+            "not permitted' (exit 71). Retrying cannot fix this. Use a different "
+            "backend on macOS, or run Codex on a host where Kiro Crew's macOS "
+            "sandbox is not applied to it -- do NOT turn a sandbox off to work "
+            "around this.",
+            transient=False,
+            user_worded=True,
+        )
+
+
 class AcpDelegateLaunchFailed(AcpError):  # noqa: N818
     """The ``kiro-cli-chat`` delegate failed to launch, so the agent child never started.
 
