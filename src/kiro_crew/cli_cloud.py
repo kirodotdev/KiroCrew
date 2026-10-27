@@ -553,26 +553,6 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     return 0
 
 
-#: The doctor's next step for a refused ``aws`` CLI or plugin with no fix command,
-#: by ``ssm`` refusal code. A root gateway and the strict policy are not cleared
-#: by an ownership change, and another account's file must not be made trusted:
-#: the step for it is a copy from AWS, in folders only root or this account own.
-_REFUSAL_NEXT_STEP = {
-    "other_owner": (
-        "Install a copy with AWS's own installer, then rerun. That copy runs only if "
-        "it and every folder above it belong to root or to the account the gateway "
-        "runs as. If a folder such as /usr/local/bin belongs to the other account, an "
-        "administrator must make root its owner first (see the Remote Crew on EC2 guide)."
-    ),
-    "root_gateway": "Start the gateway from a regular account instead of root, then rerun.",
-    "strict_policy": (
-        "Install it where only root can change the file and its folders, at a path "
-        "with no symbolic links, then rerun."
-    ),
-    "": "Fix the file's ownership or permissions so the check passes, then rerun.",
-}
-
-
 def _cloud_doctor(args: argparse.Namespace) -> int:
     """Read-only diagnostics for the cloud launcher prerequisites."""
     import shutil
@@ -589,7 +569,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
         # Found but refused: the install link would put the same refused file back.
         ui.fail(f"aws CLI found at {cli_refusal.path} but refused: {cli_refusal.reason}")
-        ui.detail(_REFUSAL_NEXT_STEP.get(cli_refusal.code, _REFUSAL_NEXT_STEP[""]))
+        ui.detail(ssm.REFUSAL_NEXT_STEP.get(cli_refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
@@ -607,7 +587,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
                 f"Then make its install directory root-owned and rerun: {refusal.remedy_command}"
             )
         else:
-            ui.detail(_REFUSAL_NEXT_STEP.get(refusal.code, _REFUSAL_NEXT_STEP[""]))
+            ui.detail(ssm.REFUSAL_NEXT_STEP.get(refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
         ui.warn("session-manager-plugin not found — needed to connect over SSM")
         ui.detail(ssm.session_manager_plugin_install_hint())
@@ -636,6 +616,10 @@ def _ensure_session_manager_plugin() -> bool:
     """Install the local Session Manager plugin when a cloud command needs SSM tunnels."""
     if ssm.session_manager_plugin_installed():
         return True
+    if ssm.reinstall_cannot_clear_refusal():
+        # Refused inside AWS's install tree: a reinstall rewrites the same file.
+        ui.fail(ssm.session_manager_plugin_unavailable_message())
+        return False
     ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
     ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
     if not ui.confirm("Install session-manager-plugin now?", default=True):

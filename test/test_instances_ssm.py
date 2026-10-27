@@ -1121,6 +1121,7 @@ class TestSsmTransportSelection:
             return False  # short-circuit: no tunnel spawn, error status asserted
 
         monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_installed", _probe)
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_refusal", lambda: None)
         reg, mgr = self._mgr(tmp_path)
         reg.add(
             name="EC2",
@@ -1141,6 +1142,7 @@ class TestSsmTransportSelection:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_refusal", lambda: None)
         reg, mgr = self._mgr(tmp_path)
         reg.add(
             name="EC2",
@@ -1153,6 +1155,34 @@ class TestSsmTransportSelection:
         assert st.state == TunnelState.ERROR
         assert "session-manager-plugin" in st.error
         # No tunnel was spawned for a missing prerequisite.
+        assert mgr.status("ec2") is None
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_ssm_connect_names_a_refused_plugin_not_missing(self, tmp_path, monkeypatch):
+        """Remote Crew says why an installed plugin was refused."""
+        from kiro_crew.cloud import ssm as cloud_ssm
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        refusal = cloud_ssm.PluginRefusal(
+            path="/usr/local/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="",
+        )
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_refusal", lambda: refusal)
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(
+            name="EC2",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            instance_id="ec2",
+            remote_port=53515,
+        )
+        st = await mgr.connect("ec2")
+        assert st.state == TunnelState.ERROR
+        assert "not installed" not in st.error
+        assert refusal.path in st.error and refusal.reason in st.error
         assert mgr.status("ec2") is None
         await mgr.shutdown()
 

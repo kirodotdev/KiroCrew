@@ -800,6 +800,10 @@ def _ensure_session_manager_plugin(*, assume_yes: bool = False) -> bool:
     if ssm.session_manager_plugin_installed():
         ui.ok("session-manager-plugin found")
         return True
+    if ssm.reinstall_cannot_clear_refusal():
+        # Refused inside AWS's install tree: a reinstall rewrites the same file.
+        ui.fail(ssm.session_manager_plugin_unavailable_message())
+        return False
 
     ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
     ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
