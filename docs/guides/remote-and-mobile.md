@@ -622,6 +622,13 @@ In the Chat composer, tap `+` to open the device's native Files picker and
 attach an image or a regular file. This direct touch path does not open the
 desktop-style command menu first.
 
+On a phone, Return starts a new line in the chat composers (the Chat page, a
+mate's chat, the side panel), in a mate thread reply and in Edit & Resend.
+Tap Send to send. A phone's on-screen keyboard has no Shift+Return, so a
+Return that sent would leave no way to write a second line. On a tablet or a
+desktop, **Settings → Chat → Composer → Send shortcut** decides what Return
+does.
+
 ### Session duration
 
 Three clocks. The first two are signed into the access token payload
