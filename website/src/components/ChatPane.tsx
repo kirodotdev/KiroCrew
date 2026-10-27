@@ -99,6 +99,7 @@ export default function ChatPane({
   frameless,
   topInset = 0,
   followContentWidth,
+  pushToTalk = false,
   hideEmptyHint,
   openSideChat,
   leading,
@@ -231,15 +232,17 @@ export default function ChatPane({
   // P3-b). Its Voice atom is what gives the pane a microphone: the pane wires no
   // voice props, only the two things the atom cannot know — the endpointer's
   // auto-submit, and (through the root) that a pane's composer IS its slot's, so
-  // the atom's default on-screen predicate is exact. No push-to-talk here: that
-  // key binding is document-wide and ChatPage owns it (follow-up: focused-pane
-  // ownership). The pane's steer-not-queue rule (#8852) stays on `canSteer`
-  // below until the Send atom exists.
+  // the atom's default on-screen predicate is exact. Push-to-talk only when the
+  // host says so (`pushToTalk`): the key binding is document-wide, so a
+  // split-view grid of panes must not arm it (ChatPage owns it there); the
+  // Members page's single DM pane does. The pane's steer-not-queue rule
+  // (#8852) stays on `canSteer` below until the Send atom exists.
   const composerRef = useRef<ComposerHandle>(null)
   const autoSubmitRef = useRef<(() => void) | null>(null)
   const composerVoiceOptions = useMemo<ComposerVoiceOptions>(() => ({
     onAutoSubmit: () => { autoSubmitRef.current?.() },
-  }), [])
+    pushToTalk,
+  }), [pushToTalk])
   // Shared composer-busy rule (chatSlice.selectComposerBusy): main turn
   // streaming OR sub-agents running (dual signal). Drives the queue affordance
   // and skips the optimistic user bubble (the backend returns a "queued"

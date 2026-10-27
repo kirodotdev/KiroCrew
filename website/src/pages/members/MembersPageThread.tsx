@@ -1124,6 +1124,13 @@ export function MembersPageThreadColumn({
                         composerInput={CrewComposer}
                         frameless
                         followContentWidth
+                        // The DM is this page's only composer, so it owns the
+                        // "Start Dictation with a Key" binding (#24967) — but
+                        // only while nothing covers it: the key listens on the
+                        // whole document, so under the New crewmate form or an
+                        // overlay it would dictate into (and maybe send to)
+                        // the hidden chat.
+                        pushToTalk={threadView.chatUncovered}
                         // The failure notice above owns the verdict on this thread
                         // while a repair has failed; the pane's own "Session
                         // ready" would contradict it one line down.

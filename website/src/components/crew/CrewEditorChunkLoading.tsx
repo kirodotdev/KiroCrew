@@ -14,6 +14,7 @@ export default function CrewEditorChunkLoading() {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg/60"
       role="dialog"
+      aria-modal="true"
       aria-busy="true"
       aria-label={i18nT('pages.chatPage.loading')}
       data-testid="crew-editor-chunk-loading"

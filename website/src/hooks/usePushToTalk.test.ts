@@ -862,3 +862,85 @@ describe('disabled key (issue #13078)', () => {
     expect(voice.start).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('disabling the hook never strands a running capture', () => {
+  beforeEach(() => savePttConfig(MAC_ALT_RIGHT))
+
+  // A host disables the key while something covers the chat. A latch that was
+  // already running when that happened must still be stoppable with the key:
+  // the hook's blur/visibility guards skip an idle phase and the cap timer only
+  // arms for a hold, so the key is the only thing that can end it.
+  it('a press still stops a latch that was running when disabled turned on', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true }); act(() => { vi.advanceTimersByTime(200) }); up('AltRight')
+    expect(voice.recording).toBe(true)
+
+    rerender({ disabled: true })
+    down('AltRight', { altKey: true })
+    expect(voice.calls).toEqual(['start', 'stop'])
+    expect(voice.recording).toBe(false)
+
+    // Stopped, still disabled: the next press must not open a new capture.
+    up('AltRight')
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    up('AltRight')
+    expect(voice.start).toHaveBeenCalledTimes(1)
+    expect(voice.calls).toEqual(['start', 'stop'])
+  })
+
+  it('a press while disabled with nothing capturing does not start', () => {
+    const voice = makeVoice()
+    renderHook(() => usePushToTalk(voice, { disabled: true }))
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    up('AltRight')
+    expect(voice.start).not.toHaveBeenCalled()
+    expect(voice.calls).toEqual([])
+  })
+
+  it('an unrelated key while disabled does not stop a running latch', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true }); act(() => { vi.advanceTimersByTime(200) }); up('AltRight')
+    rerender({ disabled: true })
+    down('KeyA')
+    expect(voice.calls).toEqual(['start'])
+    expect(voice.recording).toBe(true)
+  })
+
+  // A hold in progress when disabled flips still reconciles a keyup the hook
+  // never saw, from the next keystroke's live modifier flags.
+  it('a held press that loses its keyup still commits after disabled turns on', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    rerender({ disabled: true })
+    down('KeyA')
+    expect(voice.calls).toEqual(['start', 'stop'])
+  })
+
+  it('a held press still ends on release after disabled turns on', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    rerender({ disabled: true })
+    up('AltRight')
+    expect(voice.calls).toEqual(['start', 'stop'])
+  })
+})

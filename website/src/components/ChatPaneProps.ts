@@ -56,6 +56,12 @@ export interface ChatPaneProps {
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** This pane's composer owns the document-wide "Start Dictation with a Key"
+   *  binding. Defaults to false: the key listens on the whole document, so
+   *  only a host that shows ONE composer may set it (N armed panes would
+   *  open N captures on one keystroke). The Members page's DM pane sets it;
+   *  split-view panes leave it off and ChatPage keeps its own. */
+  pushToTalk?: boolean
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,

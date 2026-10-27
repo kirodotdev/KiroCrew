@@ -239,7 +239,7 @@ vi.mock('../../components/ChatPane', async () => {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
-      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
+      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-push-to-talk={rest.pushToTalk ? '1' : '0'}>
         {slotKey}
         {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
@@ -1161,5 +1161,22 @@ describe('New mate dialog', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(api.memberGreet).toHaveBeenCalledTimes(1)
     expect(sendMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('MembersPage: the dictation key under the New crewmate card (#24967)', () => {
+  it('disarms the DM pane\'s dictation key while the card covers it, and re-arms it when the card closes', async () => {
+    await renderPage([row()])
+    const pane = await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    await waitFor(() => expect(pane).toHaveAttribute('data-push-to-talk', '1'))
+    await clickAddAdvanced()
+    await screen.findByTestId('crewmate-create-form')
+    // The key listens on the whole document: under the card it would dictate
+    // into, and could send to, the hidden chat.
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-push-to-talk', '0'))
+    // An empty card closes on the rail's Crewmates entry (no draft to guard).
+    clickRailMembers()
+    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-push-to-talk', '1'))
   })
 })
