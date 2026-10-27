@@ -423,6 +423,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, slot_name: 'str', thread_ts: 'str', channel_id: 'str') -> 'None'",
     ),
+    "lane_queue_priorities": ("function", False, False, "(self) -> 'dict[str, str]'"),
     "linked_session_busy": ("function", False, False, "(self, session_key: 'str') -> 'bool'"),
     "live_slot_count": ("function", False, False, "(self) -> 'int'"),
     "load_chat_pins": ("function", False, False, "(self) -> 'None'"),
@@ -513,6 +514,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, key: 'str', fields: 'Iterable[str]') -> 'None'",
     ),
     "push_slot_removed": ("function", False, False, "(self, key: 'str') -> 'None'"),
+    "queue_priority_of": (
+        "function",
+        False,
+        False,
+        "(self, slot: 'Any', *, tiers: 'Mapping[str, str] | None' = None) -> 'str | None'",
+    ),
     "push_slot_title": (
         "function",
         False,
@@ -679,7 +686,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, slot: '_ChatSlot', *, include_check_status: 'bool' = False, "
-        "dashboard_user: 'bool' = False) -> 'dict[str, Any]'",
+        "dashboard_user: 'bool' = False, queue_tiers: 'Mapping[str, str] | None' = None) "
+        "-> 'dict[str, Any]'",
     ),
     "serialize_slot_views": (
         "function",
@@ -710,6 +718,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, ws: 'web.WebSocketResponse', slots: 'object') -> 'dict | None'",
     ),
     "set_dynamic_cards_enabled": ("function", False, False, "(self, enabled: 'bool') -> 'None'"),
+    "set_queue_priority": ("function", False, False, "(self, slot: 'Any', tier: 'str') -> 'bool'"),
     "set_fold_apply_capable": (
         "function",
         False,

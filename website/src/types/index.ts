@@ -73,6 +73,7 @@ export type {
   ConfiguredChannelTarget,
   TurnIdentityFields,
   ChatDonePayload,
+  QueuePriority,
   ChatSlot,
   ChatFolder,
   AgentTagPolicy,

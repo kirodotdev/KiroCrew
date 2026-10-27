@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
@@ -872,8 +873,13 @@ def serialize_slot(
     *,
     include_check_status: bool = False,
     dashboard_user: bool = False,
+    queue_tiers: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Serialize one slot with state-backed channel-link metadata."""
+    """Serialize one slot with state-backed channel-link metadata.
+
+    *queue_tiers* is the lane-tier map a whole-list flush reads once
+    (:meth:`lane_queue_priorities`); a one-row caller leaves it out.
+    """
     payload = slot.to_dict(include_check_status=include_check_status, dashboard_user=dashboard_user)
     if payload.get("created_by"):
         # A worker tab says whether its process is held or was released by the
@@ -894,6 +900,10 @@ def serialize_slot(
             "slack_linked": slack_linked,
             "slack_channel": slack_channel,
             "slack_thread_ts": slack_thread_ts,
+            # Stored per session on the state, not on the slot: None marks a
+            # cron- or hook-bound chat, and every chat while Shared Crew's
+            # lane resolver is installed, since neither has a tier.
+            "queue_priority": self.queue_priority_of(slot, tiers=queue_tiers),
         }
     )
     # The thread a Slack-born session lives in. Not a mirror: `slack_linked`
@@ -936,6 +946,10 @@ def serialize_slots(
 
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
+    # Once per flush: each row's tier lookup would otherwise walk every slot.
+    # ``getattr`` because a stub state in the suite may not carry the method.
+    tiers_of = getattr(self, "lane_queue_priorities", None)
+    queue_tiers = tiers_of() if callable(tiers_of) else None
     saved_creators: dict[str, str] = {}
     for s in self._slots.values():
         if s.key in under_construction:
@@ -946,6 +960,7 @@ def serialize_slots(
             s,
             include_check_status=include_check_status,
             dashboard_user=dashboard_user,
+            queue_tiers=queue_tiers,
         )
         d["subagents_running"] = bool(subs and subs.running_agents_for(effective_session_key(s)))
         d["subagents_queued"] = queued_by_slot.get(s.key, 0)

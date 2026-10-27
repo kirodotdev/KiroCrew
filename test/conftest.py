@@ -736,14 +736,20 @@ def _no_inherited_admission_service(_floor_monkeypatch):
 
     ``admission_gate`` keeps the gateway's service process-wide. A chat send a
     test drives builds one, and a later test in the same worker would then run
-    every turn through it, config re-reads included. Rebound only when the
-    module is already imported; the inherited value is restored at teardown.
+    every turn through it, config re-reads included. The service also installs
+    its lane resolver in ``taskq.lanes``, and while one is installed every chat
+    serializes no agent-queue tier, so the resolver is cleared too. Rebound
+    only when the module is already imported; the inherited value is restored
+    at teardown.
     """
     gate = sys.modules.get("kiro_crew.shared_crew.admission_gate")
     if gate is not None:
         _floor_monkeypatch.setattr(gate, "_SERVICE", None)
         _floor_monkeypatch.setattr(gate, "_SERVICE_LOOP", None)
         _floor_monkeypatch.setattr(gate, "_SERVICE_LOCK", gate.LoopBoundLock())
+    lanes = sys.modules.get("kiro_crew.taskq.lanes")
+    if lanes is not None:
+        _floor_monkeypatch.setattr(lanes, "_LANE_RESOLVER", None)
     yield
 
 
