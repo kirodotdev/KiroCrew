@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Compass, Link2, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
@@ -11,6 +11,7 @@ import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import type { SteeringFile, SteeringList } from '../../types'
 
 import { parseErrorCode } from '../../utils/errorReport'
@@ -448,6 +449,7 @@ export default function SteeringTab() {
       setNewName('')
       setNewBody(newTemplate())
       if (res?.key) {
+        userPickedRef.current = true
         setSelectedKey(res.key)
         // Drop any cached detail for this key: a file deleted and recreated
         // under the same name would otherwise populate the editor from the
@@ -577,12 +579,21 @@ export default function SteeringTab() {
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
 
   // Keep a valid selection; suspended while editing so an unsaved draft is
-  // never discarded by a background refetch reordering the list.
+  // never discarded by a background refetch reordering the list. A file the
+  // user opened stays open while the filter still shows it; one this effect
+  // opened by itself moves to the best match for what was typed.
+  const userPickedRef = useRef(false)
   useEffect(() => {
     if (editing) return
     if (filtered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !filtered.some(f => f.key === selectedKey)) setSelectedKey(filtered[0].key)
-  }, [filtered, selectedKey, editing])
+    const visible = !!selectedKey && filtered.some(f => f.key === selectedKey)
+    if (visible && (userPickedRef.current || !filter.trim())) return
+    const best = bestFilterMatch(filtered, filter, f => [f.key, f.name])
+    if (best && best.key !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(best.key)
+    }
+  }, [filtered, selectedKey, editing, filter])
 
   // Default the create dialog to the scope that exists.
   useEffect(() => { setNewSource(hasProject ? 'workspace' : 'user') }, [hasProject])
@@ -615,7 +626,7 @@ export default function SteeringTab() {
     return Object.keys(out).length ? out : undefined
   }
 
-  const select = (f: SteeringFile) => { setSelectedKey(f.key); setEditing(false); openDetail() }
+  const select = (f: SteeringFile) => { userPickedRef.current = true; setSelectedKey(f.key); setEditing(false); openDetail() }
 
   const renderRow = (f: SteeringFile) => {
     const isSel = f.key === selectedKey

@@ -1120,3 +1120,38 @@ describe('steeringBody', () => {
     expect(steeringBody('---\r\ninclusion: manual\r\n---\r\n# T\r\n')).toBe('# T\r\n')
   })
 })
+
+describe('SteeringTab filter selection (#20262)', () => {
+  // A file listed first whose description mentions the query, then the file
+  // the user actually typed.
+  const MENTIONS = {
+    ...FILES,
+    files: [
+      { ...FILES.files[0], key: 'user/notes.md', name: 'notes.md', rel: 'notes.md', description: 'Notes on the api' },
+      FILES.files[1],
+    ],
+  }
+  const lastOpened = () => mockApi.steeringFile.mock.calls.at(-1)?.[0]
+
+  it('opens the file whose name matches the filter, not the first row', async () => {
+    mockApi.steeringFiles.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('user/notes.md'))
+
+    fireEvent.change(screen.getByPlaceholderText(/filter steering/i), { target: { value: 'api' } })
+    // Both rows stay listed; the open file is the one that was typed.
+    await waitFor(() => expect(lastOpened()).toBe('workspace/api.md'))
+    expect(screen.getAllByText('notes.md').length).toBeGreaterThan(0)
+  })
+
+  it('keeps a file the user clicked while the filter still shows it', async () => {
+    mockApi.steeringFiles.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('user/notes.md'))
+    fireEvent.click(screen.getAllByText('notes.md')[0])
+
+    fireEvent.change(screen.getByPlaceholderText(/filter steering/i), { target: { value: 'api' } })
+    await waitFor(() => expect(screen.getByText('api.md')).toBeInTheDocument())
+    expect(lastOpened()).toBe('user/notes.md')
+  })
+})
