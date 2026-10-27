@@ -1140,6 +1140,18 @@ def test_seeding_merges_into_the_tool_calls_own_params(tmp_path) -> None:
     ]
 
 
+def test_seeding_keeps_every_path_of_a_cached_path_list(tmp_path) -> None:
+    """A ``tool_call`` frame that cached a LIST of paths keeps each one, after the seed."""
+    frame = _edit_frame_with({"fileName": "/w/a.txt", "diff": "+a"})
+    call_id = frame["params"]["toolCall"]["toolCallId"]
+    client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
+    client._tool_call_params[call_id] = {"path": ["rel.txt", "/w/c.txt"]}
+    event = client._build_permission_event(
+        JsonRpcMessage(id=frame["id"], method=frame["method"], params=frame["params"])
+    )
+    assert event.raw_tool_params == {"path": ["/w/a.txt", "rel.txt", "/w/c.txt"]}
+
+
 @pytest.mark.parametrize(
     "raw",
     [

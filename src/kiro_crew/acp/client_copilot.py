@@ -261,7 +261,12 @@ def _seed_copilot_edit_targets(
         targets.insert(0, _COPILOT_UNRESOLVED_EDIT_TARGET)
     merged: dict = dict(base) if isinstance(base, dict) else {}
     prior = merged.get("path")
-    prior_paths = list(prior) if isinstance(prior, list) else ([] if prior is None else [prior])
+    if isinstance(prior, list):
+        prior_paths = list(prior)
+    elif prior is None:
+        prior_paths = []
+    else:
+        prior_paths = [prior]
     # The seeded targets go first so the marker, when present, stays the first target.
     merged["path"] = [*targets, *prior_paths]
     self._tool_call_params[tool_call_id] = merged
