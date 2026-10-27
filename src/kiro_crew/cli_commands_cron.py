@@ -474,11 +474,31 @@ def _cron(args: argparse.Namespace) -> None:
     `pause`, `resume` and `adopt` all persist through the same ``_save``, so
     catching at the dispatch boundary covers them without eight duplicated
     blocks, and any verb added later is covered by construction.
+
+    A ``PermissionError`` is translated the same way. The OS can refuse this
+    process a path the gateway itself can read: macOS data protection blocks a
+    terminal from even stat-ing ``.vault``, which ``cron remove`` must read to
+    revoke a job's secret grant before deleting it. The verb still refuses (the
+    revoke fence stays fail-closed); only the traceback is replaced by one line
+    naming the path and the OS refusal.
     """
     try:
         _cron_dispatch(args)
     except CronStoreUnreadable as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except PermissionError as exc:
+        if exc.errno is None:
+            # A policy refusal (``raise PermissionError("...")``), not the OS:
+            # keep it as it was rather than mislabel it an OS refusal.
+            raise
+        where = exc.filename or "a Kiro Crew data file"
+        print(
+            f"Error: the OS refused this process access to {where} ({exc.strerror or exc}). "
+            "Manage the job from the dashboard Schedule page, "
+            "or grant this terminal access to the data home (macOS: Full Disk Access).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
