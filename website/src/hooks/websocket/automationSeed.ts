@@ -230,7 +230,10 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
         if (record) {
           // The live projection is already authoritative and normalized;
           // cache it directly instead of issuing one REST request for
-          // every probe frame.
+          // every probe frame. A cold read still in flight predates this
+          // frame, so cancel it first: its late answer must not replace the
+          // frame, or a reconnect seed would carry that stale record.
+          void queryClient.cancelQueries({ queryKey: ['session-automation', slot] })
           queryClient.setQueryData(['session-automation', slot], record)
           dispatch(sseAutomation(record))
         }
