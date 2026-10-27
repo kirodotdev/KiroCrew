@@ -21,7 +21,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -402,6 +402,11 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
         )
     except SessionStorageError as exc:
         return _refused(exc, "cleanup_refused")
+    await _retire_trashed_subscriptions(
+        {unit.uid: unit.stems for unit in selected},
+        batch.moved,
+        _runtime_owner(state, "POST /api/system/session-storage/cleanup"),
+    )
 
     _sel().log_api_access(
         caller=_read_session_key(request),
@@ -970,6 +975,54 @@ async def api_session_inventory_detail(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+def _stems_by_uid(index: SessionIndex, uids: list[str]) -> dict[str, tuple[str, ...]]:
+    wanted = set(uids)
+    return {u.uid: u.stems for u in list_units(index, cached=True) if u.uid in wanted}
+
+
+def _runtime_owner(state: DashboardState, route: str) -> Callable[[str], bool]:
+    """Whether a live slot or runtime owns a session key, as the delete path asks.
+
+    *route* names the caller in the owner check's log line.
+    """
+    from kiro_crew.dashboard.handlers.sessions_parts.slot_teardown import runtime_owns_session
+
+    context = f"the sessions trashed by {route}"
+    return lambda session_key: runtime_owns_session(state, session_key, context)
+
+
+async def _retire_trashed_subscriptions(
+    stems_by_uid: dict[str, tuple[str, ...]],
+    moved: tuple[str, ...],
+    owned: Callable[[str], bool],
+) -> None:
+    """A trashed session keeps no MCP resource subscription (RFC §4.7).
+
+    Done at the move rather than at the empty: the trash is where a session
+    stops being resumable, and a restored one is subscribed again by the session
+    that wants it. Only *moved* sessions are retired: one the move left in place
+    is still live. A session key a live slot or runtime owns when the removal
+    runs keeps its subscriptions, as on the delete path: a slot key is recycled,
+    so a new conversation can take a trashed transcript's key after the move.
+    Fail-soft and bounded: the move already happened and is what the caller
+    asked for.
+    """
+    # Call-time: keeps the gateway out of this import graph.
+    from kiro_crew.mcp_gateway.resource_subscriptions import (
+        retire_sessions_with_stems,
+        retire_within_bound,
+    )
+
+    taken = set(moved)
+    await retire_within_bound(
+        retire_sessions_with_stems(
+            (stem for uid, stems in stems_by_uid.items() if uid in taken for stem in stems),
+            keep=owned,
+        ),
+        "the trashed sessions",
+    )
+
+
 def _classify(uids: list[str], index: SessionIndex, now: float) -> tuple[list[str], list[dict]]:
     """Split a client's selection into what may move and what may not, with reasons.
 
@@ -1067,6 +1120,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
         )
     if not eligible:
         return web.json_response({"sessions": 0, "bytes": 0, "batch_id": "", "refused": refused})
+    # Read before the move because moved sessions are absent from this listing.
+    # Cached is safe here -- these stems only name what to retire, never what may move.
+    eligible_stems = await asyncio.to_thread(_stems_by_uid, index, eligible)
 
     try:
         batch = await asyncio.to_thread(
@@ -1098,6 +1154,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
         )
         return _refused(exc, "trash_refused")
 
+    await _retire_trashed_subscriptions(
+        eligible_stems, batch.moved, _runtime_owner(state, "POST /api/system/session-storage/trash")
+    )
     # A session resumed while the batch was being staged was left in place, and
     # this endpoint's contract is that anything not taken is named. It joins the
     # same list under the same code the pre-flight uses for a live session: the

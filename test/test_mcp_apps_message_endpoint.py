@@ -94,8 +94,9 @@ class _FakeSlot:
         self._stop_state = "idle"
 
     def queue_append(self, content: str, kind: str = "", meta=None, **_kw) -> str:
-        self._queue.append({"content": content, "kind": kind, "meta": meta})
-        return "q-1"
+        queue_id = f"q-{len(self._queue) + 1}"
+        self._queue.append({"id": queue_id, "content": content, "kind": kind, "meta": meta})
+        return queue_id
 
     def append(self, role, content, cls="", ts="", *, meta=None, **_kw):
         self.appended.append((role, content, cls, meta))

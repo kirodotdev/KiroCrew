@@ -199,9 +199,16 @@ class TestEntryPointLiveness:
         import inspect
         import textwrap
 
+        from kiro_crew.dashboard.server import start_dashboard
+        from kiro_crew.dashboard.server_runtime.session_restore import _restore_dashboard_sessions
         from kiro_crew.slack.gateway import GatewayOrchestrator
 
         source = textwrap.dedent(inspect.getsource(GatewayOrchestrator.run))
+        init_dashboard_source = textwrap.dedent(
+            inspect.getsource(GatewayOrchestrator._init_dashboard)
+        )
+        dashboard_source = textwrap.dedent(inspect.getsource(start_dashboard))
+        restore_source = textwrap.dedent(inspect.getsource(_restore_dashboard_sessions))
         tree = ast.parse(source)
         holds = [
             node
@@ -216,14 +223,22 @@ class TestEntryPointLiveness:
         assert len(holds) == 1, "the gateway must take its tree hold once, off-loop"
         hold = holds[0]
         ready = source.index('print(f"KIROCREW_READY:')
+        dashboard_init = source.index("await self._init_dashboard()")
         approval = source.index("approval_ready.set()")
+        restore_slots = dashboard_source.index("await _restore_dashboard_sessions(state, cfg)")
+        dashboard_return = dashboard_source.index("return runner, state")
+        assert "await start_dashboard(" in init_dashboard_source
+        assert (
+            "await chat.restore_open_slots_async(state)" in restore_source
+        ), "the open-tab restore must finish before start_dashboard returns"
         imported = source.index(
             "from kiro_crew.platform.tree_liveness import hold_running_tree_lock"
         )
         held = source.index("await asyncio.to_thread(hold_running_tree_lock)")
         signals = source.index("self._install_shutdown_signal_handlers()")
         updates = source.index("asyncio.create_task(self._run_update_checks())")
-        assert ready < approval < imported < held < signals < updates
+        assert restore_slots < dashboard_return
+        assert dashboard_init < ready < approval < imported < held < signals < updates
         guarded = next(
             node
             for node in ast.walk(tree)

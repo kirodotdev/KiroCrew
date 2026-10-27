@@ -403,7 +403,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
     #:   is the only hold available, the same as ``member-records``.
-    EXPECTED: dict[str, int] = {"standard": 299, "cc": 306, "strict": 307}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``mcp-resource-subscriptions`` -- the holder's durable Register,
+    #:   initialize and server-defined URIs. A URI may be a credential and a forged
+    #:   record chooses which session gets an unsandboxed holder at startup. The
+    #:   directory is at the data-home root so its own mask is the only available hold.
+    EXPECTED: dict[str, int] = {"standard": 302, "cc": 309, "strict": 310}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

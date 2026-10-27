@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isAppMessageQueued, isServerWrittenQueued, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
 import { quoteBlock } from '../chat-core/composer/messageQuote'
@@ -643,5 +643,50 @@ describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
     expect(isNonInteractiveQueued(queued('please also check the docs', 'q1'))).toBe(false)
     // A user quoting the prefix mid-sentence is still a user message.
     expect(isNonInteractiveQueued(queued('why did I see [Tool refusal — automatic recovery]?', 'q2'))).toBe(false)
+  })
+})
+
+describe('QueueStack server-written entry (resource wake, MCP-App message)', () => {
+  const WAKE_TEXT = '[Webhook wake]\nresource changed: crux://reviews/CR-9\n[End of webhook wake]'
+  const resourceWake = (queueId: string): ChatMessage => ({
+    role: 'queued', content: WAKE_TEXT, cls: 'msg msg-queued', ts: '',
+    meta: { queueId, kind: 'resource_wake', resourceServer: 'crux', resourceSubscription: 'rsub_1' },
+  }) as ChatMessage
+  const appMessage = (queueId: string): ChatMessage => ({
+    role: 'queued', content: 'clicked approve', cls: 'msg msg-queued', ts: '',
+    meta: { queueId, kind: 'mcp_app_message', appLabel: 'demo' },
+  }) as ChatMessage
+
+  it('isServerWrittenQueued holds for both server kinds and never for the person\'s own entry', () => {
+    expect(isServerWrittenQueued(resourceWake('q1'))).toBe(true)
+    expect(isServerWrittenQueued(appMessage('q2'))).toBe(true)
+    expect(isServerWrittenQueued(queued('my own words', 'q3'))).toBe(false)
+    expect(isServerWrittenQueued(undefined)).toBe(false)
+    // The app-only display predicate keeps its scope.
+    expect(isAppMessageQueued(resourceWake('q1'))).toBe(false)
+  })
+
+  it('a queued resource wake offers no edit, keeps cancel, and shows its text as it arrived', () => {
+    const onCancel = vi.fn()
+    render(<QueueStack messages={[resourceWake('q1')]} onCancel={onCancel} onEdit={vi.fn()} onInterrupt={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    const cancel = screen.getByLabelText('Cancel queued message')
+    expect(cancel).toHaveAttribute('title', 'Cancel queued message')
+    fireEvent.click(cancel)
+    expect(onCancel).toHaveBeenCalledWith('q1')
+    expect(screen.getByTestId('queue-card').textContent).toContain('resource changed: crux://reviews/CR-9')
+  })
+
+  it('a queued MCP-App message keeps its read-only card and its app attribution', () => {
+    render(<QueueStack messages={[appMessage('q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel queued message')
+    expect(screen.getByTestId('queue-card').textContent).toContain('demo')
+  })
+
+  it('the person\'s own queued message keeps its pencil and its move-back-to-input cancel', () => {
+    render(<QueueStack messages={[queued('my own words', 'q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.getByLabelText('Edit queued message')).toBeInTheDocument()
+    expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel and move back to input')
   })
 })

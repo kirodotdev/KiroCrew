@@ -778,6 +778,7 @@ class GatewayOrchestrator:
     _wheel_update_noticed: set[str]
     _mcp_gateway_manager: GatewayManager | None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
+    _mcp_resource_subscription_task: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
     _mcp_overlay_refresh_lock: asyncio.Lock | None = None
     _mcp_rewrite_inputs: dict[str, Any] | None = None

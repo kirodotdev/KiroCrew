@@ -614,7 +614,11 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#:
+#: Raised by 2, from 33,523, for the ``mcp-resource-subscriptions`` leaf in
+#: ``paths_lists`` (the resource-subscription holder store): the leaf and its
+#: one-line reason. No rule changed.
+_PACKAGE_LINE_BUDGET = 33_525
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -770,7 +770,7 @@ _DASHBOARD_BOOT = tuple("""
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred _deferred _deferred _deferred _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -849,7 +849,7 @@ _API_BOOT = tuple("""
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1108,8 +1108,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 336
-_MCP_TABLE_DIGEST = "14fa16c5658779a210978429efce77e2c2fc4d3d260724a32955b0f1ac639c42"
+_MCP_TABLE_ROWS = 341
+_MCP_TABLE_DIGEST = "e4bb2529cd69e7d3995c3ece4df14abd7412ef8b1716c7e463b6cbc2e8297d39"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

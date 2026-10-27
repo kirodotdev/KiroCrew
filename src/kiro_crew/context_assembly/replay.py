@@ -124,6 +124,7 @@ def _interrupted_opener_kind(row: dict) -> str:
     return {
         "cron": "a scheduled job",
         "mcp_app": "an app message",
+        "resource": "a resource subscription wake",
         "synthesis": "a sub-agent synthesis",
     }.get(kind if isinstance(kind, str) else "", "an automated message")
 

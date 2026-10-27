@@ -323,6 +323,24 @@ Examples:
     )
 
 
+def register_resource_subs_parser(sub: _Commands) -> None:
+    """``kirocrew resource-subs``: dispatched by ``cli_resource_subs.resource_subs``."""
+    parser = cli_help.add_command(
+        sub,
+        "resource-subs",
+        epilog="""
+Examples:
+  kirocrew resource-subs list
+  kirocrew resource-subs remove rsub_0123456789abcdef
+""",
+        formatter_class=_fmt,
+    )
+    actions = parser.add_subparsers(dest="resource_subs_action")
+    actions.add_parser("list", help="List every session's MCP resource subscriptions")
+    remove = actions.add_parser("remove", help="Remove one subscription by its id")
+    remove.add_argument("subscription_id", help="The id `list` shows (rsub_...)")
+
+
 def register_spawn_parser(sub: _Commands) -> None:
     spawn_parser = cli_help.add_command(
         sub,

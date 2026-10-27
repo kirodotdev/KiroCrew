@@ -242,6 +242,7 @@ def __init__(
     # loop keeps a strong reference (a bare create_task is only weakly held)
     # and so broker shutdown can cancel an install still in flight.
     self._mcp_resolve_prefetch = None
+    self._mcp_resource_subscription_task = None
     # The rewriter's ``KIROCREW_MCP_TARGET_*`` mapping from the last broker
     # start, kept so an explicit refresh resolves the same launches the
     # daemon is actually serving rather than a freshly re-derived guess.

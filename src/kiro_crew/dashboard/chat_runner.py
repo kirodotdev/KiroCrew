@@ -185,6 +185,7 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
 )
 from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _RESTORED_DRAIN_IDS,
+    _STARTED_QUEUE_IDS,
     _arm_queued_delivery_settlement,
     _drain_parked_queues,
     _start_next_queued_turn,
