@@ -480,7 +480,7 @@ class Differences:
 
     Two kinds. A *loss* (a grant the old agent had that the worker does not, or
     its prompt) leaves the worker able to do less: the crewmate still moves and
-    its user is told once (2026-10-27 owner decision). A *loosening* (a grant
+    its user is told once (owner decision, ``docs/decisions``). A *loosening* (a grant
     gained, a switched-off server started, a hook or a ``permissions`` /
     ``toolsSettings`` restriction not kept) would let the worker do more than the
     old agent was allowed to: the crewmate never moves with one.
@@ -512,7 +512,7 @@ class Differences:
         return "; ".join(problems)
 
     def losses(self) -> str:
-        """What the worker would no longer have, for the user's notice, else ``""``."""
+        """What the old agent had that the worker lacks, for the user's notice, else ``""``."""
         parts = []
         if self.lost:
             parts.append(_describe("it no longer has", self.lost))
@@ -779,6 +779,58 @@ def _governed_source(source_agent: str) -> dict[str, Any]:
     return spec
 
 
+def _tool_offs(spec: dict[str, Any]) -> set[str]:
+    """Every tool *spec* takes out: its ``excludedTools`` and its servers' ``disabledTools``."""
+    return set(_strings(spec.get("excludedTools"))) | set(
+        disabled_tool_refs(spec.get("mcpServers"))
+    )
+
+
+def _fallback_keeping_limits(
+    source_agent: str, base: dict[str, Any], fallback: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """The default-template *fallback* made to keep *source_agent*'s readable limits.
+
+    For an agent :func:`_governed_source` refused. One whose spec does not parse
+    states no limit, so *fallback* is returned as it is. One that parses (a
+    ``file://`` prompt that does not resolve, say) is read raw, and the fallback
+    never loosens it: a server it switched off is written switched off, a tool it
+    takes out is written into ``excludedTools``, and a grant it never had is
+    taken out. Returns the file and why it would still loosen (a hook or a
+    ``permissions`` / ``toolsSettings`` restriction it cannot carry), else ``""``.
+    """
+    try:
+        raw = agent_specs.load_agent_spec(source_agents_dir(source_agent), source_agent)
+    except (agent_specs.AgentSpecUnreadable, OSError):
+        return fallback, ""
+    raw = {**copy_json_document(raw), "prompt": ""}
+    planned = copy_json_document(fallback)
+    diff = differences(base, raw, planned)
+    if diff.relaunched:
+        servers = planned.setdefault("mcpServers", {})
+        for server in diff.relaunched:
+            servers[server] = {"disabled": True}
+    offs = _tool_offs(raw)
+    if offs:
+        planned["excludedTools"] = list(
+            dict.fromkeys([*_strings(planned.get("excludedTools")), *sorted(offs)])
+        )
+    diff = differences(base, raw, planned)
+    if diff.gained:
+        planned = _strip_grants(planned, diff.gained)
+        diff = differences(base, raw, planned)
+    merged = merge_worker_spec(base, worker_additions(base, planned))
+    reason = diff.loosening()
+    kept_off = offs - set(_strings(merged.get("excludedTools")))
+    if kept_off:
+        reason = "; ".join(
+            filter(
+                None, [reason, _describe("its worker would run", {("tool", t) for t in kept_off})]
+            )
+        )
+    return planned, reason
+
+
 def _worker_base() -> dict[str, Any]:
     """The worker's source base with its prompt as literal text.
 
@@ -917,11 +969,22 @@ def migrate_existing_crewmates(
         try:
             old = _governed_source(source)
         except MateConfigError as exc:
-            # Moved anyway (2026-10-27 owner decision): its worker starts from the
-            # default template, as a fresh create's does, and its user is told.
+            # Moved anyway (owner decision, docs/decisions): its worker starts from
+            # the default template, as a fresh create's does, and its user is told.
             logger.info("crewmate migration: %s's agent %r unreadable: %s", label, source, exc)
+            fallback, kept_limit = _fallback_keeping_limits(
+                source, base, _default_template_file(name, base)
+            )
+            if kept_limit:
+                # Its spec parses (only its prompt did not resolve) and states a
+                # limit the fallback would not keep: moving would loosen it.
+                report.dry_run_failed[name] = kept_limit
+                logger.warning(
+                    "crewmate migration: %s stays on %r because %s", label, source, kept_limit
+                )
+                continue
             try:
-                _write_file(name, _default_template_file(name, base))
+                _write_file(name, fallback)
                 _read_back(name)
             except (MateConfigError, agent_specs.AgentSpecUnreadable) as write_exc:
                 report.copy_failed[name] = str(write_exc)
@@ -961,7 +1024,7 @@ def migrate_existing_crewmates(
             continue
         change = change_notice(diff, withheld)
         if change:
-            # Moved anyway (2026-10-27 owner decision): a loss is told once, a gain
+            # Moved anyway (owner decision, docs/decisions): a loss is told once, a gain
             # was not written and waits for the user's card.
             changes[name] = change
             logger.warning("crewmate migration: %s moves from %r; %s", label, source, change)

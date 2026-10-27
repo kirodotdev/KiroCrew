@@ -14,4 +14,4 @@ The startup migration moves a crewmate whose worker would lose a grant its old a
 
 ## Evidence
 
-- The pull request that adds this entry, where the owner restates the decision.
+- https://github.com/kirodotdev/KiroCrew/pull/24954 -- the pull request that adds this entry and implements it.

@@ -3953,7 +3953,14 @@ What the base withholds by design is no loss (`_by_design`, 2026-10-19 owner
 decision). An agent that cannot be read is no reason to stay either: the
 crewmate moves onto the default template's file (`_default_template_file`,
 `MigrationReport.moved_from_default`), with no kit record, and its notice says
-the agent could not be read. Governance applies as before: the source is read
+the agent could not be read. An agent whose spec parses but cannot be read
+governed (its `file://` prompt does not resolve) still has its stated limits
+read raw, and the default template's file never loosens them
+(`_fallback_keeping_limits`): a server it switched off is written
+`{"disabled": true}`, a tool it excludes or disables goes into
+`excludedTools`, and a grant it never had is taken out. A hook or a
+`permissions` / `toolsSettings` restriction the file cannot carry leaves it
+where it is. Governance applies as before: the source is read
 governed, and the worker session still passes POLICY ∩ PROFILE. A crewmate
 whose id is also a user-level agent's name, or a spec Kiro Crew generates, is
 skipped: its file would never be read, and giving it another file name breaks
