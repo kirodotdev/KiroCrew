@@ -19247,7 +19247,7 @@
       "create_name_taken": "Un coéquipier nommé {{name}} existe déjà.",
       "create_name_unusable": "Ce nom ne peut pas être utilisé tel qu'il est écrit. Essaie une autre version : ressaisis le texte collé ou supprime les caractères cachés, les sauts de ligne ou les tabulations ; n'utilise pas uniquement des points ; ou raccourcis-le à 500 caractères au plus.",
       "create_name_credential_shaped": "Ce nom ressemble à un identifiant secret ou à une URL qui en contient un. Choisis un nom qui dit qui est le coéquipier.",
-      "create_job": "Ce dont il s'occupe",
+      "create_job": "Objectif",
       "create_job_placeholder": "p. ex. Tenir à jour les notes de version",
       "create_optional": "facultatif",
       "create_advanced": "Avancé",

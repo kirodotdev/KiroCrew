@@ -19247,7 +19247,7 @@
       "create_name_taken": "Ya existe un compañero llamado {{name}}.",
       "create_name_unusable": "Ese nombre no se puede usar tal como está escrito. Prueba otra versión: vuelve a escribir el texto pegado o quita los caracteres ocultos, saltos de línea o tabulaciones; no uses solo puntos; o acórtalo a 500 caracteres o menos.",
       "create_name_credential_shaped": "Ese nombre parece una credencial o una URL que la contiene. Elige un nombre que diga quién es el compañero.",
-      "create_job": "De qué se ocupa",
+      "create_job": "Objetivo",
       "create_job_placeholder": "p. ej. Mantener al día las notas de la versión",
       "create_optional": "opcional",
       "create_advanced": "Avanzado",

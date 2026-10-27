@@ -18641,7 +18641,7 @@
       "create_name_taken": "{{name}} という名前のクルーメイトはすでに存在します。",
       "create_name_unusable": "この名前はそのままでは使用できません。別の形を試してください：貼り付けたテキストを入力し直すか隠れた文字・改行・タブを取り除く、ピリオドだけにしない、または 500 文字以内に短くする、のいずれかです。",
       "create_name_credential_shaped": "この名前は認証情報、またはそれを含む URL のように見えます。クルーメイトが誰なのかが分かる名前にしてください。",
-      "create_job": "担当する仕事",
+      "create_job": "目標",
       "create_job_placeholder": "例：リリースノートを最新に保つ",
       "create_optional": "任意",
       "create_advanced": "詳細設定",

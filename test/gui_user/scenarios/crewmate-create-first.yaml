@@ -32,7 +32,7 @@ steps:
   - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
   - If the page shows the heading "No mates yet", click the "New mate" button below it. Otherwise the page already lists mates; click the small plus button at the top of that list (its tooltip reads "Add…") and, in the small menu that opens (its one row reads "New mate"), click "New mate". Either way a dialog titled "New mate" opens.
   - In the dialog, type exactly "Radar{attempt_suffix}" in the "Name" field.
-  - In the field labelled "What it looks after" (marked optional), type exactly "Keep release notes up to date". Leave "Built from" and the Advanced section as they are.
+  - In the field labelled "Goal" (marked optional), type exactly "Keep release notes up to date". Leave "Built from" and the Advanced section as they are.
   - Click the "Create mate" button and wait about three seconds.
 expectations:
   - The "New mate" dialog is closed.

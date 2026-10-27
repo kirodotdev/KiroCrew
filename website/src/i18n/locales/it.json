@@ -19247,7 +19247,7 @@
       "create_name_taken": "Esiste già un compagno di nome {{name}}.",
       "create_name_unusable": "Questo nome non può essere usato così com'è scritto. Prova un'altra versione: riscrivi il testo incollato o rimuovi caratteri nascosti, interruzioni di riga o tabulazioni; non usare solo punti; oppure accorcialo a 500 caratteri o meno.",
       "create_name_credential_shaped": "Questo nome sembra una credenziale o un URL che ne contiene una. Scegli un nome che dica chi è il compagno.",
-      "create_job": "Di cosa si occupa",
+      "create_job": "Obiettivo",
       "create_job_placeholder": "es. Tenere aggiornate le note di rilascio",
       "create_optional": "facoltativo",
       "create_advanced": "Avanzate",

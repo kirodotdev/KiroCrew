@@ -18944,7 +18944,7 @@
       "create_name_taken": "Ein Crewmate namens {{name}} existiert bereits.",
       "create_name_unusable": "Dieser Name kann so nicht verwendet werden. Versuche eine andere Variante: tippe eingefügten Text neu ein oder entferne versteckte Zeichen, Zeilenumbrüche oder Tabs; verwende nicht nur Punkte; oder kürze ihn auf höchstens 500 Zeichen.",
       "create_name_credential_shaped": "Dieser Name sieht aus wie ein Zugangsschlüssel oder eine URL mit einem. Wähle einen Namen, der sagt, wer der Crewmate ist.",
-      "create_job": "Worum er sich kümmert",
+      "create_job": "Ziel",
       "create_job_placeholder": "z. B. Release-Notes aktuell halten",
       "create_optional": "optional",
       "create_advanced": "Erweitert",

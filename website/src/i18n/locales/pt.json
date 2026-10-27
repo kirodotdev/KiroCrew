@@ -19247,7 +19247,7 @@
       "create_name_taken": "Já existe um colega chamado {{name}}.",
       "create_name_unusable": "Esse nome não pode ser usado como está escrito. Tente outra versão: digite novamente o texto colado ou remova caracteres ocultos, quebras de linha ou tabulações; não use apenas pontos; ou encurte-o para 500 caracteres ou menos.",
       "create_name_credential_shaped": "Esse nome parece uma credencial ou um URL que contém uma. Escolha um nome que diga quem é o colega.",
-      "create_job": "Do que ele cuida",
+      "create_job": "Meta",
       "create_job_placeholder": "ex.: Manter as notas de versão atualizadas",
       "create_optional": "opcional",
       "create_advanced": "Avançado",

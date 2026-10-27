@@ -526,7 +526,7 @@ describe('New mate dialog', () => {
     // Lower-case name: the thread stub answers `member: slug`, and the page
     // treats a name/answer mismatch as a slug collision (its own guard).
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    fireEvent.change(screen.getByLabelText('What it looks after'), { target: { value: 'Triage new issues' } })
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Triage new issues' } })
     // The roster the page re-reads after the create carries the new row.
     membersMock.mockResolvedValue({
       members: [row(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -967,7 +967,7 @@ describe('New mate dialog', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    fireEvent.change(screen.getByLabelText('What it looks after'), { target: { value: 'Triage new issues' } })
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Triage new issues' } })
     // The reconcile read finds radar — this request's, or another tab's; the
     // dialog cannot tell, so it claims neither.
     membersMock.mockResolvedValue({

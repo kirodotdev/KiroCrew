@@ -1498,7 +1498,7 @@ record for a picture or a pack. Apply pins the pick and sends it as
 pick the create still carries that name-seeded icon as its `avatar` (frozen into
 a stored choice at create, never re-derived from a later rename), so a new mate
 is born an icon rather than wearing the name's ghost. The **Advanced settings** row unfolds inline below
-the avatar, in the same card: Built from, What it looks after, and the crew
+the avatar, in the same card: Built from, Goal, and the crew
 editor fields (workspace, model, triggers, session colour), ending with a second
 Create. It is folded by default; `startExpanded` opens it unfolded, which is what
 the hero's Advanced link and the crew manager's door pass. Folding unmounts those
@@ -1508,8 +1508,8 @@ Advanced row of its own.
 The card is the page's one creation surface. A drafted proposal (a mate's
 create link `/members?create=1&name=…&goal=…`, clicked in its chat or reached by
 address, or the `crewmate.create` guide, whose enter step is that link) opens the
-same card with the proposal filled in: the name in **Name**, the goal in **What it
-looks after**, with Advanced settings unfolded when a goal is proposed so it is in
+same card with the proposal filled in: the name in **Name**, the goal in **Goal**,
+with Advanced settings unfolded when a goal is proposed so it is in
 view (`initialDraft`). The page strips the link's parameters once read and keeps
 the chat the link was followed from as the one behind the card. A proposal left as
 proposed is not the user's draft: it leaves without asking, and a later proposal
@@ -1541,7 +1541,7 @@ welcome; nothing is sent in the user's name. From
 the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
 mate's chat and asks for no greeting. The dialog's own success path (cache
-invalidation, the post-failure reconcile, "what it looks after" stored as
+invalidation, the post-failure reconcile, the goal stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from
 `KiroCrewAgentsPage` (which re-exports them from `KiroCrewAgentsPageFields.tsx`),

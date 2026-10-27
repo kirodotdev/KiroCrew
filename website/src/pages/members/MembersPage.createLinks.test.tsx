@@ -354,8 +354,8 @@ describe('MembersPage create links open the New mate card', () => {
   const cardOpen = () => screen.queryByRole('dialog') !== null
   const card = () => screen.getByRole('dialog')
   const nameField = () => within(card()).getByLabelText('Name') as HTMLInputElement
-  /** "What it looks after": in the Advanced settings, so present only unfolded. */
-  const goalField = () => within(card()).queryByLabelText('What it looks after') as HTMLTextAreaElement | null
+  /** "Goal": in the Advanced settings, so present only unfolded. */
+  const goalField = () => within(card()).queryByLabelText('Goal') as HTMLTextAreaElement | null
   // The modal's own header X carries the "Close" name (components.modal.close),
   // the Modal path's dismiss affordance in place of the embedded card's Cancel.
   const closeCard = () => fireEvent.click(within(card()).getByRole('button', { name: 'Close' }))
@@ -383,7 +383,7 @@ describe('MembersPage create links open the New mate card', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
   }
 
-  it('a create link in Mate\'s chat opens the New mate card as a modal, prefilled: name in Name, goal in What it looks after; the chat stays MOUNTED and VISIBLE behind it; nothing is sent', async () => {
+  it('a create link in Mate\'s chat opens the New mate card as a modal, prefilled: name in Name, goal in Goal; the chat stays MOUNTED and VISIBLE behind it; nothing is sent', async () => {
     await openAssistant()
     const through = passedThrough()
     try {

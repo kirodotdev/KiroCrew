@@ -99,7 +99,7 @@ press
 **Create** and the mate is made at once. Below the avatar, **Advanced
 settings** unfolds the rest of the form in the same card: what the mate is
 **Built from** (the starting setup it copies; `kirocrew` unless you pick
-another), an optional line on **what it looks after**, and the workspace,
+another), an optional **Goal**, and the workspace,
 model, triggers and session color. Folding it again keeps whatever you set
 there. When a mate suggests a new mate, its link opens this same form
 with the suggested name and goal already filled in; nothing is created until

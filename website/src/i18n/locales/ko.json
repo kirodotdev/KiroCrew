@@ -18641,7 +18641,7 @@
       "create_name_taken": "‘{{name}}’ 이름은 이미 다른 크루메이트가 사용 중입니다.",
       "create_name_unusable": "이 이름은 입력한 그대로 사용할 수 없습니다. 다른 형태로 시도해 보세요: 붙여 넣은 텍스트를 다시 입력하거나 숨겨진 문자·줄 바꿈·탭을 제거하거나, 마침표만 사용하지 않거나, 500자 이내로 줄이세요.",
       "create_name_credential_shaped": "이 이름은 자격 증명이나 자격 증명이 담긴 URL처럼 보여요. 크루메이트가 누구인지 알 수 있는 이름을 골라 주세요.",
-      "create_job": "맡을 일",
+      "create_job": "목표",
       "create_job_placeholder": "예: 릴리스 노트를 최신 상태로 유지",
       "create_optional": "선택",
       "create_advanced": "고급",

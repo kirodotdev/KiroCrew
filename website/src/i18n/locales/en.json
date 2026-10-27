@@ -8040,7 +8040,7 @@
       "create_name_taken": "A mate named {{name}} already exists.",
       "create_name_unusable": "That name can't be used as written. Try another version: retype pasted text or remove hidden characters, line breaks, or tabs; don't use only periods; or shorten it to 500 characters or fewer.",
       "create_name_credential_shaped": "That name looks like a credential or a URL carrying one. Pick a name that says who the mate is.",
-      "create_job": "What it looks after",
+      "create_job": "Goal",
       "create_job_placeholder": "e.g. Keep release notes up to date",
       "create_optional": "optional",
       "create_advanced": "Advanced",

@@ -18641,7 +18641,7 @@
       "create_name_taken": "已经有一位名为 {{name}} 的队友。",
       "create_name_unusable": "该名称无法按原样使用。请尝试其他写法：重新输入粘贴的文本或删除隐藏字符、换行符或制表符；不要只使用句点；或将其缩短到 500 个字符以内。",
       "create_name_credential_shaped": "这个名字看起来像凭据，或者像带凭据的网址。请换一个能说明这位队友是谁的名字。",
-      "create_job": "负责的事",
+      "create_job": "目标",
       "create_job_placeholder": "例如 让发布说明保持最新",
       "create_optional": "可选",
       "create_advanced": "高级",

@@ -845,7 +845,7 @@ describe('New mate dialog', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: typed } })
-    fireEvent.change(screen.getByLabelText('What it looks after'), { target: { value: 'Watch the pager' } })
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Watch the pager' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
     expect(notice).toHaveTextContent("That name can't be used as written. Try another version: retype pasted text or remove hidden characters, line breaks, or tabs; don't use only periods; or shorten it to 500 characters or fewer.")
@@ -862,7 +862,7 @@ describe('New mate dialog', () => {
     // The draft is kept and the Name field is the marked thing to change.
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveValue(typed)
-    expect(screen.getByLabelText('What it looks after')).toHaveValue('Watch the pager')
+    expect(screen.getByLabelText('Goal')).toHaveValue('Watch the pager')
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
     // Editing the field clears the notice and the mark; the corrected name goes out.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Radär' } })
@@ -920,7 +920,7 @@ describe('New mate dialog', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'oncall' } })
-    fireEvent.change(screen.getByLabelText('What it looks after'), { target: { value: 'A new job' } })
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'A new job' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await screen.findByTestId('crewmate-create-name-hint')
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
