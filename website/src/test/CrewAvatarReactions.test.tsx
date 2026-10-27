@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 
-import CrewAvatar, { ghostTraitsFrom, seededTraits } from '../components/CrewAvatar'
+import CrewAvatar, { ghostTraitsFrom, seededTraits, avatarFrameIn } from '../components/CrewAvatar'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ghostDataUri, type KiroGhostTraits } from '../lib/kiroGhostAvatar'
 import { iconMotionVars, poseBodyDataUri, poseDataUri, poseEyeVars, poseEyesDataUri } from '../lib/avatarPoses'
@@ -368,6 +368,31 @@ describe('CrewAvatar renders the state it is told', () => {
       expect(root.className).not.toMatch(/crew-icon-(sway|bob|sq)/)
       unmount()
     }
+  })
+
+  it('names the frame a working icon draws its border on, and the one image of every other tier', () => {
+    // A flight that counter-scales "the face's border" must find the element
+    // that carries it: the motion root for a working icon, not its bare image.
+    const icon: CrewAvatarOverride = { kind: 'icon', pose: 'pose-3', bg: '#25679d' }
+    const moving = render(<CrewAvatar seed={SEED} avatar={icon} state="working" />)
+    const root = moving.container.querySelector('[data-testid="crew-icon-motion"]')
+    expect(avatarFrameIn(moving.container)).toBe(root)
+    expect(avatarFrameIn(moving.container)?.className).toMatch(/\bborder\b/)
+    moving.unmount()
+    const still = render(<CrewAvatar seed={SEED} avatar={icon} />)
+    expect(avatarFrameIn(still.container)).toBe(still.container.querySelector('img'))
+    still.unmount()
+  })
+
+  it('paints the same tile behind a still and a moving icon', () => {
+    const icon: CrewAvatarOverride = { kind: 'icon', pose: 'pose-3', bg: '#25679d' }
+    const still = render(<CrewAvatar seed={SEED} avatar={icon} />)
+    const stillBg = (still.container.querySelector('img') as HTMLElement).style.backgroundColor
+    still.unmount()
+    const moving = render(<CrewAvatar seed={SEED} avatar={icon} state="working" />)
+    const movingBg = (moving.container.querySelector('[data-testid="crew-icon-motion"]') as HTMLElement).style.backgroundColor
+    expect(stillBg).toBe('#25679d')
+    expect(movingBg).toBe(stillBg)
   })
 
   it('draws an icon still for every state but working — it has no reactions', () => {
