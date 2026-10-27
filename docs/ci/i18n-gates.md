@@ -269,9 +269,9 @@ two values carrying Bengali digits landed in separate PRs, the second crossed th
 ceiling of 8, and the next CI round took **every open pull request's Frontend Tests
 shard red at once**, naming a key none of their authors had touched. The register
 check (§5) in the same file already had the right shape, so the fix was to give the
-numerals rule the same one: the count keeps guarding the inherited catalog, while the
-values the branch itself wrote are held at zero and the failure names the key and its
-owner.
+numerals rule the same one: the values the branch itself wrote are held at zero and the
+failure names the key and its owner. Once the inherited values were converted, the
+ceiling itself went to zero, so the catalog-wide check now fails on any Bengali digit.
 
 So when you add or relax an inline ceiling, add the `[changed-values]` half in the
 same change. A ceiling with no diff-scoped companion is not a lenient gate, it is a
