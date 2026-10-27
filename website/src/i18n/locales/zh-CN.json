@@ -10509,6 +10509,7 @@
       "select_open_named": "当前打开的是：“{{name}}”。",
       "gate_setting": "请先在“设置”中打开“{{label}}”。打开后引导会自动继续；它不会替你更改这个设置。",
       "gate_terminal_enabled": "这个安装上的终端已关闭。终端打开后引导会自动继续。",
+      "gate_topbar_search_shown": "这个浏览器的顶栏已隐藏搜索。搜索重新显示后引导会自动继续。",
       "title_ui_find": "查找“{{label}}”",
       "step_ui_find_open": "打开高亮的控件：“{{target}}”就在里面。",
       "find_not_found": "“{{label}}”现在没有显示在这个页面上。如果它在某个菜单或区域里，请先打开那里，引导会指给你看。",
@@ -18687,7 +18688,9 @@
         "remote_editor_host_saved": "已保存",
         "remote_editor_save_failed": "无法保存编辑器选择。请重试。",
         "remote_editor_host_save_failed": "无法保存 SSH 主机。请使用 dev-box 或 dev.example.com 这样的主机名，不带端口或路径。",
-        "remote_editor_host_save_error": "无法保存 SSH 主机。"
+        "remote_editor_host_save_error": "无法保存 SSH 主机。",
+        "show_topbar_search": "在顶栏显示搜索",
+        "show_topbar_search_desc": "在顶栏中间显示搜索框。关闭后，它的空间留给两侧的控件，窗口较窄时 CPU、MEM 和 DSK 读数也能留在顶栏上。搜索快捷键仍然可以打开搜索。快捷键关闭时，搜索框会一直显示。"
       },
       "importPanel": {
         "agent_data": "代理数据",

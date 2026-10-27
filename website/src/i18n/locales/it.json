@@ -11005,6 +11005,7 @@
       "select_open_named": "Aperto ora: «{{name}}».",
       "gate_setting": "Attiva prima «{{label}}» nelle Impostazioni. La guida prosegue da sola appena è attivo; non cambia mai l’impostazione al posto tuo.",
       "gate_terminal_enabled": "Il terminale è disattivato in questa installazione. La guida prosegue da sola appena viene attivato.",
+      "gate_topbar_search_shown": "La ricerca è nascosta nella barra superiore di questo browser. La guida prosegue da sola appena viene mostrata di nuovo.",
       "title_ui_find": "Trova «{{label}}»",
       "step_ui_find_open": "Apri il controllo evidenziato: «{{target}}» è lì dentro.",
       "find_not_found": "«{{label}}» non è visibile in questa pagina. Se è dentro un menu o una sezione, aprilo e la guida lo indicherà.",
@@ -19665,7 +19666,9 @@
         "remote_editor_host_saved": "Salvato",
         "remote_editor_save_failed": "Impossibile salvare la scelta dell’editor. Riprova.",
         "remote_editor_host_save_failed": "Impossibile salvare l’host SSH. Usa un nome host come dev-box o dev.example.com, senza porta né percorso.",
-        "remote_editor_host_save_error": "Impossibile salvare l’host SSH."
+        "remote_editor_host_save_error": "Impossibile salvare l’host SSH.",
+        "show_topbar_search": "Mostra la ricerca nella barra superiore",
+        "show_topbar_search_desc": "Mostra il campo di ricerca al centro della barra superiore. Disattivato, il suo spazio va ai controlli ai lati, così i valori di CPU, MEM e DSK restano visibili nelle finestre più strette. La scorciatoia di ricerca apre ancora la ricerca. Finché le scorciatoie sono disattivate, il campo resta visibile."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

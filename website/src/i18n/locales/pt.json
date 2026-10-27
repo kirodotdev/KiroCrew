@@ -11005,6 +11005,7 @@
       "select_open_named": "Aberto agora: “{{name}}”.",
       "gate_setting": "Ative primeiro “{{label}}” nas Configurações. O guia continua sozinho assim que estiver ativado; ele nunca muda a configuração por você.",
       "gate_terminal_enabled": "O terminal está desativado nesta instalação. O guia continua sozinho assim que ele for ativado.",
+      "gate_topbar_search_shown": "A busca está oculta na barra superior deste navegador. O guia continua sozinho assim que ela for mostrada de novo.",
       "title_ui_find": "Encontrar “{{label}}”",
       "step_ui_find_open": "Abra o controle destacado: “{{target}}” está dentro dele.",
       "find_not_found": "“{{label}}” não está aparecendo nesta página. Se estiver dentro de um menu ou seção, abra-o e o guia vai apontar para ele.",
@@ -19665,7 +19666,9 @@
         "remote_editor_host_saved": "Salvo",
         "remote_editor_save_failed": "Não foi possível salvar a escolha do editor. Tente de novo.",
         "remote_editor_host_save_failed": "Não foi possível salvar o host SSH. Use um nome de host como dev-box ou dev.example.com, sem porta nem caminho.",
-        "remote_editor_host_save_error": "Não foi possível salvar o host SSH."
+        "remote_editor_host_save_error": "Não foi possível salvar o host SSH.",
+        "show_topbar_search": "Mostrar a busca na barra superior",
+        "show_topbar_search_desc": "Mostra a caixa de busca no meio da barra superior. Desligado, o espaço dela vai para os controles de cada lado, e as leituras de CPU, MEM e DSK continuam visíveis em janelas mais estreitas. O atalho de busca continua abrindo a busca. Enquanto os atalhos estiverem desligados, a caixa continua visível."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

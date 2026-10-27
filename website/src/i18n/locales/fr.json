@@ -11005,6 +11005,7 @@
       "select_open_named": "Ouvert en ce moment : « {{name}} ».",
       "gate_setting": "Active d’abord « {{label}} » dans les Réglages. Le guide continue tout seul une fois l’option activée ; il ne change jamais le réglage à ta place.",
       "gate_terminal_enabled": "Le terminal est désactivé sur cette installation. Le guide continue tout seul une fois qu’il est activé.",
+      "gate_topbar_search_shown": "La recherche est masquée dans la barre supérieure de ce navigateur. Le guide continue tout seul une fois qu’elle est de nouveau affichée.",
       "title_ui_find": "Trouver « {{label}} »",
       "step_ui_find_open": "Ouvre la commande en surbrillance : « {{target}} » se trouve dedans.",
       "find_not_found": "« {{label}} » n’apparaît pas sur cette page. S’il se trouve dans un menu ou une section, ouvre-le et le guide le montrera.",
@@ -19665,7 +19666,9 @@
         "remote_editor_host_saved": "Enregistré",
         "remote_editor_save_failed": "Impossible d’enregistrer le choix de l’éditeur. Réessaie.",
         "remote_editor_host_save_failed": "Impossible d’enregistrer l’hôte SSH. Utilise un nom d’hôte comme dev-box ou dev.example.com, sans port ni chemin.",
-        "remote_editor_host_save_error": "Impossible d’enregistrer l’hôte SSH."
+        "remote_editor_host_save_error": "Impossible d’enregistrer l’hôte SSH.",
+        "show_topbar_search": "Afficher la recherche dans la barre supérieure",
+        "show_topbar_search_desc": "Affiche le champ de recherche au centre de la barre supérieure. Désactivé, son espace revient aux commandes de chaque côté, et les valeurs CPU, MEM et DSK restent visibles dans les fenêtres plus étroites. Le raccourci de recherche ouvre toujours la recherche. Tant que les raccourcis sont désactivés, le champ reste affiché."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",
