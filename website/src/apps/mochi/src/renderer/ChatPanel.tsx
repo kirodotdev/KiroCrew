@@ -27,6 +27,7 @@ import {
 import Clickable from '../../../../components/Clickable'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
+import { usePointerMotion } from '../../../../hooks/usePointerMotion'
 import type { ChatMessage } from '../shared/types'
 import { applyTheme, type ThemeId } from '../shared/themes'
 import { formatShortcut } from '../shared/shortcut'
@@ -106,6 +107,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
   const MAX_LOADED = 200 // safety cap — prevents DOM from growing unbounded
   const [input, setInput] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0) // highlighted command in autocomplete
+  // Hover moves the highlight only on real pointer motion, so the reset to row 0 on
+  // each keystroke survives a pointer resting over the menu.
+  const cmdPointerMoved = usePointerMotion(input.startsWith('/'))
   const [editingTs, setEditingTs] = useState<string | null>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [screenshot, setScreenshot] = useState<string | null>(null)
@@ -1390,7 +1394,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                   background: i === cmdIdx ? 'var(--bg-input)' : 'transparent',
                 }}
-                onMouseEnter={() => setCmdIdx(i)}
+                onMouseMove={e => { if (cmdPointerMoved(e)) setCmdIdx(i) }}
               >
                 <code style={{ color: 'var(--accent)', fontSize: 11 }}>{c.cmd}</code>
                 <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{i18nT(SLASH_DESC_KEY[c.cmd])}</span>

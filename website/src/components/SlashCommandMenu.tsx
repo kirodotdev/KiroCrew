@@ -194,7 +194,7 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
 
   // Uses the SAME nav hook as the $skill / @file pickers, which gives the slash
   // menu arrow-scroll and consistent Enter/Tab/Escape.
-  const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
+  const { selected, setSelected, selectedRef, itemRefs, hoverSelect } = useListKeyboardNav({
     open: visible,
     count: displayed.length,
     onChoose: choose,
@@ -272,7 +272,7 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
           key={cmd.name}
           ref={el => { itemRefs.current[i] = el }}
           className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
-          onMouseEnter={() => setSelected(i)}
+          onMouseMove={e => hoverSelect(i, e)}
           onMouseDown={e => { e.preventDefault(); onSelect(cmd.name + ' ') }}
         >
           <span className="text-[13px] font-mono font-semibold text-accent shrink-0">{cmd.name}</span>

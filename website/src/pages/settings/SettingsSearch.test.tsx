@@ -134,6 +134,27 @@ describe('SettingsSearch', () => {
     expect(after[1]).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('a new query keeps the top match selected under a resting pointer', () => {
+    setup()
+    fireEvent.change(input(), { target: { value: 'model' } })
+    // The reader points at the second row with real motion.
+    fireEvent.mouseMove(screen.getAllByRole('option')[1], { clientX: 40, clientY: 60 })
+    fireEvent.mouseMove(screen.getAllByRole('option')[1], { clientX: 41, clientY: 60 })
+    expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
+
+    // Typing re-ranks the rows and resets the selection to the top match. The
+    // browser then fires enter, over and move events at the unchanged position
+    // on the row that landed under the resting pointer. None of them is the
+    // reader pointing, so Enter must still take the top match.
+    fireEvent.change(input(), { target: { value: 'mode' } })
+    const rows = screen.getAllByRole('option')
+    expect(rows.length).toBeGreaterThan(1)
+    fireEvent.mouseEnter(rows[1], { clientX: 41, clientY: 60 })
+    fireEvent.mouseMove(rows[1], { clientX: 41, clientY: 60 })
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'false')
+  })
+
   it('still offers the governed entry when the ceiling read FAILED', async () => {
     // This component resolves the governance answer itself
     // (`!isSuccess || data?.decisions_enabled === true`), so the case belongs here
