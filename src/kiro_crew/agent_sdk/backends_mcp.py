@@ -25,6 +25,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -148,11 +149,17 @@ from kiro_crew.agent_sdk.backends import (
 # (``acp.harness.strands``) and the CLI mounts it at start, with its own discovery of
 # other tools' MCP files switched off. Captured as a round trip:
 # ``test/fixtures/acp_frames/strands/mcp-stdio-mount-live.jsonl``.
+# mimocode is a member on a ROUND TRIP rather than on its ancestry: driven on 0.1.15,
+# the element ``acp.session_mcp.acp_server_element`` emits was mounted, the server
+# was asked ``initialize``, ``tools/list`` and ``tools/call``, and the call came back
+# under opencode's fused title (``crew-probe_crew_probe_echo``) after a permission
+# request (``test/fixtures/acp_frames/mimocode/mcp-stdio-mount-live.jsonl``).
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
@@ -317,6 +324,20 @@ def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
 # the model called ``@probe/probe_codeword`` and it returned ``tangerine-42``.
 ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
+#: Backends whose harness runs some of its own tools without a permission request
+#: even under the asking posture Crew seeds and reads back. A refusal Crew applies at
+#: the permission request therefore never meets those calls: the zero-tool ban's
+#: ``AcpClient._deny_zero_tools`` among them, which is why membership here keeps a
+#: backend out of ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`` whatever its routing.
+#:
+#: mimocode: ``memory``, ``history`` and ``task`` never consult its permission service
+#: (``tool/memory.ts``, ``tool/history.ts``, ``tool/task.ts`` hold no ``ctx.ask``),
+#: and an edit under its memory tree skips the ask (``askEditUnlessMemory``). Its
+#: ``mimo debug agent build`` lists all three on the xiaomi model, and no switch
+#: removes them.
+ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_MIMOCODE})
+
+
 # Backends on which an agent spec's ``"tools": []`` is honoured as a total ban --
 # no MCP server AND no harness-native tool (Bash, file edit, ...) is callable --
 # rather than merely an MCP-server allowlist that leaves native tools reachable.
@@ -398,17 +419,29 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # project's own, vended or MCP -- which the CLI forwards as
 # ``session/request_permission``, so ``_deny_zero_tools`` sees each one; it is
 # mirrored, enforced (``Routing.VERIFIED_GATE_EXTENSION``) and ``AcpClient``-served.
-ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
-    {
-        ACP_BACKEND_KIRO,
-        ACP_BACKEND_KAS,
-        ACP_BACKEND_CLAUDE,
-        ACP_BACKEND_OPENCODE,
-        ACP_BACKEND_GOOSE,
-        ACP_BACKEND_DEEPSEEK,
-        ACP_BACKEND_PI,
-        ACP_BACKEND_STRANDS,
-    }
+#
+# A fourth fact excludes a backend that meets the other three: membership in
+# ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``, a harness some of whose own tools run with
+# no permission request at all. ``_deny_zero_tools`` runs at that request, so those
+# calls stay live under ``"tools": []``. mimocode is excluded on this ground: it is
+# mirrored, enforced and served by ``AcpClient``, but its ``memory``, ``history``
+# and ``task`` tools never ask.
+ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = (
+    frozenset(
+        {
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_GOOSE,
+            ACP_BACKEND_DEEPSEEK,
+            ACP_BACKEND_PI,
+            ACP_BACKEND_STRANDS,
+        }
+    )
+    # The fourth fact, applied rather than restated: a backend whose own tools run
+    # unasked cannot honour the ban, whatever the literal above says about it.
+    - ACP_BACKENDS_UNASKED_NATIVE_TOOLS
 )
 
 # Backends that honour a remote MCP entry's ``oauth`` block (the pre-registered

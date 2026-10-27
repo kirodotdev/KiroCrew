@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -63,6 +64,9 @@ from kiro_crew.agent_sdk.backends import (
 # tool executors from inside the same process -- it is not an OS sandbox that Crew's
 # seatbelt would nest inside, and it does not carry Crew's credential mask. Skipping
 # Crew's layer for it would drop the compensating control for its passive reads.
+# mimocode is excluded on opencode's ground, unchanged by the fork: it is the same
+# single binary with no OS sandbox of its own, and Crew's layer carries the
+# credential mask that stands in for the reads it never asks about.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose kiro-cli RELAY route carries kiro-cli's internal sandbox, so a
@@ -124,6 +128,10 @@ ACP_BACKENDS_RELAY_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KAS})
 # override and a ``$HOME`` relocation reaches nothing the override does not.
 # KAS is excluded although Crew spawns it through ``kiro-cli`` too: where KAS keeps
 # its MCP OAuth grants is not measured, so it stays out under the rule above.
+# mimocode is excluded for opencode's reason: its credential follows ``XDG_DATA_HOME``,
+# which its auth declaration names. Its second override, ``MIMOCODE_HOME``, moves the
+# file to a spelling the floor cannot re-anchor, so the launch refuses a session
+# that sets it rather than relying on a ``$HOME`` relocation to reach it.
 ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 
 
@@ -282,6 +290,18 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
             "Install the official Strands CLI; its default --acp-server profile is "
             "not used, Kiro Crew starts it on a Python project it gates."
         ),
+    ),
+    ACP_BACKEND_MIMOCODE: SelfServedLaunch(
+        label="MiMo Code",
+        binary="mimo",
+        acp_args=("acp",),
+        bin_env_var="MIMO_BIN",
+        # Pinned to the tested 0.1 line, for opencode's reason: an unpinned name
+        # installs the latest release, which the version gate in
+        # acp/harness/mimocode.py refuses until it has been measured.
+        install_command="npm i -g @mimo-ai/cli@0.1",
+        protocol_version=1,
+        missing_hint="No adapter package is needed: this harness serves ACP itself.",
     ),
 }
 

@@ -31,6 +31,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -109,6 +110,9 @@ from kiro_crew.agent_sdk.backends import (
 #   reads no kiro agent spec, so the derived spec cannot express a read-only posture.
 # * pi: Crew's gate extension asks about every call but expresses no read-only
 #   posture.
+# * mimocode: for opencode's reason, and one of its own: its ``memory``, ``history``
+#   and ``task`` tools run without asking (``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``), so
+#   a side turn could not be confined to reads even if every asked call were.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -288,6 +292,12 @@ ACP_BACKENDS_NATIVE_WORKFLOWS = frozenset({ACP_BACKEND_KAS})
 #: matchers meet the Strands built-in names through
 #: :data:`kiro_crew.acp.harness_tool_names.STRANDS_TOOL_IDS_BY_KIRO_TOOL`, for a
 #: call the gate proved is that built-in only.
+#:
+#: mimocode is NOT a member, although it asks under the same seed opencode does: several
+#: of its own tools never reach its permission service at all (``memory``,
+#: ``history``, ``task``, and an edit under its memory directory; ``cron`` too,
+#: which the launch pins off), so a PreToolUse hook would be skipped on exactly
+#: those calls, the claude and codex ground.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
 )
@@ -438,6 +448,11 @@ ACP_BACKEND_ROUTING: dict = {
     # pi's and deepseek's member. Live capture:
     # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
     ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
+    # opencode's mechanism under MiMo Code's own variable: ``permission: "ask"`` in
+    # ``MIMOCODE_CONFIG_CONTENT``, read back from ``mimo debug config`` before the
+    # session spawns. Measured on 0.1.15: every shell and MCP call then sends
+    # ``session/request_permission`` (``test/fixtures/acp_frames/mimocode``).
+    ACP_BACKEND_MIMOCODE: Routing.VERIFIED_SEEDED_SETTINGS,
 }
 
 
@@ -489,6 +504,7 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 #: ``UNVERIFIED`` instead.
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
+    ACP_BACKEND_MIMOCODE: ("permission", "ask"),
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
 }
 

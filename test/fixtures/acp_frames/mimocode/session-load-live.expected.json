@@ -1,0 +1,344 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.1.15",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "probe/probe-model",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Probe/probe-model",
+            "value": "probe/probe-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          },
+          {
+            "description": "Compose mode (deprecated). Orchestrates workflows with built-in compose skills. For Fable/Sol-class models, use Build and run /compose-next instead.",
+            "name": "compose",
+            "value": "compose"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "build",
+      "ids": [
+        "build",
+        "plan",
+        "compose"
+      ]
+    },
+    "session_id": "mimo-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "I'll call the crew-probe echo tool for you."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I'll call the crew-probe echo tool for you.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "crew-probe_crew_probe_echo",
+        "tool_call_id": "call-1",
+        "tool_kind": "other",
+        "wire_title": "crew-probe_crew_probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "crew-stdio-mount-proved",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "9f9748c9e18a42034c91e3b56ef3086e820bc06bf97a0a2b536addd6bdd43922",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "tool_call_id": "call-1",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "The tool returned: **\"crew-stdio-mount-proved\"**"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The tool returned: **\"crew-stdio-mount-proved\"**",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-5",
+        "text": "Based on the tools available to me, I can only see one crew-probe tool that I can call:\n\n1. **crew-probe_crew_probe_echo**\n\nThe tool **crew_probe_secret** is not available in my current tool surface."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Based on the tools available to me, I can only see one crew-probe tool that I can call:\n\n1. **crew-probe_crew_probe_echo**\n\nThe tool **crew_probe_secret** is not available in my current tool surface.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-6",
+        "text": "<summary>\n\n## Task Overview\nThe user asked me to:\n1. Call the MCP tool `crew_probe_echo` from the crew-probe server once and quote the returned text\n2. List the names of every crew-probe tool I can call\n3. If `crew_probe_secret` is available, call it; otherwise state it is not available\n\n## Current State\n**Completed:**\n- Called `crew-probe_crew_probe_echo` successfully\n- Tool returned: `\"crew-stdio-mount-proved\"`\n- Quoted the result to the user\n- Listed available crew-probe tools: only `crew-probe_crew_probe_echo` is visible\n- Checked availability of `crew_probe_secret`: NOT available in current tool surface\n- Reported to user that `crew_probe_secret` is not available\n\n## Important Discoveries\n- Only one crew-probe tool is exposed in my current tool surface: `crew-probe_crew_probe_echo`\n- The tool surface is fixed at session start and reflects what the crew-probe MCP server has registered\n- `crew_probe_secret` does not appear in my available tools list, so it either doesn't exist or isn't exposed to this agent instance\n\n## Next Steps\n**Task is complete.** Both user requests have been fulfilled:\n1. ✅ Called `crew_probe_echo` and quoted its output\n2. ✅ Listed crew-probe tools and confirmed `crew_probe_secret` is unavailable\n\nNo further actions required unless the user asks for additional investigation or clarification.\n\n## Context to Preserve\n- The user was testing my ability to discover and call MCP tools from the crew-probe server\n- This appears to be a validation or probe of the tool discovery system\n- The return value `\"crew-stdio-mount-proved\"` may be a status indicator or proof of successful MCP mounting\n\n</summary>"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "<summary>\n\n## Task Overview\nThe user asked me to:\n1. Call the MCP tool `crew_probe_echo` from the crew-probe server once and quote the returned text\n2. List the names of every crew-probe tool I can call\n3. If `crew_probe_secret` is available, call it; otherwise state it is not available\n\n## Current State\n**Completed:**\n- Called `crew-probe_crew_probe_echo` successfully\n- Tool returned: `\"crew-stdio-mount-proved\"`\n- Quoted the result to the user\n- Listed available crew-probe tools: only `crew-probe_crew_probe_echo` is visible\n- Checked availability of `crew_probe_secret`: NOT available in current tool surface\n- Reported to user that `crew_probe_secret` is not available\n\n## Important Discoveries\n- Only one crew-probe tool is exposed in my current tool surface: `crew-probe_crew_probe_echo`\n- The tool surface is fixed at session start and reflects what the crew-probe MCP server has registered\n- `crew_probe_secret` does not appear in my available tools list, so it either doesn't exist or isn't exposed to this agent instance\n\n## Next Steps\n**Task is complete.** Both user requests have been fulfilled:\n1. ✅ Called `crew_probe_echo` and quoted its output\n2. ✅ Listed crew-probe tools and confirmed `crew_probe_secret` is unavailable\n\nNo further actions required unless the user asks for additional investigation or clarification.\n\n## Context to Preserve\n- The user was testing my ability to discover and call MCP tools from the crew-probe server\n- This appears to be a validation or probe of the tool discovery system\n- The return value `\"crew-stdio-mount-proved\"` may be a status indicator or proof of successful MCP mounting\n\n</summary>",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-8",
+        "text": "done."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      29282,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "probe/probe-model",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Probe/probe-model",
+            "value": "probe/probe-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          },
+          {
+            "description": "Compose mode (deprecated). Orchestrates workflows with built-in compose skills. For Fable/Sol-class models, use Build and run /compose-next instead.",
+            "name": "compose",
+            "value": "compose"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "build",
+      "ids": [
+        "build",
+        "plan",
+        "compose"
+      ]
+    },
+    "session_id": "mimo-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-9",
+        "text": "`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "`",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-9",
+        "text": "\"crew-stdio-mount-proved"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\"crew-stdio-mount-proved",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-9",
+        "text": "\"`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\"`",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      29313,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      29313,
+      13,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

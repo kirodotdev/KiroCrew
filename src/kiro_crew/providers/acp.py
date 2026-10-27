@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -626,6 +627,11 @@ class AcpProvider(LLMProvider):
     def is_opencode_backend(self) -> bool:
         """True when this ACP provider talks to OpenCode (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_OPENCODE
+
+    @property
+    def is_mimocode_backend(self) -> bool:
+        """True when this ACP provider talks to MiMo Code (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_MIMOCODE
 
     @property
     def is_pi_backend(self) -> bool:

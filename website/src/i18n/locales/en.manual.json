@@ -10092,6 +10092,7 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "install_check_failed_can_still_switch": "Could not check whether this is installed on this machine. You can still switch to it. If it is not installed, the session will say so when it starts.",
+        "mimocode": "MiMo Code",
         "opencode": "OpenCode",
         "pi": "Pi",
         "strands": "Strands"

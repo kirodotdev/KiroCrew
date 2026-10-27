@@ -5,7 +5,7 @@
 The primary ACP session transport path spans **five** entry modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
 
 Module-level code moved out of the two transports lives in the owner modules
-below: `acp/runtime_start.py` serves the runtime alone, the five host adapters
+below: `acp/runtime_start.py` serves the runtime alone, the six host adapters
 serve the client alone, and the rest serve both.
 `acp/client.py` and `acp/runtime.py` keep every moved name readable and patchable
 under its old path: a moved name their own code reads and nothing patches is an
@@ -28,7 +28,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
 | `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
 | `acp/launch.py` | the launch tail both drivers hand their plan to (`launch`): pod bundle swap, scratch window, sandbox wrap with the host's credential mask, cgroup scope, the child's environment and the suspended spawn; plus what several per-process hosts share before it -- the Node-adapter and self-served binary ladders, the resolution-cache generation fence, the enforced-host preflight and the read-back child plumbing |
-| `acp/harness/{claude,opencode,goose,pi,deepseek}.py` | one `ProcessAdapter` per host the client starts one process per session for (`process_adapter_for`): its binary resolution and caches, argv and labels, credential mask, gate sealing and routing read-back, and its additions to the child's environment |
+| `acp/harness/{claude,opencode,mimocode,goose,pi,deepseek}.py` | one `ProcessAdapter` per host the client starts one process per session for (`process_adapter_for`): its binary resolution and caches, argv and labels, credential mask, gate sealing and routing read-back, and its additions to the child's environment |
 
 `AcpClient`'s own behaviour lives in `acp/client_*.py` owner modules, one
 responsibility each. A member's body is a module-level function there whose first
@@ -57,7 +57,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_claude_seed.py` | the session's `settings.local.json` seed: render, create, adopt, re-seed, share and retract |
 | `acp/client_seed_ownership.py` | proving and handing back Crew's ownership of the seed on disk: bounded no-follow reads, move-aside and restore, settle, discard and release |
 | `acp/client_model_selection.py` | the session's model: advertised list and entitlement re-probe, served-default correction, `set_model`, the config-option push ladder (`_push_model_via_effort_split`, `_is_config_value_rejection`) and effort levels |
-| `acp/client_permissions.py` | permission requests and in-band tool restrictions: the permission event, approve and reject, the auto-approve identity gate, zero-tool and spec-disabled refusals, identity-drift refusals, the pi, DeepSeek and goose-mode tripwires and the routing read-back |
+| `acp/client_permissions.py` | permission requests and in-band tool restrictions: the permission event, approve and reject, the auto-approve identity gate, zero-tool and spec-disabled refusals, identity-drift refusals, the pi, DeepSeek and goose-mode tripwires, MiMo Code's unasked-call tripwire and the routing read-back |
 | `acp/client_elicitation.py` | an MCP server's elicitation on this client: the parse-or-decline of a request on either wire, the decline without a consumer or on a text-only prompt API, `answer_elicitation` with its form validation, and the cancel of what is still pending at a turn boundary (see *MCP elicitation*) |
 | `acp/client_mcp_array.py` | the session's `mcpServers` array: member mounts, pooled broker stubs, the per-harness translations, the pi handoff, pruning of servers that cannot start, the MCP registration report and the spec's zero-tools answer |
 | `acp/client_transport.py` | JSON-RPC over the child's stdio: request ids, bounded request and response writes, frame reads, waiting for a response while deferring other frames, draining notifications, and the idle reader between turns with its stdout claims |
@@ -65,7 +65,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_usage.py` | usage, metadata and compaction frames: usage and prompt-token updates, context-window metadata, claude and codex inline compaction and `wait_for_compaction` |
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
 | `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
-| `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
+| `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's and MiMo Code's deferred shell permission and the liveness consult |
 | `acp/client_new_conversation.py` | a fresh conversation on the live process: `new_conversation` for a member of `ACP_BACKENDS_CLIENT_NEW_CONVERSATION` (claude) closes the old session and sets a new one up as a cold start does (see claude-code-provider, *A fresh conversation on the live adapter*) |
 | `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
 | `acp/relaunch_reload.py` | not a member owner: relaunching a live client's process and loading the same session in it, and the MCP mark a relaunch-reload harness applies at its next turn boundary (see *An MCP change applied by relaunch*) |
@@ -1371,6 +1371,68 @@ in-progress `tool_call_update` with a nonempty command and no output, so the
 normal update handler fills the trusted cache before the permission is built.
 An unrelated or missing frame leaves the permission unchanged; the shell gate
 then denies it. The permission frame's inline `rawInput` never fills the cache.
+
+MiMo Code, an OpenCode fork, differs at the request itself: on 0.1.15 its shell tool
+asks `external_directory` and then `bash` with empty metadata, so neither request
+ever carries the command, and the running
+`tool_call_update` that does is published separately, in either order (both orders
+in `test/fixtures/acp_frames/mimocode/session-live.jsonl`).
+`_defer_mimocode_shell_permission` therefore keys on the request's category
+(`_MIMOCODE_COMMANDLESS_SHELL_ASKS`, read off `toolCall.title`) as well as on the
+trusted shell flag, waits at most `_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT` for the
+running update (`_is_mimocode_running_input`), and leaves `bash_delete`, which asks
+with `{command, deletes}` after `bash` was answered, to the dispatcher. When both
+categories ask for one call, the first reorders and the second finds the command
+cached. It shares no code with the OpenCode method.
+
+MiMo Code's sessions also carry an unasked-call tripwire. The launch seeds
+`permission: "ask"` and reads it back, but the harness's loopback listener can change
+the outcome from outside the read-back's sight: `POST /permission/skip-all` switches
+the instance to auto-allow, and `POST /permission/:id/reply` answers a pending
+request before Crew does. Neither route needs a credential. The launch therefore arms
+`_unasked_shell_tripwire` and records `_mimocode_memory_root`, and `_tripwire_pi_gate`
+stops the harness on two kinds of terminal frame. The first is a call that completed
+with no ask, unless the harness runs it without asking by design: a tool in the
+backend's `HARNESS_UNASKED_TOOL_IDS` row (`acp/harness_tool_names.py`: `memory`,
+`history`, `task`, `plan_exit`, `question`, `mcp_tool_search`, `invalid`, and `actor`
+and `skill_search`, which ask only to start a subagent or load a skill; `actor` passes
+only when its input, read by `mimocode_actor_asks_nothing`, starts none), or a file write (its
+`fs_write` row) whose every target is inside the harness's memory tree, the one tree
+its edit tools write under without asking. Under the seeded posture every other tool,
+MCP tools included, asks first. The second is any call that completed while Crew's
+answer to its ask was still outstanding. `approve_tool` and `reject_tool` take the request out of
+`_pi_gate_request_tool` before the answer is written, so Crew's own answer never
+trails the completion it allowed. On the same sessions an `always` answer is sent as
+`once`: a stored `always` would stop the harness asking, and the tripwire could not
+tell that from a switched-off posture. The tripwire acts after the call ran; what it
+guarantees is that the call is the last one.
+
+MiMo Code names an MCP call only by its fused `<server>_<tool>` title, on the
+`tool_call` and the permission frame alike, with no `_meta` identity, and writes any
+character outside `[A-Za-z0-9_-]` of either half as `_` (two for a character outside
+the BMP), so the real tool name is not on the wire. MCP calls are handled the way
+the opencode backend already handles them: Crew names no `(server, tool)` pair on the
+permission event, and no real name is recovered. The gate judges the call by its
+fused title, and `qualified_harness_tool_id` splits that title into its candidate
+`@server/tool` names for the hooks that match a harness id (`_mimocode_mcp_splits`,
+the copy of `_opencode_mcp_splits`). The same residual follows: governance's `mcp`
+scope is not asked for the call, and a rule written for the real name
+(`@ops/repo.delete`) does not meet `ops_repo_delete`; a rule must name the fused
+title. A spec's own per-tool denies are written into the harness's config under its
+fused id (`mimocode_tool_id`) and read back, as on opencode. A server switched
+off whole that the harness mounts from its own config (`_mimocode_disabled_servers`,
+from the same projection) refuses the session at the read-back. On a governed host the
+residual is closed by refusal rather than carried: because the `mcp` scope is never
+asked about a fused title, a session that would mount any server -- Crew's array or
+the harness's own config -- is refused after the read-back whenever the installed
+ceiling or any configured profile constrains `mcp` at all
+(`governance.mcp_scope_governed_now`, `_mimocode_governed_mcp_issue`); the remedy
+names the servers and the harness switch. That config
+(`mimocode.json`, `.mimocode/`) is the only source of servers besides Crew's array:
+the harness would also mount Claude Code's `~/.claude.json` and the checkout's
+`.claude.json`, and `MIMOCODE_DISABLE_CLAUDE_CODE_MCP` is pinned on every child so
+another tool's file in a checkout cannot start a server the read-back never named
+(`_MIMOCODE_PINNED_ENV`).
 
 The host always sends one-shot approvals (`always=False`, the default). Kiro Crew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so Kiro Crew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip Kiro Crew hooks for this exact tool" feature; no caller passes it today.
 

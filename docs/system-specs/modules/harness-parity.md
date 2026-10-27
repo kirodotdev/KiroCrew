@@ -4,16 +4,16 @@ A *harness* is the agent process Kiro Crew drives over ACP. Kiro Crew has one
 first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
-(`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
+(`ACP_BACKEND_OPENCODE`), MiMo Code (`ACP_BACKEND_MIMOCODE`), Pi (`ACP_BACKEND_PI`),
+goose (`ACP_BACKEND_GOOSE`), DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
 (`ACP_BACKEND_COPILOT`) and Strands (`ACP_BACKEND_STRANDS`), plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 `session_pid_orphan_scan.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
 must keep its browser daemon alive.
 
-Kiro, Claude Code, KAS, Strands, Codex, OpenCode, Pi, goose, DeepSeek and Copilot are selectable on a
-plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
+Kiro, Claude Code, KAS, Strands, Codex, OpenCode, MiMo Code, Pi, goose, DeepSeek and Copilot
+are selectable on a plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
 whole Claude launch and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a
 capability. Whether the binaries are INSTALLED on a given machine is a different
@@ -39,9 +39,9 @@ set once both halves landed — `backend_install.py` gained its probe, so the in
 names the missing component and its command instead of reading `unknown`, and
 `acp_tool_gate` established that its tool calls reach the PreToolUse gate.
 
-Read the invariants below against that tree: ten harnesses can serve a real
+Read the invariants below against that tree: eleven harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
-nine of them.
+ten of them.
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro
@@ -470,10 +470,13 @@ stamp (`_meta.claudeCode.toolName`) for two things only: the name a hook matcher
 session, and the read-only proof, on a Side Chat session only (`claude-code-provider.md`,
 "A Side Chat session"); that key is not a row of `_MCP_IDENTITY_META_CHANNELS`.
 opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
-`classify_tool_call`). On opencode, and for those claude calls, every heartbeat tool
-call is denied and audited `reason=no_trusted_identity`, with one gateway warning per
-denied call naming the backend condition, so an opencode heartbeat runs as a
-text-only poller. The signal is
+`classify_tool_call`), and so does MiMo Code, its fork. On opencode and MiMo Code, and
+for those claude calls, every heartbeat tool call that asks is denied and audited
+`reason=no_trusted_identity`, with one gateway warning per denied call naming the
+backend condition, so an opencode or MiMo Code heartbeat runs as a text-only poller.
+MiMo Code's `memory`, `history` and `task` tools never ask
+(`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`), so a heartbeat turn there can still run those
+three; nothing else. The signal is
 per call on purpose: each row is derived from the event itself, so it cannot drift
 from what the gate decided, and the positive set a start-time warning would key on
 (`ACP_BACKENDS_META_IDENTITY`) deliberately omits kiro-cli -- its live corpus records

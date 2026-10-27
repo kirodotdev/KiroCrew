@@ -1,0 +1,289 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.1.15",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "probe/probe-model",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Probe/probe-model",
+            "value": "probe/probe-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "build",
+      "ids": [
+        "build",
+        "plan",
+        "compose"
+      ]
+    },
+    "session_id": "mimo-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      33578,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      33578,
+      4,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-2",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      38406,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      38406,
+      4,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-3",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      43234,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "prompt_tokens": [
+      43234,
+      4,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-4",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      48430,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "prompt_tokens": [
+      48430,
+      4,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-5",
+        "text": "<summary>\n## Task Overview\nThe user has provided four \"probe turns\" of identical archive data containing quarterly ledger entries for 160 vendor codes across 7 regions. Each entry specifies a vendor code (V0000–V0159) and a unit balance. The user requested acknowledgment with \"ok\" for each probe turn (turns 1–4), which was completed successfully.\n\n**Current Status**: The user has not yet articulated what should be done with this data. The four probe turns appear to be identical (no changes between turns), suggesting this may be a test of system stability, data retention, or context management.\n\n## Current State\n- **Completed**: Successfully read and acknowledged all four probe turns with the word \"ok\"\n- **Data captured**: 160 vendor records per turn × 4 turns = 640 archive entries processed\n- **No artifacts created**: No files, analyses, or modifications have been made yet\n- **Pattern observed**: All four archive dumps contain identical data (no deltas between turns)\n\n## Important Discoveries\n1. **Data consistency**: Archive lines 0–159 repeat identically across all four probe turns with no modifications\n2. **Possible purposes**: This could be testing:\n   - System ability to handle repetitive data\n   - Context window compression under load\n   - User intent clarification before proceeding\n   - A verification that the assistant can acknowledge without acting prematurely\n\n## Next Steps\n**CRITICAL: Await user clarification on task intent.** The user has not yet specified what analysis, transformation, or action is needed for this ledger data. Possible next actions (pending user input):\n1. Analyze vendor balances (totals, averages, outliers by region)\n2. Compare deltas across the four probe turns if they diverge\n3. Generate a report or visualization of the ledger\n4. Validate data integrity or identify patterns\n5. Continue a multi-turn verification loop\n\n## Context to Preserve\n- The data format is consistent: `the quarterly ledger for region [0–6] lists vendor code V[NNNN] with a balance of [units] units`\n- Vendor codes increment (V0000–V0159) and cycle through regions in order\n- Balances follow a mathematical pattern: each cycle adds 37 units, with wraparound at 1000\n- User preference: concise, direct responses (evidenced by \"ok\"-only replies to probe turns)\n- This appears to be a system probe or stress test; confirm real task scope before proceeding with heavy analysis\n\n**Blocker**: No explicit task definition provided yet. Stand by for user direction.\n</summary>"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "<summary>\n## Task Overview\nThe user has provided four \"probe turns\" of identical archive data containing quarterly ledger entries for 160 vendor codes across 7 regions. Each entry specifies a vendor code (V0000–V0159) and a unit balance. The user requested acknowledgment with \"ok\" for each probe turn (turns 1–4), which was completed successfully.\n\n**Current Status**: The user has not yet articulated what should be done with this data. The four probe turns appear to be identical (no changes between turns), suggesting this may be a test of system stability, data retention, or context management.\n\n## Current State\n- **Completed**: Successfully read and acknowledged all four probe turns with the word \"ok\"\n- **Data captured**: 160 vendor records per turn × 4 turns = 640 archive entries processed\n- **No artifacts created**: No files, analyses, or modifications have been made yet\n- **Pattern observed**: All four archive dumps contain identical data (no deltas between turns)\n\n## Important Discoveries\n1. **Data consistency**: Archive lines 0–159 repeat identically across all four probe turns with no modifications\n2. **Possible purposes**: This could be testing:\n   - System ability to handle repetitive data\n   - Context window compression under load\n   - User intent clarification before proceeding\n   - A verification that the assistant can acknowledge without acting prematurely\n\n## Next Steps\n**CRITICAL: Await user clarification on task intent.** The user has not yet specified what analysis, transformation, or action is needed for this ledger data. Possible next actions (pending user input):\n1. Analyze vendor balances (totals, averages, outliers by region)\n2. Compare deltas across the four probe turns if they diverge\n3. Generate a report or visualization of the ledger\n4. Validate data integrity or identify patterns\n5. Continue a multi-turn verification loop\n\n## Context to Preserve\n- The data format is consistent: `the quarterly ledger for region [0–6] lists vendor code V[NNNN] with a balance of [units] units`\n- Vendor codes increment (V0000–V0159) and cycle through regions in order\n- Balances follow a mathematical pattern: each cycle adds 37 units, with wraparound at 1000\n- User preference: concise, direct responses (evidenced by \"ok\"-only replies to probe turns)\n- This appears to be a system probe or stress test; confirm real task scope before proceeding with heavy analysis\n\n**Blocker**: No explicit task definition provided yet. Stand by for user direction.\n</summary>",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      48708,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-6",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      34571,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 8,
+    "prompt_tokens": [
+      34571,
+      4,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]
