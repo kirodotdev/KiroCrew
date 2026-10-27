@@ -7,7 +7,7 @@ Each function here whose first parameter is ``self`` is an ``AcpProvider`` metho
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_compact_result``.
+Instance fields written: ``_compact_result``, ``_sign_in_ask``.
 
 Instance fields read: ``_client``, ``essential_delivery``.
 """
@@ -160,10 +160,16 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
 async def stream(
     self: AcpProvider, message: str, timeout: float | None = None, *, allow_image: bool = True
 ) -> AsyncIterator[LLMEvent]:
+    ask, self._sign_in_ask = getattr(self, "_sign_in_ask", ""), ""
     # The direct client can respawn in ensure_ready; resolve that BEFORE
     # comparing receipts so a recycled conversation receives the full text.
     await self._ready_confirmed_session()
     send = self._client.stream_events
+    if ask:
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        if isinstance(self._client, AcpSessionProvider):
+            send = functools.partial(self._client.stream, sign_in_ask=ask)
     if not allow_image:
         send = functools.partial(send, allow_image=False)
     if timeout is not None:
@@ -176,6 +182,7 @@ async def stream(
 
 
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
+    _, self._sign_in_ask = getattr(self, "_sign_in_ask", ""), ""
     # _kiro.dev/commands/execute is a kiro extension, so only
     # ACP_BACKENDS_KIRO_SLASH_COMMANDS members can be sent it. Everyone else
     # routes through session/prompt, which an adapter interprets natively for

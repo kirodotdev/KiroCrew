@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import McpToolsPanel, { SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 
 const servers = [{ name: 'slack-mcp', enabled: true }]
@@ -177,5 +177,63 @@ describe('McpToolsPanel', () => {
       />,
     )
     expect(screen.queryByText(/start a new session to load/)).toBeNull()
+  })
+
+  const awaitingReport = {
+    configured: [],
+    ready: ['slack-mcp'],
+    failed: [],
+    awaiting_auth: ['figma-mcp'],
+    failures: {},
+  }
+
+  const renderAwaiting = (onSignIn?: (server: string) => Promise<unknown>) =>
+    render(
+      <McpToolsPanel
+        servers={[
+          { name: 'figma-mcp', enabled: true },
+          { name: 'slack-mcp', enabled: true },
+        ]}
+        toolsByServer={{}}
+        loaded={new Set()}
+        toolSearchOn={false}
+        loading={false}
+        sessionReport={awaitingReport}
+        onSignIn={onSignIn}
+      />,
+    )
+
+  it('gives an awaiting-authorization row a Sign in action that starts its sign-in', async () => {
+    let finish: () => void = () => {}
+    const onSignIn = vi.fn(() => new Promise<void>(resolve => (finish = resolve)))
+    renderAwaiting(onSignIn)
+    const button = screen.getByRole('button', { name: 'Sign in to figma-mcp' })
+    expect(button).toHaveTextContent('Sign in')
+    // Only the awaiting row offers it; a started server has nothing to sign in to.
+    expect(screen.queryByRole('button', { name: 'Sign in to slack-mcp' })).toBeNull()
+    fireEvent.click(button)
+    expect(onSignIn).toHaveBeenCalledWith('figma-mcp')
+    expect(screen.getByRole('status')).toHaveTextContent('Starting sign-in…')
+    expect(button).toBeDisabled()
+    // A second click while it starts asks for nothing more.
+    fireEvent.click(button)
+    expect(onSignIn).toHaveBeenCalledTimes(1)
+    finish()
+    await waitFor(() => expect(screen.queryByText('Starting sign-in…')).toBeNull())
+    expect(button).toBeEnabled()
+  })
+
+  it('says so when the sign-in did not start, and lets the user try again', async () => {
+    const onSignIn = vi.fn(() => Promise.reject(new Error('409')))
+    renderAwaiting(onSignIn)
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Sign in to figma-mcp' }), { key: 'Enter' })
+    expect(await screen.findByText("Couldn't start the sign-in. Try again.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to figma-mcp' }))
+    expect(onSignIn).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows no Sign in action when the caller offers none', () => {
+    renderAwaiting(undefined)
+    expect(screen.queryByRole('button', { name: /Sign in/ })).toBeNull()
   })
 })

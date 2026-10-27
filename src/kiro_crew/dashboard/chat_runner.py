@@ -891,6 +891,21 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
+        if (
+            not is_slash
+            and turn._directive_user_origin
+            and not turn._turn_actor
+            and not turn._is_synthetic
+            and not turn._directive_self_wake
+            and turn._prompt_depth == 0
+        ):
+            # Require human-send provenance: generated app dispatches can have
+            # no actor or synthetic flag, but are not the person's words.
+            # Hand over only what they typed, before `@prompt`/`$skill` expansion
+            # and any runner-authored prepend that could name an unsigned server.
+            note = getattr(client, "note_user_message", None)
+            if note is not None:
+                note(turn.user_typed_message)
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (

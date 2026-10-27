@@ -20,6 +20,7 @@ from kiro_crew.dashboard import (
     session_transfer,
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.mcp_sign_in import api_chat_slot_mcp_sign_in
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
     api_issue_source,
@@ -152,6 +153,7 @@ def register(app: web.Application) -> None:
     )
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)
+    app.router.add_post("/api/chat/slots/{slot}/mcp/sign-in", api_chat_slot_mcp_sign_in)
     app.router.add_post("/api/chat/slots/{slot}/project", chat.api_chat_slot_project)
     # Follow-up suggestion card (suggest_followup MCP tool -> card below composer)
     app.router.add_post("/api/chat/slots/{slot}/followup", chat.api_chat_slot_followup)

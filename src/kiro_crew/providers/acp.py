@@ -840,6 +840,19 @@ class AcpProvider(LLMProvider):
             return self._client.native_context_documents
         return {}
 
+    def note_user_message(self, text: str) -> None:
+        # Only the shared runtime's session starts a KAS sign-in; the direct
+        # client gets the engine's own OAuth requests and has no trigger.
+        if isinstance(self._client, AcpSessionProvider):
+            self._sign_in_ask: str = text
+
+    async def request_mcp_sign_in(self, server_name: str) -> str:
+        # Only the shared runtime's KAS session starts a sign-in on request;
+        # the direct client has no such start.
+        if isinstance(self._client, AcpSessionProvider):
+            return await self._client.request_mcp_sign_in(server_name)
+        return "unsupported"
+
     @property
     def member_dispatch_mounted(self) -> bool | None:
         # Both transports answer from the composition that built THIS session's

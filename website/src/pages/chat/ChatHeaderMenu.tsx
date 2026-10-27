@@ -141,6 +141,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                   toolSearchOn={toolSearchOn}
                   loading={servers.length === 0}
                   sessionReport={sessionReport}
+                  onSignIn={activeSlot ? server => api.chatSlotMcpSignIn(activeSlot, server) : undefined}
                 />
               </DropdownMenuSubContent>
             </DropdownMenuSub>,

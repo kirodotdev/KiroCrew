@@ -140,6 +140,14 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     // servers; conversation preserved). 409 while a turn is in flight.
     chatSlotReload: (slot: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reload', {}).then(j) as Promise<{ ok?: boolean; error?: string }>,
+    /** Start the sign-in for one MCP server of this chat's live session (the MCP
+     *  menu's "Awaiting authorization" row). Its Authorize card arrives in the chat. */
+    chatSlotMcpSignIn: (slot: string, server: string) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/mcp/sign-in', { server }).then(j) as Promise<{
+        ok?: boolean
+        outcome?: 'started' | 'live' | 'queued' | 'not_needed' | 'unsupported'
+        error?: string
+      }>,
     chatSlotProject: (slot: string, project: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j) as Promise<{ ok?: boolean; project?: string }>,
   }

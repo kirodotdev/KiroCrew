@@ -87,6 +87,7 @@ export default function McpToolsPanel({
   toolSearchOn,
   loading,
   sessionReport,
+  onSignIn,
 }: {
   servers: McpServerLite[]
   toolsByServer: Record<string, McpToolsInfo>
@@ -94,8 +95,28 @@ export default function McpToolsPanel({
   toolSearchOn: boolean
   loading: boolean
   sessionReport?: McpSessionReport | null
+  /** Start the sign-in for an "Awaiting authorization" server of this chat's
+   *  session. Its Authorize card arrives in the chat; the row only shows that
+   *  the start is under way or failed. Omitted, the row has no action. */
+  onSignIn?: (server: string) => Promise<unknown>
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // Per-server sign-in start: absent = idle, 'starting' while the request runs,
+  // 'failed' when it did not start (the user can try again).
+  const [signIn, setSignIn] = useState<Record<string, 'starting' | 'failed'>>({})
+  const startSignIn = (name: string) => {
+    if (!onSignIn || signIn[name] === 'starting') return
+    setSignIn(prev => ({ ...prev, [name]: 'starting' }))
+    onSignIn(name).then(
+      () =>
+        setSignIn(prev => {
+          const next = { ...prev }
+          delete next[name]
+          return next
+        }),
+      () => setSignIn(prev => ({ ...prev, [name]: 'failed' })),
+    )
+  }
   const toggle = (name: string) =>
     setExpanded(prev => {
       const next = new Set(prev)
@@ -277,6 +298,47 @@ export default function McpToolsPanel({
                     <div role="status" className="mt-0.5 text-[11px] text-text leading-snug">
                       {i18nT('pages.chatPage.mcp_session_restart_to_load', { name: s.name })}
                     </div>
+                  )}
+                </div>
+              )}
+              {/* Awaiting authorization: on KAS this server's tools are hidden from
+                  the model until it is signed in, so this row is the one place
+                  the user can see it and act. Sign in starts the same sign-in a
+                  message naming the server would, and its Authorize card lands
+                  in the chat. A click re-offers a card the user dismissed. */}
+              {hasSessionReport && sessionState === 'awaiting_auth' && onSignIn && (
+                <div className="ml-3.5 mb-1 flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={signIn[s.name] === 'starting'}
+                    aria-label={i18nT('pages.chatPage.mcp_session_sign_in_aria', { name: s.name })}
+                    onClick={e => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      startSignIn(s.name)
+                    }}
+                    onKeyDown={e => {
+                      // As on the row button: the menu's roving focus owns the
+                      // arrow keys, so Enter/Space are handled here.
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        startSignIn(s.name)
+                      }
+                    }}
+                    className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] leading-4 font-semibold bg-accent text-accent-fg border-none cursor-pointer hover:opacity-90 transition-opacity disabled:opacity-60 disabled:cursor-default"
+                  >
+                    {i18nT('pages.chatPage.mcp_session_sign_in')}
+                  </button>
+                  {signIn[s.name] === 'starting' && (
+                    <span role="status" className="text-[11px] text-muted leading-snug">
+                      {i18nT('pages.chatPage.mcp_session_sign_in_starting')}
+                    </span>
+                  )}
+                  {signIn[s.name] === 'failed' && (
+                    <span role="status" className="text-[11px] text-danger leading-snug">
+                      {i18nT('pages.chatPage.mcp_session_sign_in_failed')}
+                    </span>
                   )}
                 </div>
               )}
