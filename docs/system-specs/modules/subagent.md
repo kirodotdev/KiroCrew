@@ -2817,6 +2817,20 @@ per-sub-agent completion note. Dashboard chat only.
   says the output is not a finished result. The dispatch is never refused and
   its reply carries no note: whether a task needs writes is not decidable from
   its prose, and the narration arrives in the completion, not the dispatch.
+- **A leaked final tool call** — a run can end on a normal `end_turn` with its
+  last tool call written into its text instead of run. The run reads the text
+  streamed after its last tool call (a `tool_call` frame or the run's own
+  permission request; a child escalation is not one) -- its final segment -- with the
+  dashboard's own `has_leaked_tool_call` (quoted code is ignored) and records
+  `SubagentInfo.leaked_tool_call`, carried on `subagent_done`. The note rides
+  where the no-tool-calls note does: one ``⚠ Agent `<id>` ended with a tool call
+  written as text…`` line on the lone completion event and under the member's
+  digest entry, a `leaked_tool_call` field on the `spawn_sub_agents` record, and
+  `leaked_tool_call` on `GET /api/spawn/{id}` for a completed run
+  (`constants.LEAKED_TOOL_CALL_NOTE`). Notice-only, like the dashboard's
+  mixed-turn leak notice (`should_notice_mixed_turn_leak`): earlier calls may
+  already have taken effect, so the outcome stays `completed`, nothing is
+  re-issued, and a failed or stopped run is not flagged.
 - **Per-result turns kept** — each completion is still processed in its own turn
   (no raw buffering) to avoid a context-window blowup; the synthesis works over
   the already-condensed per-result turns.

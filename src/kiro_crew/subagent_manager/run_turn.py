@@ -675,6 +675,9 @@ async def _run_inner_impl(
     )
 
     result_text = ""
+    # Text streamed since the run's last tool call: the final segment the
+    # leaked-tool-call check reads at the end (see ``leaked_tool_call``).
+    _final_segment = ""
     turns = 0
     turn_limit = self._manager._effective_turn_limit(info)
     # Separate volume bound for child-origin permission escalations —
@@ -1291,6 +1294,7 @@ async def _run_inner_impl(
                             "Failed to persist refined model for %s", info.id, exc_info=True
                         )
             result_text += event.text
+            _final_segment += event.text
             if not _attempt_has_text:
                 # The in-memory partial a stop or a cancel delivers. It
                 # keeps growing when the file cannot be written, which is
@@ -1348,6 +1352,10 @@ async def _run_inner_impl(
             if not event.sub_session_id:
                 turns += 1
                 info.turns = turns
+                # The run's own gated call is a tool-call boundary too (a
+                # backend may surface it ONLY as this request), so the
+                # final segment starts again after it.
+                _final_segment = ""
             else:
                 # Child escalation: counted toward its own volume bound
                 # here; side-effect activity (tool_count) is counted at
@@ -1460,6 +1468,7 @@ async def _run_inner_impl(
             # Count it, record it, and broadcast the same subagent_tool event
             # the permission path uses so the running-card shows live activity.
             info.tool_count += 1
+            _final_segment = ""
             info.last_tool = event.title or info.last_tool
             self._manager._note_tool_dispatch(info, event)
             await self._manager._fire_event(
@@ -1571,6 +1580,18 @@ async def _run_inner_impl(
     )
     info.stop_reason = _stop.stop_reason
     info.stop_class = _stop.name
+    if _stop.is_success and _final_segment:
+        # A normal end of turn whose final segment carries a tool call
+        # written as prose: the call never ran, yet the run reads as a
+        # success. Flag it for the parent, whatever the earlier tool-call
+        # count, NOTICE-ONLY like the dashboard's mixed-turn notice
+        # (should_notice_mixed_turn_leak): earlier calls may have taken
+        # effect, so the outcome stays completed and nothing is re-issued.
+        # Deferred import: a core module must not import the dashboard
+        # layer at import time.
+        from kiro_crew.dashboard.chat_utils_turn_text import has_leaked_tool_call
+
+        info.leaked_tool_call = has_leaked_tool_call(_final_segment)
     if not _stop.is_success:
         # Whatever streamed before the non-success completion is a PARTIAL:
         # preserved (result + result.txt) and flagged, never a finished

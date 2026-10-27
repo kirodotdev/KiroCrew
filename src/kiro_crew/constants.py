@@ -1536,6 +1536,20 @@ NO_TOOL_CALLS_NOTE = (
     "it on disk before relying on it."
 )
 
+#: What a parent is told beside the result of a sub-agent run that ended
+#: normally but whose final text carries a tool call written as prose instead
+#: of executed (``SubagentInfo.leaked_tool_call``). That call never ran, so the
+#: output it was meant to produce may be missing even though the run reads as
+#: completed. Notice-only, like the dashboard's mixed-turn leak notice: calls
+#: earlier in the run may already have taken effect, so the run is not marked
+#: failed and nothing is re-issued. Prefixed with the agent's label by each caller.
+LEAKED_TOOL_CALL_NOTE = (
+    "ended with a tool call written as text instead of run, so that last call "
+    "did not execute and the output it was meant to produce may be missing. "
+    "Earlier calls in the run may have taken effect. Check the result before "
+    "treating this step as done."
+)
+
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in

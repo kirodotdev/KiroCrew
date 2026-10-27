@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from kiro_crew.slack.gateway import (
         DIGEST_HOLD_SECS,
+        LEAKED_TOOL_CALL_NOTE,
         NEVER_STARTED_MEMORY_PREFIX,
         NO_TOOL_CALLS_NOTE,
         OUTCOME_FAILED,
@@ -168,6 +169,13 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     no_tools_note = ""
     if single_outcome == OUTCOME_OK and not _flush_only and info.made_no_tool_calls:
         no_tools_note = f"⚠ Agent `{info.id}` {NO_TOOL_CALLS_NOTE}"
+    # A completed run whose final segment wrote a tool call as text instead of
+    # running it (``SubagentInfo.leaked_tool_call``) reads as a success while
+    # that call never executed. Same channel as the note above, so a lone run
+    # and a wave digest line both carry it; the outcome stays completed.
+    if single_outcome == OUTCOME_OK and not _flush_only and info.leaked_tool_call:
+        _leak_note = f"⚠ Agent `{info.id}` {LEAKED_TOOL_CALL_NOTE}"
+        no_tools_note = f"{no_tools_note}\n{_leak_note}" if no_tools_note else _leak_note
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"

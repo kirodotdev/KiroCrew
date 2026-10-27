@@ -656,6 +656,12 @@ class SubagentInfo:
     # non-success completion (stall, cancel, error). The parent must not read
     # it as a finished answer.
     partial: bool = False
+    # True when the run ended NORMALLY but its final segment carries a tool
+    # call written as prose (``has_leaked_tool_call``): that call never ran,
+    # so the requested output may be missing although the run completed.
+    # Notice-only: the outcome stays completed (earlier calls may have taken
+    # effect); the parent is told to check the work (LEAKED_TOOL_CALL_NOTE).
+    leaked_tool_call: bool = False
     # Continue-nudges already spent recovering a ``stalled`` / ``recovering``
     # completion in place (``STOP_RECOVERY_MAX_RETRIES`` budget, shared with
     # the main chat's ``slot._tool_stall_retries``).

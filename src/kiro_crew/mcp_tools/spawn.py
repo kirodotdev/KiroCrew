@@ -843,7 +843,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SubAgentsStep,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
-    from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS, NO_TOOL_CALLS_NOTE  # noqa: F401
+    from kiro_crew.constants import (  # noqa: F401
+        DEFAULT_SUBAGENT_MAX_TURNS,
+        LEAKED_TOOL_CALL_NOTE,
+        NO_TOOL_CALLS_NOTE,
+    )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401

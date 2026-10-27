@@ -395,6 +395,9 @@ class TerminalCoordinator(ManagerComponent):
                 "stop_reason": info.stop_reason,
                 "stop_class": info.stop_class,
                 "partial": info.partial,
+                # A normal end whose final segment leaked a tool call as
+                # text: completed, but that last call never ran.
+                "leaked_tool_call": bool(getattr(info, "leaked_tool_call", False)),
             },
         )
         # A terminal is where the user watches the wave settle, so it
