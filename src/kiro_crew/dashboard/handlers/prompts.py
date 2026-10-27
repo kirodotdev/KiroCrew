@@ -109,6 +109,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.prompts_skill_edits import _SKILL_WRITE_LOCK  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import _match_package_row  # noqa: F401
+    from kiro_crew.dashboard.handlers.prompts_skill_edits import _skill_detail_verbs  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skill_detail  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skill_pin  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skills_create  # noqa: F401
