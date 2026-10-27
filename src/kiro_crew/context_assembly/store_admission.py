@@ -277,7 +277,10 @@ def session_memory_parts(
                         budget_chars=max(0, room),
                     )
                     memory_ctx = memory_ctx[: max(0, room - len(notice))] + notice
-                append_required(memory_ctx)
+                # Bounded by the model-safe ceiling (its ``pref.*`` rows by
+                # ``_PREFS_STARTUP_CAP``), not by the background pool the
+                # activity block below competes for, so it does not use that pool up.
+                blocks.append_authored(memory_ctx)
             if reads.activity:
                 append_required(reads.activity)
             # The recent-activity block (projects, daily history, task facts,
@@ -714,7 +717,6 @@ def session_lessons_part(
 
     parts = blocks.parts
     protected_parts = blocks.protected
-    append_required = blocks.append_required
     # Lessons: injected for ALL agents (skipped for temporary sessions), gated
     # by the same project scope the skill loader applies. A lesson with no
     # ``repo_scope`` applies everywhere; a scoped one reaches only sessions
@@ -833,7 +835,9 @@ def session_lessons_part(
             lessons_ctx = ""
         if lessons_ctx:
             lessons_part_index = len(parts)
-            append_required(lessons_ctx)
+            # The rule tier has its own window-independent allowance
+            # (``_LESSONS_STARTUP_CAP``); it is not charged to the background pool.
+            blocks.append_authored(lessons_ctx)
     return lessons_renderer, lessons_part_index
 
 

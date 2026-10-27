@@ -375,7 +375,11 @@ def _session_context_member_mode(rig: _Rig) -> str:
 
 
 def _background_overflow(rig: _Rig) -> str:
-    """Protected preferences fill the allowance, so background is omitted by name."""
+    """Preferences larger than the whole background pool still leave it for background.
+
+    Preferences carry their own startup allowance, so they are not charged to the
+    pool and the activity, workspace and docs blocks are admitted.
+    """
     rig.seed_memory()
     rig.memory._preferences_file.write_text(
         "# Preferences\n" + "Keep this standing preference.\n" * 1_000,
@@ -513,12 +517,14 @@ _SCENARIOS = {
 #: recorded before the assembly moved into owners.
 _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
     "background_overflow": (
-        "2c4855e1f2a3372fb61f2d9abac311aeb1e524374c11dddea87a6e50d396f7e5",
+        "0ee1905bca3a3c831714e7ea6ff1b63c37f739d96b2d1c3846286110510837ef",
         [
-            ("unclassified", 173),
+            ("unclassified", 64),
             ("agent_identity", 25),
             ("surface", 197),
-            ("memory", 31487),
+            ("workspace_identity", 371),
+            ("docs_pointer", 235),
+            ("memory", 31813),
             ("memory_tools", 425),
             ("lessons", 179),
         ],

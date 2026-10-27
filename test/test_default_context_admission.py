@@ -352,6 +352,86 @@ class TestAdmissionAndSkills:
             assert "skill_search" in text
 
 
+class TestAuthoredBlocksOutsideThePool:
+    """The rule tier and preferences have their own startup allowances.
+
+    Neither is charged to the 33,000-character background pool, so a store that
+    uses the allowances the code grants still leaves room for the
+    ``[Memory activity]`` block.
+    """
+
+    def test_large_preferences_leave_room_for_the_activity_block(self, rig):
+        builder, memory, _, _, _ = rig
+        # Inside the preference allowance, but larger than the whole pool.
+        preference = "Keep this standing preference.\n" * (ctx._CONTEXT_BUDGET_BASE // 30 + 50)
+        memory.write_preferences(preference)
+        memory.write_projects("# Payment migration\nOwner and open asks.\n")
+
+        text = builder.build_session_context(session_key="dashboard:synthetic")
+
+        assert preference in text
+        assert "Payment migration" in text
+        assert "omitted background context" not in text
+
+    def test_large_rule_tier_leaves_room_for_the_activity_block(self, rig):
+        builder, memory, _, lessons, _ = rig
+        rows = [
+            {
+                "ts": f"2026-03-{index + 1:02d}T00:00:00+00:00",
+                "rule": f"STANDING RULE {index:02d} " + ("keep " * 280),
+                "category": "tool",
+                "negative": None,
+                "repo_scope": None,
+            }
+            for index in range(24)
+        ]
+        lessons.path.parent.mkdir(parents=True, exist_ok=True)
+        lessons.path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        memory.write_projects("# Payment migration\nOwner and open asks.\n")
+
+        text = builder.build_session_context(session_key="dashboard:synthetic")
+
+        rule_block = text[text.index("[Learned corrections") :]
+        assert len(rule_block) > ctx._CONTEXT_BUDGET_BASE
+        assert "STANDING RULE 23" in text
+        assert "Payment migration" in text
+        assert "omitted background context" not in text
+
+    def test_other_protected_content_still_uses_the_pool(self):
+        from kiro_crew.context_assembly import budget as _budgets
+
+        caps = _budgets._resolve_caps_cached(_budgets._effective_window(None))
+        blocks = _budgets.ContextParts()
+        blocks.append_authored("R" * 900)
+        blocks.append_required("I" * 60)
+        blocks.parts.append("optional " + "o" * 30)
+        protected = sum(len(blocks.parts[index]) for index in blocks.protected)
+
+        admitted = _budgets.admit_background(
+            blocks,
+            protected_chars=protected,
+            max_context_chars=100,
+            caps=caps,
+            compressed_history=None,
+        )
+        assert "optional" in admitted
+
+        crowded = _budgets.ContextParts()
+        crowded.append_authored("R" * 900)
+        crowded.append_required("I" * 90)
+        crowded.parts.append("optional " + "o" * 30)
+        protected = sum(len(crowded.parts[index]) for index in crowded.protected)
+        admitted = _budgets.admit_background(
+            crowded,
+            protected_chars=protected,
+            max_context_chars=100,
+            caps=caps,
+            compressed_history=None,
+        )
+        assert "optional" not in admitted
+        assert "omitted background context" in admitted
+
+
 class TestSelectedEvidence:
     def test_only_exact_same_record_evidence_is_deduped(self):
         one = {"id": "key:one", "source": "synthetic", "snippet": "same evidence"}
