@@ -1404,8 +1404,6 @@ async def run(self: GatewayOrchestrator) -> None:
     # event loop.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), check_bundle_freshness)
 
-    print("👻 Kiro Crew gateway starting…")
-
     connected = await self._connect_slack()
     # Record the real socket outcome so status surfaces (e.g. the Slack
     # settings badge) can distinguish "connected" from "tokens present
@@ -1431,6 +1429,10 @@ async def run(self: GatewayOrchestrator) -> None:
         _scope_task.add_done_callback(self._background_tasks.discard)
         _scope_task.add_done_callback(log_probe_failure)
 
+    # Boot is finished here: the dashboard is bound and the process serves until
+    # it is stopped. This is the last line a foreground gateway prints, so it
+    # must not read as a step still in progress.
+    print("👻 Kiro Crew gateway running — press Ctrl+C to stop")
     await shutdown_event.wait()
     await self._shutdown_and_exit(_watchdog)
 

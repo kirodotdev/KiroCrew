@@ -1309,7 +1309,7 @@ binding its port, while every other subcommand kept working.
 `platform_compat.ensure_line_buffered_stdout()` runs once on the **`gateway`
 command path only**, as the first statement of the dispatch branch, before the
 first status line prints. The gateway's `👻` status lines (`Checking for
-updates…`, `Probing MCP servers…`, `Kiro Crew gateway starting…`, the
+updates…`, `Probing MCP servers…`, `Kiro Crew gateway running — press Ctrl+C to stop`, the
 update-check outcome, `Shutting down…`) are plain `print()` calls. CPython
 line-buffers `sys.stdout` only when it is a terminal; a pipe or a file gets a
 block buffer that drains when it fills or when the interpreter exits cleanly.
