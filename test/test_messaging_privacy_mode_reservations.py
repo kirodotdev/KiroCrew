@@ -250,6 +250,9 @@ class TestReservations:
         assert [e["outcome"] for e in audits] == ["allowed", "retained"]
         assert audits[-1]["resources"] == f"release_failed:persist_failed:{_TG_KEY}"
         assert privacy_mode._pending == {}
+        # The put-back re-owed the map a debounced write, which can still be on
+        # its worker thread here; a restart must not read the file mid-replace.
+        await _land_on_disk(sm)
         privacy_mode.reset()
         privacy_mode.hydrate(_Sessions(session_map()), _TG_KEY)
         assert privacy_mode.is_incognito(_TG_KEY), "a restart did not hydrate the retained mode"
