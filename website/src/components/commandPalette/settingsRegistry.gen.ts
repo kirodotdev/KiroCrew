@@ -1272,7 +1272,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.prevent-sleep-while-running",
     "label": "Prevent sleep while running",
     "labelKey": "pages.settings.chatPanel.prevent_sleep_while_running",
-    "hint": "Keep your computer awake while a task is running",
+    "hint": "Keep your computer awake while a task is running. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen on for long tasks.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
