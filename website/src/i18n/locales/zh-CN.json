@@ -14216,6 +14216,7 @@
       "details_runs_cut": "部分内容太长，无法显示。",
       "why_direct": "每个聊天各自启动一份。打开共享即可只用一份。",
       "why_stub_off": "共享已打开。MCP 共享打开后生效。",
+      "why_private_backend": "它的 env 引用了密钥库条目，所以每个聊天各留一份。",
       "why_shared": "所有新聊天共用一份。",
       "why_credentials": "它会发放凭证，所以每个聊天各留一份。",
       "why_no_stdio": "它没有 stdio 管道，所以每个聊天各自连接。",

@@ -14686,6 +14686,7 @@
       "details_runs_cut": "Uma parte é longa demais para mostrar.",
       "why_direct": "Cada chat inicia a própria cópia. Ative Compartilhar para usar uma só cópia.",
       "why_stub_off": "Compartilhar está ativado. Vale quando o compartilhamento de MCP estiver ativado.",
+      "why_private_backend": "O ambiente dele cita um segredo do vault, então cada chat mantém a própria cópia.",
       "why_shared": "Todos os chats novos usam uma só cópia.",
       "why_credentials": "Entrega credenciais, então cada chat mantém a própria cópia.",
       "why_no_stdio": "Não tem canal stdio, então cada chat se conecta por conta própria.",

@@ -6733,6 +6733,7 @@
       "details_runs_cut": "Part of it is too long to show.",
       "why_direct": "Each chat starts its own copy. Turn on Share to use one copy.",
       "why_stub_off": "Share is on. It takes effect when MCP sharing is on.",
+      "why_private_backend": "Its env names a vault secret, so each chat keeps its own copy.",
       "why_shared": "All new chats use one copy.",
       "why_credentials": "Hands out credentials, so each chat keeps its own copy.",
       "why_no_stdio": "It has no stdio pipe, so each chat connects on its own.",

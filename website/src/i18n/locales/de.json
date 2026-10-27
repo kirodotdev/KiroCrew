@@ -14451,6 +14451,7 @@
       "details_runs_cut": "Ein Teil ist zu lang zum Anzeigen.",
       "why_direct": "Jeder Chat startet seine eigene Kopie. Schalte Teilen ein, um eine Kopie zu nutzen.",
       "why_stub_off": "Teilen ist an. Es greift, sobald MCP-Freigabe an ist.",
+      "why_private_backend": "Seine Umgebung nennt ein Vault-Secret, daher behält jeder Chat seine eigene Kopie.",
       "why_shared": "Alle neuen Chats nutzen eine Kopie.",
       "why_credentials": "Gibt Zugangsdaten aus, daher behält jeder Chat seine eigene Kopie.",
       "why_no_stdio": "Es hat keine stdio-Pipe, daher verbindet sich jeder Chat selbst.",

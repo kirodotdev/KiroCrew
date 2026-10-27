@@ -419,8 +419,9 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     Values are never collected, only env NAMES: the verdict engine needs to know
     whether a per-session rotating credential is declared, never what it is.
     """
-    # Imported here, not at module top, so the facade does not serve it.
+    # Imported here, not at module top, so the facade does not serve them.
     from kiro_crew.mcp_gateway.launch_approval import env_fingerprint
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 
     rows: dict[str, dict[str, Any]] = {}
     agents_dir = kiro_agents_dir_path()
@@ -479,7 +480,60 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
             )
             if isinstance(declared_env, dict):
                 row["env_names"].update(str(k) for k in declared_env)
+            else:
+                declared_env = {}
+            # Per declaration, because the rewriter decides per declaration: one
+            # agent's ``secret://`` entry gets a private backend while another
+            # agent's entry under the same name is left unwrapped or shared. Every
+            # declaration is recorded, an env-less one included, so a row can tell
+            # "all private" from "some private". Key names only, and only WHETHER
+            # a value is a vault reference -- never the value or the secret it names.
+            row.setdefault("env_decls", []).append(
+                (
+                    frozenset(str(k) for k in declared_env),
+                    frozenset(secret_reference_keys(declared_env)),
+                )
+            )
     return rows
+
+
+def _env_pooling_outcome(
+    row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
+) -> tuple[bool, bool]:
+    """``(blocked, private)`` for one row, as the rewriter decides it with sharing on.
+
+    ``blocked``: some declaration would be left UNWRAPPED because a shared backend
+    would withhold part of its env. ``private``: EVERY declaration would instead
+    get a connection-private backend, because its env names a vault secret
+    (``_needs_private_backend``) -- such a server is wrapped and started by the
+    gateway, not launched by the session, and shares no backend. One declaration
+    that pools is enough for the row to be shared, so ``private`` needs all of them.
+
+    Both go through the rewriter's own two predicates, so this row and the
+    rewrite cannot disagree about which branch a declaration takes. The
+    stand-in env handed to ``_needs_private_backend`` holds only the key names
+    the row recorded as vault references; no declared value is read here.
+    """
+    from kiro_crew.mcp_gateway.rewriter import _needs_private_backend, _withheld_env_count
+    from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+
+    decls = row.get("env_decls")
+    if decls is None:
+        decls = [(frozenset(row.get("env_names", ())), frozenset())]
+    blocked = False
+    private = bool(decls)
+    for names, ref_keys in decls:
+        withheld = _withheld_env_count(
+            dict.fromkeys(names, ""), forward_declared_env, identity_keys
+        )
+        if withheld and _needs_private_backend(
+            withheld, dict.fromkeys(ref_keys, SECRET_URI_PREFIX)
+        ):
+            continue
+        private = False
+        if withheld:
+            blocked = True
+    return blocked, private
 
 
 def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
@@ -552,7 +606,6 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
-        _withheld_env_count,
         pool_identity_env_keys,
     )
 
@@ -602,12 +655,17 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         #
         # Key NAMES only, never values: the classifier is name-based, so the
         # row builder's value-free discipline holds.
-        pooling_blocked = bool(
-            gw_cfg.enabled
-            and _withheld_env_count(
-                {k: "" for k in row["env_names"]}, forward_declared_env, identity_keys
-            )
+        #
+        # A declaration whose env names a vault secret is the rewriter's one
+        # exception: it gets a connection-private backend instead of being left
+        # unwrapped, so it is neither ``direct (env)`` nor shared. Reported as
+        # ``private_backend`` so the row can say so.
+        env_blocked, env_private = (
+            _env_pooling_outcome(row, forward_declared_env, identity_keys)
+            if gw_cfg.enabled
+            else (False, False)
         )
+        pooling_blocked = env_blocked
         result.append(
             {
                 "name": name,
@@ -620,6 +678,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
+                "private_backend": env_private,
                 "agents": sorted(row["agents"]),
                 "transport": row["transport"],
                 "denylisted": denylisted,

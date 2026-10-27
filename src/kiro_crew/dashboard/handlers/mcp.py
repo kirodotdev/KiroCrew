@@ -1023,6 +1023,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MCP_RESOLVE_REFRESH_LOCK,
         _assess_server,
         _collect_server_rows,
+        _env_pooling_outcome,
         _freeze_stub_servers,
         _launch_specs_for,
         _load_shareability_state,

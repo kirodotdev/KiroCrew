@@ -201,6 +201,10 @@ export function rowState(
   if (!s.can_stub) return 'no_stub'
   if (s.stub && refused?.[s.name]) return 'needs_reapproval'
   if (s.stub && s.pooling_blocked_by_env === true) return 'direct_env'
+  // A server whose env names a vault secret is wrapped onto a backend of its
+  // own: started by the gateway, but never shared. That is what `stub` means
+  // here, so it must not read `shared` because the global switch is on.
+  if (s.stub && s.private_backend === true) return 'stub'
   if (s.stub && sharingOn) return 'shared'
   if (s.stub) return 'stub'
   return 'direct'
@@ -247,7 +251,11 @@ export function detailsWhyKey(
     case 'shared':
       return 'pages.mcpManagement.why_shared'
     case 'stub':
-      return 'pages.mcpManagement.why_stub_off'
+      // A private backend reads `stub` whatever the switch says, so the
+      // "waiting for sharing" reason would be wrong for it.
+      return s.private_backend === true
+        ? 'pages.mcpManagement.why_private_backend'
+        : 'pages.mcpManagement.why_stub_off'
     case 'direct':
       return 'pages.mcpManagement.why_direct'
   }

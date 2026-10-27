@@ -680,6 +680,11 @@ describe('the launch a share approves', () => {
       server({ stub: true, in_allowlist: true, pooling_blocked_by_env: true }),
       'state_direct_env_reason',
     ],
+    [
+      'a server on a backend of its own while sharing is on',
+      server({ stub: true, in_allowlist: true, private_backend: true }),
+      'why_private_backend',
+    ],
   ])('says in Details why %s is in its state', async (_label, row, key) => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: key !== 'why_stub_off' }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [row] } as never)

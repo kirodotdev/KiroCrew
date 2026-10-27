@@ -14686,6 +14686,7 @@
       "details_runs_cut": "Une partie est trop longue pour être affichée.",
       "why_direct": "Chaque chat lance sa propre copie. Active Partage pour utiliser une seule copie.",
       "why_stub_off": "Le partage est activé. Il prend effet quand le partage MCP est activé.",
+      "why_private_backend": "Son environnement nomme un secret du coffre, donc chaque chat garde sa propre copie.",
       "why_shared": "Tous les nouveaux chats utilisent une seule copie.",
       "why_credentials": "Il distribue des identifiants, donc chaque chat garde sa propre copie.",
       "why_no_stdio": "Il n’a pas de canal stdio, donc chaque chat se connecte de son côté.",

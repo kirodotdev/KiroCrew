@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.mcp_gateway_routes import (
     _MCP_GATEWAY_APPLY_LOCK,
     _assess_server,
     _collect_server_rows,
+    _env_pooling_outcome,
     _freeze_stub_servers,
     _launch_specs_for,
     _local_overlay_section,
@@ -168,7 +169,6 @@ def _stub_eligibility(
     from kiro_crew.mcp_gateway.evaluate import identity_for
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
-        _withheld_env_count,
         pool_identity_env_keys,
     )
     from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -195,11 +195,12 @@ def _stub_eligibility(
         if not is_stdio or name in UNPOOLABLE_SERVERS:
             skipped.append({"name": name, "reason": "cannot_stub"})
             continue
-        if sharing_on and _withheld_env_count(
-            {k: "" for k in row["env_names"]},
-            forward_declared_env,
-            pool_identity_env_keys(),
-        ):
+        blocked_by_env, private = (
+            _env_pooling_outcome(row, forward_declared_env, pool_identity_env_keys())
+            if sharing_on
+            else (False, False)
+        )
+        if blocked_by_env:
             skipped.append({"name": name, "reason": "pooling_blocked_by_env"})
             continue
         preflight: tuple[bool, bool] | None = None
@@ -225,7 +226,9 @@ def _stub_eligibility(
             identity_keys=pool_identity_env_keys(),
             probe_current=(probe_current or {}).get(name, True),
         )
-        allowed = verdict.recommend_share if sharing_on else verdict.recommend_stub
+        # A server every declaration of which gets a connection-private backend
+        # has no co-tenants even with sharing on, so the stub bar applies to it.
+        allowed = verdict.recommend_share if sharing_on and not private else verdict.recommend_stub
         if not allowed:
             skipped.append({"name": name, "reason": "evidence_insufficient"})
             continue
