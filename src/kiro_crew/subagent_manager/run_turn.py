@@ -664,6 +664,9 @@ async def _run_inner_impl(
         context_provider=client,
         agent=agent or None,
         resumed=_resumed,
+        # A parent agent reads this reply, not a person at a dashboard, so the
+        # [OPTIONS:] and card guidance has nothing to render into.
+        interactive=False,
     )
     # The one place the resolved scope and its cost are both known — without
     # this, "the sub-agent didn't know X" is undebuggable after the fact.
