@@ -153,6 +153,51 @@ def _sri_digest_spans(text: str) -> frozenset[tuple[int, int]]:
     return frozenset(m.span(m.lastgroup) for m in _SRI_INTEGRITY_RE.finditer(text) if m.lastgroup)
 
 
+# ── ELB target-group ids the bare-secret pass leaves alone ──
+# An ELB target-group ARN ends in `targetgroup/<name>/<id>`, and the name is
+# mixed-case and digit-bearing (`targetgroup/MyProdWebAppTargetGroupV2/
+# 73e2d6bc24d8a067`). `/` is in the run alphabet, so that tail is one run, and a
+# window across the name and the id clears every gate of `_looks_like_secret_key`.
+# As with `_SRI_INTEGRITY_RE`, no gate can tell that window from a key, so the
+# decision is made on the CLOSED shape the service defines, never on "it is
+# inside an ARN": an exemption for any ARN resource would also exempt a key glued
+# into one (`...:user/<key>`), which main redacts.
+#   * the literal lowercase `arn:` right after a character that cannot occur in
+#     an ARN or a run, so a lookalike glued to a word (`myarn:aws:...`) fails;
+#   * a partition (`aws` plus any `-suffix`), the `elasticloadbalancing`
+#     service, a region, and an account of EXACTLY 12 digits;
+#   * `targetgroup/`, a name of 1 to 32 letters, digits and hyphens that does not
+#     start or end with a hyphen (the service's own name rule), `/`, and an id of
+#     EXACTLY 16 lowercase hex digits;
+#   * then the end of the token: no further ARN resource character, so anything
+#     glued after the id (`.../73e2d6bc24d8a067/<key>`) fails the shape whole.
+# Only a run lying wholly inside such a resource is exempt, and never a run that
+# is itself one whole key. Every pass-1, pass-2 and pass-4 hit, and every other
+# ARN, is judged as before.
+#
+# ACCEPTED RESIDUAL (independent review): a key whose characters happen to read
+# `<23-32 letters/digits>/<7-16 lowercase hex>`, written as the name tail and id
+# of a real target-group ARN, is byte-identical to a target-group id and is not
+# redacted by pass 3. A random key has that shape about once in 2.2 million, and
+# it must also sit in that exact slot. Every other placement still redacts.
+_ELB_TARGET_GROUP_ARN_RE = re.compile(
+    r"(?<![A-Za-z0-9+/_.:@-])arn:aws(?:-[a-z]+)*:elasticloadbalancing:[a-z0-9-]+:[0-9]{12}:"
+    r"(?P<resource>targetgroup/[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?/[0-9a-f]{16})"
+    r"(?![A-Za-z0-9+/_.:@-])"
+)
+
+
+def _arn_resource_spans(text: str) -> list[tuple[int, int]]:
+    """Return the span of every ELB target-group resource in *text*, sorted and disjoint."""
+    return [m.span("resource") for m in _ELB_TARGET_GROUP_ARN_RE.finditer(text)]
+
+
+def _inside_arn_resource(spans: list[tuple[int, int]], start: int, end: int) -> bool:
+    """Whether ``[start, end)`` lies wholly inside one of the sorted, disjoint *spans*."""
+    i = bisect.bisect_right(spans, start, key=lambda span: span[0]) - 1
+    return i >= 0 and spans[i][0] <= start and end <= spans[i][1]
+
+
 #: Code-point ranges of the printable-ASCII tail of the standard baseline JPEG AC
 #: Huffman symbol table -- the ``HUFFVAL`` list of ITU-T T.81 Annex K, Table K.5 --
 #: in the order the table writes them. Everything before and after this tail is
@@ -948,11 +993,12 @@ def redact_credentials_with_records(
     The cleaned text and warnings are byte-identical to ``redact_credentials``
     with the same ``defer_token_param``; both share one plan, so the records
     cannot describe a redaction the text does not contain.
-    An SRI digest holding any of ``judged_sri_values`` (counting only values at
-    least ``_SECRET_KEY_LEN`` long, the shortest piece pass 3 removes) is judged like any other
-    run (see ``_SRI_INTEGRITY_RE``): a streamed segment's save passes the values
-    its deltas removed, so a digest a delta boundary cut, which its delta could
-    not see whole, keeps that delta's verdict and every other digest is kept.
+    An SRI digest or ELB target-group id holding any of ``judged_sri_values``
+    (counting only values at least ``_SECRET_KEY_LEN`` long, the shortest piece
+    pass 3 removes) is judged like any other run (see ``_SRI_INTEGRITY_RE`` and
+    ``_ELB_TARGET_GROUP_ARN_RE``): a streamed segment's save passes the values
+    its deltas removed, so a value a delta boundary cut, which its delta could
+    not see whole, keeps that delta's verdict and every other one is kept.
     """
     spans, warnings, rules = _credential_redaction_plan(
         text, defer_token_param=defer_token_param, judged_sri_values=judged_sri_values
@@ -1100,6 +1146,7 @@ def _credential_redaction_plan(
     pass3: list[_RedactionSpan] = []
     link_spans: list[tuple[int, int]] | None = None
     digest_spans: frozenset[tuple[int, int]] = frozenset()
+    arn_spans: list[tuple[int, int]] | None = None
     for m in bare_runs:
         run_end = m.start() + len(m.group().rstrip("="))
         run = text[m.start() : run_end]
@@ -1149,6 +1196,20 @@ def _credential_redaction_plan(
         if (m.start(), run_end) in digest_spans or any(
             start <= m.start() and run_end <= end for start, end in link_spans
         ):
+            continue
+        # A run wholly inside an ELB target-group resource is its id (see
+        # `_ELB_TARGET_GROUP_ARN_RE`); found lazily for the same reason. Like an
+        # SRI digest, a resource holding a value a streamed delta removed is
+        # judged as any other run: a delta boundary inside the `arn:` prefix
+        # hides the shape from that delta, so the segment save keeps its verdict.
+        if arn_spans is None:
+            arn_judged = [v for v in judged_sri_values if len(v) >= _SECRET_KEY_LEN]
+            arn_spans = [
+                (start, end)
+                for start, end in _arn_resource_spans(text)
+                if not any(value in text[start:end] for value in arn_judged)
+            ]
+        if not _looks_like_secret_key(run) and _inside_arn_resource(arn_spans, m.start(), run_end):
             continue
         for piece_start, piece_end in pieces:
             piece = text[piece_start:piece_end]
