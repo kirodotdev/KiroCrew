@@ -332,9 +332,19 @@ def _subagent_wave_digest(
         # Exception-first digest content: failures/stops carry detail,
         # successes are one pointer line (full output stays on disk).
         if _oc == "completed":
-            # A run that kept its output after a generate failure is
-            # completed but partial; the digest must say so.
-            _kept = " (partial: backend failed to generate the final response)"
+            # A completed run is partial for one of two causes, and the
+            # digest names which: it kept its streamed output after a
+            # generate failure, or it called tools and then closed with no
+            # reply. The second case always ends with
+            # EMPTY_TURN_NOTICE_AFTER_WORK, which run_turn appends after the
+            # keep cap. Imported here: these functions run with the
+            # gateway's module globals, which do not carry the notice.
+            from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE_AFTER_WORK
+
+            if (info.result or "").endswith(EMPTY_TURN_NOTICE_AFTER_WORK):
+                _kept = " (partial: ended without a closing reply after tool calls)"
+            else:
+                _kept = " (partial: backend failed to generate the final response)"
             bp["ok_lines"].append(
                 f"— `{info.id}` ✅{_kept if info.partial else ''} {task_text[:80]}"
                 f"{_model_tag} · {usage}"

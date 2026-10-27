@@ -1552,6 +1552,8 @@ async def _run_inner_impl(
 
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
+    # Read before the fallback annotation, which is not a reply.
+    _no_reply = not cleaned.strip()
     if cleaned:
         from kiro_crew.security import (
             redact_credentials,
@@ -1623,6 +1625,20 @@ async def _run_inner_impl(
         info.partial = True
         # result.txt is what spawn_status / spawn_run read for a done run.
         write_result_chunk(info.id, f"\n\n{_warn}\n")
+    # The whole answer a claimed completed ending rewrites result.txt from.
+    _finished_text = result_text
+    if _stop.is_success and _no_reply and not info.made_no_tool_calls:
+        # A child that called a tool and then closed without a reply: its side
+        # effects already landed, so a bare "_No response._" invites the
+        # parent to re-spawn it and run them twice. Flag it partial and say
+        # to continue, never resend (messaging.empty_turn_copy). Added after
+        # the keep cap, like the warning above, so no keep mode cuts it off.
+        from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE_AFTER_WORK
+
+        info.partial = True
+        _base = info.result.strip() or "_No response._"
+        info.result = f"{_base}\n\n{EMPTY_TURN_NOTICE_AFTER_WORK}"
+        _finished_text = info.result
     evict_completed_agents(self._manager._agents)
 
     # ── Per-turn usage row: attribute subagent spend. ──
@@ -1704,7 +1720,7 @@ async def _run_inner_impl(
         try:
             # result.txt rewritten whole from memory, then the flag that says
             # so (``subagent_persistence.result_is_whole``).
-            await self._manager._write_finished_result_off_loop(info, result_text)
+            await self._manager._write_finished_result_off_loop(info, _finished_text)
         except Exception:
             logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
         finally:
