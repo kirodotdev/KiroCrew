@@ -601,7 +601,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     followUpPicked, followUpPickedRef, toggleFollowUpOption,
     composerRootChange, composerUserEdit,
   } = useFollowUpChips({
-    messages, isStreaming, pendingQuestion, activeSlot, inputRef, setInput, prefillEdited, setPrefillEdited,
+    messages, isStreaming, turnRunning: !!slotRunning, pendingQuestion, activeSlot, inputRef, setInput, prefillEdited, setPrefillEdited,
   })
   const {
     dashCfg, splitFeatureEnabled, linkPreviewsOn, socialShareOn, jevAutoConsented, connectionsUiOn, openActivePopout, focusActivePopout, returnSelfToMain, activePoppedOut, planTaskId,
