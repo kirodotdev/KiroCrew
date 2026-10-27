@@ -132,8 +132,11 @@ Three structural facts explain most of the rest:
   single job is named `PR Readiness`, the ruleset's required check -- waits for
   those six runs on the group's commit and passes only when all six did, within
   a 200-minute budget covering `ci.yml`'s 190-minute longest chain of job caps
-  (`backend-lint` and `lint-gate` come before the shards, and `backend-test`
-  counts twice: `max-parallel: 4` runs its 8 shards in two rounds) plus pickup
+  (`backend-lint` and `lint-gate` come before the shards, and on the hosted
+  fallback `backend-test` counts twice: `max-parallel: 4` runs its 8 shards in
+  two rounds; on CodeBuild, including admitted `merge_group` runs, all 8 shards
+  start in one round -- the budget is sized for the hosted worst case, and the
+  cap of 4 exists to protect the shared hosted pool) plus pickup
   slack. The first verdict is final: a run that concludes without
   success fails the check on the tick that reads it, with no rerun and no wait
   for the lanes still running, and the job holds only `actions: read`. A rerun
@@ -877,6 +880,7 @@ These test preconditions do not promise production ordering under tied clocks.
 Test commands route only `ipv6_required` items to the hosted lane described above.
 This is one migration being validated, not eight already-proven shards
 or a rollout conditional on three green canaries.
+On CodeBuild the only remaining fan-out bound is the CodeBuild account concurrency (300 concurrent builds); `ci-runner-watchdog.yml` already treats saturating it as a known state.
 
 The CI workflow requires this repository, a push, a merge-group event or an
 `opened`/`synchronize` same-repository PR event, and

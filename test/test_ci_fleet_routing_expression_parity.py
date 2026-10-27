@@ -10,6 +10,7 @@ they carry is the merge-queue push skip pinned below.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -460,8 +461,6 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
     `timeout-minutes` must in turn exceed the budget, so the step's error -- not
     the job cap -- is what names the lane still pending.
     """
-    import re
-
     readiness = yaml.safe_load(
         (_WORKFLOWS_DIR / "merge-queue-readiness.yml").read_text(encoding="utf-8")
     )
@@ -480,6 +479,13 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
         strategy = spec.get("strategy") or {}
         matrix = strategy.get("matrix")
         cap = strategy.get("max-parallel")
+        # CodeBuild-routed jobs use a conditional expression; on the hosted
+        # fallback the expression evaluates to the `|| N` value.  Use that
+        # fallback for worst-case round counting so the budget test guards
+        # the hosted path.
+        if isinstance(cap, str):
+            m = re.search(r"\|\|\s*(\d+)\s*\}\}", cap)
+            cap = int(m.group(1)) if m else None
         if not isinstance(matrix, dict) or not isinstance(cap, int):
             return 1
         axes = [v for k, v in matrix.items() if k not in ("include", "exclude")]
@@ -522,8 +528,6 @@ def test_merge_queue_readiness_rollout_values() -> None:
     The poll has no rerun cap because it never reruns: a rerun inside the queue
     holds every group behind this one for the rerun's whole duration.
     """
-    import re
-
     job = _readiness_job()
     (step,) = job["steps"]
     values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
@@ -727,8 +731,6 @@ def test_merge_queue_readiness_reads_one_listing_per_tick() -> None:
     The installation token is shared by every workflow in the repository, and
     40 queued groups each listing six workflows on their own would starve it.
     """
-    import re
-
     job = _readiness_job()
     (step,) = job["steps"]
     run = step["run"]

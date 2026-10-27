@@ -893,7 +893,10 @@ jobs:
     # 120 seconds. File sharding reduces repeated collection, not test coverage.
     timeout-minutes: 60
     strategy:
-      max-parallel: 4
+      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
+      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
+      # fallback resolves to 'ubuntu-latest', so this correctly lifts only on CodeBuild.
+      max-parallel: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 8 || 4 }}
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
       fail-fast: false
@@ -1138,7 +1141,10 @@ jobs:
     # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
-      max-parallel: 4
+      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
+      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
+      # fallback resolves to 'windows-latest', so this correctly lifts only on CodeBuild.
+      max-parallel: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && 8 || 4 }}
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:

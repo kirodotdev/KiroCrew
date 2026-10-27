@@ -158,7 +158,7 @@ def test_all_windows_consumers_keep_output_fallback_and_matrix_names(jobs, resol
 def test_shard_selection_and_checks_stay_intact(jobs):
     job = jobs["backend-test-windows"]
     assert job["strategy"] == {
-        "max-parallel": 4,
+        "max-parallel": "${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && 8 || 4 }}",
         "fail-fast": False,
         "matrix": {"group": list(range(1, 9))},
     }
