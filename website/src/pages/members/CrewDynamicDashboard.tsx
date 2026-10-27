@@ -37,8 +37,7 @@ export { CREW_DASHBOARD_SANDBOX }
  * own bootstrap, which does not run here -- so when the server withholds script
  * it writes each bound cell's text itself, HTML-escaped
  * (`dashboard_frame.fill_bindings_as_text`). Without that the page drew every
- * bound cell empty with its stale band still hidden, which reads as a current
- * page showing nothing.
+ * bound cell empty, which reads as a current page showing nothing.
  */
 export const CREW_DASHBOARD_SANDBOX_STATIC = ''
 
@@ -190,8 +189,8 @@ interface Loaded {
  * It renders the INSTANCE -- the crewmate's own copy of a template -- which the
  * registry serves from `GET /api/members/{slug}/dashboard`. The gateway composes
  * the document: it fills every `data-dashboard-field` element from the folded
- * values, sets `window.kirocrew`, marks the agentic cells and raises its own stale
- * band. This component's jobs are the three the document cannot do for itself:
+ * values, sets `window.kirocrew`, and marks the agentic and missing cells. This
+ * component's jobs are the three the document cannot do for itself:
  * mint it into a sandbox, keep the last page that successfully loaded, and offer a
  * way out when nothing loads at all.
  *
@@ -249,8 +248,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   /** A gap recovery that did not arrive. The page keeps its values; this says they
-   *  are older than the record, which nothing else on screen can say: the page's
-   *  own stale band is driven by a read that never came. */
+   *  are older than the record, which nothing else on screen can say: the read
+   *  that would have moved them never came. */
   const [refetchError, setRefetchError] = useState<string | null>(null)
   /** A whole-read request is in flight. The notice's Retry is disabled on it, which is
    *  what acknowledges the press: the notice itself stays up until the read arrives, so
@@ -377,8 +376,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       .catch((err) => {
         // REPORTED, not swallowed. The page keeps the values it has, which is right,
         // but those values are now known to be older than the record and the reader
-        // cannot tell: the page's own stale band is driven by the host's read, and a
-        // refetch that never arrived leaves it saying nothing. The notice sits beside
+        // cannot tell: the document draws no warning of its own, and a refetch that
+        // never arrived leaves nothing on the page saying so. The notice sits beside
         // the page rather than over it, and a retry that fails again leaves it there.
         setRefetchError(apiErrorCode(err) || 'refetch_failed')
       })
@@ -437,7 +436,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // (crewmate, package) page can still be armed from before. Letting its pushes
       // through gave the template's bootstrap a generation it cannot place, so it asked
       // for a whole read with no package to name, the gateway answered 400
-      // `missing_dashboard`, and the stale band came back on every push.
+      // `missing_dashboard`, and the page refetched on every push.
       const mine = livePackageRef.current
       if (fromPackage !== mine) return
       // Same reason as the refetch answer above: an opaque origin cannot be named,
@@ -531,7 +530,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // the gateway deliberately does not compose that state -- `_render` is skipped, so
     // there is no data island, no bootstrap and no ready beacon. Promoting it would
     // draw the template's own placeholder markup as a healthy dashboard: every cell
-    // empty, nothing marked missing, no band, and no sign to a reader that what they
+    // empty, nothing marked missing, and no sign to a reader that what they
     // are looking at is not their data.
     //
     // It is not the same answer as the guard below, which is why it is asked separately.
@@ -1217,9 +1216,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       )}
       {reverted && (
         // THE KEPT-PAGE BAND, above the frame and never over it: the document on
-        // screen keeps every pixel it earned. It is distinct from the document's
-        // OWN stale band, which is about values that did not resolve; this one is
-        // about a newer page that did not load at all.
+        // screen keeps every pixel it earned. It is about a newer page that did not
+        // load at all; a field that did not resolve draws no band anywhere, because
+        // that is the crewmate's to fix and its turn block tells it.
         <div
           className="shrink-0 border-b border-border p-2 flex items-start gap-2"
           data-testid="crew-dashboard-kept-band"
@@ -1269,8 +1268,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           data-testid="crew-dashboard-refetch-error-band"
         >
           {/* The page keeps its values, which is right. What a reader cannot otherwise
-              learn is that those values are older than the record: the page's own stale
-              band is raised by a read, and this is the case where the read never came.
+              learn is that those values are older than the record, because the read
+              that would have moved them never came.
               Beside the page rather than over it, like the two bands above.
 
               ITS OWN SENTENCE, not the kept-last-good one. That string says a newer

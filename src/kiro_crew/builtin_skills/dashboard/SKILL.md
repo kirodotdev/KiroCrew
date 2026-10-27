@@ -283,7 +283,7 @@ Values arrive in three ways:
 1. `data-dashboard-field="name"` fills an element with text. Useful for a
    scalar cell; arrays and objects appear as raw JSON through this path.
 2. `window.kirocrew.fields` holds the same declared values, with `agentic`,
-   `seq` and `stale` beside them.
+   `seq` and `missing` beside them.
 3. `window.kirocrew.subscribe(name, cb)` calls `cb(value, name)` immediately
    and on each push. Its returned function unsubscribes. A chart or script-only
    field needs no extra text binding or hidden sink.
@@ -298,8 +298,10 @@ strings as `innerHTML` would turn somebody's data into page markup. Numerical
 geometry comes from validated numbers. Bindings and graphics read the same
 source, and labels say which subset they describe.
 
-The host retains the last resolved fields and shows a stale band when a
-source fails. Preserve that distinction rather than replacing an unread
+The host retains the last resolved field values, dims a cell named in
+`missing`, and shows the person no band; a field that does not resolve is
+reported to you in your `[DASHBOARD]` turn block. Draw no freshness or
+staleness badge of your own. Preserve the distinction rather than replacing an unread
 value with a made-up zero. Your words and graphics agree with the folded
 numbers; derive changing headlines from those values too.
 

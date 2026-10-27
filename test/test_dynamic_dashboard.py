@@ -772,8 +772,8 @@ class TestTheFoldScope:
         An operator writes a ``panel-templates`` page, binds a block to a tree fold and
         the save gate is what has to say no. Admitting it would hand them a field
         ``read_fields`` skips on every read -- the feed reaches a fold by its bus scope
-        and a tree fold has none -- so the block draws the stale band forever and
-        nothing on the page says why.
+        and a tree fold has none -- so the block never fills and nothing on the page
+        says why.
         """
         from kiro_crew.crew_log.projection import TREE_PROJECTION_NAMES
         from kiro_crew.dashboard_templates.manifest import ManifestError
@@ -828,8 +828,8 @@ class TestTheFoldScope:
         A TREE-keyed fold is registered in the projection kernel and has no bus scope by
         design, so the ONLY way a block bound to one ever fills is a read. While there
         was no read path, the name was withheld from every gate -- a binding
-        the save gate admits and the feed can neither key nor read is a block that only
-        ever draws the stale band.
+        the save gate admits and the feed can neither key nor read is a block that never
+        fills.
 
         The read path lands here for the PACKAGE surface, so the name joins that
         surface's set, and the invariant turns into its positive form: every tree fold
@@ -893,32 +893,12 @@ class TestTheFeed:
         assert read.fields["entries"] == 3
         assert read.seq == 11
 
-    def test_an_unwritten_agentic_field_is_absent_but_not_stale(self) -> None:
-        """ABSENT and STALE are different facts, and only one raises the band.
-
-        A cell the crewmate has never written is empty; the page dims it, which is
-        what `missing` is for. Stale means the values on screen are OLDER than the
-        record, which a cell nothing ever filled is not. Counting it raised the band
-        on every crewmate carrying an unwritten agentic field, permanently, about a
-        value nothing had yet produced -- and that includes the default page an
-        unadopted crewmate is served, whose agentic field no caller can fill.
-        """
-        made = self.feed("work")
-        made._accept("work", self.event({"conductor": {"entries": 3}}, 5, seq=11))
-        read = made.read(manifest())
-        assert "open_items" in read.missing, "the unwritten cell is not marked absent"
-        assert read.fields["entries"] == 3, "the fold-sourced field did not resolve"
-        assert read.stale is False, (
-            "an unwritten agentic field raised the stale band, so the page claims its "
-            "numbers are older than the record when they are current"
-        )
-
-    def test_a_fold_that_does_not_resolve_is_stale(self) -> None:
-        """The other half of the same rule: a fold value the feed could not read DOES
-        mean what is on screen is older than the record."""
-        made = self.feed("work")
-        read = made.read(manifest())
-        assert read.stale is True, "an unresolved fold did not raise the stale band"
+    @pytest.fixture(autouse=True)
+    def _no_earlier_reads(self) -> Any:
+        """Each case starts on a process that has resolved nothing on this slot."""
+        dashboard_feed.forget_resolved()
+        yield
+        dashboard_feed.forget_resolved()
 
     def test_an_older_revision_is_ignored(self) -> None:
         """``revision`` orders two values of one (key, fold) and ``seq`` cannot: a
@@ -942,15 +922,6 @@ class TestTheFeed:
         made._accept("work", SimpleNamespace(revision=9, seq=9, value="not a mapping"))
         made._accept("work", SimpleNamespace(revision=0, seq=9, value={"conductor": {}}))
         assert made.read(manifest()).fields["entries"] == 3
-
-    def test_an_unresolved_field_is_named_and_the_read_is_stale(self) -> None:
-        made = self.feed("work")
-        made._accept("work", self.event({"nothing": {}}, 5))
-        read = made.read(manifest())
-        # The two agentic fields are missing too: no agentic fold value was passed,
-        # and an agentic cell the crewmate has not written is not a zero.
-        assert read.missing == ["open_items", "risk_note", "entries"]
-        assert read.stale is True
 
     def test_an_agentic_field_comes_from_the_agentic_fold(self) -> None:
         read = self.feed("work").read(
@@ -1876,8 +1847,8 @@ def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():
     the SHIPPED default's own manifest off disk travels with them -- what belongs here
     is the mechanism, which is what this drives.
 
-    `stale` is asserted False in the same breath: a page showing a freshly written
-    value must not also claim its numbers are older than the record.
+    `unresolved` is asserted empty in the same breath: a page showing a freshly written
+    value must not also tell the crewmate one of its fields is broken.
     """
     from kiro_crew.dashboard_templates.manifest import parse_manifest
 
@@ -1900,8 +1871,8 @@ def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():
     written = [{"what": "approve the plan", "who": "you"}]
     feed = dashboard_feed.DashboardFeed(slot="member-atlas")
     # The fold this template binds, seeded as the route's own `subscribe` would leave
-    # it. Without it the fold-sourced fields cannot resolve and the page IS stale --
-    # correctly -- which would make the stale assertion below pass for the wrong reason.
+    # it. Without it the fold-sourced fields cannot resolve -- correctly -- which would
+    # make the unresolved assertion below fail for the wrong reason.
     feed._cells["workstreams"] = dashboard_feed._Cell()
     feed._accept(
         "workstreams",
@@ -1909,15 +1880,15 @@ def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():
             revision=1,
             seq=7,
             # Every path the manifest above binds, because a key absent here reads as a
-            # fold that did not resolve -- which IS the stale condition, and would make
-            # the assertion below pass for the wrong reason.
+            # fold that did not resolve, which would make the assertion below fail for
+            # the wrong reason.
             value={"items": []},
         ),
     )
     read = feed.read(shipped, {"fields": {"for_you": {"value": written}}})
     assert read.fields["for_you"] == written, "the written value does not reach the page"
     assert "for_you" not in read.missing, "a written field is still reported absent"
-    assert read.stale is False, "a page showing a just-written value claims it is old"
+    assert read.unresolved == {}, "a page showing a just-written value reports a broken field"
 
 
 def test_a_written_value_reaches_the_real_default_page():
@@ -1928,8 +1899,8 @@ def test_a_written_value_reaches_the_real_default_page():
     value its one agentic field receives. A fixture manifest would pin the mechanism
     while leaving the shipped default free to declare something the write cannot fill.
 
-    `stale` is asserted False in the same breath: a page showing a freshly written
-    value must not also claim its numbers are older than the record.
+    `unresolved` is asserted empty in the same breath: a page showing a freshly written
+    value must not also tell the crewmate one of its fields is broken.
     """
     import json as _json
 
@@ -1954,8 +1925,8 @@ def test_a_written_value_reaches_the_real_default_page():
     written = [{"what": "approve the plan", "who": "you"}]
     feed = dashboard_feed.DashboardFeed(slot="member-atlas")
     # The fold this template binds, seeded as the route's own `subscribe` would leave
-    # it. Without it the fold-sourced fields cannot resolve and the page IS stale --
-    # correctly -- which would make the stale assertion below pass for the wrong reason.
+    # it. Without it the fold-sourced fields cannot resolve -- correctly -- which would
+    # make the unresolved assertion below fail for the wrong reason.
     feed._cells["workstreams"] = dashboard_feed._Cell()
     feed._accept(
         "workstreams",
@@ -1963,8 +1934,8 @@ def test_a_written_value_reaches_the_real_default_page():
             revision=1,
             seq=7,
             # Every path the shipped manifest binds, because a key absent here reads as
-            # a fold that did not resolve -- which IS the stale condition, and would
-            # make the assertion below pass for the wrong reason.
+            # a fold that did not resolve, which would make the assertion below fail
+            # for the wrong reason.
             value={
                 "items": [],
                 "omitted": 0,
@@ -1983,4 +1954,4 @@ def test_a_written_value_reaches_the_real_default_page():
     read = feed.read(shipped, {"fields": {"for_you": {"value": written}}})
     assert read.fields["for_you"] == written, "the written value does not reach the page"
     assert "for_you" not in read.missing, "a written field is still reported absent"
-    assert read.stale is False, "a page showing a just-written value claims it is old"
+    assert read.unresolved == {}, "a page showing a just-written value reports a broken field"

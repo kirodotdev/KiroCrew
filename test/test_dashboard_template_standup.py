@@ -268,26 +268,12 @@ class TestTheFourBuckets:
         )
 
 
-class TestTheSilenceBand:
-    def test_it_is_computed_from_a_write_time(self, html: str) -> None:
-        """Silence, not work time. Durations on every other element are how long
-        something TOOK, which a dead worker and a thinking one share."""
-        assert "function drawQuiet" in html
-        assert "Date.now() - last" in html, (
-            "the band does not measure time since the last write, so it cannot tell a "
-            "crewmate that is thinking from one that died"
-        )
-
-    def test_it_has_an_honest_state_for_no_write_time_at_all(self, html: str) -> None:
-        """A band that silently draws nothing when it has no timestamp reads as "all
-        good", which is the one answer absence must never produce."""
-        assert "cannot say whether anything is still moving" in html
-
-    def test_the_threshold_is_a_named_constant(self, html: str) -> None:
-        assert re.search(r"var QUIET_MS = \d+ \* \d+ \* \d+;", html), (
-            "the quiet threshold is inlined at its use site, so the page's two readers "
-            "of it can drift apart"
-        )
+class TestNoSilenceBand:
+    def test_the_page_draws_no_freshness_band(self, html: str) -> None:
+        """The person sees no staleness message: a crewmate that stopped writing is
+        its own lead's news, not a band over the person's page."""
+        assert "function drawQuiet" not in html
+        assert "quiet_band" not in html and "quiet_unknown" not in html
 
     def test_a_card_with_no_report_says_so_rather_than_showing_zero(self, html: str) -> None:
         assert "no report yet" in html, (

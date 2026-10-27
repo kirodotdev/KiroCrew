@@ -265,6 +265,15 @@ def build_message(
             _member_slug = None
         if _member_slug is not None:
             ctx.read_member_rules(_member_slug, member)
+            # A V1 member's WARM turn carries no member section, so the one line
+            # that changes between turns -- a dashboard field that stopped resolving
+            # -- is added here. A V2 member's essentials already rebuild it.
+            if not ctx._desk_withheld(execution_context, desk_member):
+                from kiro_crew import dashboard_agentic
+
+                _dashboard_notice = dashboard_agentic.unresolved_notice(_member_slug, member)
+                if _dashboard_notice:
+                    parts.append(_dashboard_notice + "\n\n")
 
     # Session context on first message only
     if is_new_session:
