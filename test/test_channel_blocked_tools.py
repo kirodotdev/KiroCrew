@@ -281,11 +281,23 @@ async def test_dispatch_verb_rejected_even_on_trusted_channel(monkeypatch, tool)
         SimpleNamespace(kind=EVENT_COMPLETE),
     ]
     client = _make_client(events)
+    steered: list[str] = []
+
+    async def _steer(notice):
+        steered.append(notice)
+        return True
+
+    client.supports_refusal_steer = True
+    client.steer = _steer
     # trusted=True is the case that matters: channel trust auto-approves every
     # request the containment list does not hold back, so no human sees this one.
     await _stream_task(_make_agent(), _make_channel(), client, "hi")
     client.reject_tool.assert_awaited_once_with(11)
     client.approve_tool.assert_not_awaited()
+    # The model is told the surface refused the call, and why, before the reject.
+    assert len(steered) == 1
+    assert tool in steered[0]
+    assert "direct-to-user messaging tools do not run here" in steered[0]
 
 
 def test_session_pin_is_contained():
