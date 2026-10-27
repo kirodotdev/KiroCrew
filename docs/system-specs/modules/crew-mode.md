@@ -1519,17 +1519,30 @@ so the two pages cannot drift; the resulting call-time
 import cycle is resolved because both reference the other's bindings only inside
 component bodies.
 
-The roster lists a row unasked only when its DM thread holds a message
-(`has_dm_message` on `GET /api/members`: the thread's transcript has a row, or
-the live slot holds one) or the user starred it -- whoever sent the message,
-the user, the mate, a scheduled run, an app -- or when it is Mate, the
-first mate (key `mate`), listed from the start so its welcome has a row to
-open. An empty thread is not listed,
-as a messages app lists no empty conversation; the search still reaches it, the
-mate open in the thread stays listed while open, and a remembered mate
-is restored even when the rule hides it. The built-in `default` mate, a
-dashboard-created mate, an app's mate and a legacy built-in binding with no
-member id follow the same rule. Recent
+The roster lists a row unasked (`listedByDefault`) when the user starred it;
+when it is Mate, the first mate (key `mate`), listed from the start so its
+welcome has a row to open; when it is a mate the PERSON created
+(`dashboard_created` on `GET /api/members`: `source` `kirocrew` and a member
+id, which both the Crewmates page's create and an approved `crewmate.create`
+or `crewmate.import` card write through `POST /api/agents`), even while its
+chat is empty and was never opened; and, for every other row, when its DM
+thread holds a message (`has_dm_message`: the thread's transcript has a row, or
+the live slot holds one), whoever sent it -- the user, the mate, a scheduled
+run, an app. The rows the product made on its own -- a template-derived or
+synced row, an app's mate, a legacy built-in binding with no member id -- are
+the ones an empty thread hides, as a messages app lists no conversation it did
+not start; the search still reaches them, the mate open in the thread stays
+listed while open, and a remembered mate is restored even when the rule hides
+it. The reserved `default` member is never `dashboard_created`, whatever its
+record says, and is listed only on a stricter signal: `has_user_dm_message`,
+shipped on that row alone, true once its thread (live file, archived segments
+or the live slot) holds a message the person sent -- a `user` row that is not a
+`session_send` relay (`transcript_person_rows`). A welcome, a cron result
+(`inject`), an auto-nudge (`nudge`) or a relayed message does not list it, so a
+fresh install's roster shows only Mate, and an upgraded install shows `default`
+only where the person talked to it. The rule is recorded in
+`docs/decisions/2026-10-27-a-crewmate-the-person-created-is-listed-with-an-empty-chat.md`.
+Recent
 order is by `last_active_ts`, the crew log's fold of the thread's last
 `member/message` (see `_recency_for_row`), so the list reads newest conversation
 first like a messages app. The client stamps a send on the row bound to the
@@ -1545,7 +1558,8 @@ list every mate the user put on that team -- placing a mate on a team is
 itself a choice to use it -- and a team whose mates are all hidden keeps its
 (empty) roster header. Where nothing auto-opens (below md) and every row is
 hidden, the roster says so and names the search. A row from an older gateway
-that carries no `has_dm_message` is listed. The header count and the filter
+that carries no `has_dm_message` is listed, and a `default` row that carries no
+`has_user_dm_message` keeps the `has_dm_message` rule. The header count and the filter
 tallies count the listed rows plus any hidden row the search reaches. So that
 count is not read as the whole crew (#21852), the list ends with one muted line
 naming the mates the rule hides by the label their row shows, the ones the
@@ -1699,7 +1713,8 @@ motion); it is not drawn at rest, and neither is the roster count (#19045):
 what the page is and how big the crew is are not what a reader comes to this
 corner for. The action ("Switch mate") is the tooltip.
 Its popover lists the roster's own population, not every crewmate: the rows
-`listedByDefault` keeps (chatted-with, starred, Mate, the default crew) plus the
+`listedByDefault` keeps (chatted-with, starred, Mate, created by the person,
+and `default` once the person messaged it) plus the
 open mate (`rosterPopulation`), the same rule the roster column reads, so
 the chip can never disagree with the column. A typed search decides alone and
 falls back to the full roster, so a hidden row -- a background or app-driven
@@ -3924,7 +3939,7 @@ the loop before the slot restores, never gating readiness). Every crewmate whose
 `kiro_agent` does not name its own file is a candidate. A binding with an empty
 `member_id` is not a crewmate (an old `assistant`, the built-in
 `kirocrew-conductor`): skipped silently. Its roster rows follow the rule for
-any row the dashboard did not create: `GET /api/members` ships it with
+any row the person did not create: `GET /api/members` ships it with
 `dashboard_created` false and the page lists it once `has_dm_message` holds,
 and `GET /api/agents` (the pickers) lists it only when its DM thread holds a
 message (`mate_worker.is_legacy_binding` names the candidates; no name is
