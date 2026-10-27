@@ -207,6 +207,11 @@ def _make_slot():
     """Create a minimal mock slot that behaves like _ChatSlot."""
     slot = MagicMock()
     slot.key = "test-slot"
+    # A real slot's defaults: unlinked and not channel-born. A bare MagicMock
+    # attribute is truthy, which the app ownership check reads as a link to
+    # another conversation.
+    slot.linked_session_key = ""
+    slot.channel_origin = False
     slot.agent = ""
     slot.task = None
     slot.running = False

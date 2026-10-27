@@ -33,6 +33,7 @@ from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -132,6 +133,26 @@ def _redact(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def _foreign_slot_response() -> web.Response:
+    """The one 403 for a slot the app may not drive.
+
+    Another app's slot and the app's own slot linked to a conversation it has no
+    claim on answer with this same body, so the reply does not tell an app which
+    of its slots carry a link.
+    """
+    return web.json_response(
+        {
+            "error": {
+                "message": "slot owned by another app",
+                "type": "forbidden",
+                "code": "slot_owned_by_another_app",
+            },
+            "code": "slot_owned_by_another_app",
+        },
+        status=403,
+    )
 
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
@@ -550,10 +571,22 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
             if slot_id and freshly_created:
                 state._slots.pop(slot.key, None)
-            return web.json_response(
-                {"error": {"message": "slot owned by another app", "type": "forbidden"}},
-                status=403,
+            return _foreign_slot_response()
+        # Owning the slot is not owning the conversation it runs on: a slot linked
+        # to a channel thread, or an unbound channel-origin slot, would take this
+        # turn into a session and transcript the app has no claim on. Same test as
+        # the per-slot checkpoint, and the same body as another app's slot, so the
+        # answer does not tell the app which of its slots carry a link.
+        if not app_owns_slot_session(request_app, slot):
+            sel().log_api_access(
+                caller=request_app,
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
+                error="app does not own the session or transcript this slot uses",
             )
+            return _foreign_slot_response()
 
     # Drain stale pending from prior turns whose reader disconnected
     slot.drain()
