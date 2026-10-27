@@ -1270,11 +1270,12 @@ their primary use, which a prose-matching refusal would break. A preference that
 cannot misfire is worth more here than an enforcement that can.
 
 The descriptor is not the only prose that states the choice, and the key moves
-only the descriptor. `config/prompt.md` carries the same rule in its own words
-("Prefer bounded `monitor_watch` when typed provider facts decide the whole
-objective"), and that sentence is true in both positions, so it is left alone
-rather than made flag-aware. The reason is reach, not effort: a prompt file is one
-of many agent prompts, while the descriptor is assembled for every session
+only the descriptor. The `kirocrew-dev/babysit` skill, which `config/prompt.md`
+points every monitoring request at, carries the same rule in its own words ("Use a
+structured monitor only when its typed provider observes every fact needed to
+decide the objective"), and that sentence is true in both positions, so it is left
+alone rather than made flag-aware. The reason is reach, not effort: a skill is read
+only by the agents that load it, while the descriptor is assembled for every session
 whatever prompt it runs, so the descriptor is the only copy a single read can
 move for all of them. An installation that turns the key on therefore gets the
 default restated on the tool list, not rewritten in every prompt.

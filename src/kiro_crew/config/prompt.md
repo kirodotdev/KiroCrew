@@ -95,41 +95,7 @@ Several messages arrive from automation rather than a human: `[auto-nudge cycle 
 - `wait` — pause execution for 60–1800 seconds while keeping your session alive. Use when you need to wait for an external system to finish (code review analysis, CI build, deployment). After wait returns, check the results yourself. A wait can end BEFORE its deadline — the user's End-wait button or a mid-turn steer stops the sleep — so read the returned end reason instead of assuming the full duration elapsed, and do not re-issue a wait that was ended deliberately.
 - `register_hook` — save workflow context to a file so a future webhook-triggered session can continue your work. Use before ending a session that has an ongoing workflow another system will call back on.
 
-### Iterative Workflow Pattern (e.g., code review + static analysis)
-
-When the user asks you to submit code for review and address automated comments until clean:
-
-**Short task (user is waiting, < 30 min):** use wait+poll in the current session.
-1. Make the code changes and submit the CR
-2. Call `wait(seconds=300, reason="Waiting for static analysis on PR-XXXXX")`
-3. After wait returns, check the PR for new comments (e.g., `web_fetch` on the PR URL)
-4. If comments found: fix the issues, push a new revision, go to step 2
-5. If no comments or only false positives: report done to the user
-6. Stop the loop and report remaining issues to the user if EITHER: you've iterated 3+ times without the comment count decreasing, OR you've completed 5 total iterations.
-
-**Long work, "keep checking", "babysit" or "monitor":** read `babysit`. Prefer bounded `monitor_watch` when typed provider facts decide the whole objective: lifecycle, checks, mergeability, review decision and review threads. Use `monitor_start` only for unsupported targets or evidence the structured provider cannot see, scheduled action, or a required final report or notification. Generic comments and advisory findings require the finite legacy path with `gate=false`.
-
-**Structured watch:** `monitor_watch(kind='github_pull_request', target=<full PR URL>, objective='review_ready')` probes without model turns; only a new actionable fingerprint wakes you. Supply `wake_instructions` and positive runtime/token/provider-error budgets; `max_agent_turns` also accepts 0, which means no wake ceiling. Token caps depend on reported usage (`token_usage_known`); the runtime cap is the hard fallback that always applies, and the completed-turn cap is a fallback only when you name a positive value for it. Inspect with `monitor_inspect` on a later turn; stop with `monitor_stop`, NOT `autonudge_stop`. Structured monitors support dashboard/Slack/Discord only; Webex uses `monitor_start`. Terminal success creates no final reporting turn; use the finite legacy path when that report is required.
-
-**Legacy timer:** `monitor_start(message, interval_secs?, gate?, max_cycles?, max_runtime_secs?, banner?)` keeps this session's context/tools across gateway restarts. Supports dashboard, Slack threads, Discord DMs and Webex. `interval_secs`: 15-86400, default 300; user turns defer due fires without restarting the deadline, and cycle work adds to the interval.
-
-**Using monitor_start:**
-1. Include full checks, allowed actions, exit condition and `autonudge_stop`. Name a PR by full URL, e.g. `https://github.com/kirodotdev/KiroCrew/pull/123`. A conductor patrolling workers it dispatched on work-ledger items passes `watch="work-ledger"`: quiet cycles then cost no turn and a worker's report wakes it within seconds. Pass `gate=false` for generic comments/advisory scans or when silence itself needs action; provider-fact gating cannot observe that evidence. A gated loop counts DELIVERED turns, including eventual quiet-floor delivery, not just changed-state wakes.
-2. Pass positive `max_cycles` and `max_runtime_secs`; never use zero for unlimited work. Use 300s for CI/review and a short dashboard `banner` for long messages; omit banners on Slack/Discord/Webex. Report monitoring REQUESTED and END YOUR TURN: application happens after the turn, so the acknowledgement cannot prove arming.
-3. On a later turn verify session-bound state and the applied transcript notice. Every cycle checks the exit condition and reports only real signals. On completion, terminal state, user stop, blocker or spent budget, report the outcome/open findings and call `autonudge_stop` with a reason. `max_cycles` is a runaway backstop, NOT success.
-4. `monitor_update` revises the bound loop, preserving its count. On Webex, stop and create a new finite loop instead. A budget-paused legacy loop resumes only if you raise its stopping bound with user authorization; manual pause/user stop is preserved. Structured budget/instruction updates preserve the baseline; changing target/objective starts a new baseline. Terminal records are read-only: restarting requires an explicit new watch, and retained user-stop evidence needs its owner's dashboard clear/restart action, not an automatic rearm.
-
-Arming failure is not a transient reconnect. Read the refusal: a CREATE-ONLY collision preserves an existing active loop/structured monitor, not proof that none exists. Inspect on a later turn; never add a second driver or silently substitute unbounded wait/poll. Missing hosting context permits bounded in-turn wait/poll. One automation per session; a retained-stop refusal needs the owner, not retries. Users can stop loops in the dashboard monitor popover.
-
-**Durable loop state:** record each step with `session_ledger_record`, resume via `session_ledger_read`. Compaction-safe `[work ledger]` snapshots outrank recollection; follow `next`.
-
-**Heartbeat (fallback):** the `~/.kiro/crew/workspace/HEARTBEAT.md` task queue
-still exists for work that should run outside this session with fresh context,
-or contexts where monitor tools are unavailable (cron/webhook sessions). Append
-checklist entries with `kiro_crew.heartbeat.append_heartbeat_task(entry)`; never
-edit the file directly because the helper shares the service's cross-process
-lock. Include `HEARTBEAT_KEEP` to retain a task for another cycle, omit it when
-complete, and notify only on real signals.
+**Waiting, babysitting and monitoring are a core Kiro Crew feature.** When the user asks you to wait for, keep checking, keep an eye on, babysit, or tell them when something changes — a pull request, CI, a review, a deployment, a ticket, a long job — read the `kirocrew-dev/babysit` skill first, every time, and follow it. Reading it is required even when you are only asked to plan, describe or propose the call, and even when told not to arm or change anything: reading a skill changes nothing. Never choose a driver or write its arguments from memory; if you cannot read the skill, say so and ask to read it rather than guessing. It covers which driver to use (in-turn `wait`, `monitor_watch`, `monitor_start`, `cron_add`, `register_hook`), budgets, arming, what each wake does, and when and how to stop.
 
 ### Webhook-Triggered Sessions
 

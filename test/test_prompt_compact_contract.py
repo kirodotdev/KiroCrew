@@ -26,6 +26,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # markers gone, as a session with browsing set up gets it. The
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
+BABYSIT_SKILL_DIR = CONFIG.parent / "builtin_skills" / "kirocrew-dev" / "babysit"
 PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
@@ -198,45 +199,56 @@ def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:
     ), "the carve-out must qualify the STOP rule, and only for a call that finished"
 
 
-def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> None:
+def test_the_prompt_points_monitoring_at_the_babysit_skill() -> None:
+    """The prompt names the skill by its real key and restates none of its rules."""
     monitor = _section(_read(), "## Wait & Webhook Tools")
     _require(
         monitor,
-        r"monitor_watch.*monitor_inspect.*monitor_stop.*NOT `autonudge_stop`",
-        r"Structured monitors support dashboard/Slack/Discord only; Webex uses `monitor_start`",
-        r"exit condition.*autonudge_stop",
-        r"gate=false.*generic comments/advisory scans.*silence itself needs action",
-        r"Arming failure.*not a transient reconnect",
-        r"max_cycles.*runaway backstop, NOT success",
-        r"CREATE-ONLY.*preserves an existing active loop/structured monitor",
-        r"manual pause/user stop is preserved",
-        r"budget-paused.*raise its stopping bound with user authorization",
-        r"typed provider facts.*whole objective.*lifecycle.*checks.*mergeability.*review decision.*review threads",
-        r"only for unsupported targets.*evidence the structured provider cannot see",
-        r"final report or notification.*finite legacy path with `gate=false`",
-        r"positive runtime/token/provider-error budgets",
-        r"`max_agent_turns` also accepts 0.*no wake ceiling",
-        r"Token caps depend on reported usage.*token_usage_known",
-        r"runtime cap is the hard fallback that always applies",
-        r"completed-turn cap is a fallback only when you name a positive value",
-        r"positive `max_cycles` and `max_runtime_secs`; never use zero",
-        r"REQUESTED and END YOUR TURN.*after the turn.*cannot prove arming",
-        r"On a later turn verify session-bound state",
-        r"Terminal records are read-only.*explicit new watch.*retained user-stop evidence.*owner",
-        r"never add a second driver.*unbounded wait/poll",
+        r"core Kiro Crew feature",
+        r"wait for, keep checking, keep an eye on, babysit",
+        r"read the `kirocrew-dev/babysit` skill first, every time",
+        r"required even when you are only asked to plan, describe or propose the call",
+        r"Never choose a driver or write its arguments from memory",
+        r"`wait`, `monitor_watch`, `monitor_start`, `cron_add`, `register_hook`",
+    )
+    assert (BABYSIT_SKILL_DIR / "SKILL.md").is_file()
+    for restated in ("**Using monitor_start:**", "**Legacy timer:**", "gate=false", "max_cycles"):
+        assert restated not in monitor, restated
+
+
+def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
+    skill = " ".join((BABYSIT_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    _require(
+        skill,
+        r"Stop with `monitor_stop\(reason=\.\.\.\)`.*`autonudge_stop` is a compatibility alias",
+        r"Structured watches support dashboard, Slack, and Discord sessions",
+        r"On Webex, use the finite legacy path",
+        r"call `autonudge_stop` with a reason",
+        r"A cap is a backstop, never successful completion",
+        r"`monitor_start` is create-only",
+        r"Manual pauses and user stops stay preserved",
+        r"cap/budget-stopped legacy loop, only with user authorization",
+        r"Typed providers do not observe generic issue/pull-request comments",
+        r"finite legacy path with `gate=false`",
+        r"`max_agent_turns` where 0 = no wake cap",
+        r"token cap applies only when usage is reported.*`token_usage_known`",
+        r"runtime always caps, turns only if set positive",
+        r"never use `0` for unlimited work",
+        r"pending application request, not proof that the monitor armed.*END THE TURN",
+        r"Terminal records are read-only; restarting requires an explicit new watch",
+        r"never add wait/poll beside it",
         r"Missing hosting context permits bounded in-turn wait/poll",
+        r"three settled polls read the same progress key with no push",
+        r'`watch="work-ledger"`',
+        r"never edit the file directly.*cross-process lock",
     )
     for token in (
-        "max_runtime_secs",
         "session_ledger_record",
         "session_ledger_read",
         "kiro_crew.heartbeat.append_heartbeat_task(entry)",
         "HEARTBEAT_KEEP",
     ):
-        assert token in monitor
-    _require(monitor, r"never edit the file directly", r"cross-process lock")
-    assert "Arming failure means NO monitor is running" not in monitor
-    assert "On successful arming, tell the user monitoring is active" not in monitor
+        assert token in skill, token
 
 
 def test_browser_keeps_all_four_approval_groups_and_ownership_controls() -> None:
