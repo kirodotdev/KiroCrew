@@ -86,6 +86,19 @@ function ProfileDisclosure({ title, subtitle, open, onToggle, children }: {
   )
 }
 
+/** A backend's or Coder's own words, folded under Details: the plain line
+ *  beside it says what to do, and these are kept for diagnosing. */
+function RawDetails({ text, className = 'pl-5' }: { text: string; className?: string }) {
+  const { t } = useTranslation()
+  if (!text) return null
+  return (
+    <details className={`${className} text-[12px] text-muted`}>
+      <summary className="cursor-pointer">{t('sessionEnvironments.checkDetails')}</summary>
+      <pre className="mt-1 whitespace-pre-wrap break-words font-mono">{text}</pre>
+    </details>
+  )
+}
+
 /** One passed check: a check mark and its text, announced as a list item. */
 function CheckLine({ children }: { children: ReactNode }) {
   return (
@@ -114,12 +127,7 @@ function CheckResults({ result, profiles }: {
             <Trans i18nKey="sessionEnvironments.checkCoderLogin" components={{ code: <code className="font-mono select-all" /> }} />
           </p>
           {/* The CLI's own words, folded: the line above already says what to do. */}
-          {result.coder.error && (
-            <details className="pl-5 text-[12px] text-muted">
-              <summary className="cursor-pointer">{t('sessionEnvironments.checkDetails')}</summary>
-              <pre className="mt-1 whitespace-pre-wrap break-words font-mono">{result.coder.error}</pre>
-            </details>
-          )}
+          <RawDetails text={result.coder.error ?? ''} />
         </li>
       )}
       {/* No sign-in, no template check, whatever a row says. */}
@@ -209,7 +217,7 @@ function ReopenChat({ slot, blocked, needsSaveId }: { slot: string; blocked: boo
 
 /** The workspaces Kiro Crew owns, from the gateway's registry (no Coder call). */
 /** ``handoff``: off while the card holds an unsaved draft, which leaving would lose. */
-function WorkspaceList({ handoff }: { handoff: boolean }) {
+function WorkspaceList({ handoff, profiles }: { handoff: boolean; profiles: EnvironmentProfile[] }) {
   const { t } = useTranslation()
   const needsSaveId = useId()
   const slots = useAppSelector(s => s.dashboard.slots)
@@ -240,15 +248,23 @@ function WorkspaceList({ handoff }: { handoff: boolean }) {
         // Only a live chat has a slot to open; an archived row says what to do.
         const inUse = row.state !== 'deleting' && !row.deletion_due_at
         const name = 'truncate font-mono text-[12px]'
+        // Which chat and profile the row belongs to, from what the page already
+        // holds: the chat's title in the sidebar list, the profile's saved name.
+        const chatTitle = row.slot ? slots.find(s => s.key === row.slot)?.title?.trim() : ''
+        const profile = row.profile ? profiles.find(p => p.id === row.profile) : undefined
+        const profileName = profile ? (profile.name || profile.id) : row.profile
         return (
         <li key={row.workspace} className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-[13px]">
           {inUse && row.slot && handoff
             ? <Link to={conversationHref(row.slot)} className={`${name} text-accent hover:underline`}>{row.workspace}</Link>
             : <span className={`${name} text-text`}>{row.workspace}</span>}
+          {profileName && <span className="text-[12px] text-muted">{t('sessionEnvironments.workspaceProfile', { name: profileName })}</span>}
           {inUse ? (
             // Opening the chat would leave the card and lose the draft, so the
             // name is plain text then and the line above the list says why.
-            <span className="text-muted">{t('sessionEnvironments.workspaceSession')}</span>
+            <span className="min-w-0 truncate text-muted">
+              {chatTitle ? t('sessionEnvironments.workspaceSessionNamed', { title: chatTitle }) : t('sessionEnvironments.workspaceSession')}
+            </span>
           ) : (
             // Status and action as one right-aligned group, so the button sits
             // in the same place on every row however long the status is.
@@ -324,6 +340,9 @@ export function SessionEnvironmentsCard() {
       ? t('sessionEnvironments.urlQueryError')
       : mutation.error.message || t('pages.settings.instancesPanel.unknown_error'))
     : ''
+  // What the URL box says: the one refusal with its own wording, else the
+  // general one, with the normalizer's words under Details.
+  const urlPlain = saveDetail === t('sessionEnvironments.urlQueryError') ? saveDetail : t('sessionEnvironments.urlInvalid')
   // Removing the default's profile moves the default to a remaining profile, or
   // turns it off when none is left: say which, beside the switch.
   const savedDefault = query.data?.session_environments?.default_profile
@@ -452,7 +471,10 @@ export function SessionEnvironmentsCard() {
           invalidMessageId={urlRefused ? URL_ERROR_ID : undefined}
         />
         {/* No hand-off: leaving the page would discard the unsaved draft. */}
-        {urlRefused && <ErrorNotice id={URL_ERROR_ID} variant="inline" className="-mt-2" message={saveDetail} />}
+        {urlRefused && <div className="-mt-2 min-w-0 space-y-1">
+          <ErrorNotice id={URL_ERROR_ID} variant="inline" message={urlPlain} />
+          {urlPlain !== saveDetail && <RawDetails text={saveDetail} className="" />}
+        </div>}
         <SettingsField configKey="session_environments.profiles" label={t('sessionEnvironments.profiles')}
           description={t('sessionEnvironments.profilesCoderHint')}>
           <div className="min-w-0 space-y-3">
@@ -478,7 +500,10 @@ export function SessionEnvironmentsCard() {
                     {/* Said whichever field shows, so a failed refresh behind cached
                         choices is not hidden. No hand-off: the card may hold an
                         unsaved draft. Typing the name still works. */}
-                    {templatesError && <ErrorNotice variant="inline" message={t('sessionEnvironments.templatesUnavailable', { reason: templatesError })} />}
+                    {templatesError && <>
+                      <ErrorNotice variant="inline" message={t('sessionEnvironments.templatesUnavailable')} />
+                      <RawDetails text={templatesError} className="" />
+                    </>}
                   </div>
                 ))}
                 <SettingsToggle anchor={false} label={survivesStopLabel}
@@ -520,7 +545,7 @@ export function SessionEnvironmentsCard() {
       <section aria-label={t('sessionEnvironments.manageStep')} className="space-y-3 pt-3">
         <PanelSectionHeader label={t('sessionEnvironments.manageStep')} />
         <p className="text-[13px] text-muted">{t('sessionEnvironments.managementHint')}</p>
-        {savedCoderUrl && <WorkspaceList handoff={!draft} />}
+        {savedCoderUrl && <WorkspaceList handoff={!draft} profiles={savedProfiles} />}
         {savedCoderUrl && (
           <a href={savedCoderUrl} target="_blank" rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-[13px] text-accent hover:underline">

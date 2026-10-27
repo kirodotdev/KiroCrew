@@ -210,8 +210,12 @@ describe('Session Environments configuration preview', () => {
     expect(screen.getByLabelText('Coder template')).toHaveValue(profile.template)
     expect(screen.queryByRole('button', { name: 'Coder template' })).toBeNull()
     // Says why, under the field, with no hand-off (the card may hold a draft).
-    const notice = await screen.findByText(/Couldn't load your Coder templates, so type the template's name\. coder: not logged in/)
+    const notice = await screen.findByText("Couldn't load your Coder templates, so type the template's name.")
     expect(within(notice.closest('[role="alert"]') as HTMLElement).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+    // Coder's own words are kept for diagnosing, folded under Details, not in the sentence.
+    expect(notice).not.toHaveTextContent('not logged in')
+    const raw = screen.getByText('coder: not logged in')
+    expect(raw.closest('details')).not.toBeNull()
   })
 
   it('says a failed refresh even while cached templates keep the picker', async () => {
@@ -334,13 +338,16 @@ describe('Session Environments configuration preview', () => {
     expect(url()).not.toHaveAttribute('aria-invalid')
     typeUrl('https://')
     fireEvent.click(save())
-    // The banner points at the box; the gateway's reason is said once, under it.
+    // The banner points at the box; under it, plain words say what to enter.
     await screen.findByText('Could not save the settings: fix the Coder URL above.')
-    expect(screen.getAllByText(/coder_url must include a hostname/)).toHaveLength(1)
     expect(url()).toHaveAttribute('aria-invalid', 'true')
-    // The reason sits under the box too, and the box points at it.
     const describedBy = url().getAttribute('aria-describedby') ?? ''
-    expect(document.getElementById(describedBy.split(' ').pop()!)).toHaveTextContent('coder_url must include a hostname')
+    const reason = document.getElementById(describedBy.split(' ').pop()!)!
+    expect(reason).toHaveTextContent('Enter the full address of your Coder deployment, for example https://coder.example.com.')
+    expect(reason).not.toHaveTextContent('coder_url')
+    // The gateway's own words are said once, folded under Details.
+    expect(screen.getAllByText(/coder_url must include a hostname/)).toHaveLength(1)
+    expect(screen.getByText('coder_url must include a hostname').closest('details')).not.toBeNull()
     // Editing clears the refusal and the mark with it.
     typeUrl('https://coder.example.test')
     expect(url()).not.toHaveAttribute('aria-invalid')
@@ -417,7 +424,9 @@ describe('Coder setup and saved profile management', () => {
     expect(screen.getByRole('link', { name: 'Open provider setup documentation' })).toHaveAttribute('href', 'https://coder.com/docs/admin/setup')
     // One provider, so there is no provider choice to make.
     expect(screen.queryByRole('radio')).not.toBeInTheDocument()
-    expect(screen.getByText(/A chat runs on a profile once you choose it in the “Run this chat on” menu next to the message box/)).toBeVisible()
+    // Where the "Run this chat on" menu is, said once on the card (under Profiles).
+    expect(screen.getAllByText(/“Run this chat on” menu next to the message box/)).toHaveLength(1)
+    expect(screen.getByText('Archiving a chat stops its workspace and deletes it 7 days later.')).toBeVisible()
     expect(writes).toEqual([])
   })
 
@@ -782,6 +791,25 @@ describe('Session Environments readiness and workspaces', () => {
     const row = screen.getByText('crewenv-devuser-live').closest('li') as HTMLElement
     expect(row).not.toHaveTextContent('Save or discard your changes first.')
     expect(screen.getByText('Save or discard your changes first.')).toBeVisible()
+  })
+
+  it('names the chat and the profile each workspace row belongs to', async () => {
+    stored.session_environments!.profiles.push({ id: 'gpu', name: 'Coder GPU', template: 'gpu-dev', workdir: '/workspace/project' })
+    server.use(http.get('*/api/session-environments/workspaces', () => HttpResponse.json({ workspaces: [
+      { workspace: 'crewenv-a', slot: 'chat-a', profile: 'gpu', state: 'running', template: 'gpu-dev', created_at: '2026-10-01T12:00:00Z', deletion_due_at: '' },
+      { workspace: 'crewenv-b', slot: 'chat-b', profile: 'dev', state: 'stopped', template: 't', created_at: '2026-10-01T12:00:00Z', deletion_due_at: '2026-10-30T12:00:00Z' },
+      { workspace: 'crewenv-c', slot: 'chat-gone', profile: 'removed', state: 'running', template: 't', created_at: '2026-10-01T12:00:00Z', deletion_due_at: '' },
+    ] })))
+    const base = createTestStore().getState().dashboard
+    mount(createTestStore({ dashboard: { ...base, slots: [{ key: 'chat-a', title: 'Fix the flaky test' } as never] } }))
+    const list = await screen.findByRole('list', { name: 'Workspaces' })
+    const rows = list.querySelectorAll('li')
+    expect(rows[0]).toHaveTextContent('Profile: Coder GPU')
+    expect(rows[0]).toHaveTextContent('In use by Fix the flaky test')
+    expect(rows[1]).toHaveTextContent('Profile: Development')
+    // No title on hand, or a profile no longer saved: said with what is known.
+    expect(rows[2]).toHaveTextContent('In use by a chat')
+    expect(rows[2]).toHaveTextContent('Profile: removed')
   })
 
   it('opens a mate thread\'s workspace on the Members page, not the chat page', async () => {
