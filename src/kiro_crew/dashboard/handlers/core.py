@@ -702,11 +702,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_positive_int,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
+        _LANGUAGE_IDENTIFYING_PROVIDERS,
         _STT_LANGUAGE_CODES,
         _STT_MODEL_SIZES,
         _STT_THREAD_LADDER,
         _builtin_stt_rows,
         _ffmpeg_install_commands,
+        _language_identifying_providers,
         _stt_language_codes,
         _stt_prereq_commands,
         _stt_provider_rows,

@@ -18007,7 +18007,7 @@
         "transcribe_vocabulary_access_denied": "Queste credenziali AWS non sono autorizzate a elencare i vocabolari personalizzati. Concedi {{permission}} per vederli qui.",
         "transcribe_vocabulary_list_failed": "Impossibile caricare i tuoi vocabolari personalizzati da AWS.",
         "transcribe_languages": "Lingue miste",
-        "transcribe_languages_hint": "Lingue tra cui si alterna in una stessa registrazione, come vietnamita e inglese. Con due o più selezionate, Amazon Transcribe rileva la lingua di ogni parte e la trascrive in quella lingua. Solo per la dettatura in streaming, un dialetto per lingua.",
+        "transcribe_languages_hint": "Lingue tra cui si alterna in una stessa registrazione, come vietnamita e inglese. Con due o più selezionate, la dettatura rileva la lingua di ogni parte e la trascrive in quella lingua. Solo per la dettatura in streaming, un dialetto per lingua.",
         "transcribe_languages_off": "Disattivato (usa la lingua sopra)",
         "transcribe_languages_one": "{{name}}: scegline un’altra per attivare",
         "transcribe_languages_pending": "Scegli una seconda lingua per rilevarle entrambe. Fino ad allora, la dettatura usa la lingua sopra.",

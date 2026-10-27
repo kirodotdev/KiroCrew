@@ -17433,7 +17433,7 @@
         "transcribe_vocabulary_access_denied": "这些 AWS 凭证无权列出自定义词汇表。授予 {{permission}} 权限即可在此处查看。",
         "transcribe_vocabulary_list_failed": "无法从 AWS 加载你的自定义词汇表。",
         "transcribe_languages": "混合语言",
-        "transcribe_languages_hint": "在同一段录音中来回切换的语言，例如越南语和英语。选择两种或更多后，Amazon Transcribe 会识别每一部分的语言，并用该语言转写。仅适用于流式口述，每种语言只能选一种方言。",
+        "transcribe_languages_hint": "在同一段录音中来回切换的语言，例如越南语和英语。选择两种或更多后，口述时会识别每一部分的语言，并用该语言转写。仅适用于流式口述，每种语言只能选一种方言。",
         "transcribe_languages_off": "关闭（使用上方的语言）",
         "transcribe_languages_one": "{{name}}：再选一种即可开启",
         "transcribe_languages_pending": "再选择一种语言才能同时识别两者。在此之前，口述使用上方的语言。",

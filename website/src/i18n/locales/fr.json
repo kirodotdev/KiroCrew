@@ -18007,7 +18007,7 @@
         "transcribe_vocabulary_access_denied": "Ces identifiants AWS ne sont pas autorisés à lister les vocabulaires personnalisés. Accorde {{permission}} pour les voir ici.",
         "transcribe_vocabulary_list_failed": "Impossible de charger tes vocabulaires personnalisés depuis AWS.",
         "transcribe_languages": "Langues mélangées",
-        "transcribe_languages_hint": "Langues entre lesquelles on alterne dans un même enregistrement, comme le vietnamien et l’anglais. Dès que deux langues ou plus sont choisies, Amazon Transcribe détecte la langue de chaque passage et le transcrit dans cette langue. Dictée en continu uniquement, un seul dialecte par langue.",
+        "transcribe_languages_hint": "Langues entre lesquelles on alterne dans un même enregistrement, comme le vietnamien et l’anglais. Dès que deux langues ou plus sont choisies, la dictée détecte la langue de chaque passage et le transcrit dans cette langue. Dictée en continu uniquement, un seul dialecte par langue.",
         "transcribe_languages_off": "Désactivé (utilise la langue ci-dessus)",
         "transcribe_languages_one": "{{name}} : choisis-en une autre pour activer",
         "transcribe_languages_pending": "Choisis une deuxième langue pour détecter les deux. D’ici là, la dictée utilise la langue ci-dessus.",

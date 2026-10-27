@@ -349,7 +349,7 @@ After the three gates, each provider has its own precondition and failure frame:
   refused custom vocabulary has its own code too
   ([Custom vocabulary](#custom-vocabulary-transcribe-only)), and so does
   mixed-language detection on an SDK too old for it
-  ([Mixed-language detection](#mixed-language-detection-transcribe-only)); any
+  ([Mixed-language detection](#mixed-language-detection)); any
   other start failure is `_CODE_SESSION_FAILED`. A stream on a named
   `stt.transcribe_profile` keeps the credentials it opened with:
   `_ProfileCredentialResolver` resolves once, because the SDK asks again for every
@@ -418,7 +418,7 @@ vocabulary.
   is loading while the list is still being read with the stored value still shown,
   and warns when the stored name is not ready in the configured region.
 
-### Mixed-language detection (`transcribe` only)
+### Mixed-language detection
 
 `stt.transcribe_languages` lists the languages speakers switch between in one
 recording (empty: off). With `TRANSCRIBE_LANGUAGES_MIN` (two) or more,
@@ -427,6 +427,15 @@ opens the stream with `IdentifyMultipleLanguages` and `LanguageOptions`, so
 Amazon Transcribe transcribes each part in the language it identifies. With
 fewer, the stream is opened exactly like the single-language one, on
 `effective_language_code`.
+
+Of the built-ins only `transcribe` identifies languages. An edition STT provider
+that sets the optional `identifies_languages = True` (exactly `True`) gets the
+same picker; it reads the candidates from
+`SttConfig.transcribe_language_identification` itself, and the bullets below on
+the stream, the SDK and the voice memo describe the `transcribe` provider only.
+`GET /api/config/stt` serves `language_identification_providers`, the built-in
+`transcribe` followed by each such edition provider
+(`speech_providers.language_identifying_stt_names`).
 
 - **No `LanguageCode` beside identification.** Amazon Transcribe fails a stream
   that names both, so `stt_stream._transcribe_language_kwargs` passes
@@ -451,7 +460,9 @@ fewer, the stream is opened exactly like the single-language one, on
   client method's signature first (`_client_identifies_languages`) and, when it
   lacks them, refuses before any audio is read with
   `stt_transcribe_sdk_outdated` and logs the install command.
-- **The panel offers the picker beside Language.** Its candidates are the
+- **The panel offers the picker beside Language** for every provider in
+  `language_identification_providers`, or for `transcribe` alone when an older
+  gateway serves no list. Its help text names no provider. Its candidates are the
   served `language_codes` (which include `vi-VN`, and any stored code the
   common list lacks, so a value set in config.json stays selectable), each named
   in the app language beside its code, as the Language picker's options are; the

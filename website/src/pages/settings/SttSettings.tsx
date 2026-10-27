@@ -19,6 +19,7 @@ import {
   downloadRatio,
   FALLBACK_PROVIDERS,
   FALLBACK_STREAMING_PROVIDERS,
+  FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS,
   CODE_PROVIDER_UNAVAILABLE,
   INSTALLED_BUT_REFUSED_CODES,
   languageOptionLabel,
@@ -97,6 +98,8 @@ interface SttConfig {
   /** Served provider entries (see lib/speechProviders). An older gateway sends bare names. */
   providers?: unknown[]
   streaming_providers?: string[]
+  /** Providers that identify languages among `transcribe_languages`. An older gateway omits it. */
+  language_identification_providers?: string[]
   language_codes?: string[]
   prereqs: string[]
   transcribe_unsupported?: boolean
@@ -1028,8 +1031,14 @@ export default function SttSettings({ cardIndex }: {
   const canStream = streamingProviders.includes(provider)
   const defaultLanguage = provider === PROVIDER_LOCAL ? 'auto' : 'en-US'
   const languageOptions = stt.language_codes?.length ? stt.language_codes : [defaultLanguage]
+  // Gated on the served capability like streaming, so an edition provider that
+  // identifies languages gets the picker without core naming it.
+  const identifyingProviders = stt.language_identification_providers?.length
+    ? stt.language_identification_providers
+    : FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS
+  const identifiesLanguages = identifyingProviders.includes(provider)
   const transcribeLanguages = stt.transcribe_languages ?? []
-  const mixedLanguagesOn = isTranscribe && transcribeLanguages.length >= stt.transcribe_languages_min
+  const mixedLanguagesOn = identifiesLanguages && transcribeLanguages.length >= stt.transcribe_languages_min
   // The languages each Transcribe path runs in. A live stream identifies between
   // the candidates once mixed languages are on; a voice message, and dictation
   // with streaming off, always run in the one language above.
@@ -1499,7 +1508,7 @@ export default function SttSettings({ cardIndex }: {
 
         {/* Beside the language it overrides, because the two answer one question:
             which language dictation is heard in. */}
-        {isTranscribe && (
+        {identifiesLanguages && (
           <TranscribeLanguagesPicker
             value={transcribeLanguages}
             candidates={languageOptions.filter(code => code !== 'auto')}

@@ -1718,7 +1718,7 @@
       "label": "Mixed languages",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.transcribe_languages",
-      "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, Amazon Transcribe detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
+      "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, dictation detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
       "configKey": "stt.transcribe_languages"
     },
     {

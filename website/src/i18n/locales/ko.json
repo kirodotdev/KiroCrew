@@ -17433,7 +17433,7 @@
         "transcribe_vocabulary_access_denied": "이 AWS 자격 증명에는 사용자 지정 어휘 목록을 조회할 권한이 없습니다. 여기에서 보려면 {{permission}} 권한을 부여하세요.",
         "transcribe_vocabulary_list_failed": "AWS에서 사용자 지정 어휘를 불러오지 못했습니다.",
         "transcribe_languages": "여러 언어",
-        "transcribe_languages_hint": "한 녹음 안에서 바꿔 가며 말하는 언어입니다(예: 베트남어와 영어). 두 개 이상 선택하면 Amazon Transcribe가 각 부분의 언어를 감지해 그 언어로 받아씁니다. 스트리밍 구술에만 적용되며, 언어당 방언은 하나입니다.",
+        "transcribe_languages_hint": "한 녹음 안에서 바꿔 가며 말하는 언어입니다(예: 베트남어와 영어). 두 개 이상 선택하면 구술 시 각 부분의 언어를 감지해 그 언어로 받아씁니다. 스트리밍 구술에만 적용되며, 언어당 방언은 하나입니다.",
         "transcribe_languages_off": "끔(위의 언어 사용)",
         "transcribe_languages_one": "{{name}}: 켜려면 하나 더 선택하세요",
         "transcribe_languages_pending": "두 언어를 모두 감지하려면 두 번째 언어를 선택하세요. 그 전까지는 위의 언어로 구술합니다.",

@@ -17720,7 +17720,7 @@
         "transcribe_vocabulary_access_denied": "Diese AWS-Anmeldedaten dürfen keine benutzerdefinierten Vokabulare auflisten. Erteile {{permission}}, um sie hier zu sehen.",
         "transcribe_vocabulary_list_failed": "Deine benutzerdefinierten Vokabulare konnten nicht aus AWS geladen werden.",
         "transcribe_languages": "Gemischte Sprachen",
-        "transcribe_languages_hint": "Sprachen, zwischen denen in einer Aufnahme gewechselt wird, etwa Vietnamesisch und Englisch. Sobald zwei oder mehr ausgewählt sind, erkennt Amazon Transcribe die Sprache jedes Abschnitts und transkribiert ihn in dieser Sprache. Nur beim Streaming-Diktat, ein Dialekt pro Sprache.",
+        "transcribe_languages_hint": "Sprachen, zwischen denen in einer Aufnahme gewechselt wird, etwa Vietnamesisch und Englisch. Sobald zwei oder mehr ausgewählt sind, erkennt das Diktat die Sprache jedes Abschnitts und transkribiert ihn in dieser Sprache. Nur beim Streaming-Diktat, ein Dialekt pro Sprache.",
         "transcribe_languages_off": "Aus (verwendet die Sprache oben)",
         "transcribe_languages_one": "{{name}}: wähle eine weitere, um es einzuschalten",
         "transcribe_languages_pending": "Wähle eine zweite Sprache, damit beide erkannt werden. Bis dahin verwendet das Diktat die Sprache oben.",

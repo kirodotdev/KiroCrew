@@ -804,6 +804,7 @@ class TestSttConfigEndpoint:
         # Settings UI gates on a CAPABILITY rather than a provider name. `local`
         # streams too, so every advertised provider is in it.
         assert body["streaming_providers"] == ["local", "apple", "transcribe"]
+        assert body["language_identification_providers"] == ["transcribe"]
         # Tracks _STT_MODEL_SIZES (the PUT allowlist) rather than pinning one
         # literal, so a catalog entry added or resized cannot make the picker
         # offer a value this endpoint would reject.

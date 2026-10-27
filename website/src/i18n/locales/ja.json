@@ -17433,7 +17433,7 @@
         "transcribe_vocabulary_access_denied": "この AWS 認証情報には、カスタム語彙を一覧表示する権限がありません。ここに表示するには {{permission}} を許可してください。",
         "transcribe_vocabulary_list_failed": "AWS からカスタム語彙を読み込めませんでした。",
         "transcribe_languages": "複数言語",
-        "transcribe_languages_hint": "1 つの録音の中で切り替えて話す言語です。たとえばベトナム語と英語です。2 つ以上選ぶと、Amazon Transcribe が各部分の言語を判別し、その言語で文字起こしします。ストリーミングの口述でのみ使われ、1 言語につき選べる方言は 1 つです。",
+        "transcribe_languages_hint": "1 つの録音の中で切り替えて話す言語です。たとえばベトナム語と英語です。2 つ以上選ぶと、口述で各部分の言語を判別し、その言語で文字起こしします。ストリーミングの口述でのみ使われ、1 言語につき選べる方言は 1 つです。",
         "transcribe_languages_off": "オフ（上の言語を使用）",
         "transcribe_languages_one": "{{name}}：オンにするにはもう 1 つ選んでください",
         "transcribe_languages_pending": "両方を判別するには、2 つ目の言語を選んでください。それまでは上の言語で口述します。",

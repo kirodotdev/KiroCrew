@@ -8401,7 +8401,7 @@
         "transcribe_vocabulary_access_denied": "These AWS credentials are not allowed to list custom vocabularies. Grant {{permission}} to see them here.",
         "transcribe_vocabulary_list_failed": "Your custom vocabularies could not be loaded from AWS.",
         "transcribe_languages": "Mixed languages",
-        "transcribe_languages_hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, Amazon Transcribe detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
+        "transcribe_languages_hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, dictation detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
         "transcribe_languages_off": "Off (uses the language above)",
         "transcribe_languages_one": "{{name}}: pick one more to turn on",
         "transcribe_languages_pending": "Pick a second language to detect both. Until then, dictation uses the language above.",

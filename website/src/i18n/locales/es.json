@@ -18007,7 +18007,7 @@
         "transcribe_vocabulary_access_denied": "Estas credenciales de AWS no tienen permiso para listar vocabularios personalizados. Concede {{permission}} para verlos aquí.",
         "transcribe_vocabulary_list_failed": "No se pudieron cargar tus vocabularios personalizados desde AWS.",
         "transcribe_languages": "Idiomas mezclados",
-        "transcribe_languages_hint": "Idiomas entre los que se alterna en una misma grabación, como el vietnamita y el inglés. Con dos o más elegidos, Amazon Transcribe detecta el idioma de cada parte y la transcribe en ese idioma. Solo para dictado en streaming, un dialecto por idioma.",
+        "transcribe_languages_hint": "Idiomas entre los que se alterna en una misma grabación, como el vietnamita y el inglés. Con dos o más elegidos, el dictado detecta el idioma de cada parte y la transcribe en ese idioma. Solo para dictado en streaming, un dialecto por idioma.",
         "transcribe_languages_off": "Desactivado (usa el idioma de arriba)",
         "transcribe_languages_one": "{{name}}: elige otro para activarlo",
         "transcribe_languages_pending": "Elige un segundo idioma para detectar ambos. Hasta entonces, el dictado usa el idioma de arriba.",
