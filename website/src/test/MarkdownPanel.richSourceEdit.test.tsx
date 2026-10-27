@@ -138,9 +138,17 @@ describe('MarkdownPanel — source editing for text-backed rich files', () => {
     expect(await screen.findByTestId('markdown-panel-partial-read-only')).toHaveAttribute(
       'aria-label', i18nT('components.markdownPanel.partial_copy_read_only'),
     )
+    // The reason is on screen, not only in a tooltip.
+    expect(screen.getByTestId('markdown-panel-partial-notice')).toHaveTextContent(i18nT('components.markdownPanel.partial_copy_read_only'))
     expect(await screen.findByRole('button', { name: i18nT('components.markdownPanel.add_to_artifact_library') })).toBeEnabled()
     expect(screen.queryByRole('button', { name: editLabel() })).toBeNull()
     expect(screen.queryByTestId('pierre-editor')).toBeNull()
+  })
+
+  it('shows no partial notice for a complete json buffer', async () => {
+    mount('/x/mcp.json', '{"a":1}')
+    await screen.findByRole('button', { name: editLabel() })
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
   })
 
   it('closes the source view and refuses the save when a partial verdict lands after an edit', async () => {
@@ -154,32 +162,69 @@ describe('MarkdownPanel — source editing for text-backed rich files', () => {
     // The draft is kept (the unsaved row stays), but its Save cannot write it.
     const save = screen.getByRole('button', { name: i18nT('components.markdownPanel.save') })
     expect(save).toBeDisabled()
+    expect(screen.getByTestId('markdown-panel-partial-notice')).toHaveTextContent(i18nT('components.markdownPanel.partial_copy_read_only'))
     fireEvent.click(save)
     expect(onSave).not.toHaveBeenCalled()
   })
 
-  it('adds no header buttons when a rich file in source mode goes full screen', async () => {
-    // The full-screen header is already past two controls and must not grow:
-    // a rich file's Save and Cancel ride the unsaved-changes row instead.
+  const fullScreenDialog = () => screen.getByRole('dialog', { name: i18nT('components.markdownPanel.full_screen_file_preview') })
+  const fullScreenHeader = () => fullScreenDialog().firstElementChild as HTMLElement
+  async function enterFullScreen() {
+    fireEvent.click(await screen.findByRole('button', { name: i18nT('components.markdownPanel.more_options') }))
+    fireEvent.click(await screen.findByText(i18nT('components.markdownPanel.full_screen')))
+    return fullScreenHeader()
+  }
+
+  it('toggles Edit/Preview in full screen in the artifact button slot, without growing the header', async () => {
+    // The full-screen header row is capped: the toggle replaces the artifact
+    // button there, and Save/Cancel ride the unsaved-changes row.
     mount('/x/mcp.json', '{"a":1}')
-    const dialogButtons = () => {
-      const dialog = screen.getByRole('dialog', { name: i18nT('components.markdownPanel.full_screen_file_preview') })
-      const header = dialog.firstElementChild as HTMLElement
-      return header.querySelectorAll('button').length
-    }
-    fireEvent.click(await screen.findByRole('button', { name: i18nT('components.markdownPanel.more_options') }))
-    fireEvent.click(await screen.findByText(i18nT('components.markdownPanel.full_screen')))
-    const before = dialogButtons()
-    // Leave full screen, switch to source, come back: same header count.
-    fireEvent.click(screen.getByRole('button', { name: i18nT('components.markdownPanel.exit_full_screen') }))
-    fireEvent.click(await screen.findByRole('button', { name: editLabel() }))
-    fireEvent.change(await screen.findByTestId('pierre-editor'), { target: { value: '{"a":2}' } })
-    fireEvent.click(await screen.findByRole('button', { name: i18nT('components.markdownPanel.more_options') }))
-    fireEvent.click(await screen.findByText(i18nT('components.markdownPanel.full_screen')))
-    expect(dialogButtons()).toBe(before)
-    // The buffer's Save is still reachable, on its own row.
-    const dialog = screen.getByRole('dialog', { name: i18nT('components.markdownPanel.full_screen_file_preview') })
-    expect(within(dialog).getAllByRole('button', { name: i18nT('components.markdownPanel.save') }).length).toBeGreaterThan(0)
+    let header = await enterFullScreen()
+    const viewCount = within(header).getAllByRole('button').length
+    expect(within(header).queryByRole('button', { name: i18nT('components.markdownPanel.add_to_artifact_library') })).toBeNull()
+    expect(within(header).queryByRole('button', { name: previewLabel() })).toBeNull()
+
+    // The artifact action stays reachable from the full-screen ⋯ menu.
+    const more = within(header).getByRole('button', { name: i18nT('components.markdownPanel.more_options') })
+    fireEvent.click(more)
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: i18nT('components.markdownPanel.add_to_artifacts') })).toBeEnabled()
+    fireEvent.click(more)
+
+    // View → source, inside full screen.
+    const edit = within(header).getByRole('button', { name: editLabel() })
+    expect(edit).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(edit)
+    const editor = await within(fullScreenDialog()).findByTestId('pierre-editor')
+    header = fullScreenHeader()
+    const preview = within(header).getByRole('button', { name: previewLabel() })
+    expect(preview).toHaveAttribute('aria-pressed', 'true')
+    expect(within(header).queryByRole('button', { name: editLabel() })).toBeNull()
+    expect(within(header).getAllByRole('button')).toHaveLength(viewCount)
+    expect(within(header).queryByRole('button', { name: i18nT('components.markdownPanel.add_to_artifact_library') })).toBeNull()
+
+    // An edit keeps the header count and puts Save on its own row.
+    fireEvent.change(editor, { target: { value: '{"a":2}' } })
+    expect(within(header).getAllByRole('button')).toHaveLength(viewCount)
+    expect(within(header).queryByRole('button', { name: i18nT('components.markdownPanel.save') })).toBeNull()
+    expect(within(fullScreenDialog()).getByRole('button', { name: i18nT('components.markdownPanel.save') })).toBeEnabled()
+
+    // Source → view, inside full screen.
+    fireEvent.click(preview)
+    await waitFor(() => expect(within(fullScreenDialog()).queryByTestId('pierre-editor')).toBeNull())
+    header = fullScreenHeader()
+    expect(within(header).getByRole('button', { name: editLabel() })).toBeInTheDocument()
+    expect(within(header).getAllByRole('button')).toHaveLength(viewCount)
+  })
+
+  it('keeps the artifact button and offers no Edit for a partial json buffer in full screen', async () => {
+    mount('/x/mcp.json', '{"token":"[REDACTED]"}', undefined, true)
+    await screen.findByTestId('markdown-panel-partial-read-only')
+    const header = await enterFullScreen()
+    expect(await within(header).findByRole('button', { name: i18nT('components.markdownPanel.add_to_artifact_library') })).toBeEnabled()
+    expect(within(header).queryByRole('button', { name: editLabel() })).toBeNull()
+    expect(within(header).queryByRole('button', { name: previewLabel() })).toBeNull()
+    expect(within(fullScreenDialog()).getByTestId('markdown-panel-partial-notice')).toHaveTextContent(i18nT('components.markdownPanel.partial_copy_read_only'))
   })
 
   it('offers no Edit for a byte-backed rich file', async () => {

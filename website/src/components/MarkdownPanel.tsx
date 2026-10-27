@@ -2,7 +2,7 @@ import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { clearAnnotationHighlight, paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
 import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
-import { RefreshCw, Hash, WrapText, Minimize2, Copy, X, FileText, FileDiff, Folders, TriangleAlert } from 'lucide-react'
+import { RefreshCw, Hash, WrapText, Minimize2, Copy, X, FileText, FileDiff, Folders, TriangleAlert, Lock } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import DetailPanel from './DetailPanel'
 import ErrorNotice from './ErrorNotice'
@@ -1251,12 +1251,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     {!isRichType && editing && (
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title={i18nT('components.markdownPanel.toggle_line_numbers')} aria-label={i18nT('components.markdownPanel.toggle_line_numbers')} aria-pressed={lineNums}><Hash size={14} /></button>
     )}
-    {/* Full screen carries no source toggle for a rich file: this header row
-        is already past two controls and must not grow. Edit/Preview stays in
-        the side panel; a rich file in source mode gets its editor options from
-        the ⋯ menu and its Save/Cancel from the unsaved-changes row below. */}
-    {canPreview && !isRichType && !readOnly && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
+    {/* The full-screen header row is capped and must not grow, so a rich
+        file's Edit/Preview takes the artifact button's slot (the artifact
+        action stays in ⋯). Its editor options live in ⋯ and its Save/Cancel
+        on the unsaved-changes row below. */}
+    {canPreview && !readOnly && (
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }} aria-pressed={richHasSource ? editing : undefined}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
     )}
     {readOnly && (
       <span className="px-2 py-1 text-[12px] font-medium text-muted select-none" aria-label={i18nT('components.markdownPanel.read_only')}>{i18nT('components.markdownPanel.read_only')}</span>
@@ -1281,6 +1281,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       </div>
     </div>
   )
+
+  // A partial rich file says on screen why it has no Edit and no working
+  // Save; a tooltip alone leaves the user stuck with an unsaveable draft.
+  const partialNotice = richPartial && !readOnly && !showBinaryCard ? (
+    <div className="flex items-center gap-2 px-3 py-1.5 shrink-0 text-[12px] text-muted bg-bg-elevated border-b border-border" role="note" data-testid="markdown-panel-partial-notice">
+      <Lock size={12} className="shrink-0" aria-hidden="true" />
+      <span className="min-w-0">{i18nT('components.markdownPanel.partial_copy_read_only')}</span>
+    </div>
+  ) : null
 
   // Diff-mode +N/-N stats over the same original/modified pair the diff view shows.
   const diffStats = useMemo(
@@ -1423,6 +1432,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               never moves). 40px + the negative right margin over the grip
               keep its divider continuous with the rail header's. */}
           {unsavedBar(railOpen ? '-mr-1' : '')}
+          {partialNotice}
           {lastCopy && <MissingFileBanner onDownload={downloadLastCopy} onCopy={() => { void copyLastCopy() }} copied={lastCopyCopied} partial={partialCopy} />}
           {/* In markdown preview the scroll box runs flush to the panel's right
               border so the outline rail sits on that edge; pr-6 keeps the text
@@ -1506,7 +1516,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           </div>
           <div className="flex items-center gap-1.5">
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
+            {!showBinaryCard && !richHasSource && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(ext)
@@ -1524,6 +1534,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         {/* Code and markdown keep their Save in the header; a rich file in
             source mode has none there, so its Save rides this row instead. */}
         {richHasSource && unsavedBar('')}
+        {partialNotice}
         {panelNotices && <div className="px-16">{panelNotices}</div>}
         {isMarkdown && !editing && onSubmitComments && hint.show && <div className="px-16"><CommentHint image={hint.image} isNew={hint.isNew} onDismiss={hint.dismiss} /></div>}
         {lastCopy && <div className="px-4 sm:px-16"><MissingFileBanner onDownload={downloadLastCopy} onCopy={() => { void copyLastCopy() }} copied={lastCopyCopied} partial={partialCopy} /></div>}
