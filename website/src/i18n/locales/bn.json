@@ -7452,7 +7452,10 @@
       "agent_recheck_failed": "{{name}}-এর পরীক্ষা ব্যর্থ হয়েছে। “আবার পরীক্ষা করো” চাপো।",
       "configured_agent_not_ready": "{{productName}} {{name}} ব্যবহারের জন্য সেট করা আছে, কিন্তু এটি এই হোস্টে এখনো প্রস্তুত নয়।",
       "use_kiro_cli_instead": "এর বদলে Kiro CLI ব্যবহার করো",
-      "switch_agent_later_in_settings": "সেটিংস > এজেন্ট হারনেস থেকে যেকোনো সময় এজেন্ট বদলাতে পারো।"
+      "switch_agent_later_in_settings": "সেটিংস > এজেন্ট হারনেস থেকে যেকোনো সময় এজেন্ট বদলাতে পারো।",
+      "remote_only_question": "শুধু অন্য মেশিনের ক্রু ব্যবহার করো?",
+      "remote_only_skip": "এজেন্ট সেটআপ বাদ দাও",
+      "remote_only_failed": "রিমোট ক্রু ফর্ম খোলা গেল না। আবার চেষ্টা করো।"
     },
     "linkPreview": {
       "copied": "কপি করা হয়েছে",

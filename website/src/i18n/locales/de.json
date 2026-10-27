@@ -7452,7 +7452,10 @@
       "agent_recheck_failed": "Die Prüfung von {{name}} ist fehlgeschlagen. Drücke „Erneut prüfen“.",
       "configured_agent_not_ready": "{{productName}} ist auf {{name}} eingestellt, das auf diesem Host noch nicht bereit ist.",
       "use_kiro_cli_instead": "Stattdessen Kiro CLI verwenden",
-      "switch_agent_later_in_settings": "Du kannst den Agenten jederzeit unter Einstellungen > Agent-Harness wechseln."
+      "switch_agent_later_in_settings": "Du kannst den Agenten jederzeit unter Einstellungen > Agent-Harness wechseln.",
+      "remote_only_question": "Nutzt du nur Crews auf anderen Rechnern?",
+      "remote_only_skip": "Agent-Einrichtung überspringen",
+      "remote_only_failed": "Das Formular für die Remote-Crew ließ sich nicht öffnen. Versuch es noch einmal."
     },
     "linkPreview": {
       "copied": "Kopiert",

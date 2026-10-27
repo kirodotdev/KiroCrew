@@ -33,6 +33,7 @@ import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
+import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -1951,6 +1952,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             onRetryBackends={() => { void backendsQuery.refetch() }}
           />
           )}
+          {/* A desktop user who will only use crews on other machines needs no
+              agent here. The closed enterprise login gate keeps its one way
+              through, as for the other agents above. */}
+          {!enterpriseLocked && <RemoteCrewSetupSkip />}
         </>
     </SetupShell>
   )

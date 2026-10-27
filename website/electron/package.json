@@ -148,6 +148,7 @@
       "runtime/gateway/holder-decision.js",
       "runtime/gateway/shutdown.js",
       "runtime/gateway/reconnect.js",
+      "runtime/gateway/remote-switch.js",
       "window-lifecycle.js",
       "runtime/window/chrome.js",
       "runtime/window/prompts.js",

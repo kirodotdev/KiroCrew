@@ -212,6 +212,16 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
   set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
 });
 
+// First-run setup's "only using crews on other machines" exit. `available`
+// resolves true only where `start` can work; `start` opens the remote-crew form
+// and resolves "switching", "cancelled" or "unavailable". Neither takes an
+// argument: the main process decides everything from the sender. Absent in
+// plain browsers, where setup has no local gateway to replace.
+contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
+  available: () => ipcRenderer.invoke("first-run:can-use-remote-crew"),
+  start: () => ipcRenderer.invoke("first-run:use-remote-crew"),
+});
+
 // Crash-artifact notice for the dashboard banner (CrashReportNotice).
 //
 // The app already captures a minidump and, on macOS, the OS writes an .ips

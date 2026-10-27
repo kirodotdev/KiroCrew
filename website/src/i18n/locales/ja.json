@@ -7327,7 +7327,10 @@
       "agent_recheck_failed": "{{name}} の確認に失敗しました。「再度確認」を押してください。",
       "configured_agent_not_ready": "{{productName}} は {{name}} を使用するよう設定されていますが、このホストではまだ準備ができていません。",
       "use_kiro_cli_instead": "代わりに Kiro CLI を使用",
-      "switch_agent_later_in_settings": "エージェントは「設定 > エージェントハーネス」でいつでも切り替えられます。"
+      "switch_agent_later_in_settings": "エージェントは「設定 > エージェントハーネス」でいつでも切り替えられます。",
+      "remote_only_question": "別のマシンのクルーだけを使いますか？",
+      "remote_only_skip": "エージェントのセットアップをスキップ",
+      "remote_only_failed": "リモートクルーのフォームを開けませんでした。もう一度お試しください。"
     },
     "linkPreview": {
       "copied": "コピー済み",

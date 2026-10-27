@@ -40,6 +40,8 @@ const SHELL_HANDLES = [
   "dashboard:pick-folder",
   "external-terminal:detect",
   "external-terminal:open",
+  "first-run:can-use-remote-crew",
+  "first-run:use-remote-crew",
   "global-hotkey:get",
   "local-gateway:get",
   "local-gateway:set",
@@ -185,6 +187,9 @@ function harness({
   wslGatewayLocal = true,
   primaryPortOwner = "kirocrew",
   isCurrentBundleGateway = true,
+  // What the supervisor answers for first-run setup's remote-crew exit.
+  canSwitchToRemoteCrew = true,
+  switchOutcome = "switching",
   crashScan,
   revealThrows = false,
   openPathResult = "",
@@ -372,6 +377,8 @@ function harness({
       "isCurrentBundleGateway",
       Promise.resolve(isCurrentBundleGateway),
     ),
+    canSwitchToRemoteCrew: recordGateway("canSwitchToRemoteCrew", canSwitchToRemoteCrew),
+    switchToRemoteCrew: recordGateway("switchToRemoteCrew", Promise.resolve(switchOutcome)),
   };
   const logs = [];
   const runWslDetection = (...args) => {
@@ -496,13 +503,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 42);
+  assert.equal(h.handlers.size + h.listeners.size, 44);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 43);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 45);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -1126,6 +1133,63 @@ test("dashboard:can-pick-folder answers true on the local dashboard without open
     assert.equal(await h.handlers.get("dashboard:can-pick-folder")(wslEvent()), true, portOwner);
     assert.equal(h.dialogCalls.length, 0);
   }
+});
+
+// First-run setup's remote-crew exit stops the gateway this app started, so
+// both channels take the same three-gate check as the folder pick, and a
+// refused sender never reaches the supervisor.
+test("first-run:use-remote-crew is refused outside the local dashboard and never reaches the supervisor", async () => {
+  for (const [label, options, url] of PICK_REJECTIONS) {
+    const h = harness(options);
+    h.registrar.registerShell();
+    await assert.rejects(
+      () => h.handlers.get("first-run:use-remote-crew")(wslEvent(url)),
+      (error) => {
+        assert.equal(
+          error && error.message,
+          "first-run:use-remote-crew is restricted to the local dashboard",
+          label,
+        );
+        return true;
+      },
+    );
+    assert.equal(
+      h.gatewayCalls.filter(([name]) => name === "switchToRemoteCrew").length,
+      0,
+      `${label}: a rejected sender must not start a switch`,
+    );
+  }
+});
+
+test("first-run:can-use-remote-crew answers false wherever the switch is refused", async () => {
+  for (const [label, options, url] of PICK_REJECTIONS) {
+    const h = harness(options);
+    h.registrar.registerShell();
+    assert.equal(await h.handlers.get("first-run:can-use-remote-crew")(wslEvent(url)), false, label);
+    assert.equal(
+      h.gatewayCalls.filter(([name]) => name === "canSwitchToRemoteCrew").length,
+      0,
+      `${label}: a rejected sender is answered without asking the supervisor`,
+    );
+  }
+});
+
+test("first-run remote-crew channels pass the sender's own window to the supervisor", async () => {
+  const owner = { fake: "main-window" };
+  for (const can of [true, false]) {
+    const h = harness({ wslOwner: owner, canSwitchToRemoteCrew: can, switchOutcome: "cancelled" });
+    h.registrar.registerShell();
+    assert.equal(await h.handlers.get("first-run:can-use-remote-crew")(wslEvent()), can);
+    assert.equal(await h.handlers.get("first-run:use-remote-crew")(wslEvent()), "cancelled");
+    assert.deepEqual(lastCall(h.gatewayCalls, "canSwitchToRemoteCrew"), ["canSwitchToRemoteCrew", owner]);
+    assert.deepEqual(lastCall(h.gatewayCalls, "switchToRemoteCrew"), ["switchToRemoteCrew", owner]);
+  }
+});
+
+test("first-run:can-use-remote-crew is a strict boolean", async () => {
+  const h = harness({ canSwitchToRemoteCrew: "yes" });
+  h.registrar.registerShell();
+  assert.equal(await h.handlers.get("first-run:can-use-remote-crew")(wslEvent()), false);
 });
 
 test("dashboard:pick-folder returns null when the dialog yields no absolute folder", async () => {

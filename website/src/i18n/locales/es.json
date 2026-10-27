@@ -7577,7 +7577,10 @@
       "agent_recheck_failed": "La comprobación de {{name}} falló. Pulsa «Comprobar de nuevo».",
       "configured_agent_not_ready": "{{productName}} está configurado para usar {{name}}, que todavía no está listo en este host.",
       "use_kiro_cli_instead": "Usar Kiro CLI en su lugar",
-      "switch_agent_later_in_settings": "Puedes cambiar de agente en cualquier momento en Ajustes > Harness del agente."
+      "switch_agent_later_in_settings": "Puedes cambiar de agente en cualquier momento en Ajustes > Harness del agente.",
+      "remote_only_question": "¿Solo usas Crews en otros equipos?",
+      "remote_only_skip": "Omitir la configuración del agente",
+      "remote_only_failed": "No se pudo abrir el formulario del Crew remoto. Vuelve a intentarlo."
     },
     "linkPreview": {
       "copied": "Copiado",

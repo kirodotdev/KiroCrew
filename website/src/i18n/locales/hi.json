@@ -7452,7 +7452,10 @@
       "agent_recheck_failed": "{{name}} की जाँच विफल रही। “फिर से जाँचें” दबाओ।",
       "configured_agent_not_ready": "{{productName}} को {{name}} इस्तेमाल करने के लिए सेट किया गया है, जो इस होस्ट पर अभी तैयार नहीं है।",
       "use_kiro_cli_instead": "इसके बजाय Kiro CLI इस्तेमाल करो",
-      "switch_agent_later_in_settings": "तुम सेटिंग्स > एजेंट हार्नेस में कभी भी एजेंट बदल सकते हो।"
+      "switch_agent_later_in_settings": "तुम सेटिंग्स > एजेंट हार्नेस में कभी भी एजेंट बदल सकते हो।",
+      "remote_only_question": "क्या तुम सिर्फ़ दूसरी मशीनों के क्रू इस्तेमाल करते हो?",
+      "remote_only_skip": "एजेंट सेटअप छोड़ो",
+      "remote_only_failed": "रिमोट क्रू फ़ॉर्म नहीं खुल सका। फिर से कोशिश करो।"
     },
     "linkPreview": {
       "copied": "कॉपी हो गया",
