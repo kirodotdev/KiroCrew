@@ -1,4 +1,4 @@
-"""Crew as the KAS engine's store for remote MCP sign-ins (opt-in).
+"""Crew as the KAS engine's per-user store for remote MCP sign-ins (opt-in).
 
 When ``agent.kas_persist_mcp_sign_in`` is on, the KAS handshake declares
 ``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth state
@@ -17,7 +17,13 @@ What is stored, and where:
   key, and a value over :data:`MAX_VALUE_CHARS`, is refused, so the engine cannot
   use Crew as a general key-value store.
 - ``client`` (the dynamic client registration) and ``tokens`` persist, in a
-  DEDICATED vault at ``<data_home>/kas/mcp-grants/.vault/``. It has its own key
+  DEDICATED vault per authenticated user at
+  ``<data_home>/kas/mcp-grants/principals/<sha256 of the principal>/.vault/``.
+  The principal is the one :mod:`kiro_crew.mcp_grant_principals` bound to
+  the session key this engine process was spawned for, read once at the
+  handshake. A process with no principal declares no storage at all, so a
+  grant stored for one user is never served to a session another user, a
+  channel, a cron or an unattributed start opened. Each vault has its own key
   file and is neither the user Secrets vault (so it is not listed in Settings ->
   Secrets and cannot be granted to a cron) nor the Kiro sign-in vault (so a Kiro
   logout leaves MCP grants alone and the reverse). The whole ``kas`` directory is
@@ -26,6 +32,12 @@ What is stored, and where:
 - ``verifier`` and ``discovery`` only matter while a sign-in is running, so they
   stay in this runtime's memory and die with the engine process, exactly as every
   key does with the feature off.
+- When the session key stops being bound to the process's principal (a second
+  user drove it), persisted kinds fall back to this process's memory for the
+  rest of its life: nothing more is read from or written to the vault.
+- The gateway-wide vault an earlier build wrote at
+  ``<data_home>/kas/mcp-grants/.vault/`` names no user, so it is never read:
+  its grants are not migrated to anyone, and each user signs in again.
 
 Values never leave this module except as the ``get`` answer on the engine's own
 pipe: they are not logged (failures log an exception TYPE only), not put in an
@@ -41,6 +53,8 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
+
+from kiro_crew import mcp_grant_principals
 
 logger = logging.getLogger(__name__)
 
@@ -119,17 +133,23 @@ def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
 
 
 class McpGrantStore:
-    """The dedicated vault holding persisted MCP ``client`` / ``tokens`` entries."""
+    """One user's dedicated vault holding persisted MCP ``client`` / ``tokens`` entries."""
 
-    def __init__(self, data_home: str | Path) -> None:
+    def __init__(self, data_home: str | Path, principal: str) -> None:
         from kiro_crew.secrets import SecretVault
 
+        if not isinstance(principal, str) or not principal:
+            # A store with no user would be the gateway-wide namespace that the
+            # per-user layout replaces.
+            raise SecretStorageRefused("MCP grant store needs a principal")
         self._kas_dir = Path(data_home) / "kas"
-        self._root = self._kas_dir / "mcp-grants"
+        self._grants_dir = self._kas_dir / "mcp-grants"
+        self._principals_dir = self._grants_dir / "principals"
+        self._root = self._principals_dir / mcp_grant_principals.principal_dir_name(principal)
         self._vault = SecretVault(self._root)
 
     def _assert_unlinked(self) -> None:
-        """Refuse to work through a linked ``kas``, ``mcp-grants`` or ``.vault`` dir.
+        """Refuse to work through a linked directory anywhere on the vault's path.
 
         Before a directory first exists, a link planted at its name could point the
         key file and ciphertext somewhere agent-readable. Same check as the Kiro
@@ -137,7 +157,13 @@ class McpGrantStore:
         """
         from kiro_crew.platform_compat import is_link_or_junction
 
-        for path in (self._kas_dir, self._root, self._root / ".vault"):
+        for path in (
+            self._kas_dir,
+            self._grants_dir,
+            self._principals_dir,
+            self._root,
+            self._root / ".vault",
+        ):
             if is_link_or_junction(path):
                 raise SecretStorageRefused("MCP grant store directory is a link")
 
@@ -164,11 +190,11 @@ class McpGrantStore:
             await self._vault.delete_if_revision(key, revision)
 
 
-def default_grant_store() -> McpGrantStore:
-    """The gateway's one grant store, under the data home."""
+def default_grant_store(principal: str) -> McpGrantStore:
+    """*principal*'s grant store, under the data home."""
     from kiro_crew.config.paths import data_home
 
-    return McpGrantStore(data_home())
+    return McpGrantStore(data_home(), principal)
 
 
 class SecretStorageServer:
@@ -179,7 +205,13 @@ class SecretStorageServer:
     that store it has no entry cap: the engine is the host's own child process,
     and each value is still capped at :data:`MAX_VALUE_CHARS`.
 
-    Several engine processes share one persisted grant. A process whose refresh
+    It is bound to one principal and to the session key the process was
+    spawned for. Before every persisted read, write or delete it re-checks that
+    the key is still bound to that principal; once it is not, persisted kinds
+    are served from this process's memory instead, so the vault is never read
+    or written on behalf of a session another user drove.
+
+    Several engine processes of one principal share one persisted grant. A process whose refresh
     fails clears what it read, and that must not erase a fresh grant another
     process stored since. So the server remembers, per persisted key, the
     revision this process last read or wrote (``None``: it read nothing), and a
@@ -187,8 +219,18 @@ class SecretStorageServer:
     outright: it holds no copy that could be stale.
     """
 
-    def __init__(self, store: McpGrantStore | None = None) -> None:
-        self._store = store if store is not None else default_grant_store()
+    def __init__(
+        self, principal: str, session_key: str, store: McpGrantStore | None = None
+    ) -> None:
+        self._principal = principal
+        self._session_key = session_key
+        # The exact binding this process was spawned under, generation included:
+        # a binding evicted and made again is a different one, even for this
+        # principal, so it can never re-authorize this process.
+        found = mcp_grant_principals.binding_for(session_key)
+        self._binding = found if found is not None and found[0] == principal else None
+        self._revoked = self._binding is None
+        self._store = store if store is not None else default_grant_store(principal)
         self._memory: dict[str, str] = {}
         self._seen: dict[str, str | None] = {}
         # The reader loop answers each request in its own task, so two requests
@@ -204,12 +246,52 @@ class SecretStorageServer:
         key = params.get("key")
         if not isinstance(key, str) or (match := _KEY_RE.match(key)) is None:
             raise SecretStorageRefused("key is outside the MCP sign-in namespace")
-        persisted = match.group(1) in _PERSISTED_KINDS
+        persisted = match.group(1) in _PERSISTED_KINDS and self.still_bound()
 
         if persisted:
             async with self._locks.setdefault(key, asyncio.Lock()):
-                return await self._answer_key(method, key, params, persisted)
+                # Re-checked once the lock is held: a request queued behind
+                # another for this key may have waited out a conflict.
+                return await self._answer_key(method, key, params, self.still_bound())
         return await self._answer_key(method, key, params, persisted)
+
+    def still_bound(self) -> bool:
+        """Whether this process may still use its principal's vault.
+
+        Latched: once the session key is seen not bound to the principal (a
+        conflict, or an eviction from the bounded registry), the answer stays
+        False for the life of this process, so a later re-bind cannot reopen the
+        vault to an engine another user has driven in the meantime.
+        """
+        if not self._revoked and (
+            mcp_grant_principals.binding_for(self._session_key) == self._binding
+        ):
+            return True
+        if not self._revoked:
+            self._revoked = True
+            logger.warning("MCP grant vault not used: the session is no longer bound to its user")
+        return False
+
+    def release(self, params: Any, result: dict[str, Any]) -> dict[str, Any]:
+        """*result* as it may be sent now, re-checked at the moment of sending.
+
+        A vault value read while the session was bound is withheld when the
+        binding is gone by the time the answer is written: the engine gets this
+        process's own memory copy instead (``{}`` when it has none). Values from
+        memory, and every non-``get`` answer, pass through unchanged.
+        """
+        if "value" not in result or self.still_bound():
+            return result
+        key = params.get("key") if isinstance(params, dict) else None
+        if not isinstance(key, str):
+            return result
+        match = _KEY_RE.match(key)
+        if match is None or match.group(1) not in _PERSISTED_KINDS:
+            return result
+        own = self._memory.get(key)
+        if result["value"] == own:
+            return result
+        return {} if own is None else {"value": own}
 
     async def _answer_key(
         self, method: str, key: str, params: dict[str, Any], persisted: bool
@@ -236,6 +318,10 @@ class SecretStorageServer:
         if not persisted:
             return self._memory.get(key)
         found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        if not self.still_bound():
+            # The session was conflicted while the vault was read: the value
+            # must not reach an engine another user now drives.
+            return self._memory.get(key)
         if found is None:
             self._seen[key] = None
             return None
