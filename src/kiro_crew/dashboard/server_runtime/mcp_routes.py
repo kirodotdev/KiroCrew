@@ -228,6 +228,9 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/agent-panel/dashboard/record", _deferred("agent_panel", "api_dashboard_record")
     )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    # The installed app's record door: an app token reaches it only through its
+    # ``permissions.api`` grant, and the handler admits nothing else.
+    app.router.add_post("/api/member-records/{slug}", _deferred("agent_panel", "api_member_record"))
     # The crewmate's dynamic dashboard. Registered through the deferred binder for the
     # reason the panel's routes are: calling the module's own
     # `register_member_dashboard_routes` would import it at boot, which the boot-path

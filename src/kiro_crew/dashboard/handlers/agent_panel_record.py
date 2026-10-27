@@ -12,10 +12,13 @@ by the gateway. What the caller may say is the record's TYPE and DATA; who wrote
 for whom, and the envelope ``src`` are the gateway's to say and are never read from
 the body.
 
-WHO MAY WRITE is decided in one place, :func:`_resolve_record_writer`, and today the
-answer is a script cron bound to a member and nothing else. An app-token caller is
-turned away by the same ``_deny_app_caller`` every member route uses; an installed
-app's own grant is a separate decision and is not made here.
+WHO MAY WRITE through THIS route is decided in one place, :func:`_resolve_record_writer`,
+and the answer is a script cron bound to a member and nothing else. An app-token caller
+is turned away by the same ``_deny_app_caller`` every member route uses: an installed
+app writes through its own door, ``POST /api/member-records/{slug}``
+(:mod:`kiro_crew.dashboard.handlers.agent_panel_record_app`), which resolves the app as
+the writer and then hands the record to the same :func:`record_through_door` this route
+uses -- one append, one fold, two resolvers.
 
 :mod:`kiro_crew.dashboard.handlers.agent_panel` is this module's facade: callers and
 tests import and patch every name through it (:mod:`kiro_crew._facade_mirror`). This
@@ -54,11 +57,7 @@ from kiro_crew.dashboard.handlers.agent_panel_read import _panel_slot
 from kiro_crew.dashboard.handlers.members import _deny_app_caller
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.members import MemberSlugError
-from kiro_crew.security import (
-    REDACTED_CREDENTIAL_TAG,
-    redact_credentials,
-    redact_exfiltration_urls,
-)
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
 
@@ -99,11 +98,19 @@ class RecordWriter(NamedTuple):
     slot: str
 
 
-def _refuse(request: web.Request, sk: str, code: str, error: str, status: int) -> web.Response:
+def _refuse(
+    request: web.Request,
+    sk: str,
+    code: str,
+    error: str,
+    status: int,
+    *,
+    operation: str = _OPERATION,
+) -> web.Response:
     """One refusal, audited the way the publish gate audits its own."""
     sel().log_api_access(
         caller=sk,
-        operation=_OPERATION,
+        operation=operation,
         outcome="denied",
         source="dashboard",
         resources=request.path,
@@ -312,6 +319,16 @@ def _record_body_refusal(body: Any) -> tuple[str, str] | None:
             "type must be one name of letters, digits and underscores only, at most "
             f"{CUSTOM_TYPE_NAME_LIMIT} characters, so a page can bind custom.latest.<type>",
         )
+    if "__" in name:
+        # RESERVED for an installed app's key, ``<app>__<type>``
+        # (``agent_panel_record_app.app_record_type``). Refused for every caller, the
+        # app's own raw type included: a type that may hold the separator is a type
+        # that can spell another writer's key, and the fold keys on the name alone.
+        return (
+            "bad_record_type",
+            "type must not contain two underscores in a row; '__' is reserved for an "
+            "installed app's record key",
+        )
     if _scrubbed(name) != name:
         # The grammar admits a token-shaped string (a forty-character PAT is letters,
         # digits and underscores). A name the scrubber would change is a credential in
@@ -396,11 +413,38 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     if bad is not None:
         code, error = bad
         return web.json_response({"error": error, "code": code}, status=400)
+    return await record_through_door(request, resolved, body["type"], body["data"])
+
+
+async def record_through_door(
+    request: web.Request,
+    resolved: RecordWriter,
+    record_type: str,
+    data: dict[str, Any],
+    *,
+    caller: str = "",
+    operation: str = _OPERATION,
+) -> web.Response:
+    """Steps 3b and 4 of the door, for a caller the route has ALREADY resolved,
+    counted against its quota, and whose record has passed :func:`_record_body_refusal`:
+    the scrub, the scrubbed size, the append, the answer.
+
+    THE ONE APPEND every record caller shares. The cron route above and the installed
+    app's route (:mod:`kiro_crew.dashboard.handlers.agent_panel_record_app`) each decide
+    WHO is writing in their own resolver and count their own quota, then hand the writer
+    here; nothing below this line reads the request body, so the provenance on the entry
+    is whatever the resolver stamped and nothing the caller sent. *record_type* and
+    *data* are the caller's (for an app, the type already keyed by the app route). The
+    redaction and the size judgement live HERE rather than in each route, so a second
+    caller cannot land an unscrubbed record. *caller* is the SEL caller label; it
+    defaults to the cron's session key header, which is what the cron route audits as.
+    """
+    sk = caller or request.headers.get("X-Session-Key", "")
     # SCRUBBED AT THE DOOR, after the shape, depth and raw-size checks bound the walk,
     # and OFF the event loop: the scrub is a regex pass per string over a record the
     # caller sized, and the loop serves every other route meanwhile. The scrubbed form
     # is measured again, so what lands and what is measured are the same bytes.
-    record = await asyncio.to_thread(_redacted_record, body["data"])
+    record = await asyncio.to_thread(_redacted_record, data)
     bad = _record_size_refusal(record)
     if bad is not None:
         code, error = bad
@@ -422,7 +466,7 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     # on the entry is the gateway's reading of who called, and the body is not consulted
     # for any of it.
     entry: dict[str, Any] = {
-        "type": body["type"],
+        "type": record_type,
         "data": record,
         "writer": resolved.writer,
         "member": resolved.slug,
@@ -453,8 +497,9 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
             sk,
             outcome,
             "this crewmate's thread has no crew log yet; open its chat once so its "
-            "session starts, then run the job again",
+            "session starts, then send the record again",
             409,
+            operation=operation,
         )
     if outcome == "record_too_large":
         return web.json_response(
@@ -477,10 +522,10 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
         )
     sel().log_api_access(
         caller=sk,
-        operation=_OPERATION,
+        operation=operation,
         outcome="allowed",
         source="dashboard",
-        resources=f"{resolved.slug}:{body['type']}",
+        resources=f"{resolved.slug}:{record_type}",
     )
     # The fold's own bus event drives an open page's refill; this frame is for a client
     # watching the panel surface, and it carries the SLUG only, like the write route's.
@@ -489,6 +534,6 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "recorded": {"type": body["type"], "writer": resolved.writer, "member": resolved.slug},
+            "recorded": {"type": record_type, "writer": resolved.writer, "member": resolved.slug},
         }
     )

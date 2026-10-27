@@ -946,7 +946,7 @@ packages at all.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `permissions.api` | string[] | Allowed API path prefixes |
+| `permissions.api` | string[] | Allowed API path prefixes. `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY crewmate it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
 | `permissions.events` | string[] | Allowed WebSocket event types |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names |
 | `permissions.storage` | boolean | Can use app-scoped storage |

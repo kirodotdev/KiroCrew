@@ -67,7 +67,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
 | [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
-| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron appended for its crewmate, stamped with who wrote it. | live | `gateway` | — |
+| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a crewmate, stamped with who wrote it. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -1653,20 +1653,27 @@ an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
 
 Kind `session`, `src` `gateway`. Written when a script cron bound to this crewmate
 calls `ctx.crew_log_append(type, data)`, through
-`POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`).
-The body carries `type` and `data` only; `writer`, `member` and `crew_key` are stamped
-by the gateway from the job's attested identity, so a script cannot choose who it
-writes as or whose log it writes. A job bound to no crewmate is refused. Folded as
+`POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`),
+or when an installed app holding the `/api/member-records/*` grant posts to
+`POST /api/member-records/<slug>` (`dashboard/handlers/agent_panel_record_app.py`); both
+routes hand the record to the same append. The body carries `type` and `data` only;
+`writer`, `member` and `crew_key` are stamped by the gateway from the caller's attested
+identity (the job's scope, or the token's app claim), so neither a script nor an app can
+choose who it writes as. A job bound to no crewmate is refused; an app names the
+crewmate in the path and is refused for a slug no crewmate has or two share. An app's
+`type` is stored as `<app id with - as _>__<type>`, one bindable path segment that
+splits one way, so two apps never share a key and `__` is refused in every caller's
+type. Folded as
 `custom`, which keeps the latest record per `type`, so a Dashboard page binds
-`custom.latest.<type>.data.<key>`. The data is the script's own words: a page draws it
+`custom.latest.<type>.data.<key>`. The data is the writer's own words: a page draws it
 as text, and nothing frames it as an instruction to an agent.
 
 | field | type | notes |
 | --- | --- | --- |
-| `type` | string | the record type the script named: one plain name, at most `CUSTOM_TYPE_NAME_LIMIT` characters |
-| `data` | object | the record, at most `CUSTOM_RECORD_BYTES` serialized and `CUSTOM_RECORD_DEPTH` deep; its members are the script's own |
-| `writer` | string | `cron:<job id>`, stamped by the gateway |
-| `member` | string | the slug of the crewmate the job is bound to, stamped by the gateway |
+| `type` | string | the record type the writer named (for an app, `<app id with - as _>__<type>`): one plain name without `__`, at most `CUSTOM_TYPE_NAME_LIMIT` characters |
+| `data` | object | the record, at most `CUSTOM_RECORD_BYTES` serialized and `CUSTOM_RECORD_DEPTH` deep; its members are the writer's own |
+| `writer` | string | `cron:<job id>` or `app:<app id>`, stamped by the gateway |
+| `member` | string | the slug of the crewmate written for (the job's binding, or the app route's path), stamped by the gateway |
 | `crew_key` | string | digest of that crewmate's exact name, for ownership on a shared slot |
 
 ## Change cards and guides

@@ -258,7 +258,8 @@ class ScriptContext:
     def crew_log_append(self, type: str, data: dict) -> dict:
         """Append one record to the bound crewmate's crew log (``POST .../dashboard/record``).
 
-        *type* names the record: letters, digits and underscores only, at most 64
+        *type* names the record: letters, digits and underscores only (never two
+        underscores in a row, which is reserved for an installed app's key), at most 64
         characters, so a page binds it as ``custom.latest.<type>``; *data* is a JSON
         object of at most 8 KiB
         serialized and 8 levels deep. The record is redacted the way ``notify()``

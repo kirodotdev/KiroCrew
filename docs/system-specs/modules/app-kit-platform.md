@@ -4308,6 +4308,51 @@ Writers: `apps/routes_proxy.py`, `apps/proxy_auth.py`, `apps/manifest_sections.p
 `test/test_app_proxy_auth.py`, `test/test_app_manifest.py`,
 `test/test_gateway_appkit_endpoints_signed_proxy.py`.
 
+## 24a. An app writes a crewmate's Dashboard value through the shared record door
+
+An installed app has one way to put a value on a crewmate's page:
+`POST /api/member-records/{slug}` (`dashboard/handlers/agent_panel_record_app.py`).
+It is the second caller of the record door a script cron appends through
+(`agent_panel_record.record_through_door`): the same `dashboard/custom_value` entry in
+the crewmate's own DM session log, the same caps and quota, the same `custom` fold a
+page binds. Nothing is added to the crew log, the fold catalogue or the sandbox for it.
+
+Three rules are this route's:
+
+1. **The grant is `permissions.api: ["/api/member-records/*"]`** and nothing else. The
+   token middleware's deny-by-default scope check (`token_auth_app_scope`) is what
+   enforces it, so an app that did not declare the prefix, or whose owner has not yet
+   approved it on the detail page (`staged_app_grants`), never reaches the handler.
+   The route is outside `/api/apps/<name>`, which an app token may call ungranted, and
+   outside `/api/members/`, whose every route turns an app token away.
+2. **The writer is the token's app claim.** `request["app"]`, set by the middleware from
+   the claim the gateway minted at the secret exchange, becomes `writer: "app:<id>"`.
+   The body is read for `type` and `data` only. A caller with no app claim -- the
+   owner's cookie, an internal MCP caller, a cron -- is refused `app_token_required`:
+   each already has its own write path, and this one carries an app's provenance.
+3. **The record type is stored as `<app>__<type>`**, the kebab-case app id with `-`
+   written `_`, then `__`, then the type. A page's field path is split on `.` and its
+   segments are `[A-Za-z0-9_]+` (`dashboard_templates.manifest._PATH`), so an app's
+   type is held to that alphabet and the key is one bindable segment. A kebab id
+   rewritten never contains `__` and ends alphanumeric, so the first `__` is always the
+   separator and the key splits one way; `__` is refused in EVERY caller-supplied type
+   (`_record_body_refusal`), cron and app alike, so no writer can spell another app's
+   key. The whole key is held to the 64-character type rule. The kebab premise is
+   not re-checked at the door: `apps.manifest_names.app_name_error` is the single
+   contract every admission path runs, so no live app token carries another shape.
+
+An app backend with a command entry point runs as a sandboxed gateway child with the
+whole `crew-log` root hidden from it (section 0, `sandbox_leaves._CREW_HIDDEN_LEAVES`),
+so this route is the only way such an app can write a crewmate's log. A
+`backend.routes` module running inside the gateway process could already append
+anything and gains nothing here. A record is text a page draws; context assembly reads
+no crew-log fold, so it reaches a crewmate's model at most as the one-line
+`fold_summary` the `dashboard_fields` tool gives every fold-sourced field.
+
+Writers: `dashboard/handlers/agent_panel_record_app.py`,
+`dashboard/handlers/agent_panel_record.py` (`record_through_door`). Tests:
+`test/test_agent_panel_routes_record_app.py`.
+
 ## 25. `platform.os` and `platform.installMode` are closed vocabularies, refused at validation
 
 `PlatformConfig.supports_platform` resolves each `platform.os` entry through

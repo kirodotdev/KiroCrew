@@ -38,6 +38,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.agent_panel_dashboard",
     "kiro_crew.dashboard.handlers.agent_panel_snapshot",
     "kiro_crew.dashboard.handlers.agent_panel_record",
+    "kiro_crew.dashboard.handlers.agent_panel_record_app",
 )
 
 

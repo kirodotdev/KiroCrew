@@ -1104,6 +1104,49 @@ startup call, and teardown is the only thing that stops it.
 | `listNotifications()` | `{notifications}` | List notifications |
 | `ackNotifications()` | `—` (no body) | Acknowledge all notifications |
 
+### Member records
+
+An installed app can put a value on a crewmate's Dashboard page by appending one
+record to that crewmate's own crew log. There is no client method; call the
+endpoint with the app's token:
+
+```
+POST /api/member-records/{slug}
+{ "type": "scan", "data": { "open": 3, "label": "ok" } }
+-> 200 { "ok": true, "recorded": { "type": "<app>__scan", "writer": "app:<app>", "member": "<slug>" } }
+```
+
+- **Grant.** The manifest must declare `"permissions": { "api": ["/api/member-records/*"] }`.
+  The owner approves it at install, or on the app's detail page when an update adds
+  it; until then the token middleware denies the path like every undeclared one. The
+  route is outside the app's own `/api/apps/<name>` namespace on purpose, so owning
+  that namespace grants nothing here. The grant reaches any crewmate the app names by
+  slug; there is no per-crewmate form of it.
+- **Who wrote it.** The gateway stamps `writer` from the token's app claim and `member`
+  from the path. The body is read for `type` and `data` only; a `writer`, `member`,
+  `src`, `seq` or `time` in the body is ignored.
+- **Where it lands.** The record is stored under the key `<app>__<type>`: your app id
+  with each `-` written `_`, two underscores, your type (`github-pr` + `status` is
+  `github_pr__status`). A page binds
+  `{"fold": "custom", "path": "latest.<app>__<type>.data.<key>"}` and redraws on push
+  with no model turn. The key is one path segment and splits one way, so two apps
+  writing the same type never share it, and no cron can spell it (`__` is refused in
+  every caller's type). The fold row carries `data`, `at`, `seq`, `writer` and `member`.
+- **Caps.** Your `type` is letters, digits and `_` only (a path segment admits neither
+  `.` nor `-`), and the whole `<app>__<type>` key is at most 64 characters; `data` is an
+  object of at most 8 KiB serialized and 8 levels deep; 30 records a minute per app
+  (`429 quota_exceeded`); 64 record types kept per crewmate. Caps refuse, never
+  truncate.
+- **Refusals.** `403 app_token_required` (no app claim: the owner and internal callers
+  have their own write paths), `403 crew_panel_disabled`, `404 member_not_found`,
+  `409 ambiguous_slug` (two crewmates share the slug), `409 crew_log_unavailable`
+  (the crewmate's chat has never started), `400 bad_record_type` / `invalid_record` /
+  `record_too_deep` / `record_too_large`, `503 crew_log_off`.
+- **What it is not.** The record is text a page draws. It is never read into an
+  agent's context as an instruction; a crewmate sees at most a one-line fold summary
+  of it through `dashboard_fields`, marked as fold-sourced. It is the same door a
+  script cron's `ctx.crew_log_append` uses, with the app as the writer.
+
 ### Approvals
 
 | Method | Returns | Description |
@@ -1446,6 +1489,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | PUT/DELETE | `/api/mcp/servers/{name}` | Register or remove an MCP server |
 | GET | `/api/memory/episodic/search` | Search memory |
 | POST | `/api/chat/slots/{slot}/context` | Inject silent context |
+| POST | `/api/member-records/{slug}` | Append one record to a crewmate's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
 
 ### App Management
 
