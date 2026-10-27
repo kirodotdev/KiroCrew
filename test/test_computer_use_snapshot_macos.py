@@ -56,6 +56,7 @@ import pytest
 from computer_use_snapshot_macos_helpers import (  # noqa: F401 -- the fixture is requested by name
     _APP,
     _req,
+    _stage_element,
     _stage_window,
     fakes_fixture,
 )
@@ -69,7 +70,7 @@ from computer_use_snapshot_macos_helpers import (  # noqa: F401 -- the fixture i
 # broke on the 3.10 shard. pytest inserts each test file's directory on
 # ``sys.path`` (rootdir-relative ``consider_namespace_packages``-free import mode),
 # so the bare module name is the form that always resolves.
-from test_computer_use_ffi import _H_ELEMENT, _H_SOURCE, _FakeFn, _Fakes
+from test_computer_use_ffi import _H_ELEMENT, _H_SOURCE, _TID_ELEMENT, _FakeFn, _Fakes
 
 from kiro_crew.computer_use import (
     macos_driver,
@@ -246,6 +247,17 @@ class TestElectronOptIn:
         assert sets, "a tiny tree should have prompted the opt-in retry"
 
 
+def _copy_of_the_app_element(fakes: _Fakes) -> int:
+    """A fresh AXUIElement reference naming the application element.
+
+    The bare ``_H_ELEMENT`` handle is not on the fake heap, so ``ax_retained_elements``
+    would drop it as a non-element before any self-reference check ran. A real
+    ``AXWindows`` read hands back its own reference to the app, which ``CFEqual``
+    resolves to the app; ``origin`` models exactly that.
+    """
+    return fakes.heap.new(_TID_ELEMENT, None, origin=_H_ELEMENT)
+
+
 class TestWindowSelection:
     def test_selects_by_title_stem_when_ids_do_not_correlate(self, fakes: _Fakes):
         """AXWindows and the CGWindowList are independently ordered.
@@ -269,6 +281,45 @@ class TestWindowSelection:
         )
         snap = snapshot_macos.build_snapshot(app, _req())
         assert snap.window_title == "Quarterly Report"
+
+    def test_the_application_listed_as_its_own_window_is_not_walked(self, fakes: _Fakes):
+        """A degraded AX server answers ``AXWindows`` with the application element
+        first. The last-resort ``windows[0]`` must not pick it: the walk would then
+        render the whole app as one window, repeated down to the node budget."""
+        window = _stage_window(fakes, children=[{"role": "AXButton", "title": "OK"}])
+        itself = _copy_of_the_app_element(fakes)
+        fakes.ax.attrs[(_H_ELEMENT, "AXWindows")] = fakes.new_array([itself, window])
+        snap = snapshot_macos.build_snapshot(_APP, _req())
+        assert snap.window_title == "Fixture Window"
+        assert snap.truncated is False
+
+    def test_an_application_with_only_itself_as_a_window_says_so(self, fakes: _Fakes):
+        itself = _copy_of_the_app_element(fakes)
+        fakes.ax.attrs[(_H_ELEMENT, "AXWindows")] = fakes.new_array([itself])
+        with pytest.raises(ComputerUseError) as excinfo:
+            snapshot_macos.build_snapshot(_APP, _req())
+        assert "listed the application itself" in str(excinfo.value)
+
+    def test_an_application_with_no_windows_keeps_the_ordinary_message(self, fakes: _Fakes):
+        """An empty ``AXWindows`` read back with success is an app whose last
+        window closed, not a malformed AX server."""
+        fakes.ax.attrs[(_H_ELEMENT, "AXWindows")] = fakes.new_array([])
+        with pytest.raises(ComputerUseError) as excinfo:
+            snapshot_macos.build_snapshot(_APP, _req())
+        assert "exposed no accessible window (AX error 0)" in str(excinfo.value)
+        assert "listed the application itself" not in str(excinfo.value)
+
+    def test_an_element_listed_as_its_own_child_is_walked_once(self, fakes: _Fakes):
+        """``AXChildren`` naming the element itself would push it one level deeper
+        on every pass, so the tree would be one node repeated to the budget and
+        the screenshot would be suppressed as truncated."""
+        window = _stage_window(fakes)
+        button = _stage_element(fakes, {"role": "AXButton", "title": "OK"})
+        fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array([window, button])
+        snap = snapshot_macos.build_snapshot(_APP, _req(max_nodes=8))
+        assert [rec.role for rec in snap.elements].count("AXWindow") == 1
+        assert any(rec.title == "OK" for rec in snap.elements)
+        assert snap.truncated is False
 
     def test_title_stem_keeps_only_the_text_before_the_cg_ellipsis(self):
         """CoreGraphics elides the MIDDLE of a long title with U+2026.
