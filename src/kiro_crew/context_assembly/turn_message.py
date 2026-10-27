@@ -349,17 +349,13 @@ def build_message(
             # provenance) WITHOUT touching the trusted critical-rules block
             # that build_session_context prepends as parts[0] — that block
             # legitimately carries [CRITICAL RULES]/[END CRITICAL RULES] and
-            # must survive intact. The block is one of two fixed module
-            # constants (runtime-selected, never templated) and is always
-            # the prefix (only tail-truncation ever trims the string), and
+            # must survive intact. The block is one of the fixed module
+            # constants in _CRITICAL_RULES_VARIANTS (runtime-selected,
+            # never templated) and is always the prefix (only tail-truncation ever trims the string), and
             # none of the other trusted framing uses these markers, so
             # scrubbing everything after the block is safe.
             _rules_prefix = next(
-                (
-                    rb
-                    for rb in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                    if session_ctx.startswith(rb)
-                ),
+                (rb for rb in ctx._CRITICAL_RULES_VARIANTS if session_ctx.startswith(rb)),
                 None,
             )
             if _rules_prefix is not None:
