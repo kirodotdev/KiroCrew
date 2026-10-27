@@ -368,13 +368,6 @@ def test_a_warm_workstreams_baseline_reads_only_the_entries_appended_since(meter
 SAVEPOINT_GAP = 300
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a warm session fold refolds the whole unit when a savepoint write is earned: "
-    "projection_session_memo._fold_session_warm_locked drops the warm bundle when "
-    "checkpoint.write_is_earned, so fold_session re-reads from seq 1; fixed by the "
-    "session savepoint-write PR (crew_log/projection_session_memo.py)",
-)
 def test_a_warm_session_read_that_earns_a_savepoint_reads_only_the_gap(meter):
     from kiro_crew.crew_log import checkpoint
 
