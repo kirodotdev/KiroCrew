@@ -930,11 +930,11 @@ def _hold_back_executables(
     :func:`_report_held_back`, keyed ``dropped`` / ``paused`` / ``hooks``, plus
     ``kept_crons``: the names a merge's destination already has.
     """
-    # Imported here: portability_vetting imports this module at load time.
-    from kiro_crew.portability_vetting import (
-        _disable_imported_script_hooks,
-        _sanitize_imported_crons,
-    )
+    # Imported here: the portability family imports this module at load time.
+    from kiro_crew import portability
+
+    _disable_imported_script_hooks = portability._disable_imported_script_hooks
+    _sanitize_imported_crons = portability._sanitize_imported_crons
 
     held: dict[str, list[str]] = {"dropped": [], "paused": [], "hooks": [], "kept_crons": []}
     if _want(components, "crons"):

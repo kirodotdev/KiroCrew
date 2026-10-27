@@ -36,6 +36,7 @@ from urllib.parse import quote
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_bundle as reader
+from kiro_crew import portability
 from kiro_crew.change_card_catalog_kinds import _CREWMATE_NAME_MAX, CREWMATE_FORMAT_VERSIONS
 
 # Every cap and name rule is the reader's own (RFC §5.2), so the writer cannot drift
@@ -49,8 +50,6 @@ from kiro_crew.crewmate_bundle import JSON_MAX_BYTES as MAX_JSON_BYTES
 from kiro_crew.crewmate_bundle import SKILL_FILE
 from kiro_crew.crewmate_bundle import SKILL_FOLDER_MAX_BYTES as MAX_SKILL_BYTES
 from kiro_crew.guide_catalog import _has_control_chars, _redacts
-from kiro_crew.portability_archive import EXPORT_EXCLUDE, _is_excluded
-from kiro_crew.portability_templates import placeholder_mcp_values
 from kiro_crew.preview_text import drop_format_chars
 
 FORMAT_VERSION = max(CREWMATE_FORMAT_VERSIONS)
@@ -220,7 +219,9 @@ def agent_part(spec: dict[str, Any]) -> dict[str, Any]:
     Every MCP ``env``, ``headers`` and ``oauth.clientSecret`` value becomes the
     placeholder, every grant field goes, and nothing but ``mcpServers`` stays.
     """
-    redacted = _strip_grants(placeholder_mcp_values(spec if isinstance(spec, dict) else {}))
+    redacted = _strip_grants(
+        portability.placeholder_mcp_values(spec if isinstance(spec, dict) else {})
+    )
     servers = redacted.get("mcpServers")
     return {"mcpServers": servers if isinstance(servers, dict) else {}}
 
@@ -421,9 +422,7 @@ def _scan(directory: Path, limit: int | None = None) -> list[os.DirEntry[str]]:
 
 
 def _entry_is_link(entry: os.DirEntry[str]) -> bool:
-    from kiro_crew.portability_archive import _entry_is_link as is_link
-
-    return is_link(entry)
+    return portability._entry_is_link(entry)
 
 
 def _read_skill(directory: Path) -> dict[str, str] | str:
@@ -443,7 +442,9 @@ def _read_skill(directory: Path) -> dict[str, str] | str:
             return REASON_LINK
         if entry.is_dir(follow_symlinks=False):
             return REASON_SUBFOLDER
-        if entry.name in EXPORT_EXCLUDE or _is_excluded(PurePosixPath(entry.name)):
+        if entry.name in portability.EXPORT_EXCLUDE or portability._is_excluded(
+            PurePosixPath(entry.name)
+        ):
             return REASON_EXCLUDED
         # The reader folds case when it checks for a name used twice.
         if not _allowed_name(entry.name) or entry.name.casefold() in seen:
