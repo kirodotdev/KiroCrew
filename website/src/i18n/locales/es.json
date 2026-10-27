@@ -10877,6 +10877,7 @@
       "select_open_named": "Abierto ahora: “{{name}}”.",
       "gate_setting": "Activa primero «{{label}}» en Ajustes. La guía sigue sola en cuanto esté activado; nunca cambia el ajuste por ti.",
       "gate_terminal_enabled": "El terminal está desactivado en esta instalación. La guía sigue sola en cuanto se active.",
+      "gate_topbar_search_shown": "La búsqueda está oculta en la barra superior de este navegador. La guía sigue sola en cuanto se vuelva a mostrar.",
       "title_ui_find": "Buscar “{{label}}”",
       "step_ui_find_open": "Abre el control resaltado: “{{target}}” está dentro.",
       "find_not_found": "“{{label}}” no aparece en esta página. Si está dentro de un menú o una sección, ábrelo y la guía lo señalará.",
@@ -19350,7 +19351,9 @@
         "intensity_clear": "Clara",
         "intensity_vivid": "Viva",
         "intensity_bold": "Marcada",
-        "intensity_intense": "Intensa"
+        "intensity_intense": "Intensa",
+        "show_topbar_search": "Mostrar la búsqueda en la barra superior",
+        "show_topbar_search_desc": "Muestra el cuadro de búsqueda en el centro de la barra superior. Desactivado, su espacio pasa a los controles de cada lado, así que las lecturas de CPU, MEM y DSK siguen visibles en ventanas más estrechas. El atajo de búsqueda sigue abriendo la búsqueda. Mientras los atajos estén desactivados, el cuadro sigue visible."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

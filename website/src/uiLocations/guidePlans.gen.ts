@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:5a660daf3a790cce2a2675a2a176e5bf0dcfaa841571622dead75aee7af21b8c"
+export const GUIDE_BUILD_DIGEST = "sha256:44afaa297f39d70fa342682e3ed6697b8d2874bf33639c0148dee0690b96b9ab"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
