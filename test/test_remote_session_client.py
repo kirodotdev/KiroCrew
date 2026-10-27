@@ -28,10 +28,9 @@ def _drain_asyncio_transports():
 
     Tests here spawn asyncio subprocesses via asyncio.run(); a
     BaseSubprocessTransport whose subprocess is not awaited before the loop
-    closes forms a reference cycle with its protocol.  The root
-    _drain_gc_cycles fixture covers cross-module cycles at module scope;
-    this finer-grained drain covers within-module cycles so a cycle from
-    one test here cannot surface inside the next test in this same file.
+    closes forms a reference cycle with its protocol.  Collecting after each
+    test keeps such a cycle from surfacing inside the next test, in this file
+    or in a later module on the same worker.
     """
     import gc
 
