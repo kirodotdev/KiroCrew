@@ -1317,6 +1317,18 @@ class TestSemanticContext:
         ctx = store.get_semantic_context(cap=500)
         assert len(ctx) < 700  # cap + delimiters
 
+    def test_oversized_fact_is_skipped_not_a_stop(self, tmp_path: Path, opened) -> None:
+        # The long row ranks first (newer, and first by key on a timestamp tie);
+        # it does not fit the cap, but the short row after it does.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.algorithm_version != "v2"
+        store.set_semantic("project.b_short", "PostgreSQL", 1.0, "user_explicit")
+        store.set_semantic("project.a_long", "y" * 600, 1.0, "user_explicit")
+        ctx = store.get_semantic_context(cap=500)
+        assert "y" * 600 not in ctx
+        assert "PostgreSQL" in ctx
+
 
 class TestEpisodicCRUD:
     def test_write_and_list(self, tmp_path: Path, opened) -> None:

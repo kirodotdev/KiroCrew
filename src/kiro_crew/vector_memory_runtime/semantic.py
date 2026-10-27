@@ -1176,9 +1176,8 @@ def get_semantic_context(
         val_str = json.dumps(val) if isinstance(val, (dict, list)) else str(val)
         line = f"{store._fact_label(dict(r))}: {val_str}"
         if total + len(line) > cap:
-            if store.algorithm_version == "v2":
-                continue
-            break
+            # Skip a line that does not fit; a shorter, lower-ranked one may.
+            continue
         lines.append(line)
         total += len(line) + 1
     if not lines:
