@@ -346,7 +346,8 @@ async def _git(
     """Run ``git <args>`` in *cwd* off the event loop.
 
     Returns ``(returncode, stdout, stderr)``. A timeout kills the process tree
-    and surfaces as :class:`GitError` rather than a silent empty result.
+    and surfaces as :class:`GitError` rather than a silent empty result. On
+    cancel the tree is killed too, then the cancel propagates.
     """
     # Attribute-driven programs are disabled by a file, not by `-c` — see
     # `_pin_attributes_sync` for why the override list cannot cover them.
@@ -510,6 +511,13 @@ async def _git(
                 logger.warning("papyrus: git did not exit after SIGKILL")
         _audit(args[0] if args else "run", str(cwd), "failure", error="timeout")
         raise GitError(f"git {args[0] if args else ''} timed out") from exc
+    except asyncio.CancelledError:
+        # The child runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except FileNotFoundError as exc:
         _audit(args[0] if args else "run", str(cwd), "failure", error="git not found")
         raise GitError("git is not installed on this host") from exc
