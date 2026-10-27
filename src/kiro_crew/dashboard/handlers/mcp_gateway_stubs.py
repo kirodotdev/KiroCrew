@@ -71,7 +71,12 @@ def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
     silently never takes effect. Writing the decision
     instead leaves the roster alone, so the two layers can both keep moving.
 
-    A decision that AGREES with the roster deletes the override rather than
+    An OFF is always stored, even where the roster agrees: it is the marker
+    that the operator turned this server off, which the page-wide switch reads
+    so that turning sharing on never re-enables it. A False entry for a server
+    the roster does not list changes nothing the resolver produces.
+
+    An ON that AGREES with the roster deletes the override rather than
     storing it. The two are identical in effect today and differ tomorrow: stored,
     the entry would pin that server against a later roster change — so an
     operator toggling a server back to the roster's answer is asking to follow the
@@ -92,7 +97,7 @@ def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
     for name in names:
         if name in MANAGED_STUB_FOLLOWERS:
             overrides[name] = stub
-        elif (name in roster) == stub:
+        elif stub and name in roster:
             overrides.pop(name, None)
         else:
             overrides[name] = stub

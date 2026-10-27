@@ -419,6 +419,9 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     Values are never collected, only env NAMES: the verdict engine needs to know
     whether a per-session rotating credential is declared, never what it is.
     """
+    # Imported here, not at module top, so the facade does not serve it.
+    from kiro_crew.mcp_gateway.launch_approval import env_fingerprint
+
     rows: dict[str, dict[str, Any]] = {}
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
@@ -451,18 +454,29 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
                     # distinct launch here means the row covers something nobody
                     # measured. Hashing opens no file the launch names.
                     "launch_ids": set(),
+                    # The declared ``(command, *args)`` per launch, so the
+                    # footprint reading can find this server's processes inside
+                    # a session's own tree. Never an env value.
+                    "launches": set(),
+                    # One digest per distinct declared env block (a hash, never
+                    # a value). Two blocks under one name pool as two backends,
+                    # so the footprint forecast is withheld for that server.
+                    "env_ids": set(),
                 }
                 rows[name] = row
             row["agents"].add(str(agent_name))
             command = entry.get("command")
             if isinstance(command, str) and command:
                 args = entry.get("args")
-                row["launch_ids"].add(
-                    hash_command(command, [str(a) for a in args] if isinstance(args, list) else [])
-                )
+                argv = [str(a) for a in args] if isinstance(args, list) else []
+                row["launch_ids"].add(hash_command(command, argv))
+                row["launches"].add((command, *argv))
             if entry.get("poolable") is True:
                 row["entry_poolable"] = True
             declared_env = entry.get("env")
+            row["env_ids"].add(
+                env_fingerprint(declared_env if isinstance(declared_env, dict) else {})
+            )
             if isinstance(declared_env, dict):
                 row["env_names"].update(str(k) for k in declared_env)
     return rows
@@ -600,6 +614,10 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 "stub": stubbed,
                 "can_stub": can_stub,
                 "in_allowlist": name in stub_set,
+                # The operator turned this server off by hand. Turning sharing
+                # on page-wide never re-enables it (it only enables servers
+                # nobody chose for).
+                "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
                 "agents": sorted(row["agents"]),

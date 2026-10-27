@@ -83,7 +83,8 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
   'McpManagement.tsx': 'mounted only on the standalone Developer page — a settings deep link would be dead',
   'McpManagementAssessment.tsx': "McpManagement.tsx's read-only Sharing assessment view, on the standalone Developer page — a settings deep link would be dead",
-  'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, on the standalone Developer page — a settings deep link would be dead",
+  'McpManagementLaunchReview.tsx': "McpManagement.tsx's per-row share action, on the standalone Developer page — a settings deep link would be dead",
+  'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, on the standalone Developer page — a settings deep link would be dead",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
   'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
@@ -243,10 +244,6 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'CustomSoundsSection.tsx': {
     counts: { Input: 2 },
     reason: 'add-a-custom-sound form (name + per-tone number fields) — creates an entry, not a persistent setting',
-  },
-  'McpManagement.tsx': {
-    counts: { Switch: 2 },
-    reason: 'Developer-page-only surface, deliberately outside settings search',
   },
   'MobileLoginCard.tsx': {
     counts: { Input: 1 },

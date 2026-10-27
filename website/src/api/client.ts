@@ -163,6 +163,7 @@ export type {
   McpShareReason,
   McpShareRecommendation,
   McpMeasureProgress,
+  McpGatewayFootprint,
   McpManagedServer,
 } from './client/mcp'
 export type {

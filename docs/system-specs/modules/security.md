@@ -42,6 +42,28 @@ approval covers the exact launch the gateway resolved, pinned by `expected_launc
 whether or not it was rendered. Cached recommendation seeding
 can add a stub route, but it does not approve the launch behind that name.
 
+The operator's per-server **Enable MCP sharing** switch IS the approval. Turning
+it on (`POST /api/mcp-gateway/servers/stub`) resolves every launch the name runs
+right then, records exactly those fingerprints and stubs the server, in one
+request; the page shows no command text. Every share is a compare-and-set on a
+complete launch: the request must carry the `expected_launch` its caller read
+(`expected_launch_required`, `launch_display_incomplete`,
+`launch_changed_since_display`). This is a widening and is treated as one: a
+shared backend runs in `gatewayd` outside every session sandbox, as the user,
+while the same command run per chat runs inside the sandbox. The approval
+therefore covers exactly the launch that existed at the press, never what an
+agent writes afterwards: a later change to the command, args or declared env
+text under an approved name (agent specs and `~/.kiro/crew/mcp.json` are
+agent-writable) is refused as `changed_needs_reapproval` and stays on the
+session's sandboxed path until the operator presses **Approve update**, which
+reads the new launch and pins it. Only a `${VAR}` expansion moving under
+unchanged declared text is re-recorded (the rebind), because its values come
+from the gateway environment. The record stays exact (command and environment
+digests), never a wildcard. A name that reached the roster without a press
+(cached recommendation seeding, a hand edit) is refused as
+`added_outside_dashboard`. A launch set over the store's caps is
+refused as `launch_over_cap`.
+
 The generated `mcp-gateway/agents/` overlays and `mcp-gateway/stubs/` sidecars
 are not sealed: gatewayd checks the command and environment they carry against
 the approved fingerprint at launch, so tampered content fails closed. The

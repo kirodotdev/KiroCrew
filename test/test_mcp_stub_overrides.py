@@ -361,3 +361,26 @@ class TestManagedServersFollowTheControlPlane:
         _record_stub_decisions(section, ["kirocrew-guide"], True)
         assert section["stub_overrides"] == {"kirocrew-guide": True}
         assert "kirocrew-guide" in _resolve_stub_servers(section)
+
+    def test_an_off_outside_the_roster_is_kept_as_the_declined_marker(self) -> None:
+        """An OFF the roster agrees with is stored: it marks "turned off by hand",
+        which the page-wide switch reads so it never re-enables that server.
+        The resolved set is unchanged by it."""
+        from kiro_crew.dashboard.handlers.mcp import _record_stub_decisions
+
+        section: dict = {"stub_servers": []}
+        _record_stub_decisions(section, ["docs-mcp"], True)
+        _record_stub_decisions(section, ["docs-mcp"], False)
+        assert section["stub_overrides"] == {"docs-mcp": False}
+        assert "docs-mcp" not in _resolve_stub_servers(section)
+        # Turned on again: the marker gives way to the choice.
+        _record_stub_decisions(section, ["docs-mcp"], True)
+        assert section["stub_overrides"] == {"docs-mcp": True}
+        assert "docs-mcp" in _resolve_stub_servers(section)
+
+    def test_an_on_the_roster_agrees_with_is_still_pruned(self) -> None:
+        from kiro_crew.dashboard.handlers.mcp import _record_stub_decisions
+
+        section: dict = {"stub_servers": ["docs-mcp"]}
+        _record_stub_decisions(section, ["docs-mcp"], True)
+        assert "stub_overrides" not in section

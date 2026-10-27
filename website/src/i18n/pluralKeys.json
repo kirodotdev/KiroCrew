@@ -301,5 +301,12 @@
   "pages.contextBreakdown.media_documents",
   "pages.contextBreakdown.media_images",
   "pages.contextBreakdown.blocks_heading",
-  "pages.contextBreakdown.blocks_omitted"
+  "pages.contextBreakdown.blocks_omitted",
+  "pages.mcpManagement.stale_banner",
+  "pages.mcpManagement.reload_button",
+  "pages.mcpManagement.reload_skipped",
+  "pages.mcpManagement.reload_failed",
+  "pages.mcpManagement.reload_confirm_title",
+  "pages.mcpManagement.approval_title",
+  "pages.mcpManagement.confirm_will_share"
 ]
