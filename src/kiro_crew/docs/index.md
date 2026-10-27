@@ -99,7 +99,7 @@ documented by their own in-panel help.
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
 | OAuth Apps | OAuth apps for providers that need a registered client; MCP servers live on Customize → Connections | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
-| Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage, MCP Management and the other developer views | [Dashboard](dashboard.md) |
+| Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
 | Releases | Release notes for each version | — |
 | About | Version, update channel, check for updates, and license | [Getting Started](getting-started.md) |
 
