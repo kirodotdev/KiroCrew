@@ -358,7 +358,8 @@ ACP_BACKENDS_TOOL_SEARCH_OVERLAY = frozenset({ACP_BACKEND_KIRO})
 # that channel (``KAS_CLIENT_CAPABILITIES``), and the runtime fills it at spawn
 # with the settings the harness declares it reads -- today Tool Search, gated on
 # the spawn agent's spec granting the ``tool_search`` loader, because KAS defers
-# every MCP spec when told to and does not check that a loader exists. kiro-cli
+# every MCP tool not on ``toolSearch.neverDefer`` whatever ``enabled`` says, so a
+# spec without the loader is sent its MCP tools on that list. kiro-cli
 # is not a member: it has no such channel and reads the overlay file instead.
 ACP_BACKENDS_CLIENT_META_SETTINGS = frozenset({ACP_BACKEND_KAS})
 
