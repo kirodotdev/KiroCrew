@@ -833,6 +833,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # It does carry `git_neutralizer_env()`, so repo config cannot make these
         # reads exec a program (`core.fsmonitor` and friends are pinned).
         "platform/update_governance.py::_git_probe",
+        # `git config --system|--global --includes -z --get-all safe.directory`,
+        # run so `git_command_env` can forward those values after it stops git
+        # reading the home's config files. Fixed list-argv (no shell=True), no
+        # agent input, cwd is the filesystem root. Must NOT be sandboxed: it
+        # reads the operator's real config. Reading config runs no program.
+        "platform/update_governance.py::_read_protected_safe_directories",
         # Read-only `git rev-parse --show-toplevel` deciding whether the install
         # root IS a working tree. Fixed list-argv (no shell=True); the only
         # variable is the path, which comes from KIROCREW_PROJECT_DIR — an

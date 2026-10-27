@@ -446,8 +446,12 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # no "updating" spinner behind. A dashboard token proves the caller is the
     # operator, not that the fleet permits this host to pull from this remote.
     # Offloaded: the seam shells out to git.
+    # One env for the pin check and the fetch below, so the URL judged is the
+    # URL fetched. `None`: that fetch inherits the process environment, so it
+    # reads the operator's global git config, and the pin judges that view.
+    fetch_env: dict[str, str] | None = None
     blocked = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: update_blocked_reason(resolve_remote_url(proj))
+        None, lambda: update_blocked_reason(resolve_remote_url(proj, fetch_env=fetch_env))
     )
     if blocked:
         logger.warning("Update refused: %s", blocked)
@@ -506,6 +510,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
         "fetch",
         "--quiet",
         cwd=proj,
+        env=fetch_env,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,

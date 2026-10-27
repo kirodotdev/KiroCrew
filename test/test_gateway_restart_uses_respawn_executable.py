@@ -313,7 +313,9 @@ class TestAutoApplyGitUpdate:
         monkeypatch.setattr(gw, "is_primary_branch", lambda _branch: True)
         monkeypatch.setattr(gw, "repo_exec_config_reason", lambda _proj: "")
         monkeypatch.setattr(gw, "tracks_upstream", lambda _proj, _branch: True)
-        monkeypatch.setattr(gw, "resolve_remote_url", lambda _proj, remote: "https://example/r.git")
+        monkeypatch.setattr(
+            gw, "resolve_remote_url", lambda _proj, remote, **_k: "https://example/r.git"
+        )
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda _url: None
         )

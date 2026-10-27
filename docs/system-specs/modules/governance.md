@@ -391,7 +391,19 @@ privilege escalation.
 cannot drift. It resolves the remote git would *actually* fetch from — reading
 `branch.<name>.remote` rather than assuming `origin`, via `ls-remote --get-url`
 so `url.<base>.insteadOf` rewriting is applied — and returns a blocking reason or
-`""`. **A pin blocks; an unresolvable pin does not:** if governance cannot be read
+`""`. Host git run through `git_command_env()` does not read the user's global
+or system config or attributes files (a sandboxed agent can write them), so a
+`~/.gitconfig` rewrite reaches some fetches and not others. Each path therefore
+judges the URL ITS OWN fetch will connect to: `resolve_remote_url(proj,
+fetch_env=...)` takes the environment that fetch runs with, and each caller passes
+one variable to both the pin check and the fetch, so the two cannot drift. The
+gateway auto-update (and the route check that decides it) passes its
+`git_command_env()` result, so an agent-planted `url.<x>.insteadOf` can neither
+redirect that fetch nor dress up an unapproved origin for it. `kirocrew update`
+and the dashboard update pass `None`: their fetch inherits the process
+environment and so applies the operator's own rewrite, and the pin judges that
+rewritten URL, as before (a pin written for the `ssh` spelling of an `https`→`ssh`
+rewrite still passes there). A URL the fetch will not use is never judged. **A pin blocks; an unresolvable pin does not:** if governance cannot be read
 at all the update proceeds, because refusing one would strand a host on a build
 that may need a patch. These are a routing constraint for a managed fleet, not a
 boundary against a local operator who could edit the checkout directly.
@@ -3847,7 +3859,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `require_policy_signature` / `trust_keys` / `trust_public_keys`, and
   `read_policy_trust_root` (the side-effect-free trust-root reader).
 - `platform/update_governance.py` — the shared update seam (`resolve_remote_url`,
-  `update_blocked_reason`, `update_required`, `min_version`) called by
+  `git_command_env`, `update_blocked_reason`, `update_required`, `min_version`) called by
   the update handler owners (`dashboard/handlers/updates_verdict.py`, `updates_check.py`,
   `updates_apply.py`), `cli_server_update.py` and the gateway's update owners
   (`slack/gateway_runtime/update_schedule.py`, `slack/gateway_runtime/update_apply.py`).

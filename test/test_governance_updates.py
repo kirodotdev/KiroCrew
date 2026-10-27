@@ -252,7 +252,7 @@ class TestRemoteResolution:
             return _R("")
 
         monkeypatch.setattr("subprocess.run", fake_run)
-        url = update_governance.resolve_remote_url("/proj", branch="main")
+        url = update_governance.resolve_remote_url("/proj", fetch_env=None, branch="main")
         assert url == "https://git.corp/team/repo"
         assert ["ls-remote", "--get-url", "--", "upstream"] in [c[1:] for c in calls]
         # argv[0] must be the resolved binary, never a bare `git` off PATH.
@@ -266,11 +266,11 @@ class TestRemoteResolution:
             stdout = "origin\n"
 
         monkeypatch.setattr("subprocess.run", lambda argv, **kw: _R())
-        assert update_governance.resolve_remote_url("/proj", branch="main") == ""
+        assert update_governance.resolve_remote_url("/proj", fetch_env=None, branch="main") == ""
 
     def test_detached_head_is_unresolvable(self, monkeypatch):
         monkeypatch.setattr("subprocess.run", lambda *a, **k: pytest.fail("must not run git"))
-        assert update_governance.resolve_remote_url("/proj", branch="HEAD") == ""
+        assert update_governance.resolve_remote_url("/proj", fetch_env=None, branch="HEAD") == ""
 
     def test_fixed_remote_ignores_the_tracked_remote(self, monkeypatch):
         """CLI/boot fetch a hardcoded `origin`, so they must validate `origin`.
@@ -290,10 +290,12 @@ class TestRemoteResolution:
 
         monkeypatch.setattr("subprocess.run", fake_run)
         assert (
-            update_governance.resolve_remote_url("/proj", remote="origin")
+            update_governance.resolve_remote_url("/proj", fetch_env=None, remote="origin")
             == "https://git.corp/origin-repo"
         )
-        # Neither the branch nor its tracked remote is consulted.
+        # Neither the branch nor its tracked remote is consulted. The env
+        # builder's own `safe.directory` reads are host config, not this repo.
+        calls = [c for c in calls if "safe.directory" not in c]
         assert [c[1:] for c in calls] == [["ls-remote", "--get-url", "--", "origin"]]
         assert all(c[0] != "git" for c in calls), calls
 
@@ -316,7 +318,8 @@ class TestRemoteResolution:
             return _R("https://git.corp/team/repo\n")
 
         monkeypatch.setattr("subprocess.run", fake_run)
-        assert update_governance.resolve_remote_url("/proj") == "https://git.corp/team/repo"
+        url = update_governance.resolve_remote_url("/proj", fetch_env=None)
+        assert url == fake_run(["ls-remote"]).stdout.strip()  # the stub's URL answer
         assert ["rev-parse", "--abbrev-ref", "HEAD"] in [c[1:] for c in calls]
         assert all(c[0] != "git" for c in calls), calls
 
@@ -325,7 +328,7 @@ class TestRemoteResolution:
             raise FileNotFoundError("git")
 
         monkeypatch.setattr("subprocess.run", _no_git)
-        assert update_governance.resolve_remote_url("/proj", branch="main") == ""
+        assert update_governance.resolve_remote_url("/proj", fetch_env=None, branch="main") == ""
 
 
 class TestPrimaryBranchResolution:

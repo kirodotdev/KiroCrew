@@ -139,7 +139,7 @@ def git_checkout(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.resolve_remote_url",
-        lambda p, remote="", branch="": "https://github.com/kirodotdev/KiroCrew.git",
+        lambda p, remote="", branch="", **_k: "https://github.com/kirodotdev/KiroCrew.git",
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""

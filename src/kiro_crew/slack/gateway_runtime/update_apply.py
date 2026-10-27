@@ -108,7 +108,12 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # `os.environ`, because an inherited `GIT_DIR` has to be ABSENT and a
         # merge can only add keys. Left in place it would point every call
         # below at unrelated metadata while `cwd` still says `proj`.
-        _git_env = git_command_env()
+        #
+        # Built off the loop: it reads the operator's `safe.directory` values
+        # with a short `git config` child (see `_protected_safe_directories`).
+        _git_env = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), git_command_env
+        )
 
         # `git` itself is resolved OFF `PATH`. A gateway's `PATH` can lead
         # with an agent-writable directory (a worktree venv's `bin`,
@@ -221,7 +226,12 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # update path in the product — no auth, no click, `git reset --hard`
         # + pip + execv on boot — so a blocked host must not touch its tree.
         blocked = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+            # `_git_env` is the env the fetch below runs with, so the pin judges
+            # the URL that isolated fetch will connect to.
+            None,
+            lambda: update_blocked_reason(
+                resolve_remote_url(proj, fetch_env=_git_env, remote="origin")
+            ),
         )
         if blocked:
             logger.warning("Auto-update refused: %s", blocked)

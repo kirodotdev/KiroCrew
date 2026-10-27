@@ -176,7 +176,13 @@ def _update(force: bool = False) -> None:
     # which remote this host may take code from.
     from kiro_crew.platform.update_governance import resolve_remote_url, update_blocked_reason
 
-    _blocked = update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+    # One env for the pin check and the fetch below, so the URL judged is the
+    # URL fetched. `None`: this fetch inherits the process environment, so it
+    # reads the operator's global git config, and the pin judges that view.
+    _fetch_env: dict[str, str] | None = None
+    _blocked = update_blocked_reason(
+        resolve_remote_url(proj, fetch_env=_fetch_env, remote="origin")
+    )
     if _blocked:
         print(f"  🛡️  Update blocked by security policy: {_blocked}")
         sys.exit(1)
@@ -187,6 +193,7 @@ def _update(force: bool = False) -> None:
         result = subprocess.run(
             ["git", "fetch", "origin", branch],
             cwd=proj,
+            env=_fetch_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=60,

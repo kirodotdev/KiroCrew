@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from typing import Callable
 
 from kiro_crew import platform_compat
@@ -99,8 +100,12 @@ def _git_probe(
     proj: str,
     *args: str,
     decoder: Callable[[bytes | str | None], str] = utf8_stdout,
+    env: dict[str, str] | None = None,
 ) -> str | None:
     """As :func:`_git`, but ``None`` when git could not answer at all.
+
+    *env* replaces :func:`git_command_env` for a read that must see exactly what
+    a given fetch will see (see :func:`resolve_remote_url`).
 
     Every git invocation in this module carries
     :func:`git_neutralizer_env`, so a repo-planted ``core.fsmonitor`` (or any
@@ -130,15 +135,31 @@ def _git_probe(
             cwd=proj,
             capture_output=True,
             timeout=_GIT_TIMEOUT_SECS,
-            env=git_command_env(),
+            env=git_command_env() if env is None else env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     return decoder(done.stdout) if done.returncode == 0 else None
 
 
-def resolve_remote_url(proj: str, *, remote: str = "", branch: str = "") -> str:
-    """The URL of the remote an update would fetch from in *proj* (``""`` if unknown).
+def resolve_remote_url(
+    proj: str,
+    *,
+    fetch_env: dict[str, str] | None,
+    remote: str = "",
+    branch: str = "",
+) -> str:
+    """The URL the update fetch in *proj* will connect to (``""`` if unknown).
+
+    *fetch_env* is the environment that fetch runs with, passed by the caller
+    so the pin check and the fetch read the SAME git config: the source pin
+    judges the URL that fetch will use, and no other. ``None`` means the fetch
+    passes no ``env=`` and so inherits this process's environment, including
+    the user's global and system config (``kirocrew update``, the dashboard
+    update). The gateway's auto-update passes its :func:`git_command_env`
+    result, which reads neither, so a ``~/.gitconfig`` ``url.<x>.insteadOf`` an
+    agent planted cannot move what that fetch connects to and is not what the
+    pin judges there either. Each caller keeps one variable for both calls.
 
     Pass *remote* for a FIXED remote name: the CLI and gateway paths run
     ``git fetch origin <branch>``, so they must validate ``origin`` rather than
@@ -149,19 +170,26 @@ def resolve_remote_url(proj: str, *, remote: str = "", branch: str = "") -> str:
 
     ``ls-remote --get-url`` (not ``remote get-url``) additionally applies
     ``url.<base>.insteadOf`` rewriting, so the value checked is the URL git
-    resolves rather than the one merely written down.
+    resolves rather than the one merely written down. None of these reads
+    contacts a remote. The inherited view adds the fixed-key exec pins, which do
+    not change what a URL or a tracked remote resolves to.
 
     Returns ``""`` on any failure, which a source pin then treats as "not
     permitted" and an unpinned host ignores.
     """
+    env = {**os.environ, **git_neutralizer_env()} if fetch_env is None else fetch_env
+
+    def git(*args: str) -> str:
+        out = _git_probe(proj, *args, env=env)
+        return out.strip() if out is not None else ""
 
     if not remote:
         if not branch:
-            branch = _git(proj, "rev-parse", "--abbrev-ref", "HEAD")
+            branch = git("rev-parse", "--abbrev-ref", "HEAD")
         if not branch or branch == "HEAD":  # detached HEAD tracks nothing
             return ""
-        remote = _git(proj, "config", "--get", f"branch.{branch}.remote") or "origin"
-    url = _git(proj, "ls-remote", "--get-url", "--", remote)
+        remote = git("config", "--get", f"branch.{branch}.remote") or "origin"
+    url = git("ls-remote", "--get-url", "--", remote)
     # `--get-url` echoes its argument back for an unknown remote; that is a bare
     # name, not a URL, and must not be checked as one.
     return "" if url == remote else url
@@ -400,10 +428,13 @@ def git_command_env() -> dict[str, str]:
     ``GIT_DIR`` would survive that and silently retarget the command.
 
     Combines the exec-vector pins from :func:`git_neutralizer_env` with the
-    removal of every :data:`_GIT_LOCATION_VARS` entry.
+    removal of every :data:`_GIT_LOCATION_VARS` entry, and with
+    :func:`_git_home_config_isolation_env`, which stops git reading the user's
+    global and system config and attributes files.
     """
     env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
     env.update(git_neutralizer_env())
+    env.update(_git_home_config_isolation_env(env))
     # A replace ref (`refs/replace/<oid>`) makes git serve DIFFERENT content for
     # a given object id, transparently and everywhere. That defeats the reason
     # the update path pins its reset target to an OID at all: "an OID cannot
@@ -454,6 +485,139 @@ def git_neutralizer_env() -> dict[str, str]:
     return env
 
 
+def _git_home_config_isolation_env(env: dict[str, str]) -> dict[str, str]:
+    """Entries that keep the user's global and system git files out of the call.
+
+    A sandboxed agent runs as the gateway's user and can write that user's home,
+    so ``~/.gitconfig``, ``$XDG_CONFIG_HOME/git/config``, the default attributes
+    file ``~/.config/git/attributes``, and (on a Homebrew git) the system
+    ``$(prefix)/etc/gitconfig`` and ``gitattributes`` are all agent-writable.
+    Git reads them for EVERY repository. The fixed-key pins already beat them,
+    but a repo-NAMED driver cannot be pinned: ``filter.x.smudge`` in global
+    config plus ``* filter=x`` in the global attributes file runs a program on
+    the update's ``reset --hard``, and ``url.<x>.insteadOf``, ``include.path``,
+    ``http.proxy`` and the multi-valued ``core.gitProxy`` reach the fetch the
+    same way. :func:`repo_exec_config_reason` only probes repository scopes, so
+    these scopes are not read at all instead of being probed.
+
+    * ``GIT_CONFIG_GLOBAL`` at the null device replaces BOTH ``~/.gitconfig``
+      and the XDG file, and overrides an inherited ``GIT_CONFIG_GLOBAL``.
+    * ``GIT_CONFIG_NOSYSTEM`` drops the system file, whatever an inherited
+      ``GIT_CONFIG_SYSTEM`` names.
+    * ``core.attributesFile`` is pinned to the null device because git's
+      default attributes path does not come from config, so dropping global
+      config does not drop it. ``GIT_ATTR_NOSYSTEM`` drops the system one.
+
+    The system files are kept on Windows. Git for Windows stores settings it
+    needs there (``http.sslBackend``/``http.sslCAInfo``, ``core.autocrlf``,
+    ``core.longpaths``) in its system gitconfig under ``Program Files``, which a
+    standard install leaves admin-only. Dropping it would fail the update's TLS
+    fetch behind a store-only corporate CA and make a CRLF checkout read as
+    modified. A per-user Git for Windows install leaves that file user-writable;
+    that residual is accepted there.
+
+    Appended after *env*'s existing ``GIT_CONFIG_*`` entries so their indices do
+    not move. ``safe.directory`` is carried over (see
+    :func:`_protected_safe_directories`). What is lost: other settings a user
+    keeps in global config (an ``http.proxy``, a custom ``core.excludesFile``,
+    and a ``user.name``/``user.email`` a commit would need). No caller of
+    :func:`git_command_env` commits, and the update path wants none of the rest
+    from a file the agent can write; a proxy still works through
+    ``https_proxy``, which git reads from the environment.
+    """
+    pins = [("core.attributesFile", os.devnull)]
+    pins += [("safe.directory", value) for value in _protected_safe_directories()]
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    out = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_COUNT": str(count + len(pins))}
+    if not platform_compat.IS_WINDOWS:
+        out["GIT_CONFIG_NOSYSTEM"] = "1"
+        out["GIT_ATTR_NOSYSTEM"] = "1"
+    for offset, (key, value) in enumerate(pins):
+        out[f"GIT_CONFIG_KEY_{count + offset}"] = key
+        out[f"GIT_CONFIG_VALUE_{count + offset}"] = value
+    return out
+
+
+def _protected_safe_directories() -> list[str]:
+    """The ``safe.directory`` values system and global config hold, in git's order.
+
+    Git honours ``safe.directory`` only from system, global and command-line
+    config. An operator whose checkout has another owner (a container running as
+    root over a bind-mounted clone) allows it there; with those files dropped,
+    every update git call would fail with "dubious ownership". Forwarding the
+    values through command-line config keeps that working.
+
+    Reading them is safe. ``git config --get-all`` only reads files and runs
+    nothing, and a ``safe.directory`` value is a path, not a program. An agent
+    that plants ``safe.directory=*`` gains nothing new: it could do so before
+    this isolation existed, and the repository's own exec vectors are pinned or
+    refused either way. A read that fails forwards nothing, so git refuses the
+    checkout instead of trusting it.
+
+    Reused for :data:`_SAFE_DIRECTORY_TTL_SECS` per set of variables that move
+    those files, because every :func:`git_command_env` call lands here and some
+    run on the gateway's event loop.
+    """
+    git = platform_compat.trusted_git_bin()
+    if git is None:
+        return []
+    key = (git, *(os.environ.get(name) for name in _SAFE_DIRECTORY_CACHE_VARS))
+    now = time.monotonic()
+    cached = _safe_directory_cache.get(key)
+    if cached is not None and now - cached[0] < _SAFE_DIRECTORY_TTL_SECS:
+        return list(cached[1])
+    values = _read_protected_safe_directories(git)
+    _safe_directory_cache.clear()
+    _safe_directory_cache[key] = (now, tuple(values))
+    return values
+
+
+#: How long a ``safe.directory`` read is reused. An operator who adds one sees
+#: it applied within this window.
+_SAFE_DIRECTORY_TTL_SECS = 60.0
+
+#: The variables that decide which system and global files git reads.
+_SAFE_DIRECTORY_CACHE_VARS = (
+    "HOME",
+    "USERPROFILE",
+    "XDG_CONFIG_HOME",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+)
+
+_safe_directory_cache: dict[tuple[str | None, ...], tuple[float, tuple[str, ...]]] = {}
+
+
+def _read_protected_safe_directories(git: str) -> list[str]:
+    """Read the system and global ``safe.directory`` values with *git*."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+    values: list[str] = []
+    # `git config --system` reads the system file even under an inherited
+    # GIT_CONFIG_NOSYSTEM, while every other git call would skip it.
+    nosystem = os.environ.get("GIT_CONFIG_NOSYSTEM", "").strip().lower()
+    skip_system = nosystem not in ("", "0", "false", "no", "off")
+    scopes = ("--global",) if skip_system else ("--system", "--global")
+    for scope in scopes:
+        try:
+            done = subprocess.run(
+                # `--includes`: a scoped read does not follow `include.path`
+                # by default, and git itself does. `-z`: a value is a path.
+                [git, "config", scope, "--includes", "-z", "--get-all", "safe.directory"],
+                cwd=os.path.abspath(os.sep),
+                capture_output=True,
+                timeout=_GIT_TIMEOUT_SECS,
+                env=env,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        # rc 1 is "key not set"; any other non-zero is an unreadable scope.
+        if done.returncode == 0:
+            values.extend(utf8_path_stdout(done.stdout).split("\0")[:-1])
+    return values
+
+
 def _same_dir(a: str, b: str) -> bool:
     """Whether two paths name the same directory, symlinks and case resolved.
 
@@ -485,8 +649,10 @@ def repo_exec_config_reason(proj: str) -> str:
       include-following off, so a driver reached via ``include.path`` is
       invisible to the probe yet still resolves when the command runs.
 
-    Global and system config are deliberately not probed: that is the user's own
-    machine configuration, not something the repository supplies.
+    Global and system config are not probed. A command run under
+    :func:`git_command_env` does not read them at all (see
+    :func:`_git_home_config_isolation_env`); host git run without that env still
+    does, and moving those callers onto it is the host-git sweep's job.
     """
     scopes = ["--local"]
     # --bool folds every git-true spelling (yes/on/1/valueless) to "true"; a
