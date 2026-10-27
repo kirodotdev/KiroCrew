@@ -91,6 +91,48 @@ class TestShape:
         assert out["jobs"][0]["mode"] == "script"
 
 
+class TestFolder:
+    """Each record names its Schedule-page folder, read-only from ``cron_folders.json``."""
+
+    @pytest.fixture(autouse=True)
+    def _folders(self):
+        from kiro_crew.config.loader import config_dir
+
+        config_dir().mkdir(parents=True, exist_ok=True)
+        self.path = config_dir() / "cron_folders.json"
+        self.path.write_text(
+            json.dumps([{"id": "aaaa1111", "name": "Veille", "order": 0}]), encoding="utf-8"
+        )
+
+    def test_a_filed_job_carries_the_folder_id_and_name(self) -> None:
+        rec = json.loads(_call([_job(folder_id="aaaa1111")]))["jobs"][0]
+        assert rec["folder"] == {"id": "aaaa1111", "name": "Veille"}
+
+    def test_an_ungrouped_job_carries_null(self) -> None:
+        rec = json.loads(_call([_job()]))["jobs"][0]
+        assert "folder" in rec and rec["folder"] is None
+
+    def test_an_unknown_folder_id_keeps_the_id_and_a_null_name(self) -> None:
+        # Never pass a raw id off as a name: the folder was deleted or is unknown.
+        rec = json.loads(_call([_job(folder_id="eeee5555")]))["jobs"][0]
+        assert rec["folder"] == {"id": "eeee5555", "name": None}
+
+    def test_an_unreadable_store_degrades_to_null_names(self) -> None:
+        self.path.write_text("{}", encoding="utf-8")
+        rec = json.loads(_call([_job(folder_id="aaaa1111")]))["jobs"][0]
+        assert rec["folder"] == {"id": "aaaa1111", "name": None}
+
+    def test_reading_never_writes_the_folder_file(self) -> None:
+        before = self.path.read_bytes()
+        _call([_job(folder_id="aaaa1111"), _job(id="j2")])
+        assert self.path.read_bytes() == before
+
+    def test_the_description_names_the_field(self) -> None:
+        by_name = {t["name"]: t for t in mcp_cron._list_tools()}
+        desc = by_name["cron_list"]["inputSchema"]["properties"]["json"]["description"]
+        assert "folder" in desc
+
+
 class TestOwnership:
     def test_another_sessions_job_is_absent(self) -> None:
         mine = _job()
