@@ -155,6 +155,9 @@ GATEWAY_NOTICE_KAS_SIGNED_OUT = "kas_signed_out"
 # ``notice_args["binary"]``.
 GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
 
+# The resource-subscription wake budget row (``dashboard/resource_wakes``).
+GATEWAY_NOTICE_RESOURCE_WAKE_BUDGET_PAUSED = "resource_wake_budget_paused"
+
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
 GATEWAY_CONNECTION_LOST_RETRYING_TEXT = "⟳ Connection lost — retrying…"

@@ -828,6 +828,7 @@ class GatewayOrchestrator:
     _mcp_gateway_pending: GatewayManager | None = None
     _mcp_gateway_start_retry: asyncio.Task[None] | None = None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
+    _mcp_resource_subscription_task: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
     _mcp_overlay_refresh_lock: asyncio.Lock | None = None
     _mcp_rewrite_inputs: dict[str, Any] | None = None

@@ -95,7 +95,10 @@
     "code_channel_set_context_bar": "Set code channel context bar",
     "code_channel_rename": "Rename code channel",
     "code_channel_set_status": "Set code channel status",
-    "code_channel_wrap_up": "Post code channel wrap-up"
+    "code_channel_wrap_up": "Post code channel wrap-up",
+    "resource_subscribe": "Subscribe to resource",
+    "resource_subscriptions": "List resource subscriptions",
+    "resource_unsubscribe": "Unsubscribe from resource"
   },
   "kirocrew-dashboard": {
     "chat_folder_tree": "Read folder tree",

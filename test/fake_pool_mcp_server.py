@@ -97,6 +97,17 @@ def _reply(msg: dict, result: dict) -> None:
     sys.stdout.flush()
 
 
+#: A subscribe for a URI with this prefix is answered with an error, the way a
+#: server refuses a resource it will not watch.
+REFUSED_URI_PREFIX = "refused://"
+
+
+def _reply_error(msg: dict, code: int, message: str) -> None:
+    error = {"code": code, "message": message}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "error": error}) + "\n")
+    sys.stdout.flush()
+
+
 def _serve_subscription_frame(msg: dict, log: str) -> bool:
     """Answer one frame of the subscription mode; ``True`` when it was one.
 
@@ -120,6 +131,9 @@ def _serve_subscription_frame(msg: dict, log: str) -> bool:
         _record(
             log, f"{method.split('/')[1]} {params.get('uri', '')} {block.get('sessionKey', '')}\n"
         )
+        if str(params.get("uri", "")).startswith(REFUSED_URI_PREFIX):
+            _reply_error(msg, -32602, "this server refuses that resource")
+            return True
         _reply(msg, {})
         return True
     if method == "ping":
@@ -210,7 +224,7 @@ def main() -> int:
         capabilities: dict = {"tools": {}}
         if caller_log or tenant_log or subscribe_log:
             capabilities["experimental"] = {"kirocrew.caller-identity": {"schemaVersion": 1}}
-        if subscribe_log:
+        if subscribe_log and not os.environ.get("FAKE_POOL_NO_SUBSCRIBE_CAPABILITY"):
             capabilities["resources"] = {"subscribe": True}
         reply = {
             "jsonrpc": "2.0",

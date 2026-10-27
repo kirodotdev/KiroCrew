@@ -13226,7 +13226,8 @@
         "windows_spawn_blocked": "Windows hat das Agent-Programm ({{binary}}) nicht gestartet. Wahrscheinlich hat AppLocker, ein EDR-Produkt oder eine Gruppenrichtlinie auf diesem Computer es blockiert. Bitte deinen IT-Administrator, die Datei zuzulassen, und starte dann einen neuen Chat.",
         "kas_route_relay": "Dein Agent läuft über kiro-cli.",
         "kas_route_bundle": "Dein Agent läuft auf der eigenen Engine von {{productName}}.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "Das Ressourcenabo {{subscription}} auf {{server}} hat seine {{limit}} Weckaufrufe für {{day}} (UTC) erreicht und pausiert bis zum nächsten UTC-Tag. Updates aus der Zwischenzeit werden nach der Pause zu einem Weckaufruf zusammengefasst."
       },
       "turnBlock": {
         "earlier_step_one": "{{count}} früherer Schritt",

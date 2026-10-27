@@ -956,10 +956,17 @@ class SlotQueueRepository:
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
                 GATEWAY_PROMPT_INJECT_KINDS,
+                RESOURCE_WAKE_KIND,
             )
 
+            # A resource wake is server-written for the same reason, and newer
+            # than the edit endpoint, so it is withheld from the start; the
+            # frontend withholds its pencil too (`isServerWrittenQueued`).
             kind = item.get("kind")
-            if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
+            if (
+                kind in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND)
+                or kind in GATEWAY_PROMPT_INJECT_KINDS
+            ):
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors

@@ -384,6 +384,7 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
 export type InjectKind =
   | 'cron'
   | 'mcp_app'
+  | 'resource'
   | 'recovery'
   | 'synthesis'
   | 'user_replay'
@@ -421,6 +422,9 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // this, isFeatureRequestRefusal walks past it to an earlier user row and
   // mis-attributes an app turn's error to that older message.
   mcp_app: true,
+  // An MCP resource-subscription wake dispatches a turn of its own the same way
+  // an app message does (`session_deliver`'s `resource` origin).
+  resource: true,
   // A re-routed automation refusal is drained ALONE and dispatches a turn of
   // its own (chat_turn/queue_drain.py `_start_next_queued_turn`), carrying the originating
   // wake's provenance; so it OPENS a turn, and the interrupt-recovery and

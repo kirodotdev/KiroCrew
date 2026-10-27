@@ -193,6 +193,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # Resource-subscription records carry server-defined URIs, which may be
+    # credentials, and choose which session/server holder the unsandboxed gateway
+    # restores. Nothing in-sandbox reads them, so the directory is HIDDEN rather
+    # than merely READONLY. The whole directory covers its lock and write temps.
+    "mcp-resource-subscriptions",
     # The durable task queue (``tasks/tasks.db`` + SQLite siblings). Fenced
     # from agent file tools by ``security._CREW_SECRET_LEAVES``; masked here so
     # a spawned shell's ``sqlite3`` cannot read other sessions' task prompts or

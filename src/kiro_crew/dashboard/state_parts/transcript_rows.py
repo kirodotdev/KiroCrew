@@ -312,6 +312,7 @@ _TURN_INJECT_KINDS: frozenset[str] = frozenset(
     {
         "cron",
         "mcp_app",
+        "resource",
         "recovery",
         "user_replay",
         "synthesis",

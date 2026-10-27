@@ -12916,7 +12916,8 @@
         "windows_spawn_blocked": "Windows에서 에이전트 프로그램({{binary}})을 시작하지 못했습니다. 이 컴퓨터의 AppLocker, EDR 제품 또는 그룹 정책이 차단했을 가능성이 높습니다. IT 관리자에게 이 파일을 허용해 달라고 요청한 다음 새 채팅을 시작하세요.",
         "kas_route_relay": "에이전트가 kiro-cli를 통해 실행 중입니다.",
         "kas_route_bundle": "에이전트가 {{productName}} 자체 엔진에서 실행 중입니다.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "{{server}}의 리소스 구독 {{subscription}}이(가) {{day}}(UTC) 깨우기 한도 {{limit}}회에 도달해 다음 UTC 날짜까지 일시 중지되었습니다. 그동안의 업데이트는 일시 중지가 끝난 뒤 한 번의 깨우기로 합쳐집니다."
       },
       "turnBlock": {
         "earlier_step_other": "이전 단계 {{count}}개",

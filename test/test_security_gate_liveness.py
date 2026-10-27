@@ -746,7 +746,10 @@ def _url_payload_command(n: int) -> str:
 #: (``/owa/?ItemID=<id>&exvsurl=1&...``) in ``redaction_entropy``, its use by
 #: the exfil gate and its five names in the ``redaction`` facade manifest, so
 #: Graph's own message and event links are not masked or blocked. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_227
+#: Raised by 2, from 35,227, for the ``mcp-resource-subscriptions`` leaf in
+#: ``paths_lists`` (the resource-subscription holder store): the leaf and its
+#: one-line reason. No rule changed.
+_PACKAGE_LINE_BUDGET = 35_229
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

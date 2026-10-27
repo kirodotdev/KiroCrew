@@ -46,6 +46,7 @@ from mcp_gateway_backend_coverage_helpers import (
 )
 
 from kiro_crew.mcp_gateway import backend as backend_mod
+from kiro_crew.mcp_gateway.backend_leases import RESOURCE_URI_MAX_LEN
 
 # --- subscription response hardening ----------------------------------------
 
@@ -1139,7 +1140,7 @@ class TestSubscriptionResponseHardeningLeaseSettlement:
         and the refusal does not echo the URI."""
         backend = _make_backend()
         inbox1 = await backend.attach_stub("s1")
-        huge = "file:///" + "x" * (backend_mod._RESOURCE_URI_MAX_LEN + 1)
+        huge = "file:///" + "x" * (RESOURCE_URI_MAX_LEN + 1)
         await backend.forward_from_stub(
             "s1",
             {
