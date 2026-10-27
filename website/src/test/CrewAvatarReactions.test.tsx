@@ -14,7 +14,7 @@ import { render } from '@testing-library/react'
 import CrewAvatar, { ghostTraitsFrom, seededTraits } from '../components/CrewAvatar'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ghostDataUri, type KiroGhostTraits } from '../lib/kiroGhostAvatar'
-import { poseDataUri } from '../lib/avatarPoses'
+import { iconMotionVars, poseBodyDataUri, poseDataUri } from '../lib/avatarPoses'
 import {
   AVATAR_STATES,
   MOTION_DEFAULTS,
@@ -319,20 +319,45 @@ describe('CrewAvatar renders the state it is told', () => {
     // intensity knob is not the icon's: a dense roster asks `subtle` and the
     // icon still moves at the one amplitude it draws.
     const icon: CrewAvatarOverride = { kind: 'icon', pose: 'pose-3', bg: '#25679d' }
-    const working = poseDataUri('pose-3', '#25679d', true)
-    expect(working).not.toBe(poseDataUri('pose-3', '#25679d'))
-    const bare = render(<CrewAvatar seed={SEED} avatar={icon} state="working" />)
-    expect(src(bare.container)).toBe(working)
-    bare.unmount()
-    const subtle = render(<CrewAvatar seed={SEED} avatar={icon} state="working" working="subtle" />)
-    expect(src(subtle.container)).toBe(working)
-    subtle.unmount()
-    const full = render(<CrewAvatar seed={SEED} avatar={icon} state="working" working="full" />)
-    expect(src(full.container)).toBe(working)
-    full.unmount()
-    // The legacy bare `working` spelling reaches the icon too.
-    const legacy = render(<CrewAvatar seed={SEED} avatar={icon} working="subtle" />)
-    expect(src(legacy.container)).toBe(working)
+    const cases = [
+      <CrewAvatar key="bare" seed={SEED} avatar={icon} state="working" />,
+      <CrewAvatar key="subtle" seed={SEED} avatar={icon} state="working" working="subtle" />,
+      <CrewAvatar key="full" seed={SEED} avatar={icon} state="working" working="full" />,
+      // The legacy bare `working` spelling reaches the icon too.
+      <CrewAvatar key="legacy" seed={SEED} avatar={icon} working="subtle" />,
+    ]
+    for (const el of cases) {
+      const { container, unmount } = render(el)
+      const root = container.querySelector('[data-testid="crew-icon-motion"]') as HTMLElement
+      expect(root.style.getPropertyValue('--crew-icon-secs')).toBe(iconMotionVars()['--crew-icon-secs'])
+      unmount()
+    }
+  })
+
+  it('moves a working icon as ONE still image, so its eyes cannot tear from its body', () => {
+    // An SVG that animates itself is re-rastered every frame, in pieces on iOS.
+    // So the tile is the root's own background and a single still image of the
+    // silhouette WITH its eyes sits inside the motion wrappers: one raster, one
+    // transform chain, at every size the app draws an avatar.
+    const icon: CrewAvatarOverride = { kind: 'icon', pose: 'pose-3', bg: '#25679d' }
+    for (const size of [20, 28, 40, 64, 96]) {
+      const { container, unmount } = render(
+        <CrewAvatar seed={SEED} avatar={icon} state="working" size={size} />,
+      )
+      const root = container.querySelector('[data-testid="crew-icon-motion"]') as HTMLElement
+      expect(root.style.width).toBe(`${size}px`)
+      expect(root.style.backgroundColor).toBe('#25679d')
+      const imgs = root.querySelectorAll('img')
+      expect(imgs).toHaveLength(1)
+      expect(imgs[0].getAttribute('src')).toBe(poseBodyDataUri('pose-3'))
+      // The image is the innermost child of the four motion wrappers, in order.
+      const chain: string[] = []
+      for (let n = imgs[0].parentElement; n && n !== root; n = n.parentElement) chain.push(n.className)
+      expect(chain).toEqual(['crew-icon-sq', 'crew-icon-bob', 'crew-icon-sway', 'crew-icon-fit'])
+      // Nothing inside the image animates.
+      expect(decodeURIComponent(imgs[0].getAttribute('src')!)).not.toContain('<style')
+      unmount()
+    }
   })
 
   it('draws an icon still for every state but working — it has no reactions', () => {

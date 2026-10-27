@@ -58,7 +58,14 @@ import {
   type AvatarSounds,
 } from '../lib/crewAvatarState'
 import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
-import { DEFAULT_POSE_BG, poseDataUri } from '../lib/avatarPoses'
+import {
+  DEFAULT_POSE_BG,
+  iconMotionVars,
+  poseBodyDataUri,
+  poseDataUri,
+  resolvePoseBg,
+} from '../lib/avatarPoses'
+import './crewIconMotion.css'
 import PackAvatar from './appearancePacks/PackAvatar'
 
 /** Kiro's own ghost, built on the shipped mark. See `lib/kiroGhostAvatar.ts`. */
@@ -440,10 +447,41 @@ export default function CrewAvatar({
   // that composes its own art. The `working` intensity is the ghost's knob and
   // is not forwarded: a pose has one amplitude (`avatarPoses.ICON_WORKING`).
   // `done` / `error` with no reaction draw the still frame.
+  //
+  // The working icon is NOT an animated SVG. The tile is this element's own
+  // background, and one still image of the silhouette is moved by page CSS
+  // (`crewIconMotion.css`). An animation inside the image's SVG is re-rastered
+  // every frame, and iOS Safari re-rastered it in pieces, so the head, the tail
+  // and one eye drew out of step. A still raster moved as one layer cannot tear.
+  if (icon && shownState === 'working') {
+    return (
+      <span
+        aria-hidden="true"
+        data-testid="crew-icon-motion"
+        style={{
+          ...iconMotionVars(),
+          width: size,
+          height: size,
+          backgroundColor: resolvePoseBg(icon.bg),
+        }}
+        className={`crew-icon-motion shrink-0 rounded-full border border-border ${className}`}
+      >
+        <span className="crew-icon-fit">
+          <span className="crew-icon-sway">
+            <span className="crew-icon-bob">
+              <span className="crew-icon-sq">
+                <img src={poseBodyDataUri(icon.pose)} alt="" width={size} height={size} />
+              </span>
+            </span>
+          </span>
+        </span>
+      </span>
+    )
+  }
   if (icon) {
     return (
       <img
-        src={poseDataUri(icon.pose, icon.bg, shownState === 'working')}
+        src={poseDataUri(icon.pose, icon.bg)}
         alt=""
         aria-hidden="true"
         width={size}
