@@ -263,21 +263,44 @@ async def _closed_on_disk(state: Any, store: CardStore) -> "frozenset[str]":
     reader = getattr(log, "get_metadata_status", None)
     if not callable(reader):
         return frozenset()
-    from kiro_crew.dashboard.chat_utils import drained_to_thread, slot_transcript_key
-
     keys = {
         rec["slot_key"] for rec in store.pending(None) if rec.get("status") == cards.STATUS_PENDING
     }
     closed: set[str] = set()
     for key in keys:
-        try:
-            meta, readable = await drained_to_thread(reader, slot_transcript_key(key))
-        except Exception:
-            logger.debug("persisted-close read failed for %s", key, exc_info=True)
-            continue
-        if readable and meta and meta.get("closed"):
+        if await _persisted_close(reader, key):
             closed.add(key)
     return frozenset(closed)
+
+
+async def _persisted_close(reader: Callable[[str], Any], slot_key: str) -> bool:
+    """Whether *slot_key*'s session metadata, read off the loop, carries ``closed``.
+
+    An unreadable or absent record, and a read that raises, answer False: only a
+    record that was read and says closed counts as closure.
+    """
+    from kiro_crew.dashboard.chat_utils import drained_to_thread, slot_transcript_key
+
+    try:
+        meta, readable = await drained_to_thread(reader, slot_transcript_key(slot_key))
+    except Exception:
+        logger.debug("persisted-close read failed for %s", slot_key, exc_info=True)
+        return False
+    return bool(readable and meta and meta.get("closed"))
+
+
+async def slot_closure_recorded(state: Any, slot_key: str) -> bool:
+    """Whether *slot_key* has a readable persisted ``closed`` flag.
+
+    Only a close whose history save committed counts. An absent slot and an
+    in-memory close tombstone both answer False. Callers own the other gates:
+    the restore having run, and no live slot or runtime carrying the key.
+    """
+    log = getattr(state, "conversation_log", None)
+    reader = getattr(log, "get_metadata_status", None)
+    if not callable(reader):
+        return False
+    return await _persisted_close(reader, slot_key)
 
 
 async def _json_body(request: web.Request) -> dict[str, Any]:

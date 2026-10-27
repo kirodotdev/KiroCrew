@@ -179,7 +179,7 @@ _BASE_STAR_NAMES = frozenset("""
     MCP_APPS_ENV_FLAG MCP_APPS_ENV_TRUE MCP_APPS_EXTENSION_KEY MCP_APPS_MIME_TYPE Mapping
     Optional PING_STALE_SECS POOLED_BACKEND_ENV POOLED_BACKEND_VALUE
     POOLED_RESPAWN_COMMAND_ENV PROGRESS_WEDGE_CEILING_SECS Path READ_BUFFER_LIMIT_BYTES
-    RESPONSE_SPILL_THRESHOLD_BYTES SUBAGENT_TIMEOUT_SECS SecurityEventLog TENANT_META_KEY
+    RESOURCE_URI_MAX_LEN RESPONSE_SPILL_THRESHOLD_BYTES SUBAGENT_TIMEOUT_SECS SecurityEventLog TENANT_META_KEY
     TOOL_SURFACE_STUB_PREFIX ToolSurface WithheldTools allocate_backend_tmp annotations
     append_marker asyncio base64 binascii build_caller_meta build_tenant_meta
     classify_declared_temp_env contextlib dataclass declared_temp_refusal_reasons

@@ -28,6 +28,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _session_mounts_complete,
 )
 from kiro_crew.mcp_gateway.daemon.launch import resolvable_target_stems
+from kiro_crew.mcp_gateway.daemon.session_describe import describe_session_reply
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
 from kiro_crew.mcp_gateway.pool import BackendPool
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
@@ -584,6 +585,13 @@ async def _serve_control_frame(
     # Trust basis: same uid-gated 0700 socket as Register/Claim/Abort.
     # Session-open mount check (``acp.mcp_mount_check``): which of one session's
     # broker stubs reached this daemon. Read-only; same uid-gated socket.
+    # Resource-subscription holder lookup (``daemon.session_describe``): the
+    # Register and initialize of one session's live stub for one server.
+    # Read-only; same uid-gated socket.
+    if register.get("type") == "describe-session":
+        await _write_json_line(writer, describe_session_reply(register))
+        return True
+
     if register.get("type") == "session-mounts":
         await _write_json_line(writer, _session_mounts_reply(register))
         return True

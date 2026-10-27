@@ -26,7 +26,7 @@ from kiro_crew.mcp_gateway import stub as stub_mod
 from kiro_crew.mcp_gateway import stub_register, transport
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.pool import BackendPool
-from kiro_crew.testing.wait import async_wait_until, finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 FAKE_SERVER = Path(__file__).with_name("fake_pool_mcp_server.py")
 
@@ -153,6 +153,33 @@ class StubProcess:
         except (asyncio.TimeoutError, ProcessLookupError, AssertionError):
             pass
         self._pump.cancel()
+        await await_until(
+            asyncio.gather(self._pump, return_exceptions=True),
+            what="cancelled stub output pump did not finish",
+        )
+
+
+@asynccontextmanager
+async def running_stub(
+    socket_path: Path,
+    work_dir: Path,
+    home: Path,
+    *,
+    session_token: str = "",
+    session_key: str = "",
+) -> AsyncIterator[StubProcess]:
+    """A real initialized stub that is always closed and reaped."""
+    stub = StubProcess(
+        await spawn_stub(
+            socket_path, work_dir, home, session_token=session_token, session_key=session_key
+        )
+    )
+    try:
+        reply = await stub.request(1, "initialize", INIT_PARAMS)
+        assert "result" in reply, reply
+        yield stub
+    finally:
+        await stub.close()
 
 
 async def wait_for_message(
@@ -191,16 +218,20 @@ class RawConnection:
     async def register(cls, socket_path: Path, payload: dict[str, Any]) -> "RawConnection":
         reader, writer = await transport.connect(socket_path)
         conn = cls(reader, writer)
-        frame = dict(payload)
-        frame["stub_uuid"] = conn.stub_uuid = str(uuid.uuid4())
-        await conn._send(frame)
-        reply = json.loads(await asyncio.wait_for(reader.readline(), REPLY_TIMEOUT))
-        assert reply.get("type") == "registered", reply
-        await conn._send({"type": "ensure_backend"})
-        ready = json.loads(await asyncio.wait_for(reader.readline(), REPLY_TIMEOUT))
-        assert ready.get("type") == "ready", ready
-        conn._pump = asyncio.create_task(conn._read())
-        return conn
+        try:
+            frame = dict(payload)
+            frame["stub_uuid"] = conn.stub_uuid = str(uuid.uuid4())
+            await conn._send(frame)
+            reply = json.loads(await asyncio.wait_for(reader.readline(), REPLY_TIMEOUT))
+            assert reply.get("type") == "registered", reply
+            await conn._send({"type": "ensure_backend"})
+            ready = json.loads(await asyncio.wait_for(reader.readline(), REPLY_TIMEOUT))
+            assert ready.get("type") == "ready", ready
+            conn._pump = asyncio.create_task(conn._read())
+            return conn
+        except BaseException:
+            await conn.close()
+            raise
 
     async def _send(self, frame: dict[str, Any]) -> None:
         self.writer.write((json.dumps(frame) + "\n").encode("utf-8"))
@@ -229,11 +260,18 @@ class RawConnection:
     async def close(self) -> None:
         self.writer.close()
         try:
-            await self.writer.wait_closed()
-        except (OSError, ConnectionError):
+            await finished(self.writer.wait_closed(), "raw connection close")
+        except (OSError, ConnectionError, AssertionError):
             pass
         if self._pump is not None:
             self._pump.cancel()
+            try:
+                await await_until(
+                    asyncio.gather(self._pump, return_exceptions=True),
+                    what="cancelled raw connection pump did not finish",
+                )
+            except AssertionError:
+                pass
 
 
 def updated_for(uri: str) -> Any:
@@ -273,12 +311,13 @@ async def running_daemon(
     caller_log: Path,
     *,
     approved: Optional[Any] = None,
+    extra_env: Optional[dict[str, str]] = None,
 ) -> AsyncIterator[Daemon]:
     """gatewayd on *socket_path*, launching the fake server in subscription mode.
 
     *approved*, when given, is called per spawn; returning False stands in for a
     launch the operator's approval does not admit, which the real resolver
-    answers with ``None``.
+    answers with ``None``. *extra_env* is added to the fake server's environment.
     """
     pools: list[BackendPool] = []
 
@@ -295,7 +334,7 @@ async def running_daemon(
         return (
             sys.executable,
             [str(FAKE_SERVER), str(launch_log), str(caller_log)],
-            {"FAKE_POOL_SUBSCRIBE_LOG": str(subscribe_log)},
+            {"FAKE_POOL_SUBSCRIBE_LOG": str(subscribe_log), **(extra_env or {})},
             str(work_dir),
         )
 

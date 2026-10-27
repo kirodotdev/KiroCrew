@@ -8,18 +8,82 @@ the row each origin yields on both paths, and that each caller routes through it
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
 from steer_requeue_helpers import _running_slot
 
+from kiro_crew.dashboard import resource_wakes as rw
+from kiro_crew.dashboard import session_control
 from kiro_crew.dashboard import session_deliver as sd
-from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND, MCP_APP_MESSAGE_KIND
+from kiro_crew.dashboard.chat_utils import (
+    CRON_NOTIFICATION_KIND,
+    MCP_APP_MESSAGE_KIND,
+    effective_session_key,
+)
+from kiro_crew.dashboard.chat_utils_injected_rows import RESOURCE_WAKE_KIND, resource_inject_row
+from kiro_crew.dashboard.state_parts.slot_transcript import _MAX_SLOT_MESSAGES
+from kiro_crew.mcp_gateway import resource_subscriptions as rs
+from kiro_crew.testing.wait import await_until
 
 CRON_TEXT = '[Cron notification from "nightly"]\nstill red\n[End of cron notification]'
 APP_TEXT = '[MCP app message from "srv/tool"]\nhello\n[End of MCP app message]'
 WAKE_TEXT = "[work-ledger wake] item=it_1 status=done"
+RESOURCE_TEXT = "[Webhook wake]\nInstruction: use the queued instruction"
+RESOURCE_ID = "rsub_0000000000000007"
+RESOURCE_URI = "resource://current"
+RESOURCE_DAY = "2026-10-29"
+
+
+def _resource_service(session_key: str, current_id: str | None, pause: str = "") -> MagicMock:
+    subscription = SimpleNamespace(
+        id=current_id, instruction="current instruction", wake_day="", wakes=0
+    )
+    record = SimpleNamespace(
+        server="srv",
+        paused_reason="offline" if pause == "holder" else "",
+        paused_uris={RESOURCE_URI: "refused"} if pause == "uri" else {},
+        subscriptions={RESOURCE_URI: subscription},
+    )
+    service = MagicMock()
+
+    def find_subscription(candidate_session: str, subscription_id: str):
+        if candidate_session == session_key and subscription_id == subscription.id:
+            return record, RESOURCE_URI
+        return None
+
+    service.record = record
+    service.find_subscription.side_effect = find_subscription
+    service.paused.side_effect = lambda _session, _server, uri: bool(
+        record.paused_reason or uri in record.paused_uris
+    )
+    return service
+
+
+def _wake_dispatcher(state, slot) -> tuple[MagicMock, rw.ResourceWakeDispatcher, rw.Key]:
+    """A dispatcher owing *slot*'s session one wake, its charge and refund mocked."""
+    session_key = effective_session_key(slot)
+    service = _resource_service(session_key, RESOURCE_ID)
+    service.subscription.side_effect = lambda *_args: service.record.subscriptions.get(RESOURCE_URI)
+    service.charge_wake = AsyncMock(return_value=1)
+    service.refund_wake = AsyncMock()
+    dispatcher = rw.ResourceWakeDispatcher(service, lambda: state, today=lambda: RESOURCE_DAY)
+    key = (session_key, "srv", RESOURCE_URI)
+    dispatcher._pending[key] = rw._Pending()
+    return service, dispatcher, key
+
+
+def _resource_rows(slot) -> list[dict]:
+    """The resource inject rows *slot*'s transcript holds for the subscription."""
+    return [
+        row
+        for row in slot.messages
+        if row.get("role") == "inject"
+        and (row.get("meta") or {}).get("resourceSubscription") == RESOURCE_ID
+    ]
 
 
 @pytest.fixture
@@ -95,6 +159,28 @@ class TestIdle:
         assert [entry["kind"] for entry in slot._queue] == [CRON_NOTIFICATION_KIND]
 
     @pytest.mark.asyncio
+    async def test_an_idle_resource_wake_that_lapses_before_the_next_drain_is_dropped(self, state):
+        from kiro_crew.dashboard import chat_runner
+
+        slot = state.get_or_create_slot("idle")
+        slot._stop_state = "soft_pending"
+        service = _resource_service(effective_session_key(slot), RESOURCE_ID)
+        with patch.object(rs, "active_service", return_value=service):
+            assert (
+                await sd.deliver(state, slot, RESOURCE_TEXT, sd.resource("srv", RESOURCE_ID))
+                == sd.DELIVERED_QUEUED
+            )
+            service.find_subscription.side_effect = lambda *_args: None
+            slot._stop_state = "idle"
+            spawn = MagicMock()
+            with patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", spawn):
+                assert await chat_runner._start_next_queued_turn(state, slot) is False
+
+        spawn.assert_not_called()
+        assert slot._queue == []
+        assert [row for row in slot.messages if row.get("role") == "queued"] == []
+
+    @pytest.mark.asyncio
     async def test_an_entry_already_queued_runs_before_the_new_message(self, state):
         """A message parked in the queue keeps its place ahead of the delivery."""
         slot = state.get_or_create_slot("idle")
@@ -110,6 +196,83 @@ class TestIdle:
 
         assert run_chat.call_args.args[2] == "parked earlier"
         assert [entry["kind"] for entry in slot._queue] == [CRON_NOTIFICATION_KIND]
+
+    @pytest.mark.asyncio
+    async def test_a_wake_delivered_into_a_full_transcript_keeps_its_charge(self, state):
+        """At the cap each append trims the oldest row, here this subscription's last
+        wake, so delivering the next one leaves its row count unchanged."""
+        slot = state.get_or_create_slot("idle")
+        service, dispatcher, key = _wake_dispatcher(state, slot)
+        role, cls, meta = resource_inject_row("srv", RESOURCE_ID)
+        earlier_wake = {"role": role, "content": "an earlier wake", "cls": cls, "meta": meta}
+        filler = [{"role": "assistant", "content": ""} for _ in range(_MAX_SLOT_MESSAGES - 1)]
+        slot.messages = [earlier_wake, *filler]
+        with (
+            patch.object(rs, "active_service", return_value=service),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", MagicMock()),
+            patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", return_value=MagicMock()),
+        ):
+            await dispatcher._fire(key)
+
+        try:
+            wake = rw.build_wake_text("srv", RESOURCE_ID, RESOURCE_URI, "current instruction")
+            assert [row["content"] for row in _resource_rows(slot)] == [wake]
+            service.refund_wake.assert_not_awaited()
+            assert dispatcher._pending == {}
+        finally:
+            await dispatcher.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mutation", ["pause", "remove"])
+    @pytest.mark.parametrize("entry_ahead", [True, False])
+    async def test_a_gate_dropped_wake_is_refunded_even_when_an_entry_ahead_starts(
+        self, state, monkeypatch, mutation, entry_ahead
+    ):
+        slot = state.get_or_create_slot("idle")
+        service, dispatcher, key = _wake_dispatcher(state, slot)
+        if entry_ahead:
+            slot.queue_append("parked earlier")
+        state.notify = MagicMock()
+        reached_delivery = asyncio.Event()
+        real_deliver = rw.session_deliver.deliver
+
+        async def marked_deliver(*args, **kwargs):
+            reached_delivery.set()
+            return await real_deliver(*args, **kwargs)
+
+        monkeypatch.setattr(rw.session_deliver, "deliver", marked_deliver)
+        run_chat = MagicMock(return_value=MagicMock())
+        with (
+            patch.object(rs, "active_service", return_value=service),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", run_chat),
+            patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", return_value=MagicMock()),
+        ):
+            await slot._lock.acquire()
+            fire = asyncio.create_task(dispatcher._fire(key))
+            try:
+                await await_until(reached_delivery, what="the wake reaching delivery")
+                if mutation == "pause":
+                    service.record.paused_reason = "offline"
+                    event_kind = rw.EVENT_PAUSED
+                else:
+                    service.record.subscriptions.clear()
+                    service.find_subscription.side_effect = lambda *_args: None
+                    event_kind = rw.EVENT_REMOVED
+                dispatcher.handle(rw.ResourceEvent(event_kind, *key, reason="offline"))
+            finally:
+                slot._lock.release()
+            await await_until(fire, what="the held wake finishing")
+
+        try:
+            assert _resource_rows(slot) == []
+            if entry_ahead:
+                assert run_chat.call_args.args[2] == "parked earlier"
+            else:
+                run_chat.assert_not_called()
+            service.refund_wake.assert_awaited_once_with(*key, RESOURCE_ID, day=RESOURCE_DAY)
+            assert (key in dispatcher._missed) is (mutation == "pause")
+        finally:
+            await dispatcher.close()
 
     @pytest.mark.asyncio
     async def test_a_closing_slot_takes_nothing(self, state):
@@ -171,6 +334,126 @@ class TestRunning:
         assert entry["kind"] == MCP_APP_MESSAGE_KIND
         assert entry["meta"] == {"appLabel": "srv/tool", **admission}
         assert slot.messages[0]["meta"]["kind"] == MCP_APP_MESSAGE_KIND
+
+    def test_a_queued_resource_wake_cannot_be_edited_into_the_persons_words(self, state):
+        slot = _running_slot(state)
+        qid = slot.queue_append("wake", kind=RESOURCE_WAKE_KIND, meta={"resourceServer": "srv"})
+        assert slot.queue_edit_by_id(qid, "my own words") is False
+        assert slot._queue[0]["content"] == "wake"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("case", "starts"),
+        [
+            ("current", True),
+            ("removed", False),
+            ("new_id", False),
+            ("uri_paused", False),
+            ("holder_paused", False),
+            ("slot_rebound", False),
+            ("no_service", False),
+            ("in_place_resubscribe", True),
+        ],
+    )
+    async def test_a_running_slot_revalidates_a_resource_wake_before_drain(
+        self, state, case, starts
+    ):
+        from kiro_crew.dashboard import chat_runner
+
+        slot = _running_slot(state)
+        if case == "slot_rebound":
+            slot.linked_session_key = "dashboard:original"
+        queued_session = effective_session_key(slot)
+        admission = session_control.containment_meta(state, slot)
+        assert (
+            await sd.deliver(
+                state,
+                slot,
+                RESOURCE_TEXT,
+                sd.resource("srv", RESOURCE_ID),
+                admission=admission,
+            )
+            == sd.DELIVERED_QUEUED
+        )
+        (entry,) = slot._queue
+        assert entry["kind"] == RESOURCE_WAKE_KIND
+        assert entry["meta"] == {
+            "resourceServer": "srv",
+            "resourceSubscription": RESOURCE_ID,
+            **admission,
+        }
+
+        current_id = None if case == "removed" else RESOURCE_ID
+        if case == "new_id":
+            current_id = "rsub_0000000000000008"
+        pause = "uri" if case == "uri_paused" else "holder" if case == "holder_paused" else ""
+        service = _resource_service(queued_session, current_id, pause)
+        if case == "in_place_resubscribe":
+            service.record.subscriptions[RESOURCE_URI].instruction = "replacement instruction"
+        if case == "slot_rebound":
+            slot.linked_session_key = "dashboard:replacement"
+        active_service = None if case == "no_service" else service
+        slot.task = None
+        run_chat = MagicMock(return_value=MagicMock())
+        with (
+            patch.object(rs, "active_service", return_value=active_service),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", run_chat),
+            patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", return_value=MagicMock()),
+        ):
+            started = await chat_runner._start_next_queued_turn(state, slot)
+
+        assert started is starts
+        assert slot._queue == []
+        if starts:
+            assert run_chat.call_args.args[2] == RESOURCE_TEXT
+        else:
+            run_chat.assert_not_called()
+            assert [row for row in slot.messages if row.get("role") == "queued"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_subscription_removed_during_the_admission_awaits_drops_its_wake(self, state):
+        from kiro_crew.dashboard import chat_runner
+
+        slot = _running_slot(state)
+        admission = session_control.containment_meta(state, slot)
+        assert (
+            await sd.deliver(
+                state,
+                slot,
+                RESOURCE_TEXT,
+                sd.resource("srv", RESOURCE_ID),
+                admission=admission,
+            )
+            == sd.DELIVERED_QUEUED
+        )
+        service = _resource_service(effective_session_key(slot), RESOURCE_ID)
+
+        async def removal_commits_while_parked_work_is_read(_work_ids):
+            service.record.subscriptions[RESOURCE_URI].id = "rsub_0000000000000008"
+            return None
+
+        admission_service = MagicMock()
+        admission_service._cancelled_parked = removal_commits_while_parked_work_is_read
+        slot.task = None
+        run_chat = MagicMock(return_value=MagicMock())
+        with (
+            patch.object(rs, "active_service", return_value=service),
+            patch(
+                "kiro_crew.shared_crew.admission_gate.installed_service",
+                return_value=admission_service,
+            ),
+            patch(
+                "kiro_crew.shared_crew.admission_entry.queued_work_ids",
+                return_value=["work-1"],
+            ),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", run_chat),
+            patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", return_value=MagicMock()),
+        ):
+            started = await chat_runner._start_next_queued_turn(state, slot)
+
+        assert started is False
+        run_chat.assert_not_called()
+        assert slot._queue == []
 
     @pytest.mark.asyncio
     async def test_a_full_queue_writes_nothing(self, state):
