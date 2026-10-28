@@ -14,7 +14,7 @@ import { render } from '@testing-library/react'
 import CrewAvatar, { ghostTraitsFrom, seededTraits } from '../components/CrewAvatar'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ghostDataUri, type KiroGhostTraits } from '../lib/kiroGhostAvatar'
-import { iconMotionVars, poseBodyDataUri, poseDataUri } from '../lib/avatarPoses'
+import { iconMotionVars, poseBodyDataUri, poseDataUri, poseEyeVars, poseEyesDataUri } from '../lib/avatarPoses'
 import {
   AVATAR_STATES,
   MOTION_DEFAULTS,
@@ -334,11 +334,11 @@ describe('CrewAvatar renders the state it is told', () => {
     }
   })
 
-  it('moves a working icon as ONE still image, so its eyes cannot tear from its body', () => {
+  it('moves a working icon body and eyes inside one transform chain, over a still tile', () => {
     // An SVG that animates itself is re-rastered every frame, in pieces on iOS.
-    // So the tile is the root's own background and a single still image of the
-    // silhouette WITH its eyes sits inside the motion wrappers: one raster, one
-    // transform chain, at every size the app draws an avatar.
+    // So the tile is the root's own background, and two still images, the
+    // silhouette and its eyes, sit inside the same body-motion wrappers. Only
+    // the eyes add a blink and a glance, as the ghost tier's eyes do.
     const icon: CrewAvatarOverride = { kind: 'icon', pose: 'pose-3', bg: '#25679d' }
     for (const size of [20, 28, 40, 64, 96]) {
       const { container, unmount } = render(
@@ -348,14 +348,24 @@ describe('CrewAvatar renders the state it is told', () => {
       expect(root.style.width).toBe(`${size}px`)
       expect(root.style.backgroundColor).toBe('#25679d')
       const imgs = root.querySelectorAll('img')
-      expect(imgs).toHaveLength(1)
+      expect(imgs).toHaveLength(2)
       expect(imgs[0].getAttribute('src')).toBe(poseBodyDataUri('pose-3'))
-      // The image is the innermost child of the four motion wrappers, in order.
-      const chain: string[] = []
-      for (let n = imgs[0].parentElement; n && n !== root; n = n.parentElement) chain.push(n.className)
-      expect(chain).toEqual(['crew-icon-sq', 'crew-icon-bob', 'crew-icon-sway', 'crew-icon-fit'])
-      // Nothing inside the image animates.
-      expect(decodeURIComponent(imgs[0].getAttribute('src')!)).not.toContain('<style')
+      expect(imgs[1].getAttribute('src')).toBe(poseEyesDataUri('pose-3'))
+      const chainOf = (img: Element) => {
+        const chain: string[] = []
+        for (let n = img.parentElement; n && n !== root; n = n.parentElement) chain.push(n.className)
+        return chain
+      }
+      // The body is the innermost child of the four motion wrappers, in order.
+      const body = ['crew-icon-sq', 'crew-icon-bob', 'crew-icon-sway', 'crew-icon-fit']
+      expect(chainOf(imgs[0])).toEqual(body)
+      // The eyes ride the SAME chain, with their own blink and glance inside it.
+      expect(chainOf(imgs[1])).toEqual(['crew-icon-blink', 'crew-icon-look', 'crew-icon-eyes', ...body])
+      const blink = imgs[1].parentElement as HTMLElement
+      expect(blink.style.getPropertyValue('--crew-icon-eye-y')).toBe(poseEyeVars('pose-3')['--crew-icon-eye-y'])
+      // Nothing inside either image animates, and nothing above the fit moves the tile.
+      for (const img of imgs) expect(decodeURIComponent(img.getAttribute('src')!)).not.toContain('<style')
+      expect(root.className).not.toMatch(/crew-icon-(sway|bob|sq)/)
       unmount()
     }
   })

@@ -62,6 +62,8 @@ import {
   DEFAULT_POSE_BG,
   iconMotionVars,
   poseBodyDataUri,
+  poseEyesDataUri,
+  poseEyeVars,
   poseDataUri,
   resolvePoseBg,
 } from '../lib/avatarPoses'
@@ -449,10 +451,12 @@ export default function CrewAvatar({
   // `done` / `error` with no reaction draw the still frame.
   //
   // The working icon is NOT an animated SVG. The tile is this element's own
-  // background, and one still image of the silhouette is moved by page CSS
-  // (`crewIconMotion.css`). An animation inside the image's SVG is re-rastered
-  // every frame, and iOS Safari re-rastered it in pieces, so the head, the tail
-  // and one eye drew out of step. A still raster moved as one layer cannot tear.
+  // background and stays still. Two still images, the silhouette and its eyes,
+  // are moved by page CSS (`crewIconMotion.css`): the body chain moves both, and
+  // the eyes add their own blink and glance, like the ghost tier. An animation
+  // inside an image's SVG is re-rastered every frame, and iOS Safari re-rastered
+  // it in pieces, so the head, the tail and one eye drew out of step. A still
+  // raster moved by transforms is never repainted in parts.
   if (icon && shownState === 'working') {
     return (
       <span
@@ -471,6 +475,13 @@ export default function CrewAvatar({
             <span className="crew-icon-bob">
               <span className="crew-icon-sq">
                 <img src={poseBodyDataUri(icon.pose)} alt="" width={size} height={size} />
+                <span className="crew-icon-eyes" data-testid="crew-icon-eyes">
+                  <span className="crew-icon-look">
+                    <span className="crew-icon-blink" style={poseEyeVars(icon.pose)}>
+                      <img src={poseEyesDataUri(icon.pose)} alt="" width={size} height={size} />
+                    </span>
+                  </span>
+                </span>
               </span>
             </span>
           </span>
