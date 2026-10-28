@@ -407,6 +407,28 @@ is accepted. Versioned aliases never qualify: an entry also lists substitution
 aliases (`claude-haiku-4.5` under Sonnet), and an adapter advertising one is
 serving that other model.
 
+`to_provider_id` applies the same "track the served model" idea in the forward
+direction for the `claude_code` provider's bare FAMILY aliases (`sonnet`, `opus`,
+`fable` — the version-less `claude_code` aliases). The registry's `claude_code`
+provider ids are hand-maintained, so folding a bare family name onto its entry's
+fixed versioned id (`sonnet` -> `global.anthropic.claude-sonnet-4-6[1m]`) pins a
+session to a model that goes stale on every Claude release. Instead
+`_resolve_bare_family_claude_code` resolves a bare family alias against the
+advertised-model cache: among the advertised ids whose normalized key shares the
+family stem (`claude-sonnet-`), the HIGHEST numeric version wins, then
+`preferred_advertised_spelling` breaks a within-version tie toward the 1M
+spelling. Version outranks window, so a newer 200K model still beats an older 1M
+one. `_family_version` reads only the leading short version groups, stopping at a
+5+-digit run (a Bedrock date stamp) or a `-v` revision marker, so a dated id
+(`claude-sonnet-4-20250514-v1:0`) reads as `(4,)` and never passes a real newer
+version. When the advertised cache is cold, or lists nothing in the family, the
+entry's pinned provider id is used — a valid, allowlisted answer, so the result
+is never worse than the pre-resolution behaviour. This makes `to_provider_id`
+read the mutable advertised cache for these three aliases, like
+`resolve_wire_model_id` already does; it resolves at session-start use time, and
+no caller persists or compares the translated id across a cache refresh. Versioned
+aliases and canonical keys still resolve to their specific pinned model.
+
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in
 `providers/acp_runtime_start.py`, the warm-pool post-claim switch in `session_allocation.py`

@@ -115,8 +115,16 @@ class TestModelRegistry:
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "minimax-m2.5", "minimax-m3", "minimax-m2.7",
-                  "glm-5", "gpt-5.6-terra", "qwen3-coder-next", "glm-4.7-flash"):
+        for m in (
+            "deepseek-3.2",
+            "minimax-m2.5",
+            "minimax-m3",
+            "minimax-m2.7",
+            "glm-5",
+            "gpt-5.6-terra",
+            "qwen3-coder-next",
+            "glm-4.7-flash",
+        ):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
@@ -150,7 +158,9 @@ class TestModelRegistry:
         try:
             mr._KIRO_WINDOWS.clear()
             assert mr.model_window("auto") == 200_000  # stale registry literal
-            assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
+            assert (
+                mr.model_window("unlisted-model-zzz") is None
+            )  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
@@ -177,10 +187,15 @@ class TestModelRegistry:
                 is False
             )
             # The catalog is ground truth: a model absent from it is evicted.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is True
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}])
+                is True
+            )
             assert mr.model_window("unlisted-model-zzz") is None
             # A snapshot with no usable window never wipes a good cache.
-            assert mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            )
             assert mr.model_window("auto") == 1000000
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
@@ -219,11 +234,166 @@ class TestModelRegistry:
             mr.to_provider_id("claude-opus-4.6", "claude_code")
             == "global.anthropic.claude-opus-4-8[1m]"
         )
-        # bare 'opus'/'sonnet' aliases
+
+    def test_bare_family_alias_cold_cache_falls_back_to_pinned_id(self, monkeypatch):
+        # With no advertised cache, a version-less family alias resolves to the
+        # registry entry's pinned provider id — a valid, allowlisted answer, so
+        # the result is never worse than before the fix.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-4-8[1m]"
         assert (
             mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-4-6[1m]"
         )
+        assert mr.to_provider_id("fable", "claude_code") == "global.anthropic.claude-fable-5[1m]"
+        # The set is derived from the registry: exactly the bare family aliases.
+        assert mr._CLAUDE_CODE_BARE_FAMILY_ALIASES == {"opus", "sonnet", "fable"}
+
+    def test_bare_family_alias_folds_onto_current_advertised_family(self, monkeypatch):
+        # When the account advertises a NEWER model in the family, the bare
+        # alias resolves to that current id (preferring a 1M spelling) instead of
+        # the registry's hand-maintained pinned id — so 'sonnet' tracks the served
+        # model rather than going stale on every Claude release, and the wire value
+        # is an id the adapter's availableModels allowlist actually carries.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-sonnet-5-5[1m]",
+                    "global.anthropic.claude-sonnet-5-5",
+                    "global.anthropic.claude-opus-5-5[1m]",
+                ]
+            },
+        )
+        assert (
+            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5[1m]"
+        )
+        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-5-5[1m]"
+        # A family the warm cache does not list falls back to the pinned id.
+        assert mr.to_provider_id("fable", "claude_code") == "global.anthropic.claude-fable-5[1m]"
+
+    def test_bare_family_alias_picks_highest_version_not_advertised_order(self, monkeypatch):
+        # The newest model in the family must win regardless of advertised order
+        # and window: version is ranked first, then a 1M spelling breaks a tie
+        # between two spellings of that one version.
+        # Same length, older advertised FIRST -> newer still wins.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-sonnet-4-6[1m]",
+                    "global.anthropic.claude-sonnet-5-5[1m]",
+                ]
+            },
+        )
+        assert (
+            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5[1m]"
+        )
+        # A newer 200K version beats an older 1M one (the user wants the current
+        # model; the 1M preference only breaks a within-version tie).
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-sonnet-4-5[1m]",
+                    "global.anthropic.claude-sonnet-5-5",
+                ]
+            },
+        )
+        assert mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5"
+        # Two spellings of ONE version -> the 1M one wins.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-sonnet-5-5",
+                    "global.anthropic.claude-sonnet-5-5[1m]",
+                ]
+            },
+        )
+        assert (
+            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5[1m]"
+        )
+
+    def test_bare_family_version_ignores_date_stamps_and_revisions(self, monkeypatch):
+        # A Bedrock-style dated id must not read as a newer version: its 8-digit
+        # date and -v revision are not version components, so a real newer version
+        # still wins.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-sonnet-4-6[1m]",
+                    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "global.anthropic.claude-sonnet-5-5",
+                ]
+            },
+        )
+        assert mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5"
+        # The parser stops at the date run / revision marker.
+        assert mr._family_version("claude-sonnet-4-20250514-v1-0", "claude-sonnet-") == (4,)
+        assert mr._family_version("claude-sonnet-5-5", "claude-sonnet-") == (5, 5)
+        assert mr._family_version("claude-sonnet", "claude-sonnet-") == ()
+
+    def test_bare_family_alias_warm_versioned_only_cache_stays_allowlisted(self, monkeypatch):
+        # The Design Review scenario: the account advertises only the current
+        # pinned ids. 'sonnet' must resolve to an advertised id (so the adapter's
+        # availableModels allowlist carries it and the pin is not refused), with
+        # its 1M window — never the bare name, which the allowlist lacks.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-sonnet-4-6[1m]",
+                    "global.anthropic.claude-opus-4-8[1m]",
+                    "global.anthropic.claude-fable-5[1m]",
+                ]
+            },
+        )
+        for alias, served in (
+            ("sonnet", "global.anthropic.claude-sonnet-4-6[1m]"),
+            ("opus", "global.anthropic.claude-opus-4-8[1m]"),
+            ("fable", "global.anthropic.claude-fable-5[1m]"),
+        ):
+            wire = mr.to_provider_id(alias, "claude_code")
+            assert wire == served, alias
+            assert wire in mr._ADVERTISED_MODELS["claude_code"], alias
+
+    def test_bare_family_resolution_is_claude_code_only(self, monkeypatch):
+        # The family resolution is scoped to the claude_code wire path. On the kiro
+        # (acp) path to_acp_id passes a bare name through, and the window /
+        # dropdown-dedup reads still resolve the alias to its canonical key.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5-5[1m]"]}
+        )
+        assert mr.to_acp_id("opus") == "opus"
+        assert mr.canonical_key("opus") == "opus-4.8-1m"
+        assert mr.window("opus") == 1_000_000
+        assert mr.from_provider_id("global.anthropic.claude-opus-4-8[1m]", "claude_code") == (
+            "opus-4.8-1m"
+        )
+
+    def test_versioned_claude_code_aliases_still_resolve(self, monkeypatch):
+        # A VERSIONED alias names a specific model an AIM-managed agent pins, so it
+        # keeps resolving to that id regardless of what the account advertises.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5-5[1m]"]}
+        )
+        assert (
+            mr.to_provider_id("claude-opus-4.8", "claude_code")
+            == "global.anthropic.claude-opus-4-8[1m]"
+        )
+        assert (
+            mr.to_provider_id("opus-4.8-1m", "claude_code")
+            == "global.anthropic.claude-opus-4-8[1m]"
+        )
+        # haiku is not a registered alias and keeps passing through unchanged.
+        assert mr.to_provider_id("haiku", "claude_code") == "haiku"
 
     def test_legacy_dotted_ids_do_not_regress_to_flagship(self):
         # Models the OLD _CC_MODEL_ALIASES mapped to cheaper classes must NOT
@@ -249,16 +419,18 @@ class TestModelRegistry:
     def test_fable_5_canonical_round_trip(self):
         # Fable 5 entry: canonical -> provider id -> canonical.
         assert (
-            mr.to_provider_id("fable-5-1m", "claude_code")
-            == "global.anthropic.claude-fable-5[1m]"
+            mr.to_provider_id("fable-5-1m", "claude_code") == "global.anthropic.claude-fable-5[1m]"
         )
         assert (
             mr.from_provider_id("global.anthropic.claude-fable-5[1m]", "claude_code")
             == "fable-5-1m"
         )
 
-    def test_fable_5_aliases_resolve(self):
+    def test_fable_5_aliases_resolve(self, monkeypatch):
         expected = "global.anthropic.claude-fable-5[1m]"
+        # Bare 'fable' is a version-less family alias: with a cold advertised cache
+        # it resolves to the entry's pinned id; versioned aliases always do.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         assert mr.to_provider_id("fable", "claude_code") == expected
         assert mr.to_provider_id("fable-5", "claude_code") == expected
         assert mr.to_provider_id("claude-fable-5", "claude_code") == expected
@@ -404,10 +576,10 @@ class TestAcpProviderIds:
         # index still folds them for claude-agent-acp dropdown dedup/downgrade.
         cases = {
             # kiro id            acp canonical    window   cc fold (downgrade)
-            "claude-haiku-4.5":  ("haiku-4.5",    200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4.5": ("sonnet-4.5",   200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4":   ("sonnet-4",     200_000, "sonnet-4.6-1m"),
-            "claude-opus-4.6":   ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
+            "claude-haiku-4.5": ("haiku-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4.5": ("sonnet-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4": ("sonnet-4", 200_000, "sonnet-4.6-1m"),
+            "claude-opus-4.6": ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
         }
         for kiro_id, (acp_canon, win, cc_canon) in cases.items():
             assert mr.from_provider_id(kiro_id, "acp") == acp_canon, kiro_id
@@ -609,7 +781,9 @@ class TestAdvertisedModelCache:
         assert too_long not in kept
         assert len(kept) == len(set(kept)) == mr.ADVERTISED_MODELS_MAX_IDS
         # 1 over-long + 2 past the cap; the duplicate "m0" is neither.
-        assert sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+        assert (
+            sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+        )
 
     def test_a_refused_window_row_is_not_readmitted_from_the_sidecar(
         self, monkeypatch, tmp_path, caplog
@@ -673,7 +847,9 @@ class TestAdvertisedModelCache:
         # window is still a kiro id. And a full cache never refuses a NEW
         # catalog id -- the snapshot replaces the cache, so the two stores
         # cannot disagree about whether the newest model exists.
-        monkeypatch.setattr(mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)})
+        monkeypatch.setattr(
+            mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)}
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         rows = [
             {"model_id": "new-model", "model_name": "new-model", "context_window_tokens": 272000},
@@ -701,7 +877,10 @@ class TestAdvertisedModelCache:
         assert mr.registered_model_key("claude-opus-4-8") == "opus-4.8"
         assert mr.registered_model_key("openai.gpt-9-nova[high]") is None
         assert mr.same_registered_model("claude-opus-4.8", "claude-opus-4-8") is False
-        assert mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8") is True
+        assert (
+            mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8")
+            is True
+        )
         # Unknown is not different.
         assert mr.same_registered_model("openai.gpt-9-nova[high]", "claude-opus-4.8") is True
         # A hand-typed case variant is the same registered model, not an unknown
