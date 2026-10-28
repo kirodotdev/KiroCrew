@@ -71,7 +71,9 @@ Once the store sees a version newer than the one installed, Kiro Crew tells the
 user itself: a bell notification naming your app and the new version, once per
 version, plus the pending-updates count on Discover. Your app can also read the
 same answer and show its own banner through `useAppInfo().update` (see
-[Getting started](getting-started.md#telling-the-user-a-new-version-is-out)).
+[Getting started](getting-started.md#telling-the-user-a-new-version-is-out)), and
+start the update from that banner with `useAppUpdate().requestUpdate()` (see
+[Letting the user update](getting-started.md#letting-the-user-update-from-inside-your-app)).
 
 Two things follow for you. A version bump is user-visible even when nobody opens
 the store, so a release published by accident is noticed; and only `version`

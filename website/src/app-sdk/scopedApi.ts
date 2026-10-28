@@ -86,6 +86,34 @@ export interface AppUpdate {
   checkedAt: string | null
 }
 
+/**
+ * What `useAppUpdate().requestUpdate()` resolved to.
+ *
+ * `updated` means the host applied the update; the open page still runs the
+ * bundle it loaded, and `version` is the version now installed. `cancelled`
+ * means the user dismissed the host's dialog and nothing changed. `failed`
+ * carries a machine-readable `error` and, when the gateway refused the update,
+ * its own sentence in `message`.
+ */
+export interface AppUpdateResult {
+  status: 'updated' | 'cancelled' | 'failed'
+  /** The installed version after the call: the new one on `updated`, the
+   *  unchanged one otherwise. */
+  version: string
+  /** Set on `failed`: `no_update_available`, `lifecycle_not_gateway`,
+   *  `inactive`, `no_user_gesture`, `busy`, `unsupported`, or the gateway's
+   *  own failure code (`update_failed` when it gave none). */
+  error?: string
+  /** The gateway's reason for a failed update, for display. */
+  message?: string
+  /** Set on `updated` when the update succeeded with a caveat the user must act
+   *  on: `session_approval_reconsent` means the new version asks to control
+   *  chats and was left disabled until the user allows it; `grants_staged`
+   *  means it declares new api or event permissions, which stay off until the
+   *  user approves them on the app's details page. */
+  notice?: string
+}
+
 export interface AppInfo {
   name: string
   version: string
@@ -115,6 +143,9 @@ export interface AppSdkContextValue {
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
   /** The host's per-slot change signal; absent when the host has none (see slotPush.ts). */
   slotPush?: SlotPush
+  /** The host's self-update bridge, bound to THIS app by the host; absent on a
+   *  host that cannot update apps (see `useAppUpdate`). */
+  requestUpdate?: () => Promise<AppUpdateResult>
 }
 
 export const AppSdkContext = createContext<AppSdkContextValue | null>(null)
@@ -300,6 +331,7 @@ export function AppScopedApiProvider({
   notifyFn = hostNotify,
   sessionKey,
   slotPush,
+  requestUpdateFn,
   children,
 }: {
   allowedApiPaths: string[]
@@ -331,6 +363,10 @@ export function AppScopedApiProvider({
   sessionKey?: string
   /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
   slotPush?: SlotPush
+  /** Published as `requestUpdate`. The host binds it to the app it mounted, so
+   *  the app never names what is updated. Omitted, `useAppUpdate` reports
+   *  `unsupported`. */
+  requestUpdateFn?: () => Promise<AppUpdateResult>
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -366,8 +402,9 @@ export function AppScopedApiProvider({
     navigate: navigateFn,
     notify: notifyFn,
     slotPush,
+    requestUpdate: requestUpdateFn,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush, requestUpdateFn])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

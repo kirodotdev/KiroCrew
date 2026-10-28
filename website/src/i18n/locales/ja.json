@@ -5921,6 +5921,17 @@
       "this_app_is_disabled": "このアプリは無効です",
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"
     },
+    "appSelfUpdate": {
+      "ask_title": "{{name}} を更新しますか？",
+      "ask_body": "{{name}} を {{installed}} から {{version}} に更新します。更新中にバックエンドが再起動しますが、データは保持されます。",
+      "update_now": "更新",
+      "updating": "{{name}} を更新しています…",
+      "failure_title": "アップデートに失敗しました",
+      "failure_summary": "{{name}} をアップデートできませんでした",
+      "reload_title": "バージョン {{version}} をインストールしました",
+      "reload_body": "このページはまだ {{name}} の以前のバージョンで動作しています。新しいバージョンを使うには再読み込みしてください。",
+      "reload_now": "今すぐ再読み込み"
+    },
     "approvalCard": {
       "actions_group": "承認アクション",
       "approval_no_longer_pending": "この承認は期限切れか、すでに決定済みです — エージェントはもう待機していません。",
