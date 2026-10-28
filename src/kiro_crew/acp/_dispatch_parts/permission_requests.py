@@ -523,6 +523,9 @@ def build_permission_event(
     # actual optionIds keyed by kind so approve/reject can echo the exact id.
     options: list[dict[str, str]] = []
     kind_to_id: dict[str, str] = {}
+    # The kind each kept option STATED (before any legacy inference), for
+    # ``AcpEvent.answers_only``.
+    stated_kinds: list[str] = []
     raw_options = params.get("options", [])
     for o in raw_options if isinstance(raw_options, list) else []:
         if not isinstance(o, dict):
@@ -538,6 +541,7 @@ def build_permission_event(
             opt_label = ""
         if not isinstance(opt_kind, str):
             opt_kind = ""
+        stated_kinds.append(opt_kind)
         options.append({"id": opt_id, "label": opt_label})
         if not opt_kind:
             opt_kind = _LEGACY_OPTION_KIND.get(opt_id.lower(), "")
@@ -996,6 +1000,7 @@ def build_permission_event(
         # ``tool_name`` here is a KAS id the gate may read under its kiro-cli
         # policy name. Every other harness is handed ``None`` and gets no fold.
         kas_builtin_ids=identity_unreadable_cache is not None,
+        answers_only=bool(stated_kinds) and all(k == "allow_once" for k in stated_kinds),
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,

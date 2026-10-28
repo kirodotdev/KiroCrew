@@ -1248,6 +1248,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
     "KAS-specific so shared frames still fall through (H5).",
+    (
+        "src/kiro_crew/acp/session_handle_kas.py",
+        "_observed_turn_boundary",
+    ): "An observed turn (a KAS workflow step's engine turn, not a prompt Crew sent) "
+    "ends on KAS's own ``session_info_update`` ``_meta.kiro`` ``turn_start``/``turn_end`` "
+    "kinds, which ``kas_wire.turn_boundary`` parses. No other harness emits them or runs an engine "
+    "turn Crew did not start, so every other host must answer None rather than read "
+    "a boundary from a shape it never promised.",
 }
 
 

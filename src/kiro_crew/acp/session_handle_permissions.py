@@ -96,6 +96,11 @@ async def approve_tool(
     the lock it is read ahead of the runtime's liveness check, which
     ``deadline`` follows.
     """
+    # A KAS question is answered in its own shape, never through the floor:
+    # answering it runs nothing (see ``_user_inputs``).
+    answered = await self._answer_user_input_approval(request_id, option_id)
+    if answered is not None:
+        return answered
     gate_event = self._permission_gate_events.pop(request_id, None)
     # No recorded event means no request this transport built, so there is
     # nothing the floor could judge: refuse rather than approve unjudged.
@@ -190,6 +195,10 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int) -> None:
     signal: kiro-cli maps it to cancelling the TURN, auto-denying every
     later tool call in it without prompting.
     """
+    # A KAS question refused is a question dismissed: KAS moves on without
+    # an answer. Not a tool denial, so no steering-denial note either.
+    if await self.answer_user_input(request_id, None):
+        return
     recorded = self._permission_options.pop(request_id, None)
     self._permission_gate_events.pop(request_id, None)
     # Answered (see approve_tool) — a rejection ends the human wait too.
