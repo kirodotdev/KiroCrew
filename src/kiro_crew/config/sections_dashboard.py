@@ -670,6 +670,20 @@ class DashboardConfig:
                         ),
                     },
                 },
+                "orphan_timeout_s": {
+                    "type": "integer",
+                    "default": 43200,
+                    "x-meta": {
+                        "label": "Detached terminal timeout (seconds)",
+                        "help": (
+                            "How long a terminal's shell keeps running with no browser "
+                            "attached, for example while your laptop sleeps, before it and "
+                            "everything running in it are ended. Default 43200 (12 hours); "
+                            "values below 60 count as 60. Run jobs that must outlive this "
+                            "inside tmux."
+                        ),
+                    },
+                },
                 "cwd": {
                     "type": "string",
                     "default": "",

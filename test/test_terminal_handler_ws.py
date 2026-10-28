@@ -8,12 +8,12 @@ orphaned-terminal reaper.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import pathlib
 import sys
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -141,6 +141,40 @@ class TestApiTerminalWs:
             resp = await terminal.api_terminal_ws(req)
         assert isinstance(resp, web.Response)
         assert resp.status == 429
+
+    @pytest.mark.asyncio
+    async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
+        # The evicted shell's slot must already be this opener's placeholder when
+        # the teardown starts awaiting, or another opener could take it meanwhile.
+        # Detached a billion seconds before the clock's origin: past the 60 s floor
+        # against any real monotonic reading the handler takes.
+        old = _make_session(session_id="old", alive=True, disconnect=-1e9)
+        registry = {"old": old, "busy": _make_session(session_id="busy")}
+        req = _make_request(registry=registry, session_id="new")
+        seen = {}
+
+        class _Stop(Exception):
+            pass
+
+        async def end_evicted(_app, evicted, cap):
+            seen["evicted"], seen["cap"] = evicted[0], cap
+            seen["registry"] = dict(registry)
+            raise _Stop
+
+        with (
+            patch.object(terminal, "_sel") as mock_sel,
+            patch.object(
+                terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
+            ),
+            patch.object(terminal, "_end_evicted_shell", side_effect=end_evicted),
+        ):
+            mock_sel.return_value.log_api_access = MagicMock()
+            with pytest.raises(_Stop):
+                await terminal.api_terminal_ws(req)
+        assert seen["evicted"] == "old" and seen["cap"] == 2
+        assert seen["registry"] == {"busy": registry["busy"], "new": None}
+        # A teardown that fails still releases this opener's reservation.
+        assert registry == {"busy": registry["busy"]}
 
     @pytest.mark.asyncio
     async def test_rejects_when_reservation_placeholder_held(self):
@@ -619,76 +653,233 @@ class TestStreamIsForwardedUnscanned:
 # ── reap_orphaned_terminals ──
 
 
-class TestReapOrphanedTerminals:
-    @pytest.mark.asyncio
-    async def test_reaps_disconnected_session(self):
-        sess = _make_session(session_id="s1", alive=True)
-        # flake-ok: pre-existing real-clock stamp 2000 s in the past so the session reads as disconnected beyond the reap threshold, moved verbatim; tracked for a de-flake pass
-        sess.last_ws_disconnect = time.monotonic() - 2000  # ~33 min ago (> reap threshold)
-        state = MagicMock()
-        state._terminal_sessions = {"s1": sess}
-        app = {"state": state}
+_DETACHED_AT = 1_000_000.0  # an arbitrary monotonic reading: the sweep is handed `now`
 
-        # flake-ok: pre-existing patch of asyncio.sleep that ends the reaper loop with CancelledError on its second tick, moved verbatim; tracked for a de-flake pass
-        with (
-            patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
-            patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-        ):
-            await terminal.reap_orphaned_terminals(app)
+
+def _sweep_app(*sessions, bus=None):
+    state = MagicMock()
+    state._terminal_sessions = {s.session_id: s for s in sessions}
+    state.notification_bus = bus
+    return {"state": state}, state._terminal_sessions
+
+
+async def _sweep(app, idle_s, cfg=None):
+    """Run one sweep ``idle_s`` after ``_DETACHED_AT`` with ``cfg`` as the terminal
+    config; returns the ``_kill_session`` and ``_sel`` mocks."""
+    with (
+        patch.object(terminal, "_read_terminal_config", return_value=dict(cfg or {})),
+        patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
+        patch.object(terminal, "_sel") as mock_sel,
+    ):
+        await terminal._sweep_terminals(app, _DETACHED_AT + idle_s)
+    return mock_kill, mock_sel
+
+
+class TestOrphanTimeout:
+    def test_default_keeps_a_detached_shell_for_twelve_hours(self):
+        assert terminal._orphan_timeout_s({}) == 12 * 60 * 60
+
+    def test_a_configured_value_is_used(self):
+        assert terminal._orphan_timeout_s({"orphan_timeout_s": 600}) == 600
+
+    @pytest.mark.parametrize("raw", [0, 5, -100, 59.5])
+    def test_a_value_below_the_floor_reads_as_the_floor(self, raw):
+        assert terminal._orphan_timeout_s({"orphan_timeout_s": raw}) == 60
+
+    @pytest.mark.parametrize("raw", ["600", True, False, None, [600], float("nan"), float("inf")])
+    def test_a_malformed_value_reads_as_the_default(self, raw):
+        assert terminal._orphan_timeout_s({"orphan_timeout_s": raw}) == 12 * 60 * 60
+
+    @pytest.mark.parametrize(
+        ("seconds", "text"),
+        [
+            (30, "1 minute"),
+            (61, "1 minute"),
+            (900, "15 minutes"),
+            (3600, "1 hour"),
+            (43200, "12 hours"),
+        ],
+    )
+    def test_idle_spans_read_in_whole_hours_else_minutes(self, seconds, text):
+        assert terminal._format_idle(seconds) == text
+
+
+class TestSweepTerminals:
+    @pytest.mark.asyncio
+    async def test_ends_a_shell_detached_past_the_default_and_says_so(self, caplog):
+        sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
+        bus = MagicMock()
+        app, registry = _sweep_app(sess, bus=bus)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.terminal"):
+            mock_kill, mock_sel = await _sweep(app, terminal._ORPHAN_TIMEOUT_S + 1)
         mock_kill.assert_awaited_once_with(sess)
-        assert "s1" not in state._terminal_sessions
+        assert registry == {}
+        assert any("no browser attached" in r.getMessage() for r in caplog.records)
+        audit = mock_sel.return_value.log_api_access.call_args.kwargs
+        assert audit["operation"] == "terminal.session.reap"
+        assert "session=s1" in audit["resources"]
+        note = bus.push.call_args.args[0]
+        assert note.channel == "system.terminal"
+        assert note.title == "Terminal closed"
+        assert "12 hours" in note.body
+        # The feed reaches every dashboard session: no session id in the note.
+        assert "s1" not in note.body and "s1" not in json.dumps(note.meta)
 
     @pytest.mark.asyncio
-    async def test_reaps_dead_process(self):
-        sess = _make_session(session_id="s1", alive=False)
-        state = MagicMock()
-        state._terminal_sessions = {"s1": sess}
-        app = {"state": state}
-
-        # flake-ok: pre-existing patch of asyncio.sleep that ends the reaper loop with CancelledError on its second tick, moved verbatim; tracked for a de-flake pass
-        with (
-            patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
-            patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-        ):
-            await terminal.reap_orphaned_terminals(app)
-        mock_kill.assert_awaited_once()
-        assert state._terminal_sessions == {}
-
-    @pytest.mark.asyncio
-    async def test_skips_active_session(self):
-        sess = _make_session(session_id="s1", alive=True)
-        sess.last_ws_disconnect = None  # still connected
-        state = MagicMock()
-        state._terminal_sessions = {"s1": sess}
-        app = {"state": state}
-
-        # flake-ok: pre-existing patch of asyncio.sleep that ends the reaper loop with CancelledError on its second tick, moved verbatim; tracked for a de-flake pass
-        with (
-            patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
-            patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
-        ):
-            await terminal.reap_orphaned_terminals(app)
+    async def test_keeps_a_shell_detached_for_longer_than_a_lunch_break(self):
+        # Two hours: a laptop closed over lunch must find its shell still running.
+        sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
+        app, registry = _sweep_app(sess, bus=MagicMock())
+        mock_kill, _ = await _sweep(app, 2 * 60 * 60)
         mock_kill.assert_not_awaited()
-        assert state._terminal_sessions == {"s1": sess}
+        assert registry == {"s1": sess}
 
     @pytest.mark.asyncio
-    async def test_skips_recently_disconnected(self):
-        sess = _make_session(session_id="s1", alive=True)
-        # flake-ok: pre-existing real-clock stamp 60 s in the past so the session reads as recently disconnected and is kept, moved verbatim; tracked for a de-flake pass
-        sess.last_ws_disconnect = time.monotonic() - 60  # 1 min ago (< 15 min threshold)
-        state = MagicMock()
-        state._terminal_sessions = {"s1": sess}
-        app = {"state": state}
+    async def test_honours_a_configured_timeout(self):
+        kept = _make_session(session_id="kept", alive=True, disconnect=_DETACHED_AT + 2)
+        ended = _make_session(session_id="ended", alive=True, disconnect=_DETACHED_AT)
+        app, registry = _sweep_app(kept, ended, bus=MagicMock())
+        mock_kill, _ = await _sweep(app, 601, cfg={"orphan_timeout_s": 600})
+        mock_kill.assert_awaited_once_with(ended)
+        assert registry == {"kept": kept}
 
-        # flake-ok: pre-existing patch of asyncio.sleep that ends the reaper loop with CancelledError on its second tick, moved verbatim; tracked for a de-flake pass
+    @pytest.mark.asyncio
+    async def test_a_tiny_configured_timeout_still_survives_a_reload(self):
+        sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
+        app, registry = _sweep_app(sess, bus=MagicMock())
+        mock_kill, _ = await _sweep(app, 30, cfg={"orphan_timeout_s": 1})
+        mock_kill.assert_not_awaited()
+        assert registry == {"s1": sess}
+
+    @pytest.mark.asyncio
+    async def test_keeps_a_connected_shell(self):
+        sess = _make_session(session_id="s1", alive=True, disconnect=None)
+        app, registry = _sweep_app(sess, bus=MagicMock())
+        mock_kill, _ = await _sweep(
+            app, 10 * terminal._ORPHAN_TIMEOUT_S, cfg={"orphan_timeout_s": 60}
+        )
+        mock_kill.assert_not_awaited()
+        assert registry == {"s1": sess}
+
+    @pytest.mark.asyncio
+    async def test_cleans_up_an_exited_shell_without_a_reap_notice(self):
+        sess = _make_session(session_id="s1", alive=False, disconnect=None)
+        bus = MagicMock()
+        app, registry = _sweep_app(sess, bus=bus)
+        mock_kill, mock_sel = await _sweep(app, 0)
+        mock_kill.assert_awaited_once_with(sess)
+        assert registry == {}
+        mock_sel.return_value.log_api_access.assert_not_called()
+        bus.push.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_refusing_feed_does_not_stop_the_sweep(self):
+        first = _make_session(session_id="a", alive=True, disconnect=_DETACHED_AT)
+        second = _make_session(session_id="b", alive=True, disconnect=_DETACHED_AT)
+        bus = MagicMock()
+        bus.push.side_effect = RuntimeError("feed closed")
+        app, registry = _sweep_app(first, second, bus=bus)
+        mock_kill, _ = await _sweep(app, terminal._ORPHAN_TIMEOUT_S + 1)
+        assert mock_kill.await_count == 2
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_reads_config_off_the_default_executor(self):
+        # Every live PTY reader parks a blocking read on the default executor, so a
+        # config read queued there could wait behind the very shells it would end.
+        sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
+        app, registry = _sweep_app(sess, bus=MagicMock())
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            with patch.object(terminal, "maintenance_executor", return_value=pool) as chosen:
+                mock_kill, _ = await _sweep(app, terminal._ORPHAN_TIMEOUT_S + 1)
+        finally:
+            pool.shutdown(wait=True)
+        chosen.assert_called_once_with()
+        mock_kill.assert_awaited_once_with(sess)
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_no_feed_still_ends_the_shell(self):
+        sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
+        app, registry = _sweep_app(sess, bus=None)
+        mock_kill, _ = await _sweep(app, terminal._ORPHAN_TIMEOUT_S + 1)
+        mock_kill.assert_awaited_once_with(sess)
+        assert registry == {}
+
+
+class TestEvictionAtTheCap:
+    """At the cap, the longest-detached live shell gives up its slot."""
+
+    _NOW = _DETACHED_AT + 2 * 60 * 60
+
+    def test_takes_the_longest_detached_shell(self):
+        older = _make_session(session_id="older", alive=True, disconnect=_DETACHED_AT)
+        newer = _make_session(session_id="newer", alive=True, disconnect=_DETACHED_AT + 100)
+        connected = _make_session(session_id="connected", alive=True, disconnect=None)
+        registry = {"older": older, "newer": newer, "connected": connected}
+        evicted = terminal._take_shell_to_evict(registry, 3, self._NOW)
+        assert evicted == ("older", older, 2 * 60 * 60)
+        assert set(registry) == {"newer", "connected"}
+
+    def test_below_the_cap_nothing_is_taken(self):
+        detached = _make_session(session_id="d", alive=True, disconnect=_DETACHED_AT)
+        registry = {"d": detached}
+        assert terminal._take_shell_to_evict(registry, 2, self._NOW) is None
+        assert registry == {"d": detached}
+
+    @pytest.mark.parametrize("cap", [0, 1, 2])
+    def test_above_the_cap_nothing_is_taken(self, cap):
+        # max_sessions lowered while more shells run: one eviction frees no slot,
+        # the opener refuses anyway, and a shell taken here would never be ended.
+        registry = {
+            f"s{i}": _make_session(session_id=f"s{i}", alive=True, disconnect=_DETACHED_AT + i)
+            for i in range(3)
+        }
+        before = dict(registry)
+        assert terminal._take_shell_to_evict(registry, cap, self._NOW) is None
+        assert registry == before
+
+    @pytest.mark.asyncio
+    async def test_never_takes_a_connected_reloading_returning_or_exited_shell(self):
+        returning = _make_session(session_id="returning", alive=True, disconnect=_DETACHED_AT)
+        registry = {
+            "connected": _make_session(session_id="connected", alive=True, disconnect=None),
+            # Detached 30 s ago: a tab mid-reload, inside the floor.
+            "reloading": _make_session(
+                session_id="reloading", alive=True, disconnect=self._NOW - 30
+            ),
+            "exited": _make_session(session_id="exited", alive=False, disconnect=_DETACHED_AT),
+            "returning": returning,
+            "opening": None,
+        }
+        # A reconnect holds replace_lock for its whole takeover.
+        async with returning.replace_lock:
+            assert terminal._take_shell_to_evict(registry, 5, self._NOW) is None
+        assert set(registry) == {"connected", "reloading", "exited", "returning", "opening"}
+
+    @pytest.mark.asyncio
+    async def test_ending_the_shell_says_why(self):
+        sess = _make_session(session_id="older", alive=True, disconnect=_DETACHED_AT)
+        bus = MagicMock()
+        state = MagicMock()
+        state.notification_bus = bus
         with (
             patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
-            patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
+            patch.object(terminal, "_sel") as mock_sel,
         ):
-            await terminal.reap_orphaned_terminals(app)
-        mock_kill.assert_not_awaited()
-        assert state._terminal_sessions == {"s1": sess}
+            await terminal._end_evicted_shell({"state": state}, ("older", sess, 7200.0), 3)
+        mock_kill.assert_awaited_once_with(sess)
+        audit = mock_sel.return_value.log_api_access.call_args.kwargs
+        assert audit["operation"] == "terminal.session.reap"
+        assert "max_sessions=3" in audit["resources"]
+        note = bus.push.call_args.args[0]
+        assert "dashboard.terminal.max_sessions" in note.body
+        assert "2 hours" in note.body
+        assert "older" not in note.body
 
+
+class TestReapOrphanedTerminals:
     @pytest.mark.asyncio
     async def test_handles_missing_state(self):
         app = {"state": None}

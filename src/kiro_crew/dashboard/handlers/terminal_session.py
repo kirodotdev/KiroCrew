@@ -160,6 +160,11 @@ def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
 
 
 def _get_config(request: web.Request) -> dict:
+    """The ``dashboard.terminal`` object for a route handler; see ``_read_terminal_config``."""
+    return _read_terminal_config()
+
+
+def _read_terminal_config() -> dict:
     """The ``dashboard.terminal`` object, or ``{}`` for anything malformed.
 
     Every level is type-checked rather than chained, and the read fails CLOSED to
