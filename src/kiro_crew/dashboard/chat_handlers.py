@@ -235,6 +235,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _grant_deadline,
     _internal_session_approval_refusal,
     _is_deny_override_card,
+    _note_permission_answer,
     _pending_elicitation_ids,
     _still_owning,
     _sweep_pending_approvals,
@@ -606,6 +607,7 @@ from kiro_crew.history import (  # noqa: F401
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
+from kiro_crew.kas_workflows import chat as kas_chat  # noqa: F401 -- read by chat_api.slot_approval
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
     provider_model_pin_refused,

@@ -14,6 +14,7 @@ from kiro_crew.dashboard.state import (
     REFUSAL_INBAND_RECOVERY_PREFIX,
     build_refusal_steer_notice,
 )
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         _credential_tool_hint_for,
         _pre_tool_block_reason,
     )
+    from kiro_crew.dashboard.chat_turn.tool_rows import _tool_meta
 
 
 def _redact_display_text(text: str) -> str:
@@ -180,6 +182,62 @@ async def _reject_attributed(client: Any, request_id: Any, *, attribution: str) 
     omits it is a mypy error; test_refusal_inband_notice.py checks the value.
     """
     await client.reject_tool(request_id)
+
+
+async def _settle_kas_question(
+    client: Any,
+    slot: Any,
+    event: Any,
+    question: Any,
+    option_id: str | None,
+    *,
+    session_key: str,
+) -> None:
+    """Answer the chat's own KAS question with the person's pick, or dismiss it.
+
+    *option_id* is the answer the approve route recorded (``answer`` action):
+    an option id for a legacy-bridge question, the answer TEXT for a
+    ``_kiro/userInput`` one (``question.is_user_input``). None dismisses: the
+    same ``cancelled`` answer Reject sends (``dismissed`` for a structured
+    question), which KAS reads as "move on without an answer". A transport that
+    cannot answer by id or by text dismisses too, never approving (that would
+    pick the first answer).
+    """
+    title = _redact_display_text(question.prompt or event.title or "")
+    if question.is_user_input:
+        select = getattr(client, "answer_user_input", None)
+    else:
+        select = getattr(client, "select_permission_option", None)
+    if option_id is not None and select is not None:
+        label = _redact_display_text(question.display_for(option_id))
+        sent = await select(event.request_id, option_id)
+        sel().log_tool_invocation(
+            session_key=session_key,
+            agent=slot.agent or "kirocrew",
+            source="dashboard",
+            tool_name=title,
+            tool_kind=event.tool_kind,
+            outcome="approved" if sent is not False else OUTCOME_REJECTED_TRANSPORT_FLOOR,
+            request_id=event.request_id,
+            metadata={"reason": "kas_question_answered"},
+        )
+        if sent is not False:
+            slot.append("tool", f"✅ {title} → {label}", "msg msg-tool", meta=_tool_meta(event))
+        return
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="rejected",
+        request_id=event.request_id,
+        metadata={"reason": "kas_question_dismissed"},
+    )
+    # The person dismissed the question (or no one answered it): KAS's own
+    # "the user did not answer" is the true account, so no steer precedes it.
+    await _reject_attributed(client, event.request_id, attribution="exempt: question dismissed")
+    slot.append("tool", f"🚫 {title} (dismissed)", "msg msg-tool")
 
 
 async def _reject_hook_blocked(

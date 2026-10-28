@@ -1011,6 +1011,26 @@ class AcpProvider(LLMProvider):
     async def reject_tool(self, request_id: str | int) -> None:
         await self._client.reject_tool(request_id)
 
+    async def select_permission_option(self, request_id: str | int, option_id: str) -> bool:
+        """Answer a pending permission request with one offered option, by its id.
+
+        For a request whose options are answers, not allow/reject (KAS's legacy
+        ``user_input`` bridge): the person picked *option_id*. Passes the same
+        security floor as :meth:`approve_tool`; False when the transport refused.
+        """
+        return await self._client.approve_tool(request_id, option_id)
+
+    async def answer_user_input(self, request_id: str | int, answer: str | None) -> bool:
+        """Answer the chat's own KAS ``_kiro/userInput`` question with *answer* text.
+
+        *answer* None dismisses it. False when this transport holds no such
+        question (a single-session client, which never announces the surface).
+        """
+        answer_fn = getattr(self._client, "answer_user_input", None)
+        if answer_fn is None:
+            return False
+        return bool(await answer_fn(request_id, answer))
+
     def context_usage_pct(self) -> float:
         return self._client.last_prompt_stats.context_pct
 
@@ -1280,6 +1300,7 @@ class AcpProvider(LLMProvider):
     watch_agent_turns = _acp_turns.watch_agent_turns
     agent_turn_pending = _acp_turns.agent_turn_pending
     stream_unsolicited = _acp_turns.stream_unsolicited
+    stream_observe = _acp_turns.stream_observe
     compact = _acp_turns.compact
     cancel = _acp_turns.cancel
     steer = _acp_turns.steer
