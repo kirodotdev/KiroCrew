@@ -51,7 +51,7 @@ import { CrewEyebrow, CrewGhostBadge, CrewWorkerStack } from '../../components/c
 import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import ErrorNotice from '../../components/ErrorNotice'
-import { MemberRowFace, MembersPageFallbackChip } from './MemberRowFace'
+import { MemberRowHead } from './MemberRowFace'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -1438,7 +1438,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
           {crewRoot && <span className="mt-2 mr-2"><CrewGhostBadge size={26} /></span>}
-          <div className="flex-1 min-w-0 overflow-hidden">
+          {/* The `:has` rule hides the title line below while a crewmate head (`MemberRowHead`),
+              which already carries the name, is drawn on the first line. Not while
+              renaming: the rename box lives in that title line. */}
+          <div className={`flex-1 min-w-0 overflow-hidden ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
@@ -1516,10 +1519,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  the DESTINATION ("Members page", with the leave-this-page glyph),
                 *  not the bare noun "Members", which in this product also means the
                 *  crew's participants and read as "people are in it" on a cold read.
-                *  A crewmate the roster lists wears its face beside the title instead
-                *  (`MemberRowFace`); this chip is the fallback for every other case. */}
+                *  A crewmate the roster lists instead wears its face and name on this
+                *  line (`MemberRowHead`), and the title line below is hidden; this chip
+                *  is the fallback for every other case. */}
               {!peerId && onOpenElsewhere && (
-                <MembersPageFallbackChip agent={memberTitle !== null ? s.agent ?? '' : ''} />
+                <MemberRowHead agent={memberTitle !== null ? s.agent ?? '' : ''} name={shownTitle} tooltip={tooltipTitle} running={isRunning} />
               )}
               {/* NO destination marker beside the agent name any more. It read
                 *  "· opens the astro dashboard", and it was there because the click
@@ -1686,9 +1690,6 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                       the row itself says the model call is running. */}
                   {titleGenerating && (
                     <Loader size={ROW_ICON_PX} className="lucide-inline mr-1 shrink-0 text-accent animate-spin" role="img" aria-label={i18nT('pages.chatPage.regenerating_title')} data-testid="row-title-generating" />
-                  )}
-                  {!peerId && onOpenElsewhere && memberTitle !== null && s.agent && (
-                    <MemberRowFace agent={s.agent} running={isRunning} />
                   )}
                   {shownTitle}
                 </>

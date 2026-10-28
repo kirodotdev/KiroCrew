@@ -72,7 +72,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 // `chatSlots` is a STABLE spy, unlike the proxy's per-access `vi.fn()`: the
 // provisional-lineage test asserts on whether the sidebar came back for a second
 // read, which a fresh mock per property access cannot record.
-const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn(), crewWorkersFail: false, crewWorkersNotServed: false, roster: [] as unknown[] }))
+const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn(), crewWorkersFail: false, crewWorkersNotServed: false, roster: [] as unknown[], rosterFails: false, membersCalls: 0, lastMembers: null as Promise<unknown> | null }))
 
 // The router is real (MemoryRouter below); only `useNavigate` is a spy, so a row that
 // leaves the chat page can be asked WHERE it went rather than inferred from a route
@@ -97,7 +97,13 @@ vi.mock('../api/client', () => ({
       ] })
       // The crewmates roster the member row's face is drawn from. Empty by default,
       // so every other test sees the "Members page" fallback chip.
-      if (p === 'members') return vi.fn().mockImplementation(() => Promise.resolve({ members: mocks.roster }))
+      if (p === 'members') return vi.fn().mockImplementation(() => {
+        mocks.membersCalls++
+        const read = mocks.rosterFails ? Promise.reject(new Error('roster down')) : Promise.resolve({ members: mocks.roster })
+        // Tests await this (settled either way) as the barrier for the query having answered.
+        mocks.lastMembers = read.then(() => undefined, () => undefined)
+        return read
+      })
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -1324,13 +1330,86 @@ describe('chat sidebar — conductor lane', () => {
       }
     })
 
+    it('draws the face and name on the first line, beside the time, with no second title line', async () => {
+      mocks.roster = [{ name: 'kirocrew-pipeline-conductor', slug: 'kirocrew-pipeline-conductor', slot_key: 'member-pipeline', running: false }]
+      try {
+        localStorage.setItem('mc-sidebar-lane', 'conductor')
+        const { getByTestId, findByTestId } = renderSidebar(listed, [], null, {}, [], inStore)
+        await findByTestId('member-row-head')
+        const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
+        const head = anchor.querySelector('[data-member-head]') as HTMLElement
+        expect(head).not.toBeNull()
+        // The head sits on the meta line, the same line as the timestamp group.
+        expect(head.closest('.session-agent-label')).not.toBeNull()
+        // The row's own title line is hidden by the text column while a head is drawn.
+        const column = head.closest('.session-agent-label')!.parentElement as HTMLElement
+        expect(column.className).toContain('[&:has([data-member-head])>[data-session-title]]:hidden')
+        expect(column.querySelector(':scope > [data-session-title]')).not.toBeNull()
+      } finally {
+        mocks.roster = []
+      }
+    })
+
+    it('falls back to the Members page chip, with no banner, when the roster read fails', async () => {
+      // A recoverable read shows no error banner: the row still works and keeps the chip.
+      mocks.rosterFails = true
+      mocks.membersCalls = 0
+      mocks.lastMembers = null
+      try {
+        localStorage.setItem('mc-sidebar-lane', 'conductor')
+        const { getByTestId, container } = renderSidebar(listed, [], null, {}, [], inStore)
+        // Wait on the roster read itself, then let the query commit its error state.
+        await waitFor(() => expect(mocks.lastMembers).not.toBeNull())
+        await act(async () => { await mocks.lastMembers })
+        expect(mocks.membersCalls).toBeGreaterThan(0)
+        const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
+        expect(anchor.querySelector('[data-testid="members-page-chip"]')?.textContent).toBe('Members page')
+        expect(document.querySelector('[data-testid="sidebar-member-roster-error"]')).toBeNull()
+        expect(container.querySelector('[role="alert"]')).toBeNull()
+      } finally {
+        mocks.rosterFails = false
+      }
+    })
+
+    it('does not read the crewmate roster in a lane that draws no crewmate row', async () => {
+      // The member thread sits in the store, but the tree lane never draws it, so no
+      // face is wanted and the roster must not be fetched.
+      mocks.membersCalls = 0
+      localStorage.setItem('mc-sidebar-lane', 'tree')
+      const { container, findAllByText } = renderSidebar(listed, [], null, {}, [], inStore)
+      // The lane has drawn its rows: every mount-time read has been issued by now.
+      await findAllByText('Unrelated chat')
+      expect(container.querySelector('[data-session-row="member-pipeline"]')).toBeNull()
+      expect(mocks.membersCalls).toBe(0)
+    })
+
+    it('keeps the crewmate row free of a rename box: no hidden editor can trap it', async () => {
+      // The head hides the title line, which is where the rename box lives; rename must
+      // never start on this row, so a double-click on the head opens nothing.
+      mocks.roster = [{ name: 'kirocrew-pipeline-conductor', slug: 'kirocrew-pipeline-conductor', slot_key: 'member-pipeline', running: false }]
+      try {
+        localStorage.setItem('mc-sidebar-lane', 'conductor')
+        const { getByTestId, findByTestId } = renderSidebar(listed, [], null, {}, [], inStore)
+        await findByTestId('member-row-head')
+        const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
+        fireEvent.doubleClick(anchor.querySelector('[data-member-head]') as HTMLElement)
+        expect(anchor.querySelector('textarea')).toBeNull()
+        // The ⋯ menu that carries Rename is withheld from this row too.
+        expect(anchor.querySelector('[data-close]')).toBeNull()
+      } finally {
+        mocks.roster = []
+      }
+    })
+
     it('keeps the Members page chip for a crewmate the roster no longer lists', async () => {
       // Deleted or renamed: no face nobody can open, and the destination cue survives.
+      mocks.lastMembers = null
       mocks.roster = [{ name: 'someone-else', slug: 'someone-else', slot_key: '', running: false }]
       try {
         localStorage.setItem('mc-sidebar-lane', 'conductor')
         const { getByTestId, queryByTestId } = renderSidebar(listed, [], null, {}, [], inStore)
-        await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+        await waitFor(() => expect(mocks.lastMembers).not.toBeNull())
+        await act(async () => { await mocks.lastMembers })
         const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
         expect(anchor.querySelector('[data-testid="members-page-chip"]')?.textContent).toBe('Members page')
         expect(queryByTestId('member-row-face')).toBeNull()
