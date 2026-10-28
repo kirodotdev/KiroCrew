@@ -36,7 +36,7 @@ import socket
 import sys as _sys
 import time  # noqa: F401  (a test clock installs here and the mirror carries it to exfil_oauth)
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from .exfil_oauth import (  # noqa: F401
@@ -185,39 +185,40 @@ _SLACK_APP_CREATE_PARAMS = frozenset({"new_app", "manifest_yaml"})
 # Single-slot cache for the derived pattern. A plain module constant would read
 # packaged data at import time, which ``security`` avoids: it is imported by the
 # stdio MCP servers, where import-time file I/O is on the critical path.
-_slack_manifest_re_slot: list[re.Pattern[str] | None] = []
+_slack_manifest_re_slot: list[tuple[re.Pattern[str], ...] | None] = []
 
 
-def _slack_manifest_payload_re() -> re.Pattern[str] | None:
-    """Pattern matching the bundled Slack manifest rendered with any one alias.
+def _slack_manifest_variant_re(slack_manifest: Any, combo: frozenset[str]) -> re.Pattern[str]:
+    """Pattern for one switch combination's stripped manifest with any one alias."""
+    rendered = slack_manifest.stripped_template(combo)
+    placeholder, alias_body = slack_manifest.ALIAS_PLACEHOLDER, slack_manifest.ALIAS_PATTERN
+    command_slot = (re.escape(slack_manifest.COMMAND_PLACEHOLDER), "(?P<command>[a-z0-9_-]+)")
+    if placeholder not in rendered or slack_manifest.COMMAND_PLACEHOLDER not in rendered:
+        raise ValueError("manifest template lacks its alias or command placeholder")
+    parts = rendered.split(placeholder)
+    pattern = re.escape(parts[0]).replace(*command_slot)
+    for index, part in enumerate(parts[1:]):
+        slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
+        pattern += slot + re.escape(part).replace(*command_slot)
+    return re.compile(pattern)
 
-    Derived from ``slack_manifest.stripped_template()`` — the SAME procedure both
-    emitters use to build the payload — so the accepted payload cannot drift from
-    the emitted one. Every ``{{ALIAS}}`` after the first is a backreference, and
-    ``{{COMMAND}}`` a group the caller pins to ``slash_command(alias)``, so neither
-    can vary. Returns None when the template cannot be read (fails closed).
-    """
-    if _slack_manifest_re_slot:
-        return _slack_manifest_re_slot[0]
-    compiled: re.Pattern[str] | None = None
-    try:
-        from kiro_crew import slack_manifest
 
-        rendered = slack_manifest.stripped_template()
-        placeholder_token = slack_manifest.ALIAS_PLACEHOLDER
-        alias_body = slack_manifest.ALIAS_PATTERN
-        command_slot = (re.escape(slack_manifest.COMMAND_PLACEHOLDER), "(?P<command>[a-z0-9_-]+)")
-    except Exception:
-        rendered = placeholder_token = alias_body = ""
-    if rendered and placeholder_token in rendered:
-        parts = rendered.split(placeholder_token)
-        pattern = re.escape(parts[0]).replace(*command_slot)
-        for index, part in enumerate(parts[1:]):
-            slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
-            pattern += slot + re.escape(part).replace(*command_slot)
-        compiled = re.compile(pattern) if command_slot[1] in pattern else None
-    _slack_manifest_re_slot.append(compiled)
-    return compiled
+def _slack_manifest_payload_re() -> tuple[re.Pattern[str], ...] | None:
+    """One exact pattern per switch combination, built by the emitters' own
+    ``stripped_template()``; ``{{ALIAS}}`` repeats are backreferences, ``{{COMMAND}}``
+    is pinned by the caller. A variant that does not build is left out (refused)."""
+    if not _slack_manifest_re_slot:
+        built: list[re.Pattern[str]] = []
+        try:
+            from kiro_crew import slack_manifest
+
+            for combo in slack_manifest.feature_sets():
+                with contextlib.suppress(Exception):
+                    built.append(_slack_manifest_variant_re(slack_manifest, combo))
+        except Exception:
+            pass
+        _slack_manifest_re_slot.append(tuple(built) or None)
+    return _slack_manifest_re_slot[0]
 
 
 def _kirocrew_slack_app_link_alias(
@@ -255,13 +256,11 @@ def _kirocrew_slack_app_link_alias(
     payloads = params["manifest_yaml"]
     if len(payloads) != 1:
         return None
-    pattern = _slack_manifest_payload_re()
-    if pattern is None:
-        return None
-    match = pattern.fullmatch(payloads[0])
-    if match is None or match["command"] != slack_manifest.slash_command(match["alias"]):
-        return None
-    return match.group("alias")
+    for pattern in _slack_manifest_payload_re() or ():
+        match = pattern.fullmatch(payloads[0])
+        if match is not None and match["command"] == slack_manifest.slash_command(match["alias"]):
+            return match.group("alias")
+    return None
 
 
 def _exfil_url_warning(

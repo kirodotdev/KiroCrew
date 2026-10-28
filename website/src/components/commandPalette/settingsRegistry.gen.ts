@@ -50,6 +50,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.use_builtin_browser"
   },
   {
+    "id": "channels.agent-sessions-slack",
+    "label": "Agent sessions (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.agent_sessions",
+    "labelSuffix": "Slack",
+    "description": "Slack threads show a live status and title, and a Stop button that stops the agent's current reply.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.agent_sessions"
+  },
+  {
     "id": "channels.allowed-emails-webex",
     "label": "Allowed emails (Webex)",
     "labelKey": "pages.settings.webexPanel.allowed_emails",
@@ -574,7 +588,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Owner Slack member ID (Slack)",
     "labelKey": "pages.settings.slackPanel.owner_slack_member_id",
     "labelSuffix": "Slack",
-    "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
+    "description": "Your Slack member ID (KIROCREW_OWNER_ID): in Slack, open your profile, select ⋮, then Copy member ID. Starts with U or W.",
     "tab": "channels",
     "type": "input",
     "occurrence": 1,

@@ -163,6 +163,36 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _wire_slack_code_capability_probe(
+    orch: GatewayOrchestrator, web_client: AsyncWebClient
+) -> None:
+    """Re-read the install's Slack Code capability on every socket (re)connect.
+
+    Slack sends ``{"type": "hello"}`` each time a Socket Mode connection opens,
+    so a message listener that answers it covers the first connect and every
+    reconnect. The probe runs as its own task: the listener must not hold the
+    socket's receive loop for an HTTP round trip.
+    """
+    from kiro_crew.slack import features, scope_probe
+
+    state = orch.dashboard_state
+    features.set_capability_notifier(
+        scope_probe.capability_notifier(state.notify if state is not None else None)
+    )
+    tasks: set[asyncio.Task[None]] = set()
+
+    async def _on_message(_client: Any, message: dict, _raw: Any = None) -> None:
+        if not isinstance(message, dict) or message.get("type") != "hello":
+            return
+        task = asyncio.create_task(scope_probe.refresh_capabilities(web_client))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    listeners = getattr(orch._socket_client, "message_listeners", None)
+    if isinstance(listeners, list):
+        listeners.append(_on_message)
+
+
 async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     """Wire up the Socket Mode client and attach the event listener.
 
@@ -223,6 +253,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         app_token=orch._app_token,
         web_client=web_client,
     )
+    _wire_slack_code_capability_probe(orch, web_client)
 
     async def _on_event(client: WSSocketModeClient, req: SocketModeRequest) -> None:
         # Reserve before the ACK's first suspension. A paused update returns

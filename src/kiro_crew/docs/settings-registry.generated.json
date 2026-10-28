@@ -36,6 +36,14 @@
       "configKey": "dashboard.use_builtin_browser"
     },
     {
+      "id": "channels.agent-sessions-slack",
+      "label": "Agent sessions (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.agent_sessions",
+      "description": "Slack threads show a live status and title, and a Stop button that stops the agent's current reply.",
+      "configKey": "slack.agent_sessions"
+    },
+    {
       "id": "channels.allowed-emails-webex",
       "label": "Allowed emails (Webex)",
       "tab": "channels",
@@ -314,7 +322,7 @@
       "label": "Owner Slack member ID (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.owner-slack-member-id-slack",
-      "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W."
+      "description": "Your Slack member ID (KIROCREW_OWNER_ID): in Slack, open your profile, select ⋮, then Copy member ID. Starts with U or W."
     },
     {
       "id": "channels.phase-reactions-slack",
