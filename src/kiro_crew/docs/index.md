@@ -21,7 +21,9 @@ kirocrew gateway     # → http://localhost:5476
 
 `kiro-cli` must be installed, on your `PATH`, and logged in. See
 [Getting Started](getting-started.md) for the source install, the pip channel
-index, first-time setup, and connecting messaging channels.
+index, first-time setup, and connecting messaging channels. Already using
+kiro-cli? [Coming from kiro-cli](coming-from-kiro-cli.md) explains what carries
+over and what changes.
 
 ## Core Capabilities
 
@@ -116,6 +118,8 @@ gracefully rather than failing the turn.
 ## Guides
 
 - [Getting Started](getting-started.md): installation, first-time setup, running in the background
+- [Coming from kiro-cli](coming-from-kiro-cli.md): how Kiro Crew relates to kiro-cli, what
+  carries over, why a chat behaves differently, and how to get CLI-style behaviour
 - [Configuration](configuration.md): config file reference, environment variables, sandbox
 - [Use Cases](use-cases.md): real-world workflows from the community
 - [Troubleshooting](troubleshooting.md): common issues and fixes
