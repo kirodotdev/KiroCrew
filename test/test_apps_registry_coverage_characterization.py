@@ -290,7 +290,14 @@ class TestTimeoutsAreReadWhereTheyAreUsed:
             "fetch cut off by the clone timeout",
             timeout=5,  # flake-ok: the 5 s bound IS the assertion; an inert _CLONE_TIMEOUT patch waits the real 60 s
         )
-        assert result == {"ok": False, "name": "demo-app", "error": "git fetch failed (exit 124)"}
+        assert result == {
+            "ok": False,
+            "name": "demo-app",
+            "error": (
+                "git fetch failed (exit 124): timed out; "
+                "check your network and proxy settings (HTTPS_PROXY, NO_PROXY)"
+            ),
+        }
         assert len(killed) == 1 and isinstance(killed[0], _NeverExits)
         assert "timed out" in log
         assert not dest.exists(), "a destination this call created is discarded on failure"

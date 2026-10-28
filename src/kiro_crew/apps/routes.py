@@ -139,6 +139,10 @@ from kiro_crew.apps.registry import (
     resolve_installed_trust_repository,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+)
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
 from kiro_crew.apps.routes_enable import handle_disable_app, handle_enable_app, handle_open_app
 from kiro_crew.apps.routes_install import (

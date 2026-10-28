@@ -229,7 +229,10 @@ class TestIndexOriginatedCloneFailureHintIsGated:
         assert "credentials are withheld" not in result["error"]
         # The honest, redacted (constant) failure class is surfaced instead.
         assert result["code"] == "git_clone_failed"
-        assert result["error"] == "Git clone failed: host could not be resolved."
+        assert result["error"] == (
+            "Git clone failed: host could not be resolved; "
+            "check your network and proxy settings (HTTPS_PROXY, NO_PROXY)."
+        )
 
     @pytest.mark.asyncio
     async def test_typoed_branch_failure_drops_the_posture_hint(self, tmp_path):
@@ -377,7 +380,10 @@ class TestIndexOriginatedCloneFailureHintIsGated:
         assert secret_path not in banner
         assert "x-access-token" not in banner
         # Exact honest banner (not a bare substring of git output).
-        assert banner == "Git clone failed: host could not be resolved."
+        assert banner == (
+            "Git clone failed: host could not be resolved; "
+            "check your network and proxy settings (HTTPS_PROXY, NO_PROXY)."
+        )
 
 
 class TestCloneLocaleIsPinnedForDeterministicClassifier:

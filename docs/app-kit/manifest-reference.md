@@ -1286,7 +1286,10 @@ hints a desktop launch needs:
   is the list): shell and locale basics such as `HOME` and `PATH`, the XDG
   directories (including `XDG_RUNTIME_DIR`), toolchain roots (Java, Node,
   Python, Conda, Gradle/Maven), the git SSH overrides, and the Windows
-  equivalents of the basics.
+  equivalents of the basics. Proxy and CA-bundle variables (`HTTPS_PROXY`,
+  `NO_PROXY`, `SSL_CERT_FILE`, ...) are not on it: only the gateway's own
+  `git` clone, fetch and pull of app and registry repositories receive them,
+  because a proxy URL can carry a password.
 - **Removed again before the spawn** (`sandbox.scrub_env`): of the allowlisted
   names, the SSH agent socket `SSH_AUTH_SOCK`. The install and build commands
   run git against the owner's own repositories and need it; a launcher does

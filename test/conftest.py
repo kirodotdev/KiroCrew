@@ -287,6 +287,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,
     _no_carried_auto_update_effect,
+    _no_inherited_git_proxy_env,
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
     _no_managed_venv_override,

@@ -56,7 +56,11 @@ from kiro_crew.apps.registry_pipeline.store_art import (
     _SAFE_BRANCH_RE,
     _prewarm_owner_tier_store_assets,
 )
-from kiro_crew.apps.registry_pipeline.subprocess_env import minimal_env
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+    minimal_env,
+)
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -311,6 +315,9 @@ async def _fetch_external_registry_index(
     credential_target = repo
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # SEL audit: log external subprocess invocation for traceability (best-effort).
     def _sel_outcome(outcome: str) -> None:
@@ -334,7 +341,7 @@ async def _fetch_external_registry_index(
     try:
         tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-registry-")
         clone_path = Path(tmp_root)
-        if credentialed_transport:
+        if isolate_transport:
             # See `_git_fetch_branch`: a combined credentialed clone would let
             # checkout-time filters inherit the one-shot credential mapping.
             clone_path /= "branch"
@@ -393,7 +400,7 @@ async def _fetch_external_registry_index(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=minimal_env(),
+                env=_git_network_env(minimal_env(), git_url),
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )

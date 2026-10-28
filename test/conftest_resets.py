@@ -383,6 +383,23 @@ def _no_restart_ready_timeout_override(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_git_proxy_env(_floor_monkeypatch):
+    """Keep a developer's proxy variables out of every test.
+
+    A proxy URL holding a password sends an App Store clone down the split fetch
+    path, so an exported ``HTTPS_PROXY`` would change which git commands a registry
+    test sees. The names come from the module that reads them, so the two cannot
+    drift. CA-bundle variables are left alone: they change no git command, and the
+    CLI start exports ``SSL_CERT_FILE`` itself when it is unset. A test that needs
+    a proxy sets the variable itself.
+    """
+    from kiro_crew.apps.registry_pipeline.subprocess_env import _GIT_PROXY_ENV_KEYS
+
+    for key in (*_GIT_PROXY_ENV_KEYS, "NO_PROXY", "no_proxy"):
+        _floor_monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_managed_venv_override(_floor_monkeypatch):
     """Keep a developer's ``KIROCREW_VENV`` out of every test.
 
