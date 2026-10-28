@@ -734,6 +734,36 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
     state.subagents.settle_queued_delivery.assert_awaited_once_with(owed)
 
 
+@pytest.mark.asyncio
+async def test_a_repeated_mark_leaves_an_already_reported_member_out_of_the_set(
+    tmp_path,
+) -> None:
+    """The tool re-sends a mark whose first attempt timed out. If that first
+    attempt already settled a queued announce, the member has reached the parent
+    and no later check discards its id, so the repeat must not add it to the
+    inline-collected set. A member still running is added as before."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.handlers.messaging import api_spawn_mark_collected
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    infos = {
+        "a1": MagicMock(_reported_to_parent=True),
+        "b1": MagicMock(_reported_to_parent=False),
+    }
+    state.subagents = MagicMock(
+        get=MagicMock(side_effect=infos.get), settle_queued_delivery=AsyncMock()
+    )
+
+    await api_spawn_mark_collected(
+        _Req(state, body={"ids": ["a1", "b1"], "parent_session": "dashboard:chat-1"})
+    )
+
+    assert slot._subagents_inline_collected == {"b1"}
+    state.subagents.settle_queued_delivery.assert_not_awaited()
+
+
 def test_spawn_list_never_says_none_running_over_a_partial_queue() -> None:
     from kiro_crew.mcp_tools import spawn as spawn_tools
 

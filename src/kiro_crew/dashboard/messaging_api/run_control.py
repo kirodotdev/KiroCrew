@@ -463,6 +463,17 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
             owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
         except Exception:
             logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
+    if state.subagents is not None:
+        # A completion still queued was settled above. One already handed to
+        # the parent and not queued (injected, or settled by an earlier
+        # mark whose reply the tool never saw) has passed every check that
+        # would discard its id, so it stays out of the set. That makes a
+        # repeated mark a no-op, which the tool relies on when it re-sends one.
+        wanted = {
+            aid
+            for aid in wanted
+            if getattr(state.subagents.get(aid), "_reported_to_parent", False) is not True
+        }
     room = max(0, _COLLECTED_IDS_CAP - len(slot._subagents_inline_collected))
     slot._subagents_inline_collected.update(sorted(wanted)[:room])
     if owed and state.subagents is not None:

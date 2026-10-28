@@ -1062,7 +1062,7 @@ class TestDeferredCollectionCommit:
         from kiro_crew import mcp_core
         from kiro_crew.mcp_tools.spawn import _SubAgentsStep
 
-        post = MagicMock()
+        post = MagicMock(return_value={"status": "ok", "marked": 1})
         audit = MagicMock()
         monkeypatch.setattr(mcp_core, "_post", post)
         monkeypatch.setattr(mcp_core, "sel", lambda: audit)
