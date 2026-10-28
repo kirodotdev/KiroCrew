@@ -10530,7 +10530,7 @@
     "useWebSocket": {
       "response_ready": "Réponse prête",
       "waiting_for_input": "En attente de ta réponse",
-      "turn_failed": "Ce tour a échoué. Ouvrez la session pour en voir la raison.",
+      "turn_failed": "Ce tour a échoué. Ouvre la session pour en voir la raison.",
       "tool_approval": "Approbation d’outil : {{name}}",
       "approval_waiting": "En attente de ton approbation : {{name}}",
       "approval_wait_expired": "L’attente d’approbation a expiré, la demande a donc été refusée.",
