@@ -11642,6 +11642,14 @@
         "session_colors": "सत्र रंग",
         "save_failed": "सत्र रंग सहेजा नहीं जा सका"
       },
+      "sessionMessageCard": {
+        "needs_you": "ध्यान चाहिए",
+        "open_session": "{{name}} खोलो",
+        "show_less": "कम दिखाओ",
+        "show_more": "और दिखाओ",
+        "this_session": "यह सत्र",
+        "to_recipient": "{{name}} को भेजा गया"
+      },
       "sessionFlyout": {
         "new": "नया",
         "new_chat": "नई चैट",
