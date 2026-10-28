@@ -351,9 +351,20 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // Focus + refit when becoming visible. Re-measure here too so a pane that
   // gained the web font while it was hidden (display:none) picks up the correct
   // cell metrics the moment it is shown.
+  //
+  // Until xterm's first render places its helper textarea at the cursor, the
+  // stylesheet parks it at left:-9999em. iPhone Safari lifts the page to reveal
+  // the field it focuses as the keyboard opens, and an off-screen field gives
+  // it nothing to reveal, so a newly opened terminal stayed under the keyboard.
+  // Seat it at the first cell instead; xterm overwrites both on its next sync.
   useEffect(() => {
     if (!visible) return
     const raf = requestAnimationFrame(doRefit)
+    const input = term.textarea
+    if (input && !input.style.left) {
+      input.style.left = '0px'
+      input.style.top = '0px'
+    }
     term.focus()
     return () => cancelAnimationFrame(raf)
   }, [visible, term, doRefit])

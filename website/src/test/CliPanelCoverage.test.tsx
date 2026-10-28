@@ -37,6 +37,10 @@ const xt = vi.hoisted(() => {
     static instances: FakeTerminal[] = []
     options: FakeOptions
     element: HTMLElement | undefined = undefined
+    /** xterm's helper textarea; its inline left/top stay unset until a render. */
+    textarea: HTMLTextAreaElement | undefined = undefined
+    /** The helper textarea's inline left/top at each focus() call. */
+    focusedAt: { left: string; top: string }[] = []
     /** Ordered log of every fontFamily write — proves the re-measure toggle. */
     fontFamilyWrites: string[] = []
     openCalls = 0
@@ -67,10 +71,17 @@ const xt = vi.hoisted(() => {
       const el = document.createElement('div')
       el.className = 'xterm'
       Object.defineProperty(el, 'offsetParent', { get: () => this.offsetParent, configurable: true })
+      const ta = document.createElement('textarea')
+      ta.className = 'xterm-helper-textarea'
+      el.appendChild(ta)
       container.appendChild(el)
       this.element = el
+      this.textarea = ta
     }
-    focus() { this.focusCalls += 1 }
+    focus() {
+      this.focusCalls += 1
+      if (this.textarea) this.focusedAt.push({ left: this.textarea.style.left, top: this.textarea.style.top })
+    }
     dispose() { this.disposed = true }
     hasSelection() { return this.selection.length > 0 }
     getSelection() { return this.selection }
@@ -379,6 +390,25 @@ describe('CliPanel mount', () => {
       document.documentElement.style.removeProperty('--bg')
       document.documentElement.style.removeProperty('--text')
     }
+  })
+
+  it('focuses a freshly opened terminal with its input inside the pane, not parked off-screen', () => {
+    // Before xterm's first render its helper textarea sits at the stylesheet's
+    // left:-9999em, 0x0. iPhone Safari reveals the focused field when the
+    // keyboard opens, so focusing it there left the new terminal under the
+    // keyboard on the first open.
+    const { term } = mount()
+    expect(term.focusedAt).toEqual([{ left: '0px', top: '0px' }])
+  })
+
+  it('leaves a rendered terminal input where xterm put it', () => {
+    const sessionId = nextId()
+    const first = mount({ sessionId })
+    first.term.textarea!.style.left = '18px'
+    first.term.textarea!.style.top = '36px'
+    cleanup()
+    const second = mount({ sessionId })
+    expect(second.term.focusedAt.at(-1)).toEqual({ left: '18px', top: '36px' })
   })
 
   it('hides the pane and skips focus when not visible', () => {
@@ -851,7 +881,7 @@ describe('CliPanel copy action', () => {
     const copyBtn = screen.getByRole('button', { name: COPY_LABEL })
     copyBtn.focus()
     await act(async () => { fireEvent.click(copyBtn) })
-    expect(document.querySelector('textarea')).toBeNull()
+    expect(document.querySelector('textarea:not(.xterm-helper-textarea)')).toBeNull()
     expect(document.activeElement).toBe(copyBtn)
   })
 })
