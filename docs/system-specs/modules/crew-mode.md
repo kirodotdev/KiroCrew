@@ -2936,14 +2936,17 @@ in the tab there is no unsent answer for the page to hold or guard, so exits ask
 only about a Schedules draft. The mate's `panel_publish` record keeps its MCP
 tool and its `GET /api/members/{slug}/panel` read; no surface on this page draws
 it. Files is the standard SidePanel browser scoped
-to the workspace rule above. Dashboard and Files are the only STANDING tabs.
-Side Chat remains available dynamically through selection Ask and the plus
-menu; it is not a standing entry — and the plus menu keeps every other dynamic
-view the chat page offers (Terminal, Browser, Git, Subagents, Workflows, the
-Developer-Mode Logs / Context / Crew log, app-contributed tabs), bound to the
-member's slot once the thread is confirmed. Withheld outright are the
+to the workspace rule above, labelled **Workspace** on this page's strip (the
+Profile card's word for the same directory; `SidePanel.viewTitles` changes the
+title only, the tab id stays `files`). Dashboard and Files are the only
+STANDING tabs. Side Chat remains available dynamically through selection Ask
+and the plus menu; it is not a standing entry — and the plus menu offers
+Terminal, Browser and app-contributed tabs, bound to the member's slot
+once the thread is confirmed (#25378). Withheld outright are the
 transcript-fed views (Changes / Issues / Links / Pins, plus the session
-Summary), the chat page's Command Center, and Artifacts — a pinned standing
+Summary), Subagents, Workflows and Git (a mate hands its work to workers), the
+diagnostics group (Logs / Context / Crew log), the chat page's Command Center,
+and Artifacts — a pinned standing
 tab on the chat page that has no place in this page's Dashboard + Files set
 (`MEMBERS_WITHHELD_VIEWS`). Withholding that LIST does not withhold an
 artifact DOCUMENT: `SidePanel.isWithheld` ties every document tab (file, diff,

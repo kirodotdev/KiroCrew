@@ -521,6 +521,10 @@ export function MembersPageSidePanel({
   activeSlug, activeMemberName,
 }: MembersPageSidePanelProps) {
   const { t } = useTranslation()
+  // Files is the mate's own directory here, which its profile card already
+  // calls Workspace; the strip uses the same word.
+  const workspaceLabel = t('pages.membersPage.profile_workspace')
+  const viewTitles = useMemo(() => ({ files: workspaceLabel }), [workspaceLabel])
   const { roster, isMobile, rosterShown, beside, panelFillWidth } = layout
   const { openProfile, schedGuardRef, schedAtStakeRef, closeDocked } = profileCard
   const { sidePanelX, sidePanelSlideRef } = drawers
@@ -619,6 +623,7 @@ export function MembersPageSidePanel({
     // another session, whose remembered size a drag here must not take.
     persistSlot: confirmedSlot,
     hiddenViews,
+    viewTitles,
     onActiveTabChange: setShownTabId,
     projectDir,
     onFileOpen: openFile,

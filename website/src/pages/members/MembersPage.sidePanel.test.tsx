@@ -543,7 +543,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(classes()).not.toContain('md:flex')
   })
 
-  it('the side panel has Dashboard and Files as its two standing tabs', async () => {
+  it('the side panel has Dashboard and Workspace as its two standing tabs', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-dashboard')
@@ -551,7 +551,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const leading = within(screen.getByTestId('side-panel-leading-tabs')).getAllByRole('tab')
     expect(leading).toHaveLength(1)
     expect(leading[0]).toHaveAccessibleName('Dashboard')
-    expect(screen.getByRole('tab', { name: 'Files' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Workspace' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Notes' })).toBeNull()
     expect(screen.queryByRole('tab', { name: 'Work log' })).toBeNull()
     expect(screen.queryByRole('tab', { name: 'Schedules' })).toBeNull()
@@ -580,24 +580,24 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
 
     it('reopens on Dashboard after a reload even when Files was focused', async () => {
       const first = await openOncall()
-      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
-      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
       first.unmount()
       // The strip keeps its stored focus on Files, as the persisted bucket does
       // across a reload; the reload itself is the module state starting over.
       resetDashboardOnLoad()
       await openOncall()
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
-      expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'false')
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'false')
     })
 
     it('keeps the tab the person picked on an in-app return', async () => {
       const first = await openOncall()
-      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
-      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
       first.unmount()
       await openOncall()
-      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
       expect(dashTab()).toHaveAttribute('aria-selected', 'false')
     })
   })
@@ -1032,15 +1032,18 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(navigateSpy).not.toHaveBeenCalled()
   })
 
-  it('withholds only the unfed views, Command Center and Artifacts: Dashboard + Files stand, the + menu keeps its dynamic views', async () => {
+  it('withholds the unfed views, Command Center, Artifacts, Subagents, Workflows, Git and diagnostics: Dashboard + Workspace stand', async () => {
     // The set is the contract: every view fed by ChatPage-owned transcript
     // indexes plus the session Summary (MEMBERS_UNFED_VIEWS), the chat page's
-    // Command Center (the Dashboard tab is the one dashboard entrance here) and
+    // Command Center (the Dashboard tab is the one dashboard entrance here),
     // Artifacts — pinned on the chat page, but this page's standing set is
-    // Dashboard + Files. Nothing else: Terminal, Browser, Git, Subagents,
-    // Workflows, the Developer-Mode views and app tabs stay reachable from +.
+    // Dashboard + Files —, Subagents, Workflows, Git and the diagnostics group
+    // (Logs, Context, Crew log). Terminal, Browser, Side Chat and app tabs
+    // stay reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
-    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts'].sort())
+    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual(
+      [...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'workflows', 'git', 'logs', 'context', 'crewlog'].sort(),
+    )
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('terminal')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('app')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('side')
@@ -1060,17 +1063,21 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
     })
-    // Standing tabs: Dashboard (leading) + Files (pinned) — no Artifacts, no Changes.
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Dashboard', 'Files'])
+    // Standing tabs: Dashboard (leading) + Files (pinned, labelled Workspace
+    // here) — no Artifacts, no Changes.
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Dashboard', 'Workspace'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
     )
     const menu = await screen.findByRole('menu')
-    for (const name of ['Side Chat', 'Terminal', 'Browser', 'Git', 'Subagents', 'Workflows']) {
+    for (const name of ['Side Chat', 'Terminal', 'Browser']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
-    for (const name of ['Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center']) {
+    for (const name of [
+      'Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center',
+      'Subagents', 'Workflows', 'Git', 'Logs', 'Context breakdown', 'Crew log',
+    ]) {
       expect(within(menu).queryByRole('menuitem', { name })).toBeNull()
     }
   })
@@ -1086,7 +1093,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0, project: '/home/me/repos/oncall-desk' }] as never))
     })
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
     const files = await screen.findByTestId('files-home-stub')
     expect(files).toHaveAttribute('data-project-dir', '/home/me/repos/oncall-desk')
     // The Profile's Workspace tile still names the workspace, as a name. The

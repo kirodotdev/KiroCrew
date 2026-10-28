@@ -749,7 +749,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
     expect(screen.queryByDisplayValue('Check the board')).toBeNull()
     expect(await screen.findByTestId('side-panel-root')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('Workspace from a FLOATING Profile opens Files without asking — the card and its draft stay mounted', async () => {
@@ -765,7 +765,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
 
     fireEvent.click(screen.getByTestId('crew-profile-workspace'))
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()

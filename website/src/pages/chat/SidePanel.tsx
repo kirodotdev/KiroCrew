@@ -200,6 +200,10 @@ interface SidePanelProps {
    *  reason: its `AppHost` body holds the app's own unsaved state, which the
    *  re-key's remount would discard. */
   hiddenViews?: ReadonlySet<SidePanelWithholdable>
+  /** Host-specific strip labels for singleton views, already localised (the
+   *  Members page calls Files "Workspace": there it is the mate's own
+   *  directory). Only the displayed title changes; the tab id stays the kind. */
+  viewTitles?: Partial<Record<ViewKind, string>>
   /** Pin Summary (`dashboard.side_panel_pin_summary`); see `usePinnedViews`. */
   pinSummary?: boolean
   /** Reports the tab the strip actually SHOWS whenever it changes — the stored
@@ -248,6 +252,7 @@ export default function SidePanel({
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
   leadingTabs, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
+  viewTitles,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder } = tabsCtl
   const hiddenViews = hostHiddenViews
@@ -360,9 +365,16 @@ export default function SidePanel({
     const leaving = leadingTabsRef.current?.find(t => t.id === activeLeadingIdRef.current)
     return leaving?.onBeforeLeave ?? null
   }, [])
-  const visibleTabs = useMemo(() => (hiddenViews || terminalsPending
-    ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
-    : tabs), [tabs, hiddenViews, isWithheld, terminalsPending])
+  const visibleTabs = useMemo(() => {
+    const shown = hiddenViews || terminalsPending
+      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
+      : tabs
+    if (!viewTitles) return shown
+    return shown.map(t => {
+      const title = Object.prototype.hasOwnProperty.call(viewTitles, t.kind) ? viewTitles[t.kind as ViewKind] : undefined
+      return title && title !== t.title ? { ...t, title } : t
+    })
+  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
     if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId
