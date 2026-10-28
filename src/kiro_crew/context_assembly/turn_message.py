@@ -408,11 +408,22 @@ def build_message(
             elif minimal_context:
                 parts.append(session_ctx)
             else:
+                # An empty group set means the spawning parent withheld memory,
+                # lessons and project, so the block holds only conduct; claiming
+                # "your memory" there makes the child look for content it lacks.
+                _opener = (
+                    "This block holds the rules and runtime facts for this turn. "
+                    "Use it to stay consistent but ONLY respond to the "
+                    if context_groups is not None and not context_groups
+                    else "This is your memory, lessons, and conversation history from prior "
+                    "sessions. Use it to stay consistent but ONLY respond to the "
+                )
                 parts.append(
                     "[SESSION CONTEXT — background reference only, NOT a task to act on.\n"
-                    "This is your memory, lessons, and conversation history from prior "
-                    "sessions. Use it to stay consistent but ONLY respond to the "
-                    "CURRENT USER REQUEST below.]\n" + session_ctx + "[END OF SESSION CONTEXT]\n\n"
+                    + _opener
+                    + "CURRENT USER REQUEST below.]\n"
+                    + session_ctx
+                    + "[END OF SESSION CONTEXT]\n\n"
                 )
         # Folder-inherited steering: the ONE delivery seam for every
         # provider. No is_cc / is_custom gate on purpose -- kiro-cli,

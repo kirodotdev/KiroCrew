@@ -343,3 +343,22 @@ class TestSubagentCriticalRules:
         assert "Your reply goes to the agent that started you" in msg
         assert "[END CRITICAL RULES]" in msg
         assert "renders interactive buttons" not in msg
+
+
+class TestSessionContextOpener:
+    """The [SESSION CONTEXT] opener must not claim content the parent withheld."""
+
+    _CLAIM = "This is your memory, lessons, and conversation history"
+
+    def test_default_opener_names_memory_and_lessons(self, tmp_path):
+        msg, _ = _builder(tmp_path).build_message("q", True, "subagent:abc", interactive=False)
+        assert self._CLAIM in msg
+
+    def test_neutral_opener_when_every_group_is_withheld(self, tmp_path):
+        msg, _ = _builder(tmp_path).build_message(
+            "q", True, "subagent:abc", interactive=False, context_groups=frozenset()
+        )
+        assert self._CLAIM not in msg
+        assert "rules and runtime facts for this turn" in msg
+        assert "CURRENT USER REQUEST below" in msg
+        assert "[END OF SESSION CONTEXT]" in msg
