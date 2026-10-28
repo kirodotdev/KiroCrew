@@ -222,14 +222,14 @@ def _materialize(base: dict, rows: dict[str, dict], catalog: dict[str, str]) -> 
             result["mcpServers"][server].setdefault("autoApprove", []).append(tool)
     for section in ("tools", "allowedTools"):
         result[section] = list(rows[section])
+    # Ambient loading serves the global mcp.json, whose servers can back a grant too.
+    ambient, servers = result.get("includeMcpJson", True) is not False, result["mcpServers"]
     result["allowedTools"] = [
         ref
         for ref in result["allowedTools"]
         if not ref.startswith("@")
-        or (
-            ref[1:].split("/", 1)[0] in result["mcpServers"]
-            and not result["mcpServers"][ref[1:].split("/", 1)[0]].get("disabled")
-        )
+        or (ambient and ref[1:].split("/", 1)[0] not in servers)
+        or not servers.get(ref[1:].split("/", 1)[0], {"disabled": True}).get("disabled")
     ]
     # Preserve the relative order of all surviving custom resource entries.
     wanted = list(rows["resources"].values()) + list(rows["skills"].values())

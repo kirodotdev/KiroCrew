@@ -1191,6 +1191,31 @@ def test_shared_enrollment_keeps_implicit_global_scope_unchanged(editor):
         save(service, [{"section": "tools", "id": "read", "action": "remove"}])
 
 
+@pytest.mark.parametrize("existing", [[], ["@global/read_page"]])
+def test_adding_a_grant_keeps_refs_to_servers_from_the_global_mcp_json(editor, existing):
+    """An ``@server`` grant whose server only the global mcp.json declares survives an add."""
+    service, home, specs, parent = editor
+    parent.pop("includeMcpJson")
+    parent["allowedTools"] = list(existing)
+    (specs / "parent.json").write_text(json.dumps(parent))
+    save(service, enroll=True)
+    save(
+        service,
+        [{"section": "allowedTools", "id": "@global/search", "action": "set", "value": True}],
+    )
+    assert spec_for(home, specs)["allowedTools"] == [*existing, "@global/search"]
+
+
+def test_pinned_off_mcp_json_still_drops_refs_to_undeclared_servers(editor):
+    service, home, specs, _ = editor
+    save(service, enroll=True)
+    save(
+        service,
+        [{"section": "allowedTools", "id": "@global/search", "action": "set", "value": True}],
+    )
+    assert spec_for(home, specs)["allowedTools"] == []
+
+
 def test_preview_and_publication_use_identical_governance_without_preview_audit(
     editor, monkeypatch
 ):

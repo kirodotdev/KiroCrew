@@ -2459,6 +2459,10 @@ removals of servers, tools or approval entries refuse with
 the saved and final projected rows, so Parent reconciliation, selected acceptance,
 per-item inheritance and whole reset cannot bypass the explicit-remove guard.
 A final projection with `includeMcpJson: false` can represent these removals.
+Under ambient loading an `@server` entry in `allowedTools` whose server the spec
+does not declare is kept, because the global `mcp.json` can serve that server;
+with `includeMcpJson: false` such an entry is dropped. An entry naming a server
+the spec declares `disabled` is dropped in both cases.
 
 Sidecar reads are capped at 8 MiB and require a single-link regular file.
 Mutators refuse unreadable state instead of replacing it with an empty map.
