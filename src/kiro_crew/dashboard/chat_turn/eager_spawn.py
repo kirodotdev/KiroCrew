@@ -173,6 +173,12 @@ def _is_pre_spawn_refusal(exc: BaseException) -> bool:
     """
     if isinstance(exc, CapabilityError):
         return True
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+    if isinstance(exc, CrewmateHarnessUnavailable):
+        # Refused before the factory spawned anything, and a retry repeats it
+        # until someone changes the crewmate's harness.
+        return True
     return isinstance(exc, CapabilityStartupError) and str(exc) in _PRE_SPAWN_CAPABILITY_CODES
 
 
@@ -767,10 +773,15 @@ async def _eager_spawn(
             # same fresh-session path it always does. The backend is the
             # factory's own selection for this key, and the prefetch allocates
             # with no channel identity.
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
+
             if allow_resume and resume_takes_tool_search_replay(
                 tool_search=cfg.agent.tool_search,
                 backend=select_provider_backend(
-                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                    session_key,
+                    cfg.agent.member_acp_backend,
+                    cfg.agent.acp_backend,
+                    crew_backend=crewmate_backend_pin(cfg, session_key),
                 ),
                 channel_id=None,
                 session_key=session_key,

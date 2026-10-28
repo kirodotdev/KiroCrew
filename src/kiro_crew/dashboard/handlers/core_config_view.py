@@ -68,6 +68,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "memory_store",
     "model",
     "worker_model",
+    # A crewmate's harness pin is kept as written so the selection gate can
+    # refuse it with its reason, so any string a hand edit left can arrive here.
+    "acp_backend",
     "source",
     "telegram_account",
 )

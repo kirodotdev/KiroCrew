@@ -92,7 +92,7 @@ def _agent_list_label(label: str) -> str:
     return safe_terminal_line(label)
 
 
-def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
+def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     """The ``--model`` value to store on an agent, or exit with the reason.
 
     ``""`` and ``auto`` both mean "no pin", stored as ``""`` the way the crew
@@ -106,7 +106,8 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     (``_no_kiro_id_reason``, which the crew editor runs only with no live
     catalog). Entitlement itself needs a live session's advertised list, which
     this offline command does not have, so an unknown id is accepted, as the
-    crew editor accepts it with no live session.
+    crew editor accepts it with no live session. *crew* names the agent being
+    updated, so a crewmate that pins its own harness is judged against it.
     """
     model = normalize_agent_model(raw)
     if not model:
@@ -128,7 +129,23 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
         sys.exit(1)
     if is_claude_code(cfg.agent.provider):
         return model
-    correction = model_registry.acp_id_correction(model)
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
+
+    try:
+        backend = _pin_entitlement_backend(cfg, crew)
+    except CrewmateHarnessUnavailable as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    from kiro_crew.crewmate_harness import crewmate_pin_for, kiro_spelling_applies
+
+    # A crewmate pinned to a harness with its own model ids takes those ids as
+    # written; every other agent keeps the kiro-cli spelling check.
+    correction = (
+        model_registry.acp_id_correction(model)
+        if kiro_spelling_applies(backend, crewmate_pin_for(cfg, crew) is not None)
+        else None
+    )
     if correction:
         print(
             f"Error: {model!r} is not a model kiro-cli serves; the registry maps that "
@@ -139,10 +156,8 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     # Imported here, as the crew editor's own validator imports it, so the
     # dashboard modules load only when a --model value is actually judged.
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
-    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
     from kiro_crew.dashboard.handlers.core import _no_kiro_id_reason
 
-    backend = _pin_entitlement_backend(cfg)
     reason = _model_rejected_reason(model, backend) or _no_kiro_id_reason(model, backend)
     if reason:
         print(f"Error: {reason}", file=sys.stderr)
@@ -309,7 +324,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             agent.workspace = args.workspace
         new_model = getattr(args, "model", None)
         if new_model is not None:
-            agent.model = _agent_model_or_exit(new_model, cfg)
+            agent.model = _agent_model_or_exit(new_model, cfg, args.name)
         new_label = getattr(args, "display_name", None)
         if new_label is not None:
             try:

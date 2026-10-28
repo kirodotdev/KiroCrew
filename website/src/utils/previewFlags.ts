@@ -148,6 +148,18 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
+ * A crewmate's own agent harness: the Harness row on a crewmate's profile
+ * Settings page, which pins the harness its chat and its workers run on
+ * (`agents.<name>.acp_backend`) and scopes the Model list to that harness.
+ *
+ * A developer control: most people never need a crewmate off the install's
+ * harness, and a pin moves that crewmate's work to another provider. Gating the
+ * INGRESS only, like every flag here: a pin already saved keeps applying with
+ * the flag off, and the server never reads this key.
+ */
+export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

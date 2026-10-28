@@ -298,7 +298,7 @@ def test_the_session_tools_check_is_the_context_builders_member_backend_answer(
 
     _seed()
     _floor_monkeypatch.setattr(
-        context_mod, "_member_backend_can_dispatch", lambda cfg=None: can_dispatch
+        context_mod, "_member_backend_can_dispatch", lambda cfg=None, crew="": can_dispatch
     )
     _floor_monkeypatch.setattr(
         session_mcp, "session_mcp_server_is_disabled", lambda *_a, **_k: disabled

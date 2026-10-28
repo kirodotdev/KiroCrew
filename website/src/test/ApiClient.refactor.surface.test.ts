@@ -65,7 +65,7 @@ const API_KEY_ORDER = [
   'memberExportPreview', 'memberExportLessonsDraft', 'memberExportFile', 'memberActivity', 'memberProjections',
   'memberDashboard', 'memberDashboardPreviewApply', 'memberDashboardPreviewDiscard', 'memberDashboardLock', 'sessionDashboard', 'memberDashboardRefetch',
   'memberBriefing', 'memberGoals', 'teams', 'updateKirocrewAgent',
-  'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models',
+  'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models', 'harnessModels',
   'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands', 'chatSlotAgent',
   'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotTurnTimeout',
   'setChatSlotTurnTimeout', 'chatSlotsModel', 'chatSlotsFollowDefaultCount', 'chatSlotsFollowDefault',

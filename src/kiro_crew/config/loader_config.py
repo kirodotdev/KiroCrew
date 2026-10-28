@@ -1436,13 +1436,21 @@ class KiroCrewConfig:
             # kiro -- the member thread then runs as plain chat and the mount
             # step logs why.
             # circular import: members sits above config in the layering.
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
             from kiro_crew.members import select_provider_backend
 
+            # A crewmate's own harness pin outranks the member route and fails
+            # closed before the gate (H17), but only when it selects the harness.
+            # An explicit override outranks it, including "" (Kiro CLI), so an
+            # unstartable lower-priority pin must not block that choice (H3).
             _backend = select_provider_backend(
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
                 backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(self, session_key) if backend_override is None else None
+                ),
             )
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

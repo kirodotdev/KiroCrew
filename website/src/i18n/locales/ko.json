@@ -13521,7 +13521,13 @@
         "set_is_fixed_at_gateway_start": "여기에 표시되는 에이전트는 gateway가 시작될 때 결정됩니다. 관리형 배포는 정책으로 이 집합을 제한할 수 있으며, 정책 변경은 다음 시작 시 적용됩니다.",
         "use_button_in_use": "사용 중",
         "use_switches_new_sessions": "새 세션은 {{current}}에서 {{name}}(으)로 전환됩니다.",
-        "word_not_offered": "제공 안 함"
+        "word_not_offered": "제공 안 함",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "실시간 스크롤 및 앵커 진단 정보를 채팅 위에 표시합니다",
@@ -13649,7 +13655,9 @@
         "decisions_runtime_error": "모델을 시작하지 못했습니다.",
         "decisions_runtime_retry": "다시 시도",
         "folder_conductor": "폴더 지휘자",
-        "folder_conductor_desc": "폴더의 다른 채팅을 시작한 채팅을 그 폴더의 맨 위로 올립니다. 왼쪽 가장자리에 강조 막대가 생기고 에이전트 이름 옆에 작은 conductor 태그가 붙습니다. 세션 목록의 순서가 바뀌므로 켜기 전에는 목록이 그대로입니다. 폴더 메뉴의 채팅 항목은 항상 있습니다."
+        "folder_conductor_desc": "폴더의 다른 채팅을 시작한 채팅을 그 폴더의 맨 위로 올립니다. 왼쪽 가장자리에 강조 막대가 생기고 에이전트 이름 옆에 작은 conductor 태그가 붙습니다. 세션 목록의 순서가 바뀌므로 켜기 전에는 목록이 그대로입니다. 폴더 메뉴의 채팅 항목은 항상 있습니다.",
+        "crewmate_harness": "크루메이트별 에이전트 하네스",
+        "crewmate_harness_desc": "각 크루메이트의 프로필에 에이전트 하네스 설정을 추가해, 한 크루메이트는 Claude Code 같은 다른 AI 코딩 도구와 그 모델로 실행하고 나머지는 기본값을 유지할 수 있게 합니다."
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",
@@ -19120,7 +19128,17 @@
       "export_discard_lessons_body": "멤버의 기억은 바뀌지 않습니다.",
       "export_discard_lessons_confirm": "글 버리기",
       "export_reason_first_goal_only": "이 파일에는 첫 번째 목표만 들어갑니다",
-      "built_from_mate_label": "크루메이트"
+      "built_from_mate_label": "크루메이트",
+      "profile_harness": "에이전트 하네스",
+      "profile_harness_hint": "{{name}}의 채팅과 워커를 실행하는 AI 코딩 도구(예: Kiro Agent, Claude Code)이며, {{name}}이(가) 쓸 수 있는 모델도 이에 따라 정해집니다. 변경은 {{name}}에게 보내는 다음 메시지부터 적용되며, 모델과 워커 모델이 모두 상속됨으로 돌아갑니다.",
+      "profile_harness_sub": "{{name}}이(가) 실행되는 AI 코딩 도구",
+      "profile_harness_inherited_value": "상속됨({{harness}})",
+      "profile_harness_inherited_hint": "크루 기본값을 따릅니다(현재 {{harness}}).",
+      "profile_harness_no_workers": "{{name}}은(는) 이 하네스에서 채팅할 수 있지만, 워커는 여기서 시작할 수 없습니다.",
+      "profile_harness_cannot_start": "여기서는 시작할 수 없습니다.",
+      "profile_harness_saved": "저장했습니다. 다음 메시지부터 {{name}}이(가) 이 하네스에서 실행됩니다.",
+      "profile_harness_unavailable": "{{name}}은(는) {{harness}}에서 실행되도록 설정되어 있지만 여기서는 시작할 수 없어 채팅과 워커도 시작되지 않습니다. 다른 에이전트 하네스나 상속됨을 선택하세요.",
+      "profile_harness_choose": "에이전트 하네스 선택"
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

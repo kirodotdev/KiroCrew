@@ -573,11 +573,16 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         if is_crewmate_worker_session(session_key):
             # A crewmate's worker is refused for its kit, which only some
             # member backends carry, so the member card's remedy does not fit.
+            from kiro_crew.crewmate_harness import crewmate_for_session
             from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
-            _worker_reason = worker_kit_backend_refusal(
-                crewmate_worker_backend(KiroCrewConfig.load().agent)
-            )
+            _cfg = KiroCrewConfig.load()
+            try:
+                _worker_reason = worker_kit_backend_refusal(
+                    crewmate_worker_backend(_cfg, crewmate_for_session(_cfg, session_key))
+                )
+            except Exception as _exc:  # noqa: BLE001 - the row must still be written
+                _worker_reason = str(_exc)
             if _worker_reason:
                 _err_text = "capability_harness_unsupported: " + _worker_reason
         _err_meta = _terminal_error_meta(exc)

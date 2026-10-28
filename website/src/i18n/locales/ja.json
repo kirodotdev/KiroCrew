@@ -13521,7 +13521,13 @@
         "set_is_fixed_at_gateway_start": "ここに表示されるエージェントは gateway の起動時に決まります。管理された環境ではポリシーで対象を制限できます。ポリシーの変更は次回の起動時に反映されます。",
         "use_button_in_use": "使用中",
         "use_switches_new_sessions": "新しいセッションは {{current}} から {{name}} に切り替わります。",
-        "word_not_offered": "非提供"
+        "word_not_offered": "非提供",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",
@@ -13649,7 +13655,9 @@
         "decisions_runtime_error": "モデルを起動できませんでした。",
         "decisions_runtime_retry": "再試行",
         "folder_conductor": "フォルダーのコンドクター",
-        "folder_conductor_desc": "フォルダーの他のチャットを開始したチャットを、そのフォルダーの先頭に引き上げます。左端にアクセントのバーが入り、エージェント名の横に小さな conductor タグが付きます。セッション一覧の並び順が変わるため、有効にするまで一覧はそのままです。フォルダーメニューのチャット項目は常に表示されます。"
+        "folder_conductor_desc": "フォルダーの他のチャットを開始したチャットを、そのフォルダーの先頭に引き上げます。左端にアクセントのバーが入り、エージェント名の横に小さな conductor タグが付きます。セッション一覧の並び順が変わるため、有効にするまで一覧はそのままです。フォルダーメニューのチャット項目は常に表示されます。",
+        "crewmate_harness": "クルーメイトごとのエージェントハーネス",
+        "crewmate_harness_desc": "各クルーメイトのプロフィールにエージェントハーネスの設定を追加し、1 人を Claude Code などの別の AI コーディングツールとそのモデルで動かし、ほかは既定のままにできるようにします。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
@@ -19120,7 +19128,17 @@
       "export_discard_lessons_body": "クルーメイトの記憶は変わりません。",
       "export_discard_lessons_confirm": "テキストを破棄",
       "export_reason_first_goal_only": "このファイルには最初の目標だけが入ります",
-      "built_from_mate_label": "クルーメイト"
+      "built_from_mate_label": "クルーメイト",
+      "profile_harness": "エージェントハーネス",
+      "profile_harness_hint": "{{name}} のチャットとワーカーを動かす AI コーディングツール（Kiro Agent や Claude Code など）で、{{name}} が使えるモデルもこれで決まります。変更は {{name}} への次のメッセージから適用され、「モデル」と「ワーカーのモデル」は「継承済み」に戻ります。",
+      "profile_harness_sub": "{{name}} が動く AI コーディングツール",
+      "profile_harness_inherited_value": "継承済み（{{harness}}）",
+      "profile_harness_inherited_hint": "クルーの既定に従います（現在は {{harness}}）。",
+      "profile_harness_no_workers": "{{name}} はこのハーネスでチャットできますが、ワーカーはここでは起動できません。",
+      "profile_harness_cannot_start": "ここでは起動できません。",
+      "profile_harness_saved": "保存しました。次のメッセージから {{name}} はこのハーネスで動きます。",
+      "profile_harness_unavailable": "{{name}} は {{harness}} で動く設定ですが、ここでは起動できないため、チャットもワーカーも起動しません。別のエージェントハーネスか「継承済み」を選んでください。",
+      "profile_harness_choose": "エージェントハーネスを選ぶ"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

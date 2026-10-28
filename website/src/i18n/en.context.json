@@ -923,6 +923,7 @@
     "crewWorkerKit.apply_replace_n": "Button at the bottom of the Add abilities preview when it replaces the crewmate's behavior directions and adds new items. {{count}} is how many new items are added (the replaced directions are not counted). Imperative.",
     "crewWorkerKit.current_directions": "Muted line on the behavior-directions row of the Add abilities preview, under the incoming directions. {{directions}} is the crewmate's current directions text, which the incoming directions will overwrite.",
     "crewWorkerKit.done_replaced": "Sentence in the confirmation after an add succeeds, shown when it replaced the crewmate's behavior directions. May follow the \"Added N to NAME.\" sentence or stand alone.",
-    "crewEditorNext.band_remove_stale": "Error in the mate abilities view when Remove is refused because the displayed revision changed; nothing was removed, the list refreshes, and the user must check it and press the Remove button again."
+    "crewEditorNext.band_remove_stale": "Error in the mate abilities view when Remove is refused because the displayed revision changed; nothing was removed, the list refreshes, and the user must check it and press the Remove button again.",
+    "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant."
   }
 }

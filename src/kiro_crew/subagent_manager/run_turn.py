@@ -315,14 +315,23 @@ async def _run_inner_impl(
         # backend that carries its per-session kit (the hand-off's own check).
         from kiro_crew.acp_backends import resolve_selected_backend
         from kiro_crew.config.loader import KiroCrewConfig as _Config
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crew_for_member_id
         from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
-        _agent_cfg = (await asyncio.to_thread(_Config.load)).agent
-        worker_backend = (
-            resolve_selected_backend(info.backend)
-            if info.backend is not None
-            else crewmate_worker_backend(_agent_cfg)
-        )
+        _cfg = await asyncio.to_thread(_Config.load)
+        try:
+            worker_backend = (
+                resolve_selected_backend(info.backend)
+                if info.backend is not None
+                else crewmate_worker_backend(
+                    _cfg, crew_for_member_id(_cfg, str(execution.member_id or ""))
+                )
+            )
+        except CrewmateHarnessUnavailable as exc:
+            # The crewmate's pinned harness cannot start, so neither can its
+            # worker; it never runs on another harness in its place. The
+            # message leads with its code, as the kit refusal below does.
+            raise RuntimeError(str(exc)) from None
         backend_reason = worker_kit_backend_refusal(worker_backend)
         if backend_reason is not None:
             raise RuntimeError(f"capability_harness_unsupported: {backend_reason}")

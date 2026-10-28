@@ -9152,7 +9152,9 @@
         "decisions_runtime_error": "The model could not be started.",
         "decisions_runtime_retry": "Try again",
         "folder_conductor": "Folder conductor",
-        "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
+        "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there.",
+        "crewmate_harness": "Agent harness per mate",
+        "crewmate_harness_desc": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default."
       },
       "kasBundleCard": {
         "toggle_label": "Run KAS on {{productName}}'s own engine",
@@ -9187,6 +9189,14 @@
         "could_not_sign_out": "Could not sign out",
         "keep_current_sign_in": "Keep the current sign-in",
         "signed_in_body_no_refresh": "Agents run as this Kiro account. This sign-in has no refresh token, so it cannot renew itself — sign in again before it expires."
+      },
+      "agentBackendTab": {
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       }
     },
     "appPage": {
@@ -9223,7 +9233,17 @@
       "import_refused_user_template": "This file names a custom dashboard only its sender has.",
       "import_refused_text": "This file holds text that looks like a password or key, so it can't be imported.",
       "import_keep_hint": "Decide later keeps this import waiting here until it expires. Don't import throws it away.",
-      "import_later": "Decide later"
+      "import_later": "Decide later",
+      "profile_harness": "Agent harness",
+      "profile_harness_hint": "Which AI coding tool runs {{name}}'s chats and its workers, such as Kiro Agent or Claude Code, and so which models {{name}} can use. A change applies from {{name}}'s next message and puts Model and Worker model back to Inherited.",
+      "profile_harness_sub": "The AI coding tool {{name}} runs on",
+      "profile_harness_inherited_value": "Inherited ({{harness}})",
+      "profile_harness_inherited_hint": "Follows the crew default (now {{harness}}).",
+      "profile_harness_no_workers": "{{name}} can chat on this harness, but its workers cannot start on it.",
+      "profile_harness_cannot_start": "Can't start here.",
+      "profile_harness_saved": "Saved. {{name}}'s next message starts on this harness.",
+      "profile_harness_unavailable": "{{name}} is set to run on {{harness}}, which can't start here, so its chats and workers don't start either. Choose another agent harness, or Inherited.",
+      "profile_harness_choose": "Choose an agent harness"
     }
   },
   "privacyDisclosure": {

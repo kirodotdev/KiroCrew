@@ -26,7 +26,9 @@ if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
 
 
-def _member_dispatch_held(mounted: bool | None, cfg: "KiroCrewConfig | None" = None) -> bool:
+def _member_dispatch_held(
+    mounted: bool | None, cfg: "KiroCrewConfig | None" = None, crew: str = ""
+) -> bool:
     """Whether this member session actually holds the ``session_*`` tools.
 
     *mounted* is the live session's own answer (``member_dispatch_mounted`` on
@@ -36,13 +38,14 @@ def _member_dispatch_held(mounted: bool | None, cfg: "KiroCrewConfig | None" = N
     per-tool restriction on a withhold-only backend, a permission surface Crew
     does not own, an unresolved entry), and teaching the block then would send
     the member after tools it never received. ``None`` means no session evidence
-    reached the build, and only then does the configured capability decide.
+    reached the build, and only then does the configured capability decide,
+    for crewmate *crew*'s own harness when it pins one.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     if mounted is not None:
         return mounted
-    return ctx._member_backend_can_dispatch(cfg)
+    return ctx._member_backend_can_dispatch(cfg, crew)
 
 
 def _template_selected_on_member_store(execution_context: Any) -> bool:

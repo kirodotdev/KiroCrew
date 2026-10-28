@@ -196,6 +196,19 @@ harness for crew-member DM sessions, reads the same values, except that `kiro`
 there selects KAS: crewmates run on KAS as their Kiro backend, because their
 work-dispatch tools need a backend that takes them per session.
 
+One crewmate can run on its own harness: `agents.<name>.acp_backend` takes the
+same values as `agent.acp_backend` (`kiro` here means kiro-cli, and runs through
+KAS once Kiro Crew confirms your kiro-cli offers v3, as it does there) and applies to
+that crewmate's chat and the worker sessions it opens. Empty inherits
+`agent.member_acp_backend`. A harness this gateway cannot start refuses the
+crewmate's session with `crewmate_harness_unavailable` rather than running it on
+another harness, and the crewmate's `model` and `worker_model` are judged against
+the pinned harness when they change or the harness does, so an edit to another
+field still saves while the pinned harness cannot start. The dashboard shows the
+setting as **Agent harness** on a crewmate's profile Settings page once Settings >
+Developer > Feature Previews > Agent harness per mate is on; a saved pin applies
+whether or not that preview is on.
+
 ## Key Settings
 
 ```json

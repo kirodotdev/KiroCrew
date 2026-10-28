@@ -501,6 +501,8 @@ PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     # A crew's slot is app-owned, so the press never counts or clears it.
     ("dashboard/chat_follow_default.py", "_clear_loaded"): ("pick", 1),
     ("dashboard/session_control_parts/session_create.py", "create_session"): ("pick", 1),
+    # A person's harness pick for a crewmate clears its DM chat's model pick.
+    ("dashboard/agent_admin/crew_update.py", "_reload"): ("pick", 1),
     ("dashboard/session_control_parts/model_switch.py", "apply_pending_model_pick"): ("pick", 1),
     ("dashboard/server_runtime/config_watch.py", "_switch_provider"): ("runtime", 1),
     ("apps/builtins/issue_radar/backend/crew_model.py", "apply_turn_model"): ("crew", 1),

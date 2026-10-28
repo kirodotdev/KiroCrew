@@ -42,6 +42,12 @@ export interface FollowDefaultCount {
 export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
   const selection = {
     models: () => fetch('/api/models').then(j),
+    /** One harness's own model list (`?backend=` in the config spelling: `kiro`,
+     *  `kas`, `claude`, ...), for a picker that pins a crewmate to that harness. */
+    harnessModels: (backend: string) =>
+      fetch('/api/models?backend=' + encodeURIComponent(backend)).then(j) as Promise<
+        { model_name: string; display_name?: string; description?: string }[]
+      >,
     chatSlotSelectionCapabilities: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
         known: boolean

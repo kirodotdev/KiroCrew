@@ -74,6 +74,9 @@ HANDLER_ADDED_KEYS = frozenset({"name", "scope", "owns_mate_file"})
 WITHHELD_RECORD_FIELDS = frozenset(
     {
         "member_id",
+        # A crewmate's harness pin: read only by the owner, through
+        # GET /api/agents/resolved-model, never on this roster.
+        "acp_backend",
         "watchdog_tool_stall_suspect_secs",
         "watchdog_tool_stall_hard_cap_secs",
         # Per-agent compaction default: read by the session manager and shown

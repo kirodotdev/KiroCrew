@@ -141,6 +141,30 @@ export interface MemberRosterRow {
  *  an orchestrator routing decision ('select_crew', intent, not a run), a
  *  delegated `spawn_run(crew=...)` run ('spawn') and an auto-improvement
  *  run ('auto-improvement'). */
+/** `GET /api/agents/resolved-model`: what a new session on a crew runs. The
+ *  harness fields come only for the owner and only for a configured crew: the
+ *  crewmate's pin is read here and nowhere else (`GET /api/agents` leaves it out). */
+export interface AgentResolvedModel {
+  model: string
+  agent: string
+  kiro_agent: string
+  pinned: boolean
+  reasoning_effort: string
+  effort_pinned: boolean
+  /** The stored pin in the config spelling (`kiro`, `kas`, ...); `''` inherits. */
+  acp_backend?: string
+  /** What clearing the pin would run on (the install's member harness), same spelling. */
+  inherited_harness?: string
+  /** What the crewmate's chat runs on, same spelling; `''` when the pin cannot start. */
+  harness?: string
+  /** Why the pinned harness cannot start, when it cannot. */
+  harness_error?: string
+  /** Every harness a crewmate may be pinned to. */
+  harnesses?: string[]
+  /** The harnesses a crewmate's worker sessions can run on. */
+  worker_harnesses?: string[]
+}
+
 export interface MemberActivityEntry {
   /** Epoch seconds (UTC) the engagement was recorded. */
   ts: number
@@ -326,7 +350,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
      *  app's own model setting. */
     agentResolvedModel: (agent: string, app?: string) =>
       fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)
-        + (app ? '&app=' + encodeURIComponent(app) : '')).then(j),
+        + (app ? '&app=' + encodeURIComponent(app) : '')).then(j) as Promise<AgentResolvedModel>,
     /** Execution choices for a chat: configured members AND installed shared
      *  templates, each row tagged with its `selection_kind`. Read-only -- unlike
      *  the sync route it enrols nothing and allocates no member memory, so

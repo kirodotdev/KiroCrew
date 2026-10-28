@@ -3904,8 +3904,10 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   routes it like one: a key `mate_worker.note_worker_session` published -- at
   the child's birth in `session_create`, and on the record read every turn and
   resume prefetch makes before allocating (`resolve_session_agent_bindings`), so
-  a restart keeps it -- takes `agent.member_acp_backend` through the same gate
-  (a stored `kiro` reads as KAS), never `agent.acp_backend`. The identity is
+  a restart keeps it -- takes its crewmate's own harness pin
+  (`agents.<name>.acp_backend`, see "A crewmate's own harness" below) when it has
+  one, else `agent.member_acp_backend` through the same gate (a stored `kiro`
+  reads as KAS), never `agent.acp_backend`. The identity is
   positive: a `template` record on `kirocrew-mate-worker` with a member id
   (`mate_worker.is_own_worker_execution`). A record that no longer says so drops the
   key, on every read before an allocation and at an explicit selection's commit
@@ -4343,6 +4345,73 @@ read-time pass (`kas_agents._ceiling_permitted`) withholds again, so an addition
 cannot lift the worker above POLICY ∩ PROFILE; a withheld grant leaves the
 server mounted and its calls prompting. Crew's PreToolUse gate evaluates every
 call regardless.
+
+### A crewmate's own harness
+
+`agents.<name>.acp_backend` pins the agent harness one crewmate's sessions run on,
+spelled as `agent.acp_backend` is (`kiro`, `kas`, `claude`, ...). Empty, the
+default, inherits `agent.member_acp_backend` exactly as before the field existed.
+
+- **One gate, one more tier.** `members.select_provider_backend` takes the pin as
+  `crew_backend`: an explicit `spawn_run(backend=...)` still wins, then the pin,
+  then the member route, then the configured default. Every caller passes the
+  argument (`None` included); `test_crewmate_harness.py` fails on a call that
+  omits it.
+- **Which sessions.** `crewmate_harness.crewmate_for_session` names the crewmate
+  from the session key alone: its `member-<slug>` DM thread, or its own worker,
+  whose `member_id` `mate_worker.note_worker_session` records beside the worker
+  key. No other session (a template chat, a sub-agent, a cron turn not on the
+  worker) takes the pin.
+- **Fails closed, before the gate.** A pin this gateway cannot start (not
+  registered, denied by policy, unservable on this host, including one that was
+  selectable when it was saved) raises `CrewmateHarnessUnavailable`
+  (`crewmate_harness_unavailable`) before any process exists, and the chat shows
+  the reason. It never degrades to kiro-cli, unlike the other tiers. The check is
+  `crewmate_harness.crewmate_backend_pin`, run as the gate's `crew_backend`
+  argument, so the gate only ever sees a confirmed pin and never raises
+  (harness-parity H17, the one exception to H3). Displays that name the pin as
+  stored read `crewmate_stored_pin`, which never raises.
+- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS under the
+  same rule as a stored `agent.acp_backend: kiro` (`CrewBackendPin.resolve` calls
+  `kiro_cli_pick_backend()` when `agent.kas_bundle` is off), for the DM chat and
+  the workers alike, while the stored value still reads `kiro`
+  (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`).
+- **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
+  selectable harness, and judges `model` and `worker_model` against the harness
+  the record will hold, re-judging the stored pins when the harness changes.
+  Without a harness change, an inherit value and a value equal to the stored
+  one judge nothing (`crewmate_harness.judges_a_model_edit`), both in the
+  pre-lock probe and in the locked check: the editor re-sends both models with
+  every save, so an unrelated edit to a crewmate whose stored pin has since
+  become unstartable still saves, while a changed real model is still refused
+  with the `crewmate_harness_unavailable` reason. Saving it rebuilds the provider
+  factory (`refresh_defaults`), and so does an edit outside the dashboard
+  (`session_parts.config_apply`).
+- **Read path.** Only the owner-only `GET /api/agents/resolved-model` reads the
+  pin (`acp_backend`, the effective `harness`, `harnesses`, `worker_harnesses`,
+  and `harness_error` when it cannot start). `GET /api/agents` and
+  `GET /api/members` leave it out. `GET /api/models?backend=<harness>` lists one
+  harness's models for the picker.
+- **When it applies.** A save that changes the pin reloads the crewmate's live
+  DM chat (`crew_update.api_kirocrew_agent_update`) through `reload_slot_session`,
+  and writes the record in that reload's `after_reset_in_lock` hook: after the
+  busy and sub-agent guards pass and the old process is gone, with the slot and
+  session locks still held. A turn that cold-starts in the meantime waits on the
+  session lock, so the next message starts on the new harness. The same hook
+  refreshes the provider factory and clears the slot's own `model`,
+  `reasoning_effort` and pending-pick state, so that session inherits the
+  record. A dormant bound DM's persisted model and effort are cleared through
+  the guarded metadata writer without reopening its tab, including when another
+  DM slot is live. The transcript and resume pointer stay; the provider-switch check
+  drops the old harness's resume and replays the conversation. While a reply,
+  a queued message or sub-agents run on that chat, the save is refused with 409
+  `crewmate_harness_busy`, naming the crewmate, and nothing is written. A mate
+  with more than one live DM chat is refused the same way, before any teardown,
+  until the others are closed, and the permission compare-and-set
+  (`memory_stores.check_member_approval_mode`) runs before the reload. A save
+  that leaves the pin unchanged reloads nothing, and with no live chat it is a
+  plain write. Workers already running keep their harness; new workers start on
+  the new one.
 
 ### Dynamic capabilities
 

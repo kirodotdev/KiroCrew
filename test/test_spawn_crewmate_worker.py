@@ -240,3 +240,75 @@ async def test_a_worker_run_on_a_backend_without_its_kit_is_refused_by_name(monk
 
     assert "capability_harness_unsupported: set agent.member_acp_backend" in (info.error or "")
     sessions.get_or_create.assert_not_called()
+
+
+def _pin_harness(stored: str) -> None:
+    """Store crewmate ``alpha``'s own harness pin (``agents.alpha.acp_backend``)."""
+    path = config_dir() / "config.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["agents"]["alpha"]["acp_backend"] = stored
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    loader._invalidate_config_cache()
+
+
+@pytest.fixture
+def _kit_backends(monkeypatch):
+    """Record the backend the worker run is judged on, and let every one through."""
+    from kiro_crew.agent_sdk import backends
+
+    monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas", "claude"}))
+    judged: list[str] = []
+
+    def _judge(backend):
+        judged.append(backend)
+        return None
+
+    monkeypatch.setattr(mate_worker, "worker_kit_backend_refusal", _judge)
+    return judged
+
+
+@pytest.mark.asyncio
+async def test_an_unpinned_worker_run_is_judged_on_the_member_route(_kit_backends):
+    """The crew spawn path hands the WHOLE config to the worker's backend helper:
+    with no pin a default config answers the member route (KAS), never ``""``."""
+    _home(owns_file=True)
+    manager = SubagentManager(sessions=_sessions(), ctx_builder=None)
+
+    info = await _run(manager)
+
+    assert _kit_backends == ["kas"]
+    assert "capability_harness_unsupported" not in (info.error or "")
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_worker_run_is_judged_on_its_crewmates_pin(_kit_backends):
+    _home(owns_file=True)
+    _pin_harness("claude")
+    manager = SubagentManager(sessions=_sessions(), ctx_builder=None)
+
+    await _run(manager)
+
+    assert _kit_backends == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_run_on_an_unstartable_pin_is_refused_before_it_starts(_kit_backends):
+    """A pinned harness this gateway cannot start refuses the run; nothing falls
+    back to another harness and no session is opened."""
+    _home(owns_file=True)
+    _pin_harness("codex")
+    sessions = _sessions()
+    manager = SubagentManager(sessions=sessions, ctx_builder=None)
+
+    info = await _run(manager)
+
+    assert "crewmate_harness_unavailable" in (info.error or "")
+    assert _kit_backends == []
+    sessions.get_or_create.assert_not_called()
+
+
+def test_the_worker_backend_refuses_a_config_section():
+    """Handing the helper ``config.agent`` instead of the config is a type error,
+    not a silent "no pin, no member route" answer."""
+    with pytest.raises(TypeError):
+        mate_worker.crewmate_worker_backend(KiroCrewConfig().agent)

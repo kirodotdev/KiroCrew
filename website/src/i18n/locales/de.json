@@ -13747,7 +13747,13 @@
         "set_is_fixed_at_gateway_start": "Welche Agenten hier erscheinen, wird beim Start des Gateways festgelegt. Eine verwaltete Installation kann die Auswahl per Richtlinie einschränken; Änderungen an dieser Richtlinie greifen beim nächsten Start.",
         "use_button_in_use": "In Verwendung",
         "use_switches_new_sessions": "Neue Sitzungen wechseln von {{current}} zu {{name}}.",
-        "word_not_offered": "Nicht angeboten"
+        "word_not_offered": "Nicht angeboten",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Blendet Live-Diagnose zu Scrollposition und Ankern über dem Chat ein",
@@ -13875,7 +13881,9 @@
         "decisions_runtime_error": "Das Modell konnte nicht gestartet werden.",
         "decisions_runtime_retry": "Erneut versuchen",
         "folder_conductor": "Ordner-Conductor",
-        "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da."
+        "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da.",
+        "crewmate_harness": "Agent-Harness pro Crewmate",
+        "crewmate_harness_desc": "Fügt dem Profil jedes Crewmates eine Einstellung Agent-Harness hinzu, damit ein Crewmate mit einem anderen KI-Coding-Tool wie Claude Code und dessen Modellen laufen kann, während die übrigen beim Standard bleiben."
       },
       "kasBundleCard": {
         "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",
@@ -19430,7 +19438,17 @@
       "export_discard_lessons_body": "Das Gedächtnis des Crew-Mitglieds bleibt unverändert.",
       "export_discard_lessons_confirm": "Text verwerfen",
       "export_reason_first_goal_only": "Nur das erste Ziel passt in diese Datei",
-      "built_from_mate_label": "Crewmate"
+      "built_from_mate_label": "Crewmate",
+      "profile_harness": "Agent-Harness",
+      "profile_harness_hint": "Welches KI-Coding-Tool die Chats und Worker von {{name}} ausführt, etwa Kiro Agent oder Claude Code, und damit, welche Modelle {{name}} nutzen kann. Eine Änderung gilt ab der nächsten Nachricht an {{name}} und setzt „Modell“ und „Worker-Modell“ auf „Geerbt“ zurück.",
+      "profile_harness_sub": "Das KI-Coding-Tool, auf dem {{name}} läuft",
+      "profile_harness_inherited_value": "Geerbt ({{harness}})",
+      "profile_harness_inherited_hint": "Folgt dem Crew-Standard (derzeit {{harness}}).",
+      "profile_harness_no_workers": "{{name}} kann auf diesem Harness chatten, aber seine Worker können darauf nicht starten.",
+      "profile_harness_cannot_start": "Kann hier nicht starten.",
+      "profile_harness_saved": "Gespeichert. {{name}} läuft ab der nächsten Nachricht auf diesem Harness.",
+      "profile_harness_unavailable": "{{name}} soll auf {{harness}} laufen, das hier nicht starten kann, daher starten auch seine Chats und Worker nicht. Wähle ein anderes Agent-Harness oder „Geerbt“.",
+      "profile_harness_choose": "Agent-Harness wählen"
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

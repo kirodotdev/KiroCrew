@@ -1712,6 +1712,41 @@ class MemberApprovalConflict(Exception):
         self.current = current
 
 
+def _refuse_moved_approval_mode(current: object, expected_approval_mode: str) -> None:
+    """Raise :class:`MemberApprovalConflict` when the stored record's mode is not the expected one."""
+    from kiro_crew.config.sections import coerce_member_approval_mode
+
+    stored_mode = coerce_member_approval_mode(
+        current.get("approval_mode") if isinstance(current, dict) else None
+    )
+    if stored_mode != expected_approval_mode:
+        raise MemberApprovalConflict(stored_mode)
+
+
+def check_member_approval_mode(member: str, expected_approval_mode: str | None) -> None:
+    """Run :func:`persist_member_config`'s permission compare-and-set without writing.
+
+    Reads the record on disk under the cross-process config lock and raises
+    :class:`MemberApprovalConflict` exactly when that write would, so a caller
+    with side effects before the write (a chat reload) can refuse first. The
+    write itself still checks again and stays authoritative. A missing record
+    is left to the write, which refuses it with its own error. Blocks on the
+    file lock: call it from a worker thread.
+    """
+    if expected_approval_mode is None:
+        return
+    from kiro_crew.config.loader import update_config_locked
+
+    def check(data: dict) -> None:
+        agents = data.get("agents")
+        current = agents.get(member) if isinstance(agents, dict) else None
+        if isinstance(current, dict):
+            _refuse_moved_approval_mode(current, expected_approval_mode)
+        return None
+
+    update_config_locked(mutate=check)
+
+
 class MemberFieldConflict(Exception):
     """A stored field is not the value the writer expected to find (compare-and-set)."""
 
@@ -1833,13 +1868,7 @@ def persist_member_config(
             # Compare-and-set against the record on disk, inside the
             # cross-process lock: a CLI or other-process write that landed
             # after the caller loaded its snapshot wins, and this one is refused.
-            from kiro_crew.config.sections import coerce_member_approval_mode
-
-            stored_mode = coerce_member_approval_mode(
-                current.get("approval_mode") if isinstance(current, dict) else None
-            )
-            if stored_mode != expected_approval_mode:
-                raise MemberApprovalConflict(stored_mode)
+            _refuse_moved_approval_mode(current, expected_approval_mode)
         if expected_values and not create and isinstance(current, dict):
             # The same compare-and-set for any field the caller read: the
             # value on disk, under this lock, must still be the one it saw.

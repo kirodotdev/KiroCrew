@@ -409,11 +409,16 @@ def _session_model(
             or is_member_session_key(session_key)
             or is_crewmate_worker_session(session_key)
         ):
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
+
             backend = select_provider_backend(
                 session_key,
                 cfg.agent.member_acp_backend,
                 cfg.agent.acp_backend,
                 backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(cfg, session_key) if backend_override is None else None
+                ),
             )
         crew_name = _resolve_allocation_crew_identity(cfg, agent, crew_agent)
         if crew_name and crew_name in cfg.agents:

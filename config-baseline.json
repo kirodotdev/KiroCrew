@@ -10204,6 +10204,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Harness",
+      "help": "Agent harness for this crewmate's own chat and the worker sessions it opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty inherits agent.member_acp_backend. A harness this gateway cannot start refuses the session with the reason instead of running another one. The model and worker_model pins are judged against this harness.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.dynamic_capabilities",
       "kind": "core",
       "type": "boolean",

@@ -900,7 +900,7 @@ def _board_safe_tag_name(raw: object) -> str:
 
 
 # Per-section limits are derived below; shared admission never sums them.
-def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
+def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None, crew: str = "") -> bool:
     """Whether the configured member backend can mount the dispatch tools.
 
     The member operating-mode block teaches ``session_*`` tools that arrive as
@@ -913,19 +913,23 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
 
     ``cfg`` lets a caller that already loaded the config share the handle —
     the context builder calls this once per member turn, so a second disk
-    read would be pure waste.
+    read would be pure waste. *crew* names the crewmate whose thread this is:
+    its own harness pin (``agents.<name>.acp_backend``) outranks the member
+    route, as it does in ``members.select_provider_backend``, and a pin that
+    cannot start withholds the block.
     """
     try:
         from kiro_crew.acp_backends import (
             ACP_BACKENDS_MEMBER_DISPATCH,
             resolve_selected_backend,
         )
+        from kiro_crew.crewmate_harness import pinned_backend
 
         if cfg is None:
             from kiro_crew.config import KiroCrewConfig
 
             cfg = KiroCrewConfig.load()
-        backend = resolve_selected_backend(cfg.agent.member_acp_backend)
+        backend = pinned_backend(cfg, crew, resolve_selected_backend(cfg.agent.member_acp_backend))
         return backend in ACP_BACKENDS_MEMBER_DISPATCH
     except Exception:
         logger.debug("member backend capability check failed", exc_info=True)

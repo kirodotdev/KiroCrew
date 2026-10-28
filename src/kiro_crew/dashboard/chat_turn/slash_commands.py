@@ -82,12 +82,21 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
     provider = state.sessions.get_provider(session_key)
     if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
         return capabilities_of(provider).backend
-    agent_cfg = KiroCrewConfig.load().agent
-    backend = select_provider_backend(
-        session_key,
-        getattr(agent_cfg, "member_acp_backend", ""),
-        getattr(agent_cfg, "acp_backend", ""),
-    )
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
+
+    cfg = KiroCrewConfig.load()
+    agent_cfg = cfg.agent
+    try:
+        backend = select_provider_backend(
+            session_key,
+            getattr(agent_cfg, "member_acp_backend", ""),
+            getattr(agent_cfg, "acp_backend", ""),
+            crew_backend=crewmate_backend_pin(cfg, session_key),
+        )
+    except CrewmateHarnessUnavailable:
+        # Only a pre-check: the turn goes on to the session start, which refuses
+        # the unstartable pin inside the turn's error handling, with its reason.
+        return ACP_BACKEND_KIRO
     return backend if isinstance(backend, str) else ACP_BACKEND_KIRO
 
 
@@ -662,12 +671,23 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         else:
             # A dead registry row is not the harness dispatch would reach:
             # get_or_create evicts it and uses this same member-aware selector.
-            _agent_cfg = KiroCrewConfig.load().agent
-            _cfg_backend = select_provider_backend(
-                session_key,
-                getattr(_agent_cfg, "member_acp_backend", ""),
-                getattr(_agent_cfg, "acp_backend", ""),
+            from kiro_crew.crewmate_harness import (
+                CrewmateHarnessUnavailable,
+                crewmate_backend_pin,
             )
+
+            _cfg = KiroCrewConfig.load()
+            _agent_cfg = _cfg.agent
+            try:
+                _cfg_backend = select_provider_backend(
+                    session_key,
+                    getattr(_agent_cfg, "member_acp_backend", ""),
+                    getattr(_agent_cfg, "acp_backend", ""),
+                    crew_backend=crewmate_backend_pin(_cfg, session_key),
+                )
+            except CrewmateHarnessUnavailable:
+                # As in _slash_command_backend: the session start reports it.
+                _cfg_backend = None
             _compact_unsupported = (
                 _cfg_backend
                 if isinstance(_cfg_backend, str) and _cfg_backend not in ACP_BACKENDS_COMPACT

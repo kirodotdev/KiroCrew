@@ -153,8 +153,10 @@ async def set_model_target(
                 status=400,
             )
         model_name = _normalize_model(model)
+    loaded_cfg = None
     try:
-        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        loaded_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        agent_cfg = loaded_cfg.agent
         provider = agent_cfg.provider
         member_backend, default_backend = agent_cfg.member_acp_backend, agent_cfg.acp_backend
     except Exception:  # pragma: no cover - config load is resilient
@@ -183,7 +185,22 @@ async def set_model_target(
     # resolved through the same member-aware gate the provider factory uses: a
     # member DM routes to agent.member_acp_backend, which can differ from the
     # configured default, and a Claude backend takes canonical keys as wire ids.
-    backend = select_provider_backend(effective_session_key(slot), member_backend, default_backend)
+    # A crewmate's own harness pin outranks both, and one that cannot start
+    # refuses the pick (fail closed) rather than judging it for another harness.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
+
+    target_key = effective_session_key(slot)
+    try:
+        backend = select_provider_backend(
+            target_key,
+            member_backend,
+            default_backend,
+            crew_backend=(
+                crewmate_backend_pin(loaded_cfg, target_key) if loaded_cfg is not None else None
+            ),
+        )
+    except CrewmateHarnessUnavailable as exc:
+        raise SessionControlError(str(exc), code=exc.code, status=409) from None
     target_provider = (
         provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
     )

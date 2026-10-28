@@ -13747,7 +13747,13 @@
         "set_is_fixed_at_gateway_start": "यहाँ कौन-से एजेंट दिखते हैं यह gateway शुरू होने पर तय होता है। प्रबंधित परिनियोजन नीति द्वारा इस समूह को सीमित कर सकता है; उस नीति में बदलाव अगली शुरुआत पर लागू होता है।",
         "use_button_in_use": "उपयोग में",
         "use_switches_new_sessions": "नए सत्र {{current}} से {{name}} पर स्विच हो जाते हैं।",
-        "word_not_offered": "उपलब्ध नहीं"
+        "word_not_offered": "उपलब्ध नहीं",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "चैट पर लाइव स्क्रॉल और ऐंकर डायग्नोस्टिक्स दिखाता है",
@@ -13875,7 +13881,9 @@
         "decisions_runtime_error": "मॉडल शुरू नहीं हो सका।",
         "decisions_runtime_retry": "फिर से कोशिश करो",
         "folder_conductor": "फ़ोल्डर कंडक्टर",
-        "folder_conductor_desc": "जिस चैट ने फ़ोल्डर की बाकी चैट शुरू कीं, उसे उस फ़ोल्डर में सबसे ऊपर ले आता है: उसके बाएँ किनारे पर एक रंगीन पट्टी और एजेंट के नाम के पास एक छोटा conductor लेबल। इससे सत्र सूची का क्रम बदलता है, इसलिए जब तक तुम इसे चालू नहीं करते, सूची वैसी ही रहती है। फ़ोल्डर मेनू का चैट आइटम हमेशा रहता है।"
+        "folder_conductor_desc": "जिस चैट ने फ़ोल्डर की बाकी चैट शुरू कीं, उसे उस फ़ोल्डर में सबसे ऊपर ले आता है: उसके बाएँ किनारे पर एक रंगीन पट्टी और एजेंट के नाम के पास एक छोटा conductor लेबल। इससे सत्र सूची का क्रम बदलता है, इसलिए जब तक तुम इसे चालू नहीं करते, सूची वैसी ही रहती है। फ़ोल्डर मेनू का चैट आइटम हमेशा रहता है।",
+        "crewmate_harness": "हर साथी का एजेंट हार्नेस",
+        "crewmate_harness_desc": "हर साथी की प्रोफ़ाइल में एजेंट हार्नेस सेटिंग जोड़ता है, ताकि कोई एक साथी Claude Code जैसे किसी दूसरे AI कोडिंग टूल और उसके मॉडल पर चल सके, जबकि बाकी डिफ़ॉल्ट पर रहें।"
       },
       "kasBundleCard": {
         "toggle_label": "KAS को {{productName}} के अपने इंजन पर चलाओ",
@@ -19430,7 +19438,17 @@
       "export_discard_lessons_body": "क्रू सदस्य की याददाश्त नहीं बदलती।",
       "export_discard_lessons_confirm": "पाठ छोड़ो",
       "export_reason_first_goal_only": "इस फ़ाइल में केवल पहला लक्ष्य समाता है",
-      "built_from_mate_label": "साथी"
+      "built_from_mate_label": "साथी",
+      "profile_harness": "एजेंट हार्नेस",
+      "profile_harness_hint": "कौन-सा AI कोडिंग टूल {{name}} की चैट और उसके वर्कर चलाता है, जैसे Kiro Agent या Claude Code, और इसी से तय होता है कि {{name}} कौन-से मॉडल इस्तेमाल कर सकता है। बदलाव {{name}} को भेजे अगले संदेश से लागू होता है और मॉडल व वर्कर मॉडल दोनों वापस विरासत में मिला पर आ जाते हैं।",
+      "profile_harness_sub": "वह AI कोडिंग टूल जिस पर {{name}} चलता है",
+      "profile_harness_inherited_value": "विरासत में मिला ({{harness}})",
+      "profile_harness_inherited_hint": "टीम के डिफ़ॉल्ट का पालन करता है (अभी {{harness}})।",
+      "profile_harness_no_workers": "{{name}} इस हार्नेस पर चैट कर सकता है, लेकिन उसके वर्कर इस पर शुरू नहीं हो सकते।",
+      "profile_harness_cannot_start": "यहाँ शुरू नहीं हो सकता।",
+      "profile_harness_saved": "सेव हो गया। अगले संदेश से {{name}} इसी हार्नेस पर चलेगा।",
+      "profile_harness_unavailable": "{{name}} को {{harness}} पर चलने के लिए सेट किया गया है, जो यहाँ शुरू नहीं हो सकता, इसलिए उसकी चैट और वर्कर भी शुरू नहीं होते। कोई दूसरा एजेंट हार्नेस चुनो, या विरासत में मिला।",
+      "profile_harness_choose": "एजेंट हार्नेस चुनो"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",

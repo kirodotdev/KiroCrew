@@ -93,30 +93,46 @@ def _model_rejected_reason(
     if backend is not None:
         backends: list[str] = [backend]
     else:
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
         from kiro_crew.members import select_provider_backend
 
+        cfg = None
         try:
-            agent = KiroCrewConfig.load().agent
-            default_backend = agent.acp_backend or ""
-            member_backend = agent.member_acp_backend or ""
+            cfg = KiroCrewConfig.load()
+            default_backend = cfg.agent.acp_backend or ""
+            member_backend = cfg.agent.member_acp_backend or ""
         except Exception:  # pragma: no cover - config load is resilient
             default_backend, member_backend = "", ""
         keys = list(session_keys or ())
-        backends = (
-            [select_provider_backend(k, member_backend, default_backend) for k in keys]
-            if keys
-            else [default_backend]
-        )
+        try:
+            backends = (
+                [
+                    select_provider_backend(
+                        k,
+                        member_backend,
+                        default_backend,
+                        crew_backend=crewmate_backend_pin(cfg, k) if cfg is not None else None,
+                    )
+                    for k in keys
+                ]
+                if keys
+                else [default_backend]
+            )
+        except CrewmateHarnessUnavailable as exc:
+            # A crewmate whose pinned harness cannot start takes no model at all.
+            return str(exc)
     from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.crewmate_harness import harness_label
 
     entry = model_registry.get_entry(model_name) or {}
     for name in dict.fromkeys(backends):
         namespace = capabilities_for(name).model_id_namespace
         if namespace != MODEL_NAMESPACE_ACP and entry.get("providers", {}).get(namespace):
             continue
+        # The harness by the name the dashboard shows it under, never the raw id.
         return (
             f"{model_name!r} is a display-only model identifier the "
-            f"{name or 'kiro'} backend does not accept; "
+            f"{harness_label(name or 'kiro')} harness does not accept; "
             f"select a listed model or 'auto'."
         )
     return None

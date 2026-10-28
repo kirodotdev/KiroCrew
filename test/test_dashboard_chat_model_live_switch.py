@@ -14,6 +14,51 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.state import DashboardState
 
 
+class TestCrewmatePicksOnItsHarness:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route,field,pick",
+        [
+            ("model", "model", "gpt-5.6-sol"),
+            ("reasoning-effort", "reasoning_effort", "max"),
+        ],
+    )
+    async def test_same_harness_still_applies_live(self, tmp_path, monkeypatch, route, field, pick):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(
+            "member-atlas-0123456789ab", mode="member", model="claude-opus-4.8"
+        )
+        provider = TestSlotModelLiveSwitch._provider(supports_effort=True)
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.accepts_effort_level.return_value = True
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.sessions.reset = AsyncMock()
+        cfg = KiroCrewConfig.load()
+        cfg.agents["atlas"] = KiroCrewAgentConfig(
+            member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend="kas"
+        )
+        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+        app = TestSlotModelLiveSwitch._app(state)
+        app.router.add_post(
+            "/api/chat/slots/{slot}/reasoning-effort", chat_handlers.api_chat_slot_reasoning_effort
+        )
+        async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+            resp = await client.post(f"/api/chat/slots/{slot.key}/{route}", json={field: pick})
+            data = await resp.json()
+
+        assert resp.status == 200, data
+        assert getattr(slot, field) == pick
+        if field == "model":
+            provider.client.set_model.assert_awaited_once_with(pick)
+        else:
+            provider.change_effort.assert_awaited_once_with(pick)
+        state.sessions.reset.assert_not_awaited()
+
+
 class TestSlotModelLiveSwitch:
     """POST /api/chat/slots/{slot}/model — prefer an in-place session/set_model
     over tearing the session down.
@@ -1070,3 +1115,46 @@ class TestDeferredModelSwitchAtTheBoundary:
 
         assert await sc.apply_deferred_model_switch(state, slot) is True
         assert slot._pending_reset_history_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [False, True])
+async def test_stored_harness_secret_never_reaches_model_response_or_log(
+    tmp_path, monkeypatch, caplog, live
+):
+    from kiro_crew import model_registry
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.dashboard import chat_handlers
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(model_registry, "is_canonical_key", lambda model: True)
+    monkeypatch.setattr(model_registry, "get_entry", lambda model: {})
+    monkeypatch.setattr(model_registry, "acp_id_correction", lambda model: None)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("member-atlas-0123456789ab", mode="member", model="auto")
+    provider = TestSlotModelLiveSwitch._provider() if live else None
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.reset = AsyncMock()
+    async with TestClient(
+        TestServer(TestSlotModelLiveSwitch._app(state), host="127.0.0.1")
+    ) as client:
+        response = await client.post(
+            f"/api/chat/slots/{slot.key}/model",
+            json={"model": "test-display-only"},
+        )
+        assert response.status == 400
+        text = await response.text()
+        data = await response.json()
+    assert secret not in text + caplog.text
+    assert "unknown" in data["error"]
+    assert "model rejected" in caplog.text
+    assert cfg.agents["atlas"].acp_backend == secret
+    assert slot.model == "auto"
+    state.sessions.reset.assert_not_awaited()
+    if provider is not None:
+        provider.client.set_model.assert_not_awaited()

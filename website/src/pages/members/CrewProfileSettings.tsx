@@ -2,15 +2,18 @@ import { useContext, useEffect, useRef, useState, type KeyboardEvent, type React
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Check, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
-import { Toggle } from '../../components/ui'
+import { Btn, Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { INHERIT_MODEL } from '../../components/crew/useCrewEditor'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_CREWMATE_HARNESS } from '../../utils/previewFlags'
+import { acpBackendName } from '../../api/acpBackend'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -22,12 +25,15 @@ import { Row, RowGroup, RowStatic, type TONE } from './profileRow'
 
 /** The approval modes a crewmate's record may pin, in label order; YOLO is process-global. */
 const MODES = ['normal', 'trust_reads', 'trust'] as const
-type Setting = 'approval_mode' | 'model' | 'reasoning_effort' | 'worker_model' | 'worker_reasoning_effort'
+type Setting = 'approval_mode' | 'acp_backend' | 'model' | 'reasoning_effort' | 'worker_model' | 'worker_reasoning_effort'
 /** The record's "workers run the crewmate's own" spelling for both worker fields. */
 const SAME_AS_CREWMATE = ''
 /** A REAL worker-model pin, unlike the crewmate's own `model` where it means
  *  inherit: dispatched sessions run on the backend's default. */
 const WORKER_AUTO = 'auto'
+
+/** The record's "inherit the install's harness" spelling for `acp_backend`. */
+const INHERIT_HARNESS = ''
 
 /** One choice on a picker page. */
 interface Option { value: string; label: string; desc?: string }
@@ -40,6 +46,9 @@ interface Picker {
   /** The current value, as the row reads it and the page checks it. */
   value: string
   valueLabel: string
+  /** A short line under the row's label, for a label that alone does not say
+   *  what it controls. */
+  sub?: string
   options: Option[]
   /** The line under the page's list: what the current pick resolves to or trades. */
   caption?: string
@@ -85,6 +94,9 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   const [draft, setDraft] = useState<Partial<Record<Setting, string>>>({})
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  // A save that worked and has something to say (a harness pick takes effect
+  // later): a plain status line, never an alert.
+  const [saved, setSaved] = useState('')
   // One save at a time. Each pick writes the record, then the live slot; two
   // picks in flight could land out of order and leave the slot on an older mode.
   const [saving, setSaving] = useState(false)
@@ -100,8 +112,13 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     queryKey: ['agent-resolved-model', member.name],
     queryFn: () => api.agentResolvedModel(member.name),
   })
+  // A developer preview (Settings > Developer > Feature Previews): the Harness row.
+  // The pin itself is read from the owner-only readout above whatever the flag
+  // says, so a saved pin always scopes the model lists below.
+  const harnessRowOn = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
   const stored = {
     approval_mode: String(member.approval_mode || 'trust'),
+    acp_backend: String(resolved?.acp_backend || INHERIT_HARNESS),
     model: member.model || INHERIT_MODEL,
     reasoning_effort: String(member.reasoning_effort || ''),
     worker_model: String(member.worker_model || SAME_AS_CREWMATE),
@@ -115,7 +132,18 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   // The model the crewmate itself runs on, named: its pin, else what Inherited resolves to.
   const ownModel = model === INHERIT_MODEL ? resolved?.model : model
   const effortCapable = modelSupportsEffort(ownModel)
-  const listedModels = (models.data || []).map((m) => m.name).filter((n) => n && n !== INHERIT_MODEL)
+  // A crewmate pinned to a harness picks from THAT harness's models, never the
+  // install's: a model only another harness serves is refused at save.
+  const harness = value('acp_backend')
+  const harnessModels = useQuery({
+    queryKey: ['available-models', 'harness', harness],
+    queryFn: () => api.harnessModels(harness),
+    enabled: !!harness,
+  })
+  const listedModels = (harness
+    ? (harnessModels.data || []).map((m) => m.model_name)
+    : (models.data || []).map((m) => m.name)
+  ).filter((n) => n && n !== INHERIT_MODEL)
   const modelOptions = withCurrent([INHERIT_MODEL, ...listedModels], model)
   // What the crewmate's dispatched workers run on. "Same as <name>" is the
   // record's '' and follows the crewmate's own pick; Auto is a real pin here.
@@ -191,15 +219,25 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     setDraft((d) => ({ ...d, [key]: next }))
     setError('')
     setNotice('')
+    setSaved('')
     // The record spells "inherit" as ''; the picker spells it INHERIT_MODEL.
     const wire = key === 'model' && next === INHERIT_MODEL ? '' : next
     try {
       // The permission is compare-and-set: the server applies it only if the
       // record still holds what this card read, so a stale card can never
       // undo a newer pick. Model and effort are plain last-write-wins.
+      // A harness pick also returns both model pins to Inherited: a model chosen
+      // for one harness is rarely served by another, and the server would refuse
+      // the pick. The person then picks from the new harness's own list.
+      const resetModels = key === 'acp_backend'
+        ? {
+            ...(value('model') !== INHERIT_MODEL ? { model: '' } : {}),
+            ...(value('worker_model') !== SAME_AS_CREWMATE ? { worker_model: '' } : {}),
+          }
+        : {}
       const body = key === 'approval_mode'
         ? { approval_mode: wire, expected_approval_mode: String(member.approval_mode ?? '') }
-        : { [key]: wire }
+        : { [key]: wire, ...resetModels }
       try {
         await api.updateKirocrewAgent(member.name, body)
       } catch (e) {
@@ -210,6 +248,22 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           rows?.map((r) => (r.name === member.name ? { ...r, approval_mode: current } : r)))
         setDraft((d) => ({ ...d, [key]: current || 'trust' }))
         setNotice(t('pages.membersPage.profile_permission_changed'))
+        return
+      }
+      if (key === 'acp_backend') {
+        // The pin is not on the roster row (only the owner readout carries it);
+        // the readout is refetched below. The server reloaded the live thread
+        // onto the new harness and cleared its own model and effort picks.
+        if (Object.keys(resetModels).length) {
+          queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+            rows?.map((r) => (r.name === member.name ? { ...r, ...resetModels } : r)))
+          setDraft((d) => ({
+            ...d,
+            ...('model' in resetModels ? { model: INHERIT_MODEL } : {}),
+            ...('worker_model' in resetModels ? { worker_model: SAME_AS_CREWMATE } : {}),
+          }))
+        }
+        setSaved(t('pages.membersPage.profile_harness_saved', { name }))
         return
       }
       queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
@@ -239,6 +293,9 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       ? t('components.approvalModePicker.reads_label')
       : t('components.approvalModePicker.trust_label')
   const modelLabel = (m: string) => (m === INHERIT_MODEL ? t('pages.kiroCrewAgentsPage.inherited') : m)
+  const harnessLabel = (h: string) => (h === INHERIT_HARNESS ? t('pages.kiroCrewAgentsPage.inherited') : acpBackendName({ id: h }))
+  const workerHarnesses = resolved?.worker_harnesses
+  const harnessOptions = withCurrent([INHERIT_HARNESS, ...(resolved?.harnesses || [])], harness)
   const workerModelLabel = (m: string) => (
     m === SAME_AS_CREWMATE ? t('pages.membersPage.profile_worker_same_as', { name }) : m === WORKER_AUTO ? t('pages.membersPage.profile_worker_auto') : m
   )
@@ -261,6 +318,31 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
             : t('pages.membersPage.profile_mode_trust_desc', { name }),
       })),
     },
+    ...(harnessRowOn ? [{
+      key: 'acp_backend' as const,
+      label: t('pages.membersPage.profile_harness'),
+      icon: <Cpu size={16} />, tone: 'accent' as const,
+      // "Agent harness" alone does not say what it is: the row says so under
+      // its label, and an Inherited value names the harness it resolves to.
+      sub: t('pages.membersPage.profile_harness_sub', { name }),
+      value: harness,
+      valueLabel: harness === INHERIT_HARNESS && resolved?.inherited_harness
+        ? t('pages.membersPage.profile_harness_inherited_value', { harness: acpBackendName({ id: resolved.inherited_harness }) })
+        : harnessLabel(harness),
+      // Inherited names what it resolves to; a harness that cannot run this
+      // crewmate's workers says so under its label, before it is picked. The
+      // saved pin that cannot start on this gateway says only that: "can chat"
+      // under it would contradict the notice that its chats don't start.
+      options: harnessOptions.map((h) => ({
+        value: h, label: harnessLabel(h),
+        desc: h === INHERIT_HARNESS
+          ? (resolved?.inherited_harness ? t('pages.membersPage.profile_harness_inherited_hint', { harness: acpBackendName({ id: resolved.inherited_harness }) }) : undefined)
+          : resolved?.harness_error && h === resolved.acp_backend
+            ? t('pages.membersPage.profile_harness_cannot_start')
+            : workerHarnesses && !workerHarnesses.includes(h) ? t('pages.membersPage.profile_harness_no_workers', { name }) : undefined,
+      })),
+      caption: t('pages.membersPage.profile_harness_hint', { name }),
+    }] : []),
     {
       key: 'model',
       label: t('pages.kiroCrewAgentsPage.model'),
@@ -387,11 +469,25 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         testId="crew-profile-settings-resolve-error"
       />
       <ErrorNotice
-        message={models.error || models.isDegraded ? t('pages.chatSidebar.model_list_failed') : null}
+        message={(harness ? harnessModels.isError : (models.error || models.isDegraded)) ? t('pages.chatSidebar.model_list_failed') : null}
         testId="crew-profile-settings-models-error"
+      />
+      {/* Our own words, with the harness named, not the server's English sentence,
+          and the way out inside it: the Agent harness picker. */}
+      <ErrorNotice
+        message={resolved?.harness_error && resolved.acp_backend
+          ? t('pages.membersPage.profile_harness_unavailable', { name, harness: acpBackendName({ id: resolved.acp_backend }) })
+          : null}
+        testId="crew-profile-settings-harness-error"
+        footer={harnessRowOn && page !== 'acp_backend' ? (
+          <Btn type="button" onClick={() => openPage('acp_backend')} data-testid="crew-profile-settings-harness-fix">
+            {t('pages.membersPage.profile_harness_choose')}
+          </Btn>
+        ) : undefined}
       />
       <ErrorNotice message={error || null} testId="crew-profile-settings-error" />
       <ErrorNotice message={notice || null} testId="crew-profile-settings-notice" />
+      {saved && <p className="m-0 px-3.5 text-[12px] text-muted" role="status" data-testid="crew-profile-settings-saved">{saved}</p>}
     </>
   )
   const waitingLine = waiting && (
@@ -399,7 +495,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   )
 
   const rowProps = (p: Picker) => ({
-    icon: p.icon, tone: p.tone, label: p.label, value: p.valueLabel,
+    icon: p.icon, tone: p.tone, label: p.label, sub: p.sub, value: p.valueLabel,
     onClick: () => openPage(p.key), testId: `crew-profile-setting-${p.key}`,
   })
   const row = (p: Picker) => (p.key === 'approval_mode'

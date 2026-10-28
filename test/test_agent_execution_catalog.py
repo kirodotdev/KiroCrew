@@ -528,6 +528,38 @@ def test_session_backend_matches_the_provider_selection(session_key, default, me
     assert agent_catalog._session_backend(config, session_key) == expected
 
 
+@pytest.mark.parametrize("stored,expected", [("nope", "unknown"), ("claude", "claude")])
+def test_session_backend_shows_an_unstartable_pin_without_raising(monkeypatch, stored, expected):
+    """A display read names known pins even when this gateway cannot start them."""
+    from kiro_crew.agent_sdk import backends
+
+    monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas"}))
+    config = KiroCrewConfig()
+    config.agents = {
+        "atlas": KiroCrewAgentConfig(
+            member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=stored
+        ),
+    }
+    key = "dashboard:member-atlas-0123456789ab"
+    assert agent_catalog._session_backend(config, key) == expected
+
+
+@pytest.mark.asyncio
+async def test_catalog_answers_for_a_crewmate_whose_pin_cannot_start(catalog, monkeypatch):
+    from kiro_crew.agent_sdk import backends
+
+    monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas"}))
+    catalog.config.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend="nope"
+    )
+    catalog.state._slots["member-atlas-0123456789ab"] = SimpleNamespace(project="", _app="")
+    headers = {"X-Session-Key": "dashboard:member-atlas-0123456789ab"}
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog", headers=headers)
+        assert response.status == 200
+        assert (await response.json())["session_backend"] == "unknown"
+
+
 def test_refused_backends_are_the_hosts_whose_activation_guard_refuses():
     """The routing-table answer equals the harness answer, host by host.
 
@@ -608,3 +640,30 @@ async def test_catalog_names_the_configured_crew_mode_agent_and_the_conductor_fa
     # Every conductor stays out of a normal chat's picker.
     assert "better-conductor" in body["conductor_agents"]
     assert "kirocrew-pipeline-conductor" in body["conductor_agents"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True])
+@pytest.mark.parametrize(
+    "stored,expected", [("sk-test-not-a-real-secret-0000", "unknown"), ("claude", "claude")]
+)
+async def test_catalog_pin_display_is_safe_for_every_caller(
+    catalog, owner, stored, expected, caplog
+):
+    if not owner:
+        catalog.caller.user = "another-user"
+    catalog.config.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=stored
+    )
+    catalog.state._slots["member-atlas-0123456789ab"] = SimpleNamespace(project="", _app="")
+    async with TestClient(TestServer(catalog.app, host="127.0.0.1")) as client:
+        response = await client.get(
+            "/api/agents/catalog", headers={"X-Session-Key": "dashboard:member-atlas-0123456789ab"}
+        )
+        assert response.status == 200
+        text = await response.text()
+        body = await response.json()
+    assert body["session_backend"] == expected
+    if stored != expected:
+        assert stored not in text + caplog.text
+    assert catalog.config.agents["atlas"].acp_backend == stored

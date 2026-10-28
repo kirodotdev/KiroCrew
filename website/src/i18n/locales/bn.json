@@ -13747,7 +13747,13 @@
         "set_is_fixed_at_gateway_start": "এখানে কোন এজেন্টগুলি দেখা যাবে তা gateway চালু হওয়ার সময় নির্ধারিত হয়। পরিচালিত ডিপ্লয়মেন্ট নীতির মাধ্যমে এই সেট সীমিত করতে পারে; নীতি সম্পাদনা পরবর্তী চালুর সময় কার্যকর হয়।",
         "use_button_in_use": "ব্যবহৃত হচ্ছে",
         "use_switches_new_sessions": "নতুন সেশনগুলি {{current}} থেকে {{name}}-এ চলে যায়।",
-        "word_not_offered": "অপ্রদত্ত"
+        "word_not_offered": "অপ্রদত্ত",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "চ্যাটের উপরে লাইভ স্ক্রল ও অ্যাঙ্কর ডায়াগনস্টিকস দেখায়",
@@ -13875,7 +13881,9 @@
         "decisions_runtime_error": "মডেল চালু করা গেল না।",
         "decisions_runtime_retry": "আবার চেষ্টা করো",
         "folder_conductor": "ফোল্ডারের কন্ডাক্টর",
-        "folder_conductor_desc": "যে চ্যাট একটি ফোল্ডারের বাকি চ্যাটগুলো শুরু করেছে, সেটিকে ফোল্ডারের একদম উপরে তুলে ধরে: বাঁ ধারে একটি রঙিন দাগ আর এজেন্টের নামের পাশে একটি ছোট conductor লেবেল। এটি সেশন তালিকার সাজানো বদলে দেয়, তাই তুমি চালু না করা পর্যন্ত তালিকাটি আগের মতোই থাকে। ফোল্ডার মেনুর চ্যাট আইটেমটি সব সময়ই থাকে।"
+        "folder_conductor_desc": "যে চ্যাট একটি ফোল্ডারের বাকি চ্যাটগুলো শুরু করেছে, সেটিকে ফোল্ডারের একদম উপরে তুলে ধরে: বাঁ ধারে একটি রঙিন দাগ আর এজেন্টের নামের পাশে একটি ছোট conductor লেবেল। এটি সেশন তালিকার সাজানো বদলে দেয়, তাই তুমি চালু না করা পর্যন্ত তালিকাটি আগের মতোই থাকে। ফোল্ডার মেনুর চ্যাট আইটেমটি সব সময়ই থাকে।",
+        "crewmate_harness": "প্রতি সঙ্গীর এজেন্ট হারনেস",
+        "crewmate_harness_desc": "প্রতিটি সঙ্গীর প্রোফাইলে একটি এজেন্ট হারনেস সেটিং যোগ করে, যাতে একজন সঙ্গী Claude Code-এর মতো অন্য একটি AI কোডিং টুল আর তার মডেলে চলতে পারে, আর বাকিরা ডিফল্টে থাকে।"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}}-এর নিজস্ব ইঞ্জিনে KAS চালাও",
@@ -19430,7 +19438,17 @@
       "export_discard_lessons_body": "সদস্যের স্মৃতি বদলায় না।",
       "export_discard_lessons_confirm": "লেখা বাদ দাও",
       "export_reason_first_goal_only": "এই ফাইলে শুধু প্রথম লক্ষ্যটি আঁটে",
-      "built_from_mate_label": "সঙ্গী"
+      "built_from_mate_label": "সঙ্গী",
+      "profile_harness": "এজেন্ট হারনেস",
+      "profile_harness_hint": "কোন AI কোডিং টুল {{name}}-এর চ্যাট আর তার ওয়ার্কার চালায়, যেমন Kiro Agent বা Claude Code, আর তাতেই ঠিক হয় {{name}} কোন মডেল ব্যবহার করতে পারে। পরিবর্তনটি {{name}}-কে পাঠানো পরের বার্তা থেকে কাজ করে, আর মডেল ও ওয়ার্কার মডেল দুটোকেই ইনহেরিট করা-তে ফিরিয়ে দেয়।",
+      "profile_harness_sub": "যে AI কোডিং টুলে {{name}} চলে",
+      "profile_harness_inherited_value": "ইনহেরিট করা ({{harness}})",
+      "profile_harness_inherited_hint": "দলের ডিফল্ট অনুসরণ করে (এখন {{harness}})।",
+      "profile_harness_no_workers": "{{name}} এই হারনেসে চ্যাট করতে পারে, কিন্তু তার ওয়ার্কাররা এতে চালু হতে পারে না।",
+      "profile_harness_cannot_start": "এখানে চালু হতে পারে না।",
+      "profile_harness_saved": "সেভ হয়েছে। পরের বার্তা থেকে {{name}} এই হারনেসে চলবে।",
+      "profile_harness_unavailable": "{{name}}-কে {{harness}}-এ চালানোর জন্য সেট করা আছে, যেটি এখানে চালু হতে পারে না, তাই তার চ্যাট আর ওয়ার্কাররাও চালু হয় না। অন্য একটি এজেন্ট হারনেস বেছে নাও, অথবা ইনহেরিট করা।",
+      "profile_harness_choose": "একটি এজেন্ট হারনেস বেছে নাও"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",

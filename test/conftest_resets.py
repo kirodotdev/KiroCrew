@@ -590,8 +590,9 @@ def _disarm_agent_slice_memory_high():
 def _reset_crewmate_worker_slots():
     """A test that registers a session key as a crewmate worker must not leak it.
 
-    ``_CREWMATE_WORKER_SLOTS`` and ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` are
-    process-wide sets in ``kiro_crew.members_parts.member_sessions``.
+    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS`` and
+    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` are process-wide in
+    ``kiro_crew.members_parts.member_sessions``.
     ``note_crewmate_worker_session`` mutates them directly (not through a
     monkeypatch), so a test that calls ``resolve_session_agent_bindings`` or
     ``note_worker_session`` with a worker execution silently contaminates every
@@ -605,6 +606,7 @@ def _reset_crewmate_worker_slots():
         module = sys.modules.get("kiro_crew.members_parts.member_sessions")
         if module is not None:
             module._CREWMATE_WORKER_SLOTS.clear()
+            module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
 
     clear()

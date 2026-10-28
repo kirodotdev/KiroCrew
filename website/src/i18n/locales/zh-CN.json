@@ -13521,7 +13521,13 @@
         "set_is_fixed_at_gateway_start": "此处显示哪些 agent 在 gateway 启动时确定。受管部署可通过策略限制该集合；修改策略需下次启动才生效。",
         "use_button_in_use": "正在使用",
         "use_switches_new_sessions": "新会话将从 {{current}} 切换到 {{name}}。",
-        "word_not_offered": "未提供"
+        "word_not_offered": "未提供",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "在聊天上叠加实时滚动与锚点诊断信息",
@@ -13649,7 +13655,9 @@
         "decisions_runtime_error": "无法启动模型。",
         "decisions_runtime_retry": "重试",
         "folder_conductor": "文件夹调度者",
-        "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。"
+        "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。",
+        "crewmate_harness": "按队友设置代理运行框架",
+        "crewmate_harness_desc": "在每个队友的资料中添加“代理运行框架”设置，让某个队友使用另一种 AI 编程工具（例如 Claude Code）及其模型，其他队友保持默认。"
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",
@@ -19120,7 +19128,17 @@
       "export_discard_lessons_body": "这个队友的记忆不会改变。",
       "export_discard_lessons_confirm": "丢弃文字",
       "export_reason_first_goal_only": "这个文件只放得下第一个目标",
-      "built_from_mate_label": "队友"
+      "built_from_mate_label": "队友",
+      "profile_harness": "代理运行框架",
+      "profile_harness_hint": "运行 {{name}} 的聊天及其工作会话的 AI 编程工具（例如 Kiro Agent 或 Claude Code），它也决定 {{name}} 能用哪些模型。更改从发给 {{name}} 的下一条消息起生效，并把“模型”和“工作会话模型”都恢复为“继承”。",
+      "profile_harness_sub": "{{name}} 运行所用的 AI 编程工具",
+      "profile_harness_inherited_value": "继承（{{harness}}）",
+      "profile_harness_inherited_hint": "跟随团队默认设置（当前为 {{harness}}）。",
+      "profile_harness_no_workers": "{{name}} 可以在此运行框架上聊天，但其工作会话无法在此启动。",
+      "profile_harness_cannot_start": "无法在此启动。",
+      "profile_harness_saved": "已保存。从下一条消息起，{{name}} 在此运行框架上运行。",
+      "profile_harness_unavailable": "{{name}} 设置为使用 {{harness}}，但它在这里无法启动，因此其聊天和工作会话也不会启动。请选择其他代理运行框架，或选择“继承”。",
+      "profile_harness_choose": "选择代理运行框架"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

@@ -545,9 +545,9 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
-    const count = panel().getByText(/deepseek supports \d+ of \d+ features/)
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
+    const count = panel().getByText(/DeepSeek Harness supports \d+ of \d+ features/)
     expect(count.parentElement?.className).toContain('opacity-60')
 
     // An offered harness's list is not muted.
@@ -600,13 +600,13 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'codex', 'pi']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
 
     expect(rowLabel('Kiro CLI').textContent).toContain('Installed')
     expect(rowLabel('Claude Code').textContent).toContain('Not installed')
-    expect(rowLabel('codex').textContent).toContain('Check failed')
-    expect(rowLabel('pi').textContent).toContain('Installed, not active yet')
-    expect(rowLabel('deepseek').textContent).toContain('Not offered')
+    expect(rowLabel('OpenAI Codex').textContent).toContain('Check failed')
+    expect(rowLabel('Pi').textContent).toContain('Installed, not active yet')
+    expect(rowLabel('DeepSeek Harness').textContent).toContain('Not offered')
 
     // The accessible name stays the harness name alone.
     expect(row('Claude Code')).toHaveAccessibleName('Claude Code')
@@ -724,10 +724,10 @@ describe('AgentBackendTab switching', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('codex')).toBeInTheDocument())
-    highlight('codex')
+    await waitFor(() => expect(row('OpenAI Codex')).toBeInTheDocument())
+    highlight('OpenAI Codex')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Use codex' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Use OpenAI Codex' })).toBeNull()
     expect(panel().queryByText(/New sessions switch from/)).toBeNull()
   })
 
@@ -1294,7 +1294,7 @@ describe('AgentBackendTab check again', () => {
     await waitFor(() => expect(acpBackendRecheckMock).toHaveBeenCalledWith('claude'))
 
     // The reader moves on BEFORE the rejection arrives.
-    highlight('codex')
+    highlight('OpenAI Codex')
     await waitFor(() => expect(panel().getByText(/codex-acp/)).toBeInTheDocument())
     reject(new Error('500'))
 
@@ -1325,8 +1325,8 @@ describe('AgentBackendTab check again', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
     expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -121,7 +122,8 @@ class TestSlotSelectionCapabilities:
             chat_handlers.KiroCrewConfig,
             "load",
             lambda: SimpleNamespace(
-                agent=SimpleNamespace(acp_backend="claude", member_acp_backend="codex")
+                agent=SimpleNamespace(acp_backend="claude", member_acp_backend="codex"),
+                agents={},
             ),
         )
         state = _mock_state(_ChatSlot("member-test"))
@@ -300,7 +302,10 @@ class TestChatSlotReasoningEffort:
             chat_handlers.KiroCrewConfig,
             "load",
             lambda: SimpleNamespace(
-                agent=SimpleNamespace(acp_backend=global_backend, member_acp_backend=member_backend)
+                agent=SimpleNamespace(
+                    acp_backend=global_backend, member_acp_backend=member_backend
+                ),
+                agents={},
             ),
         )
         slot = _ChatSlot("member-test")
@@ -929,3 +934,34 @@ class TestValidateReasoningEffortPersistence:
         assert _validate_reasoning_effort(5) == ""
         assert _validate_reasoning_effort(None) == ""
         assert _validate_reasoning_effort(["max"]) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["selection-capabilities", "reasoning-effort"])
+async def test_unknown_crewmate_pin_is_absent_from_slot_refusals(route, monkeypatch, caplog):
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+    slot = _ChatSlot("member-atlas-0123456789ab", model="claude-opus-4.8[max]")
+    state = _mock_state(slot)
+    async with TestClient(TestServer(_make_app(state), host="127.0.0.1")) as client:
+        url = f"/api/chat/slots/{slot.key}/{route}"
+        response = (
+            await client.get(url)
+            if route == "selection-capabilities"
+            else await client.post(url, json={"reasoning_effort": "high"})
+        )
+        assert response.status == 409
+        text = await response.text()
+        data = await response.json()
+    assert data["code"] == "crewmate_harness_unavailable"
+    assert "an unknown harness" in data["error"]
+    assert secret not in text + caplog.text
+    assert cfg.agents["atlas"].acp_backend == secret
+    assert slot.reasoning_effort == ""
+    cast(AsyncMock, state.sessions.reset).assert_not_awaited()

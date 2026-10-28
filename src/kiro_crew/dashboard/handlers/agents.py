@@ -1393,7 +1393,15 @@ async def api_models(request: web.Request) -> web.Response:
     adapter's namespace, because they do not accept ids from that catalog.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    backend = getattr(cfg.agent, "acp_backend", "")
+    from kiro_crew.crewmate_harness import models_route  # ``?backend=``: the mate picker's list
+
+    route = await asyncio.to_thread(models_route, cfg, request.query)
+    if route is None:
+        return web.json_response(
+            {"error": "backend is not a selectable harness", "code": "invalid_acp_backend"},
+            status=400,
+        )
+    backend, bundle_route = route
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
@@ -1409,11 +1417,7 @@ async def api_models(request: web.Request) -> web.Response:
     # narrowing below never apply (the engine's select is already the signed-in
     # account's list). Decided per ROUTE (backend AND the bundle switch), not per
     # backend, which is why it is not a capability-set branch like the one above.
-    # The one shared predicate (``agent_sdk.kas_bundle``); it re-reads config, so
-    # off the loop. Deferred like the handler module's own engine probe.
-    from kiro_crew.agent_sdk import kas_bundle
-
-    if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+    if bundle_route:
         return await api_models_kas_bundle(request)
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
@@ -1755,10 +1759,13 @@ def _get_config_lock() -> LoopBoundLock:
     return _config_lock
 
 
-def _pin_entitlement_backend(cfg: Any) -> str:
+def _pin_entitlement_backend(
+    cfg: Any, crew: str = "", acp_backend: str | None = None, *, for_workers: bool = False
+) -> str:
     """The harness whose live catalog may judge a crew's model pin.
 
-    Every agent the crew create and update handlers write is a Crew Member whose DM slot
+    A crewmate's harness pin decides first and may raise (see
+    ``crewmate_harness.pinned_entitlement_backend``). Every agent the crew create and update handlers write is a Crew Member whose DM slot
     (``member-<slug>``) routes through ``agent.member_acp_backend`` — not
     through the configured default harness ``agent.acp_backend``. When the two
     share a model-registry namespace, the default backend scopes the
@@ -1773,6 +1780,10 @@ def _pin_entitlement_backend(cfg: Any) -> str:
     -namespace provider is live the catalog is simply unknown (fail-open) rather
     than judged by the wrong backend's advertised ids.
     """
+    from kiro_crew.crewmate_harness import pinned_entitlement_backend as pin_backend
+
+    if (pinned := pin_backend(cfg, crew, acp_backend, for_workers=for_workers)) is not None:
+        return pinned
     default_backend = getattr(cfg.agent, "acp_backend", "")
     member_backend = getattr(cfg.agent, "member_acp_backend", "")
     if (
@@ -1784,7 +1795,12 @@ def _pin_entitlement_backend(cfg: Any) -> str:
 
 
 async def _revalidate_crew_pin(
-    model: str, request: web.Request, *, for_workers: bool = False
+    model: str,
+    request: web.Request,
+    *,
+    for_workers: bool = False,
+    crew: str = "",
+    acp_backend: str | None = None,
 ) -> str | None:
     """Revalidate the snapshot a crew's model pin is about to be judged by.
 
@@ -1799,8 +1815,7 @@ async def _revalidate_crew_pin(
     the retained claude_code seam and a known wrong-flavour spelling -- so no probe
     is spent on a value the snapshot does not decide.
 
-    ``for_workers`` names the crew's ``worker_model``: it is judged against the
-    harness the crewmate's worker runs on (``mate_worker.crewmate_worker_backend``).
+    ``for_workers`` judges ``worker_model`` on its worker's harness; an unstartable pin denies.
     """
     if not model or model == "auto" or model_registry.acp_id_correction(model):
         return None
@@ -1808,15 +1823,23 @@ async def _revalidate_crew_pin(
     if is_claude_code(cfg.agent.provider):
         return None
     # circular import: see _model_pin_rejected.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
     from kiro_crew.dashboard.handlers.core import _revalidate_role_pin_evidence
-    from kiro_crew.mate_worker import crewmate_worker_backend
 
-    backend = crewmate_worker_backend(cfg.agent) if for_workers else _pin_entitlement_backend(cfg)
+    try:
+        backend = _pin_entitlement_backend(cfg, crew, acp_backend, for_workers=for_workers)
+    except CrewmateHarnessUnavailable as exc:
+        return str(exc)
     return await _revalidate_role_pin_evidence(model, request, backend=backend)
 
 
 def _model_pin_rejected(
-    model: str, request: web.Request, provider: str, *, backend: str | None = None
+    model: str,
+    request: web.Request,
+    provider: str,
+    *,
+    backend: str | None = None,
+    harness_pinned: bool = False,
 ) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
@@ -1853,7 +1876,11 @@ def _model_pin_rejected(
     # kiro-cli serves; the others reach the child verbatim and kill it at startup.
     # Check this before live entitlement because a wrong-flavour id is naturally
     # absent from that set and would otherwise produce a less actionable error.
-    correction = model_registry.acp_id_correction(model)
+    from kiro_crew.crewmate_harness import kiro_spelling_applies
+
+    # A crew *harness_pinned* to a harness with its own ids has no kiro-cli spelling to fix.
+    spelled = kiro_spelling_applies(backend, harness_pinned)
+    correction = model_registry.acp_id_correction(model) if spelled else None
     if correction:
         # Deliberately NOT prescriptive. Upstream naming does not line up across
         # providers — Bedrock's ``claude-opus-4-8`` is the registry's

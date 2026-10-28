@@ -13973,7 +13973,13 @@
         "set_is_fixed_at_gateway_start": "Quais agentes aparecem aqui é decidido quando o gateway inicia. Uma implantação gerenciada pode restringir o conjunto por política; editar essa política passa a valer no próximo início.",
         "use_button_in_use": "Em uso",
         "use_switches_new_sessions": "As novas sessões passam de {{current}} para {{name}}.",
-        "word_not_offered": "Não oferecido"
+        "word_not_offered": "Não oferecido",
+        "codex": "OpenAI Codex",
+        "copilot": "GitHub Copilot CLI",
+        "deepseek": "DeepSeek Harness",
+        "goose": "goose",
+        "opencode": "OpenCode",
+        "pi": "Pi"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sobrepõe ao chat um diagnóstico ao vivo de rolagem e âncoras",
@@ -14101,7 +14107,9 @@
         "decisions_runtime_error": "Não foi possível iniciar o modelo.",
         "decisions_runtime_retry": "Tentar de novo",
         "folder_conductor": "Conductor da pasta",
-        "folder_conductor_desc": "Leva para o topo da pasta o chat que iniciou os outros chats dessa pasta: uma barra de destaque na borda esquerda e uma pequena etiqueta conductor ao lado do nome do agente. Isso muda a ordem da lista de sessões, por isso a lista fica como está até você ativar. O item de chat no menu da pasta está sempre lá."
+        "folder_conductor_desc": "Leva para o topo da pasta o chat que iniciou os outros chats dessa pasta: uma barra de destaque na borda esquerda e uma pequena etiqueta conductor ao lado do nome do agente. Isso muda a ordem da lista de sessões, por isso a lista fica como está até você ativar. O item de chat no menu da pasta está sempre lá.",
+        "crewmate_harness": "Harness do agente por colega",
+        "crewmate_harness_desc": "Adiciona uma configuração Harness do agente ao perfil de cada colega, para que um colega rode em outra ferramenta de programação com IA, como Claude Code, com os modelos dela, enquanto os demais ficam no padrão."
       },
       "kasBundleCard": {
         "toggle_label": "Executar o KAS no mecanismo próprio do {{productName}}",
@@ -19740,7 +19748,17 @@
       "export_discard_lessons_body": "A memória do membro não muda.",
       "export_discard_lessons_confirm": "Descartar texto",
       "export_reason_first_goal_only": "Só a primeira meta cabe neste arquivo",
-      "built_from_mate_label": "Colega"
+      "built_from_mate_label": "Colega",
+      "profile_harness": "Harness do agente",
+      "profile_harness_hint": "Qual ferramenta de programação com IA executa os chats e os workers de {{name}}, como Kiro Agent ou Claude Code, e portanto quais modelos {{name}} pode usar. Uma mudança vale a partir da próxima mensagem para {{name}} e volta Modelo e Modelo dos workers para Herdado.",
+      "profile_harness_sub": "A ferramenta de programação com IA em que {{name}} roda",
+      "profile_harness_inherited_value": "Herdado ({{harness}})",
+      "profile_harness_inherited_hint": "Segue o padrão da equipe (agora {{harness}}).",
+      "profile_harness_no_workers": "{{name}} pode conversar neste harness, mas seus workers não conseguem iniciar nele.",
+      "profile_harness_cannot_start": "Não consegue iniciar aqui.",
+      "profile_harness_saved": "Salvo. A partir da próxima mensagem, {{name}} roda neste harness.",
+      "profile_harness_unavailable": "{{name}} está configurado para rodar em {{harness}}, que não consegue iniciar aqui, então os chats e os workers dele também não iniciam. Escolha outro harness do agente, ou Herdado.",
+      "profile_harness_choose": "Escolher um harness do agente"
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

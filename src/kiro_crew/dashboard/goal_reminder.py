@@ -626,7 +626,7 @@ def member_has_session_tools(member: str) -> bool:
         from kiro_crew.members import MEMBER_DISPATCH_SERVER
 
         cfg = KiroCrewConfig.load()
-        if not _member_dispatch_held(None, cfg):
+        if not _member_dispatch_held(None, cfg, member):
             return False
         binding = cfg.agents.get(member)
         agent = getattr(binding, "kiro_agent", "") or None

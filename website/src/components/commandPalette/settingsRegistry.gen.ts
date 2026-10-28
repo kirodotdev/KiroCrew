@@ -1770,6 +1770,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "developer.agent-harness-per-mate",
+    "label": "Agent harness per mate",
+    "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
+    "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_memory_text",
     "tab": "developer",

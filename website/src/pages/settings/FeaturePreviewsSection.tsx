@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -117,6 +117,7 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  const crewmateHarness = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
@@ -263,6 +264,17 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
           checked={folderConductor}
           onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
+        />
+      </SettingsCard>
+      {/* A crewmate's own harness: the Harness row on each crewmate's profile
+          Settings page. NO ingress button: the row appears on a profile the reader
+          already opens, and there is no one page to link to. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.crewmate_harness')}
+          description={i18nT('pages.developer.featurePreviewsTab.crewmate_harness_desc')}
+          checked={crewmateHarness}
+          onChange={v => setPreviewFlag(PREVIEW_CREWMATE_HARNESS, v)}
         />
       </SettingsCard>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch

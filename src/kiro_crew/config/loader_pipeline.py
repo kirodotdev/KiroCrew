@@ -897,6 +897,10 @@ def build_config(
                         else crew.default("worker_model")
                     ),
                     worker_reasoning_effort=coerce_effort(crew.get("worker_reasoning_effort")),
+                    # Kept as written, never coerced to a selectable value: the
+                    # selection gate refuses a pin this build cannot start, and a
+                    # coerced one would run the crewmate on another harness.
+                    acp_backend=crew.read("acp_backend", _safe_str).strip(),
                     approval_mode=_sections.coerce_member_approval_mode(crew.get("approval_mode")),
                     display_name=(
                         raw_display_name

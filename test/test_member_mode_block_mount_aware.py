@@ -52,7 +52,7 @@ def builder(tmp_path, monkeypatch):
 
 
 def _capable(monkeypatch, value: bool) -> None:
-    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg=None: value)
+    monkeypatch.setattr(ctx, "_member_backend_can_dispatch", lambda cfg=None, crew="": value)
 
 
 @pytest.mark.parametrize(

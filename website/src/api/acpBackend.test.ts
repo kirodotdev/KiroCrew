@@ -71,14 +71,14 @@ describe('mcpWholeServerDeny', () => {
 
   it('states the rule, naming the harness, where the server classed the reach as whole-server', () => {
     const out = mcpWholeServerDeny(row({ per_tool_deny: 'whole-server', costs_whole_server: true, ineffective: [] }))
-    expect(out.rule).toMatch(/^Turning off one MCP tool on Goose stops every tool on the same server/)
+    expect(out.rule).toMatch(/^Turning off one MCP tool on goose stops every tool on the same server/)
     expect(out.exception).toBe('')
   })
 
   it('adds the exception on a per-call reach', () => {
     const out = mcpWholeServerDeny(row({ per_tool_deny: 'per-call', costs_whole_server: true, ineffective: [] }, 'codex', 'Codex'))
-    expect(out.rule).toContain('on Codex')
-    expect(out.exception).toMatch(/^One exception: .*kirocrew-core.* on Codex\.$/)
+    expect(out.rule).toContain('on OpenAI Codex')
+    expect(out.exception).toMatch(/^One exception: .*kirocrew-core.* on OpenAI Codex\.$/)
   })
 
   it('says nothing on a reach that stops only the named tool', () => {
@@ -103,17 +103,17 @@ describe('mcpServerDeny', () => {
   it('gives a spared server only the tool-by-tool fact', () => {
     const out = mcpServerDeny(perCall(['kirocrew-core']), 'kirocrew-core')
     expect(out.rule).toBe('')
-    expect(out.exception).toMatch(/on Codex turning off one tool here stops only that tool\.$/)
+    expect(out.exception).toMatch(/on OpenAI Codex turning off one tool here stops only that tool\.$/)
   })
 
   it('gives every other server only the rule', () => {
     const out = mcpServerDeny(perCall(['kirocrew-core']), 'github')
-    expect(out.rule).toContain('on Codex')
+    expect(out.rule).toContain('on OpenAI Codex')
     expect(out.exception).toBe('')
   })
 
   it('reads the names from the gateway, not from a list of its own', () => {
-    expect(mcpServerDeny(perCall(['someone-else']), 'kirocrew-core').rule).toContain('on Codex')
+    expect(mcpServerDeny(perCall(['someone-else']), 'kirocrew-core').rule).toContain('on OpenAI Codex')
   })
 
   it('keeps the pair on a gateway that sends no list', () => {

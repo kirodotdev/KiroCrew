@@ -272,6 +272,17 @@ class KiroCrewAgentConfig:
             "standard levels. An explicit effort on the call wins.",
         ),
     )
+    acp_backend: str = field(
+        default="",
+        metadata=_meta(
+            "Harness",
+            "Agent harness for this crewmate's own chat and the worker sessions it "
+            "opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty "
+            "inherits agent.member_acp_backend. A harness this gateway cannot start "
+            "refuses the session with the reason instead of running another one. "
+            "The model and worker_model pins are judged against this harness.",
+        ),
+    )
     dynamic_capabilities: bool = field(
         default=False,
         metadata=_meta(

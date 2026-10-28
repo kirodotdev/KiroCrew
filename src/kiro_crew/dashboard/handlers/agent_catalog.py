@@ -151,8 +151,19 @@ def _session_backend(config: KiroCrewConfig, session_key: str) -> str:
     ``agent.member_acp_backend``, every other chat and a picker with no chat on
     ``agent.acp_backend``. Both fields are already resolved runtime ids after
     ``KiroCrewConfig.load``, so this reads them rather than calling that gate,
-    which logs every member routing. Display-only: no spawn reads this.
+    which logs every member routing. Display-only: no spawn reads this. A
+    crewmate's own harness pin outranks the member route, read as the harness
+    it runs on (a stored ``kiro`` may run on KAS). Known pins that cannot start
+    are shown as stored; unknown text is replaced by a placeholder.
     """
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_stored_pin
+
+    pin = crewmate_stored_pin(config, session_key)
+    if pin is not None:
+        try:
+            return backend_to_stored(pin.resolve())
+        except CrewmateHarnessUnavailable:
+            return pin.display_stored
     if is_member_session_key(session_key):
         return backend_to_stored(config.agent.member_acp_backend)
     return backend_to_stored(config.agent.acp_backend)

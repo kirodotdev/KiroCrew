@@ -43,12 +43,15 @@ if TYPE_CHECKING:
 async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
     """Resolve a cold slot through the same member-aware gate as the provider factory."""
     config = await asyncio.to_thread(KiroCrewConfig.load)
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
     from kiro_crew.members import select_provider_backend
 
+    session_key = effective_session_key(slot)
     return select_provider_backend(
-        effective_session_key(slot),
+        session_key,
         config.agent.member_acp_backend,
         config.agent.acp_backend,
+        crew_backend=crewmate_backend_pin(config, session_key),
     )
 
 
@@ -71,7 +74,13 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
         # The slot can exist before its ACP session. The configured harness
         # still knows whether model IDs encode effort, so the picker can render
         # the base rows while live effort options are pending.
-        backend = await _configured_backend_for_slot(slot)
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+        try:
+            backend = await _configured_backend_for_slot(slot)
+        except CrewmateHarnessUnavailable as exc:
+            # The crewmate's pinned harness cannot start: say so, not a 500.
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         return web.json_response(
             {
                 "known": False,
@@ -228,11 +237,16 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         legacy_base = ""
         if model_registry.split_effort_suffix(legacy_model)[1]:
             # The backend is only worth resolving when the pin carries a suffix.
-            backend = (
-                provider.capabilities.backend
-                if isinstance(provider, AcpProvider)
-                else await _configured_backend_for_slot(slot)
-            )
+            from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+            try:
+                backend = (
+                    provider.capabilities.backend
+                    if isinstance(provider, AcpProvider)
+                    else await _configured_backend_for_slot(slot)
+                )
+            except CrewmateHarnessUnavailable as exc:
+                return web.json_response({"error": str(exc), "code": exc.code}, status=409)
             legacy_base = legacy_effort_base(
                 legacy_model, pair_id_backend=backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
             )
