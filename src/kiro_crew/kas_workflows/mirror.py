@@ -16,6 +16,7 @@ actually knows and never erases what it does not carry.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
@@ -24,21 +25,111 @@ from typing import Any, Callable, Iterable, Mapping
 
 from kiro_crew.kas_workflows import wire
 
-#: Terminal runs kept per mirror. Live runs are never evicted; past runs beyond
-#: this are dropped oldest-first and stay listable from KAS on demand.
+# Every KAS input passes through _bounded (raw payloads) or _bounded_record
+# (parsed list rows) before it reaches a run, so the caps below bound every
+# field a run keeps: how many entries each holds and how long each string is.
+# What a cap cuts or refuses is counted on RunMirror.dropped; the first is logged.
+
+#: Terminal runs kept per mirror, dropped oldest-first past it (they stay
+#: listable from KAS on demand).
 MAX_TERMINAL_RUNS = 200
-#: Node instances kept per run (a long loop unrolls one body per iteration).
+#: Live runs kept per mirror. Live runs are never evicted; a new one past this
+#: (a placeholder for an unknown id, say) is not recorded.
+MAX_LIVE_RUNS = 500
+#: Node instances kept per run (a long loop unrolls one body per iteration), and
+#: distinct node ids kept in a run's per-id maps. A known id or path is always
+#: updated; a new one past the cap is not recorded.
 MAX_PATHS_PER_RUN = 2000
 #: Project scopes whose last list membership is remembered (gap 19).
 MAX_LIST_SCOPES = 64
-#: Longest KAS text kept on a node's retry-wait line or a plan update reason.
+#: Longest string the mirror keeps from KAS, ids, names, timestamps and reasons
+#: alike. A cut id names nothing KAS holds, so a control sent with it fails.
 MAX_REASON_CHARS = 1000
+#: Most items kept from any one KAS list or mapping: an attention list, one
+#: level of a plan, queued steps, one scope's listed runs.
+MAX_LIST_ITEMS = MAX_PATHS_PER_RUN
+#: Most list items and mapping entries one KAS payload contributes all told, so
+#: a plan wide at every level is bounded as a whole, not only per level.
+MAX_PAYLOAD_VALUES = 20_000
+#: Deepest nesting kept from a payload: a plan level is a node mapping holding a
+#: list of nodes (two levels each), inside a short envelope.
+_MAX_NESTING = 2 * wire.MAX_PLAN_DEPTH + 8
 
 logger = logging.getLogger(__name__)
 
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass
+class _Budget:
+    """What one input may still bring in, and how much a cap has cut so far."""
+
+    left: int = MAX_PAYLOAD_VALUES
+    dropped: int = 0
+
+    def cut(self, text: str) -> str:
+        if len(text) <= MAX_REASON_CHARS:
+            return text
+        self.dropped += 1
+        return text[:MAX_REASON_CHARS]
+
+
+def _bounded(value: Any, budget: _Budget, depth: int = 0) -> Any:
+    """A copy of raw KAS payload *value* within the mirror's caps.
+
+    Strings are cut to :data:`MAX_REASON_CHARS`; a list or mapping keeps at most
+    :data:`MAX_LIST_ITEMS` entries, and the whole payload at most
+    :data:`MAX_PAYLOAD_VALUES`; nesting past :data:`_MAX_NESTING` is dropped.
+    """
+    if isinstance(value, str):
+        return budget.cut(value)
+    if not isinstance(value, (Mapping, list, tuple)):
+        return value
+    if depth >= _MAX_NESTING:
+        budget.dropped += 1
+        return None
+    entries: list[Any] = []
+    for item in value.items() if isinstance(value, Mapping) else value:
+        if len(entries) >= MAX_LIST_ITEMS or budget.left <= 0:
+            budget.dropped += 1
+            break
+        budget.left -= 1
+        entries.append(item)
+    if isinstance(value, Mapping):
+        return {
+            budget.cut(k) if isinstance(k, str) else k: _bounded(v, budget, depth + 1)
+            for k, v in entries
+        }
+    return [_bounded(item, budget, depth + 1) for item in entries]
+
+
+def _bounded_record(record: Any, budget: _Budget) -> Any:
+    """A parsed wire record (a list row and the records it holds) within the same caps."""
+    changes: dict[str, Any] = {}
+    for spec in dataclasses.fields(record):
+        value = getattr(record, spec.name)
+        if isinstance(value, str):
+            kept: Any = budget.cut(value)
+        elif isinstance(value, tuple):
+            if len(value) > MAX_LIST_ITEMS:
+                budget.dropped += 1
+            kept = tuple(
+                (
+                    _bounded_record(item, budget)
+                    if dataclasses.is_dataclass(item)
+                    else budget.cut(item) if isinstance(item, str) else item
+                )
+                for item in value[:MAX_LIST_ITEMS]
+            )
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            kept = _bounded_record(value, budget)
+        else:
+            continue
+        if kept != value:
+            changes[spec.name] = kept
+    return dataclasses.replace(record, **changes) if changes else record
 
 
 @dataclass
@@ -74,6 +165,12 @@ class _Run:
     #: ``{nodeId, status?, sessionId?, reason?}``. A loop body's node recurs once
     #: per iteration under one bare id; the path tells the instances apart.
     path_state: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Every node id the per-id maps above may hold, capped at
+    #: :data:`MAX_PATHS_PER_RUN` (:func:`_admit_node`). Never cleared, so a
+    #: restart cannot let a further set of ids in.
+    node_ids: set[str] = field(default_factory=set)
+    #: New node ids and instance paths refused at their caps, all told.
+    refused: int = 0
     queued_steps: tuple[wire.NodeDescriptor, ...] = ()
     #: Queued plan replacements KAS applied, and the latest resolution:
     #: ``(outcome, reason, at)``.
@@ -102,6 +199,8 @@ class RunMirror:
         #: The run ids each list scope (a project) last returned, for
         #: :meth:`apply_scoped_list`.
         self._scope_members: dict[str, frozenset[str]] = {}
+        #: Values a cap cut or refused, all told. Only the first is logged.
+        self.dropped = 0
 
     # ── Reading ──
 
@@ -243,8 +342,11 @@ class RunMirror:
 
     def apply_summaries(self, summaries: Iterable[wire.RunSummary]) -> list[str]:
         """Fold ``list`` rows in; returns the ids whose row changed."""
-        changed = [s.workflow_id for s in summaries if self._apply_summary(s)]
+        budget = _Budget()
+        rows = [_bounded_record(s, budget) for s in summaries]
+        changed = [s.workflow_id for s in rows if self._apply_summary(s)]
         self._evict()
+        self._count_dropped(budget.dropped)
         return changed
 
     def apply_scoped_list(
@@ -266,22 +368,28 @@ class RunMirror:
         """
         items = list(summaries)
         changed = self.apply_summaries(items)
-        listed = frozenset(s.workflow_id for s in items)
+        listed = frozenset(s.workflow_id[:MAX_REASON_CHARS] for s in items)
         before = self._scope_members.get(scope, frozenset())
         forgotten = [wid for wid in sorted(before - listed) if wid in self._runs and not keep(wid)]
         for wid in forgotten:
             self._runs.pop(wid, None)
         self._scope_members.pop(scope, None)
-        self._scope_members[scope] = listed
+        if len(listed) > MAX_LIST_ITEMS:
+            # Too wide to remember: the scope's next list forgets nothing.
+            self._count_dropped(1)
+        else:
+            self._scope_members[scope] = listed
         while len(self._scope_members) > MAX_LIST_SCOPES:
             self._scope_members.pop(next(iter(self._scope_members)))
         return changed, forgotten
 
     def apply_load(self, response: Any) -> str | None:
         """Fold a ``load`` or ``inspect`` answer in; returns its id when it changed."""
-        body = wire.as_mapping(response)
-        if body is None:
+        if wire.as_mapping(response) is None:
             return None
+        budget = _Budget()
+        body = _bounded(response, budget)
+        self._count_dropped(budget.dropped)
         workflow_id = wire.as_str(body.get("workflowId"))
         state = wire.as_mapping(body.get("state")) or wire.as_mapping(body.get("finalState"))
         if workflow_id is None or state is None:
@@ -290,7 +398,10 @@ class RunMirror:
         if status not in wire.RUN_STATUSES:
             return None
         run = self._ensure(workflow_id, status=status, name=_state_name(state, workflow_id))
+        if run is None:
+            return None
         before = _fingerprint(run)
+        refused = run.refused
         self._apply_state(run, state)
         plan = wire.parse_plan(body.get("nodePlan"))
         if plan:
@@ -299,9 +410,10 @@ class RunMirror:
             item = wire.as_mapping(raw)
             node_id = wire.as_str(item.get("nodeId")) if item else None
             session_id = wire.as_str(item.get("sessionId")) if item else None
-            if item and node_id and session_id:
+            if item and node_id and session_id and _admit_node(run, node_id):
                 run.node_session[node_id] = session_id
                 _note_path(run, _event_path(run, item), node_id=node_id, session_id=session_id)
+        self._count_dropped(run.refused - refused)
         return self._touched(run, before)
 
     def apply_notification(self, method: str, params: Any) -> str | None:
@@ -309,11 +421,13 @@ class RunMirror:
 
         An unknown method, or one naming no run, is ignored.
         """
-        if method not in wire.RUN_NOTIFICATIONS:
+        if method not in wire.RUN_NOTIFICATIONS or wire.as_mapping(params) is None:
             return None
-        body = wire.as_mapping(params)
-        workflow_id = wire.as_str(body.get("workflowId")) if body else None
-        if body is None or workflow_id is None:
+        budget = _Budget()
+        body = _bounded(params, budget)
+        self._count_dropped(budget.dropped)
+        workflow_id = wire.as_str(body.get("workflowId"))
+        if workflow_id is None:
             return None
         if method == wire.NOTIFY_RUN_START:
             name = wire.as_str(body.get("workflowName")) or workflow_id
@@ -326,7 +440,10 @@ class RunMirror:
                 # fills in its name and creation time.
                 existing = self._ensure(workflow_id, status=wire.STATUS_RUNNING, name=workflow_id)
             run = existing
+        if run is None:
+            return None
         before = _fingerprint(run)
+        refused = run.refused
         now = _iso(self._clock())
         run.updated_at = now
         parent = wire.as_str(body.get("parentSessionId"))
@@ -339,6 +456,7 @@ class RunMirror:
         progress = wire.parse_run_progress(body)
         if progress is not None:
             run.progress = progress
+        self._count_dropped(run.refused - refused)
         changed = self._touched(run, before)
         if run.status in wire.TERMINAL_RUN_STATUSES:
             self._evict()
@@ -346,9 +464,27 @@ class RunMirror:
 
     # ── Internals ──
 
-    def _ensure(self, workflow_id: str, *, status: str, name: str) -> _Run:
+    def _count_dropped(self, count: int) -> None:
+        """Count values a cap cut or refused; log the first, so a flood logs once."""
+        if count <= 0:
+            return
+        if self.dropped == 0:
+            logger.warning(
+                "KAS workflow mirror: cut or refused %d value(s) past its caps; "
+                "later ones are counted on RunMirror.dropped, not logged",
+                count,
+            )
+        self.dropped += count
+
+    def _ensure(self, workflow_id: str, *, status: str, name: str) -> _Run | None:
         run = self._runs.get(workflow_id)
         if run is None:
+            if status not in wire.TERMINAL_RUN_STATUSES and (
+                sum(r.status not in wire.TERMINAL_RUN_STATUSES for r in self._runs.values())
+                >= MAX_LIVE_RUNS
+            ):
+                self._count_dropped(1)
+                return None
             # revision -1 marks a row nobody has published yet; _touched reports
             # it as changed even when the input carried nothing beyond its id.
             run = _Run(workflow_id=workflow_id, status=status, name=name, revision=-1)
@@ -357,6 +493,8 @@ class RunMirror:
 
     def _apply_summary(self, summary: wire.RunSummary) -> bool:
         run = self._ensure(summary.workflow_id, status=summary.status, name=summary.name)
+        if run is None:
+            return False
         before = _fingerprint(run)
         run.name = summary.name
         run.workflow_name = summary.workflow_name or run.workflow_name
@@ -467,7 +605,7 @@ def _on_run_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
 
 def _on_node_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
-    if node_id is None:
+    if node_id is None or not _admit_node(run, node_id):
         return
     path = _event_path(run, body)
     # A node_start that ends a retry-wait backoff re-drives the SAME attempt:
@@ -511,7 +649,7 @@ def _on_node_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
 def _on_node_complete(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
     status = wire.as_str(body.get("status"))
-    if node_id is None or status not in wire.NODE_STATUSES:
+    if node_id is None or status not in wire.NODE_STATUSES or not _admit_node(run, node_id):
         return
     run.node_status[node_id] = status
     run.node_retry_wait.pop(node_id, None)
@@ -536,7 +674,7 @@ def _on_node_complete(run: _Run, body: Mapping[str, Any], now: str) -> None:
 
 def _on_node_paused(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
-    if node_id is None:
+    if node_id is None or not _admit_node(run, node_id):
         return
     reason = wire.as_str(body.get("reason"))
     path = _event_path(run, body)
@@ -565,13 +703,13 @@ def _on_node_paused(run: _Run, body: Mapping[str, Any], now: str) -> None:
 def _on_loop_iteration(run: _Run, body: Mapping[str, Any], now: str) -> None:
     loop_id = wire.as_str(body.get("loopId"))
     iteration = wire.as_count(body.get("iteration"))
-    if loop_id and iteration is not None:
+    if loop_id and iteration is not None and _admit_node(run, loop_id):
         run.node_iteration[loop_id] = iteration
 
 
 def _on_watch_poll(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
-    if not node_id:
+    if not node_id or not _admit_node(run, node_id):
         return
     run.node_status.setdefault(node_id, wire.STATUS_RUNNING)
     outcome = wire.as_str(body.get("outcome"))
@@ -745,7 +883,10 @@ def _walk_node_state(
     """
     if depth > wire.MAX_PLAN_DEPTH:
         return
-    node_id = wire.as_str(node.get("id")) or wire.as_str(node.get("nodeId"))
+    raw_id = wire.as_str(node.get("id")) or wire.as_str(node.get("nodeId"))
+    # A node past the id cap records nothing; its children are still walked,
+    # since a child whose id is already held keeps being updated.
+    node_id = raw_id if raw_id and _admit_node(run, raw_id) else None
     status = wire.as_str(node.get("status"))
     if node_id and status in wire.NODE_STATUSES:
         run.node_status[node_id] = status
@@ -772,14 +913,15 @@ def _walk_node_state(
             run.node_ended.pop(node_id, None)
     iteration = wire.as_count(node.get("iteration"))
     here = path
-    if depth > 0 and node_id:
+    if depth > 0 and raw_id:
         # The synthetic root (depth 0) contributes no segment.
         segment = (
             f"{wire.ITERATION_SEGMENT_PREFIX}{iteration}"
             if parent_type == "repeat" and iteration is not None
-            else node_id
+            else raw_id
         )
         here = path + (segment,)
+    if depth > 0 and node_id:
         _note_path(
             run,
             here,
@@ -806,6 +948,22 @@ def _walk_node_state(
                 _walk_node_state(run, item, depth=depth + 1, path=here, parent_type=node_type)
 
 
+def _admit_node(run: _Run, node_id: str) -> bool:
+    """Whether *node_id*'s per-id state may be written: a held id always, a new one under the cap.
+
+    Bare-id maps keep a loop body's LATEST instance under one key, so they are
+    capped by distinct ids, not by instances: tying them to the path cap would
+    freeze a long loop's current step once its 2000th instance is recorded.
+    """
+    if node_id in run.node_ids:
+        return True
+    if len(run.node_ids) >= MAX_PATHS_PER_RUN:
+        run.refused += 1
+        return False
+    run.node_ids.add(node_id)
+    return True
+
+
 def _note_path(
     run: _Run,
     path: tuple[str, ...],
@@ -818,7 +976,14 @@ def _note_path(
 ) -> None:
     """Record one node instance's state under its runtime path."""
     key = wire.NODE_PATH_SEP.join(path)
-    if not path or (key not in run.path_state and len(run.path_state) >= MAX_PATHS_PER_RUN):
+    if not path:
+        return
+    # A plan level adds at most two segments (the node, an iteration), so a
+    # deeper path is no instance of this run's plan.
+    if len(path) > 2 * wire.MAX_PLAN_DEPTH + 2 or (
+        key not in run.path_state and len(run.path_state) >= MAX_PATHS_PER_RUN
+    ):
+        run.refused += 1
         return
     entry = run.path_state.setdefault(key, {"nodeId": node_id})
     if status is not None:

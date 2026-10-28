@@ -18,8 +18,9 @@ builds them and an adjustment is a single-file edit.
    -- rather than by the backend. The handshake does not announce the surface
    (see ``KAS_CLIENT_CAPABILITIES``), so today the backend asks none of them.
 3. The **structured-question** surface, ``_kiro/userInput`` (see
-   :data:`METHOD_USER_INPUT`): announced only while ``agent.kas_workflows`` is
-   on, answered by the person on the chat's question card or a workflow step's.
+   :data:`METHOD_USER_INPUT`): the backend asks it only of a client that
+   announces it. Only the wire names are defined here; nothing announces or
+   answers the surface yet.
 
 The literals below are only what Kiro Crew must match to route a frame or answer
 a request; the backend's own internals are not documented here.
@@ -183,8 +184,8 @@ METHOD_HOOKS_EXECUTE = "_kiro/hooks/executeHook"
 
 # ── The structured-question surface (``_kiro/userInput``) ──
 #
-# With ``_meta.kiro.userInput: true`` in the initialize ``clientCapabilities``
-# (``acp.types.kas_client_capabilities``), the backend asks its ``user_input``
+# With ``_meta.kiro.userInput: true`` (:data:`CAPABILITY_USER_INPUT`) in the
+# initialize ``clientCapabilities``, the backend asks its ``user_input``
 # tool's question as a server->client REQUEST of this method on the asking
 # session, instead of on the legacy ``session/request_permission`` bridge:
 #
@@ -196,9 +197,7 @@ METHOD_HOOKS_EXECUTE = "_kiro/hooks/executeHook"
 # An empty ``options`` is a free-form question (the person types the answer);
 # picked sub-options ride the answer as ``"Title [a, b]"``. A dismissal, an
 # error answer or a method-not-found all read as "no answer" to the backend,
-# which moves the asking turn on. The params are read in
-# ``kas_workflows.asks.question_from_user_input``; the answer shapes are built
-# there too (``user_input_answered`` / ``USER_INPUT_DISMISSED``).
+# which moves the asking turn on.
 METHOD_USER_INPUT = "_kiro/userInput"
 #: The ``_meta.kiro`` key that announces the surface.
 CAPABILITY_USER_INPUT = "userInput"

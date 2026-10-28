@@ -1052,27 +1052,9 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "Kiro Workflows on Kiro Agent",
-            "When the agent backend is Kiro Agent (KAS), turn on Kiro Workflows "
-            "everywhere they run: the Workflows tab and the Task Runner "
-            "offer their recipes and runs, dashboard chats start their Kiro Agent "
-            "sessions with its workflow surface on (run_workflow, inspect_workflow, "
-            "update_workflow, the /workflow-* commands and its steering), and this "
-            "gateway recovers interrupted runs on boot. A workflow a chat's model "
-            "starts is then a KAS run parented by that chat, and Crew's workflow_run "
-            "declines to author a new script there (saved Crew workflows still run). "
-            "Saved on this gateway, not per device; each chat picks it up when its "
-            "next session starts. No effect unless the backend is Kiro Agent.",
-        ),
-    )
-    kas_creator_effort: str = field(
-        default="",
-        metadata=_meta(
-            "Kiro Agent Workflow Creator Effort",
-            "Reasoning effort for the step Kiro Agent (KAS) runs to write a workflow "
-            "a chat asks for: low, medium, high, xhigh or max. Empty leaves KAS's own "
-            "default. Applies only while Kiro Workflows on Kiro Agent is on, and only "
-            "to dashboard chats. Read when each chat's session starts or reloads, so a "
-            "change reaches a chat's next session.",
+            "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by "
+            "default. This build has no surface that reads it yet, so setting it "
+            "changes nothing. No effect unless the backend is Kiro Agent.",
         ),
     )
     subagent_mem_buffer_pct: int = field(
