@@ -72,7 +72,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 // `chatSlots` is a STABLE spy, unlike the proxy's per-access `vi.fn()`: the
 // provisional-lineage test asserts on whether the sidebar came back for a second
 // read, which a fresh mock per property access cannot record.
-const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn(), crewWorkersFail: false, crewWorkersNotServed: false }))
+const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn(), crewWorkersFail: false, crewWorkersNotServed: false, roster: [] as unknown[] }))
 
 // The router is real (MemoryRouter below); only `useNavigate` is a spy, so a row that
 // leaves the chat page can be asked WHERE it went rather than inferred from a route
@@ -95,6 +95,9 @@ vi.mock('../api/client', () => ({
         { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
         { key: 'k-w2', title: 'W2', agent: '', status: 'needs_approval', group: 'approval', last_activity: '', ledger_item: '', created_by: 'k-root' },
       ] })
+      // The crewmates roster the member row's face is drawn from. Empty by default,
+      // so every other test sees the "Members page" fallback chip.
+      if (p === 'members') return vi.fn().mockImplementation(() => Promise.resolve({ members: mocks.roster }))
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -1294,6 +1297,46 @@ describe('chat sidebar — conductor lane', () => {
       const worker = lane.querySelector('[data-session-row="k-fix-1"]') as HTMLElement
       expect(worker.getAttribute('data-draggable')).toBe('true')
       expect(worker.querySelector('[data-testid="members-page-chip"]')).toBeNull()
+    })
+
+    it("wears the crewmate's roster face beside its name instead of the Members page chip", async () => {
+      // The crewmate is on the roster, so the row says WHO it is: the same avatar the
+      // Crewmates page draws, leading the name. The destination stays in the row's
+      // content for a screen reader, outside the title text the scroll peek copies.
+      mocks.roster = [{ name: 'kirocrew-pipeline-conductor', slug: 'kirocrew-pipeline-conductor', slot_key: 'member-pipeline', running: false, avatar: { kind: 'ghost' } }]
+      try {
+        localStorage.setItem('mc-sidebar-lane', 'conductor')
+        const { getByTestId, findByTestId } = renderSidebar(listed, [], null, {}, [], inStore)
+        await findByTestId('member-row-face')
+        const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
+        const title = anchor.querySelector('[data-session-title]') as HTMLElement
+        const face = title.querySelector('[data-testid="member-row-face"]') as HTMLElement
+        expect(face).not.toBeNull()
+        expect(face.querySelector('svg, img')).not.toBeNull()
+        expect(title.textContent).toBe('kirocrew-pipeline-conductor')
+        expect(anchor.querySelector('[data-testid="members-page-chip"]')).toBeNull()
+        expect(anchor.querySelector('[data-testid="members-page-sr"]')?.textContent).toBe('Members page')
+        // The click still lands on the Members page.
+        fireEvent.click(anchor)
+        expect(mocks.navigate).toHaveBeenCalledWith('/members?member=kirocrew-pipeline-conductor')
+      } finally {
+        mocks.roster = []
+      }
+    })
+
+    it('keeps the Members page chip for a crewmate the roster no longer lists', async () => {
+      // Deleted or renamed: no face nobody can open, and the destination cue survives.
+      mocks.roster = [{ name: 'someone-else', slug: 'someone-else', slot_key: '', running: false }]
+      try {
+        localStorage.setItem('mc-sidebar-lane', 'conductor')
+        const { getByTestId, queryByTestId } = renderSidebar(listed, [], null, {}, [], inStore)
+        await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+        const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
+        expect(anchor.querySelector('[data-testid="members-page-chip"]')?.textContent).toBe('Members page')
+        expect(queryByTestId('member-row-face')).toBeNull()
+      } finally {
+        mocks.roster = []
+      }
     })
 
     it('names the unit of the child count for a reader who cannot see the chevron', () => {

@@ -51,6 +51,7 @@ import { CrewEyebrow, CrewGhostBadge, CrewWorkerStack } from '../../components/c
 import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import ErrorNotice from '../../components/ErrorNotice'
+import { MemberRowFace, MembersPageFallbackChip } from './MemberRowFace'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -1514,14 +1515,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  leave a touch reader with an unexplained page jump. The text names
                 *  the DESTINATION ("Members page", with the leave-this-page glyph),
                 *  not the bare noun "Members", which in this product also means the
-                *  crew's participants and read as "people are in it" on a cold read. */}
+                *  crew's participants and read as "people are in it" on a cold read.
+                *  A crewmate the roster lists wears its face beside the title instead
+                *  (`MemberRowFace`); this chip is the fallback for every other case. */}
               {!peerId && onOpenElsewhere && (
-                <span
-                  className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 rounded bg-info-subtle text-info-text border border-info/40"
-                  data-testid="members-page-chip">
-                  <ExternalLink size={9} className="shrink-0" aria-hidden="true" />
-                  {i18nT('pages.chatSidebar.members_page_chip')}
-                </span>
+                <MembersPageFallbackChip agent={memberTitle !== null ? s.agent ?? '' : ''} />
               )}
               {/* NO destination marker beside the agent name any more. It read
                 *  "· opens the astro dashboard", and it was there because the click
@@ -1688,6 +1686,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                       the row itself says the model call is running. */}
                   {titleGenerating && (
                     <Loader size={ROW_ICON_PX} className="lucide-inline mr-1 shrink-0 text-accent animate-spin" role="img" aria-label={i18nT('pages.chatPage.regenerating_title')} data-testid="row-title-generating" />
+                  )}
+                  {!peerId && onOpenElsewhere && memberTitle !== null && s.agent && (
+                    <MemberRowFace agent={s.agent} running={isRunning} />
                   )}
                   {shownTitle}
                 </>
