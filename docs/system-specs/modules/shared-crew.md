@@ -125,11 +125,68 @@ authoritative assigned-user directory. Per-person `usage` is `null`, and
 
 ### Operation state machine
 
+`admission.TRANSITIONS` is the one state machine every entry point reports through.
+
+```
+submitted -> queued | admitted | rejected
+queued -> admitted | cancelled | expired | reconciling
+admitted -> running | queued | cancelled | expired | reconciling | failed
+running -> cancelling | completed | failed | reconciling
+cancelling -> cancelled | completed | failed | reconciling
+reconciling -> queued | running | completed | failed | cancelled | unknown_outcome
+```
+
+`submitted` exists only in the client. `rejected` is reachable only from it, and
+`AcceptedWork` refuses both: a rejected request was never accepted. `admitted ->
+queued` is a start-time revalidation that found capacity gone; `admitted ->
+cancelled` is one that found the grant or policy revoked, so a queue record is never
+standing permission. `reconciling -> queued` requires proof the work never started.
+Ambiguous execution after a crash ends in `unknown_outcome` and is surfaced, never
+replayed.
+
+`TASKQ_STATE_MAP` maps every `kiro_crew.taskq.model` state onto this machine; the
+durable queue stays the store of record and this is its projection.
+
 ### Capacity accounting
+
+Work counts against active capacity in `CAPACITY_HOLDING` and against queue depth
+while `queued`. `AdmissionService._maybe_release` returns capacity only for terminal
+work whose runtime is proven stopped and whose children have all settled.
+Restart, disconnect or lease expiry therefore never frees a slot while a child lives.
+
+`RuntimeOwnershipRef` points into the existing ownership registry
+(`runtime_ownership` lease, `RuntimeTenancy` epoch, taskq generation, systemd scope
+unit). It is not a second registry. Its `liveness` is what the reconciler proved,
+never what a client reported.
 
 ### Requests and idempotency
 
+`AdmissionRequest.budget_key` is the initiator's principal id. It is never the session
+creator and never a per-device token, so tabs, devices, reconnects and child tasks of
+one person share one budget. Work in a shared session is charged to whoever started
+it.
+
+The client sends an `Idempotency-Key` header per logical send and reuses it on retry.
+The deduplication scope is `idempotency_scope(budget_key, session_key, key)`, retained
+for `IDEMPOTENCY_TTL_SECONDS`. A replay with the same `request_digest` returns the
+existing `AcceptedWork`; a different digest is `idempotency_conflict`. A retry never
+runs a prompt twice.
+
+
 ### Responses
+
+A lost send race is settled before admission and is not an admission refusal:
+it answers 409 `send_race` with the winner (section 5, First submit wins) and
+creates no `AcceptedWork`. The race-versus-queue boundary is open; the POC
+settles races by revision compare-and-set and leaves capacity to admission.
+
+A refusal or conflict answers `admission.error_body`: the dashboard's
+`{"error", "code"}` envelope, plus `capacity` on a limit and `current` (the public
+`AcceptedWork`) on a conflict, so a stale UI action reconciles against server truth.
+The status comes from `REASON_HTTP_STATUS`, and a refusal with a retry hint sends
+`Retry-After` (`retry_after_header`). `CapacityResponse` reports both scopes' limits
+and usage and the effective `EnforcementLevel`. It has no wait-time field, because the
+scheduler cannot back one.
 
 ### Fairness
 
