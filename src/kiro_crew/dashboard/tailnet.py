@@ -1278,6 +1278,61 @@ async def resolve_forwarded_peer(request: web.Request, trust: TailnetTrust) -> F
     return ForwardedPeer(login=login, node=node, address=addr)
 
 
+def _direct_peer_candidate(request: web.Request, trust: TailnetTrust) -> str | None:
+    """The socket address of a tailnet peer that connected to this gateway directly.
+
+    The counterpart of :func:`_forwarded_peer_candidate` for a gateway bound to
+    its tailnet address with no local proxy in front. The address is the TCP
+    peer itself, never a header, so the only questions are whether identity
+    trust is on, whether the peer is a tailnet address, and whether it carries
+    no forwarding header. A non-loopback peer that sends any forwarding header
+    (``origin.is_proxied_request``) is a proxy on another node: its socket
+    address names the proxy device, not the person behind it, so it is never
+    attributed. No I/O.
+    """
+    from kiro_crew.dashboard.origin import is_proxied_request
+
+    if not trust.enforces_identity:
+        return None
+    remote = request.remote or ""
+    if not remote or is_loopback(remote):
+        return None
+    if is_proxied_request(request):
+        return None
+    try:
+        candidate = ipaddress.ip_address(remote)
+    except ValueError:
+        return None
+    if not any(candidate in net for net in _TAILNET_RANGES):
+        return None
+    return str(candidate)
+
+
+async def resolve_direct_peer(request: web.Request, trust: TailnetTrust) -> ForwardedPeer | None:
+    """Resolve a directly connected tailnet peer through the daemon, or ``None``.
+
+    Attribution only. The result never takes part in the session pin or the
+    login allowlist, which keep their existing behaviour for a direct
+    connection, so resolving it cannot admit or refuse a request. The daemon
+    call shares the forwarded path's cache and executor. A
+    ``Tailscale-User-Login`` header that disagrees with the daemon drops the
+    attribution, the same corroboration rule the forwarded path applies.
+    """
+    addr = _direct_peer_candidate(request, trust)
+    if addr is None:
+        return None
+    resolved = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _whois_cached, addr
+    )
+    if resolved is None:
+        return None
+    login, node = resolved
+    header_login = (request.headers.get(_USER_LOGIN_HEADER) or "").strip()
+    if header_login and header_login.lower() != login.lower():
+        return None
+    return ForwardedPeer(login=login, node=node, address=addr)
+
+
 def peer_pin_key(peer: ForwardedPeer, pin_scope: str) -> str:
     """The session pin key for a resolved peer, per RFC §3.1.
 

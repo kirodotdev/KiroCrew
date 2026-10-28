@@ -42,7 +42,70 @@ named component from `Principal.system`), and `unknown`.
 
 ### Derivation
 
+`identity.publish_actor` derives the principal once per request, after
+`token_auth_middleware` admitted it and before the handler, and publishes an
+`ActorContext` under `request[ACTOR_REQUEST_KEY]`. Handlers read it with
+`identity.actor_of` (`viewer_principal` for the principal); a request with no
+published actor reads as Unknown, never as the operator. The WebSocket upgrade
+passes through the same middleware, so a socket's actor is the upgrade request's.
+The browser never names itself: a principal is never read from a body, query,
+header or display name, and `from_dict` exists only to read records this server
+wrote.
+
+Evidence, strongest first (`identity.derive_principal`):
+
+| Request | Principal | Provenance |
+|---|---|---|
+| An app identity (an app token, or an internal caller the middleware derived an app for) | `system`, component `app:<name>` | `internal` |
+| The internal loopback secret (kiro-cli, MCP, doctor) | `system`, component `internal` | `internal` |
+| Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
+| Tailnet peer reaching a widened bind on its tailnet address, no forwarding header, resolved by daemon `whois` of the socket address (`tailnet.resolve_direct_peer`) | `human` keyed by tailnet login; `machine` keyed by node | `tailscale_direct` |
+| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject | `local_operator` |
+| Anything else auth admitted | `Principal.unknown()` | `none` |
+
+A tailnet principal's subject is the lowercased daemon login under provider
+`tailscale` and issuer `tailnet`; a tagged node's is `node:<name>`, because every
+tagged node reports the login `tagged-devices`. The display snapshot is the login
+(or node name) as the daemon reported it, so a rename never changes the id.
+
+A person is keyed by their tailnet login on every transport, never by a display
+name, so every node of one user and a re-created node map to one principal. The
+display name is a label only. The device a person was seen from is the node key.
+
+The serve and widened-bind rows require the existing identity-trust opt-in
+(`dashboard.tailscale.trust_identity` with a non-empty `allowed_logins`, i.e.
+`TailnetTrust.enforces_identity`). Without it no daemon lookup runs on those paths
+and tailnet callers are Unknown. The serve row reuses the middleware's existing
+resolution, allowlist deny and pin unchanged. The widened-bind row is attribution
+only: its lookup runs after the auth decision, shares the whois cache and executor,
+and is read by neither the pin (a direct peer stays `ip:`-pinned) nor the
+allowlist, so it cannot admit or refuse a request.
+
+Loopback alone is not proof of a trusted proxy: a loopback request carrying any
+forwarding header (`origin.is_proxied_request`) is never the local operator. It is
+a person only when the serve row resolved it, else Unknown.
+
+Failure never changes access. Derivation runs only on an admitted request, and
+an exception anywhere in it publishes Unknown. A request auth refused publishes
+nothing.
+
+`ActorContext.auth` is a copy of what the middleware decided, kept for audit. It is
+not a second decision. `correlation_id` is the client's `X-Correlation-Id` when it
+is a short plain token, else the server's `request_id`.
+
 ### Observed collaborators
+
+`people` keeps a bounded in-memory record (`MAX_OBSERVED` principals, LRU) of the
+human and machine principals seen on authorized requests, with first and last
+sighting and a device count (a digest per node, at most `MAX_DEVICES`). Unknown
+and system principals are not recorded. `people.people_view` builds the People
+body: it merges that record with the creators recorded on persisted sessions. No
+route serves it yet. Each row names its `sources`
+(`observed`, `session_creator`), so an observation is never presented as
+membership; `directory.state` is `unavailable` because this build has no
+authoritative assigned-user directory. Per-person `usage` is `null`, and
+`usage_available` false, until the admission layer registers a reader
+(`people.register_usage_source`).
 
 ### People and setup modes
 
