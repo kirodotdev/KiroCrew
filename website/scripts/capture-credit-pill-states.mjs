@@ -33,7 +33,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import { serveDist } from './lib/serve-dist.mjs'
-import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { logPageProblems, stubDashboardApi, json, KIRO_BACKEND_CONFIG_FIXTURE } from './lib/stub-dashboard-api.mjs'
 
 const DIST = resolvePath(process.argv[2] || 'dist')
 const OUT = resolvePath(process.argv[3] || '/tmp/credit-pill-shots')
@@ -95,6 +95,11 @@ for (const scenario of ['failed', 'loading', 'ok', 'api-key']) {
       }
       if (path.startsWith('/api/chat/slots/')) {
         await json(route, { running: false, has_more: false, total: 0, queue: [], messages: [] })
+        return true
+      }
+      // The credit segment and its modal are the Kiro backend's surface.
+      if (path === '/api/config/kirocrew') {
+        await json(route, KIRO_BACKEND_CONFIG_FIXTURE)
         return true
       }
       return false

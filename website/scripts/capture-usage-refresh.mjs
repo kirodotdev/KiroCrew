@@ -62,7 +62,7 @@ import { join } from 'node:path'
 
 import { chromiumExecutable } from './lib/chromium-executable.mjs'
 import { serveDist } from './lib/serve-dist.mjs'
-import { json, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import { json, KIRO_BACKEND_CONFIG_FIXTURE, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
 
 const OUT = process.argv[2] || join(process.env.KIROCREW_SCRATCH || '/tmp', 'usage-refresh-evidence')
 mkdirSync(OUT, { recursive: true })
@@ -108,13 +108,13 @@ const shot = async (page, name, clip) => {
  * One page per scene.
  *   `get`     what GET /api/sessions/usage serves first: 'reading' | 'stale' | 'failed' (500)
  *             | 'none' (`{available:false}`, no reason: the gateway holds no reading;
- *               the fixture's `agent.acp_backend` is unset, i.e. the kiro backend,
- *               which is the one place the dash renders)
+ *               the config names the kiro backend, which is the one place the
+ *               dash renders)
  *             | 'signin' (`{available:false, reason:'signin_required'}`)
  *   `refresh` what the POST answers: 'reading' (200) | 'stale' (200, dimmed prior reading)
  *             | 'parked' (200 + skipped marker) | 'error' (500) | 'in-flight' (409) | 'hang' (held open)
- *   `config`  what GET /api/config/kirocrew answers: 'ok' (the fixture; unset
- *             `agent.acp_backend`, i.e. the kiro backend) | 'error' (500)
+ *   `config`  what GET /api/config/kirocrew answers: 'ok'
+ *             (`KIRO_BACKEND_CONFIG_FIXTURE`, the kiro backend) | 'error' (500)
  * Returns the page, the POST count, the config-read count, and the release handle for 'hang'.
  */
 async function scene(theme, get, refresh, config = 'ok') {
@@ -153,9 +153,13 @@ async function scene(theme, get, refresh, config = 'ok') {
       else await json(route, { error: 'usage store unreadable' }, 500)
       return true
     }
-    if (path === '/api/config/kirocrew' && config === 'error') {
-      configReads += 1
-      await json(route, { error: 'config store unreadable' }, 500)
+    if (path === '/api/config/kirocrew') {
+      if (config === 'error') {
+        configReads += 1
+        await json(route, { error: 'config store unreadable' }, 500)
+      } else {
+        await json(route, KIRO_BACKEND_CONFIG_FIXTURE)
+      }
       return true
     }
     return false
