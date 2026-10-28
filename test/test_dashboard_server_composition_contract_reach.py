@@ -815,9 +815,11 @@ _DASHBOARD_TEARDOWN = tuple("""
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
-    S:_initialize_workflow_service S:_prune_browser_snapshots_loop S:_stt_idle_sweep
+    S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_prune_browser_snapshots_loop S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
-    T:_live_sibling_port T:_register_deploy_skills T:_take_prior_dropped_grant
+    T:_live_sibling_port T:_register_deploy_skills
+    T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
