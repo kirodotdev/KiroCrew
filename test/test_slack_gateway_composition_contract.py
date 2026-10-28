@@ -702,6 +702,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', parent_key: 'str') -> 'None'",
         ),
+        (
+            "_reset_cron_parent_when_idle",
+            "async method",
+            "(self, info: 'SubagentInfo', parent_key: 'str', *, skip_if_busy: 'bool' = False) -> 'None'",
+        ),
+        (
+            "_route_cron_parent_to_tab",
+            "async method",
+            "(self, info: 'SubagentInfo', *, parent_key: 'str', **route_kwargs: 'Any') -> 'None'",
+        ),
     ),
     "runtime_charge": (
         ("_apply_gate_verdict", "function", "(job: 'CronJob', tally: '_GateTally') -> 'bool'"),

@@ -961,6 +961,8 @@ class GatewayOrchestrator:
     _route_subagent_to_tab = _subagent_injection._route_subagent_to_tab
     _inject_subagent_into_channel_parent = _subagent_injection._inject_subagent_into_channel_parent
     _finish_subagent_cron_or_notify = _subagent_injection._finish_subagent_cron_or_notify
+    _reset_cron_parent_when_idle = _subagent_injection._reset_cron_parent_when_idle
+    _route_cron_parent_to_tab = _subagent_injection._route_cron_parent_to_tab
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:

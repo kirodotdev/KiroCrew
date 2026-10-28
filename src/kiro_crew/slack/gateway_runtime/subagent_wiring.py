@@ -295,7 +295,12 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # Cron/no parent  → dashboard notification only
 
         if _parent_slot_name and self.dashboard_state:
-            await self._route_subagent_to_tab(
+            _tab_route = (
+                self._route_cron_parent_to_tab
+                if parent_key.startswith("cron:")
+                else self._route_subagent_to_tab
+            )
+            await _tab_route(
                 info,
                 announce=wave.announce,
                 body=report.body,
