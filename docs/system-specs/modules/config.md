@@ -3617,13 +3617,14 @@ read by more than one enforcement mechanism, and two of those keys mean
 | `max_total_memory_mb` | — | slice `MemoryMax` (all trees together) | — |
 | `max_total_processes` | — | slice `TasksMax` | — |
 | `scope_memory_high_pct` | — | per-scope `MemoryHigh` as % of `MemoryMax`, 1..100; unset = 90; `0` = emit none | — |
+| `slice_memory_high_pct` | — | slice `MemoryHigh`, % of RAM, 50..95, default 75; at most 95% of the slice `MemoryMax`; ignored in a pod; unset writes only when the unit has no MemoryHigh; restart to apply | — |
 | `xdist_auto_cap` | — | — | `-1` auto, `0` off, `N` fixed |
 
 On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 (`sandbox.apply_windows_resource_ceiling`) enforces only `max_processes`
 (`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
 (`cpu_weight`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`,
-`max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`) are accepted but not enforced there,
+`max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`, `slice_memory_high_pct`) are accepted but not enforced there,
 and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
 

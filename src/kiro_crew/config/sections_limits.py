@@ -494,6 +494,24 @@ class ResourceLimitsConfig:
             nullable=True,
         ),
     )
+    slice_memory_high_pct: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Slice memory throttle (% of RAM)",
+            "cgroup MemoryHigh for the whole agents SLICE, as a percentage of "
+            "physical RAM: past it the kernel throttles and reclaims every "
+            "agent tree together. Accepted range 50-95; unset or out of range "
+            "uses 75. The effective value is at most 95% of the slice's Max "
+            "total memory (80% of RAM by default, so above about 76 it is "
+            "capped). Ignored inside a pod. Unset only fills a slice that has "
+            "no MemoryHigh yet, so removing the key does not restore 75 on a "
+            "slice already set: set 75 for that. With two configured "
+            "instances the last writer wins. Read once per gateway process, so a change "
+            "takes effect on gateway restart. Linux with cgroup v2 only.",
+            nullable=True,
+            restart=True,
+        ),
+    )
     xdist_auto_cap: int | None = field(
         default=None,
         metadata=_meta(
@@ -533,6 +551,9 @@ class ResourceLimitsConfig:
             ),
             scope_memory_high_pct=_limit_int(
                 section.get("scope_memory_high_pct"), "scope_memory_high_pct", lo=0, hi=100
+            ),
+            slice_memory_high_pct=_limit_int(
+                section.get("slice_memory_high_pct"), "slice_memory_high_pct", lo=50, hi=95
             ),
             xdist_auto_cap=_limit_int(section.get("xdist_auto_cap"), "xdist_auto_cap", lo=-1),
         )

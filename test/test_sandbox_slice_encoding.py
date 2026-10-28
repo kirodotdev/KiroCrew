@@ -40,6 +40,8 @@ def test_the_memory_high_call_decodes_as_utf8(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(sandbox, "_SLICE_MEMHIGH_DISABLED", False)
     monkeypatch.setattr(sandbox, "_SLICE_MEMHIGH_APPLIED", None)
     monkeypatch.setattr(sandbox, "_default_slice_memory_high_mb", lambda: 512)
+    monkeypatch.setattr(sandbox, "_slice_memory_high_unit_state", lambda *_a: ("unset", None))
+    monkeypatch.setattr(sandbox, "_slice_unit_props", lambda: {})
 
     sandbox._ensure_agent_slice_memory_high()
 

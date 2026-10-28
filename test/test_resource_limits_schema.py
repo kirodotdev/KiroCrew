@@ -37,6 +37,7 @@ _ALL_KEYS = (
     "max_total_memory_mb",
     "max_total_processes",
     "scope_memory_high_pct",
+    "slice_memory_high_pct",
     "xdist_auto_cap",
 )
 

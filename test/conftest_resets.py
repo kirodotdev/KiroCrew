@@ -471,7 +471,7 @@ def _disarm_agent_slice_memory_high():
     user manager — exactly the class of side effect the root conftest's
     host-service guard refuses (``set-property`` is a mutating verb), turning
     those tests into guard failures. Pre-disarm via the module's own kill
-    switch and restore all four state globals after, so tests of the
+    switch and restore its state globals after, so tests of the
     reconciler itself can re-arm explicitly in their own body.
     """
     import kiro_crew.sandbox as _sb
@@ -480,7 +480,12 @@ def _disarm_agent_slice_memory_high():
     saved_applied = _sb._SLICE_MEMHIGH_APPLIED
     saved_events_seen = _sb._SLICE_MEMHIGH_EVENTS_SEEN
     saved_climb_warned = _sb._SLICE_MEMHIGH_CLIMB_WARNED
+    saved_desired = _sb._SLICE_MEMHIGH_DESIRED
+    saved_configured = _sb._SLICE_MEMHIGH_CONFIGURED
+    saved_deferred = _sb._SLICE_MEMHIGH_DEFERRED
+    saved_unit_props = _sb._SLICE_UNIT_PROPS
     _sb._SLICE_MEMHIGH_DISABLED = True
+    _sb._SLICE_MEMHIGH_DESIRED = None
     try:
         yield
     finally:
@@ -488,6 +493,10 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_MEMHIGH_APPLIED = saved_applied
         _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
         _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
+        _sb._SLICE_MEMHIGH_DESIRED = saved_desired
+        _sb._SLICE_MEMHIGH_CONFIGURED = saved_configured
+        _sb._SLICE_MEMHIGH_DEFERRED = saved_deferred
+        _sb._SLICE_UNIT_PROPS = saved_unit_props
 
 
 @pytest.fixture(autouse=True)

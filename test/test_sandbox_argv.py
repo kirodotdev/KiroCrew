@@ -590,6 +590,7 @@ class TestAgentSliceMemoryHigh:
         sb._SLICE_MEMHIGH_DISABLED = False
         sb._SLICE_MEMHIGH_EVENTS_SEEN = None
         sb._SLICE_MEMHIGH_CLIMB_WARNED = False
+        sb._SLICE_MEMHIGH_DESIRED = None
 
     def _restore(self):
         # Leave the module disarmed, matching the autouse conftest fixture's
@@ -600,17 +601,21 @@ class TestAgentSliceMemoryHigh:
         sb._SLICE_MEMHIGH_DISABLED = True
         sb._SLICE_MEMHIGH_EVENTS_SEEN = None
         sb._SLICE_MEMHIGH_CLIMB_WARNED = False
+        sb._SLICE_MEMHIGH_DESIRED = None
 
     def test_applies_host_default_via_systemctl_runtime(self):
-        # The slice is UID-global (shared by live/dev/pod gateways), so the
-        # ceiling is deliberately NOT config-driven: always the host-derived
-        # default, so no single instance can lift the others' protection.
+        # With slice_memory_high_pct unset the ceiling is the host-derived
+        # default (test_slice_memory_high_pct.py covers the configured path).
         import kiro_crew.sandbox as sb
 
         self._reset()
         try:
             with (
                 patch("kiro_crew.sandbox._default_slice_memory_high_mb", return_value=2048),
+                patch(
+                    "kiro_crew.sandbox._slice_memory_high_unit_state", return_value=("unset", None)
+                ),
+                patch("kiro_crew.sandbox._slice_unit_props", return_value={}),
                 patch(
                     "kiro_crew.sandbox.platform_compat.trusted_system_bin",
                     return_value="/usr/bin/systemctl",
@@ -644,6 +649,10 @@ class TestAgentSliceMemoryHigh:
                     return_value=2048,
                 ),
                 patch(
+                    "kiro_crew.sandbox._slice_memory_high_unit_state", return_value=("unset", None)
+                ),
+                patch("kiro_crew.sandbox._slice_unit_props", return_value={}),
+                patch(
                     "kiro_crew.sandbox.platform_compat.trusted_system_bin",
                     return_value="/usr/bin/systemctl",
                 ),
@@ -666,6 +675,10 @@ class TestAgentSliceMemoryHigh:
         try:
             with (
                 patch("kiro_crew.sandbox._default_slice_memory_high_mb", return_value=2048),
+                patch(
+                    "kiro_crew.sandbox._slice_memory_high_unit_state", return_value=("unset", None)
+                ),
+                patch("kiro_crew.sandbox._slice_unit_props", return_value={}),
                 patch(
                     "kiro_crew.sandbox.platform_compat.trusted_system_bin",
                     return_value="/usr/bin/systemctl",
@@ -694,6 +707,10 @@ class TestAgentSliceMemoryHigh:
         try:
             with (
                 patch("kiro_crew.sandbox._default_slice_memory_high_mb", return_value=2048),
+                patch(
+                    "kiro_crew.sandbox._slice_memory_high_unit_state", return_value=("unset", None)
+                ),
+                patch("kiro_crew.sandbox._slice_unit_props", return_value={}),
                 patch("kiro_crew.sandbox.platform_compat.trusted_system_bin", return_value=None),
             ):
                 with caplog.at_level(logging.WARNING):
@@ -758,7 +775,7 @@ class TestAgentSliceMemoryHigh:
         sixteen_g = 16 * 1024**3
         with patch("os.sysconf", side_effect=lambda n: sixteen_g // 4096 if "PHYS" in n else 4096):
             mb = sb._default_slice_memory_high_mb()
-        assert mb == int(sixteen_g * sb._SLICE_MEMORY_HIGH_FRACTION) // (1024 * 1024)
+        assert mb == (sixteen_g * sb._SLICE_MEMORY_HIGH_DEFAULT_PCT // 100) // (1024 * 1024)
         with patch("os.sysconf", side_effect=OSError("no sysconf")):
             assert sb._default_slice_memory_high_mb() == sb._SLICE_FALLBACK_MEMORY_HIGH_MB
         with patch("os.sysconf", return_value=0):

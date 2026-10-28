@@ -48,12 +48,17 @@ logger = logging.getLogger("kiro_crew.sandbox")
 # controller delegated to the user slice (the existing _probe_cgroup_scope
 # check).
 
-# Fraction of physical RAM used for the default slice memory.high. Higher than
+# Percentage of physical RAM used for the default slice memory.high, and the
+# unit of the ``resource_limits.slice_memory_high_pct`` override. Higher than
 # the per-scope 65% because it bounds the SUM of all agent scopes, and below
 # the slice's hard 80% memory.max so throttling engages before the kernel
 # OOM-kills, with OS + gateway headroom preserved even while the whole fleet
 # is being throttled.
-_SLICE_MEMORY_HIGH_FRACTION = 0.75
+_SLICE_MEMORY_HIGH_DEFAULT_PCT = 75
+# MemoryHigh is capped at this percentage of the slice MemoryMax, keeping a
+# throttle window below the hard ceiling (the default 75%-of-RAM vs
+# 80%-of-RAM pair sits at about 94%, so it is untouched on a default host).
+_SLICE_MEMORY_HIGH_HEADROOM_PCT = 95
 # Fallback slice memory.high (MB) used only when physical RAM can't be read.
 # The slice path is Linux-only, where SC_PHYS_PAGES exists, so this is a
 # belt-and-suspenders default, not the normal path.
@@ -61,24 +66,39 @@ _SLICE_FALLBACK_MEMORY_HIGH_MB = 12288
 
 # Last MemoryHigh value applied to the slice by THIS process ("24576M" /
 # "infinity"), or None before the first reconcile. The desired value is
-# host-derived and constant for the process's life (no config input), so
-# after the first successful apply every later reconcile reduces to a
-# string compare and no-ops. Kept as a reconcile (rather than a one-shot)
-# so an apply that failed transiently is retried on the next spawn.
+# constant for the process's life (see _SLICE_MEMHIGH_DESIRED), so after the
+# first successful apply every later reconcile reduces to a string compare
+# and no-ops. Kept as a reconcile (rather than a one-shot) so an apply that
+# failed transiently is retried on the next spawn.
 _SLICE_MEMHIGH_APPLIED: str | None = None
+# The MemoryHigh value THIS process wants on the slice, resolved once on the
+# first reconcile (:func:`_slice_memory_high_mb`) and then held: the reconcile
+# runs on every spawn, and re-reading config.json each time would both cost a
+# file read per spawn and let a mid-run edit move a UID-global ceiling. A
+# config change takes effect on the next gateway start.
+_SLICE_MEMHIGH_DESIRED: str | None = None
+# Whether _SLICE_MEMHIGH_DESIRED came from an explicitly set key (resolved with
+# it). Only a set key may replace a finite memory.high another instance wrote.
+_SLICE_MEMHIGH_CONFIGURED = False
+# Set once an instance without the key has found another instance's ceiling on
+# the slice and left it alone. That decision holds until restart, so later
+# spawns skip the `systemctl show` call instead of repeating it.
+_SLICE_MEMHIGH_DEFERRED = False
+# The slice unit's MemoryHigh as one successful `systemctl --user show`
+# answered it, or None before that. Read at most once per process; a failed
+# read is not kept, so it is tried again on a later reconcile.
+_SLICE_UNIT_PROPS: dict[str, str] | None = None
 # Process-level kill switch: set after a failed apply so a broken systemctl is
 # warned about ONCE and never hammered on every subsequent spawn.
 _SLICE_MEMHIGH_DISABLED = False
 
 
-def _default_slice_memory_high_mb() -> int:
-    """Return the default slice ``memory.high`` in MB: a fixed fraction
-    (:data:`_SLICE_MEMORY_HIGH_FRACTION`) of physical RAM, falling back to
-    :data:`_SLICE_FALLBACK_MEMORY_HIGH_MB` if host RAM can't be determined.
-    """
+def _ram_pct_mb(pct: int) -> int:
+    """Return *pct* percent of physical RAM in MB, or
+    :data:`_SLICE_FALLBACK_MEMORY_HIGH_MB` if host RAM can't be determined."""
     try:
         total_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-        mb = int(total_bytes * _SLICE_MEMORY_HIGH_FRACTION) // (1024 * 1024)
+        mb = (total_bytes * pct // 100) // (1024 * 1024)
         if mb > 0:
             return mb
     except (ValueError, OSError, AttributeError):
@@ -86,15 +106,190 @@ def _default_slice_memory_high_mb() -> int:
     return _SLICE_FALLBACK_MEMORY_HIGH_MB
 
 
+def _default_slice_memory_high_mb() -> int:
+    """Return the default slice ``memory.high`` in MB:
+    :data:`_SLICE_MEMORY_HIGH_DEFAULT_PCT` of physical RAM (:func:`_ram_pct_mb`)."""
+    return _ram_pct_mb(_SLICE_MEMORY_HIGH_DEFAULT_PCT)
+
+
+def _slice_memory_high_pct() -> tuple[int, bool]:
+    """Return ``(pct, configured)``: the slice ``memory.high`` as % of RAM.
+
+    ``resource_limits.slice_memory_high_pct`` when it is set and valid (the
+    50..95 range is enforced by the config parse, which logs one warning and
+    yields unset for anything else), else :data:`_SLICE_MEMORY_HIGH_DEFAULT_PCT`.
+    ``configured`` says whether the value came from config, kept apart from the
+    number so an explicit 75 is still a configured value.
+
+    A pod (``KIROCREW_POD`` set, the same marker
+    :func:`kiro_crew.config.paths.shared_kiro_settings_writable` keys on) always
+    gets the default: it is a throwaway instance sharing the UID-global slice
+    with the operator's live gateway, and must not move that gateway's ceiling.
+    """
+    if os.environ.get("KIROCREW_POD"):
+        return _SLICE_MEMORY_HIGH_DEFAULT_PCT, False
+    try:
+        # circular import: same constraint as _slice_limits_from_config.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        # The full loader, so a value set with `config set --local` (the
+        # config.local.json overlay) counts; it parses the block through the
+        # same ResourceLimitsConfig.from_raw range check.
+        rl = KiroCrewConfig.load().resource_limits
+        if rl.slice_memory_high_pct is not None:
+            return rl.slice_memory_high_pct, True
+    except Exception:
+        logger.debug("slice memory.high: config unavailable, using the default")
+    return _SLICE_MEMORY_HIGH_DEFAULT_PCT, False
+
+
+def _slice_memory_high_mb() -> tuple[int, bool]:
+    """Return ``(mb, configured)``: the ``MemoryHigh`` this process applies.
+
+    ``configured`` is the flag from :func:`_slice_memory_high_pct`: True only
+    for a non-pod gateway whose config sets the key.
+
+    The configured percentage (:func:`_slice_memory_high_pct`) of physical RAM,
+    with :data:`_SLICE_FALLBACK_MEMORY_HIGH_MB` when RAM can't be read; the
+    default percentage goes through :func:`_default_slice_memory_high_mb`
+    unchanged when the key is unset.
+
+    The result is at most :data:`_SLICE_MEMORY_HIGH_HEADROOM_PCT` of the
+    slice's aggregate ``MemoryMax`` from this process's config
+    (:func:`_slice_memory_high_cap_mb`; floor 1 MB), so throttling always
+    starts before the hard ceiling OOM-kills: a ``memory.high`` at or above
+    ``memory.max`` never throttles. With the default 80%-of-RAM ``MemoryMax``
+    that cap is 76% of RAM, so a larger pct is capped on a default host. The
+    cap is logged when it applies, as a warning for a configured pct and as
+    info for the default; that is once per process, because the only caller
+    resolves the value once (:data:`_SLICE_MEMHIGH_DESIRED`). A pod skips the key
+    and the cap and gets the plain default, which it writes only into an
+    empty slot or over a value that cannot throttle, so it cannot move a
+    ceiling that still throttles.
+    """
+    pct, configured = _slice_memory_high_pct()
+    mb = _ram_pct_mb(pct) if configured else _default_slice_memory_high_mb()
+    if os.environ.get("KIROCREW_POD"):
+        return mb, False
+    cap_mb, max_total_mb = _slice_memory_high_cap_mb()
+    if mb > cap_mb:
+        # A configured pct the operator asked for is a warning; the default
+        # under a low max_total_memory_mb is expected and only informative.
+        logger.log(
+            logging.WARNING if configured else logging.INFO,
+            "agent slice %s: MemoryHigh %dM (%d%% of RAM) is above its cap "
+            "%dM (slice MemoryMax %dM); using %dM",
+            _CGROUP_AGENTS_SLICE,
+            mb,
+            pct,
+            cap_mb,
+            max_total_mb,
+            cap_mb,
+        )
+        mb = cap_mb
+    return mb, configured
+
+
+def _slice_unit_props() -> dict[str, str] | None:
+    """Return the slice unit's ``MemoryHigh`` property, or None.
+
+    A successful ``systemctl --user show`` answer is kept for the process
+    (:data:`_SLICE_UNIT_PROPS`), so the call runs at most once once it has
+    worked. None when ``systemctl`` is missing or fails.
+    """
+    global _SLICE_UNIT_PROPS
+    if _SLICE_UNIT_PROPS is not None:
+        return _SLICE_UNIT_PROPS
+    try:
+        systemctl = platform_compat.trusted_system_bin("systemctl")
+        if systemctl is None:
+            return None
+        proc = subprocess.run(
+            [
+                systemctl,
+                "--user",
+                "show",
+                "-p",
+                "MemoryHigh",
+                _CGROUP_AGENTS_SLICE,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    props: dict[str, str] = {}
+    for line in (proc.stdout or "").splitlines():
+        key, _, rest = line.partition("=")
+        props[key.strip()] = rest.strip()
+    _SLICE_UNIT_PROPS = props
+    return props
+
+
+def _slice_memory_high_cap_mb() -> tuple[int, int]:
+    """Return ``(cap_mb, max_total_mb)``: the highest ``MemoryHigh`` that still
+    throttles, :data:`_SLICE_MEMORY_HIGH_HEADROOM_PCT` of the slice
+    ``MemoryMax`` this process's config sets (:func:`_slice_limits_from_config`;
+    floor 1 MB), and that ``MemoryMax``."""
+    max_total_mb, _ = _slice_limits_from_config()
+    return max(1, max_total_mb * _SLICE_MEMORY_HIGH_HEADROOM_PCT // 100), max_total_mb
+
+
+def _slice_memory_high_unit_state() -> tuple[str, int | None]:
+    """Return ``(state, held_mb)`` for the slice unit's MemoryHigh.
+
+    ``state`` is ``"unset"``, ``"set"`` or ``"unknown"``. Read from the unit
+    property (``systemctl --user show -p MemoryHigh``), not the cgroup file: the
+    slice cgroup only exists while a scope is in it, so on a fresh login the
+    first reconcile would find no file at all. ``infinity`` or an empty value
+    is ``"unset"``; any other value is ``"set"`` (another instance's ceiling,
+    or one left by an earlier run), with ``held_mb`` the value in MB when it is
+    a byte count and None otherwise; a failed or missing ``systemctl`` is
+    ``"unknown"``. Uses the one per-process read (:func:`_slice_unit_props`).
+    """
+    read = _slice_unit_props()
+    if read is None:
+        return "unknown", None
+    value = read.get("MemoryHigh", "")
+    if value in ("", "infinity"):
+        return "unset", None
+    return "set", int(value) // (1024 * 1024) if value.isdigit() else None
+
+
 def _ensure_agent_slice_memory_high() -> None:
-    """Reconcile ``MemoryHigh`` on :data:`_CGROUP_AGENTS_SLICE` with the host default.
+    """Reconcile ``MemoryHigh`` on :data:`_CGROUP_AGENTS_SLICE` with this process's value.
 
     The slice is UID-GLOBAL: every gateway instance under this user (live,
     dev-backend, pods with delegation) parents scopes into the same slice, so
-    the ceiling is deliberately NOT config-driven — a per-instance config key
-    would let one instance (e.g. a dev gateway configured permissively) lift
-    or lower the ceiling that protects the others. The value is always the
-    host-derived default (:func:`_default_slice_memory_high_mb`).
+    a write by one instance sets the ceiling for all of them. The value
+    (:func:`_slice_memory_high_mb`) is therefore config-driven only within
+    guard rails:
+
+    - ``resource_limits.slice_memory_high_pct`` is accepted only in 50..95, and
+      the value is capped at 95% of the slice's aggregate ``MemoryMax`` so it
+      can never switch throttling off.
+    - With the key unset, or in a pod (``KIROCREW_POD``), which never applies
+      its own key, the 75% default is written only when the slice unit's
+      ``MemoryHigh`` is unset (:func:`_slice_memory_high_unit_state`). A finite
+      value is another instance's ceiling, possibly an operator-configured
+      one, so it is left alone while it is below the active ``MemoryMax``
+      (``systemctl show`` then runs no more this process); at or above
+      ``MemoryMax`` it would never throttle, so it is replaced with the
+      capped value. When the property cannot be read, a non-pod
+      gateway writes the default (as before this knob) and a pod writes
+      nothing.
+    - A non-pod gateway with the key set always writes its value. Two such
+      instances are last-writer-wins until one restarts.
+    - Removing the key does not restore 75% on a slice that already holds a
+      value (until logout clears the ``--runtime`` property); set 75 for that.
+
+    The value is resolved once per process and held in
+    :data:`_SLICE_MEMHIGH_DESIRED`; a config change applies on gateway restart.
 
     Runs ``systemctl --user set-property --runtime`` — unprivileged: the user
     manager owns the slice, and the memory controller is delegated wherever the
@@ -107,12 +302,36 @@ def _ensure_agent_slice_memory_high() -> None:
     applied. On failure it logs one loud warning and disarms for the rest of
     the process.
     """
-    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED
-    if _SLICE_MEMHIGH_DISABLED:
+    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_DESIRED
+    global _SLICE_MEMHIGH_CONFIGURED, _SLICE_MEMHIGH_DEFERRED
+    if _SLICE_MEMHIGH_DISABLED or _SLICE_MEMHIGH_DEFERRED:
         return
-    desired = f"{_default_slice_memory_high_mb()}M"
+    if _SLICE_MEMHIGH_DESIRED is None:
+        mb, _SLICE_MEMHIGH_CONFIGURED = _slice_memory_high_mb()
+        _SLICE_MEMHIGH_DESIRED = f"{mb}M"
+    desired = _SLICE_MEMHIGH_DESIRED
     if desired == _SLICE_MEMHIGH_APPLIED:
         return
+    if not _SLICE_MEMHIGH_CONFIGURED:
+        # Without a set key this instance only fills an empty slot: a finite
+        # MemoryHigh is another instance's ceiling (possibly operator-
+        # configured). Re-checked on the next spawn while not applied.
+        state, held_mb = _slice_memory_high_unit_state()
+        if state == "unknown" and os.environ.get("KIROCREW_POD"):
+            return
+        if state == "set":
+            cap_mb, max_total_mb = _slice_memory_high_cap_mb()
+            if held_mb is None or held_mb < max_total_mb:
+                # Below MemoryMax the held value still throttles: it is
+                # another instance's ceiling, kept until this one restarts.
+                _SLICE_MEMHIGH_DEFERRED = True
+                return
+            # At or above MemoryMax (e.g. left by an earlier run with a higher
+            # MemoryMax) it would never throttle: replace it with a capped
+            # value, and keep that as this process's value so the next spawn
+            # does not write again.
+            desired = f"{min(int(desired[:-1]), cap_mb)}M"
+            _SLICE_MEMHIGH_DESIRED = desired
     try:
         systemctl = platform_compat.trusted_system_bin("systemctl")
         if systemctl is None:
@@ -238,8 +457,9 @@ def _check_slice_memory_pressure() -> None:
 # for the whole reconcile body: every schedule spawns its own short-lived
 # worker and workers queue on the mutex, so concurrent spawns never interleave
 # systemctl calls and a failed apply is retried by the next spawn's worker.
-# The desired value is host-derived and process-constant (no config input) —
-# the mutex guards the apply/retry handoff, not value freshness. Redundant
+# The desired value comes from config and the host, capped below MemoryMax,
+# and is resolved once per process (_SLICE_MEMHIGH_DESIRED) -- the mutex guards
+# the apply/retry handoff, not value freshness. Redundant
 # workers are near-free (the applied-value check reduces them to a string
 # compare), and thread count is bounded by concurrent agent spawns.
 _SLICE_MEMHIGH_MUTEX = threading.Lock()
@@ -292,6 +512,7 @@ _WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
     "max_total_memory_mb",
     "max_total_processes",
     "scope_memory_high_pct",
+    "slice_memory_high_pct",
 )
 _WINDOWS_INERT_LIMITS_WARNED = False
 
@@ -429,8 +650,9 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     Every scope is parented under a per-instance child of
     :data:`_CGROUP_AGENTS_SLICE` (see :func:`_agents_slice_name`, which explains
     why the owner has to be expressible), and the slice-level soft ceiling
-    (``MemoryHigh``, see :func:`_ensure_agent_slice_memory_high`) — a
-    host-derived constant (75% of RAM) — is ensured before each wrap on the
+    (``MemoryHigh``, see :func:`_ensure_agent_slice_memory_high`) — 75% of
+    RAM by default, ``resource_limits.slice_memory_high_pct`` when set, capped
+    at 95% of the slice ``MemoryMax`` — is ensured before each wrap on the
     PARENT, throttling the SUM of all concurrent agent trees before the slice's
     hard ``MemoryMax`` (:func:`ensure_agents_slice_limits`) OOM-kills a scope.
     cgroup v2 bounds a descendant by the minimum effective limit along its

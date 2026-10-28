@@ -969,10 +969,16 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # The agent-slice MemoryHigh reconciler. Fixed argv: `systemctl --user
         # set-property --runtime kirocrew-agents.slice MemoryHigh=<value>`, where
         # the binary is resolved with shutil.which (never a caller-supplied PATH)
-        # and <value> is derived from host RAM, never from agent input.
+        # and <value> is derived from host RAM and the range-checked
+        # resource_limits config, never from agent input.
         # Sandboxing it would also be circular: it CONFIGURES the cgroup
         # containment that agent spawns are wrapped in.
         "sandbox_slice.py::_ensure_agent_slice_memory_high",
+        # Its read-only companion: a fixed `systemctl --user show -p MemoryHigh
+        # kirocrew-agents.slice` (trusted binary, no variable tokens), run at
+        # most once per process once it succeeds, to see the slice's current
+        # MemoryHigh before deciding whether to write one.
+        "sandbox_slice.py::_slice_unit_props",
         # The chokepoint wrapper itself. It spawns whatever argv it is handed, so
         # it cannot route on its own behalf — its CALLERS are the ones this audit
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
