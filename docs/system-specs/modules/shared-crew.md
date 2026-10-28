@@ -113,6 +113,36 @@ authoritative assigned-user directory. Per-person `usage` is `null`, and
 
 ### Tailscale invites
 
+The owner invites a teammate through Tailscale's device-invite API. In this build
+only the API client exists (`shared_crew.tailscale_api`); nothing calls it yet.
+
+**Credential.** A user-owned Tailscale API access key (`tskey-api-...`), made by an
+Owner, Admin or IT admin. An OAuth-client token cannot create or resend device
+invites (the share belongs to a user), so no OAuth path exists. `looks_like_api_key`
+checks the shape and `api_key_id` reads the key id used for the expiry read. The
+client never logs the key or a response body, and its `repr` masks the key.
+
+**API calls.** Only to `https://api.tailscale.com/api/v2`, basic auth with the key
+(key as username, empty password), redirects refused, so a redirect can never carry
+the key to another host. Every path id must match `[A-Za-z0-9_-]{1,128}`. A response
+over 2 MiB is refused.
+
+| Call | Use |
+|---|---|
+| `GET /tailnet/-/devices` | find this machine's device id (`nodeId`, `nodeKey`, `addresses`) |
+| `GET /tailnet/-/keys/{keyId}` | the key's `expires` |
+| `POST /device/{id}/device-invites` | body a JSON array of `{email?, multiUse, allowExitNode}`; `allowExitNode` is always `false`, `multiUse` is `false` unless the caller asks for a reusable link (email invites are always single-use) |
+| `GET /device/{id}/device-invites` | read back each invite's `accepted` and `acceptedBy {id, loginName, profilePicUrl}` |
+| `POST /device-invites/{id}/resend` | Resend; Tailscale allows one per minute |
+| `DELETE /device-invites/{id}` | Revoke |
+
+**Errors.** Every failure raises `TailscaleApiError` with a short code:
+`auth_failed` (401), `forbidden` (403), `not_found` (404), `rate_limited` (429,
+carrying the server's `Retry-After`, 60 s when absent), `bad_request` (other 4xx or
+an unsafe id), `unavailable` (5xx, network error or timeout) and `bad_response` (a
+redirect, an oversized or malformed body). The caller decides what a code means; a
+revoke treats `not_found` as already gone.
+
 ## 3. Session attribution and records
 
 ### Session list query
