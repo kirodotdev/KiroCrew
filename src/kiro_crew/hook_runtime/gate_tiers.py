@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         GateTier,
         HookManager,
         HooksConfig,
+        SpecBuiltinAllow,
         ToolCall,
         ToolHookResult,
         _app_owns_mcp_server,
@@ -1190,6 +1191,25 @@ def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult
     A shell call reaches here only with its command recovered: the first row denies
     one whose command it could not read. The surface's own checks that follow an
     auto-approve (the name-grant shim, PreToolUse script hooks) still run.
+
+    The body is :func:`grant_spec_builtin` with no extra condition.
+    """
+    return grant_spec_builtin(facts)
+
+
+def grant_spec_builtin(
+    facts: GateFacts, *, allow: SpecBuiltinAllow | None = None
+) -> ToolHookResult | None:
+    """Crew's answer to a KAS permission request for a spec-granted built-in.
+
+    The shared helper for every grant Crew makes inside the gate on a KAS built-in
+    the policy kept at ``ask``. Called from a ``grant`` row, so every deny row and
+    governance have already run on the call; the conditions of
+    :func:`_tier_spec_builtin_grant` are checked here, and *allow*, when given, is
+    asked LAST with the facts and the call's names (:func:`_spec_builtin_names`).
+    It can only withhold: ``False`` (or an exception, which the gate's crash guard
+    turns into a refusal) leaves the call to the next row and the prompt. Returns
+    ``ToolHookResult.auto_approve()`` or ``None``.
     """
     if facts.classifier_only:
         return None
@@ -1208,6 +1228,8 @@ def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult
     if not all(may_grant_builtin_at_gate(name, ceiling) for name in names):
         return None
     if _operator_confirms(facts, names):
+        return None
+    if allow is not None and not allow(facts, names):
         return None
     return ToolHookResult.auto_approve()
 

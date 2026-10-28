@@ -331,6 +331,9 @@ def _install_governance(body: dict[str, Any] | None) -> None:
     from kiro_crew.config.loader import KiroCrewConfig
 
     if body is None:
+        # A scenario with no policy runs on the default context, never on a
+        # ceiling an earlier scenario judged in the same test installed.
+        ctx_mod.reset_context()
         return
     base = build_default_context(KiroCrewConfig.load())
     ctx_mod.set_context(dataclasses.replace(base, governance=parse_policy(body)))

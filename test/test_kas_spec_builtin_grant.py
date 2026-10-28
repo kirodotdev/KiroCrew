@@ -184,6 +184,45 @@ def test_a_powershell_grant_answers_a_kas_shell_call() -> None:
     assert _judge(_shell(_DESTRUCTIVE), {"execute_pwsh"}).action == TOOL_DENY
 
 
+def _facts(event: AcpEvent, grants: set[str], **surface: Any):
+    from kiro_crew.hooks import GateFacts, ToolCall
+
+    event.spec_granted_builtins = frozenset(grants)
+    return GateFacts(
+        HookManager(),
+        ToolCall.from_event(event),
+        session_key="",
+        agent="",
+        app="",
+        classifier_only=bool(surface.get("classifier_only", False)),
+    )
+
+
+def test_the_shared_helper_takes_an_allow_predicate_that_only_narrows() -> None:
+    """``kiro_crew.hooks.grant_spec_builtin`` is the helper another grant reuses:
+    its ``allow`` predicate is asked last, with the facts and the call's names, and
+    can only withhold."""
+    from kiro_crew.hooks import grant_spec_builtin
+
+    seen: list[tuple[str, ...]] = []
+
+    def allow_all(facts: Any, names: tuple[str, ...]) -> bool:
+        seen.append(names)
+        return True
+
+    facts = _facts(_shell("make build"), {"execute_bash"})
+    assert grant_spec_builtin(facts).action == TOOL_AUTO_APPROVE
+    assert grant_spec_builtin(facts, allow=allow_all).action == TOOL_AUTO_APPROVE
+    assert seen == [("run_command", "execute_bash", "execute_pwsh")]
+    assert grant_spec_builtin(facts, allow=lambda facts, names: False) is None
+    # The predicate never widens: an ungranted call gets no grant and is not asked.
+    seen.clear()
+    assert grant_spec_builtin(_facts(_shell("make build"), set()), allow=allow_all) is None
+    assert seen == []
+    unattended = _facts(_shell("make build"), {"execute_bash"}, classifier_only=True)
+    assert grant_spec_builtin(unattended, allow=allow_all) is None
+
+
 def test_a_grant_for_another_tool_approves_nothing() -> None:
     assert _judge(_shell("make build"), {"fs_read"}).action == TOOL_ALLOW
 

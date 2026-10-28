@@ -115,6 +115,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_unverifiable_shell,
     _tier_write_protected,
     gate_tier_problems,
+    grant_spec_builtin,
     shell_rules,
 )
 from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
@@ -500,6 +501,12 @@ class GateTier(NamedTuple):
     judge: Callable[[GateFacts, GateTier], ToolHookResult | None]
     shell_rule: str = ""
     rules: tuple[GateRule, ...] = ()
+
+
+#: An extra condition on ``grant_spec_builtin`` (``hook_runtime/gate_tiers.py``):
+#: handed the judgement's facts and the names the call answers to, it may only
+#: NARROW the grant.
+SpecBuiltinAllow = Callable[[GateFacts, tuple[str, ...]], bool]
 
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
