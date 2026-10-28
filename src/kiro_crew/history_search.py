@@ -557,7 +557,7 @@ class SessionCatalogProjection:
         if keys is not None or not query or limit <= 0:
             return self._search_sessions(query, limit, keys=keys)
         slot = (str(self._log._dir), query, limit)
-        epoch = self._log._dir_write_epoch()
+        epoch = self._log.write_epoch()
         with _flights_lock:
             running = _flights.get(slot)
             if running is None or running.epoch != epoch:

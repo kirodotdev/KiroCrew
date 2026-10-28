@@ -195,6 +195,7 @@ def env(tmp_path, monkeypatch):
     conversation_log = SimpleNamespace(
         get_metadata=lambda key: metadata.get(key, {}),
         get_metadata_status=lambda key: (metadata.get(key, {}), True),
+        write_epoch=lambda: 0,
     )
     global_memory = MemoryStore(workspace=tmp_path / "global-workspace")
     global_memory.init()
