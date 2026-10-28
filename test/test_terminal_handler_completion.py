@@ -275,7 +275,8 @@ class TestSensitiveEntryGate:
         for name in ("alpha", "beta", "gamma"):
             (tmp_path / name).write_text("x")
         with _sensitive(always=False) as (gate, _):
-            terminal._list_vetted_completions(str(tmp_path), "alph", False, 100)
+            entries, _ = terminal._list_vetted_completions(str(tmp_path), "alph", False, 100)
+        assert [e["name"] for e in entries] == ["alpha"]
         assert gate.call_count == 1
 
 
@@ -565,7 +566,8 @@ class TestApiTerminalComplete:
             patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))),
             _sensitive(always=True),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
+        assert (resp.status, json.loads(resp.text)["entries"]) == (200, [])
         assert sel_log.call_args.kwargs == {
             "caller": "testuser",
             "operation": "terminal.complete",
@@ -597,17 +599,20 @@ class TestApiTerminalComplete:
         sess = _make_session(session_id="s1")
         req = self._req({"session_id": "s1", "token": "x"}, registry={"s1": sess})
         with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=None)):
-            await terminal.api_terminal_complete(req)
+            no_cwd = await terminal.api_terminal_complete(req)
+        assert no_cwd.status == 200
         assert sel_log.call_args.kwargs["resources"] == "no_cwd"
-        await terminal.api_terminal_complete(
+        gone = await terminal.api_terminal_complete(
             self._req({"session_id": "gone", "token": ""}, registry={})
         )
+        assert gone.status == 404
         assert sel_log.call_args.kwargs["resources"] == "unknown_session"
 
     @pytest.mark.asyncio
     async def test_lists_on_discovery_pool_not_subprocess_pool(self, tmp_path):
         # subprocess_executor's workers are shared with PTY teardown; a slow
         # directory scan must not be able to occupy one.
+        (tmp_path / "docs").mkdir()
         sess = _make_session(session_id="s1")
         req = self._req({"session_id": "s1", "token": ""}, registry={"s1": sess})
         with (
@@ -616,7 +621,8 @@ class TestApiTerminalComplete:
             patch.object(terminal, "subprocess_executor") as sub,
         ):
             disc.return_value = None  # None → loop's default executor
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
         assert disc.called
         assert not sub.called
 
@@ -772,8 +778,10 @@ class TestApiTerminalCompleteCommandTier:
             patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))),
             patch.object(terminal_commands, "complete", engine),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
         assert engine.await_args.args[:3] == (["gh", "pr"], "cre", str(tmp_path))
+        body = json.loads(resp.text)
+        assert (body["prefix"], [e["name"] for e in body["entries"]]) == ("cre", ["create"])
 
     @pytest.mark.asyncio
     async def test_answers_flags_for_a_dash_token(self):
@@ -861,8 +869,9 @@ class TestApiTerminalCompleteCommandTier:
             patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")),
             patch.object(terminal_commands, "complete", engine),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
         engine.assert_not_awaited()
+        assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_the_path_tier_is_untouched_when_argv_is_absent(self, tmp_path):
@@ -895,8 +904,9 @@ class TestApiTerminalCompleteCommandTier:
             ),
             patch.object(terminal_commands, "complete", engine),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
         assert engine.await_args.args[3] == {"mytool": "cobra"}
+        assert (resp.status, json.loads(resp.text)["entries"]) == (200, [])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", [False, True, "yes", 7, [], None])
@@ -1003,7 +1013,9 @@ class TestApiTerminalCompleteCommandTier:
             patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")),
             self._complete(self._entries("create") if reason == "cmd_listed" else [], reason),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
+        names = [e["name"] for e in json.loads(resp.text)["entries"]]
+        assert names == (["create"] if reason == "cmd_listed" else [])
         assert sel_log.call_args.kwargs == {
             "caller": "testuser",
             "operation": "terminal.complete",
@@ -1023,7 +1035,8 @@ class TestApiTerminalCompleteCommandTier:
             patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")),
             self._complete([], "sensitive_path"),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
+        assert (resp.status, json.loads(resp.text)["entries"]) == (200, [])
         assert sel_log.call_args.kwargs["outcome"] == "denied"
         assert sel_log.call_args.kwargs["resources"] == "sensitive_path"
 
@@ -1035,7 +1048,8 @@ class TestApiTerminalCompleteCommandTier:
             registry={"s1": sess},
         )
         with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 400
         assert sel_log.call_args.kwargs["outcome"] == "denied"
         assert sel_log.call_args.kwargs["resources"] == "invalid_argv"
 
@@ -1401,8 +1415,9 @@ class TestApiTerminalCompletionEnabledFlag:
             patch.object(terminal, "_get_config", return_value={"completion": {"enabled": False}}),
             patch.object(terminal_commands, "complete", engine),
         ):
-            await terminal.api_terminal_complete(req)
+            resp = await terminal.api_terminal_complete(req)
         engine.assert_not_awaited()
+        assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_a_well_formed_argv_is_parsed_once(self):

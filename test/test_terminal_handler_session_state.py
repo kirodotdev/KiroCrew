@@ -388,6 +388,10 @@ class TestPollTerminalTitles:
         ):
             await terminal.poll_terminal_titles(self._app(sess))
         ws.send_str.assert_not_awaited()
+        # The session WAS probed (the dirty flag is spent), so the silence is the
+        # dedup, not a skipped probe.
+        assert sess.frames_dirty is False
+        assert sess.last_title == "vim"
 
     @pytest.mark.asyncio
     async def test_skips_when_no_title(self):
@@ -402,6 +406,8 @@ class TestPollTerminalTitles:
         ):
             await terminal.poll_terminal_titles(self._app(sess))
         ws.send_str.assert_not_awaited()
+        assert sess.frames_dirty is False
+        assert (sess.last_title, sess.last_cwd) == (None, None)
 
     @pytest.mark.asyncio
     async def test_skips_disconnected_session(self):
@@ -413,6 +419,8 @@ class TestPollTerminalTitles:
         ):
             await terminal.poll_terminal_titles(self._app(sess))
         mock_title.assert_not_called()
+        # The pending output stays armed for the socket that reattaches.
+        assert sess.frames_dirty is True
 
     @pytest.mark.asyncio
     async def test_does_not_probe_a_session_with_no_new_output(self):
@@ -434,6 +442,7 @@ class TestPollTerminalTitles:
         title.assert_not_called()
         cwd.assert_not_called()
         ws.send_str.assert_not_awaited()
+        assert (sess.frames_dirty, sess.last_title, sess.last_cwd) == (False, None, None)
 
     @pytest.mark.asyncio
     async def test_disarms_itself_after_probing(self):
@@ -645,6 +654,8 @@ class TestPollTerminalTitles:
         ):
             await terminal.poll_terminal_titles(self._app(sess))
         ws.send_str.assert_not_awaited()
+        assert sess.frames_dirty is False
+        assert sess.last_cwd == "/home/u/proj"
 
     @pytest.mark.asyncio
     async def test_pushes_both_title_and_cwd_frames(self):
@@ -684,6 +695,8 @@ class TestPollTerminalTitles:
         ):
             await terminal.poll_terminal_titles(self._app(sess))  # must not raise
         ws.send_str.assert_not_awaited()
+        # Nothing was delivered, so neither dedup marker may claim it was.
+        assert (sess.ws, sess.last_title, sess.last_cwd) == (None, None, None)
 
 
 class TestTerminalRefusalCodes:
