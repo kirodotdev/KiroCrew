@@ -72,29 +72,65 @@ except ImportError:  # pragma: no cover - standalone fallback
             return default
 
 
-# Every loopback call below carries X-Internal-Secret, and urlopen honours
-# HTTP_PROXY for loopback addresses, so a proxied environment would send the
-# secret to the proxy in cleartext. The fallback must therefore stay
-# proxy-disabled too -- degrading to a bare urlopen would leave the standalone
-# path (`python3 sage_lib/review_driver.py`) carrying the leak this closes.
+# Every loopback call carries X-Internal-Secret, which must reach ONLY this
+# install's own gateway (``sage_lib.loopback`` keeps the opener proxy- and
+# redirect-disabled). A plain loopback send writes it to whatever process
+# currently holds the port, so every
+# credential-bearing call proves the connected peer IS this install's recorded
+# gateway before the first byte, reusing the gateway's own connection-bound proof
+# (``kiro_crew.cli_server_peer._owner_verified_secret_urlopen``). An unproven peer
+# raises ``_GatewayPeerRefused`` and nothing is sent. The standalone path (run with
+# no ``kiro_crew`` importable) keeps that proxy/redirect-disabled opener: it
+# runs outside an install and has no recorded gateway to prove against.
 #
-# It must ALSO refuse redirects, for the same reason the real helper does.
-# "These endpoints never return a redirect" is wrong for `_probe`, whose entire
-# job is to dial candidate ports that may have something other than our gateway
-# listening. A 302 from one of those would replay the secret to whatever host
-# Location names.
+# The Sage backend runs inside the agent sandbox, and on Linux that sandbox can
+# prove the gateway only over its owner-only unix socket: the TCP arm's peer
+# verdict does not resolve from inside the child user namespace. A gateway that
+# degraded to TCP-only (its socket path too long for AF_UNIX) is therefore
+# refused, and the error says how to restore the socket rather than sending
+# unproven.
+_TCP_ONLY_REMEDY = (
+    "the gateway has no dashboard socket (TCP-only), and the sandboxed Sage backend "
+    "can prove its gateway only over that socket; use a shorter data home so the "
+    "socket path fits the AF_UNIX limit, then restart the gateway"
+)
+
+
+def _sandboxed_tcp_only(port: int) -> bool:
+    """True for the one refusal the remedy above fixes: this process runs inside
+    the Linux agent sandbox (the launcher sets ``KIROCREW_SANDBOX_ACTIVE``) and
+    the gateway has no dashboard socket. Native Windows has no socket either, so
+    the platform is part of the test, not just the missing file."""
+    return (
+        sys.platform == "linux"
+        and os.environ.get("KIROCREW_SANDBOX_ACTIVE") == "1"
+        and not _existing_dashboard_socket(port)
+    )
+
+
 try:
-    from kiro_crew.loopback_http import loopback_urlopen  # type: ignore
+    from kiro_crew.cli_server_peer import (  # type: ignore
+        _existing_dashboard_socket,
+        _GatewayPeerRefused,
+        _owner_verified_secret_urlopen,
+    )
 except ImportError:  # pragma: no cover - standalone fallback
 
-    class _FallbackNoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None
+    class _GatewayPeerRefused(Exception):  # type: ignore
+        """Never raised standalone; the plain opener is used instead."""
 
-    def loopback_urlopen(req: urllib.request.Request | str, timeout: float):  # type: ignore
-        return urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), _FallbackNoRedirect()
-        ).open(req, timeout=timeout)
+    def _existing_dashboard_socket(port: int) -> str:  # type: ignore
+        return ""
+
+    def _verified_urlopen(req: urllib.request.Request, port: int, timeout: float, *, operation: str):  # type: ignore
+        return loopback_urlopen(req, timeout)
+
+else:
+
+    def _verified_urlopen(
+        req: urllib.request.Request, port: int, timeout: float, *, operation: str
+    ):
+        return _owner_verified_secret_urlopen(req, port, timeout, operation=operation)
 
 
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,6 +149,7 @@ from sage_lib import (  # noqa: E402
 )
 
 # Re-exported: tests and callers keep using `review_driver.<name>` for these.
+from sage_lib.loopback import loopback_urlopen  # noqa: E402,F401
 from sage_lib.worker_response import (  # noqa: E402,F401
     _MAX_ENVELOPE_CANDIDATES,
     _MAX_RESPONSE_BYTES,
@@ -164,9 +201,14 @@ def _api_request(method: str, path: str, body: dict | None = None, timeout: int 
         headers["Content-Type"] = "application/json"
     try:
         req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
-        with loopback_urlopen(req, timeout=timeout) as resp:
+        with _verified_urlopen(req, base_port, timeout, operation="sage_api") as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
+    except _GatewayPeerRefused as exc:
+        error = f"gateway peer not verified; request not sent: {exc}"
+        if _sandboxed_tcp_only(base_port):
+            error += "; " + _TCP_ONLY_REMEDY
+        return {"error": error}
     except Exception as e:
         return {"error": str(e)}
 
@@ -702,13 +744,19 @@ def _probe(base: str, secret: str) -> bool:
     port, so a cold resolve that misses sends the secret up to len(candidates)
     times -- this is the highest-multiplicity secret-bearing send in the app."""
     try:
+        port = int(base.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return False
+    try:
         req = urllib.request.Request(
             base + "/api/spawn", headers={"X-Internal-Secret": secret} if secret else {}
         )
-        with loopback_urlopen(req, timeout=3) as resp:
+        with _verified_urlopen(req, port, 3, operation="sage_probe") as resp:
             return resp.status < 500
     except urllib.error.HTTPError:
         return True  # a gateway responded (e.g. 401/404) — it's the right port
+    except _GatewayPeerRefused:
+        return False  # the listener on this port is not this install's gateway
     except Exception:
         return False
 

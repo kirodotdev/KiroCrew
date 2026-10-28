@@ -1767,6 +1767,12 @@ refused.
   connection is still in the accept queue. That pid must equal the recorded
   pid and be owned by this account: uid on POSIX, access-token owner SID on
   Windows. Every other outcome, including any exception, is `MISMATCH`.
+  Inside the Linux agent sandbox the TCP arm does not reach `MATCH` (the
+  in-sandbox TCP-only case in `test/test_sage_sender_proves_peer_in_sandbox.py`
+  pins this), so a sandboxed sender (the Code Review Sage backend) proves its
+  gateway only over the unix arm. Against a TCP-only gateway it is refused, and
+  Sage's `_api_request` error names the remedy: a data home short enough for
+  the socket path to fit the AF_UNIX limit.
 
 **Refusal on mismatch.** A failed proof emits a SEL `denied` event and raises
 `_GatewayPeerRefused` before the secret is written; a passed proof emits SEL

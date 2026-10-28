@@ -107,6 +107,7 @@ code_review_sage/
 │   ├── store.py             # data layout self-heal + config
 │   ├── review_driver.py     # code-enforced one-isolated-review-per-change loop
 │   ├── worker_response.py   # binds a worker's response envelope to its dispatch
+│   ├── loopback.py          # proxy- and redirect-disabled loopback opener
 │   ├── review_pool.py       # reviewer worker pool (config-driven model/effort)
 │   ├── adapters.py          # GitHub PR source adapter
 │   └── ...
