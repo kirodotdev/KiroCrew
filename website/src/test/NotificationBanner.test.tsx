@@ -726,18 +726,90 @@ describe('NotificationBanner: swipe to dismiss (mobile)', () => {
     expect(el.getAttribute('data-swiping')).toBeNull()
   })
 
-  it('a vertical drag is left to the browser: the card never moves, even if the finger turns sideways later', () => {
+  it('a downward drag is declined: the card never moves, even if the finger turns sideways later', () => {
     isMobileMock = true
     const n = mkN()
     renderBanner()
     arrive(n)
     const el = swipeEl()
-    expect(el.className).toContain('touch-pan-y')
+    expect(el.className).toContain('touch-none')
     fireEvent.pointerDown(el, touch(200, 100))
     fireEvent.pointerMove(el, touch(202, 130))
     fireEvent.pointerMove(el, touch(320, 160))
     expect(el.style.transform).toBe('')
     fireEvent.pointerUp(el, touch(320, 160))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('an upward swipe past the threshold dismisses the card the way the X does: gone, still unread', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { store } = renderBanner({ items: [n] })
+    arrive(n)
+    const el = swipeEl()
+    // The wrapper must not hand the vertical axis to the browser, or a real
+    // engine cancels the upward swipe as a scroll before it can dismiss.
+    expect(el.className).toContain('touch-none')
+    expect(el.className).not.toContain('touch-pan-y')
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(202, 185))
+    fireEvent.pointerMove(el, touch(204, 150))
+    expect(el.style.transform).toBe('translateY(-50.0px)')
+    fireEvent.pointerUp(el, touch(205, 110))
+    expect(cards()).toHaveLength(0)
+    expect(mockAck).not.toHaveBeenCalled()
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+  })
+
+  it('a short upward swipe follows the finger and then springs back, dismissing nothing', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    vi.useFakeTimers()
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(200, 188))
+    fireEvent.pointerMove(el, touch(200, 160))
+    expect(el.style.transform).toBe('translateY(-40.0px)')
+    // Back down past the rest position: the card stops at rest, it is not pulled down.
+    fireEvent.pointerMove(el, touch(200, 230))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerMove(el, touch(200, 170))
+    fireEvent.pointerUp(el, touch(200, 170))
+    expect(cards()).toHaveLength(1)
+    expect(el.style.transform).toBe('')
+    expect(el.getAttribute('data-swiping')).toBeNull()
+    // The release's click is swallowed, as for a sideways snap-back.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).not.toHaveBeenCalled()
+  })
+
+  it('an upward swipe the browser cancels springs back', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(200, 185))
+    fireEvent.pointerMove(el, touch(200, 90))
+    fireEvent.pointerCancel(el, touch(200, 90))
+    expect(el.style.transform).toBe('')
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('a drag that locks sideways stays sideways: turning upward later does not dismiss', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(215, 198))
+    fireEvent.pointerMove(el, touch(230, 100))
+    expect(el.style.transform).toBe('translateX(30.0px)')
+    fireEvent.pointerUp(el, touch(230, 100))
     expect(cards()).toHaveLength(1)
   })
 
@@ -831,7 +903,7 @@ describe('NotificationBanner: swipe to dismiss (mobile)', () => {
     arrive(n)
     swipe([[200, 100], [230, 100], [400, 100]])
     expect(cards()).toHaveLength(1)
-    expect(swipeEl().className).not.toContain('touch-pan-y')
+    expect(swipeEl().className).not.toContain('touch-none')
     isMobileMock = true
     const m = mkN()
     renderBanner()

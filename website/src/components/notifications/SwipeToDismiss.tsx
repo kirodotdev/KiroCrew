@@ -6,20 +6,19 @@ import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent, 
  */
 export const SWIPE_DISMISS_SLOP = 10
 /**
- * Vertical travel, in px, past which the touch is declined outright: the
- * browser has already committed it to a scroller by then (the platform scroll
- * slop is ~8px on the engines that publish one), and `preventDefault` no longer
- * reaches it. Smaller than `SWIPE_DISMISS_SLOP` on purpose, so a diagonal drag
- * that drifted this far vertically before earning its horizontal lock is left
- * to the page rather than fought over. Same rule as `useDrawerSwipe`'s
- * `PLATFORM_SCROLL_SLOP`.
+ * Downward travel, in px, past which the touch is declined outright. Down is
+ * the one direction that has no meaning on a top banner, so a drag that goes
+ * this far down before it has earned a lock is left alone for good. Smaller
+ * than `SWIPE_DISMISS_SLOP` on purpose, so a diagonal drag that drifted this
+ * far down before its sideways lock does not start moving the card later.
  */
 export const SWIPE_DISMISS_SCROLL_SLOP = 8
 /**
- * Horizontal travel, in px, past which a release dismisses. Distance is the
- * only criterion, as in the lightbox's swipe: a velocity path would buy a
- * sub-threshold flick and cost per-move rate tracking plus a second
- * threshold, and the flick a user actually makes travels past this anyway.
+ * Travel, in px, past which a release dismisses: sideways in either direction,
+ * or upward. Distance is the only criterion, as in the lightbox's swipe: a
+ * velocity path would buy a sub-threshold flick and cost per-move rate
+ * tracking plus a second threshold, and the flick a user actually makes
+ * travels past this anyway.
  */
 export const SWIPE_DISMISS_DISTANCE = 80
 /**
@@ -42,29 +41,31 @@ interface Gesture {
   startY: number
   /** The touch is still a candidate: no axis decided yet. */
   active: boolean
-  /** The horizontal axis is locked; the card follows the finger. */
-  engaged: boolean
+  /** The axis is locked (`x` sideways, `y` upward); the card follows the finger. */
+  engaged: 'x' | 'y' | null
 }
 
-const IDLE: Gesture = { pointerId: -1, startX: 0, startY: 0, active: false, engaged: false }
+const IDLE: Gesture = { pointerId: -1, startX: 0, startY: 0, active: false, engaged: null }
 
 /**
- * Finger-tracking horizontal swipe that dismisses its child.
+ * Finger-tracking swipe that dismisses its child, sideways or upward.
  *
- * Wraps one notification banner card on the mobile layout. A horizontal drag
- * past `SWIPE_DISMISS_DISTANCE` calls `onDismiss` on release -- the SAME
- * handler the card's close button calls, so the two paths cannot drift apart
- * (the note stays unread in the bell either way). A shorter drag snaps the
- * card back. The gesture is touch-only and horizontal-only:
+ * Wraps one notification banner card on the mobile layout. A sideways drag, or
+ * an upward one as on an iOS banner, past `SWIPE_DISMISS_DISTANCE` calls
+ * `onDismiss` on release -- the SAME handler the card's close button calls, so
+ * the paths cannot drift apart (the note stays unread in the bell either way).
+ * A shorter drag snaps the card back. The gesture is touch-only:
  *
- * - `touch-action: pan-y` on the wrapper leaves vertical panning to the
- *   browser, so a finger that scrolls the page under the banner is never
- *   taken, and a touch the browser has already committed to a scroll arrives
- *   as `pointercancel`, which aborts the candidate.
- * - The axis is decided once: a touch that drifts past
- *   `SWIPE_DISMISS_SCROLL_SLOP` vertically before it has travelled
- *   `SWIPE_DISMISS_SLOP` horizontally is declined for good, and the card does
- *   not move however the finger turns afterwards.
+ * - `touch-action: none` on the wrapper, so the browser does not claim the
+ *   vertical axis and cancel an upward swipe as a scroll (`pan-up` is not
+ *   supported by WebKit). It covers the card's own box only: a finger that
+ *   starts anywhere else still scrolls the page as before. A touch the browser
+ *   cancels anyway arrives as `pointercancel` and snaps the card back.
+ * - The axis is decided once, by whichever lock comes first: `SWIPE_DISMISS_SLOP`
+ *   sideways locks `x`, the same travel upward locks `y`, and a touch that
+ *   drifts past `SWIPE_DISMISS_SCROLL_SLOP` downward first is declined for
+ *   good. On the `y` axis the card follows the finger up and stops at its rest
+ *   position going down.
  * - A mouse never starts a gesture: a desktop pointer has the hover-revealed
  *   close and the swipe would only fight text selection.
  *
@@ -89,6 +90,7 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
 }) {
   const [offset, setOffset] = useState(0)
   const [swiping, setSwiping] = useState(false)
+  const [axis, setAxis] = useState<'x' | 'y'>('x')
   const gesture = useRef<Gesture>(IDLE)
   // The release of a real swipe may still fire `click` on whatever the finger
   // landed on (the card body opens the note, the X dismisses). A swipe that
@@ -106,7 +108,7 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
   const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     swallowUntil.current = 0
     if (!enabled || e.pointerType === 'mouse' || gesture.current.active) return
-    gesture.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: true, engaged: false }
+    gesture.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: true, engaged: null }
   }, [enabled])
 
   const onPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
@@ -117,31 +119,32 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
     if (!g.engaged) {
       // Declined, not deferred: the browser owns a touch this far down the
       // vertical axis, and the card must not start moving under it later.
-      if (Math.abs(dy) > SWIPE_DISMISS_SCROLL_SLOP) { gesture.current = IDLE; return }
-      if (Math.abs(dx) < SWIPE_DISMISS_SLOP) return
-      // No separate "more horizontal than vertical" test: with the scroll slop
-      // below the lock distance, any touch that gets here is already so.
-      g.engaged = true
+      if (dy > SWIPE_DISMISS_SCROLL_SLOP) { gesture.current = IDLE; return }
+      if (Math.abs(dx) >= SWIPE_DISMISS_SLOP && Math.abs(dx) >= -dy) g.engaged = 'x'
+      else if (-dy >= SWIPE_DISMISS_SLOP) g.engaged = 'y'
+      else return
       setSwiping(true)
+      setAxis(g.engaged)
       // Capture so the card keeps hearing the finger once it leaves the card's
       // box. Best-effort: an engine that refuses still delivers the moves that
       // land on the card, and the release path below reads the last one.
       try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* uncaptured drag still follows while over the card */ }
     }
-    setOffset(dx)
+    setOffset(g.engaged === 'x' ? dx : Math.min(dy, 0))
   }, [])
 
   const end = useCallback((e: ReactPointerEvent<HTMLDivElement>, cancelled: boolean) => {
     const g = gesture.current
     if (!g.active || e.pointerId !== g.pointerId) return
-    if (!g.engaged) { gesture.current = IDLE; return }
+    if (g.engaged === null) { gesture.current = IDLE; return }
     // Capture, when it was granted, is released by the browser on up/cancel.
     // Only a RELEASE can fire the click to swallow, and only within the window:
     // a cancel fires none, and a release past the tap slop may fire none either,
     // so anything armed for longer would wait for a later activation that has
     // no pointerdown to clear it (a keyboard Enter on Review) and eat that.
     swallowUntil.current = cancelled ? 0 : Date.now() + SWIPE_CLICK_SWALLOW_MS
-    if (!cancelled && Math.abs(e.clientX - g.startX) >= SWIPE_DISMISS_DISTANCE) {
+    const travel = g.engaged === 'x' ? Math.abs(e.clientX - g.startX) : g.startY - e.clientY
+    if (!cancelled && travel >= SWIPE_DISMISS_DISTANCE) {
       // The card is leaving: AnimatePresence plays the exit from wherever the
       // wrapper sits, so the offset is left in place rather than snapped.
       gesture.current = IDLE
@@ -166,8 +169,8 @@ export default function SwipeToDismiss({ enabled, reduced, onDismiss, children }
     <div
       data-testid="notification-banner-swipe"
       data-swiping={swiping ? 'true' : undefined}
-      className={`${enabled ? 'touch-pan-y' : ''} ${swiping || reduced ? '' : 'transition-transform duration-200 ease-out'}`}
-      style={offset !== 0 ? { transform: `translateX(${offset.toFixed(1)}px)` } : undefined}
+      className={`${enabled ? 'touch-none' : ''} ${swiping || reduced ? '' : 'transition-transform duration-200 ease-out'}`}
+      style={offset !== 0 ? { transform: `${axis === 'x' ? 'translateX' : 'translateY'}(${offset.toFixed(1)}px)` } : undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
