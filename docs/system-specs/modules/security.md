@@ -2339,7 +2339,8 @@ of the command passes one closed allowlist: with its
 other quoted words masked (an empty one, or one opening with `-`, stays an option
 bash dequotes and fails the check, as does an inert word that opens with `-` or
 is glued to other text), only word characters, spaces, tabs, newlines and
-`. / : = @ % + , - ; &` remain,
+`. / : = @ % + , - ; &` remain (plus `$PATH`, the one expansion admitted, and
+only inside a push prefix),
 and every segment is `cd <dir>` or a `git` verb (`add`, `commit`, `push`) whose
 every flag is on that verb's lowercase allowlist (`commit -m`/`-q`, `push -u`/`-q`,
 no `add` flag, no `git -c` setting), where only `-m` takes
@@ -2353,13 +2354,19 @@ kiro-cli's `Running: <command>` title, so this proof reads through ONE exact
 leading `running: ` (`_SHELL_TITLE_PREFIX`, the constant `_exception_applies`
 uses) and the title gets the verdict of the command it displays; a second
 prefix, one without its space, or one later in the text stays a command word.
-Adding a verb, owner or
+A `git push` alone may carry
+`PATH=<value>` assignments, bare or after a plain `env` with no option, whose
+value is plain text or `$PATH`: `PATH` can change which `git`
+runs but not the argv the per-line reading judges, while a `GIT_*` value can remap
+the refspec and `BASH_ENV`/`ENV` can make a shell that git starts source the message
+file, so no other variable is listed. Adding a verb, owner or
 flag to `_INERT_FLAGS` widens an
 allow on the push gate, so it needs a matching row in `_INERT_ORACLE_ROWS`, which
 the real-bash oracle (`test_no_command_real_bash_runs_as_a_protected_push_is_allowed`)
 requires to run a protected push that stays denied;
 `test_every_inert_allowlist_entry_has_a_real_bash_oracle_row` fails on an entry
-without one. The list holds
+without one (a variable needs a bare row and an `env` row; the oracle's `env` is a
+shell function that exports the assignments and runs the stub `git`). The list holds
 only the flags issue #12631's refused commands use, each with its row. When a line
 of a refused multi-line command starts inside a quote and the command with each
 `git` command after an unquoted separator (with any `env` or assignment prefix)

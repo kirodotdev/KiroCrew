@@ -650,7 +650,13 @@ def _url_payload_command(n: int) -> str:
 #: The proof reads through one exact leading ``running: `` (kiro-cli's shell title).
 #: The masked rest of the command, the same for every quoted line, is read once per
 #: command rather than once per line.
-_PACKAGE_LINE_BUDGET = 33_919
+#:
+#: Raised again, from 33,919, for the push prefix in that allowlist: a push may set
+#: ``PATH`` first, bare or after a plain ``env``, to plain text or ``$PATH``, so a
+#: feature push behind it after a multi-line message reads as on its own line. No
+#: other variable, ``env`` option or prefixed command is admitted, and each form
+#: has a real-bash oracle row.
+_PACKAGE_LINE_BUDGET = 33_937
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
