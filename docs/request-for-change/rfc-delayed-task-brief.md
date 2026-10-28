@@ -22,6 +22,7 @@ superseded-by: []
 - UX amendment, 2026-10-24: the owner found the four-field card too thin to act on. The brief now reads like a manager's report to the owner who hired them: a status and headline first, then what needs the owner, then how far it is from the goal, then what they asked for. Progress (`accepted of total` work items) is counted by the gateway from the ledger, never by the model. The model may add up to two sections of its own for anything else the owner must decide. Section 5.1 holds the shape. Trigger, preparation, spend, staleness and reader-filter rules are unchanged.
 - Leave amendment, 2026-10-26: the owner left the thread a few seconds after the opener appeared and came back to the opener alone; the card never arrived. Leaving is a pause, not a cancel. Once the opener is posted, hiding the tab or switching to another chat no longer drops the brief: the result is ordinary history and lands while the owner is away, and a turn running at publication still defers it. Only a typed row, a reset, a close or a replaced slot cancels a brief past the opener, and a new user turn still makes its result stale. Leaving before the opener still drops the attempt, as before. A return while the brief is in flight starts no second one, so the owner sees exactly one card. This supersedes "leaves" in the section 3.4 stale-result table, the foreground recheck before publication in section 3.7, and "a second leave" in the race tests.
 - UX amendment, 2026-10-26: the report read too stiff. The prompt now names the facts the owner must come away with (what needs them and what it unblocks, the ask, distance to the goal, what is next) and lets the model choose tone and layout in a free-form `body`, plus an optional `widget` drawn in the chat widget sandbox. Section 5.1 holds the shape.
+- Writer amendment, 2026-10-28: the brief read only the ledger snapshot, so it reported a merged or conflicting pull request as still open. On a qualifying return the gateway now wakes the crewmate for one read-only, background-priority turn. The crewmate checks the live state of its open tasks with its own tools, updates its records and Dashboard fields, and writes the brief itself. The one-call brief stays as the fallback. Trigger, opener, progress counting, staleness and reader-filter rules are unchanged. Section 3.8 holds the design.
 - Audited on `d06b611f549d` (`main`, 2026-10-14).
 - This amends only the **warm** branch of [rfc-crewmate-greeting.md](rfc-crewmate-greeting.md) and [rfc-crewmate-greeting-as-message.md](rfc-crewmate-greeting-as-message.md). Their cold-welcome decision remains fully in force.
 
@@ -164,6 +165,84 @@ Before posting the preparing message or calling the model, the gateway atomicall
 A later hidden-leave → 30 minutes away → return cycle is eligible only when its task fingerprint differs from the last claimed attempt. No previous claim makes the first eligible return valid. A new user message or worker event can change the fingerprint, but does not itself trigger a call; the next qualifying return does.
 
 The gateway rechecks the foreground episode, slot identity, task fingerprint, and terminal state before preparation and before the model call, and everything but the foreground episode before publication: once the opener is posted, leaving does not drop the result. Any mismatch discards the result; messages already posted stay. Once model acquisition starts, cancellation lets the governed call finish and publication suppression discards any stale output afterward.
+
+### 3.8 Writer amendment, 2026-10-28: the crewmate writes the brief
+
+**Why.** The one-call brief summarizes what the ledger last said. The ledger only changes when a worker or the crewmate writes to it, so the brief can say a pull request is waiting for review after it merged, or is green after it went conflicting. A gateway-side fix that read live pull-request state before the call ([#25307](https://github.com/kirodotdev/KiroCrew/pull/25307)) was closed by the owner in favor of this design: it covered one task kind, and the gateway would have had to learn every other kind (files, deployments, tickets) itself. The crewmate already has the tools for every task it owns. Issue [#25306](https://github.com/kirodotdev/KiroCrew/issues/25306) tracks the stale report.
+
+**Decision.** On a qualifying return the gateway no longer starts with `run_bg_oneliner`. It wakes the crewmate that owns the thread for one turn. In that turn the crewmate:
+
+1. Checks the live state of each open task with its own tools, by what the task's acceptance points at: a pull request's state and checks, a file, a deployment, a ticket. Nothing in the wake is specific to GitHub.
+2. Records what it found in its work ledger and its Dashboard fields (allowed writes below).
+3. Publishes the brief through one structured publish call carrying the section 5.1 fields (`status`, `headline`, `needs_you`, `body`, optional `widget`).
+
+The gateway validates, redacts, defangs and caps the published fields exactly as it does for the one-call result. It posts the row tagged `warm_task_brief_result` under the existing claim. A wake that ends without a valid publish call counts as a failed wake (fallback below).
+
+**Trigger.** Unchanged: sections 3.2 and 3.3 as amended on 2026-10-18 and 2026-10-22. The same durable claim, fingerprint dedup, and fixed opener come first. The opener is posted before the wake starts and costs no model call.
+
+| State at return | What runs |
+|---|---|
+| Qualifying return, crewmate idle, under caps, host not under pressure | Wake turn |
+| Crewmate already has a turn running | No wake. The existing deferral waits for that turn; then the one-call brief runs on the ledger that turn left |
+| Daily wake cap reached | One-call brief |
+| Host resource posture is `critical` | One-call brief |
+| Wake fails, times out, or ends without a valid publish | One-call brief |
+| Wake setting turned off | One-call brief |
+
+**What the wake may do.** The wake turn reads and reports. It is a background-priority turn: it never preempts a turn the person starts, and a typed row from the person cancels it like any brief in preparation (2026-10-26 leave amendment).
+
+| Allowed | Refused |
+|---|---|
+| Read tools: files, `gh pr view`, check runs, deploy and ticket status | New dispatch: spawning sub-agents, sending to other sessions, ledger `create` or `bind` |
+| Ledger `verdict` with the acceptance evaluator's answer | Ledger `decide` (it instructs workers) |
+| Ledger `close` with `accepted`, only after the evaluator returned `pass` in this turn | `close` with `rejected` or `abandoned` |
+| Dashboard field writes | Pushes, merges, comments, or any other write to a remote system |
+| The one brief publish call | Deletes, resets, or any other destructive action |
+
+The gateway enforces this list for the wake turn, not the prompt. A refused tool fails at once instead of raising an approval card, because the person has just returned and a card on top of the brief is noise. The turn also has a tool-call budget, `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS = 15`; past it every call but the publish is refused.
+
+**Progress stays gateway-counted.** After the wake turn ends, the gateway reads the ledger and computes `progress` (`accepted` of `total` work items for the current goal) itself, so a `close` the wake just wrote counts. A number in the published fields is ignored, as in section 5.1. The crewmate cannot invent progress; it can only move it by a ledger write the evaluator backed.
+
+**Spend.** This is the main cost of the change. A one-call brief is one small tool-less model call. A wake is one full agent turn: the crewmate's startup context plus every tool call and result. One return can cost tens of times what a one-call brief costs. Caps:
+
+- At most one wake per qualifying return (the existing claim already enforces this).
+- `WARM_TASK_BRIEF_WAKE_MAX_PER_THREAD_PER_DAY = 6`. Past it the thread uses the one-call brief until the next local day.
+- `WARM_TASK_BRIEF_WAKE_MAX_PER_OWNER_PER_DAY = 20`, across every crewmate thread.
+- The 15-tool-call budget above.
+
+The existing ceiling of 48 briefs per thread per day still bounds the total. The owner's conductor thread had about four qualifying returns on 2026-10-17, inside the per-thread cap. Each wake is charged to the owning session as `warm_task_brief_wake` background work through the existing token, credit and duration accounting, so the Usage view and crew log show it apart from `warm_task_brief`. A fallback after a failed wake charges both.
+
+**Timeout and fallback.** `WARM_TASK_BRIEF_WAKE_TIMEOUT_SECS = 180`. At the deadline the gateway cancels the wake turn and runs the one-call brief with its existing `WARM_TASK_BRIEF_TIMEOUT_SECS = 60`. Ledger and Dashboard writes the wake made before the deadline stay: each was a checked fact. The fallback reads the snapshot again, so it sees them. The same fallback runs when the wake cannot start, errors, ends without a valid publish, or the host posture is `critical` at return. The person never returns to the opener alone, short of the one-call fallback failing too, which posts the existing failure line.
+
+**Latency and UI.** A wake can take tens of seconds, and the worst case is about four minutes (180 s wake plus 60 s fallback). The UI change stays small. The existing opener is the placeholder: it already says the crewmate is catching the person up. The brief card lands below it when ready, through the ordinary row path. The wake turn's own steps draw collapsed, like any background turn's, so the chat does not fill with tool calls. No spinner, progress bar or new status channel is added.
+
+**Records.** The wake prompt row, the turn's steps, and the published brief carry the warm-brief tag, so the section 3.5 reader filters keep generated speech out of replay, fingerprints, summaries and recall. The ledger and Dashboard writes are ordinary records: they change the fingerprint like any other write, which is correct, since they are new facts.
+
+**Setting and undo.** One setting, `dashboard.warm_brief_wake`, default on. Off restores the one-call brief with no migration, because the published row has the same tag and shape. The two-release rollback in section 9 is unchanged for removing the brief as a whole.
+
+**Validation (focused tests only).**
+
+- A qualifying return with an idle crewmate posts the opener, then starts exactly one wake turn and no `run_bg_oneliner` call.
+- A return while a turn runs starts no wake; the one-call brief runs after that turn ends.
+- Each fallback cause (cap, `critical` posture, error, 180 s timeout, no publish, setting off) runs the one-call brief exactly once and posts exactly one card.
+- Every refused tool in the table fails without an approval prompt; an allowed read runs; `close accepted` without an in-turn `pass` is refused.
+- A published `progress` number is ignored; the posted progress matches the ledger after the wake's writes.
+- A typed row cancels the wake and posts no stale card.
+- Wake spend is recorded under `warm_task_brief_wake`.
+
+**Open questions.**
+
+1. **Running turn at return.** This design reads "that turn reports instead" as: no wake, and the one-call brief runs after that turn ends on the ledger it left. The other reading is no brief at all, with the running turn's answer as the report. The owner should confirm.
+2. **`close accepted` in a wake.** Letting the wake close an item it verified keeps progress true when the person returns. Leaving it out keeps the wake strictly reporting, but the card can then show 1 of 3 while the bar is met. This design allows it, behind the evaluator's `pass`.
+3. **Context size.** A wake could load a trimmed context (no memory or lesson replay) to cut spend. That may also cut the judgment the brief needs. This design keeps the crewmate's normal context and relies on the caps.
+4. **Cap values.** 6 per thread and 20 per owner per day are first guesses from one owner's use. They should be read again after a week of `warm_task_brief_wake` spend.
+
+**Risks.**
+
+- **Spend.** A crewmate with many threads and frequent returns can reach the owner cap daily. The cap turns the overflow into one-call briefs, not silence.
+- **A read that writes.** Some "read" commands have side effects (a CLI that refreshes a cache or a login). The refused list stops remote writes; local side effects of allowed reads are the same as in any normal turn.
+- **Wrong verdict.** A wake could close an item on a misread. The evaluator `pass` gate bounds this to the evaluator's own error rate, the same bar a normal turn uses.
+- **Slower brief.** Most returns now wait longer for the card. The opener keeps that wait explained.
 
 ## 4. Timing
 
@@ -308,3 +387,5 @@ Accepted by maintainer `iamwhatever` on 2026-10-14 in [the maintainer decision c
 Amended by the user's 2026-10-15 UX decision: preparation and result are two ordinary crewmate messages; the result sections are **Problem**, **Current status**, and **Suggested actions**; failure is an ordinary second message; posted messages stay as ordinary history and a stale result is dropped unposted; and the reader filters and two-release rollback above keep generated speech from becoming model evidence.
 
 Amended by the owner's 2026-10-22 UX decision (section 5.1): the result is structured plain-text fields drawn by a fixed card as the body of the assistant bubble, on assistant rows only, with the timestamp, Copy, Quote and Reply in thread kept and the raw-markdown toggle hidden.
+
+Amended by the owner's 2026-10-28 decision (section 3.8): a qualifying return wakes the crewmate for one read-only, background-priority turn that checks live task state with its own tools, updates its records and Dashboard, and writes the brief; progress stays gateway-counted; the one-call brief is the fallback on a running turn, a cap, host pressure, failure or a 180-second timeout.
