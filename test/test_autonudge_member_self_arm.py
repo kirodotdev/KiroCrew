@@ -1436,7 +1436,7 @@ class TestLegacyLoopUpdateOnAMemberSlotKeepsTheSelfArmRule:
                 patch("kiro_crew.autonudge.get_instance", return_value=self._svc(loop)),
                 patch("kiro_crew.autonudge.is_structured_monitor_loop", return_value=False),
             ):
-                await sda.apply_session_directive(
+                result = await sda.apply_session_directive(
                     _state({"member-conductor": _member_slot("member")}),
                     SimpleNamespace(key="member-conductor", _app="", messages=[]),
                     "dashboard:member-conductor",
@@ -1444,6 +1444,7 @@ class TestLegacyLoopUpdateOnAMemberSlotKeepsTheSelfArmRule:
                     {"patch": {"message": "new standing orders"}},
                 )
         audit.assert_called_with("dashboard:member-conductor", "monitor_update", "denied")
+        assert result.startswith("Failed to update monitor loop: this turn was started by")
 
     @pytest.mark.asyncio
     async def test_the_slots_own_human_turn_may_revise_it(self) -> None:

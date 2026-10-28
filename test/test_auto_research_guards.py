@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -55,16 +56,35 @@ class TestRedaction:
 
 
 class TestAudit:
-    def test_audit_does_not_crash(self):
-        from kiro_crew.apps.builtins.auto_research.handlers import _audit
+    def test_audit_does_not_crash(self, monkeypatch, caplog):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
 
-        # Should not raise even if sel module is unavailable
-        _audit("test_operation", "a1b2c3d4")
+        monkeypatch.setattr(h, "sel", None)
+        with caplog.at_level("WARNING", logger=LOGGER_NAME):
+            h._audit("test_operation", "a1b2c3d4")
+        messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
+        assert messages == [
+            "SEL module unavailable — audit event for test_operation/a1b2c3d4 not recorded"
+        ]
 
-    def test_audit_with_extras(self):
-        from kiro_crew.apps.builtins.auto_research.handlers import _audit
+    def test_audit_with_extras(self, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
 
-        _audit("campaign_created", "a1b2c3d4", extra_field="value")
+        rows: list[dict] = []
+        monkeypatch.setattr(
+            h, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+        )
+        h._audit("campaign_created", "a1b2c3d4", extra_field="value")
+        assert rows == [
+            {
+                "caller": "auto_research",
+                "operation": "campaign_created",
+                "outcome": "success",
+                "resources": "a1b2c3d4",
+                "extra_field": "value",
+            }
+        ]
 
 
 # --- Campaign ID validation in handlers ---
