@@ -3253,7 +3253,9 @@ reads the tool names from the `kirocrew-mate`, `kirocrew-panel`,
 `kirocrew-crew-log` and `kirocrew-work` server sources plus the guide and
 session tools, and fails when the assembled prompt omits one, with an explicit
 exempt list (`panel_templates`, `work_brief`, `work_report`,
-`work_ledger_rebuild`). The worker's principles add one line: facts the
+`work_ledger_rebuild`, `offer_dashboard_page`). `offer_dashboard_page` is exempt
+because its per-turn note names it (`dashboard/page_offer.py`), and its tool
+description says to call it only when that note does. The worker's principles add one line: facts the
 crewmate's Dashboard depends on are recorded as crew-log events, through the
 tools that record them. It also says its project directory is the crewmate's
 own worktree on `crew/<crewmate>/<repo>`, to commit there and name further
