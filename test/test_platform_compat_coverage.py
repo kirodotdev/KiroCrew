@@ -250,6 +250,7 @@ class TestEnsureUtf8Console:
         monkeypatch.setattr(pc.sys, "stdout", None)
         monkeypatch.setattr(pc.sys, "stderr", None)
         pc.ensure_utf8_console()
+        assert pc.sys.stdout is None and pc.sys.stderr is None
 
 
 # ---------------------------------------------------------------------------
@@ -391,14 +392,17 @@ class TestWindowsLocking:
     def test_release_lock_swallows_an_unlock_error(self, monkeypatch, tmp_path):
         class _Failing(_FakeMsvcrt):
             def locking(self, _fd: int, mode: int, _nbytes: int) -> None:
+                self.calls.append(mode)
                 raise OSError(13, "not locked")
 
+        failing = _Failing([])
         _fake_windows(monkeypatch)
-        monkeypatch.setattr(pc, "msvcrt", _Failing([]), raising=False)
+        monkeypatch.setattr(pc, "msvcrt", failing, raising=False)
         lock = tmp_path / "i.lock"
         lock.write_text("")
         with open(lock, "r+") as handle:
             pc.release_lock(handle.fileno())  # must not raise
+        assert failing.calls == [_FakeMsvcrt.LK_UNLCK]
 
     def test_try_acquire_lock_reports_both_outcomes(self, monkeypatch, tmp_path):
         fake = _FakeMsvcrt([True, False])
