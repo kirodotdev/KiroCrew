@@ -11600,7 +11600,6 @@
         "save_failed": "세션 색상을 저장할 수 없습니다"
       },
       "sessionMessageCard": {
-        "needs_you": "확인 필요",
         "open_session": "{{name}} 열기",
         "show_less": "간단히 보기",
         "show_more": "더 보기",

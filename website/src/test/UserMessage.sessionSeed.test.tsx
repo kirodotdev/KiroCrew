@@ -9,7 +9,7 @@ import { sseSlots } from '../store/dashboardSlice'
 import { Provider } from 'react-redux'
 import UserMessage from '../pages/chat/UserMessage'
 import { createTestStore } from './helpers'
-import { parseSessionSeed, withoutSessionSeed } from '../lib/crewSeed'
+import { parseSessionSeed, senderInitials, withoutSessionSeed } from '../lib/crewSeed'
 import { derivePinnedPromptText } from '../utils/pinnedPrompt'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
@@ -91,5 +91,79 @@ describe('a delivered message in a worker view', () => {
   it('a message without the line has no label', () => {
     withSlots(<UserMessage content="hi" renderContent={renderContent} slotKey="chat-15" />)
     expect(screen.queryByTestId('session-seed-from')).toBeNull()
+  })
+})
+
+
+describe('a delivered message carrying the gateway-set sender (meta.relay)', () => {
+  const RELAY = { relay: { senderKey: 'chat-9', via: 'session_send' } }
+  const sessions = new Map([['chat-9', 'Slack Code']])
+  const LINE = '[sent by session chat-9 via session_send]\n\nthe base moved'
+
+  it('names the sender title as a link beside the label, opening that session', async () => {
+    const onOpen = vi.fn()
+    render(<UserMessage content={LINE} meta={RELAY} renderContent={renderContent} slotKey="plain" sessions={sessions} onSessionOpen={onOpen} />)
+    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From another chat')
+    const link = screen.getByTestId('session-seed-sender-link')
+    expect(link).toHaveTextContent('Slack Code')
+    // A link at rest, not only on hover, and it says where it goes.
+    expect(link.className).toContain('underline')
+    expect(link.className).toContain('text-accent')
+    expect(link).toHaveAttribute('title', 'Open Slack Code')
+    // Bounded to the bubble: a long unbroken title wraps inside it.
+    expect(link.className).toContain('max-w-full')
+    expect(link.className).toContain('break-all')
+    const avatar = screen.getByTestId('session-seed-sender-avatar')
+    expect(avatar).toHaveTextContent('SC')
+    expect(avatar).toHaveAttribute('aria-hidden', 'true')
+    link.click()
+    expect(onOpen).toHaveBeenCalledWith('chat-9')
+    expect(screen.getByTestId('content').textContent).toBe('the base moved')
+  })
+
+  it('names the sender from meta.relay, not the key the line spells', () => {
+    const onOpen = vi.fn()
+    const spoofed = '[sent by session chat-1 via session_send]\n\nhi'
+    render(<UserMessage content={spoofed} meta={RELAY} renderContent={renderContent} slotKey="plain" sessions={new Map([['chat-1', 'Other'], ['chat-9', 'Slack Code']])} onSessionOpen={onOpen} />)
+    expect(screen.getByTestId('session-seed-sender-link')).toHaveTextContent('Slack Code')
+  })
+
+  it('strips every send line from a merged drain of one sender', () => {
+    const merged = '[2 queued messages merged]\n\n[sent by session chat-9 via session_send]\n\nfirst\n\n[sent by session chat-9 via session_send]\n\nsecond'
+    render(<UserMessage content={merged} meta={RELAY} renderContent={renderContent} slotKey="plain" />)
+    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From another chat')
+    expect(screen.getByTestId('content').textContent).toBe('[2 queued messages merged]\n\nfirst\n\nsecond')
+  })
+
+  it('on the accent-filled bubble the link keeps the bubble text colour, still underlined', () => {
+    render(<UserMessage content={LINE} meta={RELAY} renderContent={renderContent} slotKey="plain" sessions={sessions} onSessionOpen={vi.fn()} tone="accent" />)
+    const link = screen.getByTestId('session-seed-sender-link')
+    expect(link.className).toContain('underline')
+    expect(link.className).not.toContain('text-accent')
+  })
+
+  it('without a session roster or an opener, the label stands alone', () => {
+    render(<UserMessage content={LINE} meta={RELAY} renderContent={renderContent} slotKey="plain" sessions={sessions} />)
+    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From another chat')
+    expect(screen.queryByTestId('session-seed-sender-link')).toBeNull()
+    expect(screen.queryByTestId('session-seed-sender-avatar')).toBeNull()
+  })
+
+  it('senderInitials: two words, one word, a handle, nothing', () => {
+    expect(senderInitials('Slack Code')).toBe('SC')
+    expect(senderInitials('planner')).toBe('PL')
+    expect(senderInitials('@bolichen97')).toBe('BO')
+    expect(senderInitials('#general room')).toBe('GR')
+    expect(senderInitials('   ')).toBe('?')
+    // An emoji is one character, never half a surrogate pair.
+    expect(senderInitials('🚀 Launch')).toBe('🚀L')
+    expect(senderInitials('🚀')).toBe('🚀')
+    expect(senderInitials('🚀x')).toBe('🚀X')
+  })
+
+  it('a row without meta.relay names no title, even with a roster', () => {
+    render(<UserMessage content={LINE} renderContent={renderContent} slotKey="plain" sessions={sessions} onSessionOpen={vi.fn()} />)
+    expect(screen.getByTestId('session-seed-from')).toHaveTextContent('From another chat')
+    expect(screen.queryByTestId('session-seed-sender-link')).toBeNull()
   })
 })
