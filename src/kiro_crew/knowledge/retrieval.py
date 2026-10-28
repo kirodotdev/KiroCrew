@@ -25,6 +25,29 @@ _HAS_NUMPY = importlib.util.find_spec("numpy") is not None
 
 logger = logging.getLogger(__name__)
 
+
+def _has_json1(db: sqlite3.Connection) -> bool:
+    """Whether this SQLite connection can read a JSON array with ``json_each``.
+
+    JSON1 (which ``json_each`` belongs to) is compiled into SQLite by default
+    from 3.38, and the bundled ``pysqlite3-binary`` carries it — but the tree
+    also falls back to the host's stdlib ``sqlite3`` on platforms without a
+    ``pysqlite3`` wheel, and a minimal build can omit JSON1. So the capability
+    is probed against the live connection rather than assumed, and the graph
+    leg uses a chunked IN-list when it is absent.
+    """
+    try:
+        db.execute("SELECT value FROM json_each('[]')").fetchall()
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+# IN-list chunk size for the graph leg's mentions count when JSON1 is absent.
+# Kept under the oldest supported SQLite's ``SQLITE_MAX_VARIABLE_NUMBER`` of 999
+# (pre-3.32) so one statement per chunk never trips the bound-variable limit.
+_MENTIONS_IN_CHUNK = 900
+
 # Entity-name candidates drawn from one spaceless CJK run. Each candidate costs a
 # `find_entity` query, so the run is capped: an entity name longer than this is
 # still reachable by the whole-word candidate the whitespace split already emits.
@@ -499,23 +522,70 @@ class HybridRetriever:
             for neighbor in self.store.get_neighbors(eid, depth=2):
                 all_entity_ids.add(neighbor["id"])
 
-        # Count item mentions
-        item_counts: dict[str, int] = defaultdict(int)
-        placeholders = ",".join("?" * len(all_entity_ids))
+        # Count item mentions.
+        #
         # ``item_id`` breaks count ties: without it the order of equal counts
         # was whatever the query plan produced, so an index change reordered
         # results that were not otherwise different.
-        rows = self.store.db.execute(
-            f"SELECT item_id, COUNT(*) as cnt FROM mentions "  # noqa: S608
-            f"WHERE entity_id IN ({placeholders}) GROUP BY item_id "
-            f"ORDER BY cnt DESC, item_id LIMIT ?",
-            (*all_entity_ids, limit),
-        ).fetchall()
-        for row in rows:
-            item_counts[row["item_id"]] = row["cnt"]
+        #
+        # A hub entity's two-hop neighbourhood can be larger than SQLite's
+        # bound-variable limit (``SQLITE_MAX_VARIABLE_NUMBER`` -- 32766 on 3.32+,
+        # 999 before). One placeholder per id then raised ``too many SQL
+        # variables`` out of the *whole* search, not just the graph leg. So the
+        # ids travel as ONE JSON parameter read back through ``json_each`` (two
+        # bound variables however many ids there are), with a chunked IN-list
+        # fallback where JSON1 is unavailable. Any ``OperationalError`` the leg
+        # still raises degrades to no graph results -- the keyword and vector
+        # legs ``_keyword_search`` / ``_attach_*`` already catch the same way --
+        # so the search answers rather than failing outright.
+        item_counts: dict[str, int] = defaultdict(int)
+        try:
+            item_counts = self._count_item_mentions(all_entity_ids, limit)
+        except sqlite3.OperationalError:
+            logger.warning(
+                "graph leg mentions count failed; serving keyword+vector only",
+                exc_info=True,
+            )
+            return []
 
         sorted_items = sorted(item_counts.items(), key=lambda x: x[1], reverse=True)
         return [(item_id, rank + 1) for rank, (item_id, _) in enumerate(sorted_items)]
+
+    def _count_item_mentions(self, all_entity_ids: set[str], limit: int) -> dict[str, int]:
+        """Top-``limit`` items by mention count over ``all_entity_ids``.
+
+        Ranked ``ORDER BY cnt DESC, item_id`` and capped at ``limit`` -- the
+        same order and cap the single-statement query produced. ``json_each``
+        keeps it one statement; the chunked path merges per-item counts across
+        chunks in Python before applying the identical order and cap, so a
+        neighbourhood over the variable limit returns the same rows.
+        """
+        entity_ids = sorted(all_entity_ids)
+        if _has_json1(self.store.db):
+            rows = self.store.db.execute(
+                "SELECT item_id, COUNT(*) as cnt FROM mentions "
+                "WHERE entity_id IN (SELECT value FROM json_each(?)) "
+                "GROUP BY item_id ORDER BY cnt DESC, item_id LIMIT ?",
+                (json.dumps(entity_ids), limit),
+            ).fetchall()
+            return {row["item_id"]: row["cnt"] for row in rows}
+
+        # No JSON1: sum counts across IN-list chunks small enough to stay under
+        # the bound-variable limit, then rank and cap in Python.
+        merged: dict[str, int] = defaultdict(int)
+        chunk = _MENTIONS_IN_CHUNK
+        for start in range(0, len(entity_ids), chunk):
+            batch = entity_ids[start:start + chunk]
+            placeholders = ",".join("?" * len(batch))
+            rows = self.store.db.execute(
+                f"SELECT item_id, COUNT(*) as cnt FROM mentions "  # noqa: S608
+                f"WHERE entity_id IN ({placeholders}) GROUP BY item_id",
+                tuple(batch),
+            ).fetchall()
+            for row in rows:
+                merged[row["item_id"]] += row["cnt"]
+        top = sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+        return dict(top)
 
     def _vector_search(
         self,
