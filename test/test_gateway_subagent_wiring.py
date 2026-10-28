@@ -97,7 +97,9 @@ class _Done:
         sessions.cancel_current = AsyncMock(
             side_effect=lambda key, **_kw: self.calls.append(("cancel", key))
         )
-        sessions.release = MagicMock(side_effect=lambda key: self.calls.append(("release", key)))
+        sessions.release = MagicMock(
+            side_effect=lambda key, **_kw: self.calls.append(("release", key))
+        )
         sessions.get_thread = MagicMock(return_value=None)
         sessions.get_channel = MagicMock(return_value=None)
         self.sessions = sessions

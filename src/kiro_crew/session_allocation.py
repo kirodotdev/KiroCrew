@@ -1115,12 +1115,18 @@ class SessionAllocationService:
     def conversation_provider(self, key: str) -> str:
         return self._owner._session_map.get_provider(self._owner._fold_key(key))
 
-    def release(self, key: str, *, cleanup: bool = False) -> None:
+    def release(self, key: str, *, cleanup: bool = False, wake_queue: bool = False) -> None:
         """Release the current registry occupant's semaphore.
 
         This intentionally preserves the existing key-only lease identity: it
         does not repair the known stale-release window when a locked replacement
         occupies the same key.
+
+        ``wake_queue`` is for a holder that is not a channel's own turn, such as a
+        sub-agent completion injection. A channel drains its queue only at the tail
+        of its own turn, so a message queued while such a holder ran would wait for
+        the person's next message. With it set, the drains of the channels whose
+        entries are queued on the key are woken once the lease is free.
         """
         key = self._owner._fold_key(key)
         if self._owner.absorb_orphaned_release(key):
@@ -1173,9 +1179,11 @@ class SessionAllocationService:
                 # The claim that just ended adopted entries a forced stop parked
                 # (``adopt_parked_queue``). Their channels' drains are woken
                 # NOW, after the lease is free, or the entries sit on the queue
-                # until an unrelated message happens to start a turn. Off this
-                # synchronous call, as ``wake_other_drains`` requires.
+                # until an unrelated message happens to start a turn.
                 session.adopted_parked = False
+                wake_queue = True
+            if wake_queue:
+                # Off this synchronous call, as ``wake_other_drains`` requires.
                 channels = [entry_channel(e[2]) for e in session.queue]
                 if any(channels):
                     task = asyncio.ensure_future(
