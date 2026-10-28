@@ -592,13 +592,13 @@ with `base_spec_missing` before a session exists.
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
 `ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends_routing.py`, harness-parity H6):
-kiro-cli, KAS, claude, goose and deepseek. A harness has its own pre-approval surface
+kiro-cli, KAS, claude, goose, deepseek and pi. A harness has its own pre-approval surface
 (claude-agent-acp `permissions.allow` / `bypassPermissions`, KAS `permissions`
 rules from its own store, goose's `permission.yaml`) that the host gate cannot see: a call it pre-approves
 would run with no READ_ONLY decision and no SEL row. A member therefore starts
 the side session in a shape where that surface cannot reach a write — kiro-cli
 through the derived spec above, KAS through the same spec taken over the wire,
-claude and goose through the session shapes below, and deepseek through Crew's verified gate plugin. KAS receives `<agent>--readonly` as a
+claude and goose through the session shapes below, deepseek through Crew's verified gate plugin, and pi through a launcher with no discovered extensions and no shell tool (harness-parity, pi section). KAS receives `<agent>--readonly` as a
 projected custom agent (`acp/kas_agents` puts it in `customAgents`), and the
 derivation empties its `permissions` block with the other grants, so every KAS
 tool call raises `session/request_permission` (measured on kiro-cli 2.29.0,

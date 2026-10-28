@@ -104,6 +104,14 @@ PI_INSTALL_COMMAND = f"npm i -g {PI_ACP_NPM_PKG} {PI_NPM_PKG}"
 _PI_RPC_ARGS = ("--mode", "rpc", "--no-themes")
 
 _PI_EXTENSION_FLAG = "--extension"
+# A Side Chat pi process also runs with no shell tool. The READ_ONLY gate judges
+# a shell call by its command text, but pi's user settings (``shellCommandPrefix``,
+# ``shellPath``) change what pi actually runs for that text, and ``--no-approve``
+# does not drop them. With ``--exclude-tools bash,powershell`` pi registers neither
+# of its shell tools, so no setting can reach them, ``defaultTools`` included.
+# Driven on pi 0.99.2 and 1.4.0 through this launcher: the read-back answers and
+# pi's tool registry holds no ``bash`` or ``powershell``.
+_PI_SIDE_CONFINE_FLAGS = "--no-extensions --no-approve --exclude-tools bash,powershell"
 
 # The RPC verb whose answer IS the read-back: pi lists every command each loaded
 # extension registered, with the file it came from.
@@ -179,7 +187,7 @@ _pi_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLV
 
 _pi_bin_cache: tuple[str | None, str] | object = launch_mod._UNRESOLVED
 
-_pi_gate_launcher_cache: dict[tuple[str, str, tuple[str, ...]], str] = {}
+_pi_gate_launcher_cache: dict[tuple[str, str, tuple[str, ...], bool], str] = {}
 
 
 def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
@@ -544,24 +552,39 @@ def _publish_gate_artifact(
     return target
 
 
-def _pi_gate_launcher_body(pi_bin: str, extension_path: str, program: tuple[str, ...] = ()) -> str:
+def _pi_gate_launcher_body(
+    pi_bin: str, extension_path: str, program: tuple[str, ...] = (), *, confine: bool = False
+) -> str:
     """The launcher pi-acp is told to run in place of ``pi``.
 
     It forwards every argument the adapter passes and appends the extension flag,
     so the harness process is the one the adapter meant to start plus Crew's gate.
-    A shell script on POSIX; a ``.cmd`` on Windows, where the adapter itself uses a
-    shell for exactly that extension. *program*, when given, is what runs in place
-    of *pi_bin* -- ``(node, pi's script)`` when pi's shebang would find a Node below
-    pi's floor (:func:`~kiro_crew.acp.harness.pi_node.choose_pi_node`, POSIX only).
+    A Side Chat launcher also passes ``--no-extensions --no-approve --exclude-tools
+    bash,powershell`` after the adapter's own arguments, so a later flag cannot undo them:
+    discovered, configured and built-in extensions stay unloaded (an explicit
+    ``--extension`` still loads, which is how Crew's gate arrives), project-local
+    files are ignored, and pi registers no shell tool. A shell script on POSIX; a
+    ``.cmd`` on Windows, where the adapter itself uses a shell for exactly that
+    extension. *program*, when given, is what
+    runs in place of *pi_bin* -- ``(node, pi's script)`` when pi's shebang would
+    find a Node below pi's floor (:func:`~kiro_crew.acp.harness.pi_node.choose_pi_node`,
+    POSIX only).
     """
+    confine_flags = f"{_PI_SIDE_CONFINE_FLAGS} " if confine else ""
     if platform_compat.IS_WINDOWS:
-        return f'@echo off\r\n"{pi_bin}" %* {_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
+        return (
+            "@echo off\r\n"
+            f'"{pi_bin}" %* {confine_flags}{_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
+        )
     run = " ".join(shlex.quote(part) for part in (program or (pi_bin,)))
-    return f'#!/bin/sh\nexec {run} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
+    return (
+        f'#!/bin/sh\nexec {run} "$@" {confine_flags}'
+        f"{_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n"
+    )
 
 
 def _ensure_pi_gate_launcher(
-    pi_bin: str, extension_path: str, program: tuple[str, ...] = ()
+    pi_bin: str, extension_path: str, program: tuple[str, ...] = (), *, confine: bool = False
 ) -> str:
     """Write (once per process and inputs) the launcher and return its path.
 
@@ -570,11 +593,13 @@ def _ensure_pi_gate_launcher(
     extension. Written under a unique ``mkstemp`` name
     that is published to the cache only after the write and the mode change have
     finished, so a concurrent spawn never reads a half-written file, and cached so
-    N sessions share one launcher rather than leaving N files behind.
+    N sessions share one launcher rather than leaving N files behind. A Side Chat
+    launcher is a different file: its confine flags must not leak onto a main-chat
+    spawn that still loads the operator's extensions.
 
     Blocking (writes a file); callers run it off the loop.
     """
-    key = (pi_bin, extension_path, program)
+    key = (pi_bin, extension_path, program, confine)
     cached = _pi_gate_launcher_cache.get(key)
     if cached and os.path.isfile(cached):
         return cached
@@ -585,7 +610,7 @@ def _ensure_pi_gate_launcher(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            fh.write(_pi_gate_launcher_body(pi_bin, extension_path, program))
+            fh.write(_pi_gate_launcher_body(pi_bin, extension_path, program, confine=confine))
         if not platform_compat.IS_WINDOWS:
             os.chmod(tmp, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     except OSError:
@@ -1005,13 +1030,15 @@ class PiLaunch(ProcessAdapter):
         # The names pi will spell its tools after: the permission path maps a pi
         # ``mcp__<server>__<tool>`` title back to the server Crew placed.
         session._pi_mcp_server_names = names
+        confine = bool(getattr(session, "_side_read_only", False))
         self._launcher = await asyncio.to_thread(
-            _ensure_pi_gate_launcher, pi_bin, extension_path, node_choice.argv
+            _ensure_pi_gate_launcher, pi_bin, extension_path, node_choice.argv, confine=confine
         )
         # Wrapped in the SAME sandbox with the SAME credential mask as the session
         # spawn, for the same reason the opencode read-back is: this child is the
-        # agent itself, loading extensions out of the operator's own directories,
-        # moments before the masked spawn.
+        # agent itself. A Side Chat launcher has already passed ``--no-extensions``,
+        # so that child does not load the operator's extension directories; a
+        # main-chat child still does, moments before the masked spawn.
         readback_argv, readback_cleanup = await wrap_argv_async(
             [self._launcher, *_PI_RPC_ARGS],
             mode=ctx.sandbox_mode,

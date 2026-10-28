@@ -228,8 +228,9 @@ with no row here.
        and a session starts MCP sign-ins with ``_kiro/mcp/resetServer``)
    * - ``ACP_BACKENDS_SIDE_READONLY``
      - pre-session registry query (whether a side-chat turn may execute
-       read-only tools under the derived ``<agent>--readonly`` spec; asked
-       about the configured backend id before the side session is created)
+       read-only tools under ``ToolApprovalPolicy.READ_ONLY`` in a harness-
+       confined session; asked about the configured backend id before the
+       side session is created)
    * - ``ACP_BACKENDS_SERIAL_SESSION_STARTS``
      - driver-internal (whether a timed-out session start names the unanswered
        starts and mode switches it was sent behind on the same process)
