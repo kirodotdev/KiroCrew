@@ -75,11 +75,12 @@ def _allow_unsandboxed_exec() -> bool:
     undeclared key reads ``True`` on a platform with no installable
     backend and a declared ``false`` reads ``False`` everywhere.
 
-    Deliberately not keyed on whether the operator DECLARED the key. That would
-    make a full-document ``KiroCrewConfig.save()`` — which publishes
-    ``asdict(self.agent)``, materializing every field — turn "never decided" into
-    a declared lockdown and re-brick every spawn on such a platform. Meaning has
-    to live in the value, so that writing the resolved value back changes nothing.
+    Deliberately not keyed on whether the operator DECLARED the key: the value
+    already carries the effective policy, so every reader takes it from one
+    field. A full-document ``KiroCrewConfig.save()`` builds its snapshot through
+    ``asdict(self.agent)`` but strips this key unless
+    :func:`~kiro_crew.config.loader.unsandboxed_exec_declared` says the operator
+    recorded it, so writing the snapshot back leaves "never decided" undecided.
 
     An unreadable config yields ``False``: a broken config must never be a way to
     obtain a LOOSER sandbox than the operator configured.
