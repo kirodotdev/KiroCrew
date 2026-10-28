@@ -11,6 +11,12 @@ from __future__ import annotations
 
 BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
     {
+        # boxd lifecycle: resolved operator CLI, fixed machine verbs, validated
+        # generated names, saved snapshot/CPU and retention duration; no shell or
+        # agent cwd, stdin DEVNULL. Needs the host login.
+        "boxd_session/cli.py::_run",
+        # asyncio.run drives the terminal bridge in-process, not a child spawn.
+        "sprites_session/terminal.py::main",
         # Coder lifecycle: resolved operator CLI, fixed verbs, saved template/preset
         # and validated generated names; cwd the data home, stdin DEVNULL, no shell.
         "coder/client.py::_run",

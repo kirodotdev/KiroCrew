@@ -282,16 +282,55 @@ def _kas_floor_gates_spawns(cfg: KiroCrewConfig) -> tuple[bool, bool]:
 
 
 def _start_coder_retention(cfg: KiroCrewConfig) -> None:
-    """Activate the optional Coder subsystem only after readiness/configuration."""
+    """Maintain configured environments and persisted VMs after readiness.
+
+    A gateway with neither configuration nor a VM registry never imports the
+    subsystem. Profile removal leaves archived-row sweeps and shutdown active.
+    """
     global _CODER_RETENTION_TASK
     from kiro_crew.session_environment import session_environments_enabled
 
-    if not session_environments_enabled() or not cfg.session_environments.coder_url:
+    if not session_environments_enabled():
+        # Developer flag off: no provider's retention runs.
         return
     if _CODER_RETENTION_TASK is not None and not _CODER_RETENTION_TASK.done():
         return
 
+    def configured(section: Any) -> bool:
+        return bool(
+            section.coder_url
+            or getattr(section, "sprites_profiles", None)
+            or getattr(section, "boxd_profiles", None)
+        )
+
+    def has_vm_registry() -> bool:
+        from kiro_crew.config.paths import data_home
+        from kiro_crew.config.session_environments import VM_REGISTRY_FILES
+
+        try:
+            home = data_home()
+            # Every VM provider's registry, without importing a provider.
+            for name in VM_REGISTRY_FILES.values():
+                try:
+                    (home / name).stat()
+                except FileNotFoundError:
+                    continue
+                return True
+        except OSError:
+            # Let the sweeper report an unreadable registry, not abandon it.
+            return True
+        return False
+
     async def run() -> None:
+        global _CODER_RETENTION_TASK
+        from kiro_crew.config import live
+
+        if not configured(cfg.session_environments):
+            persisted = await asyncio.to_thread(has_vm_registry)
+            # A configuration save can arrive while the registry probe runs.
+            if not (persisted or configured((live.snapshot() or cfg).session_environments)):
+                _CODER_RETENTION_TASK = None
+                return
         from kiro_crew.coder.retention import run_sweeper
 
         await run_sweeper()
