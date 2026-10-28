@@ -177,7 +177,17 @@ def test_commands_are_routed_through_the_proxy_only_when_it_runs(tmp_path, monke
         == f"http.http://127.0.0.1:{port}/.extraHeader"
     )
     assert pairs["!f() { echo quit=1; }; f"] == f"credential.http://127.0.0.1:{port}/.helper"
-    assert len(pairs) == 2 + sum(len(p) for p in workspace_tools.GIT_PROXY_REWRITES.values())
+    entries = [
+        (env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"])
+        for i in range(int(env["GIT_CONFIG_COUNT"]))
+    ]
+    relay = f"http://127.0.0.1:{port}/"
+    # No workspace HTTP proxy for the relay's own URL (empty value: off), and the
+    # workspace's own credential helpers are reset for it before the quit helper.
+    assert (f"http.{relay}.proxy", "") in entries
+    helpers = [value for key, value in entries if key == f"credential.{relay}.helper"]
+    assert helpers == ["", "!f() { echo quit=1; }; f"]
+    assert len(entries) == 4 + sum(len(p) for p in workspace_tools.GIT_PROXY_REWRITES.values())
     assert not any("evil.example" in key for key in pairs.values())
     # Nothing listening any more: a stale file must not break every clone.
     assert workspace_tools.git_proxy_env(str(port_file), PROXY_SECRET) == {}

@@ -437,14 +437,13 @@ def test_the_owner_lock_refuses_whatever_it_cannot_confirm(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_lookup_kills_the_tree_where_the_tree_is_killed(monkeypatch):
+async def test_a_stopped_lookup_kills_its_whole_tree_on_every_os(monkeypatch):
     killed = []
 
     async def tree(pid, *args):
         killed.append(pid)
         return True
 
-    monkeypatch.setattr(git_gateway, "_kills_process_tree", lambda: True)
     monkeypatch.setattr("kiro_crew.platform_compat.kill_process_tree_async", tree)
     monkeypatch.setattr(git_gateway, "_GH_TIMEOUT_SECS", 0.2)
     with pytest.raises(git_gateway._NoCredential, match="timed out"):
