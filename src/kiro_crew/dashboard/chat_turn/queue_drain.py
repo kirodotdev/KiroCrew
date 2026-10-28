@@ -872,6 +872,22 @@ async def _start_next_queued_turn(
         _pop_send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
         if _pop_send_id:
             _pop_meta["sendId"] = _pop_send_id
+        # A peer's queued ``session_send`` names its sender (``meta.relay``, set
+        # only by the gateway's delivery path; an edit drops it). The rebuilt row
+        # is that one entry's text, so its own sender rides its own pop, and the
+        # live row draws the same incoming card a reload does. Only a
+        # well-formed record is copied: an entry restored from disk is data.
+        _pop_relay = (item.get("meta") or {}).get("relay")
+        if (
+            isinstance(_pop_relay, dict)
+            and isinstance(_pop_relay.get("senderKey"), str)
+            and _pop_relay["senderKey"]
+        ):
+            _pop_via = _pop_relay.get("via")
+            _pop_meta["relay"] = {
+                "senderKey": _pop_relay["senderKey"],
+                "via": _pop_via if isinstance(_pop_via, str) and _pop_via else "session_send",
+            }
         if _pop_meta:
             _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)
@@ -978,6 +994,7 @@ async def _start_next_queued_turn(
             _drained_meta.update(
                 (k, v) for k, v in _item_meta.items() if k != QUEUED_CONTAINMENT_META_KEY
             )
+
     # A drop-notice address names the one sender whose text the notice quotes.
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
@@ -985,16 +1002,18 @@ async def _start_next_queued_turn(
     # ``relay`` (the cross-session sender for the incoming card) is a per-sender
     # address like the ones beside it: a merged row of different senders' queued
     # sends must not wear one sender's card, so it is dropped unless every entry
-    # agrees.
+    # agrees. It is compared by its SENDER alone: one session's ``session_send``
+    # and its ``session_broadcast`` differ only in the verb and are still that
+    # sender's.
+    def _address_of(item: dict, key: str) -> object:
+        meta = item.get("meta")
+        value = meta.get(key) if isinstance(meta, dict) else None
+        if key == "relay":
+            return value.get("senderKey") if isinstance(value, dict) else None
+        return value
+
     for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "author", "relay"):
-        _addresses = [
-            (
-                (item.get("meta") or {}).get(_address_key)
-                if isinstance(item.get("meta"), dict)
-                else None
-            )
-            for item in consumed
-        ]
+        _addresses = [_address_of(item, _address_key) for item in consumed]
         if any(_address != _addresses[0] for _address in _addresses):
             _drained_meta.pop(_address_key, None)
     # Model input only: the row keeps the user's text as typed.
