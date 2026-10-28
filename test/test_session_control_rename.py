@@ -645,6 +645,35 @@ def test_a_channel_title_on_a_live_slot_renames_through_the_shared_helper(tmp_pa
     assert calls == [("chat-2", "From Telegram")]
 
 
+def test_a_channel_rename_reaches_an_open_channel_born_slot(tmp_path, monkeypatch):
+    """A Slack-born tab runs on ``slack:<ts>`` (its ``linked_session_key``), not a
+    ``dashboard:`` key; the rename must land on it, or the tab's next save writes
+    its old title back over the transcript."""
+    from kiro_crew.dashboard import channel_slots
+
+    calls: list = []
+
+    async def _spy(state_, slot, title):
+        calls.append((slot.key, title))
+        return True
+
+    monkeypatch.setattr(channel_slots, "apply_manual_title", _spy)
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-2").linked_session_key = "slack:1700.1"
+    state.get_or_create_slot("chat-3")
+    # A workflow result tab injected into the same thread shares the key.
+    state.get_or_create_slot("chat-4").linked_session_key = "slack:1700.1"
+
+    renamed = asyncio.run(
+        channel_slots.rename_channel_title_live(state, "slack:1700.1", "From Slack")
+    )
+    missing = asyncio.run(channel_slots.rename_channel_title_live(state, "slack:1700.9", "No"))
+
+    assert renamed is True
+    assert missing is False
+    assert calls == [("chat-2", "From Slack"), ("chat-4", "From Slack")]
+
+
 def test_an_older_title_write_that_lands_last_writes_the_newest_title(tmp_path):
     """Rename "A" snapshots its fields, then "B" lands before A's write takes the
     transcript lock. Because the under-lock guard re-snapshots when the epoch

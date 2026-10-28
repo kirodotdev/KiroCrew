@@ -91,6 +91,7 @@ from kiro_crew.slack.handler import (
     build_timing_footer,
 )
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -436,6 +437,21 @@ class SlackApprovalDecider:
         SlackApprovalDecider._NONCES[key] = nonce
         return nonce
 
+    def on_decided(self, request_id: str | int, callback: Callable[[], None]) -> bool:
+        """Run *callback* once the reserved window for *request_id* is decided.
+
+        Any end counts -- a click, the deny-by-default timeout, a teardown -- since
+        after each one the turn waits on nobody. A window already decided (a click
+        that beat this call) runs *callback* on the next loop pass. False when no
+        reservation is open (off the loop).
+        """
+        fut = self._futures.get(str(request_id))
+        if fut is None:
+            return False
+        # On a done future asyncio schedules the callback instead of dropping it.
+        fut.add_done_callback(lambda _f: callback())
+        return True
+
     def discard(self, request_id: str | int) -> None:
         """Close a window whose prompt never went out (idempotent).
 
@@ -573,7 +589,7 @@ class SlackApprovalDecider:
         return dec.session_key
 
 
-class SlackRenderer(Renderer):
+class SlackRenderer(ApprovalSessionStatus, Renderer):
     """Renders abstract output events onto a Slack thread.
 
     Holds (and exposes) the underlying ``SlackClientOps`` so the inline
@@ -729,6 +745,11 @@ class SlackRenderer(Renderer):
         # Visible text withheld from the append-only stream because a local image
         # reference is in play; released (markup removed) at the seal.
         self._ref_hold = ""
+        # The agent session is paused on a tool-approval prompt (``suspended``);
+        # the decision, or failing that the next output, puts it back to
+        # ``processing``. Only ever set while agent sessions are live.
+        self._suspended = False
+        self._resume_tasks: set[asyncio.Task[None]] = set()
 
     async def on_turn_start(self) -> None:
         # Native sets the working thread-status before streaming and, only where
@@ -1291,6 +1312,9 @@ class SlackRenderer(Renderer):
         turn's reaction to the error state.
         """
         self._cancel_tool_timer()
+        self._suspended = False
+        for task in list(self._resume_tasks):
+            task.cancel()
         if not self._finalized and self._controller is not None:
             try:
                 self._controller.finalize(error=True)
@@ -1418,6 +1442,7 @@ class SlackRenderer(Renderer):
         # Flush any accumulated reasoning as a 💭 reply first so it lands above
         # the answer (no-op when show_thinking is off or nothing accumulated).
         await self._maybe_post_thinking()
+        await self._resume_from_suspended()
         ts = await self._ensure_stream()
         # Accumulate the FULL raw text (incl. any [OPTIONS:...]) so the final
         # extract_options in on_done sees it; only filter what is *shown*.
@@ -1649,6 +1674,8 @@ class SlackRenderer(Renderer):
                 self.decider.discard(request_id)
             raise
 
+        await self._suspend_for_approval(request_id, self.decider)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
         try:
@@ -1841,6 +1868,8 @@ class SlackRenderer(Renderer):
         # MUST NOT raise: the answer is already delivered above — a
         # raising status clear must not convert a delivered turn into a
         # recorded failure.
+        self._suspended = False  # an approval decided after this must not re-arm it
+        await self._settle_resumes()
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
             self._status_cleared = True

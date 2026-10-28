@@ -55,6 +55,7 @@ from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack.agent_sessions.fence import fenced_turn
 from kiro_crew.slack.channel_crew import resolve_channel_crew
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import escape_mrkdwn
@@ -275,6 +276,7 @@ def flat_dm_session_key(channel: str, thread_ts: str | None, *, enabled: bool) -
     return f"{SLACK_NAMESPACE}:{channel}"
 
 
+@fenced_turn
 async def handle_message_transport(
     slack: SlackClientOps,
     sessions: SessionManager,

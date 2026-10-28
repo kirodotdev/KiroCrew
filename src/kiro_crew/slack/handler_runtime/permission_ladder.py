@@ -378,6 +378,8 @@ async def _answer_permission_request(
         request_id=event.request_id,
         metadata={"reason": "interactive"},
     )
+    # After the audit row: the resume is a Slack round-trip a Stop can cancel.
+    await answer.resume_after_approval()
     if outcome == _OUTCOME_REJECTED:
         await answer.on_tool_rejected()
         return True
