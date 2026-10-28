@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
-import { setAgentSwitchNotice } from '../../store/chatSlice'
+import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSlice'
+import { isStaleProjectDirError } from '../../utils/folderAgent'
+import type { ChatFolder } from '../../types'
+import { newChatShortcutArgs } from './newChatArgs'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
@@ -54,12 +57,25 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   // trigger + open state. Mounted once at the app shell (`shell/appShell.tsx`).
   const commandPalette = useCommandPalette()
   const newChatMutation = useMutation({
-    mutationFn: () => createChatForView(dispatch, appStore.getState, { defaultFolder: true }),
+    // The active chat's folder wins over the default folder (#16041).
+    mutationFn: (args: ReturnType<typeof newChatShortcutArgs>) => createChatForView(dispatch, appStore.getState, args),
+    onError: (err, args) => {
+      // The one failure a folder create adds: the folder's project directory
+      // is gone. The folder "+" says so under the folder header; the shortcut
+      // has no header, so it uses the shell's transient notice.
+      if ('project' in args && args.project && isStaleProjectDirError(err)) {
+        dispatch(setAgentSwitchNotice(i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project })))
+      }
+    },
     onSuccess: (view) => {
       // A create the user moved away from (another session, another page)
       // leaves the user there: no navigate and no composer focus. So does a
       // page that refused to be left.
       if (!showCreatedChat(view, navigate)) return
+      // A chat filed into the active chat's folder: open that folder's path in
+      // the sidebar so its row is not hidden (a default-folder create already
+      // asks from createSlot; this is a no-op for an unfiled chat).
+      if (view.slot.folder_id) dispatch(requestSlotFolderOpen({ key: view.slot.key, folder_id: view.slot.folder_id }))
       // Unguarded on purpose: this mutation only fires from the new-chat
       // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
       // focusComposer()'s touch-device skip would wrongly suppress focus on a
@@ -103,7 +119,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
     }
   }, [dispatch])
-  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
+  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => {
+    const s = appStore.getState()
+    newChatMutation.mutate(newChatShortcutArgs(s.dashboard.slots, s.chat.activeSlot, queryClient.getQueryData<ChatFolder[]>(['chat-folders'])))
+  }, disabled: shortcutsOpen,
     onToggleFocusMode: toggleFocusMode,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots
