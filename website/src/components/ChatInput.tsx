@@ -65,6 +65,7 @@ import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/l
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { KasComposerApprovals } from './chat-input/KasComposerApprovals'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -1303,7 +1304,7 @@ function ChatInput({
       )}
       {appActions.popover}
 
-      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} filePathTail={!!mention} />}
+      {!terminal.active && <><KasComposerApprovals slotId={slotApprovalChrome ? slotId : null} /><ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} filePathTail={!!mention} /></>}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),
