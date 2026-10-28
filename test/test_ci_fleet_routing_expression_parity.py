@@ -93,9 +93,13 @@ _CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
     "|| 'ubuntu-latest' }}"
 )
 
-# These lanes remain hosted: untrusted-content model execution, schedule/issue
-# triggers, or an isolation contract tied to hosted paths. The scope-review
-# generate job's action-code Write fence is one such path-sensitive contract.
+# These lanes take no fleet route: untrusted-content model execution,
+# schedule/issue triggers, an isolation contract tied to hosted paths, or a
+# tag-triggered release job whose capacity must not depend on the tagger. The
+# scope-review generate job's action-code Write fence is one such
+# path-sensitive contract; the release jobs are the capacity case, since the
+# fleet's actor admission leaves any tagger outside CODEBUILD_ACTOR_IDS on the
+# shared standard pool and the tagger rotates with the on-call.
 _PERMANENT_EXCEPTIONS = {
     ("security-scope-review.yml", "generate"),
     ("security-scope-review.yml", "validate"),
@@ -116,6 +120,11 @@ _PERMANENT_EXCEPTIONS = {
     ("ux-review.yml", "ux-review"),
     ("design-review.yml", "design-review"),
     ("ci-runner-watchdog.yml", "watchdog"),
+    ("release.yml", "version"),
+    ("release.yml", "resolve-promotion"),
+    ("release.yml", "stable-gate"),
+    ("release.yml", "github-release"),
+    ("release.yml", "record-promotion"),
 }
 
 # A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
@@ -128,6 +137,11 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("first-principles-review.yml", "first-principles-review"): {"group": "kirocrew-runners"},
     ("ux-review.yml", "ux-review"): {"group": "kirocrew-runners"},
     ("design-review.yml", "design-review"): {"group": "kirocrew-runners"},
+    ("release.yml", "version"): {"group": "kirocrew-runners"},
+    ("release.yml", "resolve-promotion"): {"group": "kirocrew-runners"},
+    ("release.yml", "stable-gate"): {"group": "kirocrew-runners"},
+    ("release.yml", "github-release"): {"group": "kirocrew-runners"},
+    ("release.yml", "record-promotion"): {"group": "kirocrew-runners"},
 }
 _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 
@@ -156,11 +170,6 @@ _EXPECTED_ROUTED_JOBS = {
     ("main-ratchet-audit.yml", "frontend-ceiling"),
     ("main-ratchet-audit.yml", "bundle-ceiling"),
     ("main-ratchet-audit.yml", "report"),
-    ("release.yml", "version"),
-    ("release.yml", "resolve-promotion"),
-    ("release.yml", "stable-gate"),
-    ("release.yml", "github-release"),
-    ("release.yml", "record-promotion"),
     ("pages.yml", "build"),
     ("pages.yml", "deploy"),
     ("cross-platform.yml", "cross-platform"),

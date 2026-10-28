@@ -1045,12 +1045,24 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 
 ### Larger runners for the review lanes and CodeQL
 
-Fourteen `runs-on` sites draw on the `kirocrew-runners` larger-runner group
+Twenty-one `runs-on` sites draw on the `kirocrew-runners` larger-runner group
 rather than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
 `fork-ux-review`, and all three jobs of `fork-security-scope-review`), the five
 same-repo review lanes (`codex-review`, `claude-review`,
-`first-principles-review`, `design-review`, `ux-review`), and `codeql.yml`.
+`first-principles-review`, `design-review`, `ux-review`), `codeql.yml`, both
+`docker-smoke.yml` jobs, and five jobs of `release.yml` (`version`,
+`resolve-promotion`, `stable-gate`, `github-release`, `record-promotion`).
+
+**Why those five release jobs.** They are the release path's coordination jobs,
+and they are here for capacity rather than isolation. A fleet route is gated on
+the actor appearing in `CODEBUILD_ACTOR_IDS`, so a tagger outside that list
+lands on the shared standard pool, and the tagger rotates with the on-call;
+`version` is the job every other release job `needs`, so its queue is the whole
+release's queue. The group makes that time independent of who cut the release.
+Widening the actor list is not the alternative: the AWS webhook's actor
+admission is a security boundary, and routing is not. These jobs run on a tag,
+never on `pull_request`, so they add nothing to the group's PR-time occupancy.
 
 **Why the fork lanes, and why their spend is permanent.** Fork work cannot move
 to the CodeBuild fleet, and the obstruction is structural rather than unfinished

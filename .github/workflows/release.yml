@@ -28,7 +28,15 @@ jobs:
   # release on the insider channel; bare semver tags are stable.
   version:
     name: Derive Version + Channel
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Release capacity does not depend on who tagged. An actor-gated fleet
+    # route falls back to the shared standard pool for any tagger outside
+    # CODEBUILD_ACTOR_IDS, and the tagger rotates with the on-call; every other
+    # job here `needs` this one, so that queue delays the whole release.
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     outputs:
       version: ${{ steps.channel.outputs.version }}
@@ -190,7 +198,11 @@ jobs:
     name: Resolve Tested Candidate
     if: needs.version.outputs.promote_mode == 'true'
     needs: version
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     permissions:
       actions: read
       contents: read
@@ -259,7 +271,11 @@ jobs:
   stable-gate:
     name: Stable publication gate
     needs: [version]
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 10
     # Replaces the workflow default: `actions: read` is what lets the promotion
     # check ask whether a prerelease tag's release run actually SUCCEEDED.
@@ -960,7 +976,11 @@ jobs:
           needs.sign-and-notarize.result == 'success' &&
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' }}
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # 60, not 20: the assets now upload one at a time (see `preserve_order` on
     # the Create GitHub Release step), several GB in all.
     timeout-minutes: 60
@@ -1456,7 +1476,11 @@ jobs:
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' }}
     needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize, sign-and-notarize-arm64, sign-and-notarize-x64, build-windows]
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     permissions:
       contents: read
     steps:
