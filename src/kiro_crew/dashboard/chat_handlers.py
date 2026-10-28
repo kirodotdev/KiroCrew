@@ -669,6 +669,7 @@ from kiro_crew.history import (  # noqa: F401
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
 from kiro_crew.hooks import dispatch_session_lane_changed_bulk  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
+from kiro_crew.kas_workflows.person_hold import held_for_person  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
     provider_model_pin_refused,

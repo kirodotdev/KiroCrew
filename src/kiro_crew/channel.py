@@ -39,6 +39,8 @@ from kiro_crew.constants import (
     DENY_CAUSE_SURFACE_POLICY,
     TOOL_APPROVAL_TIMEOUT,
 )
+from kiro_crew.kas_workflows.chat import needs_a_person as kas_needs_a_person
+from kiro_crew.kas_workflows.person_hold import hold_for_person
 from kiro_crew.llm_helpers import (
     CREDENTIAL_RELOAD_RETRY_NOTICE,
     SESSION_NOT_FOUND_GIVE_UP_TEXT,
@@ -1494,8 +1496,12 @@ async def _stream_task(
                     continue
                 # YOLO mode (global) or channel trust — auto-approve. A
                 # ``gateway --approval yolo`` grant is for dashboard chats only.
+                # Never for a KAS workflow plan handoff: it is the person's call
+                # and goes to the card below.
                 _yolo = bool(is_yolo and is_yolo()) and safety_override().is_cli_launch is not True
-                if _yolo or (channel.trusted and session_mode_permitted("trust")):
+                if not kas_needs_a_person(event) and (
+                    _yolo or (channel.trusted and session_mode_permitted("trust"))
+                ):
                     approval_outcome = (
                         "auto_approved_yolo" if _yolo else "auto_approved_channel_trust"
                     )
@@ -1735,6 +1741,10 @@ async def _stream_task(
                 # grant scoped to the redacted form would silently cover
                 # commands the user never consented to.
                 approval_future = loop.create_future()
+                if kas_needs_a_person(event):
+                    # A plan handoff: only this card's buttons answer it, never
+                    # the all-slots trust/yolo sweep (``person_hold``).
+                    hold_for_person(approval_future)
                 agent._pending_approval_command = _cmd if _command_grantable else ""
                 agent._approval_future = approval_future
                 # The card's structured facts, beside the prose. The

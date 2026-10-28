@@ -441,13 +441,15 @@ async def request_approval(
     run_task_id: str = "",
     task_index: int | None = None,
     on_host_decision: Callable[[str], object] | None = None,
+    person_only: bool = False,
 ) -> bool:
     """Request interactive approval and deny on timeout or cancellation.
 
     A task runner gate passes ``run_task_id`` and ``task_index``; the
     record carries them so ``GET /api/approvals`` names the gate's run
     and task. *on_host_decision* is for a caller that records who decided;
-    see ``ApprovalCoordinator.request``.
+    see ``ApprovalCoordinator.request``. *person_only* holds a KAS plan
+    handoff for the person: no bulk grant settles it.
     """
     return await _approvals_for(self).request(
         self,
@@ -463,6 +465,7 @@ async def request_approval(
         run_task_id=run_task_id,
         task_index=task_index,
         on_host_decision=on_host_decision,
+        person_only=person_only,
     )
 
 

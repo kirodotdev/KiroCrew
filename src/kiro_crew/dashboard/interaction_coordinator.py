@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.kas_workflows.person_hold import hold_for_person
 from kiro_crew.shared_crew.collab import DecisionKind, DecisionState
 from kiro_crew.shared_crew.collaborators import (
     broadcast_to_collaborators,
@@ -145,15 +146,21 @@ class ApprovalCoordinator:
         run_task_id: str = "",
         task_index: int | None = None,
         on_host_decision: Callable[[str], object] | None = None,
+        person_only: bool = False,
     ) -> bool:
         """Wait for a person's answer; an expired or cancelled wait answers ``False``.
 
         A caller that records who decided passes *on_host_decision*: it is told
         ``DENY_CAUSE_APPROVAL_TIMEOUT`` before an expiry's ``False``, and a
         cancellation is raised to it, because nobody refused.
+
+        *person_only* (a KAS plan handoff) marks the future so the all-slots
+        ``trust``/``yolo`` sweep leaves it pending (``kas_workflows.person_hold``).
         """
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
+        if person_only:
+            hold_for_person(future)
         state._approval_futures[approval_id] = future
         record: dict[str, Any] = {
             "id": approval_id,
