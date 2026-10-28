@@ -171,7 +171,19 @@ beats more parallelism: every open item is a session the user may have to read.
 
 ### Dispatch a round
 
-For each item in the round, in **exactly this order**:
+For each item in the round, call `work_dispatch` with the item's `title`, its
+`acceptance`, the `agent`, the `folder` and the `seed` described in the steps
+below. One call runs the four steps in order, sends the seed only after the bind
+succeeded, and on a failure names the step, the refusal code and what it cleaned
+up. It prompts for approval once per item, as `session_send` does. It never
+opens your ledger: Round 0's `action=goal` does, and without it the first step is
+refused `no_ledger`. A reply with
+`outcome=outcome_unknown` lost a reply rather than being refused: read the board
+and the sidebar (or, for a lost seed, the session) before dispatching again.
+
+Run the four steps as separate calls only to bind an existing session. Then
+make **one call at a time**, each after the previous reply came back, in
+**exactly this order**:
 
 1. `work_ledger_record` `action=create`, with the item's `title` and its
    `acceptance` condition — the same condition object `accept_eval.py` parses,

@@ -36,6 +36,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
+    _run_work_dispatch,
 )
 from kiro_crew.mcp_tools.table import Tool
 
@@ -680,6 +681,80 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_send,
             identity="strict",
             routes=("POST /api/session-control/send",),
+        ),
+        Tool(
+            name="work_dispatch",
+            description=(
+                "Dispatch ONE work item in one call: work_ledger_record action=create, "
+                "then session_create, then work_ledger_record action=bind, then "
+                "session_send the seed. The seed is sent only after the bind succeeded, "
+                "and only to the session this call opened, so no id is carried between "
+                "calls. Returns the item_id and worker_session_key. On a failure it names "
+                "the step (create, session_create, bind, seed), the route's refusal code, "
+                "and what it cleaned up: a failed session_create closes the item, a failed "
+                "bind closes the session and the item, and a failed seed cleans up nothing. "
+                "outcome=outcome_unknown means a reply was lost, not that the step was "
+                "refused. It never opens a work ledger: open yours first with "
+                "work_ledger_record action=goal, or create is refused no_ledger. To bind an "
+                "existing session instead, use the four calls one at a time."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "What the item is, <= 200 chars, as action=create takes it.",
+                    },
+                    "acceptance": {
+                        "type": "object",
+                        "description": (
+                            "The accept_eval.py condition object, stored verbatim, as "
+                            "action=create takes it."
+                        ),
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "The worker's agent, as session_create takes it.",
+                    },
+                    "agent_kind": {
+                        "type": "string",
+                        "enum": ["template"],
+                        "description": "As session_create takes it.",
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": "Sidebar folder for the session, as session_create takes it.",
+                    },
+                    "session_title": {
+                        "type": "string",
+                        "description": "The session's sidebar title. Defaults to `title`.",
+                    },
+                    "seed": {
+                        "type": "string",
+                        "description": (
+                            "The seed prompt: the item's whole contract, sent with "
+                            "session_send once the bind succeeded."
+                        ),
+                    },
+                    "model": {"type": "string", "description": "As session_create takes it."},
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": "As session_create takes it.",
+                    },
+                },
+                "required": ["title", "acceptance", "agent", "seed"],
+            },
+            run=_run_work_dispatch,
+            identity="strict",
+            routes=(
+                "GET /api/chat/slots",
+                "GET /api/chat/folders",
+                "POST /api/chat/folders",
+                "POST /api/work-ledger/record",
+                "POST /api/session-control/create",
+                "POST /api/session-control/close",
+                "POST /api/session-control/send",
+            ),
         ),
         Tool(
             name="session_broadcast",

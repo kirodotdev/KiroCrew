@@ -695,3 +695,54 @@ def test_a_create_call_never_pairs_with_a_send_seed():
     root = {"key": "root", "title": "Goal", **_lane([_create(10, "", "c1")])}
     worker = {"key": "w1", "title": "w", **_lane([_seeded("root", 12, "send")])}
     assert crew_timeline.handoffs([root, worker]) == []
+
+
+def _dispatch(seconds: float, tcid: str, **args: str) -> dict[str, Any]:
+    payload = {"tool_id": "kirocrew-dashboard::work_dispatch", "arguments": args}
+    return _row(
+        "tool",
+        seconds,
+        "🔧 @kirocrew-dashboard/work_dispatch",
+        tool_call_id=tcid,
+        input=json.dumps(payload),
+    )
+
+
+def test_a_work_dispatch_seed_is_drawn_from_the_dispatch_call():
+    """``work_dispatch`` opens the worker and seeds it ``via session_send``; the
+    hand-off leaves at the call whose session title names the worker."""
+    root = {
+        "key": "root",
+        "title": "Goal",
+        **_lane([_dispatch(10, "d1", title="fix flake", session_title="worker A")]),
+    }
+    worker = {"key": "w1", "title": "worker A", **_lane([_seeded("root", 12, "send")])}
+    other = {"key": "w2", "title": "fix flake", **_lane([_seeded("root", 13, "send")])}
+    links = crew_timeline.handoffs([root, worker, other])
+    assert [(link["from"], link["to"]) for link in links] == [("root", "w1")]
+    assert links[0]["start"] == _at(10) and links[0]["end"] == _at(12)
+
+
+def test_a_work_dispatch_without_a_session_title_names_the_item_title():
+    root = {"key": "root", "title": "Goal", **_lane([_dispatch(10, "d1", title="fix flake")])}
+    worker = {"key": "w1", "title": "fix flake", **_lane([_seeded("root", 12, "send")])}
+    assert [link["to"] for link in crew_timeline.handoffs([root, worker])] == ["w1"]
+
+
+def test_a_work_dispatch_never_pairs_with_a_create_seed():
+    root = {"key": "root", "title": "Goal", **_lane([_dispatch(10, "d1", title="w")])}
+    worker = {"key": "w1", "title": "w", **_lane([_seeded("root", 12, "create")])}
+    assert crew_timeline.handoffs([root, worker]) == []
+
+
+def test_two_workers_sharing_a_title_draw_no_dispatch_hand_off():
+    """Two ``work_dispatch`` calls naming one title cannot be told apart, so
+    neither worker is drawn from either call."""
+    root = {
+        "key": "root",
+        "title": "Goal",
+        **_lane([_dispatch(10, "d1", title="same"), _dispatch(11, "d2", title="same")]),
+    }
+    first = {"key": "w1", "title": "same", **_lane([_seeded("root", 12, "send")])}
+    second = {"key": "w2", "title": "same", **_lane([_seeded("root", 13, "send")])}
+    assert crew_timeline.handoffs([root, first, second]) == []

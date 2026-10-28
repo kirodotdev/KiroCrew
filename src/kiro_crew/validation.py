@@ -483,6 +483,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_STOP_SCHEMA,
         SESSION_SUMMARY_SCHEMA,
         WAIT_SCHEMA,
+        WORK_DISPATCH_SCHEMA,
         _validate_channel_routing,
         _validate_session_set_model,
     )

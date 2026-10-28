@@ -90,6 +90,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         reaches_a_channel,
     )
     from kiro_crew.dashboard.handlers.work_ledger_conductor import (  # noqa: F401
+        DISPATCH_FIELD,
         RECORD_ACTIONS,
         _bootstrap,
         _close_warning,
@@ -97,6 +98,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _count_recorded,
         _ensure,
         _record_conductor_write,
+        _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
         _worker_slot,
