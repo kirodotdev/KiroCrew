@@ -86,6 +86,9 @@ ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent")
 # provider factory and the crews API's readout) and a second copy of the pair
 # would let them disagree about which agents take the role default.
 BACKGROUND_WORKER_AGENTS: tuple[str, ...] = ("kirocrew-lite", "kirocrew-heartbeat")
+#: KAS ``WORKFLOW_CREATOR_EFFORT_LEVELS`` (WorkflowsSettingSchema.creatorEffort),
+#: the values ``agent.kas_creator_effort`` may hold besides "" (KAS's default).
+KAS_CREATOR_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 
 
 def coerce_role_models(raw: object) -> dict[str, str]:
