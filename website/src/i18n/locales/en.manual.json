@@ -9803,6 +9803,7 @@
       "choicesUnreadable": "Couldn't load your profiles. Open the menu again to retry.",
       "unknownProfile": "That profile is no longer set up in Settings.",
       "environmentLocked": "A chat's environment is fixed once its first message is sent.",
+      "privateChat": "Kiro Cloud Sessions aren't available in incognito or temporary chats.",
       "appliesNext": "Fixed once you send the first message. To run somewhere else, start a new chat.",
       "stage": {
         "checking": "Checking profile",
@@ -9837,6 +9838,8 @@
       "conflict": "The file changed in the workspace, so it was not saved. Your edits are still here: copy them if you want to keep them, then load the new version.",
       "rootChanged": "This profile's working folder changed since you opened this file, so it was not saved. Your edits are still here: copy them if you want to keep them.",
       "openTerminal": "Open a terminal in this workspace",
+      "cloudSandbox": "This chat runs in a Kiro cloud sandbox, so its files and Git can't be shown here.",
+      "cloudSandboxRefused": "Couldn't open this chat's files: it runs in a Kiro cloud sandbox, which only its own agent can reach.",
       "copyEdits": "Copy my edits",
       "discardEdits": "Discard my edits",
       "discardWhich": "Your unsaved edits to {{path}} will be lost.",
@@ -9901,6 +9904,22 @@
     "computeSurvivesStop": "This template keeps its files when a workspace stops",
     "computeSurvivesStopHint": "On: files are kept when a workspace stops, so {{productName}} may stop these workspaces. Off: files are lost when a workspace stops, so {{productName}} never stops them, even when “Stop workspaces when {{productName}} shuts down” below is on. Coder's own auto-stop still applies.",
     "computeSurvivesStopMicroVm": "Not sure? Leave it on unless this template's files are lost when a workspace stops.",
+    "kiroCloud": {
+      "replayed": "Couldn't reopen the cloud session, so a new cloud session started with this conversation carried over. Files and changes from the earlier session aren't in it. The earlier session is still listed in Kiro Web (app.kiro.dev).",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profiles that run the whole session in a Kiro cloud sandbox: the agent, its files and its commands. Choose one for a session from the environment menu beside the message box.",
+      "notVerified": "These profiles aren't checked ahead of time. If a cloud chat can't start, the chat explains why.",
+      "setup1": "In Settings → {{tab}}, choose the {{backend}} backend and sign in to Kiro with an account that has Kiro Cloud Sessions.",
+      "setup2": "List the repositories the sandbox should open, as owner/name. An empty list opens an empty workspace.",
+      "repositories": "Repositories",
+      "repositoriesHint": "Repositories on the source provider (such as GitHub) connected to your Kiro account, comma-separated as owner/name (e.g. acme/web), at most {{max}}. Leave it empty for an empty workspace.",
+      "emptyWorkspace": "Empty workspace",
+      "profiles": "Kiro Cloud profiles",
+      "limits": "The cloud agent runs commands without asking you first, and can't use the tools and connections you set up in {{productName}}.",
+      "setup": "Kiro Cloud setup instructions",
+      "add": "Add Kiro Cloud profile",
+      "remove": "Remove Kiro Cloud profile"
+    },
     "checkCoderLogin": "To sign in, run <code>coder login</code> in a terminal on this machine."
   },
   "crewEditorNext": {

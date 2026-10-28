@@ -76,13 +76,14 @@ def test_ordered_values_are_values_the_route_accepts():
             "code_exec",
         ),
         ("session_environments.coder_url", "_CODE_EXEC_SETTINGS", "", "https://c", "code_exec"),
-        ("session_environments.default_profile", "_CANNOT_WIDEN_SETTINGS", "", "dev", "normal"),
+        # The default can bind every new chat to a Kiro Cloud profile.
+        ("session_environments.default_profile", "_CODE_EXEC_SETTINGS", "", "dev", "code_exec"),
         ("session_environments.stop_on_shutdown", "_CANNOT_WIDEN_SETTINGS", True, False, "normal"),
     ],
 )
 def test_session_environment_paths_keep_their_class(path, cls, before, after, risk):
-    # The deployment and template pick the machine a session runs on; the default
-    # profile and the shutdown switch choose only among the operator's own setups.
+    # The deployment, the template and the default profile pick the machine a
+    # session runs on; the shutdown switch only chooses among the operator's own setups.
     assert [name for name, members in _CLASSES.items() if path in members] == [cls]
     p = {"path": path, "value": after}
     assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk

@@ -19642,6 +19642,7 @@
       "choicesUnreadable": "无法加载你的配置方案。再次打开菜单即可重试。",
       "unknownProfile": "该配置方案已不在设置中。",
       "environmentLocked": "聊天发送第一条消息后，其环境即固定。",
+      "privateChat": "隐身或临时聊天无法使用 Kiro Cloud Sessions。",
       "appliesNext": "发送第一条消息后即固定。要在别处运行，请新建聊天。",
       "stage": {
         "checking": "正在检查配置方案",
@@ -19676,6 +19677,8 @@
       "conflict": "该文件已在工作区中更改，因此未保存。你的编辑仍在：如需保留请先复制，然后加载新版本。",
       "rootChanged": "自你打开此文件后，此配置文件的工作文件夹已更改，因此未保存。你的编辑仍在：如需保留，请复制。",
       "openTerminal": "在此工作区中打开终端",
+      "cloudSandbox": "此聊天在 Kiro 云沙盒中运行，因此无法在此显示其文件和 Git。",
+      "cloudSandboxRefused": "无法打开此聊天的文件，因为它在 Kiro 云沙盒中运行，只有它自己的智能体可以访问。",
       "copyEdits": "复制我的编辑",
       "discardEdits": "放弃我的编辑",
       "discardWhich": "{{path}} 中未保存的编辑将丢失。",
@@ -19740,6 +19743,22 @@
     "computeSurvivesStop": "此模板在工作区停止后仍保留文件",
     "computeSurvivesStopHint": "开启：工作区停止时文件会保留，因此 {{productName}} 可能会停止这些工作区。关闭：工作区停止时文件会丢失，因此即使下方的“{{productName}} 关闭时停止工作区”已开启，{{productName}} 也不会停止它们。Coder 自身的自动停止仍然适用。",
     "computeSurvivesStopMicroVm": "不确定？保持开启，除非此模板的文件会在工作区停止时丢失。",
+    "kiroCloud": {
+      "replayed": "无法重新打开云端会话，因此已启动一个延续此对话的新云端会话。之前会话中的文件和更改不在其中。之前的会话仍列在 Kiro Web (app.kiro.dev) 中。",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "在 Kiro 云沙盒中运行整个会话（智能体及其文件和命令）的配置方案。在消息框旁边，用环境菜单为会话选择配置方案。",
+      "notVerified": "这些配置方案不会预先检查。云聊天无法启动时，聊天中会说明原因。",
+      "setup1": "在“设置 → {{tab}}”中选择 {{backend}} 后端，并使用拥有 Kiro Cloud Sessions 的账号登录 Kiro。",
+      "setup2": "以 owner/name 形式列出沙盒要打开的仓库。列表为空时会打开一个空工作区。",
+      "repositories": "仓库",
+      "repositoriesHint": "源代码提供方（例如 GitHub，需已连接到你的 Kiro 账户）中的仓库，以逗号分隔，采用 owner/name 形式（例如 acme/web），最多 {{max}} 个。留空则使用空工作区。",
+      "emptyWorkspace": "空工作区",
+      "profiles": "Kiro Cloud 配置方案",
+      "limits": "云端智能体会直接运行命令，不会事先询问你，并且无法使用你在 {{productName}} 中设置的工具和连接。",
+      "setup": "Kiro Cloud 设置说明",
+      "add": "添加 Kiro Cloud 配置方案",
+      "remove": "移除 Kiro Cloud 配置方案"
+    },
     "checkCoderLogin": "要登录，请在本机的终端中运行 <code>coder login</code>。"
   },
   "crewEditorNext": {

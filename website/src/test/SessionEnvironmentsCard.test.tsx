@@ -19,6 +19,7 @@ interface Section {
   coder_url: string
   profiles: typeof profile[]
   default_profile?: string
+  kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }
 let reads: number
@@ -953,5 +954,154 @@ describe('Session Environments readiness and workspaces', () => {
       expect(reopen).toBeDisabled()
       expect(reopen).toHaveAccessibleDescription('Save or discard your changes first.')
     }
+  })
+})
+
+describe('Kiro Cloud Sessions profiles', () => {
+  it('adds a cloud profile with its repositories, and offers it as the default', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    const add = await screen.findByRole('button', { name: 'Add Kiro Cloud profile' })
+    // The Kiro Cloud list needs no Coder URL.
+    fireEvent.click(add)
+    const field = screen.getByRole('group', { name: 'kiro-cloud-1' })
+    fireEvent.change(within(field).getByLabelText('Profile name'), { target: { value: 'Cloud' } })
+    // A trailing comma while typing is kept, then dropped on save.
+    fireEvent.change(within(field).getByLabelText('Repositories'), { target: { value: 'acme/web, ' } })
+    expect(within(field).getByLabelText('Repositories')).toHaveValue('acme/web, ')
+    fireEvent.click(screen.getByRole('switch', { name: 'Start new chats on a profile' }))
+    fireEvent.click(save())
+    expect(await screen.findByText(SAVED)).toBeVisible()
+    expect(writes).toEqual([{ path: 'session_environments', value: {
+      coder_url: '', profiles: [], default_profile: 'kiro-cloud-1',
+      kiro_cloud_profiles: [{ id: 'kiro-cloud-1', name: 'Cloud', repositories: ['acme/web'] }],
+    } }])
+  })
+
+  it('lets a separator typed in the repositories field be deleted again', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Kiro Cloud profile' }))
+    const repos = () => within(screen.getByRole('group', { name: 'kiro-cloud-1' })).getByLabelText('Repositories')
+    // Typed one key at a time, then the comma is backspaced away: the field
+    // shows what was typed, not the list rebuilt from it with ", " put back.
+    for (const value of ['acme/web', 'acme/web,', 'acme/web']) {
+      fireEvent.change(repos(), { target: { value } })
+      expect(repos()).toHaveValue(value)
+    }
+    // An emptied middle entry can lose its separator too.
+    fireEvent.change(repos(), { target: { value: 'acme/web, , acme/api' } })
+    fireEvent.change(repos(), { target: { value: 'acme/web, acme/api' } })
+    expect(repos()).toHaveValue('acme/web, acme/api')
+    fireEvent.click(save())
+    expect(await screen.findByText(SAVED)).toBeVisible()
+    expect(writes.at(-1)?.value).toMatchObject({
+      kiro_cloud_profiles: [{ id: 'kiro-cloud-1', name: '', repositories: ['acme/web', 'acme/api'] }],
+    })
+  })
+
+  it('carries the default along when a cloud profile id is renamed', async () => {
+    stored = {
+      session_environments: {
+        coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: 'cloud',
+        kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }],
+      },
+    }
+    await mounted()
+    expand('Cloud')
+    const cloudId = within(screen.getByRole('group', { name: 'Cloud' })).getByLabelText('Profile ID')
+    fireEvent.change(cloudId, { target: { value: 'cloud-2' } })
+    // Clearing the id to retype it keeps the default for the retyped id.
+    fireEvent.change(cloudId, { target: { value: '' } })
+    fireEvent.change(cloudId, { target: { value: 'cloud-3' } })
+    // A Coder id passing through empty does not take a cloud default.
+    expand('Development')
+    const coder = screen.getByRole('button', { name: /^Development/ }).closest('div')!.parentElement!
+    fireEvent.change(within(coder).getByLabelText('Profile ID'), { target: { value: '' } })
+    fireEvent.change(within(coder).getByLabelText('Profile ID'), { target: { value: 'dev-2' } })
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({
+      default_profile: 'cloud-3',
+      profiles: [{ ...profile, id: 'dev-2' }],
+      kiro_cloud_profiles: [{ id: 'cloud-3', name: 'Cloud', repositories: [] }],
+    })
+  })
+
+  it('moves a removed cloud default to another cloud profile, and leaves it on a Coder removal', async () => {
+    stored = {
+      session_environments: {
+        coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: 'cloud',
+        kiro_cloud_profiles: [
+          { id: 'cloud', name: 'Cloud', repositories: [] },
+          { id: 'scratch', name: 'Scratch', repositories: [] },
+        ],
+      },
+    }
+    await mounted()
+    const defaults = screen.getByRole('region', { name: 'Global defaults' })
+    // Removing a Coder profile leaves a cloud default alone, with no notice.
+    expand('Development')
+    const coder = screen.getByRole('button', { name: /^Development/ }).closest('div')!.parentElement!
+    fireEvent.click(within(coder).getByRole('button', { name: 'Remove profile' }))
+    expect(defaults).not.toHaveTextContent('the default profile was removed')
+    // Removing the cloud default moves it to the other cloud profile, and says so.
+    expand('Cloud')
+    // Only the expanded row shows its Remove button.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Kiro Cloud profile' }))
+    expect(defaults).toHaveTextContent('Now Scratch: the default profile was removed. Discard changes to undo.')
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({
+      default_profile: 'scratch', profiles: [],
+      kiro_cloud_profiles: [{ id: 'scratch', name: 'Scratch', repositories: [] }],
+    })
+  })
+
+  it('says Kiro Cloud profiles are not checked ahead of time, without pointing at the Coder steps', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    // The readiness check probes Coder and git hosts only, so the cloud list says
+    // so in words that stand on their own: its reader cannot see the Coder steps.
+    expect(await screen.findByText(/These profiles aren't checked ahead of time/)).toBeVisible()
+    expect(screen.getByText(/If a cloud chat can't start, the chat explains why/)).toBeVisible()
+  })
+
+  it('keeps Kiro Cloud outside the numbered Coder steps, with its cost in plain view', async () => {
+    stored = {
+      session_environments: {
+        coder_url: '', profiles: [], default_profile: '',
+        kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }],
+      },
+    }
+    mount()
+    const cloud = await screen.findByRole('region', { name: 'Kiro Cloud Sessions' })
+    const configure = screen.getByRole('region', { name: '1. Connect and configure' })
+    const manage = screen.getByRole('region', { name: '3. Manage' })
+    expect(configure.contains(cloud)).toBe(false)
+    // After the last numbered step, not between step 1 and step 2.
+    expect(manage.compareDocumentPosition(cloud) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // What opting in gives up is not folded inside the setup instructions.
+    const limits = within(cloud).getByText(/runs commands without asking you first, and can't use the tools and connections you set up in/)
+    expect(limits).toBeVisible()
+    expect(limits.closest('details')).toBeNull()
+    // The cost of opting in reads as a warning, not body text.
+    expect(limits.closest('[data-tone]')).toHaveAttribute('data-tone', 'warn')
+    // The setup step names the backend by the label the Agent Harness picker shows.
+    expect(within(cloud).getByText(/choose the Kiro Agent backend/)).toHaveTextContent('Settings → Agent Harness')
+    // Its controls are named for it, so they are not twins of the Coder ones.
+    expect(within(cloud).getByRole('button', { name: 'Add Kiro Cloud profile' })).toBeEnabled()
+    expect(within(cloud).getByText('Kiro Cloud setup instructions')).toBeInTheDocument()
+    expect(within(cloud).queryByRole('button', { name: 'Add Coder profile' })).toBeNull()
+    fireEvent.click(within(cloud).getByRole('button', { name: /^Cloud/, expanded: false }))
+    expect(within(cloud).getByRole('button', { name: 'Remove Kiro Cloud profile' })).toBeInTheDocument()
+  })
+
+  it('hides the Kiro Cloud list for a gateway that does not report it', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.queryByText('Kiro Cloud Sessions')).not.toBeInTheDocument()
+    expect(screen.queryByText(/These profiles aren't checked ahead of time/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Add Coder profile' })).toHaveLength(1)
   })
 })

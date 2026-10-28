@@ -36,6 +36,7 @@ class _Runtime:
     def __init__(self, backend: str = ACP_BACKEND_CODEX) -> None:
         self.acp_backend = backend
         self.is_alive = lambda: True
+        self.is_cloud_sandbox = False
         self.answer: asyncio.Future = asyncio.get_running_loop().create_future()
         self.requests: list[tuple[str, dict]] = []
         self.notifications: list[tuple[str, dict]] = []

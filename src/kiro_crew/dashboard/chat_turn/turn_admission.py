@@ -109,6 +109,7 @@ if TYPE_CHECKING:
         _notice_steer_upgrade,
         _prepare_spec_hooks,
         _surface_agent_welcome,
+        _surface_startup_notice,
     )
 
 
@@ -1070,6 +1071,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew.skill_scope_pin import pin_session_skill_spec
 
     pin_session_skill_spec(session_key, _pinned_spec)
+    _surface_startup_notice(state, slot, client)
     # The acquired provider is the final authority for harness-specific slash
     # gates. A dead live row can be replaced during the get_or_create call
     # above. The positive capability fails closed for unknown adapters and

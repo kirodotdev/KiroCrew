@@ -19,6 +19,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import beacon
+from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
@@ -108,53 +109,126 @@ class _UnknownDefaultProfile(Exception):
 def _check_default_profile_is_saved(section: object, value: object) -> None:
     """Refuse a default profile id the saved section does not hold, as a whole
     section save does: a dangling default runs every new chat locally and makes
-    the next Settings save fail. "" (this machine) is always allowed."""
+    the next Settings save fail. "" (this machine) is always allowed. Every
+    profile list counts, Coder and Kiro Cloud alike."""
     if not value:
         return
-    profiles = section.get("profiles") if isinstance(section, dict) else None
-    ids = (
-        {p.get("id") for p in profiles if isinstance(p, dict)}
-        if isinstance(profiles, list)
-        else set()
-    )
+    ids = _profile_ids(section) if isinstance(section, dict) else set()
     if value not in ids:
         raise _UnknownDefaultProfile(f"default_profile {value!r} is not one of the saved profiles")
 
 
-def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
-    """A whole ``session_environments`` save with an optional key left out keeps
-    that key's saved value, as the section's contract says (an agent's change card
-    may carry only the required keys). Only ``SECTION_OPTIONAL_KEYS``: any other
-    stored key is replaced with the section. A saved default profile missing
-    from the new profile list is dropped rather than kept dangling, and a saved
-    value the loader would not accept (a hand edit) is not carried over."""
+def _session_environment_key_validators() -> dict[str, Any]:
+    """The loader's own validator for each optional ``session_environments`` key.
+
+    One entry per ``SECTION_OPTIONAL_KEYS`` key (a test pins that), so a key a
+    later provider adds is carried by :func:`_keep_omitted_session_environment_keys`
+    only once it has a validator here: an unvalidated saved value is never kept.
+    """
     from kiro_crew.config.session_environments import (
-        SECTION_OPTIONAL_KEYS,
-        SessionEnvironmentsError,
         validate_default_profile,
         validate_stop_on_shutdown,
     )
 
-    validators = {
+    return {
         "default_profile": validate_default_profile,
+        "kiro_cloud_profiles": _keep_kiro_cloud_profiles,
         "stop_on_shutdown": validate_stop_on_shutdown,
     }
+
+
+def _keep_kiro_cloud_profiles(value: object) -> list[dict[str, Any]]:
+    """The saved Kiro Cloud profiles the loader keeps, entry by entry.
+
+    The loader drops a malformed or duplicate entry and keeps every valid one, so
+    an omitted list is carried the same way: one hand-edited entry does not take
+    the valid profiles (or a default naming one) with it. A list with no entry
+    the loader keeps, or a value that is not a list, carries nothing.
+    """
+    from kiro_crew.config.session_environments import (
+        SessionEnvironmentsError,
+        load_kiro_cloud_profiles,
+    )
+
+    if not isinstance(value, list):
+        raise SessionEnvironmentsError("kiro_cloud_profiles must be a list")
+    kept = load_kiro_cloud_profiles({"kiro_cloud_profiles": value})
+    if value and not kept:
+        raise SessionEnvironmentsError("kiro_cloud_profiles has no profile the loader keeps")
+    return kept
+
+
+def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
+    """A whole ``session_environments`` save with an optional key left out keeps
+    that key's saved value, as the section's contract says. An agent's change card
+    may carry only the required keys, and a Settings tab opened before this build
+    added a provider does not know that provider's profile list; neither may wipe
+    what it never showed. Every ``SECTION_OPTIONAL_KEYS`` key is kept this way;
+    any other stored key is replaced with the section. A saved value is carried as
+    the loader reads it: a profile list keeps each entry the loader keeps, a value
+    it would not accept at all (a hand edit) is not carried, and a saved default profile
+    that no profile list of the merged section has is dropped rather than kept
+    dangling. Profile lists are merged first, so a default naming a kept Kiro
+    Cloud profile survives a save that omitted that list."""
+    from kiro_crew.config.session_environments import (
+        SECTION_OPTIONAL_KEYS,
+        SessionEnvironmentsError,
+    )
+
+    validators = _session_environment_key_validators()
     if not isinstance(saved, dict):
         return value
     merged = dict(value)
-    profile_ids = {p.get("id") for p in value.get("profiles", []) if isinstance(p, dict)}
-    for key in SECTION_OPTIONAL_KEYS:
+    # Lists before scalars: the default is judged against every merged list.
+    for key in sorted(SECTION_OPTIONAL_KEYS, key=lambda k: k == "default_profile"):
         if key in merged or key not in saved:
             continue
         validate = validators.get(key)
+        if validate is None:
+            continue
         try:
-            kept = validate(saved[key]) if validate is not None else saved[key]
+            kept = validate(saved[key])
         except SessionEnvironmentsError:
             continue
-        if key == "default_profile" and kept and kept not in profile_ids:
+        if key == "default_profile" and kept and kept not in _profile_ids(merged):
             continue
         merged[key] = kept
     return merged
+
+
+def _drop_dangling_default_profile(section: object) -> None:
+    """Drop a saved default that no profile list of ``section`` still holds.
+
+    Run on the merged section after every ``session_environments`` write, under
+    the config lock. A leaf write of one provider's list (``kiro_cloud_profiles``)
+    can remove the profile the default names; left in place, that default would
+    run every new chat on this machine and make the next whole-section save fail.
+    It is dropped, as a whole-section save that removes the default's profile
+    drops it, rather than refusing the write. "" (this machine) is kept. A
+    hand-edited default that is not a string the loader would never read either,
+    so it is dropped too rather than failing the unrelated write.
+    """
+    if not isinstance(section, dict):
+        return
+    default = section.get("default_profile")
+    if default and (not isinstance(default, str) or default not in _profile_ids(section)):
+        del section["default_profile"]
+
+
+def _profile_ids(section: dict) -> set[str]:
+    """Every string profile id across the section's profile lists, of any provider.
+
+    The section is read raw, so a hand-edited entry whose id is not a string (a
+    list, an object) is skipped: the loader drops that entry, and an unhashable
+    id must not fail a valid write with an uncaught ``TypeError``.
+    """
+    return {
+        item["id"]
+        for entries in section.values()
+        if isinstance(entries, list)
+        for item in entries
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
 
 
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
@@ -526,6 +600,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
             section[parts[-1]] = stored
+            if parts[0] == "session_environments":
+                # On the merged section, under the lock: a leaf write of one
+                # provider's list, or a whole-section save that preserved one,
+                # must not leave an id naming profiles of two providers.
+                _session_environments.check_profile_ids_unique(data.get("session_environments"))
+                _drop_dangling_default_profile(data.get("session_environments"))
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers
@@ -555,6 +635,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("denied", f"{path_key}=write_refused")
             return web.json_response(
                 {"error": str(exc), "code": "config_write_refused"}, status=400
+            )
+        except _session_environments.ProfileIdCollision as exc:
+            # A ``ValueError`` too: the operator's input, refused before any write.
+            _log_sel("denied", f"{path_key}=profile_id_collision")
+            return web.json_response(
+                {"error": str(exc), "code": "profile_id_collision"}, status=400
             )
         except ValueError as exc:
             _log_sel("error", f"{path_key}=section_not_dict")

@@ -19953,6 +19953,7 @@
       "choicesUnreadable": "Deine Profile konnten nicht geladen werden. Öffne das Menü erneut, um es noch einmal zu versuchen.",
       "unknownProfile": "Dieses Profil ist in den Einstellungen nicht mehr eingerichtet.",
       "environmentLocked": "Die Umgebung eines Chats steht fest, sobald seine erste Nachricht gesendet ist.",
+      "privateChat": "Kiro Cloud Sessions sind in Inkognito- und temporären Chats nicht verfügbar.",
       "appliesNext": "Wird mit der ersten Nachricht festgelegt. Um woanders zu arbeiten, starte einen neuen Chat.",
       "stage": {
         "checking": "Profil wird geprüft",
@@ -19987,6 +19988,8 @@
       "conflict": "Die Datei hat sich im Workspace geändert und wurde nicht gespeichert. Deine Änderungen sind noch da: Kopiere sie, wenn du sie behalten willst, und lade dann die neue Version.",
       "rootChanged": "Der Arbeitsordner dieses Profils hat sich geändert, seit du diese Datei geöffnet hast, daher wurde sie nicht gespeichert. Deine Änderungen sind noch da: Kopiere sie, wenn du sie behalten willst.",
       "openTerminal": "Terminal in diesem Workspace öffnen",
+      "cloudSandbox": "Dieser Chat läuft in einer Kiro-Cloud-Sandbox, daher können seine Dateien und sein Git hier nicht angezeigt werden.",
+      "cloudSandboxRefused": "Die Dateien dieses Chats konnten nicht geöffnet werden, da er in einer Kiro-Cloud-Sandbox läuft, die nur sein eigener Agent erreicht.",
       "copyEdits": "Meine Änderungen kopieren",
       "discardEdits": "Meine Änderungen verwerfen",
       "discardWhich": "Deine nicht gespeicherten Änderungen an {{path}} gehen verloren.",
@@ -20051,6 +20054,22 @@
     "computeSurvivesStop": "Diese Vorlage behält ihre Dateien, wenn ein Workspace anhält",
     "computeSurvivesStopHint": "An: Dateien bleiben erhalten, wenn ein Workspace anhält, daher darf {{productName}} diese Workspaces anhalten. Aus: Dateien gehen verloren, wenn ein Workspace anhält, daher hält {{productName}} sie nie an, auch wenn „Workspaces beim Beenden von {{productName}} stoppen“ unten eingeschaltet ist. Die automatische Abschaltung von Coder gilt weiterhin.",
     "computeSurvivesStopMicroVm": "Unsicher? Lass es an, außer die Dateien dieser Vorlage gehen verloren, wenn ein Workspace anhält.",
+    "kiroCloud": {
+      "replayed": "Die Cloud-Sitzung konnte nicht erneut geöffnet werden, daher wurde eine neue Cloud-Sitzung gestartet, in die dieses Gespräch übernommen wurde. Dateien und Änderungen aus der früheren Sitzung sind darin nicht enthalten. Die frühere Sitzung ist weiterhin in Kiro Web (app.kiro.dev) aufgeführt.",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profile, die die ganze Sitzung in einer Kiro-Cloud-Sandbox ausführen: den Agenten, seine Dateien und seine Befehle. Das Profil einer Sitzung wählst du über das Umgebungsmenü neben dem Nachrichtenfeld.",
+      "notVerified": "Diese Profile werden nicht vorab geprüft. Kann ein Cloud-Chat nicht starten, erklärt der Chat den Grund.",
+      "setup1": "Wähle unter Einstellungen → {{tab}} das {{backend}}-Backend und melde dich bei Kiro mit einem Konto an, das Kiro Cloud Sessions hat.",
+      "setup2": "Gib die Repositorys an, die die Sandbox öffnen soll, im Format owner/name. Eine leere Liste öffnet einen leeren Workspace.",
+      "repositories": "Repositorys",
+      "repositoriesHint": "Repositorys beim mit deinem Kiro-Konto verbundenen Quellanbieter (z. B. GitHub), durch Kommas getrennt im Format owner/name (z. B. acme/web), höchstens {{max}}. Lass das Feld leer für einen leeren Workspace.",
+      "emptyWorkspace": "Leerer Workspace",
+      "profiles": "Kiro-Cloud-Profile",
+      "limits": "Der Cloud-Agent führt Befehle aus, ohne dich vorher zu fragen, und kann die Tools und Verbindungen, die du in {{productName}} eingerichtet hast, nicht nutzen.",
+      "setup": "Einrichtung von Kiro Cloud",
+      "add": "Kiro-Cloud-Profil hinzufügen",
+      "remove": "Kiro-Cloud-Profil entfernen"
+    },
     "checkCoderLogin": "Zum Anmelden führe <code>coder login</code> in einem Terminal auf diesem Rechner aus."
   },
   "crewEditorNext": {

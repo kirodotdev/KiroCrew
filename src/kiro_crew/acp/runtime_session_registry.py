@@ -161,7 +161,9 @@ def mark_turn_active(self: AcpRuntime, session_id: str, active: bool) -> None:
         self._turn_active_sessions.discard(session_id)
 
 
-async def terminate_session(self: AcpRuntime, session_id: str) -> None:
+async def terminate_session(
+    self: AcpRuntime, session_id: str, *, delete_cloud_session: bool = False
+) -> None:
     """Evict a session from kiro-cli (freeing its memory), then unregister locally.
 
     Sends the ``_kiro.dev/session/terminate`` request so the multiplexed
@@ -201,6 +203,9 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
     try:
         if not self._dead and self._process is not None:
             policy = self._harness.teardown
+            unclaimed = session_id in self._unclaimed_new_sessions
+            if policy.local_only and not (delete_cloud_session or unclaimed):
+                return
             try:
                 if policy.notification:
                     # A verb the host does not answer. Awaiting a reply here would
@@ -222,6 +227,7 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
                     exc_info=True,
                 )
     finally:
+        self._unclaimed_new_sessions.discard(session_id)
         self.unregister_session(session_id)
 
 

@@ -4,7 +4,8 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_remote_workspace``.
+Instance fields written: ``_remote_workspace``, ``_harness_resolved`` and
+``_expect_mcp_reports`` (a cloud sandbox).
 
 Instance fields read: ``_process``, ``check_remote_workspace_supported``.
 """
@@ -16,6 +17,7 @@ import fnmatch
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.harness.kas_cloud import CloudResumeHold, KasCloudSandboxHarness
 from kiro_crew.acp.session_handle import AcpRuntimeError
 from kiro_crew.acp.types import ACP_BACKEND_KAS
 
@@ -176,6 +178,33 @@ def check_remote_workspace_supported(self: AcpRuntime) -> None:
     if self.acp_backend == ACP_BACKEND_KAS:
         return
     raise AcpRuntimeError(REMOTE_NEEDS_KAS)
+
+
+def set_cloud_sandbox(self: AcpRuntime, repositories: tuple[str, ...] | list[str] = ()) -> None:
+    """Run this runtime's sessions in a Kiro cloud sandbox (Kiro Cloud Sessions).
+
+    Installs :class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness` as
+    this runtime's harness, which answers request shaping, agent selection and
+    readiness for every session the runtime starts; see that module for what
+    the sandbox does and does not receive. The runtime is also declared
+    MCP-free, because it sends no servers. KAS only, and before the spawn.
+    """
+    self.check_remote_workspace_supported()
+    self._harness_resolved = KasCloudSandboxHarness(repositories)
+    self._expect_mcp_reports = False
+
+
+def hold_cloud_resume(self: AcpRuntime, session_id: str) -> CloudResumeHold:
+    """Hold the approvals KAS replays while *session_id* reopens in the cloud.
+
+    Asked only by the provider's cloud start path, around its reopen, on a
+    runtime :meth:`set_cloud_sandbox` configured; settle the hold with the
+    loaded handle (``None`` on failure) once the reopen finished.
+    """
+    harness = self._harness_resolved
+    if not isinstance(harness, KasCloudSandboxHarness):
+        raise AcpRuntimeError("a cloud resume hold needs a cloud-sandbox runtime")
+    return harness.resume_hold(session_id)
 
 
 async def _write_remote_token(self: AcpRuntime) -> None:

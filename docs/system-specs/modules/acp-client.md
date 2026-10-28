@@ -235,6 +235,43 @@ reader, interactive rule or tool-call field to the owner whose row names it.
 | `acp/liveness_interactive.py` | interactive-command classification: the program tables, `InteractiveClassification`, `classify_interactive_command` and `non_interactive_hint` |
 | `acp/liveness_tool_state.py` | the in-flight tool call: `ToolCallState`, the `InFlightToolTracker` hand-off rule and `wait_tool_verdict` |
 
+## Kiro Cloud reconnect lifecycle
+
+The cloud harness alone opts into detach-only teardown (`TeardownPolicy.local_only`).
+`terminate_session` still unregisters in `finally`; a handle's end deletes only when
+it is non-persistent (`delete_cloud_session=True`). A session no caller holds a
+handle for is deleted, too, because nothing records its id: a `session/new` whose
+local setup refuses before `_finish_create_session` returns, a late `session/new`
+answer no one adopts, and the entitlement probe's own session
+(`AcpRuntime._unclaimed_new_sessions`). A failed local setup after loading a
+cloud session never deletes the session it reopened. A start whose new sandbox
+cannot be recorded on the chat's choice row deletes that sandbox before the start
+fails: it holds no conversation yet and nothing else points at it. A fallback that
+replaces a session it could not reopen deletes nothing (it may still hold the
+user's work), and the choice row then names the new session. A session Kiro Crew
+no longer points at, and an ordinary chat's session after the chat is deleted, are
+listed and deleted where Kiro's docs place them: Kiro Web (app.kiro.dev) and the
+IDE's cloud-session menu (**Delete Session**). Local and ordinary KAS teardown
+keep their wire verbs and delivery unchanged.
+
+`load_session` is the unchanged request/setup body on every host. The provider's
+cloud start path, and only it, takes a resume hold around its reopen
+(`AcpRuntime.hold_cloud_resume`, which refuses on a runtime `set_cloud_sandbox` did not
+configure) and settles it with the handle once the reopen finished. The reader asks
+`holds_replayed_permission`, and an unroutable permission's answer comes from
+`unroutable_permission`; every served host answers both as if they did not exist, so
+the runtime tests no harness identity (harness-parity H13). The cloud
+harness's hold owns the exact resumed id's registration future until ALL setup
+completes. The reader retains replayed permission requests through bounded
+answer tasks while that future is pending, leaving history frames on the drop path.
+The cloud hold resolves to the real handle only after init draining; its first-turn
+stale drain preserves those specific request ids for the normal permission parser,
+and keeps preserving them until the drain ends, so a stranded request queued behind
+a replay (whose reject hands the replay back to the queue) cannot turn the replay
+into a stranded reject.
+An unsuccessful or 60-second-expired registration uses the existing audited reject
+answer. No other session id or harness receives this exception.
+
 ## Native skill startup views
 
 `acp/skill_projection.py` is a mirror facade over the owners in

@@ -79,7 +79,8 @@ workspace tools execute; Coder is the workspace provider. Shared helpers live in
 `session_environment.py` (the start-stage and remote-workspace records, the
 local-only tool fence, `SessionEnvironmentUnavailable`), apart from the LLM
 provider selector: placement adds no `agent.provider` value and selects no model.
-Gateway hosting and whole-Crew deployment are out of scope.
+Gateway hosting and whole-Crew deployment are out of scope. Kiro Cloud Sessions
+(below) is the one provider that moves the agent itself.
 
 Configuration lives in Settings > Session Environments, shown by the per-device
 toggle under Settings > Developer > Feature Previews (schema in
@@ -596,6 +597,122 @@ files go when the compute stops. `retention.compute_survives_stop` reads the
 flag from the bound profile when it still names the template, else from every
 profile on that template; no match reads `false`. Without systemd the
 `setsid`/`nohup` worker fallback may not survive Coder's SSH session cleanup.
+
+### Kiro Cloud Sessions
+
+Kiro Cloud profiles (`session_environments.kiro_cloud_profiles`: `id`, `name`,
+`repositories`, each `name` or `owner/name`, at most 10, no other key) are the
+one provider whose AGENT runs remotely, so the "engine stays on the gateway"
+rule above does not hold for them. A profile id names one provider: the config
+writer refuses an id a Coder profile also uses, and `session_launch.profile_provider`
+is the one resolver the launch path, `session_browse`, the picker (`_profiles()`)
+and the choice lock share. An id a hand edit saved for both providers names
+neither: the picker omits it, a launch or browse raises
+`SessionEnvironmentUnavailable`, and a started session bound to it stays fixed.
+The choice row records the provider the id resolved to when it was picked
+(`coder` or `kiro_cloud`; a subagent's row copies its parent's). A launch or
+browse derives the provider from the id and refuses with
+`SessionEnvironmentUnavailable` when it differs from the row's
+(`session_launch.chosen_provider`), so an id reused across providers never
+moves a started session. The choice lock also reads the row's recorded provider,
+so deleting a cloud profile or reusing its id does not unlock a started cloud
+session. `prepare_for_session` provisions nothing and returns
+`PreparedCloudSession` after the same `before_compute` KAS check once the
+governance ceiling allows it. The provider passes its execution agent through
+to active-profile resolution, including task/agent bindings. An explicit
+policy or profile denial of `capabilities.kiro_cloud_sessions` always refuses
+the start, even on an otherwise ungoverned host. When the policy or
+profile governs any other scope, only a policy opt-in can permit the
+start; a profile can withdraw that allowance. An unreadable ceiling or profile
+refuses. The check emits a SEL governance-decision event for grants, denials
+and fail-closed evaluation errors, naming the session, execution agent,
+capability and reason (see governance.md). `AcpRuntime.set_cloud_sandbox` (KAS backend
+only, before spawn) installs `KasCloudSandboxHarness`
+(`acp/harness/kas_cloud.py`) as that runtime's harness and declares the runtime
+MCP-free. Every cloud answer comes from that harness through the existing
+seams (`session_extras`, `session_mcp_servers`, `notification_aliases`) and the
+`session_request` seam, which every host the backend table serves answers by
+returning the request and agent unchanged; `load_session` asks it only inside
+its KAS branch. The ordinary session request shaping is unchanged, and so is the
+runtime's `load_session`. Replayed approvals are held by a resume hold only the
+provider's cloud start takes around its reopen (`hold_cloud_resume`), and by two
+reader seams every served host answers as a no-op (`holds_replayed_permission`,
+`False`; `unroutable_permission`, the runtime's audited reject): the runtime asks the
+host instead of testing for the cloud harness (harness-parity H13), and only the cloud
+harness keeps those approvals until local registration succeeds. The cloud harness makes `session/new` carry the `_meta.kiro` keys kiro-cli's
+own `--cloud` flag sends (confirmed against kiro-cli 2.21.1's ACP client
+`newSession`/`loadSession`): `executionTarget: {kind: "cloud-sandbox"}`,
+`sessionSource: "remote"` when KAS lists it in `sessionSources`, and
+`repositories` or `isEmptyWorkspace: true`. `session/load` carries only
+`sessionSource: "remote"`. KAS relays such a session to Kiro's cloud and
+forwards only the mode, target and repositories, so Kiro Crew sends
+`mcpServers: []`, no `customAgents` and no `set_mode`, and waits for no MCP
+readiness reports. The session runs Kiro's default agent with that sandbox's
+tools; Kiro Crew's MCP servers, agent spec and PreToolUse gate do not apply to
+it, which is what the operator opts into by choosing the profile (the change
+card catalog classes `kiro_cloud_profiles` and `default_profile` as code-exec). A start is refused,
+never run locally, when KAS's `initialize` does not list `cloud-sandbox` in
+`agentCapabilities._meta.kiro.executionTargets`. The provider binds the sandbox
+through the same `attach_remote_workspace` seam as a workspace, so an engine
+respawn re-binds it, and records the session with an empty workdir: the
+`[PROJECT]` rail then names the cloud sandbox instead of a gateway or guest
+path. `session_browse._resolve` raises `CloudSandboxOnly` (a
+`SessionEnvironmentUnavailable`) before any Coder call, so files, git, the
+terminal and the unsaved-work check all refuse it; the browse and file routes
+answer 409 `cloud_sandbox`. The slot environment response also names its recorded
+provider, even after its profile was removed or reused. The Files view waits for
+that placement query: a recorded `kiro_cloud` renders an informational
+`StatusNotice` without mounting any browse, read or terminal controls.
+Requests actually sent and rejected still render `ErrorNotice` with an agent
+hand-off. A failed placement read is an error, never permission to browse locally.
+Before publishing the runtime, the provider records Kiro's session id on the
+choice row, under the writer lock and only if it still names the prepared cloud
+profile. A cleared or changed choice refuses startup and the normal failed-setup
+cleanup kills the unpublished runtime without overwriting the new choice. A cloud
+session with messages and that durable record is locked even though no registry
+row exists, since its history lives in Kiro's cloud store. Archiving leaves the
+cloud session to Kiro.
+
+Kiro Cloud turns survive client disconnects. `turn_survives_disconnect` is False
+on `LLMProvider` and True only on the installed cloud harness's providers, so a
+graceful gateway shutdown skips their cooperative cancel and kills only the local
+relay. An explicit user Stop still cancels normally. The cloud teardown policy is
+local-only: chat teardown and post-load setup failures unregister without sending
+KAS delete, which would remove the sandbox. Incognito and temporary chats are no
+exception: the same provider shutdown runs on idle eviction, compaction, resets and
+gateway restarts, so it cannot tell a chat ending from Kiro Crew letting go, and a
+delete there would destroy the sandbox with any unpushed work in it. Only a start's
+own cleanup of a session it minted and recorded nowhere deletes; other KAS and local
+sessions are unchanged.
+
+Kiro Cloud is unavailable to incognito and temporary chats. Such a chat never reopens
+its native session (resume is for persistent chats only), so after an idle eviction
+or a restart a cloud start would mint a new sandbox and silently strand the earlier
+one's files. It is refused before any sandbox exists, at three points: the start
+(`_start_kiro_runtime_impl` raises `SessionEnvironmentUnavailable` once
+`prepare_for_session` returns a `PreparedCloudSession`), the chat's environment
+choice (`PUT /api/chat/slots/{slot}/environment` answers 400 `choice_refused` with
+`reason: private_chat`), and a configured default (`apply_default_environment`
+leaves the chat on this machine). Memory mode only tightens, so the strictest known
+mode, a committed tightening included, decides. Coder and other remotes stay
+choosable.
+
+`session/load` can replay `session/request_permission` before returning. Only the
+exact cloud session being loaded may hold those requests, off the reader loop,
+under the existing answer-task/frame-size bounds and a 60-second registration
+limit. Successful local setup queues them for the normal approval dispatcher;
+init and stale-frame drains cannot reject them as an abandoned local turn.
+Failure to register or expiry answers with the existing audited rejection path.
+History replay frames are still dropped, not inserted into a fresh turn.
+
+When cloud load fails, the existing fresh-session/history-replay fallback remains.
+A successful replacement logs the event and stores a one-shot startup notice on
+the provider. The next dashboard claim surfaces it as a persisted `error` row
+(something the user had did not reopen, so it renders through the transcript's
+`ErrorCard`, per `errors-use-error-notice`), not prompt context, with
+`meta.kind = cloud_session_replayed`; the card renders that kind's localized
+sentence in every locale. No row is emitted for a successful reload or an
+ordinary local/KAS fallback.
 
 ## Essential-context delivery contract
 
