@@ -2868,7 +2868,7 @@
             "trailer_required": "Gib einen Commit-Trailer ein.",
             "unit_hours_one": "Stunde",
             "unit_hours_other": "Stunden",
-            "wake_new_work_hint": "Eine Crew beginnt einen Durchlauf, sobald ein Issue eines ihrer Labels erhält, oder bei einer Crew ohne Labels, sobald ein neues Issue eröffnet wird. Aus: Crews schauen nur nach ihrem Leerlauf-Timer.",
+            "wake_new_work_hint": "Eine Crew beginnt einen Durchlauf, sobald ein Issue eines ihrer Labels erhält, oder bei einer Crew ohne Labels, sobald ein neues Issue eröffnet wird. Aus: Eine Crew wird trotzdem geweckt, wenn sie einen freien Platz und etwas Neues zum Übernehmen hat; sonst wartet sie auf ihren Leerlauf-Timer.",
             "wake_new_work_label": "Crews bei neuer Arbeit wecken"
           },
           "editor": {
@@ -2881,7 +2881,7 @@
             "aria_edit": "Crew {{name}} bearbeiten",
             "automerge_hint": "Mergt, sobald ein Mensch zustimmt. Der Branch-Schutz greift weiterhin.",
             "automerge_label": "Auto-Merge bei grün aktivieren",
-            "backstop_fixed": "Fest: alle {{seconds}} s, wenn nichts anderes sie weckt.",
+            "backstop_fixed": "Fest: alle {{active}} s, solange sie an einem Issue arbeitet, sonst alle {{seconds}} s, wenn nichts anderes sie weckt.",
             "backstop_label": "Leerlauf-Weckruf",
             "cancel": "Abbrechen",
             "conflicts_hint": "Nur bei schlüsselbasierten Dateien und solchen, an die nur angefügt wird. Ein Konflikt in einem .py- oder .tsx-Hunk eskaliert stattdessen.",

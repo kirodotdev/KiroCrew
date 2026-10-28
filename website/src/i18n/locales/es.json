@@ -2881,7 +2881,7 @@
             "unit_hours_many": "horas",
             "unit_hours_one": "hora",
             "unit_hours_other": "horas",
-            "wake_new_work_hint": "Un equipo empieza un turno en cuanto una incidencia recibe una de sus etiquetas o, para un equipo sin etiquetas, en cuanto se abre una incidencia nueva. Desactivado: los equipos solo miran según su temporizador de inactividad.",
+            "wake_new_work_hint": "Un equipo empieza un turno en cuanto una incidencia recibe una de sus etiquetas o, para un equipo sin etiquetas, en cuanto se abre una incidencia nueva. Desactivado: un equipo aún despierta cuando tiene un hueco libre y algo nuevo que tomar; si no, espera a su temporizador de inactividad.",
             "wake_new_work_label": "Despertar a los equipos cuando aparece trabajo nuevo"
           },
           "editor": {
@@ -2894,7 +2894,7 @@
             "aria_edit": "Editar el equipo {{name}}",
             "automerge_hint": "Fusiona en el momento en que una persona aprueba. La protección de rama sigue controlándolo.",
             "automerge_label": "Activar la fusión automática al estar en verde",
-            "backstop_fixed": "Fijo: cada {{seconds}} s si nada más lo despierta.",
+            "backstop_fixed": "Fijo: cada {{active}} s mientras trabaja en una incidencia, si no cada {{seconds}} s, salvo que algo más lo despierte.",
             "backstop_label": "Despertar por inactividad",
             "cancel": "Cancelar",
             "conflicts_hint": "Solo archivos con claves o de solo añadido. Un conflicto en un fragmento .py o .tsx se escala en su lugar.",

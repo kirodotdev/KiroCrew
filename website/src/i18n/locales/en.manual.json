@@ -877,7 +877,7 @@
             "trailer_required": "Enter a commit trailer.",
             "unit_hours_one": "hour",
             "unit_hours_other": "hours",
-            "wake_new_work_hint": "A crew starts a turn as soon as an issue gets one of its labels, or, for a crew with no labels, a new issue opens. Off: crews only look on their idle timer.",
+            "wake_new_work_hint": "A crew starts a turn as soon as an issue gets one of its labels, or, for a crew with no labels, a new issue opens. Off: a crew still wakes when it has a free slot and something new to pick up; otherwise it waits for its idle timer.",
             "wake_new_work_label": "Wake crews when new work appears"
           },
           "editor": {
@@ -890,7 +890,7 @@
             "aria_edit": "Edit Crew {{name}}",
             "automerge_hint": "Merges once a human approves.",
             "automerge_label": "Arm auto-merge when green",
-            "backstop_fixed": "Fixed: every {{seconds}}s if nothing else wakes it.",
+            "backstop_fixed": "Fixed: every {{active}}s while it works on an item, every {{seconds}}s otherwise, unless something else wakes it.",
             "backstop_label": "Idle wake",
             "cancel": "Cancel",
             "conflicts_hint": "Only keyed / append-only files.",

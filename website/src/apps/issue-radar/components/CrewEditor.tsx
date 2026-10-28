@@ -64,9 +64,15 @@ import { useImeGuard } from '../../../hooks/useImeGuard'
 import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 
 /** Backstop wake, in seconds. A CONSTANT, not state: see the file header.
- *  Mirrors `crew_runtime_session.DEFAULT_IDLE_SECS`, the `idle_secs` every
- *  crew loop is armed with; `IssueRadarCrewEditor.test.tsx` fails if they drift. */
-const BACKSTOP_WAKE_SECONDS = 300
+ *  Mirrors `crew_runtime_session.DEFAULT_IDLE_SECS`, the `idle_secs` a crew loop
+ *  is armed with while none of its items is in an acting phase (the watcher wakes
+ *  it for everything it can see); `IssueRadarCrewEditor.test.tsx` fails if they
+ *  drift. */
+const BACKSTOP_WAKE_SECONDS = 86400
+
+/** Wake gap while the crew has an item in an acting phase. Mirrors
+ *  `crew_runtime_session.ACTIVE_IDLE_SECS`; the same test fails if they drift. */
+const ACTIVE_WAKE_SECONDS = 300
 
 /** `crew_store._DEFAULT_CREW`, mirrored so a fresh dialog shows what the store
  *  would have stored anyway — a create form that disagrees with the server's
@@ -1013,6 +1019,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
               />
               <p id="crew-editor-backstop-fixed" className="mt-1.5 text-[12px] text-muted">
                 {t('apps.issueRadar.views.crews.editor.backstop_fixed', {
+                  active: ACTIVE_WAKE_SECONDS,
                   seconds: BACKSTOP_WAKE_SECONDS,
                 })}
               </p>

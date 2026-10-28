@@ -1,4 +1,6 @@
-"""Mention asks a wake carried, kept on disk until the model CONSUMES the turn.
+"""Mention asks (and pickup-due reasons) a wake carried, kept on disk until the model
+CONSUMES the turn. A returned pickup clears that crew's pickup state, so it is woken
+again (``crew_runtime_pickup.return_pickup``); everything below describes asks.
 
 ``wake_crew`` reports success when it schedules a turn, but the turn still waits
 for a background-turn permit and for the runner's own preparation, and a cancel, a
@@ -102,7 +104,10 @@ def carry(
         for _at, a in spare[: max(0, len(rows) + len(fresh) - _MAX_PER_CREW)]:
             rows.pop(a, None)
         room = max(0, _MAX_PER_CREW - len(rows))
-        took = [a for a in dict.fromkeys(asks) if a in rows] + fresh[:room]
+        # A row a turn still carries is not taken again: an uncarry of this wake would
+        # delete it, and that turn's return with it (two pickups can share a reason).
+        again = [a for a in dict.fromkeys(asks) if a in rows and not _live(rows[a])]
+        took = again + fresh[:room]
         if took:
             rows.update({a: f"{BOOT} {int(time.time())}" for a in took})
             _write(owner, repo, root, doc)

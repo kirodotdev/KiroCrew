@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from . import crew_model, crew_store, provider, store
 from .crew_runtime_prompt import compose_turn_prompt_async
 from .crew_runtime_session import (
     APP_NAME,
+    OWN_LOOP_GAPS,
     _autonudge_instance,
     _call_if_present,
     _current_crew,
@@ -33,6 +35,7 @@ from .crew_runtime_session import (
     _rehydrate,
     _slot_key,
     _turn_model_items,
+    crew_loop_gap,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
@@ -231,6 +234,7 @@ async def wake_crew(
     reason: str = "",
     root: Path | None = None,
     key: provider.RepoKey | None = None,
+    dispatched_at: list[float] | None = None,
 ) -> bool:
     """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
 
@@ -273,7 +277,7 @@ async def wake_crew(
     already written when this read ran.
     """
     try:
-        return await _wake_crew_body(state, owner, repo, crew, reason, root, key)
+        return await _wake_crew_body(state, owner, repo, crew, reason, root, key, dispatched_at)
     finally:
         current = await _current_crew(owner, repo, crew, root)
         if current is None or not is_live(current):
@@ -295,6 +299,7 @@ async def _wake_crew_body(
     reason: str = "",
     root: Path | None = None,
     key: provider.RepoKey | None = None,
+    dispatched_at: list[float] | None = None,
 ) -> bool:
     """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
 
@@ -399,6 +404,10 @@ async def _wake_crew_body(
     if turn_items is not None:
         crew_model.apply_turn_model(state, slot, at_dispatch, turn_items)
     tagged = f"[crew wake: {reason}]\n{prompt}" if reason else prompt
+    if dispatched_at is not None:
+        # The turn's start for the held-signal bound: nothing awaits between it and
+        # the dispatch, so a step the previous turn wrote is older than this.
+        dispatched_at.append(time.time())
     started = dispatch_crew_turn(state, slot, tagged)
     _call_if_present(state, "push_slots_update")
     # A hand pick the switch just saw goes on the record, as the watchdog pass
@@ -743,6 +752,8 @@ async def watchdog_cycle(
                     await _pause_stood_down_crew(svc, loop, owner, repo, crew, root)
                 elif not loop.active:
                     await svc.update(loop.id, active=True)
+                if not _stood_down(loop):
+                    await _retime_loop(svc, loop, owner, repo, crew, root)
         # The model the next idle-timer turn runs on: the loop fires on its own
         # clock, and this pass is what keeps the slot's model in step with the
         # ledger between wakes. A triage turn that moved an item into an acting
@@ -797,6 +808,38 @@ _STAND_DOWN_REASONS = frozenset({CONSECUTIVE_FAILURE_REASON, SESSION_START_FAILU
 
 def _stood_down(loop: Any) -> bool:
     return not loop.active and getattr(loop, "stopped_reason", "") in _STAND_DOWN_REASONS
+
+
+async def _retime_loop(
+    svc: Any,
+    loop: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None,
+) -> None:
+    """Move the crew's loop to the gap its items call for (:func:`crew_loop_gap`).
+
+    Only a loop on one of this app's own gaps (:data:`OWN_LOOP_GAPS`) is moved, and
+    only when the gap changed, so a steady crew costs no loop write. Any other
+    interval was set by an operator and is kept. The write carries a precondition the
+    service re-takes under its mutation lock, so an interval an operator sets after
+    this read is kept as well.
+
+    shortcut: an operator who sets exactly one of :data:`OWN_LOOP_GAPS` is moved like
+    an app-armed loop; telling them apart needs a record of who wrote the interval,
+    worth adding if operators pin crews at those values.
+    """
+    captured = getattr(loop, "idle_secs", None)
+    if captured not in OWN_LOOP_GAPS:
+        return
+    idle = await crew_loop_gap(owner, repo, crew, root)
+    if idle != captured:
+        await svc.update(
+            loop.id,
+            idle_secs=idle,
+            precondition=lambda live: getattr(live, "idle_secs", None) == captured,
+        )
 
 
 #: The pause reason a stood-down crew carries. The crew page shows it beside Resume,

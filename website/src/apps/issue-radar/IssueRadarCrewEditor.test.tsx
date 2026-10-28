@@ -760,11 +760,15 @@ describe('CrewEditor — the idle wake shows the interval crews really use', () 
     const match = /^DEFAULT_IDLE_SECS = (\d+)$/m.exec(src)
     expect(match).not.toBeNull()
     const idleSecs = Number(match![1])
+    // The gap while an item is in an acting phase, named in the same line.
+    const active = /^ACTIVE_IDLE_SECS = (\d+)$/m.exec(src)
+    expect(active).not.toBeNull()
+    const activeSecs = Number(active![1])
 
     await openCreate()
     expect(screen.getByTestId('crew-editor-backstop')).toHaveValue(String(idleSecs))
     expect(
-      screen.getByText(i18nT(`${K}.backstop_fixed`, { seconds: idleSecs })),
+      screen.getByText(i18nT(`${K}.backstop_fixed`, { active: activeSecs, seconds: idleSecs })),
     ).toBeInTheDocument()
   })
 })

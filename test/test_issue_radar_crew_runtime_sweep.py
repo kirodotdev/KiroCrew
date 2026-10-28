@@ -1139,7 +1139,10 @@ class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(woken, {self.cid: [cr.SIG_HUMAN_ANSWERED]})
         wake.assert_awaited_once()
-        self.assertEqual(wake.await_args.args[4], "#7 human-answered by @alice")
+        self.assertEqual(
+            wake.await_args.args[4],
+            "#7 human-answered by @alice; pickup-due (1 claimable, 3 of 3 slots free)",
+        )
         self.assertNotIn(7, self._skipped())
         answers = off_loop(cs.read_answers, OWNER, REPO, self.root)
         self.assertEqual(answers["7"]["actor"], "alice")
@@ -1279,7 +1282,10 @@ class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
         woken, wake = await self._sweep(client)
 
         self.assertEqual(woken, {self.cid: [cr.SIG_HUMAN_ANSWERED]})
-        self.assertEqual(wake.await_args.args[4], "#8 human-answered by @alice")
+        self.assertEqual(
+            wake.await_args.args[4],
+            "#8 human-answered by @alice; pickup-due (1 claimable, 3 of 3 slots free)",
+        )
         self.assertNotIn(8, self._skipped())
 
     async def test_the_forge_list_wins_over_a_cache_that_still_shows_the_label(self):
@@ -1307,7 +1313,10 @@ class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
         woken, wake = await self._sweep(client)
 
         self.assertEqual(woken, {self.cid: [cr.SIG_HUMAN_ANSWERED]})
-        self.assertEqual(wake.await_args.args[4], "#8 human-answered by @alice")
+        self.assertEqual(
+            wake.await_args.args[4],
+            "#8 human-answered by @alice; pickup-due (3 claimable, 3 of 3 slots free)",
+        )
         self.assertNotIn(8, self._skipped())
 
     async def test_an_off_page_issue_is_read_at_most_once_per_window(self):

@@ -135,7 +135,9 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
 
         _, wake = await self._sweep(client)
 
-        wake.assert_not_awaited()
+        # pickup-due runs whatever the setting (the idle clock needs it); the opt-in
+        # covers only the arrival wakes.
+        self.assertEqual(self._arrivals(wake), [])
         checks = cr.read_wake_checks(OWNER, REPO, self.root)
         self.assertEqual((checks["scope"], checks["new_mark"]), ({}, {}))
         # A truthy non-bool does not turn it on; only a JSON true does.
@@ -145,10 +147,10 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         # Turning it on seeds from that moment: what was labelled meanwhile wakes nobody.
         cs.write_settings(OWNER, REPO, {"crew_wake_on_new_work": True}, self.root)
         _, wake = await self._sweep(client)
-        wake.assert_not_awaited()
+        self.assertEqual(self._arrivals(wake), [])
         client.add_issue(8, ["bug"])
         _, wake = await self._sweep(client)
-        self.assertEqual(sorted(self._reasons(wake)), ["#8 new-issue", "#8 scope-label"])
+        self.assertEqual(sorted(self._arrivals(wake)), ["#8 new-issue", "#8 scope-label"])
 
     async def test_mention_wakes_are_off_unless_the_repo_opts_in(self):
         cs.write_settings(OWNER, REPO, {"crew_answer_mentions": False}, self.root)
@@ -325,20 +327,31 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
     def _reasons(wake) -> list[str]:
         return [call.args[4] for call in wake.await_args_list]
 
+    def _arrivals(self, wake) -> list[str]:
+        """Each wake's reasons without its pickup-due one; a pickup-only wake drops out."""
+        kept = (
+            "; ".join(p for p in r.split("; ") if not p.startswith("pickup-due"))
+            for r in self._reasons(wake)
+        )
+        return [r for r in kept if r]
+
     async def test_a_scope_label_wakes_once_after_a_silent_first_look(self):
         crew = _crew(self.root, labels=["Bug"])
         client = _WakeClient()
         client.add_issue(5, ["bug"])
         woken, wake = await self._sweep(client)
-        # First observation: the backlog is recorded, nobody is woken.
-        self.assertEqual(woken, {})
-        wake.assert_not_awaited()
+        # First observation: the backlog is recorded and names no issue. The one wake
+        # is pickup-due -- the crew has room and #5 to choose from.
+        self.assertEqual(woken, {crew["id"]: [cr.SIG_PICKUP_DUE]})
+        self.assertEqual(self._reasons(wake), ["pickup-due (1 claimable, 3 of 3 slots free)"])
 
         client.add_issue(6, ["bug", "ui"])
         client.add_issue(7, ["docs"])
         woken, wake = await self._sweep(client)
         self.assertEqual(woken, {crew["id"]: [cr.SIG_SCOPE_LABEL]})
-        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+        self.assertEqual(
+            self._reasons(wake), ["#6 scope-label; pickup-due (2 claimable, 3 of 3 slots free)"]
+        )
 
         woken, wake = await self._sweep(client)
         self.assertEqual(woken, {})
@@ -381,11 +394,15 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
 
         self.wake_result = False  # mid-turn: the wake is dropped
         _, wake = await self._sweep(client)
-        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+        self.assertEqual(
+            self._reasons(wake), ["#6 scope-label; pickup-due (1 claimable, 3 of 3 slots free)"]
+        )
 
         self.wake_result = True
         woken, wake = await self._sweep(client)
-        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+        self.assertEqual(
+            self._reasons(wake), ["#6 scope-label; pickup-due (1 claimable, 3 of 3 slots free)"]
+        )
         self.assertIn(crew["id"], woken)
 
         _, wake = await self._sweep(client)
@@ -396,13 +413,16 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         client = _WakeClient()
         client.add_issue(5, ["bug"])
         _, wake = await self._sweep(client)
-        wake.assert_not_awaited()
+        # No new-issue reason for what was already open; the room is pickup-due's.
+        self.assertEqual(self._reasons(wake), ["pickup-due (1 claimable, 3 of 3 slots free)"])
 
         client.add_issue(6, [])
         client.add_issue(7, [cr.CLAIM_LABEL])
         woken, wake = await self._sweep(client)
         self.assertEqual(woken, {crew["id"]: [cr.SIG_NEW_ISSUE]})
-        self.assertEqual(self._reasons(wake), ["#6 new-issue"])
+        self.assertEqual(
+            self._reasons(wake), ["#6 new-issue; pickup-due (2 claimable, 3 of 3 slots free)"]
+        )
         # An old issue gaining labels is not new to a crew with no scope.
         client.add_issue(5, ["bug", "ui"], updated_at=_LATER)
         _, wake = await self._sweep(client)
@@ -471,7 +491,9 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         client.login = ""
         client.add_issue(6, ["bug"])
         _, wake = await self._sweep(client)
-        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
+        self.assertEqual(
+            self._reasons(wake), ["#6 scope-label; pickup-due (1 claimable, 3 of 3 slots free)"]
+        )
 
         client.login = "crew-bot"
         woken, wake = await self._sweep(client)
@@ -482,11 +504,22 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         crew = _crew(self.root)
         client = _WakeClient()
         client.add_issue(5)
-        await self._sweep(client)
+        _, wake = await self._sweep(client)
+        await self._consume(crew, wake)  # the first-look pickup turn ran
         client.note(5, 101, "alice", "@crew-bot ?")
         _, wake = await self._sweep(client)
         self.assertEqual(self._reasons(wake), ["#5 asked 101"])  # scheduled, settled
         return crew, client
+
+    @staticmethod
+    async def _consume(crew, wake):
+        """The model consumed each turn *wake* dispatched, as its runner reports it."""
+        from kiro_crew.apps.builtins.issue_radar.backend import crew_wake_inflight as inflight
+
+        for call in wake.await_args_list:
+            await inflight._on_admission(
+                f"crew-{crew['id']}", f"[crew wake: {call.args[4]}]\n", True
+            )
 
     async def _end_turn(self, crew, outcome):
         """Run the scheduled turn through the real capped runner. *outcome*: what the

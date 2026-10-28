@@ -60,7 +60,7 @@ from kiro_crew.apps.manager import is_app_enabled  # noqa: F401
 from kiro_crew.atomic_write import atomic_write, read_json_or
 
 from . import crew_answer_store as _answer_store
-from . import crew_store
+from . import crew_model, crew_store
 from . import crew_wake_inflight as _inflight
 from . import github_client, gitlab_queries, provider, store
 from .crew_mention_scan import (  # noqa: F401 -- re-exported for callers and tests
@@ -71,7 +71,24 @@ from .crew_mention_scan import (  # noqa: F401 -- re-exported for callers and te
     _second_before,
     _thread_key,
 )
+from .crew_runtime_pickup import (
+    PICKUP_SECTION,
+    claimable_numbers,
+    fold_pickup_reasons,
+    is_pickup_reason,
+    return_pickup,
+    settle_pickup,
+    stage_pickup,
+)
 from .crew_runtime_session import is_live
+from .crew_runtime_signal_hold import (
+    charge_turns,
+    credit_turn,
+    fingerprint_basis,
+    is_held,
+    read_steps,
+    resolve_mark,
+)
 from .crew_runtime_supervision import wake_crew, watchdog_cycle
 from .mention_match import mentions
 
@@ -81,6 +98,7 @@ from .mention_match import mentions
 # owner that binds the name, and a write -- ``monkeypatch.setattr``, ``mock.patch`` -- reaches
 # every owner holding it (:mod:`kiro_crew._facade_mirror`). Owners never import this module. New
 # work goes to the owner of its responsibility:
+#   ``crew_runtime_pickup`` -- the pickup-due decision: room plus claimable work
 #   ``crew_runtime_prompt`` -- the brief, the nudge and the turn prompt
 #   ``crew_runtime_session`` -- the crew's slot, minting its grant, launch and turn dispatch
 #   ``crew_runtime_supervision`` -- trust reconciliation, wake, watchdog, hooks, revocation
@@ -993,14 +1011,18 @@ async def detect_human_answers(
 #
 # Each one seeds on first observation, like every other signal here: a crew seen for
 # the first time (or whose scope changed) records what is already there and wakes for
-# nothing, so connecting a repo cannot wake a crew for its whole backlog. And each is
-# committed only when the wake STARTED a turn: ``wake_crew`` drops a wake on a crew
-# that is mid-turn, so a signal recorded as handled then would be lost until the idle
-# clock. Uncommitted, the next sweep finds it again. A mention is kept as a pending
-# reason instead, because its comment cursor has already moved past it.
+# nothing, so connecting a repo cannot wake a crew for its whole backlog. The same read
+# also feeds ``pickup-due`` (:mod:`.crew_runtime_pickup`): one wake, not one per issue,
+# when the crew has room and more to choose from than it last saw -- the case a full
+# crew would otherwise wait out on its idle clock. And each is committed only when the wake
+# STARTED a turn: ``wake_crew`` drops a wake on a crew that is mid-turn, so a signal
+# recorded as handled then would be lost until the idle clock. Uncommitted, the next
+# sweep finds it again. A mention is kept as a pending reason instead, because its
+# comment cursor has already moved past it.
 #
-# Cost, per sweep and repo with a live crew and either setting on: one open-issues
-# read (by update time, labels included); for mentions on GitHub one repository-comments read, on GitLab one
+# Cost, per sweep and repo with a live crew: one open-issues read (by update time,
+# labels included), which pickup-due needs whatever the settings; with mentions on, on
+# GitHub one repository-comments read, on GitLab one
 # updated-issues and one updated-MRs read plus one notes read per thread updated since
 # the cursor, at most :data:`MAX_MENTION_THREADS_PER_SWEEP`. State lives in
 # ``crew-wake-checks.json``.
@@ -1039,7 +1061,7 @@ def read_wake_checks(owner: str, repo: str, root: Path | None = None) -> dict[st
     which seeds rather than wakes on the next sweep. A file that exists but cannot
     be read raises :class:`WakeChecksUnreadable`: an empty fallback would be saved
     over it and erase the pending asks it holds."""
-    out: dict[str, Any] = {"scope": {}, "new_mark": {}, "mentions": {}}
+    out: dict[str, Any] = {"scope": {}, "new_mark": {}, "mentions": {}, PICKUP_SECTION: {}}
     path = wake_checks_path(owner, repo, root)
     if not path.is_file():
         return out
@@ -1130,6 +1152,7 @@ async def detect_new_work(
     before = json.dumps(checks, sort_keys=True)
     reasons: dict[str, list[str]] = {}
     staged: dict[str, dict[str, Any]] = {}
+    pickup_due: dict[str, str] = {}
     live_ids = [str(c.get("id")) for c in live]
 
     # Each crew's own threads: the issue numbers and the PR numbers of its items, and
@@ -1137,12 +1160,15 @@ async def detect_new_work(
     # item, but the question is for the crew that holds the work now).
     owned: dict[str, tuple[set[int], set[int]]] = {}
     held: dict[str, tuple[set[int], set[int]]] = {}
+    acting: set[str] = set()
     for crew in live:
         cid = str(crew.get("id"))
         items = await asyncio.to_thread(
             partial(crew_store.list_work_items, owner, repo, cid, scope)
         )
         live_items = [it for it in items if it.get("phase") not in crew_store.TERMINAL_PHASES]
+        if crew_model.has_acting_item(live_items):
+            acting.add(cid)
         for into, group in ((owned, items), (held, live_items)):
             into[cid] = (
                 {n for it in group if isinstance(n := it.get("number"), int)},
@@ -1155,33 +1181,66 @@ async def detect_new_work(
         # Off (the default): no marks kept, so turning it on later seeds from that
         # moment instead of waking for everything labelled meanwhile.
         checks["scope"], checks["new_mark"] = {}, {}
-    issues = None
-    if new_work_on or settings.get("crew_answer_mentions") is True:
-        issues = await asyncio.to_thread(partial(_read_open_issues, key))
+    # Carried reasons whose turn ended before consuming them (cancel, permit timeout,
+    # restart) come back before anything is staged: asks go back on the queue (their
+    # comments are already read), and a pickup clears its state so this sweep wakes
+    # for it again. They leave the in-flight file only after the checks are saved.
+    returned: dict[str, list[str]] = {}
+    for crew in live:
+        cid = str(crew.get("id"))
+        lost, carried = await asyncio.to_thread(partial(_inflight.review, owner, repo, scope, cid))
+        returned[cid] = lost
+        asks_lost = return_pickup(checks, cid, lost)
+        if settings.get("crew_answer_mentions") is True:
+            _inflight.requeue(checks["mentions"], cid, asks_lost, carried)
+    # Read for every live crew, setting or not: pickup-due below is what wakes a crew
+    # with room once its idle clock is the day-long backstop, so it cannot be opt-in.
+    issues = await asyncio.to_thread(partial(_read_open_issues, key)) if live else None
     rows = _issue_rows(issues) if issues is not None else []
-    if issues is not None and new_work_on:
+    if issues is not None:
         needs_human = str(settings.get("needs_human_label") or "").strip().casefold()
         blocked = {_prompt.CLAIM_LABEL.casefold()} | ({needs_human} if needs_human else set())
         skips = await asyncio.to_thread(partial(crew_store.read_skips, owner, repo, scope))
         skipped = {int(k) for k in skips if str(k).isdigit()}
         for crew in live:
             cid = str(crew.get("id"))
-            mine = owned[cid][0]
-            free = [
+            crew_scope = _crew_scope(crew)
+            if new_work_on:
+                mine = owned[cid][0]
+                free = [
+                    (number, labels)
+                    for number, labels, _stamp in rows
+                    if not labels & blocked and number not in skipped and number not in mine
+                ]
+                if crew_scope:
+                    _scope_wakes(checks, cid, crew_scope, free, reasons, staged)
+                else:
+                    _new_issue_wakes(checks, cid, free, rows, reasons, staged)
+            if cid in acting:
+                # Its turns advance that item before picking anything up (the brief's
+                # per-turn order), so the state stays as it was until the item parks.
+                continue
+            # Only the crew's OPEN items are its own here: an issue it resolved and
+            # someone reopened is a candidate like any other.
+            claimable = [
                 (number, labels)
                 for number, labels, _stamp in rows
-                if not labels & blocked and number not in skipped and number not in mine
+                if not labels & blocked and number not in skipped and number not in held[cid][0]
             ]
-            crew_scope = _crew_scope(crew)
-            if crew_scope:
-                _scope_wakes(checks, cid, crew_scope, free, reasons, staged)
-            else:
-                _new_issue_wakes(checks, cid, free, rows, reasons, staged)
+            stage_pickup(
+                checks,
+                cid,
+                claimable_numbers(claimable, crew_scope),
+                held[cid][0],
+                int(crew.get("max_open") or 0),
+                staged,
+                pickup_due,
+            )
 
     # Crews that are not live (retired, deleted, paused) keep no scope state. Their
     # pending asks are dropped only once the crew is gone for good: a paused crew's
     # questions are already read, and it answers them when it is resumed.
-    for section in ("scope", "new_mark"):
+    for section in ("scope", "new_mark", PICKUP_SECTION):
         for cid in [c for c in checks[section] if c not in live_ids]:
             checks[section].pop(cid, None)
     pending = checks["mentions"].get("pending")
@@ -1189,17 +1248,6 @@ async def detect_new_work(
         kept = await asyncio.to_thread(partial(crew_store.list_crews, owner, repo, scope))
         for cid in set(pending) - {str(c.get("id")) for c in kept}:
             pending.pop(cid, None)
-
-    # Carried asks whose turn ended before consuming them (cancel, permit timeout,
-    # restart) go back on the queue: their comments are already read. They leave
-    # the in-flight file only after the queue holding them is saved.
-    returned: dict[str, list[str]] = {}
-    for crew in live:
-        cid = str(crew.get("id"))
-        lost, carried = await asyncio.to_thread(partial(_inflight.review, owner, repo, scope, cid))
-        returned[cid] = lost
-        if settings.get("crew_answer_mentions") is True:
-            _inflight.requeue(checks["mentions"], cid, lost, carried)
 
     if settings.get("crew_answer_mentions") is True:
         await _detect_mentions(key, live, (held, owned), checks, rows, issues is not None, reasons)
@@ -1214,7 +1262,12 @@ async def detect_new_work(
         await asyncio.to_thread(partial(_inflight.settle, owner, repo, scope, cid, lost))
     # The issues on this page: a crew's seen marks for them are evicted last.
     visible = sorted({str(number) for number, _labels, _stamp in rows})
-    return reasons, {"checks": checks, "staged": staged, "visible": visible}
+    return reasons, {
+        "checks": checks,
+        "staged": staged,
+        "visible": visible,
+        "pickup_due": pickup_due,
+    }
 
 
 def _scope_wakes(
@@ -1435,6 +1488,7 @@ async def settle_new_work(
         if "mark" in staged:
             checks["new_mark"][cid] = staged["mark"]
             changed = True
+        changed = settle_pickup(checks, cid, staged) or changed
     pending = checks["mentions"].get("pending")
     if isinstance(pending, dict):
         for cid in [c for c in pending if results.get(c)]:
@@ -1572,6 +1626,13 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not due:
         if stale:
             await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
+        fold_pickup_reasons(
+            plan.get("pickup_due") or {},
+            reasons,
+            woken,
+            plan.get("staged") or {},
+            (SIG_SCOPE_LABEL, SIG_NEW_ISSUE, SIG_HUMAN_ANSWERED),
+        )
         await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan)
         return woken
 
@@ -1591,14 +1652,22 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     # unlock — fail-closed, exactly like an unknown reading.
     deps = await asyncio.to_thread(partial(_read_or_refresh_deps, key, scope))
 
-    # Pass 2 — fingerprint each due item, compare, then wake each crew ONCE.
+    # Pass 2 — fingerprint each due item, compare, then wake each crew ONCE. A signal
+    # stays raised until the crew records a step on its item (:mod:`.crew_runtime_signal_hold`):
+    # a started turn may handle another item, or fail partway.
+    from .crew_runtime_session import _slot_key as _crew_slot_key
+
+    raised: dict[str, list[tuple[str, Any]]] = {}
+    steps: dict[str, dict[int, float]] = {}
     for crew, item in due:
         crew_id = str(crew.get("id"))
         ikey = _item_key(crew_id, item.get("number"))
         entry = stored.get(ikey) if isinstance(stored.get(ikey), dict) else None
-        prev = (entry or {}).get("fp") if isinstance((entry or {}).get("fp"), dict) else None
+        basis = fingerprint_basis(entry)
         try:
-            fp = await asyncio.to_thread(partial(fingerprint_item, key, item, enriched, prev, deps))
+            fp = await asyncio.to_thread(
+                partial(fingerprint_item, key, item, enriched, basis, deps)
+            )
         except Exception:
             # A per-item failure leaves its mark UNTOUCHED, so the change is still
             # pending next cycle rather than being silently consumed by the error.
@@ -1609,15 +1678,35 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
                 exc_info=True,
             )
             continue
-        signals = detect_unblocks(prev, fp)
-        stored[ikey] = {"fp": fp, "checked_at": now}
+        if is_held(entry) and crew_id not in steps:
+            steps[crew_id] = await asyncio.to_thread(
+                partial(read_steps, key.owner, key.repo, crew_id, scope)
+            )
+        crew_steps = steps.get(crew_id, {})
+        credit_turn(entry, crew_steps, item.get("number"))
+        last_step = crew_steps.get(item.get("number"))  # type: ignore[arg-type]
+        busy = bool(getattr(state and state.get_slot(_crew_slot_key(crew)), "running", False))
+        stored[ikey], signals = resolve_mark(entry, fp, now, last_step, detect_unblocks, busy)
         if not signals:
             continue
+        raised.setdefault(crew_id, []).append((ikey, item.get("number")))
         woken.setdefault(crew_id, []).extend(signals)
         reasons.setdefault(crew_id, []).append(f"#{item.get('number')} {', '.join(signals)}")
 
+    # Written BEFORE the wake: a held mark keeps its old fingerprint, so a sweep cut
+    # short here (cancelled, shut down) raises the same signals next time.
     await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-    await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan)
+    fold_pickup_reasons(
+        plan.get("pickup_due") or {},
+        reasons,
+        woken,
+        plan.get("staged") or {},
+        (SIG_SCOPE_LABEL, SIG_NEW_ISSUE, SIG_HUMAN_ANSWERED),
+    )
+    started: dict[str, float] = {}
+    await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan, started)
+    if charge_turns(stored, raised, started):
+        await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
     return woken
 
 
@@ -1628,8 +1717,11 @@ async def _wake_and_settle(
     reasons: dict[str, list[str]],
     scope: Path | None,
     plan: dict[str, Any],
-) -> None:
+    started: dict[str, float] | None = None,
+) -> dict[str, bool]:
     """Wake each crew once, then commit the new-work signals whose wake started a turn.
+
+    Returns whether each crew's wake STARTED a turn, and fills *started* (:func:`_wake_for`).
 
     ``crew_answer_mentions`` is read again here, after every forge read of the sweep:
     an operator who turned it off while a mention scan was in flight has the scan's
@@ -1651,11 +1743,13 @@ async def _wake_and_settle(
                 await asyncio.to_thread(
                     partial(write_wake_checks, key.owner, key.repo, plan["checks"], scope)
                 )
-    # Asks are carried BEFORE the wake: the turn can be admitted before this returns.
+    # Asks and pickups are carried BEFORE the wake: the turn can be admitted before
+    # this returns. One left uncarried is out of this wake, and so is its pickup commit.
     from .crew_runtime_session import _slot_key as _crew_slot_key
 
     asks = {
-        cid: [r for r in why if r.split(" ")[1:2] == [SIG_ASKED]] for cid, why in reasons.items()
+        cid: [r for r in why if r.split(" ")[1:2] == [SIG_ASKED] or is_pickup_reason(r)]
+        for cid, why in reasons.items()
     }
     for cid, mine in asks.items():
         if mine and cid in crews_by_id:
@@ -1670,11 +1764,13 @@ async def _wake_and_settle(
                 took = []
             # An ask the in-flight file had no room for stays pending, out of this wake.
             asks[cid] = took
+            if any(is_pickup_reason(r) for r in mine if r not in took):
+                ((plan.get("staged") or {}).get(cid) or {}).pop("pickup", None)
             if not (kept := [r for r in reasons[cid] if r not in mine or r in took]):
                 reasons.pop(cid)
             else:
                 reasons[cid] = kept
-    results = await _wake_for(state, key, crews_by_id, reasons, scope)
+    results = await _wake_for(state, key, crews_by_id, reasons, scope, started)
     for cid, mine in asks.items():
         if mine and not results.get(cid):
             try:
@@ -1689,6 +1785,7 @@ async def _wake_and_settle(
             await settle_new_work(key, plan, results, scope, reasons)
         except Exception:
             logger.warning("issue-radar: recording new-work wakes failed", exc_info=True)
+    return results
 
 
 async def _wake_for(
@@ -1697,8 +1794,10 @@ async def _wake_for(
     crews_by_id: dict[str, dict[str, Any]],
     reasons: dict[str, list[str]],
     scope: Path | None,
+    started: dict[str, float] | None = None,
 ) -> dict[str, bool]:
-    """ONE wake per crew, carrying every reason. Returns whether each STARTED a turn.
+    """ONE wake per crew, carrying every reason. Returns whether each STARTED a turn;
+    *started* gets each started turn's own dispatch time (``wake_crew``'s stamp).
 
     Two items signalling in the same sweep is one turn's worth of work, and the second
     call would be dropped as mid-turn anyway — so the crew would have been told about
@@ -1711,6 +1810,8 @@ async def _wake_for(
     for crew_id, why in reasons.items():
         results[crew_id] = False
         try:
+            stamp: list[float] = []
+            before = time.time()
             results[crew_id] = bool(
                 await wake_crew(
                     state,
@@ -1720,8 +1821,11 @@ async def _wake_for(
                     "; ".join(why),
                     scope,
                     key,
+                    dispatched_at=stamp,
                 )
             )
+            if results[crew_id] and started is not None:
+                started[crew_id] = stamp[-1] if stamp else before
         except Exception:  # pragma: no cover - defensive
             logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)
     return results
@@ -1756,6 +1860,8 @@ async def _enrich(key: provider.RepoKey, prs: list[int]) -> dict[int, dict[str, 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
+    "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_pickup",
+    "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_signal_hold",
     "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_prompt",
     "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_session",
     "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_supervision",
@@ -1770,6 +1876,12 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_pickup import (  # noqa: F401
+        _CREW_LABEL_PREFIX,
+        _MAX_PICKUP_NUMBERS,
+        SIG_PICKUP_DUE,
+        _stored_state,
+    )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_prompt import (  # noqa: F401
         _BRIEF_PATH,
         BRIEF_SENTINEL,
@@ -1790,10 +1902,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ADMISSION_HOOK,
         _GRANTS,
         _HAS_SECURITY,
+        ACTIVE_IDLE_SECS,
         APP_NAME,
         DEFAULT_IDLE_SECS,
         GRANT_SOURCE,
         NO_PERMIT_CARD,
+        OWN_LOOP_GAPS,
         TRUST_TTL_SECS,
         _apply_turn_model,
         _autonudge_instance,
@@ -1809,6 +1923,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _tell_admission,
         _turn_model_items,
         autoapprove_scope,
+        crew_loop_gap,
         dispatch_crew_turn,
         ensure_crew_session,
         launch_crew,
@@ -1816,6 +1931,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         release_slot_grant,
         stop_sentinel_path,
         sync_trust,
+    )
+    from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_signal_hold import (  # noqa: F401
+        _STAMP_FORMAT,
+        SIGNAL_TURNS,
+        _committed,
+        _pending,
+        count_turn,
+        last_steps,
+        stamp_secs,
     )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_supervision import (  # noqa: F401
         _CREW_SLOT_PREFIX,
@@ -1831,6 +1955,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _on_slot_closed,
         _pause_stood_down_crew,
         _reconcile_trust,
+        _retime_loop,
         _retire_stood_down_loop,
         _revoke_generation,
         _stood_down,
@@ -1848,9 +1973,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the owner family, from their homes
     from kiro_crew.apps import (  # noqa: F401
         teardown,
-    )
-    from kiro_crew.apps.builtins.issue_radar.backend import (  # noqa: F401
-        crew_model,
     )
     from kiro_crew.apps.teardown import (  # noqa: F401
         register_slot_close_hook,
