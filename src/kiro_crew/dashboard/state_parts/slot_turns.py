@@ -22,14 +22,16 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_pending_consumers``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
-``_queue_persisted_sig``, ``_queue_repository``, ``_responsive``, ``_side``,
+``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
+``_responsive``, ``_side``,
 ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
-``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``,
+``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``, ``_swap_in_flight``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
 ``_turn_reply_mids``, ``_unstarted_generation``, ``_wake_starting_task``,
-``credential_evidence``, ``event``,
+``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
+``event``,
 ``linked_session_key``, ``segment_message_id``, ``segment_raw_text``,
 ``segment_removed``, ``segment_shown_sha``.
 
@@ -419,6 +421,14 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._dropped_note_ids = set()
     # Regenerate feature: variants pending attachment to next finalized assistant message
     self._pending_variants = []
+    # The previous reply a running Regenerate will replace at its turn end
+    # (``chat_turn.regenerate_swap``); ``None`` outside a Regenerate.
+    self._regenerate_target = None
+    # Committed Regenerate swaps, so a save whose window copy predates one
+    # re-takes it instead of writing the old reply back.
+    self._window_swap_epoch = 0
+    self._swap_in_flight = False
+    self._window_swap_applying = None
     self._lock = asyncio.Lock()
     self._file_changes = (
         []

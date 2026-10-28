@@ -78,6 +78,10 @@ if TYPE_CHECKING:
         _take_context_cap_seed,
     )
     from kiro_crew.dashboard.chat_turn.queue_drain import settle_drained_subagent_notices
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import (
+        regenerate_replaced_rows,
+        rows_before_regenerate_target,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import (
         _detach_appended_context,
         _folder_steering_turn,
@@ -157,7 +161,8 @@ async def _session_replay_history(
             _budget = {"budget_chars": CONTEXT_CAP_TAIL_CHARS} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
-            # whether or not the periodic flush has persisted it yet.
+            # whether or not the periodic flush has persisted it yet, and
+            # the previous reply a Regenerate turn is replacing.
             compressed = (
                 await asyncio.to_thread(
                     build_session_replay,
@@ -165,6 +170,7 @@ async def _session_replay_history(
                     session_key,
                     pending_messages=list(slot.messages),
                     current_message=_current_replay_message,
+                    exclude_messages=regenerate_replaced_rows(slot),
                     model_window=window_for_provider_client(client),
                     **_budget,
                 )
@@ -721,7 +727,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             )
 
             preamble = build_interrupted_turn_preamble(
-                list(slot.messages),
+                rows_before_regenerate_target(slot, list(slot.messages)),
                 current=_current_replay_message,
                 opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
             )

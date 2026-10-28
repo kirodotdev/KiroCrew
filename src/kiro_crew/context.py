@@ -1167,6 +1167,7 @@ def _replay_rows(
     exclude_last_n: int = 0,
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
+    exclude_messages: list[dict] | None = None,
 ) -> list[dict]:
     """Tail of the chain under per-role quotas, in chronological order.
 
@@ -1175,7 +1176,9 @@ def _replay_rows(
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
-        messages = _merge_replay_rows(messages, pending_messages or [], current_message)
+        messages = _merge_replay_rows(
+            messages, pending_messages or [], current_message, exclude_messages
+        )
     elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
     messages = _without_warm_task_brief_messages(messages)
@@ -1228,6 +1231,7 @@ def build_session_replay(
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
     budget_chars: int = _REPLAY_BUDGET_CHARS,
+    exclude_messages: list[dict] | None = None,
 ) -> str | None:
     """Build session replay from KiroCrew's conversation_log.
 
@@ -1242,6 +1246,8 @@ def build_session_replay(
     With *pending_messages*, merge the disk and live window by delivery identity
     and exclude *current_message* explicitly before applying quotas or budgets.
     The legacy *exclude_last_n* applies only when no live snapshot is supplied.
+    *exclude_messages* (with a live snapshot) are left out on both sides by
+    delivery identity: the previous reply a Regenerate is replacing.
 
     *model_window* scales the replay budget to the active model's context
     window (the dashboard's primary history vehicle — it must shrink on a
@@ -1255,6 +1261,7 @@ def build_session_replay(
         exclude_last_n=exclude_last_n,
         pending_messages=pending_messages,
         current_message=current_message,
+        exclude_messages=exclude_messages,
     )
     if not messages:
         return None

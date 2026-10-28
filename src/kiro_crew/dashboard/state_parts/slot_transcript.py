@@ -493,8 +493,11 @@ def append(
             self._on_row(self.key, msg)  # type: ignore[operator]
         except Exception:
             logger.debug("slot row hook failed", exc_info=True)
-    # Trim old messages to bound memory usage
-    if len(self.messages) > _MAX_SLOT_MESSAGES:
+    # Trim old messages to bound memory usage. Held while a Regenerate swap is
+    # in flight: a trim would credit a row the swap is retiring to the frozen
+    # prefix after the swap removed it from disk. The first append after the
+    # swap trims the whole excess.
+    if len(self.messages) > _MAX_SLOT_MESSAGES and not self._swap_in_flight:
         excess = len(self.messages) - _MAX_SLOT_MESSAGES
         # A trimmed leading window message may only join the frozen prefix
         # once it is actually on disk. Credit _disk_older_count only

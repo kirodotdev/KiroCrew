@@ -4,6 +4,9 @@ A taken-back steer keeps its row, with its text cleared, between the reply writt
 before the steer and the one written after it. Regenerate reads the nearest
 ``user`` row as the request, so it steps past that row to the request the turn was
 answering. A steer the turn read is still a request of its own.
+
+Nothing is removed when Regenerate is pressed: the rows after the request become
+the turn's target, replaced only once the new turn produces a reply.
 """
 
 from __future__ import annotations
@@ -52,13 +55,21 @@ def _take_back(state, slot, row: dict) -> None:
     assert row["content"] == ""
 
 
-async def _regenerate(state, slot):
+async def _regenerate(state, slot, armed: list[tuple[str, str]] | None = None):
     """POST regenerate with the turn stubbed out.
 
     Returns the status, the body, the stubbed turn and the variants it was handed.
+    *armed* collects the rows the turn was armed to replace once it has a reply.
     """
     variants: list[dict] = []
-    run_chat = AsyncMock(side_effect=lambda *a, **kw: variants.extend(slot._pending_variants))
+    armed = [] if armed is None else armed
+
+    def _turn(*_a, **_kw):
+        variants.extend(slot._pending_variants)
+        target = slot._regenerate_target
+        armed.extend((m["role"], m["content"]) for m in target.rows)
+
+    run_chat = AsyncMock(side_effect=_turn)
     with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run_chat):
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(f"/api/chat/slots/{slot.key}/regenerate")
@@ -79,12 +90,19 @@ async def test_regenerate_runs_the_prompt_before_a_taken_back_steer(state):
     _take_back(state, slot, _steer_row(slot))
     slot.append("assistant", _REPLY_AFTER_STEER)
     slot.drain()
+    before = _transcript(slot)
 
-    status, body, run_chat, variants = await _regenerate(state, slot)
+    armed: list[tuple[str, str]] = []
+    status, body, run_chat, variants = await _regenerate(state, slot, armed)
 
     assert status == 200, body
     assert run_chat.call_args.args[2] == _PROMPT
-    assert _transcript(slot) == [("user", _PROMPT)]
+    # The request row itself is the turn's current message: the taken-back steer
+    # after it is the newest user row, and a cold start must not replay the
+    # request as an unanswered turn.
+    assert run_chat.call_args.kwargs["_current_message"] is slot.messages[0]
+    assert _transcript(slot) == before
+    assert armed == before[1:]
     assert [v["content"] for v in variants] == [_REPLY_AFTER_STEER]
 
 
@@ -95,12 +113,15 @@ async def test_regenerate_takes_the_reply_before_a_taken_back_steer_with_none_af
     slot.append("assistant", _REPLY_BEFORE_STEER)
     _take_back(state, slot, _steer_row(slot))
     slot.drain()
+    before = _transcript(slot)
 
-    status, body, run_chat, variants = await _regenerate(state, slot)
+    armed: list[tuple[str, str]] = []
+    status, body, run_chat, variants = await _regenerate(state, slot, armed)
 
     assert status == 200, body
     assert run_chat.call_args.args[2] == _PROMPT
-    assert _transcript(slot) == [("user", _PROMPT)]
+    assert _transcript(slot) == before
+    assert armed == before[1:]
     assert [v["content"] for v in variants] == [_REPLY_BEFORE_STEER]
 
 
@@ -129,16 +150,16 @@ async def test_regenerate_still_runs_a_steer_the_turn_read_as_the_request(state)
     _steer_row(slot, STEER_STATE_CONSUMED)
     slot.append("assistant", _REPLY_AFTER_STEER)
     slot.drain()
+    before = _transcript(slot)
 
-    status, body, run_chat, variants = await _regenerate(state, slot)
+    armed: list[tuple[str, str]] = []
+    status, body, run_chat, variants = await _regenerate(state, slot, armed)
 
     assert status == 200, body
     assert run_chat.call_args.args[2] == _STEER
-    assert _transcript(slot) == [
-        ("user", _PROMPT),
-        ("assistant", _REPLY_BEFORE_STEER),
-        ("user", _STEER),
-    ]
+    assert run_chat.call_args.kwargs["_current_message"] is slot.messages[2]
+    assert _transcript(slot) == before
+    assert armed == [("assistant", _REPLY_AFTER_STEER)]
     assert [v["content"] for v in variants] == [_REPLY_AFTER_STEER]
 
 

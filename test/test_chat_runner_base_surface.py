@@ -765,9 +765,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_segment_row_meta",
             "function",
-            # links_ordered: keyword-only and defaulted, so every old caller keeps its shape.
+            # links_ordered and text: keyword-only and defaulted, so every old caller keeps its shape.
             "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None,"
-            " *, links_ordered: 'bool' = False) -> 'dict | None'",
+            " *, links_ordered: 'bool' = False, text: 'str | None' = None) -> 'dict | None'",
         ),
         ("_SEGMENT_RAW_MAX_CHARS", "value", "int"),
         (

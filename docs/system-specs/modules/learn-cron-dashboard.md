@@ -1976,9 +1976,10 @@ specified compatibility change.
   `/api/sessions/usage`) have no turn to carry the failure and `kiro-cli`
   auto-opens an interactive browser login when run unauthenticated (and
   `kiro-cli chat` hangs), so an unverified spawn on a timer opens a window and
-  leaks a process every poll; and the **destructive reruns** (regenerate,
-  edit-resend, rewind) have already rewritten durable history by the time a turn
-  could fail; and `POST /v1/chat/completions` has no transcript, so an error card
+  leaks a process every poll; and the **reruns** (regenerate, edit-resend,
+  rewind) would start a turn that fails at once: edit-resend and rewind have
+  already rewritten durable history by then, and a regenerate would end empty
+  and keep the reply it was asked to replace; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
   fails closed in all three. The usage routes skip the gate when the default
   harness is KAS and Crew's sign-in vault holds a usable identity: that read
@@ -2221,6 +2222,7 @@ surface. The modules of
 | `native_cards` | harness-native sub-agent Activity cards (kiro-cli's, KAS's and Claude Code's; `_native_subagent_sync`) and the native AskUserQuestion card (`_post_native_question_card`), and the stream's native sub-agent arms (`_on_subagent_list`, `_on_subagent_activity`) |
 | `account_identity` | the turn's reaction to the signed-in kiro-cli account changing: retiring the sessions an identity change invalidates (`_retire_sessions_on_identity_change`) and the signed-out latch |
 | `decisions_hooks` | the decisions hooks (`decisions.md`): the stale-decision drop, the strip hand-off, the tool-card risk annotation, and the Jev model routing family (`_route_model_for_turn` and its gates) |
+| `regenerate_swap` | a Regenerate's replace step (`settle_regenerate`): at the turn's end the previous reply is removed and kept as a variant only when the turn produced a reply, through one write pinned to the transcript and slot the Regenerate was authorized against; an empty turn leaves it in place. The committed swap's `chat_variant_switch` frame carries `retired` (`mids`, `approval_ids`), and the client drops those rows (`retireSwappedRows`) before the refetch, whose decided-row merge would otherwise re-seat a permission or elicitation card of the replaced turn |
 | `segment_flush` | finalizing an assistant text segment (`_flush_segment`): its redaction with the records, row meta, the variant stash, the `[OPTIONS:]` footer audit and the widget registration, and a local slash command's reply persisted through the same redaction (`_append_command_reply`), and the settle of the turn's answer once the stream ends (`_turn_settle_answer`): the terminal directive, the final segment, the refusal-fallback hop and refusal card, the post-compaction continuation and the empty-response ladder |
 | `turn_ending` | the if/elif chain that decides how a turn ends (`_turn_ending_chain`): the leaked tool-call notice, the L1 infrastructure retry, the promise-only and false-blocker recoveries, the spent-budget and progress-claim notices and the compaction-dropped leak card |
 | `turn_failures` | the except arms outside the `except AcpError` recovery ladder, and the ladder's terminal fall-through: a cancel (`_on_cancelled`), a sign-in and a busy prompt queue, each requeueing the message (`_on_auth_required`, `_on_prompt_busy`), a closing gateway (`_on_session_closing`), the ACP error card with the poisoned-conversation escalation: the canary probe and its settings, the discard and one requeue (`_on_acp_error_card`), and any other error (`_on_error`); the arm for a slot whose app agent is not loaded is `app_agent_binding`'s. A new arm that ends the turn goes here |
@@ -4852,13 +4854,18 @@ overflow rows carry the same kind, so they get the same card. Pinned by `test_co
 `ErrorCard.test.tsx`, `transcriptRenderers.test.tsx` and
 `useChatPageTurnRecovery.test.tsx`.
 
-**The destructive reruns are the exception and still fail closed.** `regenerate`,
-`edit-resend`, and `rewind` truncate `slot.messages` and **persist** the result
+**The reruns are the exception and still fail closed.** `edit-resend` and
+`rewind` truncate `slot.messages` and **persist** the result
 (`_save_slot_to_history`, `_pending_rewrite`) *before* dispatching the background
 turn, so "let the ACP attempt be the authority" does not hold for them: by the
 time the turn raises `AcpAuthRequired` the history is already rewritten and no
-error card can undo it. All three therefore call `reject_if_kiro_unverified`
-BEFORE any mutation, returning the shared `kiro_prerequisite_required` 503.
+error card can undo it. `regenerate` changes no history before its turn (it
+arms a `RegenerateTarget` and `settle_regenerate` swaps the reply only when the
+turn produced one, see the `regenerate_swap` row), so an auth failure would only
+end it empty with the reply kept; it is gated the same way so the press answers
+the setup notice instead of a turn that cannot run. All three therefore call
+`reject_if_kiro_unverified` BEFORE any mutation, returning the shared
+`kiro_prerequisite_required` 503.
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
 turn.)
 

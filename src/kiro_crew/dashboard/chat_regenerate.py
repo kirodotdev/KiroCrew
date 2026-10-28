@@ -11,7 +11,12 @@ from aiohttp import web
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_delivery import is_retracted_steer_row, queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
+from kiro_crew.dashboard.chat_runner import (
+    RegenerateTarget,
+    _run_chat,
+    _start_next_queued_turn,
+    release_regenerate_on_done,
+)
 from kiro_crew.dashboard.chat_utils import (
     adopt_variant_text,
     effective_session_key,
@@ -105,10 +110,13 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
 
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply."""
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
+    """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply.
+
+    The previous reply is replaced only when the new turn produced one; see
+    ``chat_turn.regenerate_swap``.
+    """
+    # The readiness latch is honored before the turn is dispatched, as for the
+    # other history actions.
     blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return blocked
@@ -147,10 +155,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # was sent into. The turn never read it, so it is not a user turn.
             if is_retracted_steer_row(msgs[i]):
                 continue
-            # Never cross a real user turn: the truncation below deletes
-            # everything after the target reply's user row, so a reply found
-            # PAST a newer user row (e.g. a /compact row awaiting only its
-            # notice) would take that newer turn with it, irreversibly.
+            # Never cross a real user turn: the replace step removes everything
+            # after the target reply's user row, so a reply found PAST a newer
+            # user row (e.g. a /compact row awaiting only its notice) would take
+            # that newer turn with it.
             if role == "user":
                 break
             if role != "assistant":
@@ -158,7 +166,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # A system notice (compaction / session reload) is a status row,
             # not the reply being regenerated: capturing it as the variant
             # would silently drop the real reply from variant history. The
-            # frontend's optimistic truncation runs the same skip.
+            # frontend's Regenerate scan runs the same skip.
             if is_system_notice("assistant", msgs[i].get("meta")):
                 continue
             ai_idx = i
@@ -195,79 +203,17 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 variants, current_entry["content"], ai_msg.get("variant_idx")
             )
 
-        del slot.messages[u_idx + 1 :]
-        slot.invalidate_source_links()
-        slot._dirty = True
-        slot._resumed_count = 0
-        # Window was truncated → next save MUST be the archive-safe rewrite path.
-        # If the inline save below fails, the flag keeps the flush loop on the
-        # rewrite path so the dropped tail is still archived.
-        slot._pending_rewrite = True
+        # Nothing is deleted or written here. The previous reply stays in the
+        # window and on disk while the new turn runs; the turn's end replaces it
+        # only if the turn produced a reply (``regenerate_swap.settle_regenerate``).
+        # A turn that ends empty -- refused, cancelled before output, failed --
+        # leaves it where it is.
         slot._pending_variants = variants
-
-        # Pin the transcript and the slot object this truncation was authorized
-        # against. Both are read BEFORE the write's await: that await frees the
-        # event loop while the worker thread runs, and a same-name
-        # close-and-recreate is NOT serialized against this slot._lock (the
-        # cleanup pops state._slots[name] and get_or_create_slot re-inserts,
-        # neither taking the original lock).
-        #
-        # Two axes can move, and they need two checks, matching the pair
-        # edit-resend below carries:
-        #   * routing -- save_slot_off_loop refuses the write (returns False,
-        #     nothing written) when the slot's routing resolves to a different
-        #     key at write time. This catches a RENAMED replacement.
-        #   * object identity -- a same-name recreate that resumes the same
-        #     transcript keeps the history key identical, so the routing check
-        #     passes and the stale rewrite would land on the replacement anyway.
-        #     expected_slot_name carries this slot's map key into the save, where
-        #     state._slots[name] is re-read at the locked commit boundary with no
-        #     await before the write: if the map holds a different slot the
-        #     save refuses (returns False). A pre-dispatch check cannot cover it
-        #     because the recreate can land inside the executor wait, after the
-        #     check and before the write.
-        #
-        # On either refusal the original slot is being torn down and its
-        # regeneration has no future, so nothing that would otherwise persist is
-        # lost; both refusals are recorded in the save's own log lines.
-        # best_effort keeps the site fire-and-forget: a genuine transient
-        # failure re-arms _dirty (and _pending_rewrite is already set) so the
-        # periodic flush retries.
+        replacing = list(slot.messages[u_idx + 1 :])
+        # Pin the replace write to the transcript and slot object authorized
+        # here. A same-name close-and-recreate or a rebind during the turn then
+        # refuses it, so it cannot rewrite the replacement's transcript.
         expected_history_key = slot_history_key(slot)
-        try:
-            msgs_snapshot = list(slot.messages)
-            committed = await save_slot_off_loop(
-                state,
-                slot,
-                msgs_snapshot,
-                expected_history_key=expected_history_key,
-                expected_slot_name=name,
-            )
-        except Exception:
-            logger.warning("Regenerate: failed to rewrite session history", exc_info=True)
-            committed = True
-        if request_app and state._slots.get(name) is not slot:
-            return slot_not_found()
-        if not committed:
-            # The save's own guards refused the write: the slot was rebound to
-            # another transcript, or a same-name recreate replaced it, while the
-            # write awaited its lock. The truncation exists only in this popped
-            # slot's in-memory window. Dispatching _run_chat now would run a turn
-            # on a removed slot and persist its truncated branch over the
-            # replacement's transcript, so abort without dispatching.
-            logger.warning(
-                "Regenerate: history save refused for %s (concurrent delete or recreate); "
-                "not dispatching the turn",
-                slot.key,
-            )
-            state.push_slots_update()
-            return web.json_response(
-                {
-                    "error": "the conversation changed while saving; retry",
-                    "code": "regenerate_save_refused",
-                },
-                status=409,
-            )
 
         sel().log_api_access(
             caller=request_app or "dashboard",
@@ -293,19 +239,29 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 # actor resolver's fallback is ``user``. ``""`` is the parameter's
                 # own default and reads as "not named".
                 _turn_actor="app" if request.get("app", "") else "",
+                # The request row itself, not the turn's newest-row guess: the
+                # previous reply now stays in the window, so a later steer,
+                # inject or subagent row can sit after the request, and a cold
+                # start would replay the request as an unanswered turn.
+                _current_message=msgs[u_idx],
             )
         )
         slot.task = task
+        # Armed AFTER ``slot.task``: that assignment moved ``_turn_generation`` to
+        # this turn's own value, and only a turn of that generation may settle it.
+        slot._regenerate_target = RegenerateTarget(
+            generation=slot._turn_generation,
+            rows=replacing,
+            history_key=expected_history_key,
+            slot_name=name,
+        )
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
 
-        def _clear_pending_on_done(t: asyncio.Task) -> None:
-            if slot._pending_variants:
-                if not t.cancelled() and t.exception() is None:
-                    logger.warning("Regenerate: pending variants not consumed by flush, discarding")
-                slot._pending_variants = []
-
-        task.add_done_callback(_clear_pending_on_done)
+        # The turn's end settles the target; one that exited without reaching
+        # it leaves the previous reply as it was, unless it handed the target
+        # to a recovery replay of its own message.
+        task.add_done_callback(release_regenerate_on_done(slot, slot._regenerate_target))
     state.push_slots_update()
     return web.json_response({"ok": True})
 

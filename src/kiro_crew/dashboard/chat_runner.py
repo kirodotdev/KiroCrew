@@ -199,6 +199,10 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _current_turn_carries_image_ref,
     _should_suppress_requeue,
 )
+from kiro_crew.dashboard.chat_turn.regenerate_swap import (  # noqa: F401
+    RegenerateTarget,
+    release_regenerate_on_done,
+)
 from kiro_crew.dashboard.chat_turn.segment_flush import (
     _flush_segment,
     _turn_settle_answer,
@@ -292,6 +296,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     expire_slack_options,
     mirror_is_paused,
     run_to_completion,
+    variant_from_row,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,

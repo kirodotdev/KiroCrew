@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         _forget_swept_replays,
         _purge_superseded_continuations,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import adopt_regenerate_target
     from kiro_crew.dashboard.chat_turn.steer_queue import (
         _actor_for_queue_items,
         _drop_stale_admissions,
@@ -1193,6 +1194,9 @@ async def _start_next_queued_turn(
         _run_chat(state, slot, next_msg, **_run_kwargs),
     )
     slot.task = task
+    # A recovery replay of a Regenerate's message takes over its target now
+    # that ``slot.task`` gave it the slot's generation.
+    adopt_regenerate_target(slot, consumed, task)
     if _settleable:
         # Open the retention clock on the result files this row promises — but
         # only once the turn has actually run and the model has consumed the
