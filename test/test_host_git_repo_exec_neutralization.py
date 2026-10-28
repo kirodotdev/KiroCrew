@@ -580,6 +580,11 @@ class TestDashboardFileDiff:
         _plant(repo, prog, drivers=False)
         # Untracked, so the handler reaches its `git status` probe.
         (repo / "new.txt").write_text("two\n")
+        # Make a tracked file stale relative to the index so git must re-read it
+        # during status, refresh the cached stat entry, and fire post-index-change.
+        # Without this, a fresh commit leaves every cached stat matching, git skips
+        # the re-check, and post-index-change never fires on fast runners.
+        os.utime(repo / "a.txt", (1, 1))
         # The editor's own `-c` flags pin fsmonitor; hooks were the open half.
         _prove_planted_vector_fires(repo, marker, "-c", "core.fsmonitor=", "status", "--porcelain")
 
