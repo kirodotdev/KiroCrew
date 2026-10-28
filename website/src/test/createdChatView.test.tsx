@@ -11,6 +11,9 @@
  *     create started there is still shown: it stages its token and focuses the
  *     composer, and nothing navigates the frame to `/chat`.
  *   - Two separate Alt+Shift+N presses during one create make two sessions.
+ *   - A page that starts holding a draft while the create runs is asked before
+ *     the delayed navigate. Refused, the created chat is kept, nothing
+ *     navigates, and no token is staged.
  *   - An embed Shift+click create the user switched tabs away from adds its tab
  *     behind the one the user picked, or fills the Sessions tab the user
  *     opened. A drag reorder of the user's own tab is not a switch.
@@ -59,6 +62,7 @@ import { setActiveSlot } from '../store/chatSlice'
 import { usePaletteActions } from '../components/commandPalette/paletteActions'
 import { useShellKeyboard } from '../shell/shortcuts/shellKeyboard'
 import EmbedTabStrip from '../components/EmbedTabStrip'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 
 const ORIGIN = 'chat-a'
 const OTHER = 'chat-b'
@@ -360,5 +364,79 @@ describe('embed tab strip Shift+click "+"', () => {
     expect(navigateSpy).not.toHaveBeenCalledWith(`/embed/chat/${NEW}?sid=${NEW}`)
     expect(store.getState().chat.activeSlot).toBe(OTHER)
     expect(storedTabs()).toContain(NEW)
+  })
+})
+
+describe('a page that starts holding a draft during the create', () => {
+  // The guard the page on screen registers: clean when the create starts, so
+  // an ask made then would pass, and dirty by the time the create settles.
+  let dirty = false
+  const guard = vi.fn(() => !dirty)
+
+  function guarded(store: ReturnType<typeof makeStore>) {
+    const Inner = wrapper(store)
+    return ({ children }: { children: ReactNode }) => (
+      <Inner><NavigationLeaveGuardProvider>{children}</NavigationLeaveGuardProvider></Inner>
+    )
+  }
+
+  beforeEach(() => {
+    dirty = false
+    guard.mockClear()
+  })
+
+  it('keeps a user on Settings when New session with token settles', async () => {
+    const store = makeStore(null)
+    goTo('/settings')
+    const { result } = renderHook(() => {
+      useRegisterNavigationLeaveGuard(guard)
+      return usePaletteActions()
+    }, { wrapper: guarded(store) })
+    act(() => result.current.newSessionWithToken('$zzq-skill'))
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+    dirty = true
+    await act(async () => { held.resolve({ key: NEW }) })
+    await waitFor(() => expect(guard).toHaveBeenCalledTimes(1))
+    expect(navigateSpy).not.toHaveBeenCalled()
+    expect(store.getState().chat.pendingInput).toBeNull()
+    // The session itself was made and stays.
+    expect(store.getState().chat.activeSlot).toBe(NEW)
+  })
+
+  it('keeps a user on Settings when Alt+Shift+N settles', async () => {
+    const store = makeStore(ORIGIN)
+    goTo('/settings')
+    renderHook(() => {
+      useRegisterNavigationLeaveGuard(guard)
+      useShellKeyboard({
+        toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
+        isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+      })
+    }, { wrapper: guarded(store) })
+    fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+    dirty = true
+    await act(async () => { held.resolve({ key: NEW }) })
+    await waitFor(() => expect(guard).toHaveBeenCalledTimes(1))
+    expect(navigateSpy).not.toHaveBeenCalled()
+    // No `focusSpy` check: an earlier test's composer focus is queued on an
+    // animation frame and can land in this test.
+    expect(store.getState().chat.activeSlot).toBe(NEW)
+  })
+
+  it('still brings the user to the chat when the page agrees to be left', async () => {
+    const store = makeStore(ORIGIN)
+    goTo('/settings')
+    renderHook(() => {
+      useRegisterNavigationLeaveGuard(guard)
+      useShellKeyboard({
+        toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
+        isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+      })
+    }, { wrapper: guarded(store) })
+    fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
+    await act(async () => { held.resolve({ key: NEW }) })
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat'))
+    expect(guard).toHaveBeenCalledTimes(1)
   })
 })

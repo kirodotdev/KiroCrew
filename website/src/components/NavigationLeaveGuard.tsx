@@ -225,6 +225,25 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
   }, [mayLeave, isCurrentUrl])
 }
 
+/**
+ * A navigate that asks the page on screen at the moment it runs, and says
+ * whether it went. For a navigation that follows an await, such as
+ * `showCreatedChat` after a create: asking before the create would be asking
+ * about a page that may hold nothing yet, and the user can start a draft
+ * during the seconds the create takes. A refusal leaves the user where they
+ * are and returns `false`, so the caller can skip whatever depends on the
+ * destination being shown.
+ */
+export function useAskingNavigate(): (route: string) => boolean {
+  const navigate = useNavigate()
+  const mayLeave = useMayLeaveForNavigation()
+  return React.useCallback((route: string) => {
+    if (!mayLeave()) return false
+    navigate(route)
+    return true
+  }, [navigate, mayLeave])
+}
+
 /* `TrapEntryState` / `isTrapEntry` live in `lib/routeHistoryPosition.ts`: the
  * arrows' position store must recognise a trap duplicate too (a trap is never a
  * Forward destination), and the lib is the leaf of this import edge. */

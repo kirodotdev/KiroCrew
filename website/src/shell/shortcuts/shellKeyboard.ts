@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/composerFocus'
@@ -41,7 +41,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   terminalPoppedOut: boolean
   activeSlotProject: string | undefined
 }) {
-  const navigate = useNavigate()
+  // The new-chat create can take seconds, so its navigate asks when it runs.
+  const navigate = useAskingNavigate()
   const dispatch = useAppDispatch()
   // The Provider's store, so the create is judged against the store it was
   // dispatched to; the module singleton would bypass a test-injected store.
@@ -56,7 +57,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     mutationFn: () => createChatForView(dispatch, appStore.getState, { defaultFolder: true }),
     onSuccess: (view) => {
       // A create the user moved away from (another session, another page)
-      // leaves the user there: no navigate and no composer focus.
+      // leaves the user there: no navigate and no composer focus. So does a
+      // page that refused to be left.
       if (!showCreatedChat(view, navigate)) return
       // Unguarded on purpose: this mutation only fires from the new-chat
       // keyboard shortcut, and a pressed shortcut proves a keyboard exists —

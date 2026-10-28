@@ -10,6 +10,7 @@ import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { selectSlotsWithLiveLastTs } from '../../../store/slotLastTs'
 import { resumeFromHistory, switchSlot } from '../../../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { focusComposerForOpenedSession, focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
@@ -249,6 +250,7 @@ export function useRecentsProvider(): ResourceProvider {
   // which slot is active. Read, never subscribed.
   const store = useAppStore()
   const navigate = useNavigate()
+  const askingNavigate = useAskingNavigate()
   const queryClient = useQueryClient()
   const slots = useAppSelector(selectSlotsWithLiveLastTs)
   const unread = useAppSelector((s) => s.dashboard.unreadSlots)
@@ -353,7 +355,7 @@ export function useRecentsProvider(): ResourceProvider {
               // this thunk into a duplicate session. A failed create, or one
               // the user moved away from, leaves the user where they are.
               void createChatForView(dispatch, store.getState, { defaultFolder: true })
-                .then((view) => { showCreatedChat(view, navigate) })
+                .then((view) => { showCreatedChat(view, askingNavigate) })
                 .catch(() => {})
             },
           })
@@ -415,5 +417,5 @@ export function useRecentsProvider(): ResourceProvider {
         return [...current, ...planned, ...older]
       },
     }
-  }, [dispatch, store, navigate, queryClient, slots, unread, slotStatusDetail, simplifiedToolNames])
+  }, [dispatch, store, navigate, askingNavigate, queryClient, slots, unread, slotStatusDetail, simplifiedToolNames])
 }

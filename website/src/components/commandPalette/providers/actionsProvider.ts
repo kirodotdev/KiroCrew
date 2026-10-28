@@ -1,12 +1,12 @@
 import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { Command, MessageSquarePlus, SunMoon, Keyboard, Pin } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { useSessionActions } from '../../../hooks/useSessionActions'
 import { useTheme } from '../../../hooks/useTheme'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
@@ -178,7 +178,7 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
 export function useActionsProvider(opts: { openShortcuts: () => void }): ResourceProvider {
   const dispatch = useAppDispatch()
   const store = useAppStore()
-  const navigate = useNavigate()
+  const navigate = useAskingNavigate()
   const { cycle } = useTheme()
   const { openShortcuts } = opts
 
