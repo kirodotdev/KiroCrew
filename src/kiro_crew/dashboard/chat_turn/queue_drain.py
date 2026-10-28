@@ -841,6 +841,22 @@ async def _start_next_queued_turn(
         _pop_send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
         if _pop_send_id:
             _pop_meta["sendId"] = _pop_send_id
+        # A peer's queued ``session_send`` names its sender (``meta.relay``, set
+        # only by the gateway's delivery path; an edit drops it). The rebuilt row
+        # is that one entry's text, so its own sender rides its own pop, and the
+        # live row draws the same incoming card a reload does. Only a
+        # well-formed record is copied: an entry restored from disk is data.
+        _pop_relay = (item.get("meta") or {}).get("relay")
+        if (
+            isinstance(_pop_relay, dict)
+            and isinstance(_pop_relay.get("senderKey"), str)
+            and _pop_relay["senderKey"]
+        ):
+            _pop_via = _pop_relay.get("via")
+            _pop_meta["relay"] = {
+                "senderKey": _pop_relay["senderKey"],
+                "via": _pop_via if isinstance(_pop_via, str) and _pop_via else "session_send",
+            }
         if _pop_meta:
             _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)

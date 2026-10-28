@@ -36,6 +36,20 @@ export function withoutSessionSeed(content: string, meta?: Record<string, unknow
   return parseSessionSeed(content, meta)?.body ?? content
 }
 
+/** {@link SEED_RE} at the start of every line, not only the first. */
+const SEED_LINES_RE = new RegExp(SEED_RE.source, 'gm')
+
+/** *content* without ANY line-start seed line, for a row the gateway already
+ *  proved a delivery (`meta.relay`). A drain that merged several queued sends
+ *  from one sender writes "[N queued messages merged]" and then each send under
+ *  its own line; a sender cannot type a lookalike, because `session_send`
+ *  defangs the envelope in the text it delivers. A person's own row is never
+ *  stripped. */
+export function withoutSessionSeeds(content: string, meta?: Record<string, unknown> | null): string {
+  if (meta && meta.human) return content
+  return content.replace(SEED_LINES_RE, '')
+}
+
 /** The slot-row fields the sender label reads. */
 export interface SeedRow { key: string; crew_root?: string }
 
@@ -48,4 +62,15 @@ export function seedSender(rows: readonly SeedRow[], sender: string, slotKey: st
   if (root && sender === root) return 'conductor'
   if (root && rows.find(row => row.key === sender)?.crew_root === root) return 'worker'
   return 'session'
+}
+
+
+/** Up to two initials of a sender's session title, for the avatar beside its
+ *  name: the first letter of the first two words, or the first two letters of
+ *  one word; a leading `@` / `#` is skipped. `?` when the title has none. */
+export function senderInitials(title: string): string {
+  const words = title.trim().split(/\s+/).map(w => w.replace(/^[@#]+/, '')).filter(Boolean)
+  if (!words.length) return '?'
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)
+  return letters.toUpperCase()
 }
