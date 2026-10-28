@@ -441,3 +441,18 @@ async def test_a_cli_that_fails_to_start_names_the_reinstall(
         await enterprise_boot.require_kiro_login()
     err = capsys.readouterr().err
     assert "kiro-cli did not start (segfault)" in err and "https://kiro.dev/cli/" in err
+
+
+@pytest.mark.asyncio
+async def test_no_login_exits_with_no_companion_installed(
+    enterprise: None,
+    fake_service: type[FakeService],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The login gate keys off the build's edition, not a companion.
+    monkeypatch.setattr("kiro_crew.platform.discovery.plugin_entry_points", lambda: [])
+    with pytest.raises(SystemExit) as exc:
+        await enterprise_boot.require_kiro_login()
+    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert "no Kiro sign-in was found" in capsys.readouterr().err
