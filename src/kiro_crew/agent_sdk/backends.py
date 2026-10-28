@@ -187,6 +187,8 @@ with no row here.
        the kiro-cli / KAS branch), and the card's kiro-family marker
    * - ``ACP_BACKENDS_NATIVE_TODOS``
      - semantic question (``SessionCapabilities.supports_native_todos``)
+   * - ``ACP_BACKENDS_NATIVE_WORKFLOWS``
+     - semantic question (``SessionCapabilities.native_workflows``)
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
@@ -933,6 +935,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_META_IDENTITY,
+    ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SIDE_READONLY,
