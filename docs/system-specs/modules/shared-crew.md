@@ -109,11 +109,127 @@ authoritative assigned-user directory. Per-person `usage` is `null`, and
 
 ### People and setup modes
 
+`crew_mode` puts every Crew in exactly one mode, served by `GET
+/api/shared-crew/mode` (dashboard user only, 403 otherwise). The People surface,
+setup guidance and session list follow it, and the modes never mix:
+
+| Mode | When | People shows | Session list |
+|---|---|---|---|
+| `personal` | no setup path is available or degraded, and no principal but the local operator viewing has been seen (the operator's bootstrap subjects `local-app`, `local-startup` and the configured owner are the same person; session creators are matched by id, never by a stored provenance) | setup guidance with each adapter's honest status, personal Remote Control | no creator bylines, no All/Mine control |
+| `network` | a Tailscale or Systems Manager path is on, or a network person or another operator has been seen | who has been seen (labelled as seen), each adapter read-only, personal Remote Control | bylines, filter |
+| `invalid` | the tailnet login allowlist could not be read | one error state with the reason code | bylines, filter |
+
+A team configuration is refused (`crew_mode.team_config_problem`) with reason
+`network_identity_config_unreadable` while the tailnet login allowlist could not be
+read (`config.resolution.tailnet_identity_unknown`, recorded by `access.note_tailnet`).
+The gateway logs the refusal at start (`crew_mode.validate_at_startup`, from
+`wiring.install`) and `lifecycle.team_config_middleware` refuses every tailnet
+person with 403 `{error, code: team_config_invalid, reason}` while it holds. The
+local operator keeps working and sees the error in People. An invalid team setup
+never falls back to personal mode, and the browser treats an unreadable mode route
+as an error, not as personal.
+
+The mode body: `mode`, `crew_id` (the gateway id; it keys the browser's remembered
+list filter), `viewer`, `team_config` (`state` `not_configured` | `invalid`, with
+`reason`, `capability`, `cause`), `console` (always `not_offered`), `adapters` (the
+setup paths), `systems_manager_attribution` (always `unavailable`) and
+`workload_identity_ref` (always `unavailable`). The Tailscale and Session Manager
+links are fixed public documentation pages.
+
+AWS Systems Manager governs its path through IAM and Session Manager. A port-forwarded
+Session Manager connection arrives on loopback with no forwarding header, so
+`derive_principal` cannot tell it from the operator's own browser: with a dashboard
+token it is the local operator, and its work is attributed to whoever runs the Crew.
+No verified connection-to-principal binding exists for Session Manager in this build,
+so Session Manager access to the host is the operator's own identity; People says so.
+Identity is never inferred from the OS user or a typed label, and loopback alone
+yields the local operator only together with a dashboard token.
+
+People has no role control in any mode. Its one invite and revoke control is the
+Tailscale invite card below, shown in `personal` and `network` mode to the owner only.
+Inviting adds a person to the tailnet, which is the sharing step. The access card
+(waiting list, Approve, Remove) is shown only with `local_authorization` on.
+
 ### Access set
 
 ### Tailscale invites
 
 ## 3. Session attribution and records
+
+`SessionAttribution` is stored under the metadata-line key
+`SESSION_ATTRIBUTION_META_KEY` (`attribution`). It is not `created_by`, which already
+names the creating slot key. It is write-once: `keep_creator` returns the stored value
+whenever one exists, so a later message by someone else never changes the creator.
+
+The slot holds it on `_attribution` (`attribution.slot_attribution`).
+`attribution.stamp_creator` records the creating actor where a session is
+created; `stamp_creator_if_fresh` records the sender of the first accepted user
+message of a slot no creation path stamped, and only when the slot holds no user
+turn yet. The metadata codec's `attribution` row writes it on both save forms and
+reads it back on every hydration purpose. No writer lists the key as owned, so a
+save that does not write it carries the stored value through
+`history.carry_unowned_metadata`, and the whole line is replaced atomically by the
+existing full save.
+
+Missing human attribution is displayed as Unattributed on every surface (session
+list, filters, bylines, People, decisions and presence). Storage keeps the
+`unknown` principal kind and the `p_unknown` id; nothing is rewritten.
+
+A session with no `attribution` key reads as `legacy_missing` with an Unknown creator.
+It stays legacy: the codec never writes a legacy value back, no stamp replaces it,
+and nothing back-fills it, least of all from the current viewer. Attribution was on
+but no principal could be established reads as `unattributed`. A damaged attribution
+object, or a torn metadata line, reads as legacy, because authorization never reads
+it and a damaged record may only lose its label. Keys inside the attribution object
+this build does not know are kept (`extra`) and written back.
+
+The metadata line is a file an agent's own tools can write, like `created_by`.
+The creator is therefore a label for discovery, never an input to an access
+decision.
+
+Browser-bound copies use `attribution.public_attribution`: availability, creation
+time and `Principal.to_public_dict` (id, kind, display; no issuer or subject).
+The slot payload (`slot_projection`) and every session catalog row
+(`history_search.SessionCatalogProjection.list_sessions`) carry it as
+`attribution`.
+
+A message's author rides in the message `meta` under `MESSAGE_AUTHOR_META_KEY`
+(`author`), in the public principal shape, stamped by the server when it accepts
+the message (`attribution.stamp_message_author`). A client-supplied `author` key is
+discarded at ingress and overwritten at the stamp. Every other live user row an
+authorized request's handler appends (regenerate, rewind, task-runner hand-offs, the
+OpenAI shim) names that request's actor (`attribution.with_request_author`, bound by
+`identity.publish_actor` to the request's own task, so a turn the handler starts never
+inherits it). Channel rows name the bounded Unknown principal and automation rows the
+automation principal (`stamp_principal_author`). A message written before authors
+reads as Unknown (`attribution.message_author`).
+
+Sender in the prompt. The agent is told who sent a message with one line before
+its text, `[from: <display name> (<login>)]` (`attribution.sender_line`, added in
+`prompt_assembly._turn_build_prompt`). It is added when the turn's user row is by a
+person other than this machine's owner (the local operator's subjects and the
+owner's tailnet login), or when more than one person has written in the session,
+in which case the owner's rows read `[from: owner (<owner login>)]`. It reads the
+server-stamped author already on the row; a merged queue row whose entries name
+different people names no one and gets no line. Brackets, parentheses and control
+characters are stripped from the label. Only the prompt carries it: the stored row,
+the transcript the UI shows, the channel mirror and the system prompt are unchanged.
+
+Trigger attribution. A session a schedule, a webhook or the Crew started names
+that trigger instead of a person (`trigger.trigger_of`): `created_by` of
+`cron:<job id>` (stamped only for a transport-attested cron caller), a key in the
+`cron` or `hook` namespace in either separator spelling, or slot origin `system`.
+The public attribution then carries `trigger` `{kind: scheduled | webhook |
+system, ref, name}`, and never for a human creator. The UI reads
+`Scheduled: <job name>`, `Webhook: <name>` or `Crew automation`. The job name
+comes from the cron service's in-memory snapshot (`wiring.cron_job_namer`), so a
+label costs no I/O; without it the label omits the name. A trigger is a label derived from editable records and grants
+nothing.
+
+External attribution output is suspended pending product reconciliation: no
+tool call, outbound post or other downstream system receives "Requested by
+<person>" text. The human stays in Crew records; a downstream system sees only
+the Crew. `test_no_external_requested_by_attribution_is_emitted` pins it.
 
 ### Session list query
 
