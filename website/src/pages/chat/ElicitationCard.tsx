@@ -9,7 +9,7 @@ import { ApiError } from '../../api/apiError'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import type { ChatMessage } from '../../types'
-import { resolveByApprovalId } from '../../store/chatSlice'
+import { resolveElicitationRow } from '../../store/chatSlice'
 
 /**
  * One field of an elicitation form, as the gateway normalised it
@@ -365,7 +365,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
       // resolution frame says the same, but a socket that drops during the
       // post would miss it, and a later refresh (whose bounded page leaves an
       // answered ask out) would then retire the card as "Not answered".
-      store?.dispatch(resolveByApprovalId({ id: requestId, slot, decision: action, mid: requestMid, ...(content ? { answer: content } : {}) }))
+      store?.dispatch(resolveElicitationRow({ id: requestId, slot, decision: action, mid: requestMid, ...(content ? { answer: content } : {}) }))
     } catch (err) {
       setRequestError(answerErrorText(err))
     } finally {

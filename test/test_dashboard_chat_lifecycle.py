@@ -752,7 +752,7 @@ class TestSlotLifecycle:
                 "approval_resolved",
                 # ``slot`` keys the frame for the slot-scoped WS gate: without it
                 # an app token never receives its OWN approval resolution.
-                {"id": "req-abc", "approved": True, "slot": "s1"},
+                {"id": "req-abc", "approved": True, "slot": "s1", "origin": "native"},
             )
 
     @pytest.mark.asyncio
@@ -775,7 +775,7 @@ class TestSlotLifecycle:
                 "approval_resolved",
                 # ``slot`` keys the frame for the slot-scoped WS gate: without it
                 # an app token never receives its OWN approval resolution.
-                {"id": "req-xyz", "approved": True, "slot": "s1"},
+                {"id": "req-xyz", "approved": True, "slot": "s1", "origin": "native"},
             )
 
     @pytest.mark.asyncio
@@ -798,7 +798,7 @@ class TestSlotLifecycle:
                 "approval_resolved",
                 # ``slot`` keys the frame for the slot-scoped WS gate: without it
                 # an app token never receives its OWN approval resolution.
-                {"id": "req-rej", "approved": False, "slot": "s1"},
+                {"id": "req-rej", "approved": False, "slot": "s1", "origin": "native"},
             )
 
 

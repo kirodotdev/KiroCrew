@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
-import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
+import { resolveApprovalRow, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 import { __resetPathKindCache } from '../hooks/usePathKind'
@@ -440,7 +440,7 @@ describe('ToolCallLine inline expansion', () => {
     const msg = toolMsg()
     const pendingPerm: ChatMessage = {
       role: 'permission', content: 'Approve?', cls: '',
-      meta: { tool_call_id: 'tc_1', approval_id: 'app-1' },
+      meta: { tool_call_id: 'tc_1', approval_id: 'app-1', mid: 'm-app-1' },
     }
     const store = createTestStore({
       chat: {
@@ -455,7 +455,7 @@ describe('ToolCallLine inline expansion', () => {
     let btn = screen.getByRole('button', { name: /Awaiting approval/i })
     expect(btn.getAttribute('aria-expanded')).toBe('true')
     // Approval resolves through the proper redux action so the selector picks it up
-    store.dispatch(resolveByApprovalId({ id: 'app-1', slot: 'A', decision: 'approved' }))
+    store.dispatch(resolveApprovalRow({ target: { origin: 'native', id: 'app-1', slot: 'A', mid: 'm-app-1' }, decision: 'approved' }))
     rerender(<ToolCallLine message={msg} running={true} />)
     // Auto-collapse on resolve is rAF-deferred — wait for the next frame to flush.
     await waitFor(() => {

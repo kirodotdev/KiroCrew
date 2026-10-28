@@ -686,7 +686,7 @@ class TestResolveApprovalSlotFallback:
             "approval_resolved",
             # ``slot`` keys the frame for the slot-scoped WS gate — it must name
             # the slot that actually owned the resolved future.
-            {"id": "req-42", "approved": True, "slot": "chat-1-test"},
+            {"id": "req-42", "approved": True, "slot": "chat-1-test", "origin": "native"},
         )
         state.push_slots_update.assert_called_once()
 
@@ -709,7 +709,7 @@ class TestResolveApprovalSlotFallback:
         # decision in the frame.
         state.broadcast_ws.assert_called_with(
             "approval_resolved",
-            {"id": "req-43", "approved": False, "slot": "chat-1-test"},
+            {"id": "req-43", "approved": False, "slot": "chat-1-test", "origin": "native"},
         )
 
     @pytest.mark.asyncio

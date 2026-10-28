@@ -4,8 +4,9 @@
  *  tool-call id / `mid` / `ts`, a background pane's one-time hydrate, and
  *  clears. */
 import type { PayloadAction } from '@reduxjs/toolkit'
-import type { ChatMessage } from '../../types'
+import type { ApprovalTarget, ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
+import { permissionRowTarget, sameApprovalTarget } from '../../types/approvalTarget'
 import type { ChatState } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
@@ -272,52 +273,30 @@ export const messageReducers = {
     if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
   },
   removeByApprovalId(state: ChatState, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
-  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean; mid?: string; answer?: Record<string, unknown> }>) {
-    const { id, slot, registry, allPending, mid, answer } = action.payload
+  /** Settle the permission row raised for *target* (types/approvalTarget):
+   *  only a row naming that exact request, so a coordinator resolution never
+   *  lands on a chat runner's row under the same id, nor the reverse, nor on
+   *  an earlier request's row under a recurring id.
+   *
+   *  A 'stale' retirement carries no outcome (an expired wait, a 404, or a
+   *  reconcile snapshot that no longer lists the request), so it settles only
+   *  a row that is still pending, the same only-if-pending rule as the
+   *  switchSlot sweep and the backend marker: a reconcile can retire a card
+   *  decided while its read was in flight, and a second 'stale' write must not
+   *  downgrade that decision. A real decision landing after 'stale' is new
+   *  information and overwrites it. A rejection also marks the matching tool
+   *  pill, for every rejection token, so a human refusal never reads as a
+   *  policy block. */
+  resolveApprovalRow(state: ChatState, action: PayloadAction<{ target: ApprovalTarget; decision: string }>) {
+    const { target, decision } = action.payload
+    const slot = target.slot
     if (!slot || isUnsafeKey(slot)) return
-    const messages = slot === state.activeSlot
-      ? state.messages
-      : state.slotMessages[safeKey(slot)]
-    const matches = messages?.filter(message => message.meta?.approval_id === id)
-    // `mid` names the exact row the server stamped. An ACP request id is
-    // connection-scoped and a backend may reuse it, so by id alone the OLDEST
-    // row would win and a later card with the same id would stay pending. A
-    // frame that NAMES a mid therefore never falls back to another row: a
-    // miss means the row is not in this store (not loaded yet), and stamping
-    // a sibling would resolve the wrong card.
-    const m = mid
-      ? matches?.find(message => message.meta?.mid === mid)
-      : (registry
-        ? matches?.find(message => message.meta?.registry === registry)
-        : undefined)
-        ?? matches?.[0]
-    const decision = action.payload.decision || 'approved'
-    // A 'stale' retirement carries no outcome (an expired wait, a 404, or a
-    // reconcile snapshot that no longer lists the id), so it may only settle
-    // a row that is still pending — the same only-if-pending rule as the
-    // switchSlot sweep and the backend marker. The reconcile retire-loop
-    // walks the pre-fetch provenance map, so a card decided while that read
-    // was in flight (by a live frame or by this tab's own Allow click) is
-    // retired a second time as 'stale'; without this guard that second
-    // write downgraded the decision. The reverse direction stays open: a
-    // real decision landing after 'stale' is new information and overwrites.
-    if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
-    // An elicitation's accepted answer rides the same frame; the card reads
-    // `meta.answer` for its summary, which a transcript reload would otherwise
-    // be the first to supply.
-    if (m?.meta && answer && decision !== 'stale') m.meta.answer = answer
-    // `allPending`: a bare-id 404 proves NO request is pending under this id
-    // (`resolve_approval` checks the state and slot registries), yet a
-    // chat-runner row and a coordinator row can carry it. Settling only
-    // `matches[0]` left the other row up, so the bar stayed under its
-    // "expired" notice. A successful decide does not pass this: it answered
-    // ONE request, and another row may still be live.
-    if (allPending) for (const other of matches ?? []) if (other.meta && !other.meta.resolved) other.meta.resolved = decision
-    // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
-    // Every rejection token counts: a reject-once that missed this would leave
-    // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
-    // auto-deny and paints a human refusal as a policy block.
-    const toolCallId = m?.meta?.tool_call_id as string | undefined
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const m = messages?.find(message => message.role === 'permission'
+      && sameApprovalTarget(permissionRowTarget(message.meta, slot), target))
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    const toolCallId = m.meta.tool_call_id as string | undefined
     if (isRejectedDecision(decision) && toolCallId) {
       const log = slot === state.activeSlot
         ? state.toolLog
@@ -328,6 +307,62 @@ export const messageReducers = {
         }
       }
     }
+  },
+  /** Settle the one row the composer bar shows when that row names no
+   *  request, so there is no target to match it by. The row is addressed by
+   *  identity: its position, checked against its stable row key
+   *  (`meta.clientTs ?? ts`) and its approval id. A bare id would match the
+   *  FIRST row carrying it, which under a recurring id is an earlier request
+   *  that is already settled. If the row at *index* is no longer that row, the
+   *  key finds it; with no key, nothing is settled. Decision rules as in
+   *  `resolveApprovalRow`. */
+  resolveShownApprovalRow(state: ChatState, action: PayloadAction<{ slot: string | null; index: number; key?: string; id: string; decision: string }>) {
+    const { slot, index, key, id, decision } = action.payload
+    if (slot && isUnsafeKey(slot)) return
+    const messages = !slot || slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const rowKey = (m: ChatMessage) => (m.meta?.clientTs as string | undefined) ?? m.ts
+    const shown = (m: ChatMessage | undefined) => !!m && m.role === 'permission' && m.meta?.approval_id === id
+      && (key === undefined || rowKey(m) === key)
+    let m: ChatMessage | undefined = messages?.[index]
+    if (!shown(m)) m = key === undefined ? undefined : messages?.find(shown)
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+  },
+  /** Settle a chat runner's pending rows under *id* in *slot*, for a
+   *  resolution that names no row (a frame without a mid). Only the runner's
+   *  own rows: a coordinator row under the same id is never touched. */
+  resolveNativeApprovalRows(state: ChatState, action: PayloadAction<{ id: string; slot: string; decision: string }>) {
+    const { id, slot, decision } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    for (const m of messages ?? []) {
+      if (m.role !== 'permission' || m.meta?.registry === 'coordinator' || m.meta?.approval_id !== id || m.meta.resolved) continue
+      m.meta.resolved = decision
+    }
+  },
+  /** Settle the MCP elicitation row a resolution names: an
+   *  `elicitation_resolved` frame, or the card's own accepted answer. An
+   *  elicitation is the server's question to a person, answered through its own
+   *  route and never an approval, so only an `elicitation` row is touched; a
+   *  permission row under the same id is settled by its own target.
+   *  `mid` names the exact row the server stamped. An ACP request id is
+   *  connection-scoped and a backend may reuse it, so by id alone the OLDEST
+   *  row would win and a later card with the same id would stay pending. A
+   *  resolution that NAMES a mid therefore never falls back to another row: a
+   *  miss means the row is not in this store (not loaded yet), and stamping a
+   *  sibling would resolve the wrong card. A 'stale' write settles only a
+   *  pending row, as in `resolveApprovalRow`. The accepted answer rides the
+   *  same frame; the card reads `meta.answer` for its summary, which a
+   *  transcript reload would otherwise be the first to supply. */
+  resolveElicitationRow(state: ChatState, action: PayloadAction<{ id: string; slot: string; decision: string; mid?: string; answer?: Record<string, unknown> }>) {
+    const { id, slot, decision, mid, answer } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const matches = messages?.filter(message => message.role === 'elicitation' && message.meta?.approval_id === id)
+    const m = mid ? matches?.find(message => message.meta?.mid === mid) : matches?.[0]
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    if (answer && decision !== 'stale') m.meta.answer = answer
   },
   /** Mark all unresolved permission messages as resolved (e.g. when stop is pressed). */
   clearPendingPermissions(state: ChatState) {

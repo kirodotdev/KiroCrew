@@ -59,13 +59,12 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/SessionPulseSurveyCard', () => ({ default: () => null }))
 vi.mock('../components/ChatTranscriptSkeleton', () => ({ ChatTranscriptSkeleton: () => null }))
 vi.mock('../hooks/virtualizer/MeasureFarm', () => ({ MeasureFarm: () => null }))
-vi.mock('../api/client', () => ({ api: { resolveApproval: vi.fn(async () => undefined) } }))
+vi.mock('../api/client', () => ({ api: {} }))
 
 import ChatPaneChrome from './chat/page/ChatPaneChrome'
 import SessionsSidebarChrome from './chat/page/SessionsSidebarChrome'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
-import { api } from '../api/client'
 import { requestSlotReveal } from '../store/chatSlice'
 import { transcriptShownFor } from '../hooks/useAckCronNotesInView'
 
@@ -85,7 +84,6 @@ beforeEach(() => {
   seen.headerMenu = null
   seen.pinnedPrompt = null
   seen.toolGroups = []
-  vi.mocked(api.resolveApproval).mockClear()
 })
 
 describe('ChatPaneChrome', () => {
@@ -211,7 +209,7 @@ describe('ChatTranscriptView', () => {
     isWelcomeState: false, visibleDisplayItems: items.map(row) as never, renderedDisplayItems: items as never,
     virt: { measureRef: () => undefined, restoreGate: false } as never, chatConfig: {} as never, pinned: null, chatNav: { sections: [] } as never,
     renderMessage: (_i: number, m: { ts: string }) => <span>{m.ts}</span>, stableMsgKey: (m: { ts: string }) => m.ts,
-    approve: vi.fn(async () => undefined), dismissApproval: vi.fn(), toggleAct: vi.fn(), activityOpen: false, slotRunning: false,
+    decideRow: vi.fn(async () => undefined), toggleAct: vi.fn(), activityOpen: false, slotRunning: false,
     ...over,
   } as never)
 
@@ -220,9 +218,10 @@ describe('ChatTranscriptView', () => {
     expect(seen.toolGroups).toHaveLength(0)
   })
 
-  it('routes a group approval to the newest unresolved permission, else to the page approve', async () => {
+  it('decides a group approval through the newest unresolved permission row, and a group with none names no row', async () => {
+    const pending = { approval_id: 'ap-1', mid: 'm-1' }
     const p = base([
-      { kind: 'group', startIdx: 0, msgs: [msg('tool', 't1'), msg('permission', 'p1', { approval_id: 'ap-1' })] },
+      { kind: 'group', startIdx: 0, msgs: [msg('tool', 't1'), msg('permission', 'p1', pending)] },
       { kind: 'group', startIdx: 2, msgs: [msg('tool', 't2')] },
     ])
     render(<ChatTranscriptView {...p} />)
@@ -230,9 +229,10 @@ describe('ChatTranscriptView', () => {
     expect(withId.pendingPermCount).toBe(1)
     expect(withId.count).toBe(1)
     await act(async () => { await withId.onApprove('approve') })
-    expect(vi.mocked(api.resolveApproval).mock.calls[0][0]).toBe('ap-1')
-    expect(p.dismissApproval).toHaveBeenCalledWith('ap-1')
-    expect(noId.onApprove).toBe(p.approve)
+    // Bound to the row the group shows, never a bare id or a bare slot.
+    expect(p.decideRow).toHaveBeenCalledWith(pending, 'approve')
+    await act(async () => { await noId.onApprove('approve') })
+    expect(p.decideRow).toHaveBeenLastCalledWith(undefined, 'approve')
   })
 
   // #23564: a cron note is read against a transcript the user can see. While the

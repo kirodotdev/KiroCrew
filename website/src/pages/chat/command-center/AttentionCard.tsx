@@ -17,7 +17,8 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
-import { ApiError, apiErrorCode, isTerminalApprovalRefusal } from '../../../api/apiError'
+import { coordinatorTarget, nativeTarget } from '../../../types/approvalTarget'
+import { ApiError, apiErrorCode, isTerminalApprovalRefusal, noPendingApprovalError } from '../../../api/apiError'
 
 export function RestoredQuestionNotice({ slot, question, title, onDismiss }: {
   slot: string
@@ -83,8 +84,12 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     retry: false,
     mutationFn: async (action: { answers: Record<string, string> } | { approval: 'approve' | 'reject_once' }) => {
       if ('approval' in action && item.approval) {
-        if (item.native) await api.approveChatSlot(item.slot, action.approval === 'approve' ? 'approved' : 'rejected_once', { request_id: item.approval.id, request_mid: item.approval.request_mid || '', origin: 'native' })
-        else await api.resolveApproval(item.approval.id, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'), { origin: 'coordinator', slot: item.approval.slot || '', instance: item.approval.instance || '' })
+        // Bound to the one request the card shows (types/approvalTarget).
+        const target = item.native
+          ? nativeTarget(item.approval.id, item.slot, item.approval.request_mid)
+          : coordinatorTarget(item.approval.id, item.approval.slot || '', item.approval.instance)
+        if (!target) throw noPendingApprovalError()
+        await api.decideApproval(target, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'))
       } else if ('answers' in action && item.question) {
         const q = item.question
         if (q.ask_id) {

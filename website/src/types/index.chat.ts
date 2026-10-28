@@ -523,6 +523,8 @@ export interface SubagentActivity {
   stalledAt?: number
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
+  /** The coordinator request a pending spawn waits on (types/approvalTarget). */
+  approval_target?: CoordinatorApprovalTarget
   approving?: boolean
   /** The `approval_id` a resolve attempt found gone (`isTerminalApprovalRefusal`):
    *  decided or expired where this client could not see it. Scoped by id so a
@@ -565,6 +567,8 @@ export interface ToolActivity {
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
   approval_id?: string  // pending approval ID
+  /** The request a pending approval entry was raised for (types/approvalTarget). */
+  approval_target?: ApprovalTarget
   approval_type?: string // 'chat' or 'spawn'
   tool_call_id?: string  // for matching tool results
   rejected?: boolean     // true when approval was rejected
@@ -606,6 +610,13 @@ export interface Notification {
    *  (`native_notification_tag`). The service worker's Web Push banner carries
    *  the same value, so one event shows one banner. Absent on client-made notes. */
   tag?: string
+  /** A coordinator approval's server-issued instance: the id recurs, this
+   *  names the one request the row was raised for. */
+  approval_instance?: string
+  /** Set only on an approval row this tab raised itself (the `approval`
+   *  frame and the approvals reconcile). Client-only: the notification bus
+   *  drops every underscore-prefixed meta key, so no stored note carries it. */
+  _local?: true
   slot?: string; session_key?: string; slack_link?: string
   /** Transcript identity used to resume a closed slot; the slot name alone may name no history. */
   history_key?: string
@@ -630,9 +641,32 @@ export interface NotificationChannel {
   settings: { muted?: boolean; priority?: string }
 }
 
+/** The one pending request a control decides, retires or adopts; built and
+ *  matched by types/approvalTarget. A coordinator target is bound by the
+ *  server-issued `instance` and its owning `slot` ('' when slotless), a native
+ *  target by the slot that holds the request and its permission row's `mid`.
+ *  `id` is carried for the route and for display only. */
+export interface CoordinatorApprovalTarget {
+  readonly origin: 'coordinator'
+  readonly id: string
+  readonly slot: string
+  readonly instance: string
+}
+
+export interface NativeApprovalTarget {
+  readonly origin: 'native'
+  readonly id: string
+  readonly slot: string
+  readonly mid: string
+}
+
+export type ApprovalTarget = CoordinatorApprovalTarget | NativeApprovalTarget
+
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
+  /** A coordinator request's server-issued instance (see types/approvalTarget). */
+  request_instance?: string
   tool_purpose?: string
   tool: string
   tool_input: string

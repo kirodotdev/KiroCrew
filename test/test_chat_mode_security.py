@@ -344,7 +344,12 @@ async def test_dashboard_decision_targets_slot_and_request_with_colliding_ids(
         assert not sibling_future.done()
         state.broadcast_ws.assert_any_call(
             "approval_resolved",
-            {"id": "same-id", "approved": action == "approved", "slot": "selected"},
+            {
+                "id": "same-id",
+                "approved": action == "approved",
+                "slot": "selected",
+                "origin": "native",
+            },
         )
         # An expired request cannot fall through to the colliding other session.
         response = await client.post(
@@ -385,6 +390,12 @@ async def test_dashboard_native_stale_row_cannot_resolve_reused_id(state, replac
                 "request_mid": row_mid(old_row),
             },
         )
+        # The card's request was replaced by a live one under the same id: the
+        # refusal is the plain gone answer, and names nothing about the newer one.
+        assert await response.json() == {
+            "error": "no pending approval",
+            "code": "approval_not_pending",
+        }
     assert response.status == 404
     assert not current.done()
     assert not selected._trust and not selected._trust_reads
@@ -454,6 +465,379 @@ async def test_dashboard_coordinator_target_without_an_instance_is_refused(state
         )
     assert response.status == 400
     assert not coordinator.done()
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_settles_only_the_instance_it_names(state, action):
+    """An approval with no owning slot (a cron, autonudge or task-runner request)
+    decides with an empty slot and its instance. A card left up from an earlier
+    request under the recurring id names that request's instance and settles
+    nothing; the card for the live request settles it; a target that omits the
+    slot key altogether is malformed. Negative control: an empty slot never
+    matches a record that has one."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "live"}
+    slotted = asyncio.get_running_loop().create_future()
+    state._approval_futures["slotted-id"] = slotted
+    state._pending_approvals["slotted-id"] = {
+        "id": "slotted-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        stale = {"origin": "coordinator", "slot": "", "instance": "earlier"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=stale, json={})
+        assert response.status == 404
+        assert not coordinator.done()
+
+        no_slot_key = {"origin": "coordinator", "instance": "live"}
+        response = await client.post(
+            f"/api/approvals/cron-id/{action}", params=no_slot_key, json={}
+        )
+        assert response.status == 400
+        assert not coordinator.done()
+
+        unslotted = {"origin": "coordinator", "slot": "", "instance": "shown"}
+        response = await client.post(
+            f"/api/approvals/slotted-id/{action}", params=unslotted, json={}
+        )
+        assert response.status == 404
+        assert not slotted.done()
+
+        live = {"origin": "coordinator", "slot": "", "instance": "live"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=live, json={})
+        assert response.status == 200
+        assert coordinator.result() is (action == "approve")
+
+
+@web.middleware
+async def _internal_secret_request(request: web.Request, handler):
+    """Stand in for the auth middleware: a loopback ``X-Internal-Secret`` caller."""
+    request["internal_auth"] = True
+    return await handler(request)
+
+
+@web.middleware
+async def _peer_verified_request(request: web.Request, handler):
+    """Stand in for the auth middleware: a peer-verified unix-socket caller (an
+    MCP or agent subprocess), which carries no ``app`` claim."""
+    request["peer_verified"] = True
+    return await handler(request)
+
+
+@web.middleware
+async def _unclaimed_request(request: web.Request, handler):
+    """Stand in for the auth middleware leaving no caller claim at all."""
+    return await handler(request)
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [_internal_secret_request, _peer_verified_request, _unclaimed_request],
+    ids=["internal_auth", "peer_verified_no_app", "no_claim"],
+)
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_is_refused_to_an_internal_caller(
+    state, action, caller
+):
+    """Before the empty-slot target, a slotless (cron, autonudge, task-runner)
+    approval could be decided only by id, from the owner's browser session. The
+    target names the request without widening who may decide it: every caller
+    that is not the owner's browser session (an internal-secret caller, a
+    peer-verified subprocess with no ``app`` claim, or a request with no claim)
+    naming the exact instance is refused and the request stays pending.
+    Control: the same caller may still decide a slotted record by its exact
+    target, as on main."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "live"}
+    slotted = asyncio.get_running_loop().create_future()
+    state._approval_futures["slotted-id"] = slotted
+    state._pending_approvals["slotted-id"] = {
+        "id": "slotted-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
+    app = web.Application(middlewares=[caller])
+    app["state"] = state
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        live = {"origin": "coordinator", "slot": "", "instance": "live"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=live, json={})
+        assert response.status == 403
+        assert (await response.json())["code"] == "approval_owner_required"
+        assert not coordinator.done()
+        assert "cron-id" in state._pending_approvals
+
+        exact = {"origin": "coordinator", "slot": "dashboard:selected", "instance": "shown"}
+        response = await client.post(f"/api/approvals/slotted-id/{action}", params=exact, json={})
+        assert response.status == 200
+        assert slotted.result() is (action == "approve")
+
+
+@pytest.mark.parametrize("sent", ["shown", "replacement"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_is_bound_by_its_instance(state, sent):
+    """A coordinator approval raised with no owning slot (a cron job's) names an
+    empty slot, which is present and must match the record's own empty slot; the
+    instance still decides which request under the recurring id is resolved."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "shown"}
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/approvals/cron-id/approve",
+            params={"origin": "coordinator", "slot": "", "instance": sent},
+            json={},
+        )
+    assert response.status == (200 if sent == "shown" else 404)
+    assert coordinator.done() is (sent == "shown")
+
+
+_REGISTRATION_STEPS = 10_000
+
+
+async def _until_registered(ready, what: str) -> None:
+    """Yield to the loop until *ready()* holds, failing by name past a bound.
+
+    The spawned ``request_approval`` publishes its record within a few loop
+    steps; one that never does (it raised first) must fail here, at the poll,
+    instead of hanging the worker until pytest-timeout kills it.
+    """
+    for _ in range(_REGISTRATION_STEPS):
+        if ready():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"{what} was never registered")
+
+
+@pytest.mark.asyncio
+async def test_a_task_gate_is_decided_by_its_own_instance_and_no_other(state):
+    """Two concurrent runs can each park a gate on the same task index. Each
+    gate's id names its run and task for the project page to find its own gate,
+    and a decide binds by the record's instance: run B's instance cannot start
+    run A's task, and neither run nor task travels on the decide."""
+    loop = asyncio.get_running_loop()
+    gate_a = loop.create_task(
+        state.request_approval(
+            "task-gate-run-a-1-aaaa",
+            "taskrunner",
+            "Task 1: build",
+        )
+    )
+    gate_b = loop.create_task(
+        state.request_approval(
+            "task-gate-run-b-1-bbbb",
+            "taskrunner",
+            "Task 1: build",
+        )
+    )
+    try:
+        await _until_registered(
+            lambda: {"task-gate-run-a-1-aaaa", "task-gate-run-b-1-bbbb"}
+            <= set(state._pending_approvals),
+            "both task gates",
+        )
+        record_a = state._pending_approvals["task-gate-run-a-1-aaaa"]
+        record_b = state._pending_approvals["task-gate-run-b-1-bbbb"]
+        # The id is the only place the run and task live.
+        assert "task_run" not in record_a
+        assert "task_index" not in record_a
+        app = _make_mode_app(state)
+        app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+        async with TestClient(TestServer(app)) as client:
+            crossed = await client.post(
+                "/api/approvals/task-gate-run-a-1-aaaa/approve",
+                params={"origin": "coordinator", "slot": "", "instance": record_b["instance"]},
+                json={},
+            )
+            assert crossed.status == 404
+            assert not gate_a.done()
+            own = await client.post(
+                "/api/approvals/task-gate-run-a-1-aaaa/approve",
+                params={"origin": "coordinator", "slot": "", "instance": record_a["instance"]},
+                json={},
+            )
+            assert own.status == 200
+        assert await gate_a is True
+        assert not gate_b.done()
+    finally:
+        for gate in (gate_a, gate_b):
+            gate.cancel()
+        await asyncio.gather(gate_a, gate_b, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_cards_target_cannot_decide_the_request_that_replaced_it(state):
+    """The id is the caller's and recurs: request A's card, left up after B took
+    the id over, names A's instance. Decided through its owner-bound target it
+    resolves nothing, B stays pending, and only B's own target decides B."""
+    loop = asyncio.get_running_loop()
+    slot = "dashboard:selected"
+    request_a = loop.create_task(
+        state.request_approval("same-id", "subagent", "fs_write", slot=slot)
+    )
+    request_b: asyncio.Task[bool] | None = None
+    try:
+        await _until_registered(lambda: "same-id" in state._pending_approvals, "request A")
+        instance_a = state._pending_approvals["same-id"]["instance"]
+        request_b = loop.create_task(
+            state.request_approval("same-id", "subagent", "fs_write", slot=slot)
+        )
+        await _until_registered(
+            lambda: state._pending_approvals["same-id"]["instance"] != instance_a, "request B"
+        )
+        instance_b = state._pending_approvals["same-id"]["instance"]
+
+        app = _make_mode_app(state)
+        app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+
+        async def decide(target_slot: str, instance: str) -> tuple[int, dict]:
+            response = await client.post(
+                "/api/approvals/same-id/approve",
+                params={"origin": "coordinator", "slot": target_slot, "instance": instance},
+                json={},
+            )
+            return response.status, await response.json()
+
+        async with TestClient(TestServer(app)) as client:
+            # A's card gets the plain gone answer: it names nothing about the
+            # newer request under its id.
+            assert await decide(slot, instance_a) == (404, {"error": "not found or expired"})
+            assert not request_b.done()
+            # The right instance under the wrong owner names no request either,
+            # and learns nothing about the owner's live request.
+            assert await decide("other", instance_b) == (404, {"error": "not found or expired"})
+            assert not request_b.done()
+            assert (await decide(slot, instance_b))[0] == 200
+        assert await request_b is True
+    finally:
+        pending = [t for t in (request_a, request_b) if t is not None]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_target_never_decides_a_runner_request_under_its_id(state):
+    """Only the coordinator record the target names is decided: a chat runner's
+    pending request under the same id is left for its own slot route."""
+    loop = asyncio.get_running_loop()
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    native = loop.create_future()
+    selected._approval_futures["same-id"] = native
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/approvals/same-id/approve",
+            params={"origin": "coordinator", "slot": "dashboard:selected", "instance": "any"},
+            json={},
+        )
+        assert response.status == 404
+    assert not native.done()
+
+
+def test_resolution_frames_name_their_registry():
+    """Every ``approval_resolved`` frame says which registry resolved it, so a
+    client settles only rows from that registry whatever their ids are. The
+    caller names the registry: a coordinator record that somehow lacks an
+    instance is still reported as a coordinator resolution, never as native."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    frames: list[dict] = []
+    fake = MagicMock()
+    fake.broadcast_ws = lambda kind, payload: frames.append(payload)
+    ApprovalCoordinator.audit_and_broadcast(
+        fake,
+        "s1",
+        "id",
+        True,
+        "",
+        audit_provider=MagicMock(),
+        origin="coordinator",
+        instance="inst",
+    )
+    ApprovalCoordinator.audit_and_broadcast(
+        fake, "s1", "id", False, "rejected", audit_provider=MagicMock(), origin="native", mid="row"
+    )
+    ApprovalCoordinator.audit_and_broadcast(
+        fake, "s1", "id", False, "", audit_provider=MagicMock(), origin="coordinator"
+    )
+    assert frames == [
+        {"id": "id", "approved": True, "slot": "s1", "origin": "coordinator", "instance": "inst"},
+        {"id": "id", "approved": False, "slot": "s1", "origin": "native", "mid": "row"},
+        {"id": "id", "approved": False, "slot": "s1", "origin": "coordinator"},
+    ]
+
+
+def test_a_coordinator_resolution_names_the_instance_it_resolved():
+    """Both coordinator exits -- a decision and an expiry -- broadcast the
+    instance of the record they resolved, so a client can tell it from an
+    earlier request's row under the same recurring id."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    class _State:
+        _log = MagicMock()
+
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+            self._approval_futures: dict = {}
+            self._pending_approvals = {
+                "id": {"id": "id", "slot": "", "instance": "live"},
+                "exp": {"id": "exp", "slot": "cron:job", "instance": "gone"},
+            }
+
+        def broadcast_ws(self, kind: str, payload: dict) -> None:
+            self.frames.append({"kind": kind, **payload})
+
+        def _audit_and_broadcast_approval(
+            self, session_key, approval_id, approved, decision="", *, origin="", instance=""
+        ):
+            ApprovalCoordinator.audit_and_broadcast(
+                self,
+                session_key,
+                approval_id,
+                approved,
+                decision,
+                audit_provider=MagicMock(),
+                origin=origin,
+                instance=instance,
+            )
+
+    fake = _State()
+    loop = asyncio.new_event_loop()
+    try:
+        fake._approval_futures["id"] = loop.create_future()
+        assert ApprovalCoordinator.resolve_state(fake, "id", True)
+    finally:
+        loop.close()
+    ApprovalCoordinator._retire_unresolved(fake, "exp", "cron:job")
+    assert fake.frames == [
+        {
+            "kind": "approval_resolved",
+            "id": "id",
+            "approved": True,
+            "origin": "coordinator",
+            "instance": "live",
+        },
+        {
+            "kind": "approval_resolved",
+            "id": "exp",
+            "approved": False,
+            "slot": "cron:job",
+            "origin": "coordinator",
+            "instance": "gone",
+            "decision": "expired",
+        },
+    ]
 
 
 def test_coordinator_records_carry_a_distinct_instance_per_request():
@@ -576,6 +960,49 @@ async def test_dashboard_strict_native_never_falls_into_coordinator(
         assert not selected._trust and not selected._trust_reads
 
 
+@pytest.mark.parametrize("action", ["trust", "trust_reads"])
+@pytest.mark.asyncio
+async def test_a_stale_cards_trust_cannot_grant_the_request_that_replaced_it(state, action):
+    # Card A's row stays on screen after request B reuses its id. A trust press
+    # from A names A's row mid, so it decides nothing and widens no trust; B's
+    # own card, naming B's row, gets the grant.
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    row_a = selected.append(
+        "permission", "Tool A", json.dumps({"request_id": "same-id", "trust_grantable": "1"})
+    )
+    row_b = selected.append(
+        "permission", "Tool B", json.dumps({"request_id": "same-id", "trust_grantable": "1"})
+    )
+    future_b = asyncio.get_running_loop().create_future()
+    selected.register_approval("same-id", future_b, row_b)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        stale = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "origin": "native",
+                "request_id": "same-id",
+                "request_mid": row_mid(row_a),
+                "action": action,
+            },
+        )
+        assert stale.status == 404
+        assert not future_b.done()
+        assert not selected._trust and not selected._trust_reads
+        current = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "origin": "native",
+                "request_id": "same-id",
+                "request_mid": row_mid(row_b),
+                "action": action,
+            },
+        )
+    assert current.status == 200
+    assert future_b.done()
+
+
 @pytest.mark.parametrize("action", ["approve", "reject", "reject_once"])
 @pytest.mark.asyncio
 async def test_dashboard_legacy_coordinator_endpoint_keeps_native_fallback(state, action):
@@ -619,6 +1046,33 @@ async def test_dashboard_strict_native_invalid_target_refuses_without_mutation(
             json={"origin": origin, "request_id": request_id, "action": action},
         )
     assert response.status == 400
+    assert not future.done()
+    assert not selected._trust and not selected._trust_reads
+
+
+@pytest.mark.parametrize("action", [[], ["approved"], {"a": 1}, 1, None])
+@pytest.mark.asyncio
+async def test_dashboard_strict_native_non_string_action_is_a_bad_target_not_a_crash(state, action):
+    # A well-formed native target with an unhashable or non-string action
+    # reached the frozenset membership test and raised TypeError (HTTP 500).
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    future = asyncio.get_running_loop().create_future()
+    selected._approval_futures["same-id"] = future
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "origin": "native",
+                "request_id": "same-id",
+                "request_mid": "m1",
+                "action": action,
+            },
+        )
+        body = await response.json()
+    assert response.status == 400
+    assert body["code"] == "invalid_approval_target"
     assert not future.done()
     assert not selected._trust and not selected._trust_reads
 
@@ -672,6 +1126,43 @@ async def test_dashboard_native_origin_does_not_adopt_replacement_slot_future(st
         )
     assert response.status == (404 if strict else 200)
     assert future.done() is not strict
+
+
+@pytest.mark.parametrize("proof", ["owner-row", "wrong-row"])
+@pytest.mark.asyncio
+async def test_strict_native_decide_reaches_a_session_sharing_owner_only_by_its_mid(state, proof):
+    """A strict native press on a slot whose future lives on a session-sharing
+    owner resolves that future only when the mid names the owner's row; a
+    same-id future on a slot with another session identity is never touched."""
+    loop = asyncio.get_running_loop()
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    owner = state.get_or_create_slot("owner", origin=SlotOrigin.USER)
+    stranger = state.get_or_create_slot("stranger", origin=SlotOrigin.USER)
+    selected.linked_session_key = owner.linked_session_key = "slack:thread"
+    stranger.linked_session_key = "slack:other"
+    owned = loop.create_future()
+    owner_row = owner.append("permission", "Owner tool", json.dumps({"request_id": "same-id"}))
+    owner.register_approval("same-id", owned, owner_row)
+    foreign = loop.create_future()
+    stranger_row = stranger.append(
+        "permission", "Other tool", json.dumps({"request_id": "same-id"})
+    )
+    stranger.register_approval("same-id", foreign, stranger_row)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "action": "approved",
+                "request_id": "same-id",
+                "origin": "native",
+                "request_mid": row_mid(owner_row if proof == "owner-row" else stranger_row),
+            },
+        )
+    assert response.status == (200 if proof == "owner-row" else 404)
+    assert owned.done() is (proof == "owner-row")
+    assert not foreign.done()
 
 
 @pytest.mark.asyncio
@@ -1014,3 +1505,116 @@ async def test_valid_normal_mode_touches_the_real_singleton(state) -> None:
         resp = await client.post("/api/chat/mode", json={"mode": "normal"})
         assert resp.status == 200
     assert real_safety_override().is_active() is False
+
+
+# ── native resolution frames name the row they settled ──
+#
+# ``approval_instance`` answers only while the request is pending, so every
+# producer must read the row mid BEFORE it resolves the future. A frame that
+# loses its mid makes the client fall back to settling every native row under
+# the id, which retires the live card of a newer request that reused it.
+
+
+def _approval_frames(state) -> list[dict]:
+    return [
+        call.args[1]
+        for call in state.broadcast_ws.call_args_list
+        if call.args and call.args[0] == "approval_resolved"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_approve_route_frame_names_the_row_it_settled(state) -> None:
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    row = selected.append("permission", "Tool", json.dumps({"request_id": "id"}))
+    fut = asyncio.get_running_loop().create_future()
+    selected.register_approval("id", fut, row)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "origin": "native",
+                "request_id": "id",
+                "request_mid": row_mid(row),
+                "action": "approved",
+            },
+        )
+        assert response.status == 200
+    assert _approval_frames(state) == [
+        {"id": "id", "approved": True, "slot": "selected", "origin": "native", "mid": row_mid(row)}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_coordinator_slot_resolution_frame_names_the_row_it_settled(state) -> None:
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+    from kiro_crew.dashboard.state import _mark_permission_resolved
+
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    row = selected.append("permission", "Tool", json.dumps({"request_id": "id"}))
+    fut = asyncio.get_running_loop().create_future()
+    selected.register_approval("id", fut, row)
+    with patch("kiro_crew.dashboard.state.sel"):
+        assert ApprovalCoordinator.resolve_on_slot(
+            state,
+            selected,
+            "id",
+            False,
+            rejected_once=False,
+            permission_marker=_mark_permission_resolved,
+            expected_future=fut,
+        )
+    frames = _approval_frames(state)
+    assert len(frames) == 1
+    assert frames[0]["origin"] == "native"
+    assert frames[0]["mid"] == row_mid(row)
+
+
+@pytest.mark.asyncio
+async def test_the_bulk_trust_sweep_frame_names_the_row_it_settled(state) -> None:
+    selected = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+    row = selected.append("permission", "Tool", json.dumps({"request_id": "id"}))
+    fut = asyncio.get_running_loop().create_future()
+    selected.register_approval("id", fut, row)
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/mode", json={"mode": "trust", "slot": "s1"})
+        assert resp.status == 200
+    assert fut.result() == "approved"
+    assert _approval_frames(state) == [
+        {"id": "id", "approved": True, "slot": "s1", "origin": "native", "mid": row_mid(row)}
+    ]
+
+
+@pytest.mark.parametrize("live_first", [True, False])
+@pytest.mark.asyncio
+async def test_a_strict_decide_marks_only_the_row_it_names(state, live_first) -> None:
+    """Two permission rows share a request id (an earlier request's card is
+    still in the transcript). A strict native decide marks and persists the
+    row it names, never the other one."""
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    meta = json.dumps({"request_id": "same-id"})
+    first = selected.append("permission", "Tool A", meta)
+    second = selected.append("permission", "Tool B", meta)
+    live, other = (first, second) if live_first else (second, first)
+    fut = asyncio.get_running_loop().create_future()
+    selected.register_approval("same-id", fut, live)
+    selected._dirty = False
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "origin": "native",
+                "request_id": "same-id",
+                "request_mid": row_mid(live),
+                "action": "rejected",
+            },
+        )
+        assert response.status == 200
+    assert fut.result() == "rejected"
+    assert json.loads(live["cls"])["resolved"] == "rejected"
+    assert "resolved" not in json.loads(other["cls"])
+    assert selected._dirty is True
