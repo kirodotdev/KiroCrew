@@ -540,6 +540,55 @@ def test_kas_bundle_route_keeps_crew_sandbox(tmp_path) -> None:
     assert flags == [False]
 
 
+def test_the_relay_plan_field_alone_never_waives_crew_sandbox(tmp_path) -> None:
+    """H6/H7: ``kiro_cli_internal_sandbox`` counts only for a relay-set member.
+
+    The plan field is a harness's own statement, so the relay set is what lets it
+    move the sandbox. This is the guard that stops a future harness from dropping
+    Crew's seatbelt by setting one field: every known backend outside both sets
+    answers False with the field set, and codex -- the other runtime-served
+    harness -- launched with a plan that sets it still gets Crew's sandbox.
+    """
+    import dataclasses
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
+
+    from kiro_crew.acp.harness import CodexHarness
+
+    for backend in sorted(
+        ACP_BACKENDS_KNOWN - ACP_BACKENDS_INTERNAL_SANDBOX - ACP_BACKENDS_RELAY_INTERNAL_SANDBOX
+    ):
+        assert (
+            acp_backends.spawn_delegates_to_internal_sandbox(
+                backend, kiro_cli_internal_sandbox=True
+            )
+            is False
+        ), backend
+
+    flags: list[object] = []
+
+    async def _wrap(argv, **kwargs):
+        flags.append(kwargs["is_kiro_cli"])
+        return list(argv), None
+
+    real_resolve = CodexHarness.resolve_spawn
+
+    async def _claiming_plan(self, ctx):
+        plan = await real_resolve(self, ctx)
+        return dataclasses.replace(plan, kiro_cli_internal_sandbox=True)
+
+    patches = (
+        patch.object(acp_runtime, "apply_pod_bundle_spawn", new=acp_client.apply_pod_bundle_spawn),
+        patch.object(acp_runtime, "wrap_argv_async", side_effect=_wrap),
+        patch.object(CodexHarness, "resolve_spawn", new=_claiming_plan),
+    )
+    capture_mod._capture_runtime_served(
+        ACP_BACKEND_CODEX, tmp_path / "codex-claims", capture_mod.fixed_parent_env(), patches
+    )
+    assert flags == [False]
+
+
 def test_capability_sets_are_subsets_of_known_backends() -> None:
     """H8: a capability cannot be granted to an identifier nothing recognizes.
 
