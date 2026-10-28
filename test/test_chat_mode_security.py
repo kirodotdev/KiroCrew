@@ -861,6 +861,35 @@ async def test_app_yolo_approval_is_refused_and_audited_as_the_app(state) -> Non
     assert audit.log_api_access.call_args.kwargs["caller"] == "crew-keyboard"
 
 
+@pytest.mark.parametrize("body", [{"mode": "trust", "slot": "s1"}, {"mode": "trust"}])
+@pytest.mark.asyncio
+async def test_switching_to_trust_leaves_a_person_only_card_pending(state, body) -> None:
+    """The Trust sweep approves pending cards, but never a KAS plan handoff.
+
+    A card chat_runner marked ``person_only`` stays for the person; its sibling
+    ordinary tool card is approved as before.
+    """
+    slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+    loop = asyncio.get_running_loop()
+    plan = loop.create_future()
+    tool = loop.create_future()
+    plan_row = slot.append(
+        "permission",
+        "Approve the workflow plan",
+        json.dumps({"request_id": "req-p", "person_only": "1"}),
+    )
+    tool_row = slot.append("permission", "Running: ls", json.dumps({"request_id": "req-t"}))
+    slot.register_approval("req-p", plan, plan_row)
+    slot.register_approval("req-t", tool, tool_row)
+
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/mode", json=body)
+        assert resp.status == 200
+
+    assert not plan.done(), "the plan still waits for the person"
+    assert tool.result() == "approved"
+
+
 @pytest.mark.asyncio
 async def test_app_trust_does_not_persist_linked_channel_trust(state) -> None:
     slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)

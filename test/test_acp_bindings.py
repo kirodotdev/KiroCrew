@@ -171,6 +171,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "steer_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
     "stream": ("function", "agen", "e4e5c768b805", "acp_turns"),
     "stream_command": ("function", "agen", "c5944af5c808", "acp_turns"),
+    "stream_observe": ("function", "agen", "2ae10f4cbd2c", "acp_turns"),
     "supports_effort": ("function", False, "a6632a57e602", "acp_model_effort"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),
     "supports_steer": ("property", False, "a6632a57e602", "acp"),
