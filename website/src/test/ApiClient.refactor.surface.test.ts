@@ -119,7 +119,7 @@ const API_KEY_ORDER = [
   'chatSlots', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
   'monitorForSlot', 'monitorCreate', 'monitorUpdate', 'monitorStop',
   'monitorClear', 'monitorRestart', 'chatSlotSourceLinks', 'unlinkSourceLink', 'chatSlotDetail',
-  'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',
+  'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'discardChatSlot', 'cleanupSessions',
   'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
   'reorderQueuedMessages', 'retractSteer', 'interruptSlot', 'endWait', 'approveChatSlot',
   'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideState', 'sideOpen',
