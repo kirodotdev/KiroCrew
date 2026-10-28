@@ -10,9 +10,10 @@ import { api } from '../../api/client'
 import type { NotificationChannel } from '../../types'
 import {
   SOUND_PRESETS, SOUND_CATEGORIES, type SoundPreset, type SoundChoice, type SoundCategory, type SoundSettings, type ToneStep,
-  type CustomTones, validateCustomTone,
-  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, customSoundName,
+  type CustomTones, type CustomFiles, type CustomFileMeta, type StoredFileMeta, validateCustomTone, validateCustomFile, allCustomSounds,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName,
 } from '../../hooks/useNotificationSound'
+import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
@@ -72,9 +73,12 @@ function countCategoryChanges(
 }
 const OVERRIDE_OPTIONS: string[] = [DEFAULT_SENTINEL, ...PRESET_OPTIONS]
 
-/** The user's custom sounds as picker options, after the built-ins. */
-const customOptions = (s: SoundSettings): SoundChoice[] =>
-  Object.keys(s.customTones ?? {}).map(customSoundId)
+/** The user's custom sounds as picker options, after the built-ins: tone
+ *  sounds, then sound files. */
+const customOptions = (s: SoundSettings): SoundChoice[] => [
+  ...Object.keys(s.customTones ?? {}).map(customSoundId),
+  ...Object.keys(s.customFiles ?? {}).map(fileSoundId),
+]
 
 /** Localised preset labels, positionally aligned with `PRESET_OPTIONS` plus the
  *  custom options. A custom sound is labelled with the name the user gave it;
@@ -82,7 +86,7 @@ const customOptions = (s: SoundSettings): SoundChoice[] =>
  *  other id reaching this table is a built-in with an entry. */
 const presetLabels = (s: SoundSettings): string[] => [
   ...PRESET_OPTIONS.map(p => i18nT(PRESET_LABEL_KEY[p])),
-  ...customOptions(s).map(id => i18nT('pages.settings.notificationsPanel.custom_sound_option', { name: customSoundName(id) ?? id })),
+  ...customOptions(s).map(id => i18nT('pages.settings.notificationsPanel.custom_sound_option', { name: userSoundName(id) ?? id })),
 ]
 
 /** …plus the leading "inherit the default sound" row the per-category selects
@@ -419,7 +423,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // the save itself failed.
   const addCustomSound = (name: string, tones: ToneStep[]): string[] | null => {
     const next = loadSoundSettings()
-    const problems = validateCustomTone(name, tones, next.customTones ?? {})
+    const problems = validateCustomTone(name, tones, allCustomSounds(next))
     if (problems.length > 0) return problems
     next.customTones = { ...(next.customTones ?? {}), [name]: tones }
     if (!saveSoundSettings(next)) return null
@@ -427,24 +431,57 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     return []
   }
 
+  // The bytes go to IndexedDB first, under a key made for this write, and the
+  // record that makes the sound pickable second, so a saved record always has
+  // bytes behind it. The record is checked twice against the sounds saved NOW:
+  // before the bytes are written, and again after, because another tab may
+  // have taken the name or the last slot while they were. Bytes whose record
+  // is not saved are deleted; the key is this write's own, so that clean-up
+  // can never touch another sound's bytes.
+  const addCustomFile = async (name: string, file: Blob, meta: CustomFileMeta): Promise<string[] | null> => {
+    const first = validateCustomFile(name, meta, allCustomSounds(loadSoundSettings()))
+    if (first.length > 0) return first
+    const key = newSoundFileKey()
+    if (!(await putSoundFile(key, file))) return null
+    const next = loadSoundSettings()
+    const problems = validateCustomFile(name, meta, allCustomSounds(next))
+    if (problems.length > 0) {
+      await deleteSoundFile(key)
+      return problems
+    }
+    const record: StoredFileMeta = { bytes: meta.bytes, seconds: meta.seconds, key }
+    next.customFiles = Object.assign(Object.create(null) as CustomFiles, next.customFiles, { [name]: record })
+    if (!saveSoundSettings(next)) {
+      await deleteSoundFile(key)
+      return null
+    }
+    setSettings(next)
+    return []
+  }
+
   // Deleting a sound also clears every category that was set to it, so no
-  // picker is left pointing at a sound that no longer exists.
-  const removeCustomSound = (name: string): (() => UndoResult) | null => {
-    const id = customSoundId(name)
+  // picker is left pointing at a sound that no longer exists. A sound file's
+  // bytes stay in IndexedDB, under its key, so Undo can restore it.
+  const removeCustomSound = (name: string): (() => UndoResult | Promise<UndoResult>) | null => {
     const before = loadSoundSettings()
-    const tones = before.customTones?.[name]
+    const isFile = !Object.hasOwn(before.customTones ?? {}, name) && Object.hasOwn(before.customFiles ?? {}, name)
+    const id: SoundChoice = isFile ? fileSoundId(name) : customSoundId(name)
+    const tones = isFile ? undefined : before.customTones?.[name]
+    const meta = isFile ? before.customFiles?.[name] : undefined
     const usedBy = (Object.entries(before.perCategory) as Array<[SoundCategory, SoundChoice]>)
       .filter(([, v]) => v === id).map(([cat]) => cat)
     const ok = applyUpdate(current => {
-      const { [name]: _gone, ...customTones } = current.customTones ?? {}
+      const { [name]: _gone, ...rest } = (isFile ? current.customFiles : current.customTones) ?? {}
       void _gone
       const perCategory = Object.fromEntries(
         Object.entries(current.perCategory).filter(([cat, v]) => v !== id || cat === 'all'),
       ) as SoundSettings['perCategory']
       if (perCategory.all === id) perCategory.all = 'chime'
-      return { ...current, customTones, perCategory }
+      return isFile
+        ? { ...current, customFiles: rest as CustomFiles, perCategory }
+        : { ...current, customTones: rest as CustomTones, perCategory }
     })
-    if (!ok || !tones) return ok ? () => 'ok' : null
+    if (!ok || !(tones || meta)) return ok ? () => 'ok' : null
     // The delete's own clean-up is not a user edit: take it in silently, then
     // remember each category's count as of now.
     lastPerCategory.current = loadSoundSettings().perCategory
@@ -452,31 +489,69 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     // Undo puts back this one sound, and each category that used it unless
     // the user has set that category to something else since. It merges into
     // the settings as they are now, so nothing saved after the delete is lost.
-    return () => {
+    const restore = (): UndoResult => {
       let result: UndoResult = 'ok'
       const saved = applyUpdate(current => {
-        // No prototype, as on load: a sound named `__proto__` must be
-        // restored as its own entry, not hit Object.prototype's setter.
-        const customTones: CustomTones = Object.assign(Object.create(null) as CustomTones, current.customTones)
         // The same checks as adding it, always: a sound restored past the
         // limit, or over one the user has since saved under that name, would
         // be dropped on load or would replace the newer sound.
-        const problems = validateCustomTone(name, tones, customTones)
+        const problems = isFile
+          ? validateCustomFile(name, meta, allCustomSounds(current))
+          : validateCustomTone(name, tones, allCustomSounds(current))
         if (problems.includes('too_many')) result = 'full'
         else if (problems.length > 0) result = 'taken'
         if (result !== 'ok') return current
-        customTones[name] = tones
         const perCategory = { ...current.perCategory }
         for (const cat of usedBy) {
           const untouched = (categoryEdits.current[cat] ?? 0) === (editsAtDelete[cat] ?? 0)
             && (cat === 'all' ? perCategory.all === 'chime' : perCategory[cat] === undefined)
           if (untouched) perCategory[cat] = id
         }
+        // No prototype, as on load: a sound named `__proto__` must be
+        // restored as its own entry, not hit Object.prototype's setter.
+        if (isFile) {
+          const customFiles: CustomFiles = Object.assign(Object.create(null) as CustomFiles, current.customFiles)
+          customFiles[name] = meta as StoredFileMeta
+          return { ...current, customFiles, perCategory }
+        }
+        const customTones: CustomTones = Object.assign(Object.create(null) as CustomTones, current.customTones)
+        customTones[name] = tones as ToneStep[]
         return { ...current, customTones, perCategory }
       })
       if (saved) lastPerCategory.current = loadSoundSettings().perCategory
       return result !== 'ok' ? result : saved ? 'ok' : 'failed'
     }
+    if (!isFile) return restore
+    // A sound file's bytes can be gone by the time Undo is pressed: another
+    // tab opening this pane collects bytes no record points at. Restoring the
+    // record then would bring back a sound that plays nothing, so Undo says
+    // the file is gone instead.
+    const key = (meta as StoredFileMeta).key
+    return async () => ((await getSoundFile(key)) ? restore() : 'gone')
+  }
+
+  // Sound files whose bytes are not in this browser are forgotten, with the
+  // categories set to them, like a delete with no Undo. Records are matched by
+  // their storage key, not their name, so a sound saved again under the same
+  // name since the check began is left alone. This is clean-up, not a user
+  // edit, so the category counts Undo reads are moved past it.
+  const dropMissingFiles = (missingKeys: ReadonlySet<string>) => {
+    let dropped = false
+    const ok = applyUpdate(current => {
+      const customFiles: CustomFiles = Object.assign(Object.create(null) as CustomFiles, current.customFiles)
+      const ids = new Set<string>()
+      for (const [n, m] of Object.entries(customFiles)) {
+        if (missingKeys.has(m.key)) { delete customFiles[n]; ids.add(fileSoundId(n)) }
+      }
+      if (ids.size === 0) return current
+      dropped = true
+      const perCategory = Object.fromEntries(
+        Object.entries(current.perCategory).filter(([cat, v]) => !ids.has(v as string) || cat === 'all'),
+      ) as SoundSettings['perCategory']
+      if (perCategory.all && ids.has(perCategory.all)) perCategory.all = 'chime'
+      return { ...current, customFiles, perCategory }
+    })
+    if (ok && dropped) lastPerCategory.current = loadSoundSettings().perCategory
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
@@ -547,7 +622,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       listLabel={i18nT('settings.tabs.notifications.label')}
       banner={banner}
     >
-      {active => {
+      {(active, select) => {
         switch (active) {
 
         case 'sources':
@@ -697,10 +772,14 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           return (
             <CustomSoundsSection
               customTones={settings.customTones ?? {}}
+              customFiles={settings.customFiles ?? {}}
               volume={settings.volume}
               enabled={settings.enabled}
               onAdd={addCustomSound}
+              onAddFile={addCustomFile}
               onRemove={removeCustomSound}
+              onMissingFiles={dropMissingFiles}
+              onChooseWhereItPlays={() => select('percategory')}
             />
           )
 

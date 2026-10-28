@@ -242,8 +242,8 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'per-instance add/edit CRUD form fields, not global settings',
   },
   'CustomSoundsSection.tsx': {
-    counts: { Input: 2 },
-    reason: 'add-a-custom-sound form (name + per-tone number fields) — creates an entry, not a persistent setting',
+    counts: { Input: 4 },
+    reason: 'add-a-custom-sound forms (tone card: name + per-tone number fields; audio-file card: name + file picker) — they create entries, not persistent settings',
   },
   'MobileLoginCard.tsx': {
     counts: { Input: 1 },

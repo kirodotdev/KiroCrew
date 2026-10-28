@@ -268,7 +268,7 @@ gated on catch-up, only the frame's live banner is (see Trigger below).
 ### Settings and resolution
 
 Settings persist in `localStorage` under `mc-notification-sound`
-(`{ enabled, volume, perCategory, customTones? }`). `presetForKind(kind, settings)` resolves
+(`{ enabled, volume, perCategory, customTones?, customFiles? }`). `presetForKind(kind, settings)` resolves
 the preset for a kind, in order:
 
 1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
@@ -309,11 +309,11 @@ reader goes through `loadSoundSettings`, so the load-time check is the one
 gate between a stored value and the speakers. Playback scales a custom sound by
 its loudest overlap of step gains, so it never drives the output past full
 scale. The form edits one row per tone (Pitch, Start, Length, Volume), starts
-from a two-note example, and can play the draft ("Test") before it is saved;
+from a two-note example, and can play the draft ("Play") before it is saved;
 the draft plays under a throwaway id and is never stored. Bound failures show
 as plain hints, not error banners, each under the field it is about (a name
 problem under Name, a tone bound under its row); the offending inputs get
-`aria-invalid`, and "Add sound" stays off until the user edits. A save that
+`aria-invalid`, and "Save sound" stays off until the user edits. A save that
 fails (add, delete, undo, or a sound, volume or category setting) shows through
 `ErrorNotice` with a next step (free up this site's browser storage, then try
 again), without the agent hand-off because the form holds an unsaved draft.
@@ -326,6 +326,75 @@ withdraws the Undo, and an Undo refused because the name was reused elsewhere
 is withdrawn after its hint, so no notice says a listed sound was deleted.
 Pickers label a custom sound
 "<name> (yours)". Crew avatar sounds still offer only the built-ins.
+
+#### Sound files
+
+A user can also add a sound from an audio file (the "Use an audio file" card in the
+same pane). The bytes stay in the browser: `hooks/customSoundFiles.ts` keeps
+each file in IndexedDB (database `kirocrew-notification-sounds`, store `files`)
+and playback reads it into a `blob:` URL that is revoked once the `<audio>`
+element is released, or at the latest a few seconds past the 5 s limit, so a
+platform pause that fires neither `ended` nor `error` cannot pin it. Nothing is
+uploaded to or stored by the gateway. The settings blob holds only the record
+that makes the sound pickable, under `customFiles`
+(`{ [name]: { bytes, seconds, key } }`), and a category selects it as
+`file:<name>`.
+
+Bytes are stored under a key made for each write (`newSoundFileKey`: its
+creation time, then a random id), never under the sound's name, and the record
+carries that key; a record without a well-formed key is dropped on load. Two
+adds of the same name, from two tabs or a retry, therefore write two entries,
+and each one's clean-up can only delete its own bytes.
+
+`readAudioFile` checks a picked file before it can be saved, against
+`CUSTOM_FILE_LIMITS`: at most 256 KB (checked first, so an oversized file is
+never read), then a decode by an
+`OfflineAudioContext` (which opens no output device) that proves the file plays
+and measures it exactly, at most 5 s. `validateCustomFile` holds the
+record to the same limits on add, on Undo and on every load, so a hand-edited
+or restored record past them is dropped like a tone sound. Tone sounds and
+sound files share one name space (case-insensitive) and one limit of 20,
+because both validators check against `allCustomSounds`.
+
+Adding writes the bytes first and the record second, re-checking the record
+against the settings as they are after the write: if another tab took the name
+or the last slot meanwhile, this add deletes its own bytes and saves nothing.
+Deleting a file forgets its record, with the same category clean-up and Undo as
+a tone sound, and leaves its bytes in place for that Undo. Opening the pane
+brings the two back in line (`pruneSoundFiles`): bytes no record points at are
+deleted, reading the records again before each delete, and a record whose
+bytes are not stored (settings restored from `ui-prefs.json` into another
+browser) is dropped with its categories at that opening. Until then a
+notification for a category set to it plays what that category would play
+with its file choices unset (`missingFileFallback`), so restored settings never
+silence a category. Bytes and records
+younger than `ORPHAN_GRACE_MS` (10 minutes, read from the key) are exempt from
+both, because an add in another tab writes its bytes before its record; a key
+dated further than that in the future (a clock that ran ahead, a hand-edited
+record) is not exempt, so it cannot shield a record forever. Collecting can
+still remove the bytes another tab is holding for an Undo; that Undo first
+checks the bytes are there, and when they are not it restores nothing and says
+the file is gone. Two tabs can still race inside that check (one tab's Undo
+passes it just before the other's collection runs); the record left without
+bytes is then dropped at the next opening of the pane. Undo is off while it
+runs, so a double click restores once. When IndexedDB cannot be read at all
+nothing is concluded and every record is kept; a file sound that cannot be
+read plays silence, and a connection the browser closes is reopened on the
+next call.
+
+The pane is three titled cards, each a named region. "Your sounds" lists every
+saved sound with a small "File" or "Tones" tag and its Play and Delete
+buttons. "Use an audio file" comes next, as the quicker way, then "Build from
+tones" (the tone form). Both forms use the same words on purpose (Name, Play,
+Save sound): the card title says which way the user is making a sound. In the
+file card, Save sound stays off until a picked file has passed its checks; a
+refused file's reason is shown under the picker in the danger colour, stays
+until another file is picked, and is the only thing that marks the picker
+`aria-invalid` (a limit or name problem is shown as a hint without blaming the
+file). A successful save, from either form, says "Saved <name>." with a link,
+"Choose where it plays in Per-category sounds", that opens that sub-page
+through `SettingsSubNav`'s `select`, because a saved sound is heard only once a
+category is set to it.
 
 ### Persistence and cross-surface sync
 
