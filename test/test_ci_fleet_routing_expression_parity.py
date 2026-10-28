@@ -444,8 +444,25 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         script = step["run"]
         assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
         assert f'echo "{output}=$LABEL instance-size:large"' in script
-        hosted = "ubuntu-latest" if os_name == "linux" else "windows-latest"
-        assert f'echo "{output}={hosted}"' in script
+        if os_name == "linux":
+            # Two non-fleet branches, and BOTH must exist. A run executing in
+            # this repository takes the `kirocrew-runners` group's own runner
+            # label, keeping this matrix off the enterprise-shared standard
+            # pool. A run executing anywhere else -- a fork's own CI -- cannot
+            # reach an organization group, so it must stay on the hosted image
+            # rather than request a label no runner carries. Pinned together
+            # because dropping the second branch strands every consumer in
+            # every fork, which no other check in this file would catch.
+            assert step["env"]["IN_REPO"] == "${{ github.repository == 'kirodotdev/KiroCrew' }}"
+            assert 'elif [ "$IN_REPO" = "true" ]; then' in script
+            assert f'echo "{output}=kirocrew-linux-4-core"' in script
+            assert f'echo "{output}=ubuntu-latest"' in script
+        else:
+            # Windows stays hosted on every non-fleet path: the group is
+            # Linux-only, and group targeting dispatches to any member, so a
+            # Windows definition added to it would make every Linux consumer
+            # eligible to land on Windows.
+            assert f'echo "{output}=windows-latest"' in script
 
 
 def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> None:

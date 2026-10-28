@@ -84,9 +84,14 @@ def test_all_actual_routes_require_repository_event_and_admitted_actor(
 
 @pytest.mark.parametrize("eligible", [False, True])
 @pytest.mark.parametrize("attempt", [1, 2])
+# `in_repo` is the repository the run EXECUTES in, which decides whether the
+# organization's larger-runner group is reachable at all. False is a fork
+# running its own CI: it must land on the hosted image, because a group label it
+# cannot reach would leave every consumer queued until GitHub cancelled it.
+@pytest.mark.parametrize("in_repo", [True, False])
 @pytest.mark.parametrize("step_id,platform", [("runner", "linux"), ("windows-runner", "windows")])
 def test_real_resolver_shell_emits_large_and_hosted_fallback(
-    jobs, tmp_path, eligible, attempt, step_id, platform
+    jobs, tmp_path, eligible, in_repo, attempt, step_id, platform
 ):
     step = next(s for s in jobs["changes"]["steps"] if s.get("id") == step_id)
     # The helper rejects Windows' WSL launcher. Assert rather than skip: routing
@@ -104,7 +109,11 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
         [shell, "-e", "-c", step["run"]],
         cwd=tmp_path,
         env=dict(
-            os.environ, ELIGIBLE=str(eligible).lower(), LABEL=label, GITHUB_OUTPUT=output.as_posix()
+            os.environ,
+            ELIGIBLE=str(eligible).lower(),
+            IN_REPO=str(in_repo).lower(),
+            LABEL=label,
+            GITHUB_OUTPUT=output.as_posix(),
         ),
         capture_output=True,
         text=True,
@@ -113,7 +122,14 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
     )
     assert result.returncode == 0, result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    fallback = "ubuntu-latest" if platform == "linux" else "windows-latest"
+    # Linux lands on the `kirocrew-runners` group's runner label, but only when
+    # the run executes in this repository and can therefore reach that group. A
+    # fork running its own CI gets the hosted image. Windows has no such group
+    # and always stays hosted.
+    if platform == "windows":
+        fallback = "windows-latest"
+    else:
+        fallback = "kirocrew-linux-4-core" if in_repo else "ubuntu-latest"
     expected = {
         f"{platform}_runner": (
             (label + (" instance-size:large" if platform == "windows" else ""))

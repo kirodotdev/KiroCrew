@@ -8,8 +8,10 @@ One command is the whole offline browser gate. It boots a real gateway wired to 
 packaged fake model backend, then shells the in-tree Playwright suite at it. No
 model, no credentials, no network, no cost.
 
-The main browser job is Linux-only: it uses the CodeBuild fleet where eligible
-and otherwise falls back to `ubuntu-latest`. It cannot rely on an unprivileged
+The main browser job is Linux-only: it uses the CodeBuild fleet where eligible,
+otherwise the `kirocrew-runners` larger-runner group when the run executes in
+this repository, and `ubuntu-latest` in a fork running its own CI. It cannot
+rely on an unprivileged
 user namespace (CodeBuild refuses `unshare(CLONE_NEWUSER)`, and this job does not
 alter the hosted runner's namespace policy). Its disposable fake-backend gateway
 alone seeds `agent.sandbox_allow_unsandboxed_exec=true`; authenticated browser setup

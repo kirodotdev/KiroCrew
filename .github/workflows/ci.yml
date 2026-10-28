@@ -95,9 +95,15 @@ jobs:
       # an absent output (this job failed) reads as "run", never as a skip.
       windows_tests: ${{ steps.windows-scope.outputs.windows_tests }}
       # Central runner labels: eligible repository/event/actor combinations
-      # use CodeBuild; all other runs use the corresponding hosted OS.
-      # Linux consumers retain a fallback when this job never reports:
-      # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`.
+      # use CodeBuild. Any other run EXECUTING in this repository uses the
+      # `kirocrew-runners` group's own runner label, and a fork running its own
+      # CI uses `ubuntu-latest`, because it cannot reach that group. Windows
+      # uses the hosted image on every non-fleet path, since the group is
+      # Linux-only. Linux consumers retain a hosted fallback for when this job
+      # never reports at all:
+      # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}` --
+      # deliberately still hosted, because an empty output means the resolver
+      # failed rather than that the run was found ineligible.
       # if this job fails or is cancelled the output is empty, and a job that
       # runs anyway (`coverage-gate` fails closed with `if: !cancelled()`) must still
       # get a runner rather than error out before its own checks execute.
@@ -380,12 +386,44 @@ jobs:
         id: runner
         env:
           ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
+          # Separate from ELIGIBLE on purpose: the larger-runner group belongs to
+          # the kirodotdev organization, so only a run EXECUTING in this
+          # repository can reach it. A fork pull request against this repository
+          # executes here and can; a fork's own CI on its own `main` executes
+          # there and cannot.
+          IN_REPO: ${{ github.repository == 'kirodotdev/KiroCrew' }}
           LABEL: codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ "$ELIGIBLE" = "true" ]; then
             echo "linux_runner=$LABEL" >> "$GITHUB_OUTPUT"
             echo "linux_runner_large=$LABEL instance-size:large" >> "$GITHUB_OUTPUT"
+          elif [ "$IN_REPO" = "true" ]; then
+            # Running here but not admitted to the fleet: a fork head, an
+            # unlisted actor, or a pull_request action other than
+            # opened/synchronize. Those runs take the `kirocrew-runners`
+            # larger-runner group rather than the shared standard pool, whose
+            # concurrency is shared enterprise-wide and which this matrix
+            # occupies at a triple-digit job count. Same CPU and memory as a
+            # public-repository `ubuntu-latest`, so durations do not move; only
+            # queue position does, and larger-runner minutes bill where standard
+            # ones are free. This adds load to the group's `maximum_runners`
+            # cap, which the larger-runner section of docs/ci/ci-and-reviews.md
+            # describes.
+            #
+            # The definition's own label, not `runs-on: {group: ...}`: the choice
+            # is made at run time and no single `runs-on` can name both
+            # destinations, because the fleet runners are REPOSITORY-level
+            # self-hosted runners and are not members of this organization
+            # group. Keep this label in step with the runner definition's name.
+            echo "linux_runner=kirocrew-linux-4-core" >> "$GITHUB_OUTPUT"
+            echo "linux_runner_large=kirocrew-linux-4-core" >> "$GITHUB_OUTPUT"
           else
+            # Another repository entirely -- a fork running its own CI. It cannot
+            # reach this organization's group, so the label would match no runner
+            # and every consumer would sit queued until GitHub's pending limit
+            # cancelled it. The consumers' own `|| 'ubuntu-latest'` cannot
+            # rescue that: it fires only on an EMPTY output, and this one is
+            # non-empty and unusable, which is strictly worse than absent.
             echo "linux_runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
             echo "linux_runner_large=ubuntu-latest" >> "$GITHUB_OUTPUT"
           fi
@@ -894,15 +932,18 @@ jobs:
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
     # All eight shards use large compute and the measured non-root boundary.
-    # Forks, non-admitted actors and absent resolver output stay hosted.
+    # A non-admitted run executing here takes the `kirocrew-runners` group; a
+    # fork's own CI, and an absent resolver output, stay on the hosted pool.
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Keep the existing wall-clock budget; individual tests still time out at
     # 120 seconds. File sharding reduces repeated collection, not test coverage.
     timeout-minutes: 60
     strategy:
-      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
-      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
-      # fallback resolves to 'ubuntu-latest', so this correctly lifts only on CodeBuild.
+      # 4 protects the shared hosted pool and the larger-runner group's own
+      # `maximum_runners` cap; the CodeBuild label has its own account quota.
+      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs. Every
+      # non-fleet value ('kirocrew-linux-4-core' or 'ubuntu-latest') fails that
+      # test, so this still lifts only on CodeBuild.
       max-parallel: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 8 || 4 }}
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
@@ -3162,8 +3203,9 @@ jobs:
     if: needs.changes.outputs.only_frontend != 'true'
     # PILOT (first wave): runs on a CodeBuild-hosted runner (project
     # `kirocrew-gha-linux`, Ubuntu 22.04) instead of ubuntu-latest. The label is
-    # chosen once in `changes` (forks and fork PRs get ubuntu-latest, because the
-    # runner never serves them). Rollback: `ubuntu-latest`. Policy, image caveat
+    # chosen once in `changes`: the fleet never serves a fork, so a fork pull
+    # request takes the `kirocrew-runners` group and a fork's own CI takes
+    # `ubuntu-latest`. Rollback: `ubuntu-latest`. Policy, image caveat
     # and exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
