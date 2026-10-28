@@ -2242,6 +2242,24 @@ run. `may_grant_builtin_at_gate` differs from `may_skip_gate` only by omitting t
 floor clause, which exists because a static grant skips this gate; this grant is
 made inside it.
 
+The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320). The
+projection records the patterns (`kas_permissions.crew_answered_commands`, at most 64; each entry
+read by `platform/allowed_commands.py`, which keeps only literal characters,
+escaped punctuation and `.*`, the subset Rust's `regex` and Python read alike, and
+matches it in linear time without `re`, so a POSIX class cannot widen a grant and
+nested repetition cannot stall the gateway; an entry outside it, an over-long list,
+and a list the projection withholds are named in the session-start notice) only when
+`may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except `allowedCommands` itself, `kas_permissions.without_allowed_commands`, so a `deniedCommands` or `denyByDefault` beside it keeps every command prompting), the handle keeps them
+(`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
+requests (`AcpEvent.spec_granted_commands`). In place of the built-in name, the row
+then needs a shell call (`execute_bash` among its names, `is_shell`) whose
+host-recovered command, at most 4,096 characters, holds none of
+`; & | < > $ \` ( ) { }`, newline or carriage return, and that one entry
+matches whole, as kiro-cli anchors each entry at both ends. Every other
+condition above still holds, so a matching command the deny floor, governance or
+`confirm_tools` refuses is still refused, and a command that chains, pipes,
+redirects, groups or substitutes is never granted whatever the pattern says.
+
 **Read-only auto-approve** — kiro-cli's `autoAllowReadonly` is not used;
 the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
 the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every

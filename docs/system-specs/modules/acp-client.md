@@ -2169,6 +2169,10 @@ spec the same way kiro-cli v2 does where the wire allows it:
   kiro-cli 2.35.1: the deny with the target excluded left the call to its
   permission request, with another name excluded it was refused by the rule, and
   the allow ran it with no request.
+- `toolsSettings.shell.allowedCommands` travels as no rule: a shell allow would
+  skip the permission request Crew's deny floor runs on. Crew answers a matching
+  command at that request itself, through the gate's `spec-builtin-grant` row
+  ([security](security.md) § KAS spec built-in grant).
 - The spec's `hooks` run from Crew's turn loop (`agent_sdk/spec_hooks.py`); a
   PostToolUse spec hook's tool matcher is matched on the id the call's permission
   request stated, or for a call the frame classified as a shell command, KAS's

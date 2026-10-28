@@ -1112,6 +1112,12 @@ class AcpEvent:
     #: tier and governance, and approves only a host-identified built-in it names.
     #: Empty everywhere else, which grants nothing.
     spec_granted_builtins: frozenset[str] = frozenset()
+    #: spec_granted_commands: on the same requests, the agent's
+    #: ``toolsSettings.shell.allowedCommands`` as Python regexes
+    #: (``AcpSessionHandle.kas_crew_answered_commands``), written the same way. The
+    #: ``spec-builtin-grant`` tier approves a shell call whose recovered command
+    #: fullmatches one. Empty everywhere else, which grants nothing.
+    spec_granted_commands: tuple[str, ...] = ()
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

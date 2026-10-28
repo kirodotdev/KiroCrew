@@ -52,6 +52,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,83 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
 #: (``_dispatch.attach_kas_custom_agents``).
 CREW_ANSWERED_BUILTINS_KEY = "_crewAnsweredBuiltins"
 
+#: The key a projected entry carries its :func:`crew_answered_commands` under, for
+#: the session's own record, like :data:`CREW_ANSWERED_BUILTINS_KEY`.
+CREW_ANSWERED_COMMANDS_KEY = "_crewAnsweredCommands"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
-CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset({CREW_ANSWERED_BUILTINS_KEY})
+CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
+    {CREW_ANSWERED_BUILTINS_KEY, CREW_ANSWERED_COMMANDS_KEY}
+)
+
+#: The ``toolsSettings`` keys kiro-cli reads its shell settings under.
+_SHELL_SETTINGS_KEYS = ("execute_bash", "shell")
+
+#: Bounds on what :func:`crew_answered_commands` keeps, so the record the session
+#: carries and the work the gate does per shell call stay small.
+_MAX_ALLOWED_COMMANDS = 64
+
+
+def allowed_command_pattern(raw: Any) -> str | None:
+    """One kiro-cli ``allowedCommands`` entry as Crew records it, or ``None``.
+
+    Only the subset :mod:`kiro_crew.platform.allowed_commands` reads the same way
+    kiro-cli does, and matches in linear time, is kept (stripped); any other entry
+    is ``None`` and its commands keep prompting. Kept verbatim, as kiro-cli reads it.
+    """
+    if allowed_commands_mod.parse(raw) is None:
+        return None
+    assert isinstance(raw, str)
+    return raw
+
+
+def without_allowed_commands(tools_settings: Any) -> Any:
+    """*tools_settings* with each shell entry's ``allowedCommands`` key left out.
+
+    For :func:`withhold_answered_under_authored_rules`, which reads ANY entry for a
+    built-in as a restriction: the grant itself is not one. A shell entry that held
+    only that key goes too; every other key, and any malformed value, is kept, so
+    it still withholds.
+    """
+    if not isinstance(tools_settings, dict):
+        return tools_settings
+    out = dict(tools_settings)
+    for key in _SHELL_SETTINGS_KEYS:
+        entry = out.get(key)
+        if isinstance(entry, dict) and "allowedCommands" in entry:
+            rest = {k: v for k, v in entry.items() if k != "allowedCommands"}
+            if rest:
+                out[key] = rest
+            else:
+                del out[key]
+    return out
+
+
+def _usable_allowed_commands(tools_settings: Any) -> list[str]:
+    """Every distinct usable ``allowedCommands`` entry of both shell keys, in order."""
+    if not isinstance(tools_settings, dict):
+        return []
+    out: list[str] = []
+    for key in _SHELL_SETTINGS_KEYS:
+        settings = tools_settings.get(key)
+        entries = settings.get("allowedCommands") if isinstance(settings, dict) else None
+        for raw in entries if isinstance(entries, list) else ():
+            pattern = allowed_command_pattern(raw)
+            if pattern is not None:
+                out.append(pattern)
+    return list(dict.fromkeys(out))
+
+
+def crew_answered_commands(tools_settings: Any) -> list[str]:
+    """The ``shell.allowedCommands`` patterns Crew answers a KAS shell request for.
+
+    A shell allow never reaches the KAS policy (:data:`WITHHELD_CAPABILITIES`),
+    so each command raises a permission request; the gate's ``spec-builtin-grant``
+    tier approves one whose recovered command fullmatches a pattern here, after
+    every deny tier and governance (``gate_tiers._tier_spec_builtin_grant``).
+    Pure: the caller asks the governance ceiling about the shell tool.
+    """
+    return _usable_allowed_commands(tools_settings)[:_MAX_ALLOWED_COMMANDS]
 
 
 def crew_answered_builtins(allowed_tools: Any) -> frozenset[str]:
@@ -1379,6 +1455,19 @@ def tools_settings_to_permissions(
                 f"{tool}.deniedCommands", settings.get("deniedCommands"), _regex_to_glob
             )
             rules.extend(_chunked_rules("shell", "deny", denied))
+            # No rule: Crew answers the shell requests these match itself, at
+            # the gate (`crew_answered_commands`). Only an entry it cannot use
+            # is named.
+            handled.add("allowedCommands")
+            allowed = settings.get("allowedCommands")
+            # Named when an entry is unusable, and when the bound cuts the list:
+            # those commands keep prompting.
+            if allowed and (
+                not isinstance(allowed, list)
+                or any(allowed_command_pattern(p) is None for p in allowed)
+                or len(_usable_allowed_commands(tools_settings)) > _MAX_ALLOWED_COMMANDS
+            ):
+                lost.append(f"{tool}.allowedCommands")
         elif family in ("read", "write"):
             capability = "fs_read" if family == "read" else "fs_write"
             handled.add("deniedPaths")

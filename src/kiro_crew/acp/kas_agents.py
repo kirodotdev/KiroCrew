@@ -73,13 +73,16 @@ from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_permissions import (
     AUTO_APPROVABLE_CAPABILITIES,
     CREW_ANSWERED_BUILTINS_KEY,
+    CREW_ANSWERED_COMMANDS_KEY,
     allowed_tools_to_permissions,
     auto_approved_capabilities,
     crew_answered_builtins,
+    crew_answered_commands,
     merge_user_permissions,
     tools_settings_to_permissions,
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
+    without_allowed_commands,
 )
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
@@ -235,7 +238,40 @@ def spec_keys_without_carrier(
         return sorted(lost)
     _, not_carried = tools_settings_to_permissions(tools_settings)
     lost.extend(f"toolsSettings.{path}" for path in not_carried)
-    return sorted(lost)
+    if (
+        isinstance(tools_settings, dict)
+        and crew_answered_commands(tools_settings)
+        and _allowed_commands_withheld(spec, None)
+    ):
+        # Every entry is usable, but the session answers none of them: name each
+        # shell key that carries one, so the operator learns why they prompt.
+        lost.extend(
+            f"toolsSettings.{key}.allowedCommands"
+            for key in ("execute_bash", "shell")
+            if isinstance(tools_settings.get(key), dict)
+            and tools_settings[key].get("allowedCommands")
+        )
+    return sorted(set(lost))
+
+
+def _allowed_commands_withheld(spec: dict[str, Any], policy: dict[str, Any] | None) -> bool:
+    """Whether *spec*'s usable ``shell.allowedCommands`` go unanswered on KAS.
+
+    They do when the governance ceiling withholds the shell grant at the gate, or
+    when the spec's own author restricted the shell elsewhere (an ``ask``/``deny``
+    in *policy* or the raw ``permissions`` block, or another shell setting): the
+    same reading a shell grant in ``allowedTools`` gets. The ``allowedCommands``
+    key itself is the grant, so it is not read as a restriction. One reader for the
+    projection and the session-start notice, so the two cannot disagree.
+    """
+    if not may_grant_builtin_at_gate_now("execute_bash"):
+        return True
+    return not withhold_answered_under_authored_rules(
+        {"execute_bash"},
+        policy,
+        authored_permissions=spec.get("permissions"),
+        tools_settings=without_allowed_commands(spec.get("toolsSettings")),
+    )
 
 
 class KasAgentTranslationError(ValueError):
@@ -1173,6 +1209,14 @@ def to_client_custom_agent(
     )
     if crew_answered:
         out[CREW_ANSWERED_BUILTINS_KEY] = sorted(crew_answered)
+    # `toolsSettings.shell.allowedCommands`, answered the same way: the gate
+    # approves a shell request whose command fullmatches one, after its checks.
+    # Asked of the ceiling as the shell tool, which is what the call runs, and
+    # withheld under the same authored restrictions as a shell grant. The
+    # `allowedCommands` key itself is the grant, so it is not read as one of them.
+    answered_commands = crew_answered_commands(spec.get("toolsSettings"))
+    if answered_commands and not _allowed_commands_withheld(spec, permissions):
+        out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
 
     description = spec.get("description")
     if isinstance(description, str) and description:
@@ -1432,6 +1476,37 @@ def _entry_crew_answered(entry: Any) -> frozenset[str]:
     if not isinstance(raw, list):
         return frozenset()
     return frozenset(n for n in raw if isinstance(n, str) and n)
+
+
+def _entry_crew_answered_commands(entry: Any) -> tuple[str, ...]:
+    """The :data:`CREW_ANSWERED_COMMANDS_KEY` patterns of one projected entry, read
+    like :func:`_entry_crew_answered`: anything malformed answers empty."""
+    raw = entry.get(CREW_ANSWERED_COMMANDS_KEY) if isinstance(entry, dict) else None
+    if not isinstance(raw, list):
+        return ()
+    return tuple(p for p in raw if isinstance(p, str) and p)
+
+
+def _registered_entry(custom_agents: Any, agent_id: str) -> Any:
+    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
+    return next((a for a in entries if a.get("id") == agent_id), None)
+
+
+def _switched_entry(custom_agents: Any, mode_id: str) -> Any:
+    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
+    return next((a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == mode_id), None)
+
+
+def projected_crew_answered_commands(custom_agents: Any, agent_id: str) -> tuple[str, ...]:
+    """The ``allowedCommands`` patterns Crew answers for *agent_id*'s registered
+    entry, matched like :func:`projected_crew_answered`."""
+    return _entry_crew_answered_commands(_registered_entry(custom_agents, agent_id))
+
+
+def switched_crew_answered_commands(custom_agents: Any, mode_id: str) -> tuple[str, ...]:
+    """Those patterns once a KAS mode switch moves the session to *mode_id*,
+    matched like :func:`switched_crew_answered`."""
+    return _entry_crew_answered_commands(_switched_entry(custom_agents, mode_id))
 
 
 def projected_crew_answered(custom_agents: Any, agent_id: str) -> frozenset[str]:

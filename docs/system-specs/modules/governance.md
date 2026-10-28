@@ -1329,7 +1329,9 @@ reads the profile, so any profile at all would withhold every such grant. The ce
 the one in the gate's own context snapshot, so a ceiling or profile with any opinion on
 the tool's scopes keeps the call at the prompt; an unresolved profile store or an error
 withholds. The KAS projection asks `may_grant_builtin_at_gate_now` once when it records
-the grant; the gate asks again on every call.
+the grant; the gate asks again on every call. A spec's `toolsSettings.shell.allowedCommands`
+takes the same row and the same question, asked about `execute_bash`: the patterns are
+recorded only when it holds, and the row asks it again for every matching command.
 
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an

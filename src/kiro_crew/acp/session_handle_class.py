@@ -634,6 +634,9 @@ class AcpSessionHandle:
         # their permission requests itself, after the deny floor, the
         # sensitive-path check and the governance ceiling. Empty with no batch.
         self.kas_crew_answered: frozenset[str] = frozenset()
+        # The agent's `toolsSettings.shell.allowedCommands` as the gate matches
+        # them (``kas_permissions.crew_answered_commands``), answered the same way.
+        self.kas_crew_answered_commands: tuple[str, ...] = ()
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.

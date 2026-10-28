@@ -177,6 +177,11 @@ class ToolCall:
     #: ``spec-builtin-grant`` tier only, after every deny tier and governance.
     #: Empty (every other harness, a sub-session, a hand-built call) grants nothing.
     spec_granted_builtins: frozenset[str] = frozenset()
+    #: ``AcpEvent.spec_granted_commands``: the KAS session's own agent's
+    #: ``toolsSettings.shell.allowedCommands`` as Python regexes, written the same
+    #: way. Read by the ``spec-builtin-grant`` tier only, against the recovered
+    #: ``command``. Empty grants nothing.
+    spec_granted_commands: tuple[str, ...] = ()
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
@@ -236,6 +241,9 @@ class ToolCall:
             "identity_unreadable": bool(getattr(event, "mcp_identity_unreadable", False)),
             "kas_builtin_ids": bool(getattr(event, "kas_builtin_ids", False)),
             "spec_granted_builtins": _granted_names(getattr(event, "spec_granted_builtins", None)),
+            "spec_granted_commands": _granted_patterns(
+                getattr(event, "spec_granted_commands", None)
+            ),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
@@ -262,6 +270,7 @@ class ToolCall:
             "mcp_identity_unreadable": self.identity_unreadable,
             "kas_builtin_ids": self.kas_builtin_ids,
             "spec_granted_builtins": self.spec_granted_builtins,
+            "spec_granted_commands": self.spec_granted_commands,
             "harness_builtin_tool": self.harness_builtin_tool,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
@@ -277,6 +286,14 @@ def _granted_names(value: object) -> frozenset[str]:
     if not isinstance(value, (set, frozenset, tuple, list)):
         return frozenset()
     return frozenset(n for n in value if isinstance(n, str) and n)
+
+
+def _granted_patterns(value: object) -> tuple[str, ...]:
+    """``AcpEvent.spec_granted_commands`` as the tuple the gate reads, read like
+    :func:`_granted_names`: anything that is not a sequence of strings grants nothing."""
+    if not isinstance(value, (tuple, list)):
+        return ()
+    return tuple(p for p in value if isinstance(p, str) and p)
 
 
 def hook_gate_kwargs(event: object, **overrides: Any) -> dict[str, Any]:
