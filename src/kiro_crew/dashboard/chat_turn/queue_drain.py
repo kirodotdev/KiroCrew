@@ -304,7 +304,9 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
     Runs once when memory preparation finishes. Each slot is re-checked under
     its own lock, the same guard the dispatch routes take, so a send or a
     Continue that landed in the meantime is never doubled: a running slot
-    drains its own queue at its turn end.
+    drains its own queue at its turn end. A slot that started closing after
+    the caller scheduled this drain keeps its queue, so teardown never races
+    a turn it would have to cancel.
     """
     for key in slot_keys:
         slot = state._slots.get(key)
@@ -316,6 +318,7 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
                     state._slots.get(slot.key) is not slot
                     or not slot._queue
                     or slot.running
+                    or slot.is_closing
                     or slot._stop_state != "idle"
                 ):
                     continue
@@ -632,9 +635,17 @@ async def _start_next_queued_turn(
         required_queue_id = priority_id
         allow_user_during_subagents = True
 
+    # A completion counts as a child until it has run: while it is still being
+    # handed to this tab, or waits in the queue behind another system entry, a
+    # user message held for the children must not run ahead of it. The hold still
+    # drains system entries, so that completion is what runs next.
     hold_users = bool(
         not allow_user_during_subagents
-        and subagents_hold_user_messages(state, effective_session_key(slot))
+        and (
+            slot._subagent_deliveries_inflight > 0
+            or any(item.get("kind") == SUBAGENT_COMPLETION_KIND for item in slot._queue)
+            or subagents_hold_user_messages(state, effective_session_key(slot))
+        )
     )
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different

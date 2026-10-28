@@ -406,7 +406,6 @@ def test_the_source_scan_finds_every_known_system_producer() -> None:
     files = {site.split(":", 1)[0] for site, _ in _SYSTEM_SITES}
     for expected in (
         "slack/gateway_runtime/nudge_dashboard_fire.py",  # monitor / work-ledger wake
-        "slack/gateway_runtime/subagent_injection.py",
         "dashboard/handlers/taskrunner.py",
         "slack/handler_runtime/inbound.py",  # typed in the linked Slack thread
     ):

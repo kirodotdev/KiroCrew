@@ -29,6 +29,10 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 from subagent_scale_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _ANNOUNCE_WAIT_SECS,
     _close_subagent_managers,
@@ -149,6 +153,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -163,7 +168,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             for i in range(total):
@@ -211,6 +216,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -224,7 +230,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             # Member 0: served model present. Member 1: requested set but served
@@ -259,6 +265,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -271,7 +278,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             m0, m1 = self._member(0, 2), self._member(1, 2)
@@ -300,6 +307,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -312,7 +320,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             m0 = self._member(0, 1)
@@ -339,6 +347,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -352,7 +361,7 @@ class TestWaveDigest:
 
         secret = "AKIAIOSFODNN7EXAMPLE"
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             m0 = self._member(0, 1)
@@ -385,6 +394,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -398,7 +408,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             # Both direct members complete; the count says the wave is done...
@@ -436,6 +446,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -449,7 +460,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             mgr.batch_members_pending = MagicMock(return_value=False)
@@ -485,6 +496,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -507,7 +519,7 @@ class TestWaveDigest:
         refused.result = ""
         refused.result_path = ""
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             # Outstanding until the last member reports, which closes the wave
@@ -551,6 +563,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -580,7 +593,7 @@ class TestWaveDigest:
             return 60.0
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
             patch(
                 "kiro_crew.dashboard.turn_dispatch.chat_turn_timeout_secs",
@@ -607,6 +620,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -614,7 +628,7 @@ class TestWaveDigest:
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 12
-        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock):
+        with patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock):
             for i in range(total):
                 mgr.batch_members_pending = MagicMock(return_value=i != total - 1)
                 await on_done(self._member(i, total, error="boom" if i < 2 else ""))
@@ -652,6 +666,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -670,7 +685,7 @@ class TestWaveDigest:
 
         marked: list[str] = []
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _consuming_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _consuming_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered", side_effect=marked.append),
         ):
             for i, m in enumerate(members):
@@ -787,6 +802,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -808,7 +824,7 @@ class TestWaveDigest:
 
         marked: list[str] = []
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _gated_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _gated_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered", side_effect=marked.append),
         ):
             for i, m in enumerate(members[:10]):
@@ -888,6 +904,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         # Busy: a turn already owns the slot, so the completion is QUEUED rather
         # than dispatched. `task = None` keeps the shield-await a no-op.
@@ -909,7 +926,7 @@ class TestWaveDigest:
 
         marked: list[str] = []
         with (
-            patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock),
             patch("kiro_crew.subagent_persistence.mark_delivered", side_effect=marked.append),
         ):
             for i, m in enumerate(members[:10]):
@@ -967,6 +984,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -988,7 +1006,7 @@ class TestWaveDigest:
 
         marked: list[str] = []
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _auth_required_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _auth_required_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered", side_effect=marked.append),
         ):
             for i, m in enumerate(members[:10]):
@@ -1035,6 +1053,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -1050,7 +1069,7 @@ class TestWaveDigest:
 
         marked: list[str] = []
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _failing_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _failing_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered", side_effect=marked.append),
         ):
             for i, m in enumerate(members[:10]):
@@ -1086,6 +1105,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -1100,7 +1120,7 @@ class TestWaveDigest:
             injected.append(text)
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             for i in range(total):
@@ -1125,6 +1145,7 @@ class TestWaveDigest:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -1147,7 +1168,7 @@ class TestWaveDigest:
         solo.result = "solo result"
         solo.elapsed = 12.0
         solo.credits = 0.25
-        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat):
+        with patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat):
             await on_done(solo)
             await _settle(lambda: len(injected) >= 1, what="the per-agent completion injected")
         assert len(injected) == 1
@@ -1362,6 +1383,7 @@ class TestDigestHoldDeadline:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -1397,7 +1419,7 @@ class TestDigestHoldDeadline:
             real._agents[m.id] = m
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
             patch("kiro_crew.subagent.mark_delivered"),
         ):
@@ -1438,6 +1460,7 @@ class TestDigestHoldDeadline:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.mode = "chat"
         slot.running = False
         slot.task = None
@@ -1474,7 +1497,7 @@ class TestDigestHoldDeadline:
             m.result_path = f"/tmp/s{i}/result.txt"
 
         with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
             patch("kiro_crew.subagent_persistence.mark_delivered"),
         ):
             mgr.batch_members_pending = MagicMock(return_value=True)
@@ -1557,7 +1580,7 @@ class TestDigestHoldDeadline:
         )
         flush.done = True
         flush._digest_flush_only = True
-        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat):
+        with patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat):
             await on_done(flush)
             await asyncio.sleep(0.05)
         assert injected == []

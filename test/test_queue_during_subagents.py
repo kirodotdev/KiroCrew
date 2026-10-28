@@ -478,6 +478,20 @@ class TestDrainIdleParentQueueForStall:
         assert spawned == []
         assert slot.queue_depth == 1
 
+    async def test_closing_slot_keeps_its_queue(self, tmp_path, monkeypatch):
+        """A tab that started closing after the drain was scheduled starts no turn."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path, monkeypatch, [{"id": "dead", "stalled": True}]
+        )
+        slot.queue_append("waiting user message")
+        slot._closing = 1
+        assert slot.is_closing is True
+
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
+
+        assert spawned == []
+        assert slot.queue_depth == 1
+
     async def test_empty_queue_and_unknown_parent_are_noops(self, tmp_path, monkeypatch):
         """No queued work, or a parent with no slot, drains nothing and does not raise."""
         chat_runner, state, slot, spawned = self._make(

@@ -3696,7 +3696,7 @@ inside the manager.
 |---|---|
 | `dashboard/handlers/messaging.py::parent_work_supported`, `dashboard/messaging_api/spawn.py::api_spawn` | Resolves the actual parent slot and reports delivery capability in the receipt. |
 | `subagent_manager/admission`, `subagent_persistence.py` | Existing capacity/queue/depth/cleanup rules remain authoritative; delegation metadata follows the run. |
-| `slack/gateway_runtime/subagent_injection.py::_route_subagent_to_tab` | Busy dashboard turns are awaited through `asyncio.shield`, then completion is injected or queued; the parent edit is not interrupted. Delivery retention starts on consumption. |
+| `slack/gateway_runtime/subagent_injection.py::_route_subagent_to_tab` | Busy dashboard turns are awaited through `asyncio.shield`, then completion is queued and an idle tab drains it; the parent edit is not interrupted. While a completion is being handed to the tab (`_subagent_deliveries_inflight`) or waits in its queue, `_start_next_queued_turn` keeps holding user messages as it does for a running child, so the last result reaches its turn before a message held for the children and the batch's synthesis stays armed; a delivery that starts no turn drains the idle tab once on its way out. Delivery retention starts on consumption. |
 
 The existing full-batch barrier remains: collect all terminal outcomes before
 new dispatch. A failed/cancelled child is terminal for the barrier, not a

@@ -27,6 +27,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from _hot_reload_helpers import change
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 from overload_fakes import (
     Clock,
     mock_ctx,
@@ -900,6 +904,7 @@ def _through_the_gateway(h: _Harness, stream: Any = None) -> Any:
     orch.ctx_builder.build_message = MagicMock(return_value=("the announce", None))
     orch.dashboard_state = _mock_dashboard_state()
     slot = MagicMock()
+    open_idle_tab(slot)
     slot.mode = "chat"
     slot.running = False
     slot.task = None
@@ -929,7 +934,7 @@ def _through_the_gateway(h: _Harness, stream: Any = None) -> Any:
             _on_consumed()
 
     with (
-        patch("kiro_crew.slack.gateway._run_chat", consuming_run_chat),
+        patch("kiro_crew.dashboard.chat_runner._run_chat", consuming_run_chat),
         patch("kiro_crew.slack.gateway.session_store_for_turn", AsyncMock(return_value="")),
         patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -1081,6 +1086,7 @@ class TestADigestHeldExpiryStaysOwed:
         info = subagent_mod.SubagentInfo(id="e1", task="t", error=QUEUED_WAIT_EXPIRED_TEXT)
         info._report_owed = True
         slot = MagicMock()
+        open_idle_tab(slot)
         GatewayOrchestrator._defer_queued_delivery(slot, "announce", info, flush_only=False)
         slot.note_pending_subagent_delivery.assert_called_once_with(
             "announce", [SubagentDelivery("e1", 0.0, 0.0, report_owed=True)]
@@ -1089,6 +1095,7 @@ class TestADigestHeldExpiryStaysOwed:
         # An ordinary failed run still owes no mark: its own tombstone stands.
         plain = subagent_mod.SubagentInfo(id="f1", task="t", error="boom")
         slot = MagicMock()
+        open_idle_tab(slot)
         GatewayOrchestrator._defer_queued_delivery(slot, "announce", plain, flush_only=False)
         slot.note_pending_subagent_delivery.assert_called_once_with("announce", [])
 
