@@ -652,8 +652,11 @@ class TestScenarioGitCommitNoChanges:
             mock_git.commit_step = AsyncMock(return_value="")  # no changes
             mock_git.revert_step = AsyncMock()
 
-            await runner._execute_single_task(run, step, "hk")
+            passed = await runner._execute_single_task(run, step, "hk")
 
+        # The failed review re-ran the step once, and the re-run passed it.
+        assert passed is True
+        assert exec_count == 2
         # revert should NOT have been called (nothing was committed)
         mock_git.revert_step.assert_not_called()
 
