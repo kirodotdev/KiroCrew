@@ -129,6 +129,8 @@ with no row here.
      - semantic question (whether a full context is answered by recycling)
    * - ``ACP_BACKENDS_INTERNAL_SANDBOX``
      - driver-internal (whether Crew's seatbelt is skipped at spawn)
+   * - ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+     - driver-internal (whether Crew's seatbelt is skipped on the kiro-cli relay route)
    * - ``ACP_BACKENDS_POD_HOME_REMAP``
      - driver-internal (whether ``$HOME`` is relocated onto the pod tree)
    * - ``ACP_BACKENDS_ACP_RUNTIME``
@@ -727,6 +729,25 @@ def backend_to_stored(backend: str) -> str:
     return STORED_BACKEND_KIRO if backend == ACP_BACKEND_KIRO else backend
 
 
+def spawn_delegates_to_internal_sandbox(backend: str, *, kiro_cli_internal_sandbox: bool) -> bool:
+    """Whether this spawn's isolation is delegated to kiro-cli's internal sandbox.
+
+    The one verdict every launch site passes to ``sandbox.wrap_argv`` as
+    ``is_kiro_cli`` (harness-parity H7). A member of
+    ``ACP_BACKENDS_INTERNAL_SANDBOX`` delegates on every route; a member of
+    ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX`` delegates only when its plan says
+    kiro-cli's sandbox confines the spawn. Both tests are positive, so a harness in
+    neither set keeps Crew's layer whatever its plan says.
+
+    Defined on this facade rather than beside the sets in ``backends_launch``: tests
+    rebind ``ACP_BACKENDS_INTERNAL_SANDBOX`` here, and a function in the owner would
+    read the owner's binding instead.
+    """
+    return backend in ACP_BACKENDS_INTERNAL_SANDBOX or (
+        kiro_cli_internal_sandbox and backend in ACP_BACKENDS_RELAY_INTERNAL_SANDBOX
+    )
+
+
 def selectable_stored_backend_values() -> list[str]:
     """:func:`selectable_backend_values` in the config-file vocabulary, sorted.
 
@@ -844,6 +865,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_RELAY_INTERNAL_SANDBOX,
     ACP_BACKENDS_SELF_SERVED_ACP,
     COPILOT_VERIFIED_VERSION,
     NODE_ADAPTER_ENTRY_SEGMENTS,

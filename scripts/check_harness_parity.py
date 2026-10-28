@@ -446,6 +446,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_SELF_SERVED_ACP": "routing-only: launch table membership",
     "ACP_BACKENDS_INDEPENDENT_SETUP": "off the wire: first-run install path",
     "ACP_BACKENDS_INTERNAL_SANDBOX": "off the wire: OS sandbox nesting",
+    "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX": "off the wire: OS sandbox nesting on the kiro-cli relay",
     "ACP_BACKENDS_POD_HOME_REMAP": "off the wire: pod HOME relocation",
     "ACP_BACKENDS_SESSION_SHARING": "standard ACP: session/load after teardown",
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": "standard ACP: session/load by id",

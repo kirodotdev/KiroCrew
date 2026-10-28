@@ -1038,9 +1038,10 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # OS-level sandbox: wrap the command to hide sensitive paths.
     # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
     # foreign MCP subprocesses (which bundle their own interpreter + deps).
-    # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
-    # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
-    # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
+    # is_kiro_cli is the driver's request.internal_sandbox, the positive verdict
+    # of spawn_delegates_to_internal_sandbox (harness-parity H7), not "not
+    # claude": the flag makes wrap_argv SKIP Crew's seatbelt on macOS and
+    # grants Windows's Kiro-only delegation in
     # favour of the harness's own internal sandbox, so a harness without one
     # must never be granted it by the absence of another harness.
     #
@@ -1049,7 +1050,12 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # own sandbox, so the child runs the bundle binary and Crew's launcher
     # wraps it. Off-loop because the resolution stats the candidate path.
     argv, delegate_internal_sandbox = await asyncio.to_thread(
-        tools.apply_pod_bundle_spawn, request.argv, backend=request.backend
+        functools.partial(
+            tools.apply_pod_bundle_spawn,
+            request.argv,
+            backend=request.backend,
+            internal_sandbox=request.internal_sandbox,
+        )
     )
     spawned_binary = argv[0] if argv else None
     # Per-process scratch containment. Allocated BEFORE the sandbox is built:

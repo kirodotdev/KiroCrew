@@ -37,12 +37,11 @@ from kiro_crew.agent_sdk.backends import (
 # that never starts and leaves the agent process unconfined. Only kiro-cli
 # qualifies; a Node or Python harness does not, however it is spawned.
 #
-# KAS is NOT a member even though Crew now spawns it as ``kiro-cli acp
-# --agent-engine v3`` and the process on the end of the argv IS kiro-cli. The
-# relay spawns the KAS server without an ``--sandbox`` argument, and KAS's
-# sandbox factory resolves an absent config to its no-op backend, so no OS
-# sandbox starts inside — adding KAS here would skip Crew's seatbelt in favour of
-# a layer that does not exist. See :mod:`kiro_crew.acp.kas_transport`.
+# KAS is NOT a member, because whether it carries kiro-cli's sandbox depends on
+# the route, and a membership here is per harness. Its kiro-cli relay route does,
+# and is granted the same delegation by ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+# below; its bundle route runs Node directly, with no kiro-cli in the chain, and
+# must keep Crew's layer.
 #
 # codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
 # is the only OS confinement a codex session gets. The Codex sandbox modes the
@@ -64,6 +63,33 @@ from kiro_crew.agent_sdk.backends import (
 # seatbelt would nest inside, and it does not carry Crew's credential mask. Skipping
 # Crew's layer for it would drop the compensating control for its passive reads.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
+
+# Backends whose kiro-cli RELAY route carries kiro-cli's internal sandbox, so a
+# spawn on that route takes the delegation ``ACP_BACKENDS_INTERNAL_SANDBOX`` gives
+# kiro-cli, and a spawn on any other route of the same harness does not. The
+# route is the harness's own positive statement
+# (``SpawnPlan.kiro_cli_internal_sandbox``, set only while that sandbox is live on
+# the host); this set is what lets that statement count, so a harness cannot waive
+# Crew's layer by setting a plan field alone. Read through
+# :func:`kiro_crew.agent_sdk.backends.spawn_delegates_to_internal_sandbox`, never
+# on its own.
+#
+# KAS qualifies on its relay route, ``kiro-cli acp --agent-engine v3``: the
+# process Crew spawns is kiro-cli, reading the same settings switch as the v2
+# engine, and it starts the same internal sandbox before it spawns the KAS
+# server, which runs as its child. Measured in the field on macOS (kiro-cli
+# 2.34.3-nightly): under Crew's seatbelt the relay printed ``sandbox
+# initialization failed: Operation not permitted`` and exited before
+# ``initialize``, the nesting refusal the v2 engine gets for the same reason.
+# Delegating fixes that refusal; Crew's seatbelt stays on whenever the switch is
+# off, exactly as for kiro-cli. Windows is not covered, unlike kiro-cli's own row:
+# measured there (kiro-cli 2.35.1), the relay's KAS child runs unconfined with the
+# switch on or off, so there is nothing to delegate to and the harness never says
+# so. The bundle route is not covered either: it spawns Node with no kiro-cli in
+# the chain, and KAS's own sandbox stays off because nothing passes it a
+# ``--sandbox`` argument (:mod:`kiro_crew.acp.kas_transport`).
+ACP_BACKENDS_RELAY_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KAS})
+
 
 # Backends whose pod-spawned child has its ambient ``HOME`` relocated onto the
 # pod's own tree, so the MCP OAuth grant artifacts the harness derives from

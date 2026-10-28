@@ -85,6 +85,7 @@ from kiro_crew.acp_backends import (
     selectable_backends,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_RELAY_INTERNAL_SANDBOX
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
@@ -443,7 +444,14 @@ def test_is_kiro_cli_is_positive(tmp_path) -> None:
     launched through the driver that serves it -- each per-session host on
     ``AcpClient``, and every host the shared runtime serves on ``AcpRuntime`` --
     with the pod-bundle step that decides the flag left real, and the flag the
-    sandbox wrap receives must be exactly membership.
+    sandbox wrap receives must be exactly membership: ``ACP_BACKENDS_INTERNAL_SANDBOX``
+    on every route, plus ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX`` where the runtime's
+    harness builds the kiro-cli relay argv AND kiro-cli's sandbox is live on the host
+    (KAS's default route; its bundle route is pinned apart in
+    ``test_kas_bundle_route_keeps_crew_sandbox``). Asked once with that sandbox live
+    and once with it off, so the pin holds on every host the suite runs on.
+    ``AcpClient`` builds no relay argv, so a relay member launched there gets
+    membership alone.
     """
     from unittest.mock import AsyncMock, patch
 
@@ -454,7 +462,9 @@ def test_is_kiro_cli_is_positive(tmp_path) -> None:
     client_hosts = ACP_BACKENDS_KNOWN - capture_mod.RUNTIME_ONLY_BACKENDS
     launches = [(acp_client, backend) for backend in sorted(client_hosts)]
     launches += [(acp_runtime, backend) for backend in sorted(ACP_BACKENDS_ACP_RUNTIME)]
-    for driver, backend in launches:
+    for live, (driver, backend) in [
+        (live, launch) for live in (True, False) for launch in launches
+    ]:
         flags: list[object] = []
 
         async def _wrap(argv, _flags=flags, **kwargs):
@@ -469,22 +479,65 @@ def test_is_kiro_cli_is_positive(tmp_path) -> None:
                 "_resolve_kiro_bin_for_spawn",
                 new=AsyncMock(return_value=capture_mod._KIRO_BIN),
             ),
+            patch("kiro_crew.acp.harness.kas._kiro_cli_sandbox_owns_relay", return_value=live),
+            patch("kiro_crew.sandbox.delegated_workspace_exposes_sealed_target", return_value=None),
         )
-        where = tmp_path / driver.__name__ / (backend or "kiro")
+        where = tmp_path / str(live) / driver.__name__ / (backend or "kiro")
         if driver is acp_runtime:
             capture_mod._capture_runtime_served(
                 backend, where, capture_mod.fixed_parent_env(), patches
             )
         else:
             capture_mod.capture(backend, where, extra_patches=patches)
-        assert flags == [
-            backend in ACP_BACKENDS_INTERNAL_SANDBOX
-        ], f"{driver.__name__} launched {backend or 'kiro'!r} with is_kiro_cli={flags}"
+        relay = live and driver is acp_runtime and backend in ACP_BACKENDS_RELAY_INTERNAL_SANDBOX
+        assert flags == [backend in ACP_BACKENDS_INTERNAL_SANDBOX or relay], (
+            f"{driver.__name__} launched {backend or 'kiro'!r} (kiro-cli sandbox "
+            f"live={live}) with is_kiro_cli={flags}"
+        )
 
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO}), (
         "only kiro-cli ships an internal OS sandbox; adding a member here waives "
         "Kiro Crew's own seatbelt for that harness on macOS"
     )
+    assert ACP_BACKENDS_RELAY_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KAS}), (
+        "only KAS has a kiro-cli relay route; adding a member here waives Kiro "
+        "Crew's own seatbelt on that harness's relay route on macOS"
+    )
+
+
+def test_kas_bundle_route_keeps_crew_sandbox(tmp_path) -> None:
+    """H7: KAS's bundle route runs Node with no kiro-cli, so it never delegates.
+
+    The relay half of the same harness delegates (``test_is_kiro_cli_is_positive``);
+    this is the other half, through the same launch and with kiro-cli's sandbox
+    live, so a route verdict that leaked onto the bundle would leave KAS's Node
+    process unconfined on macOS.
+    """
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
+
+    from kiro_crew.acp.harness import SpawnPlan
+
+    flags: list[object] = []
+
+    async def _wrap(argv, **kwargs):
+        flags.append(kwargs["is_kiro_cli"])
+        return list(argv), None
+
+    async def _bundle_plan(self, ctx):
+        return SpawnPlan(argv=["/opt/kas/node", "/opt/kas/acp-server.js"], host_auth=True)
+
+    patches = (
+        patch.object(acp_runtime, "apply_pod_bundle_spawn", new=acp_client.apply_pod_bundle_spawn),
+        patch.object(acp_runtime, "wrap_argv_async", side_effect=_wrap),
+        patch("kiro_crew.acp.harness.kas.KasHarness.resolve_spawn", new=_bundle_plan),
+        patch("kiro_crew.acp.harness.kas._kiro_cli_sandbox_owns_relay", return_value=True),
+    )
+    capture_mod._capture_runtime_served(
+        ACP_BACKEND_KAS, tmp_path / "kas-bundle", capture_mod.fixed_parent_env(), patches
+    )
+    assert flags == [False]
 
 
 def test_capability_sets_are_subsets_of_known_backends() -> None:
