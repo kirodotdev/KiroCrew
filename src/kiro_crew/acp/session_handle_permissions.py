@@ -114,6 +114,11 @@ async def approve_tool(
     ``deny_waivers`` reach the floor's gate unchanged, as on
     ``AcpClient.approve_tool``.
     """
+    # A KAS question is answered in its own shape, never through the floor:
+    # answering it runs nothing (see ``_user_inputs``).
+    answered = await self._answer_user_input_approval(request_id, option_id)
+    if answered is not None:
+        return answered
     gate_event = self._permission_gate_events.pop(request_id, None)
     # Answered: the call's silence timer runs again from here (a withdrawn or
     # ended grant puts the request back, and it is pending again).
@@ -253,6 +258,10 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int, reason: str
     signal: kiro-cli maps it to cancelling the TURN, auto-denying every
     later tool call in it without prompting.
     """
+    # A KAS question refused is a question dismissed: KAS moves on without
+    # an answer. Not a tool denial, so no steering-denial note either.
+    if await self.answer_user_input(request_id, None):
+        return
     recorded = self._permission_options.pop(request_id, None)
     gate_event = self._permission_gate_events.pop(request_id, None)
     # Answered, so the call's silence timer runs again from here.
