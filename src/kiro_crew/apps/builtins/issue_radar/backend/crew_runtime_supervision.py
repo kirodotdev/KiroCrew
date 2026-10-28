@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -22,23 +23,28 @@ from kiro_crew.autonudge_service.model import (
     SESSION_START_FAILURE_REASON,
 )
 
+from . import crew_loop_gaps as _loop_gaps
 from . import crew_model, crew_store, provider, store
 from .crew_runtime_prompt import compose_turn_prompt_async
 from .crew_runtime_session import (
     APP_NAME,
+    OWN_LOOP_GAPS,
     _autonudge_instance,
     _call_if_present,
     _current_crew,
+    _note_loop_gap,
     _record_model_hold,
     _rehydrate,
     _slot_key,
     _turn_model_items,
+    crew_loop_gap,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
     launch_crew,
     release_grant,
     release_slot_grant,
+    stop_sentinel_path,
     sync_trust,
 )
 
@@ -231,6 +237,7 @@ async def wake_crew(
     reason: str = "",
     root: Path | None = None,
     key: provider.RepoKey | None = None,
+    dispatched_at: list[float] | None = None,
 ) -> bool:
     """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
 
@@ -273,7 +280,7 @@ async def wake_crew(
     already written when this read ran.
     """
     try:
-        return await _wake_crew_body(state, owner, repo, crew, reason, root, key)
+        return await _wake_crew_body(state, owner, repo, crew, reason, root, key, dispatched_at)
     finally:
         current = await _current_crew(owner, repo, crew, root)
         if current is None or not is_live(current):
@@ -295,6 +302,7 @@ async def _wake_crew_body(
     reason: str = "",
     root: Path | None = None,
     key: provider.RepoKey | None = None,
+    dispatched_at: list[float] | None = None,
 ) -> bool:
     """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
 
@@ -399,6 +407,10 @@ async def _wake_crew_body(
     if turn_items is not None:
         crew_model.apply_turn_model(state, slot, at_dispatch, turn_items)
     tagged = f"[crew wake: {reason}]\n{prompt}" if reason else prompt
+    if dispatched_at is not None:
+        # The turn's start for the held-signal bound: nothing awaits between it and
+        # the dispatch, so a step the previous turn wrote is older than this.
+        dispatched_at.append(time.time())
     started = dispatch_crew_turn(state, slot, tagged)
     _call_if_present(state, "push_slots_update")
     # A hand pick the switch just saw goes on the record, as the watchdog pass
@@ -650,6 +662,45 @@ async def refresh_crew_loop_message(
         return False
 
 
+#: The wake reason of the one turn a resumed crew with open items gets (:func:`watchdog_cycle`).
+RESUMED_REASON = "resumed with open items"
+
+
+async def _has_open_items(
+    owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+) -> bool:
+    """Whether *crew* holds an open work item. An unreadable ledger answers yes: a
+    spare turn costs one turn, a missed one up to a day."""
+    try:
+        items = await asyncio.to_thread(
+            partial(
+                crew_store.list_work_items, owner, repo, str(crew.get("id")), root, open_only=True
+            )
+        )
+    except Exception:
+        logger.debug("issue-radar: reading crew %s items failed", crew.get("id"), exc_info=True)
+        return True
+    return bool(items)
+
+
+async def _resume_wakes(
+    svc: Any, slot_key: str, owner: str, repo: str, crew: dict[str, Any], root: Path | None
+) -> bool:
+    """Whether a crew whose loop this pass switched on (or armed) gets its one wake.
+
+    Only when the loop is running now: the service declines to revive a loop its STOP
+    sentinel halted, and the sentinel is the operator's kill switch, so a crew that
+    has one gets no turn here either. Then only when it holds an open item.
+    """
+    loop = svc.get_by_slot(slot_key)
+    if loop is None or not getattr(loop, "active", False):
+        return False
+    sentinel = partial(stop_sentinel_path, owner, repo, str(crew.get("id")), root)
+    if await asyncio.to_thread(lambda: sentinel().exists()):
+        return False
+    return await _has_open_items(owner, repo, crew, root)
+
+
 async def watchdog_cycle(
     state: Any,
     owner: str,
@@ -720,6 +771,7 @@ async def watchdog_cycle(
                 await _retire_stood_down_loop(svc, slot_key)
             continue
         crew = current
+        resumed = False
         if slot is not None:
             await _reconcile_trust(state, slot, crew)
         if svc is not None:
@@ -731,6 +783,7 @@ async def watchdog_cycle(
                 # this pass just created, or its grant is the one thing in the pass
                 # nothing re-checks.
                 slot = await launch_crew(state, owner, repo, crew, root, key)
+                resumed = True
             else:
                 if slot is None:
                     # Loop but still no slot — nothing on disk to rehydrate from (a
@@ -744,6 +797,9 @@ async def watchdog_cycle(
                     await _pause_stood_down_crew(svc, loop, owner, repo, crew, root)
                 elif not loop.active:
                     await svc.update(loop.id, active=True)
+                    resumed = True
+                if not _stood_down(loop):
+                    await _retime_loop(svc, loop, owner, repo, crew, root)
         # The model the next idle-timer turn runs on: the loop fires on its own
         # clock, and this pass is what keeps the slot's model in step with the
         # ledger between wakes. A triage turn that moved an item into an acting
@@ -785,6 +841,12 @@ async def watchdog_cycle(
                 await wake_crew(
                     state, owner, repo, current, "an item needs the work model", root, key
                 )
+            elif resumed and await _resume_wakes(svc, slot_key, owner, repo, current, root):
+                # The loop was off (a pause) and the sweep kept no marks for a crew
+                # that was not live, so what moved meanwhile is seeded as the new
+                # state and signals nothing: one turn reconciles it now rather than
+                # at the day-long backstop.
+                await wake_crew(state, owner, repo, current, RESUMED_REASON, root, key)
 
 
 #: The loop stops autonudge records when its own cycles keep failing: five in a row
@@ -798,6 +860,52 @@ _STAND_DOWN_REASONS = frozenset({CONSECUTIVE_FAILURE_REASON, SESSION_START_FAILU
 
 def _stood_down(loop: Any) -> bool:
     return not loop.active and getattr(loop, "stopped_reason", "") in _STAND_DOWN_REASONS
+
+
+async def _retime_loop(
+    svc: Any,
+    loop: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None,
+) -> None:
+    """Move the crew's loop to the gap its items call for (:func:`crew_loop_gap`).
+
+    Only a loop whose interval is still the one this app last wrote on it
+    (:mod:`.crew_loop_gaps`) is moved, and only when the gap changed, so a steady crew
+    costs no loop write. Any other interval was set by an operator and is kept, even
+    when it equals one of :data:`OWN_LOOP_GAPS`. A loop with no record was armed
+    before the record existed: it is the app's when it is on one of those gaps, and
+    is recorded as such. The write carries a precondition the service re-takes under
+    its mutation lock, so an interval an operator sets after this read is kept as well.
+    """
+    captured = getattr(loop, "idle_secs", None)
+    crew_id = str(crew.get("id"))
+    mine = await asyncio.to_thread(
+        partial(_loop_gaps.written, owner, repo, root, crew_id, str(loop.id))
+    )
+    if mine is not None and mine != captured:
+        return
+    if mine is None and captured not in OWN_LOOP_GAPS:
+        return
+    idle = await crew_loop_gap(owner, repo, crew, root)
+    if idle == captured:
+        if mine is None:
+            # A loop armed before the record existed, on the gap it should have:
+            # recorded as the app's, so an interval set later is told apart from it.
+            await _note_loop_gap(owner, repo, root, crew, loop, captured)
+        return
+    applied = await svc.update(
+        loop.id,
+        idle_secs=idle,
+        precondition=lambda live: getattr(live, "idle_secs", None) == captured,
+    )
+    if getattr(applied, "idle_secs", None) == idle:
+        await _note_loop_gap(owner, repo, root, crew, loop, idle)
+    # Otherwise nothing was written (an operator's interval, a pause quiescing the
+    # loop, a shutdown) and the record stays: an operator's value is kept, and
+    # anything else is retried on the next pass.
 
 
 #: The pause reason a stood-down crew carries. The crew page shows it beside Resume,

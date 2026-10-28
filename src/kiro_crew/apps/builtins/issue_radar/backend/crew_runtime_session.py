@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_asy
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
 
+from . import crew_loop_gaps as _loop_gaps
 from . import crew_model, crew_store, provider
 from .crew_runtime_prompt import compose_turn_prompt_async
 
@@ -41,11 +42,51 @@ logger = logging.getLogger("kirocrew.app.issue-radar")
 APP_NAME = "issue-radar"
 
 
-#: Crews get a turn on this idle gap when the sweep has nothing to report. The
-#: watcher is the real scheduler (it fires on an actual signal, new work included);
-#: this is the fallback clock for whatever the watcher cannot see, so it is
-#: deliberately slow. ``autonudge`` clamps it to [15s, 24h].
-DEFAULT_IDLE_SECS = 300
+#: The idle backstop: a crew with nothing in an acting phase gets a turn on this gap
+#: when the sweep has nothing to report. The watcher is the real scheduler for such a
+#: crew -- it fires on an actual signal, including room plus claimable work
+#: (``pickup-due``) -- so an idle crew costs no turn while nothing it could act on
+#: changes, and this covers only what the watcher cannot see (an issue older than the
+#: open-issues page it reads, say). A day, the longest ``autonudge`` allows ([15s,
+#: 24h]). The loop itself stays armed because its STOP sentinel, watchdog re-arm and
+#: failure stand-down are how a crew is braked.
+DEFAULT_IDLE_SECS = 86400
+
+#: The gap for a crew with an item in an acting phase (``crew_model.ACTING_PHASES``).
+#: Only the crew moves such an item -- no forge signal will -- so a turn that ended
+#: with one (a turn timeout, a restart, one item per turn) must come back soon, not
+#: on the backstop.
+ACTIVE_IDLE_SECS = 300
+
+#: The intervals this app arms a crew loop at. The watchdog moves a loop between them
+#: as the crew's items change phase, but only while its interval is still the one the
+#: app last wrote (:mod:`.crew_loop_gaps`): any other was set through
+#: ``PATCH /api/autonudge/{loop_id}``, the loop's one operator setting, and it outranks
+#: the phase. A loop armed before that record existed is the app's when it is on one
+#: of these values.
+OWN_LOOP_GAPS = frozenset({DEFAULT_IDLE_SECS, ACTIVE_IDLE_SECS})
+
+
+async def crew_loop_gap(
+    owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+) -> int:
+    """The interval this app would run the crew's auto-nudge loop at right now.
+
+    :data:`ACTIVE_IDLE_SECS` while any open item is in an acting phase,
+    :data:`DEFAULT_IDLE_SECS` otherwise. A failed ledger read answers the active gap:
+    a spare turn costs one turn, a missed one up to a day.
+    """
+    try:
+        items = await asyncio.to_thread(
+            partial(
+                crew_store.list_work_items, owner, repo, str(crew.get("id")), root, open_only=True
+            )
+        )
+        acting = crew_model.has_acting_item(items)
+    except Exception:
+        logger.debug("issue-radar: reading the crew's items for its loop gap failed", exc_info=True)
+        acting = True
+    return ACTIVE_IDLE_SECS if acting else DEFAULT_IDLE_SECS
 
 
 # ── session launch / attach ─────────────────────────────────────────────────
@@ -342,15 +383,33 @@ async def launch_crew(
             crew.get("id"),
         )
         return slot
-    await svc.add(
+    idle = await crew_loop_gap(owner, repo, crew, root)
+    loop = await svc.add(
         slot_key=slot.key,
         message=await compose_turn_prompt_async(slot, owner, repo, crew, root, key),
-        idle_secs=DEFAULT_IDLE_SECS,
+        idle_secs=idle,
         max_cycles=0,
         stop_sentinel_path=str(stop_sentinel_path(owner, repo, str(crew.get("id")), root)),
         admission_check=lambda: state.get_slot(slot.key) is slot,
     )
+    await _note_loop_gap(owner, repo, root, crew, loop, idle)
     return slot
+
+
+async def _note_loop_gap(
+    owner: str, repo: str, root: Path | None, crew: dict[str, Any], loop: Any, idle: int
+) -> None:
+    """Record *idle* as the interval this app set on *loop* (:mod:`.crew_loop_gaps`). A
+    failed write only costs that loop its retiming until the next one lands."""
+    loop_id = getattr(loop, "id", None)
+    if not isinstance(loop_id, str):
+        return
+    try:
+        await asyncio.to_thread(
+            partial(_loop_gaps.record, owner, repo, root, str(crew.get("id")), loop_id, idle)
+        )
+    except OSError:
+        logger.warning("issue-radar: could not record the crew loop's gap", exc_info=True)
 
 
 # ── turn dispatch ───────────────────────────────────────────────────────────
