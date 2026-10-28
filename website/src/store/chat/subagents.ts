@@ -413,6 +413,19 @@ export const selectSidebarApprovalCounts = createSelector(
   },
 )
 
+/** Mark every active subagent in *slot* as parent-stopped, once that slot's
+ *  Stop card settles as stopped. The processes keep running (Stop all is a
+ *  separate verb), but the UI dims the cards so they match the [Stopped] card.
+ *  Agents live in slotActivity[slot].subagents when the slot is NOT active,
+ *  and in state.subagents (the flat map) when it IS active -- mark both. */
+export function markParentStopped(state: ChatState, slot: string) {
+  if (isUnsafeKey(slot)) return
+  const key = safeKey(slot)
+  for (const subs of [state.slotActivity[key]?.subagents, key === state.activeSlot ? state.subagents : undefined]) {
+    for (const a of Object.values(subs ?? {})) if (isActiveSubagent(a)) a.parentStopped = true
+  }
+}
+
 export const subagentReducers = {
   /** Start reconciling the held subagent view against the replay the gateway
    *  sends after `subscribe_subagents`. Every card except a pending spawn
@@ -947,6 +960,8 @@ export const subagentReducers = {
       requestedModel: d.requested_model || existing?.requestedModel || undefined,
       childSession: d.child_session || existing?.childSession || undefined,
       batchId: d.batch_id || existing?.batchId || undefined,
+      // No replayed frame restores a Stop, so a reconnect keeps the mark it left.
+      parentStopped: existing?.parentStopped || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
       // Replay applies the live tool-frame rule to a copy of a held timeline.
       // A card the replay creates seeds its timeline from the latest tool.

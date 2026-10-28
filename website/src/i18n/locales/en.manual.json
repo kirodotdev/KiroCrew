@@ -5944,6 +5944,10 @@
         "chip_failed_other": "{{count}} agents failed",
         "chip_stopped_one": "{{count}} agent stopped",
         "chip_stopped_other": "{{count}} agents stopped",
+        "chip_parent_stopped_one": "Parent turn stopped: {{count}}",
+        "chip_parent_stopped_other": "Parent turn stopped: {{count}}",
+        "parent_turn_stopped": "Parent turn stopped",
+        "parent_stopped_still_running": "Parent stopped, still running",
         "chip_stalled_one": "{{count}} agent possibly stalled",
         "chip_stalled_other": "{{count}} agents possibly stalled"
       },

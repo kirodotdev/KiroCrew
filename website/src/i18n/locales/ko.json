@@ -12856,6 +12856,9 @@
         "chip_done_other": "에이전트 {{count}}개 완료",
         "chip_failed_other": "에이전트 {{count}}개 실패",
         "chip_stopped_other": "에이전트 {{count}}개 중지됨",
+        "chip_parent_stopped_other": "상위 턴이 중지됨: {{count}}",
+        "parent_turn_stopped": "상위 턴이 중지됨",
+        "parent_stopped_still_running": "상위 중지됨, 아직 실행 중",
         "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성",
         "more_running_normally_count_other": "나머지 {{count}}개는 정상 실행 중…"
       },

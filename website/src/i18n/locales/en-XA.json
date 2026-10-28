@@ -12704,6 +12704,10 @@
         "chip_failed_other": "[{{count}} àğèñţş ƒàìĺèð ·············]",
         "chip_stopped_one": "[{{count}} àğèñţ şţøþþèð ·············]",
         "chip_stopped_other": "[{{count}} àğèñţş şţøþþèð ··············]",
+        "chip_parent_stopped_one": "[Þàŕèñţ ţùŕñ şţøþþèð: {{count}} ···············]",
+        "chip_parent_stopped_other": "[Þàŕèñţ ţùŕñ şţøþþèð: {{count}} ···············]",
+        "parent_turn_stopped": "[Þàŕèñţ ţùŕñ şţøþþèð ·················]",
+        "parent_stopped_still_running": "[Þàŕèñţ şţøþþèð, şţìĺĺ ŕùññìñğ ····················]",
         "chip_stalled_one": "[{{count}} àğèñţ þøşşìƀĺý şţàĺĺèð ················]",
         "chip_stalled_other": "[{{count}} àğèñţş þøşşìƀĺý şţàĺĺèð ·················]"
       },

@@ -12856,6 +12856,9 @@
         "chip_done_other": "{{count}} 個のエージェントが完了",
         "chip_failed_other": "{{count}} 個のエージェントが失敗",
         "chip_stopped_other": "{{count}} 個のエージェントが停止",
+        "chip_parent_stopped_other": "親のターンが停止しました: {{count}}",
+        "parent_turn_stopped": "親のターンが停止しました",
+        "parent_stopped_still_running": "親は停止、まだ実行中",
         "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性",
         "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…"
       },

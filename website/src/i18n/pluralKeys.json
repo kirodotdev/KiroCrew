@@ -214,6 +214,7 @@
   "pages.chat.subagentProgressBar.chip_queued",
   "pages.chat.subagentProgressBar.chip_done",
   "pages.chat.subagentProgressBar.chip_failed",
+  "pages.chat.subagentProgressBar.chip_parent_stopped",
   "pages.chat.subagentProgressBar.chip_stopped",
   "pages.chat.subagentProgressBar.chip_stalled",
   "pages.chat.subagentCompletionCard.chip_ok",
