@@ -55,6 +55,8 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
   conversation_card: 'the change card / guide offer row; needs the card and guide stores, which the store-free registry has none of (it leaves the role undrawn)',
   crew_dispatch_notice: 'the Crew Mode dispatch notice row; its Open Board button needs the host slot + onOpenCrewTab reveal the store-free registry has no seam for (a peer/crew window renders it inert)',
+  session_relay_incoming: "a SHAPE entry: a session_send / session_broadcast delivery (gateway-set meta.relay) drawn as the incoming session-message card; it names the sender from this hub's session roster, so the registry draws the row as plain user prose",
+  session_send_tool: "this session's own session_send call drawn as the outgoing session-message card, refining the tool line; the registry draws the generic tool line",
   // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
   hidden_invisible_assistant: 'zero-width-space quiet-cycle rows; the registry applies the same skip inside its assistant entry',
