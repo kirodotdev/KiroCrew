@@ -160,7 +160,8 @@ def _ends_agent_started_turn(msg: JsonRpcMessage) -> bool:
     response. No request is sent under that turn's id, so a response to a
     request sent before the turn began answers a wait that already ended,
     usually a prompt whose turn ended here, and the frames read were that
-    prompt's tail. ``_read_turn`` leaves a response to a later request unread.
+    prompt's tail. ``_read_turn`` leaves a response to a later request unread,
+    and reads the answer to a steering request as a stray response.
     """
     if msg.method is None and msg.id is not None:
         return True
@@ -504,9 +505,11 @@ async def _read_turn(
     arrives, so this yields a ``complete`` of its own on the frame that closes
     the cycle (``_ends_agent_started_turn``), or before the response to a
     request sent while this turn reads, which it leaves at the front of
-    ``_buffer`` for that request's reader.
+    ``_buffer`` for that request's reader. The answer to a steering request
+    ends no turn: it is passed on as a stray response, as in a user turn.
     """
     first_unsent_id = self._next_id
+    unanswered_steering = self._unanswered_steering_ids()
     await self._claim_stdout()
     try:
         # An end marker read before this turn's first activity belongs to an
@@ -514,7 +517,12 @@ async def _read_turn(
         saw_activity = False
         async with aclosing(prompt_loop(req_id, timeout)) as frames:
             async for action, msg in frames:
-                if req_id != _AGENT_STARTED_REQUEST_ID:
+                # _prompt_loop hands a steer that still waits its answer first,
+                # so a steering answer that reaches here came too late for it.
+                late_steering_answer = msg.method is None and msg.id in unanswered_steering
+                if late_steering_answer:
+                    unanswered_steering.discard(msg.id)
+                if req_id != _AGENT_STARTED_REQUEST_ID or late_steering_answer:
                     yield action, msg
                     continue
                 result: dict = {}

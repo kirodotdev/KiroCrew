@@ -2256,10 +2256,20 @@ stdout while no request waits. Design record:
   that prompt's tail; it keeps its own `stopReason`. A response to a request
   sent after the turn began (an id at or above the `_next_id` the turn started
   with) also ends the turn, but stays at the front of `_buffer` for that
-  request's reader. Process death, the stale-turn gate and the prompt timeout
-  end it too. A prompt that starts first reads the frames as its own, which
-  ends the hand-off, and `stream_unsolicited()` then yields nothing, as it does
-  while any prompt is in flight.
+  request's reader. The answer to a `_session/steering` request ends no turn,
+  whenever its steer was sent: the client keeps the id of each steering
+  request until its answer is read, a steer that still waits is handed its
+  answer before this rule runs, and an answer that arrives after its steer
+  stopped waiting passes as a stray response, as in a user turn. Process
+  death, the stale-turn gate and the prompt timeout end it too. A prompt that
+  starts first reads the frames as its own, which ends the hand-off, and
+  `stream_unsolicited()` then yields nothing, as it does while any prompt is in
+  flight.
+- **The turn takes no steers.** `_dispatch_events` leaves `_steering_turn_req`
+  unset under `-1`, so `steer()` returns False while the turn reads and the
+  caller queues the text as the next prompt. The dashboard's busy send button
+  defaults to Steer, and a Steer-mode send falls back to its queue on that
+  False, so a message typed during the turn runs after it.
 - **A prompt queues behind the turn.** `stream_unsolicited()` holds
   `_agent_turn_gate` while it reads, and keeps it until `_prompt_loop` has
   released `_turn_lock`, since `_dispatch_events` leaves that loop to the

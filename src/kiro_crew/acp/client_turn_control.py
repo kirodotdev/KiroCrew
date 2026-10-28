@@ -496,6 +496,16 @@ def _steering_waiters(self: AcpClient) -> dict[int, "asyncio.Future[Any]"]:
     return waiters
 
 
+def _unanswered_steering_ids(self: AcpClient) -> set[int]:
+    """Ids of steering requests whose answer has not been read yet. Created on
+    first use so a client built without ``__init__`` (test doubles) has one."""
+    ids = getattr(self, "_unanswered_steering_id_set", None)
+    if ids is None:
+        ids = set()
+        self._unanswered_steering_id_set = ids
+    return ids
+
+
 def _settle_steering_answer(self: AcpClient, msg: JsonRpcMessage) -> bool:
     """Hand *msg* to the steer waiting for it; True when it was that answer.
 
@@ -562,10 +572,12 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         return False
     answer: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
     sent: list[int] = []
+    unanswered = self._unanswered_steering_ids()
 
     def _register(request_id: int) -> None:
         sent.append(request_id)
         waiters[request_id] = answer
+        unanswered.add(request_id)
 
     turn_done = self._turn_done
     try:
@@ -591,6 +603,8 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         # Every exit stops waiting, so a late answer is skipped as stray.
         if sent:
             waiters.pop(sent[0], None)
+            if answer.done():
+                unanswered.discard(sent[0])
     if not answer.done() or answer.cancelled() or answer.exception() is not None:
         return False
     outcome = steering_outcome(answer.result())

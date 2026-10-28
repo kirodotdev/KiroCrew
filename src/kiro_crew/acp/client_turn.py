@@ -929,10 +929,13 @@ async def _dispatch_events(
     self._active_tool_calls.clear()
     got_complete = False
     saw_agent_switch = False
-    # A prompt turn takes ``_session/steering`` steers; a command turn does
-    # not. Steers accepted into an earlier turn were settled or dropped there.
+    # A prompt turn takes ``_session/steering`` steers; a command turn and a
+    # turn the agent started do not. Steers accepted into an earlier turn were
+    # settled or dropped there.
     self._steers_accepted = []
-    self._steering_turn_req = None if extract_agent_from_result else req_id
+    self._steering_turn_req = (
+        None if extract_agent_from_result or req_id == _AGENT_STARTED_REQUEST_ID else req_id
+    )
 
     async for action, msg in self._prompt_loop(req_id, timeout):
         if action != "update":

@@ -24,7 +24,9 @@ from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError
 from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
+    EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
+    METHOD_SESSION_STEERING,
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk.backends import (
@@ -726,3 +728,112 @@ async def test_a_prompt_past_the_gate_keeps_stream_unsolicited_out(monkeypatch) 
         await prompt
     assert client._prompts_in_flight == 0
     await client._stop_idle_reader()
+
+
+# ── Steers ──
+
+
+_PROMPT_END = {"jsonrpc": "2.0", "id": 8, "result": {"stopReason": "end_turn"}}
+
+
+def _steering_client(*, on_turn=None) -> tuple[AcpClient, asyncio.StreamReader, list[dict]]:
+    """A claude client whose adapter takes ``_session/steering``, and the frames it writes."""
+    client, reader, _proc = _client(on_turn=on_turn or (lambda _c: None))
+    client._session_id = "s1"
+    client._agent_version = "0.89.1"
+    client._steering_advertised = True
+    client.ensure_ready = AsyncMock()
+    client._send_prompt = AsyncMock(return_value=8)
+    client._next_id = 9  # the prompt was request 8
+    sent: list[dict] = []
+
+    async def _write(data: bytes, request_id: int, method: str) -> None:
+        sent.append(json.loads(data))
+
+    client._write_request_bounded = _write
+    return client, reader, sent
+
+
+def _steering_ids(sent: list[dict]) -> list[int]:
+    return [frame["id"] for frame in sent if frame.get("method") == METHOD_SESSION_STEERING]
+
+
+def _steering_answer(request_id: int, outcome: str) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}}
+
+
+async def _user_turn(client: AcpClient) -> asyncio.Future[list]:
+    """Read a user turn in the background, returned once it takes steers."""
+
+    async def _read() -> list:
+        async with contextlib.aclosing(client.stream_events("first", timeout=30)) as events:
+            return [event async for event in events]
+
+    turn = asyncio.ensure_future(_read())
+    await async_wait_until(lambda: client._steering_turn_req == 8 or turn.done(), timeout=5)
+    return turn
+
+
+@pytest.mark.asyncio
+async def test_an_agent_started_turn_takes_no_steer_and_the_next_user_turn_does() -> None:
+    client, reader, sent = _steering_client()
+    await _handed_off(client, reader, _chunk("background "))
+
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        assert (await stream.__anext__()).kind == EVENT_TEXT_CHUNK
+        # False sends the caller down its queue path.
+        assert await client.steer("change course") is False
+        _feed(reader, _AUTONOMOUS_END)
+        rest = [e async for e in stream]
+
+    assert rest[-1].kind == EVENT_COMPLETE
+    assert sent == []
+    await async_wait_until(lambda: client._stdout_claims == 0, timeout=5)
+    turn = await _user_turn(client)
+    steer = asyncio.ensure_future(client.steer("change course"))
+    [steering_id] = await async_wait_until(lambda: _steering_ids(sent), timeout=5)
+    _feed(reader, _steering_answer(steering_id, "injected"))
+    assert await await_until(steer, what="the steer") is True
+    _feed(reader, _HUMAN_END, _PROMPT_END)
+    events = await await_until(turn, what="the user turn")
+
+    assert [e.kind for e in events][-2:] == [EVENT_STEER_CONSUMED, EVENT_COMPLETE]
+    assert client._unanswered_steering_ids() == set()
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.parametrize(
+    ("stopped_waiting_on", "outcome"), [("timeout", "injected"), ("turn_end", "promptRequired")]
+)
+@pytest.mark.asyncio
+async def test_a_late_steering_answer_does_not_end_the_agent_started_turn(
+    monkeypatch, stopped_waiting_on: str, outcome: str
+) -> None:
+    """A steer sent in a user turn stops waiting; its answer lands in the next turn."""
+    from kiro_crew.acp import client as acp_client
+
+    if stopped_waiting_on == "timeout":
+        monkeypatch.setattr(acp_client, "STEERING_ANSWER_WAIT_SECS", 0.0)
+    turns: list[AcpClient] = []
+    client, reader, sent = _steering_client(on_turn=turns.append)
+    turn = await _user_turn(client)
+    steer = asyncio.ensure_future(client.steer("change course"))
+    [steering_id] = await async_wait_until(lambda: _steering_ids(sent), timeout=5)
+    if stopped_waiting_on == "timeout":
+        assert await await_until(steer, what="the steer") is False
+    _feed(reader, _HUMAN_END, _PROMPT_END)
+    await await_until(turn, what="the user turn")
+    assert await await_until(steer, what="the steer") is False
+
+    await async_wait_until(lambda: client._stdout_claims == 0, timeout=5)
+    await _handed_off(client, reader, _chunk("background "))
+    _feed(reader, _steering_answer(steering_id, outcome), _chunk("finished"), _AUTONOMOUS_END)
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        events = [e async for e in stream]
+
+    assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["background ", "finished"]
+    assert [e.kind for e in events].count(EVENT_COMPLETE) == 1
+    assert events[-1].stop_reason == "end_turn"
+    assert turns == [client]
+    assert client._unanswered_steering_ids() == set()
+    await _stop_restarted_reader(client)

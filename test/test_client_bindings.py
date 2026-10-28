@@ -296,6 +296,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_seed_copilot_edit_targets": ("function", False, "bb6b4dedb69c", "client_copilot"),
     "_tripwire_session_config": ("function", True, "87459833bc5c", "client_permissions"),
     "_tripwire_spec_disabled_tool": ("function", False, "42c6e584f488", "client_permissions"),
+    "_unanswered_steering_id_set": ("annotation", False, "", ""),
+    "_unanswered_steering_ids": ("function", False, "6e67e49bb5fd", "client_turn_control"),
     "_unclassified_tool_call": ("function", False, "2dfacffa6279", "client_permissions"),
     "_uses_advertised_model_selection": ("property", False, "a6632a57e602", "client_class"),
     "_verify_claude_project_denies_unchanged": (
