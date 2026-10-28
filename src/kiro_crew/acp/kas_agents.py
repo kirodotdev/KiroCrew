@@ -516,6 +516,54 @@ def _audit_permission_decision(refs: str, outcome: str, reason: str, agent_id: s
         logger.debug("SEL audit unavailable for KAS projection decision", exc_info=True)
 
 
+#: How many skill names one skill-scope record repeats before it summarises.
+_SKILL_SCOPE_AUDIT_NAMES = 40
+
+
+def _skill_scope_summary(rules: tuple[dict[str, Any], ...]) -> str:
+    """What the skill-scope denies keep and take away, in a bounded line."""
+    kept: list[str] = []
+    denied: list[str] = []
+    deny_all = False
+    for rule in rules:
+        if rule.get("exclude"):
+            kept.extend(rule["exclude"])
+        elif rule.get("match"):
+            denied.extend(rule["match"])
+        else:
+            deny_all = True
+
+    def _names(names: list[str]) -> str:
+        shown = ", ".join(names[:_SKILL_SCOPE_AUDIT_NAMES])
+        more = len(names) - _SKILL_SCOPE_AUDIT_NAMES
+        return f"{shown}, and {more} more" if more > 0 else shown
+
+    if kept:
+        return f"every skill denied except {len(kept)}: {_names(kept)}"
+    if denied:
+        return f"{len(denied)} default-tree skills denied by name: {_names(denied)}"
+    return "every skill denied" if deny_all else "no skill rule"
+
+
+def _audit_skill_scope(rules: tuple[dict[str, Any], ...], agent_id: str) -> None:
+    """Record the skill-scope denies a projection adds in the security event log.
+
+    They narrow only, so no ceiling decides them, but they are part of the session's
+    permission policy and the trail must be able to reconstruct it. Never fails the
+    projection on an audit error.
+    """
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="kas_skill_scope_denied",
+            outcome="ok",
+            source="kas_agent_projection",
+            resources=f"{_skill_scope_summary(rules)} for agent {agent_id or '?'}",
+        )
+    except Exception:  # noqa: BLE001 — audit must not break projection
+        logger.debug("SEL audit unavailable for KAS skill scope", exc_info=True)
+
+
 def _registry_governed() -> bool:
     """Whether the operator declared this install registry-governed.
 
@@ -1003,6 +1051,7 @@ def to_client_custom_agent(
         block = dict(permissions) if isinstance(permissions, dict) else {}
         block["rules"] = [*(block.get("rules") or []), *skill_scope_rules]
         permissions = block
+        _audit_skill_scope(skill_scope_rules, agent_id)
     if permissions:
         out["permissions"] = permissions
 

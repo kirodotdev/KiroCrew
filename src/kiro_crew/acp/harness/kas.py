@@ -276,7 +276,6 @@ def _skill_scope_rules(
     agent: str,
     spec: dict[str, Any],
     spec_dir: Path,
-    session_key: str,
     work_dir: str | Path | None,
 ) -> tuple[dict[str, Any], ...]:
     """The ``skill`` deny rules that give this KAS session its kiro-cli skill set.
@@ -290,9 +289,7 @@ def _skill_scope_rules(
     from kiro_crew.acp import kas_skill_scope
 
     try:
-        globs = kas_skill_scope.scope_globs(
-            agent, spec, agents_dir=spec_dir, session_key=session_key, work_dir=work_dir
-        )
+        globs = kas_skill_scope.scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
         return tuple(kas_skill_scope.skill_scope_rules(globs, work_dir=work_dir))
     except Exception:  # see the docstring: degrade to the unscoped catalog
         logger.warning(
@@ -682,9 +679,7 @@ class KasHarness(MembershipHarness):
                     member_dispatch=member_dispatch,
                     crew_panel=crew_panel,
                     session_key=session_key,
-                    skill_scope_rules=_skill_scope_rules(
-                        agent, spec, prompt_dir, session_key, work_dir
-                    ),
+                    skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
                 ),
                 snapshot,
             )

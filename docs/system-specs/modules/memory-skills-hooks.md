@@ -4394,22 +4394,31 @@ agent's `resources`. Measured on kiro-cli 2.35.1 with a spec that maps 3 skills,
 with inheritance left on. The `customAgents` wire has no inheritance field, but
 KAS removes a skill its policy denies under the `skill` capability from what its
 skill tool offers, and refuses to load it. So `KasHarness.session_extras` resolves
-the scope a kiro-cli session of the same agent gets
-(`session_skill_globs(..., provider_type="acp")`, the call `skill_search` makes,
-so pins, crewmate scopes and inherited trees all count), reads each matched
-skill's name (frontmatter `name`, else its directory), and appends one rule to
+the scope a kiro-cli session of the same agent gets, from the spec this session
+is projected with, under `agent_skill_globs`' rules (`skill://` entries, else the
+inherited trees for a spec that may inherit them). It never re-resolves the agent
+by name (a checkout spec shadowing a user-level name would set the scope of the
+user-level agent KAS runs) and never reads the session key's skill-scope pin
+(`skill_scope_pin.py`), which the gateway sets per turn after the session is
+built; an app-bound session's projected spec is already its registered file. It reads
+each matched skill's name through `hooks.safe_read_prefix` (frontmatter `name`,
+else its directory), and appends one rule to
 the agent's `permissions`: `{"capability": "skill", "exclude": [<names>],
 "effect": "deny"}`. Measured with that rule: 3 for the 3-skill spec, 35 for a
 35-skill spec, and an excluded skill still loads while a global one is refused.
 No rule is added for an unmapped `kirocrew` / `kirocrew-worker` (whole catalog)
 or for a scope that is exactly the default trees KAS already loads. An empty
 scope (an agent that may not inherit, or a workspace that turned inheritance off)
-denies every skill. KAS compiles `exclude` unsplit, so past
-`kas_permissions._MAX_PATTERNS_PER_RULE` names the rule is written as split
-`match` denies of the default-tree skills outside the scope; that form cannot
-see a skill added to those trees after session start. A scope that fails to
-resolve falls back to the spec's own `skill://` entries; any other failure adds
-no rule and logs a warning, so the session starts with KAS's default trees
+denies every skill. KAS compiles `exclude` unsplit, and Crew bounds every rule at
+`kas_permissions._MAX_PATTERNS_PER_RULE` (KAS's compiler overflows near 114), so
+past that many names the rule is written as split `match` denies of the
+default-tree skills outside the scope. That form cannot see a skill added to
+those trees after session start, and a name with glob characters is never
+written as a `match` entry (it would deny in-scope skills too), so such a skill
+stays offered. Every projection that adds the rules records one
+`kas_skill_scope_denied` security event (source `kas_agent_projection`) naming
+the agent and what the rules keep or deny, at most 40 names per line. Any failure
+adds no rule and logs a warning, so the session starts with KAS's default trees
 rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.

@@ -1,4 +1,4 @@
-"""A KAS session loads the skills its kiro-cli twin loads, not every global skill (#25319).
+"""A KAS session loads the skills its kiro-cli twin loads, not every global skill.
 
 KAS reads no ``cli.json``, so ``chat.disableInheritingDefaultResources`` -- the switch
 Crew's native kiro-cli launch uses to hold a session to its mapped skills -- has no
@@ -190,3 +190,131 @@ async def test_a_failed_scope_costs_the_narrowing_not_the_session(home, monkeypa
 
     assert entry["id"] == "mapped"
     assert "permissions" not in entry
+
+
+@pytest.mark.asyncio
+async def test_a_shadowing_checkout_spec_does_not_set_the_user_agents_scope(home):
+    kiro, checkout, package = home
+    alpha = _skill(package, "alpha")
+    beta = _skill(package, "beta")
+    _agent(kiro, "shared", {"tools": ["*"], "resources": [f"skill://{alpha}"]})
+    project = checkout / ".kiro" / "agents"
+    project.mkdir(parents=True)
+    (project / "shared.json").write_text(
+        json.dumps({"name": "shared", "prompt": "p", "resources": [f"skill://{beta}"]}),
+        encoding="utf-8",
+    )
+
+    entry = await _entry("shared", checkout)
+
+    # KAS runs the user-level spec, so its own skill is the one it keeps.
+    assert entry["resources"] == [f"skill://{alpha}"]
+    assert _kas_offers(kiro, entry) == {"alpha"}
+
+
+@pytest.mark.asyncio
+async def test_a_glob_named_skill_outside_a_wide_scope_never_becomes_a_pattern(home):
+    kiro, checkout, package = home
+    _skill(kiro / "skills", "starred", name="*")
+    count = kas_skill_scope._MAX_PATTERNS_PER_RULE + 1
+    _agent(kiro, "wide", {"tools": ["*"], "resources": [f"skill://{package}/*/SKILL.md"]})
+    for i in range(count):
+        _skill(package, f"wide-{i:03d}")
+
+    entry = await _entry("wide", checkout)
+
+    patterns = [p for r in entry["permissions"]["rules"] for p in r.get("match", [])]
+    assert "*" not in patterns
+    assert {f"wide-{i:03d}" for i in range(count)} <= _kas_offers(kiro, entry)
+
+
+@pytest.mark.asyncio
+async def test_every_skill_file_is_read_through_the_sensitive_path_fence(home, monkeypatch):
+    import kiro_crew.hooks as hooks
+
+    kiro, checkout, package = home
+    path = _skill(package, "alpha")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+    seen: list[str] = []
+    real = hooks.safe_read_prefix
+
+    def _spy(raw: str, n: int):
+        seen.append(raw)
+        return real(raw, n)
+
+    monkeypatch.setattr(hooks, "safe_read_prefix", _spy)
+
+    await _entry("mapped", checkout)
+
+    assert str(path) in seen
+
+
+def test_a_refused_skill_file_yields_no_name(tmp_path, monkeypatch):
+    import kiro_crew.hooks as hooks
+
+    path = _skill(tmp_path, "secret")
+    monkeypatch.setattr(hooks, "safe_read_prefix", lambda _raw, _n: None)
+
+    assert kas_skill_scope.skill_names([str(path)]) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_skill_scope_pin_left_on_the_key_does_not_set_the_new_sessions_scope(home):
+    from kiro_crew.skill_scope_pin import pin_session_skill_spec
+
+    kiro, checkout, package = home
+    alpha = _skill(package, "alpha")
+    beta = _skill(package, "beta")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{alpha}"]})
+    app_spec = kiro / "app-spec.json"
+    app_spec.write_text(
+        json.dumps({"name": "app", "prompt": "p", "resources": [f"skill://{beta}"]}),
+        encoding="utf-8",
+    )
+    # The pin an earlier app-agent turn on this key left; the gateway replaces it
+    # only once the next turn holds the session, after the session is built.
+    pin_session_skill_spec("chat-1", app_spec)
+    try:
+        extras = await KasHarness().session_extras(
+            "mapped", work_dir=str(checkout), session_key="chat-1"
+        )
+    finally:
+        pin_session_skill_spec("chat-1", None)
+
+    [entry] = extras.custom_agents
+    assert _kas_offers(kiro, entry) == {"alpha"}
+
+
+@pytest.mark.asyncio
+async def test_the_skill_scope_denies_are_recorded_in_the_security_event_log(home, monkeypatch):
+    import types
+
+    from kiro_crew.acp import kas_agents
+
+    kiro, checkout, package = home
+    path = _skill(package, "alpha")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+    events: list[dict] = []
+    monkeypatch.setattr(
+        kas_agents,
+        "sel",
+        lambda: types.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+    )
+
+    await _entry("mapped", checkout)
+
+    [event] = [e for e in events if e["operation"] == "kas_skill_scope_denied"]
+    assert event["source"] == "kas_agent_projection"
+    assert event["resources"] == "every skill denied except 1: alpha for agent mapped"
+
+
+def test_a_skill_scope_record_names_what_it_takes_away():
+    from kiro_crew.acp.kas_agents import _skill_scope_summary
+
+    assert _skill_scope_summary(({"capability": "skill", "effect": "deny"},)) == (
+        "every skill denied"
+    )
+    many = [f"s{i:02d}" for i in range(45)]
+    line = _skill_scope_summary(({"capability": "skill", "match": many, "effect": "deny"},))
+    assert line.startswith("45 default-tree skills denied by name: s00, ")
+    assert line.endswith("and 5 more")
