@@ -184,7 +184,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  currently in flight — the backend answers 409 for a stale one, which is how
      *  a click on a leftover countdown is rejected rather than ending a later wait. */
     endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
-    approveChatSlot: (slot: string, action: string, extra?: Record<string, string | number>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
+    approveChatSlot: (slot: string, action: string, extra?: Record<string, unknown>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
     resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
     sideTools: () => fetch('/api/chat/side/tools').then(j) as Promise<{ read_only_tools: boolean; claude_adapter_outdated: boolean; claude_adapter_min_version: string; claude_adapter_update_command: string; config_unavailable: boolean }>,

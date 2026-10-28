@@ -896,6 +896,15 @@
     "components.imageComments.box_label": "Accessible name of a box drawn on an image for an existing comment; {{number}} is the comment number in the pending list, and {{x}}, {{y}} are the box's top-left corner as horizontal and vertical percentages, already formatted. Activating it highlights that comment in the pending list.",
     "components.markdownPanel.new_badge": "Small badge before 'Tip:' on the file viewer's one-time comment tip, shown only when the tip is back for a reader who had closed its earlier, text-only wording: it marks that the tip now names a new feature (drawing a box on an image to comment on it). An adjective for the feature, not a verb like 'Create'; keep it to one short word.",
     "pages.mcpManagement.details_env": "Settings > MCP, a server row's Details: label before the list of environment variable NAMES the server's launch sets (never their values). Short for 'environment'.",
-    "pages.mcpManagement.details_new": "Settings > MCP, a paused server's Details and the Review dialog: heading over the server's NEW launch command, shown beside the 'Before' (previously approved) one. An adjective for the launch, not a 'create' action."
+    "pages.mcpManagement.details_new": "Settings > MCP, a paused server's Details and the Review dialog: heading over the server's NEW launch command, shown beside the 'Before' (previously approved) one. An adjective for the launch, not a 'create' action.",
+    "apps.workflows.kas.effort_low": "Option in a reasoning-effort select (Customize > Workflows launch options, and the Creator step effort setting): the lowest effort level. Adjective qualifying \"effort\".",
+    "apps.workflows.kas.effort_max": "Option in a reasoning-effort select: the highest effort level, above \"Extra high\". Short for \"maximum\", qualifying \"effort\".",
+    "apps.workflows.kas.state_needs_you": "Run-state pill/badge when a live run is waiting on the person (gap 7). Matches the IDE's 'Needs you'.",
+    "apps.workflows.kas.retry_wait": "A step is in KAS's transient-error backoff (gap 1); the step is still running. {{reason}} is KAS's English backoff text.",
+    "apps.workflows.kas.plan_update_rejected": "A mid-run plan change KAS rejected (gap 11). {{reason}} is KAS's redacted reason.",
+    "apps.workflows.kas.plan_update_dropped": "A queued plan change that never applied because the run ended first (gap 11).",
+    "apps.workflows.kas.watch_new_activity": "A watch step's last poll found new activity (gap 23).",
+    "apps.workflows.kas.needs_approval": "A step row is waiting on a tool/plan approval (gap 23).",
+    "apps.workflows.kas.not_launchable": "Shown when a recipe KAS listed without a launch source cannot be run; 'Kiro Workflows' is the feature."
   }
 }
