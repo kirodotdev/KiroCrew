@@ -670,6 +670,21 @@ describe('ChatInput context-usage popover', () => {
     expect(screen.getByText('116K')).toBeInTheDocument()
   })
 
+  it('threads derivePctFromUsed through so a switch derives the percentage from used', () => {
+    // The switch shape: the stored pct was dropped and only used=120k kept, so
+    // the host sets derivePctFromUsed and the window resolves to the new 200k.
+    // Through ChatInput (not the control alone): if the flag is not a
+    // ChatInputProps field passed on to ContextUsageControl, the popover shows
+    // the raw 12% and ~24K, which is the gap that broke the build.
+    renderWithProviders(
+      <ChatInput {...base} contextPct={12} contextWindowTokens={200_000} contextUsedTokens={120_000} derivePctFromUsed />,
+    )
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(screen.getByText('60%')).toBeInTheDocument()
+    expect(screen.getByText('120K')).toBeInTheDocument()
+    expect(screen.queryByText('12%')).toBeNull()
+  })
+
   it('derives an approximate used count when the host reports only a percentage', () => {
     renderWithProviders(<ChatInput {...base} contextPct={40} contextWindowTokens={100_000} />)
     fireEvent.click(screen.getByLabelText('Context usage'))

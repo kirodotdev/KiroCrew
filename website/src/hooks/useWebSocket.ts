@@ -949,7 +949,7 @@ export function useWebSocket() {
           case 'heartbeat':
             break
           case 'context_usage':
-            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
+            dispatch(sseContextUsage(data as { slot: string; pct?: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
             break
           case 'chat_thinking':
             chatStream.onChatThinking(data)

@@ -443,7 +443,7 @@ export interface ChatState {
    *  knows the window but not a measured used-count, and both consumers render
    *  an absent `used` as an approximation (a `~` prefix, derived from pct)
    *  rather than asserting a precise figure. */
-  slotContextTokens: Record<string, { used?: number; window: number }>
+  slotContextTokens: Record<string, { used?: number; window?: number }>
   voicePlaying: boolean
   /** A speech request for the active slot is waiting for its first audio. */
   voicePreparing: boolean

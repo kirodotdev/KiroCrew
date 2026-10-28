@@ -294,16 +294,48 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
     (a frame WITHOUT ``reset`` never deletes, so the backend sets ``reset``
     whenever it has no real counts to send). With a live provider the payload
     carries the freshly rebased stats from ``set_model``; without one (the
-    session-reset path) it carries no tokens, so the reducer deletes the entry
-    and the UI falls back to its own model-derived window for the slot's new
-    model. Best-effort: a broadcast failure must not fail the switch.
+    cold-reset path) it carries no tokens, so the reducer keeps the stored
+    ``used`` and the UI derives the percentage against the new model's window.
+    Best-effort: a broadcast failure must not fail the switch.
+
+    When the new model's window is unknown, the frame carries ``used_tokens``
+    (if the live rebase knows it) but neither ``pct`` nor ``window_tokens``.
+    ``used`` is roughly model-independent and the transcript is unchanged across
+    a switch, so the meter derives ``used / new-window`` against its own
+    model-derived window — a correct reading, not the old model's percentage
+    pinned beside a window that does not describe it. A rebase that DID
+    resolve the new window ships the full ``pct``/``used``/``window`` triple and
+    is not a reset. When ``used`` is genuinely unknown (a percentage-only
+    backend) nothing is carried, and the reducer clears the reading rather than
+    derive a wrong number.
     """
     try:
         if provider is not None:
             payload = _context_usage_payload(slot_key, provider)
         else:
-            payload = {"slot": slot_key, "pct": 0.0}
+            # No provider on the cold-reset path: no measurement to send, so the
+            # reducer keeps its stored ``used`` and derives against the new
+            # window.
+            payload = {"slot": slot_key}
         payload["reset"] = True
+        if not payload.get("window_tokens"):
+            # New window unknown: a pct computed against the OLD window must not
+            # pair with the NEW model's window downstream, so drop both the pct
+            # and the (zero) window. Keep ``used_tokens`` when the provider has
+            # it — the meter derives the percentage from it against the new
+            # window. ``_context_usage_payload`` only sets ``used_tokens``
+            # alongside ``window_tokens``, so surface it here from the provider.
+            payload.pop("pct", None)
+            payload.pop("window_tokens", None)
+            payload.pop("used_tokens", None)
+            used = 0
+            if provider is not None and hasattr(provider, "context_used_tokens"):
+                try:
+                    used = int(provider.context_used_tokens() or 0)
+                except Exception:
+                    used = 0
+            if used > 0:
+                payload["used_tokens"] = used
         state.broadcast_context_usage(slot_key, payload)
     except Exception:
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
