@@ -144,6 +144,11 @@ class SubagentInfo:
     # ``_exec_started is None`` it also tells the reaper which of the two a
     # parked run is sitting on.
     _awaiting_approval: bool = False
+    # True while the run's AgentSpawn and UserPromptSubmit hooks run, before
+    # its first prompt is sent; exempt from first-prompt silence and idle-stall.
+    _prompt_hooks_running: bool = False
+    # Seconds this attempt spent in those hooks, kept off the startup clock.
+    _prompt_hooks_secs: float = 0.0
     # The in-flight tool hand-off rule, shared with ``AcpSessionHandle`` via
     # ``InFlightToolTracker``. The sub-agent tracks its calls by toolCallId: a
     # native child's call (``sub_session_id`` set) is judged on arrival (so a

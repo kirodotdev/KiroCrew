@@ -118,6 +118,8 @@ async def _run_inner_impl(
     info._start_queue_wait_mono_ms = 0.0
     info._gate_wait_started = None
     info._gate_wait_started_mono = None
+    # Prompt-hook time paused the startup clock too, per attempt the same way.
+    info._prompt_hooks_secs = 0.0
     # The durable row stays ``starting`` until this run's OWN turn produces
     # its first stream event addressed to its session
     # (``ensure_running_marked`` in the stream loop below):
@@ -870,6 +872,30 @@ async def _run_inner_impl(
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
+    from kiro_crew.subagent_manager.prompt_hooks import prompt_hook_prefix
+
+    # Before the first stream, as a dashboard turn fires them before its own.
+    # Hook time is not the runtime's silence: the reaper's startup, first-prompt
+    # and stall checks skip the run while they run, the startup clock does not
+    # count them, and the activity clock restarts when they end, on every exit.
+    info._prompt_hooks_running = True
+    _hooks_t0 = time.monotonic()
+    try:
+        _hook_prefix = await prompt_hook_prefix(
+            self._manager.hook_store,
+            info,
+            session_key=session_key,
+            task=raw_task,
+            fresh_session=is_new and not _resumed,
+            spec_hooks=_spec.hooks,
+            spec_hooks_cwd=_spec.cwd,
+        )
+    finally:
+        info._prompt_hooks_secs += time.monotonic() - _hooks_t0
+        info.last_activity = time.time()
+        info._last_activity_mono = time.monotonic()
+        info._prompt_hooks_running = False
+    full_message = _hook_prefix + full_message
     # The run's permission ladder. Imported here because this body runs on
     # the facade's globals (bind_component_globals), not this module's.
     from kiro_crew import tool_permission

@@ -1487,9 +1487,11 @@ class OrphanStallMonitor(ManagerComponent):
             gate_mark, queued_ms = info._gate_wait_started_mono, info._start_queue_wait_mono_ms
         # Queued for a permit: the clock reads as it stood when the wait began.
         clock_now = gate_mark if gate_mark is not None else now
-        starting = clock_now - exec_started - queued_ms / 1000.0
+        # Prompt hooks are Crew's work, not the start's: off the clock.
+        starting = clock_now - exec_started - queued_ms / 1000.0 - info._prompt_hooks_secs
         return (
-            info.turns == 0
+            not info._prompt_hooks_running
+            and info.turns == 0
             and info._pid is None
             and info._first_stream_started is None
             and starting > self._stamped_startup_deadline(info)
@@ -1518,6 +1520,7 @@ class OrphanStallMonitor(ManagerComponent):
             and not self._manager._in_startup(info)
             and info._gate_wait_started is None
             and not info._awaiting_approval
+            and not info._prompt_hooks_running
             and self._idle_since_activity(info, now, mono_now) > _FIRST_PROMPT_SILENT_SECS
         )
 
@@ -1676,7 +1679,8 @@ class OrphanStallMonitor(ManagerComponent):
         # A subagent blocked on a human tool-approval prompt is healthy, not
         # stalled — the permission request bumps `turns` before the approval
         # wait, so without this a slow approval would be mislabelled idle.
-        if info._awaiting_approval:
+        # Its prompt-start hooks are running: Crew's wait, not the runtime's.
+        if info._awaiting_approval or info._prompt_hooks_running:
             return
         idle = now - info.last_activity
         if not info.stalled and idle > self._manager._stall_idle_secs:

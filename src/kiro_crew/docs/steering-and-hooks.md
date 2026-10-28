@@ -134,6 +134,10 @@ tool call before it runs, or block it outright.
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
 
+A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
+(with the task its parent wrote) before its prompt is sent, and their exit-0
+stdout is added to that prompt the same way.
+
 `PreToolUse` is the only event whose exit code can decide anything — and only
 on the path where the gateway is the one approving the call:
 
