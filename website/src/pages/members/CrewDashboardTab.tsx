@@ -73,6 +73,8 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
             preview={showPreview}
             onPreviewGone={showPreview ? onPreviewGone : undefined}
             onPreviewLoaded={showPreview ? setStagedMs : undefined}
+            // The Mates side panel's trackpad swipe closes from over this frame.
+            relayWheel
           />
         </Suspense>
       </ErrorBoundary>

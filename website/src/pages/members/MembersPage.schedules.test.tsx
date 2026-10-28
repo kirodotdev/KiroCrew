@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
@@ -705,6 +705,73 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
       window.removeEventListener('kirocrew-file-open', opened)
       delete (window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles
     }
+  })
+
+  it('a trackpad swipe that would reveal the panel over a draft asks first; Cancel leaves it hidden and the next swipe asks again', async () => {
+    await openDraft()
+    // Side Chat is the tab on show (this strip is otherwise Dashboard alone), so a
+    // reveal that lands on Dashboard is the swipe's doing.
+    fireEvent.click(screen.getByRole('button', { name: 'Open side chat' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Side Chat' })).toHaveAttribute('aria-selected', 'true'))
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await waitFor(() => expect(screen.queryByTestId('side-panel-root')).toBeNull())
+    const page = screen.getByTestId('members-page')
+    /** A leftward two-finger run at explicit event times, `t0` onwards. */
+    const swipeLeft = (t0: number) => act(() => {
+      for (let i = 0; i < 12; i++) {
+        const ev = new WheelEvent('wheel', { deltaX: 15, deltaY: 0, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: t0 + i * 16 })
+        page.dispatchEvent(ev)
+      }
+    })
+    const t0 = performance.now()
+    swipeLeft(t0)
+    // The guard is asked BEFORE anything moves: no sheet was mounted to drag.
+    expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    await answer('Cancel')
+    // Refused: nothing slid, nothing is left half-open, the draft is untouched.
+    expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
+    // The next swipe is not eaten: it reaches the guard again, and Discard opens.
+    swipeLeft(t0 + 5000)
+    await answer('Discard')
+    await screen.findByTestId('side-panel-root')
+    // Accepted: it opens on Dashboard, as a drag would.
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Dashboard' })).toHaveAttribute('aria-selected', 'true'))
+  })
+
+  it('under reduced motion, keeping the draft when a swipe asks leaves the saved tab alone', async () => {
+    const real = window.matchMedia
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+      addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    onTestFinished(() => { window.matchMedia = real })
+    await openDraft()
+    // The Files tab appears once the slot's environment read answers: wait for it.
+    fireEvent.click(screen.getByRole('button', { name: 'Open side chat' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Side Chat' })).toHaveAttribute('aria-selected', 'true'))
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await waitFor(() => expect(screen.queryByTestId('side-panel-root')).toBeNull())
+    const page = screen.getByTestId('members-page')
+    const t0 = performance.now()
+    // A clear leftward swipe: under reduced motion it switches once, at its end.
+    act(() => {
+      for (let i = 0; i < 12; i++) {
+        const ev = new WheelEvent('wheel', { deltaX: 15, deltaY: 0, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: t0 + i * 16 })
+        page.dispatchEvent(ev)
+      }
+    })
+    await answer('Cancel')
+    expect(screen.queryByTestId('side-panel-root')).toBeNull()
+    // Reveal by the header chord, Discard: the panel shows the tab it had.
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await answer('Discard')
+    await screen.findByTestId('side-panel-root')
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Side Chat' })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.getByRole('tab', { name: 'Dashboard' })).toHaveAttribute('aria-selected', 'false')
   })
 
   it('Side Chat switches the side panel without asking or unmounting a dirty Profile draft', async () => {
