@@ -62,7 +62,8 @@ vi.mock('../components/CliPanel', async (importOriginal) => {
 })
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore } from '../store'
-import { appendMessage, setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { appendMessage, createSlot, setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { createChatForView } from '../lib/createdChatView'
 import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -736,6 +737,41 @@ describe('ChatPage row callbacks — quote and ask', () => {
     expect(outcome).toBe(false)
     expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(store.getState().chat.activityTab).not.toBe('side')
+  })
+
+  // A create from the keyboard shortcut, the command palette or the command bar
+  // goes through `createChatForView`, never the sidebar's `onSelectSlot`. It
+  // activates the new session, so the page must leave Split View the way the
+  // sidebar's New does (#21935), or the new chat shows nowhere.
+  it('a foreground create from outside the sidebar leaves Split View and shows the new chat', async () => {
+    const { store } = await renderSplit()
+    apiSpy('createChatSlot').mockResolvedValue({ ...OTHER_SLOT, key: 'chat-new', title: 'new' })
+    let view: Awaited<ReturnType<typeof createChatForView>> | undefined
+    await act(async () => { view = await createChatForView(store.dispatch, store.getState, { mode: '' }) })
+    expect(view!.opened).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('chat-new')
+    await waitFor(() => expect(screen.queryByTestId('session-grid')).toBeNull())
+  })
+
+  it('a background create keeps Split View', async () => {
+    const { store } = await renderSplit()
+    apiSpy('createChatSlot').mockResolvedValue({ ...OTHER_SLOT, key: 'chat-new', title: 'new' })
+    await act(async () => { await store.dispatch(createSlot({ mode: '', activate: false })).unwrap() })
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(screen.getByTestId('session-grid')).toBeTruthy()
+  })
+
+  it('a create the user switched away from keeps Split View', async () => {
+    const { store } = await renderSplit()
+    let release: (v: unknown) => void = () => {}
+    apiSpy('createChatSlot').mockImplementationOnce(() => new Promise(res => { release = res }))
+    let pending: Promise<unknown> = Promise.resolve()
+    act(() => { pending = store.dispatch(createSlot({ mode: '' })).unwrap() })
+    // The user opens another pane's session while the create is in flight.
+    await act(async () => { await store.dispatch(switchSlot('chat-2')) })
+    await act(async () => { release({ ...OTHER_SLOT, key: 'chat-new', title: 'new' }); await pending })
+    expect(store.getState().chat.activeSlot).toBe('chat-2')
+    expect(screen.getByTestId('session-grid')).toBeTruthy()
   })
 })
 

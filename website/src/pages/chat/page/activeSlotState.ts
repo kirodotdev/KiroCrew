@@ -195,6 +195,22 @@ export function useActiveSlotState({
    * Keep every prop handed to ChatSidebar referentially stable.
    */
   const clearSplitOnSelect = useCallback(() => { setSplitMode(false); closeCrewWindow() }, [])
+  // A create that activated its new session leaves Split View, the rule the
+  // sidebar's New already follows through `onSelectSlot` (#21935). The grid
+  // seeds from the active slot only when empty, so the new chat would
+  // otherwise show nowhere. Keyed on the store's record of the activation, so
+  // the creates that never call `onSelectSlot` (the new-chat shortcut, the
+  // command palette, the command bar, the collapsed sidebar's flyout) follow
+  // it too. A background create or one the user switched away from records no
+  // activation, so it keeps the split. The value present at mount is not a
+  // new activation: Split View starts off, and an auto-enter must not be undone.
+  const lastCreatedActivation = useAppSelector(s => s.chat.lastCreatedActivation)
+  const seenActivationRef = useRef(lastCreatedActivation)
+  useEffect(() => {
+    if (lastCreatedActivation === seenActivationRef.current) return
+    seenActivationRef.current = lastCreatedActivation
+    if (lastCreatedActivation) setSplitMode(false)
+  }, [lastCreatedActivation])
   // A crew session opens as a window over the pane (see CrewChatWindow); a
   // local session taking focus closes it. Only a MOVE between two local
   // sessions counts, so the reload restore (none -> restored) keeps it open.
