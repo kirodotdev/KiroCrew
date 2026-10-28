@@ -190,6 +190,61 @@ scheduler cannot back one.
 
 ### Fairness
 
+Owner: `shared_crew.scheduler.FairScheduler` (pure; one lock, so a race at the limit
+admits exactly as many as there are slots). Capacity lives in its memory; the task
+store is the durable record.
+
+Two work classes. A ROOT (chat turn, task run, workflow run, cron run) is admitted
+while its principal holds fewer than `principal_active` and the Crew fewer than
+`crew_active` root slots; otherwise it waits in its principal's FIFO, bounded by
+`principal_queue` and `crew_queue`, and a submission past either is refused
+`principal_queue_full` / `crew_queue_full`. A CHILD (subagent) never queues here:
+the durable task queue is its queue, so the scheduler bounds what a principal and
+the Crew have outstanding (`principal_children`, `crew_children`) and refuses past
+it. Work that cannot wait in a request (`submit(allow_queue=False)`, for background
+runs) starts now or is refused with the active-limit reason, and never overtakes
+its principal's own queued work.
+
+A message sent to a session whose turn is running waits for that turn, not for
+capacity. `FairScheduler.park` counts it against `principal_queue` and `crew_queue`
+and in `queued` usage, but never dispatches it; `submit_parked` hands it to the fair
+queue under the same lock, so a full queue cannot refuse work it already counted.
+`hold` counts reconciled work as holding a slot without a limit check, so a restart
+never frees a slot while that work may still run.
+
+Across principals the scheduler is deficit round robin. Principals with queued roots
+sit in a ring; a visit adds the quantum (1) to the principal's deficit and admits
+while the deficit covers the head ticket's weight (1) and both scopes have room. A
+principal blocked by its own limit is skipped with its deficit reset, so no credit
+is banked while ineligible. Within one principal the queue is FIFO, so order within
+a session is kept. `release` is idempotent and admits whatever now fits; widening
+the limits (`set_limits`) does the same.
+
+Starvation bound: with `P` principals holding eligible queued work, a continuously
+eligible principal is admitted within `(P - 1) * (quantum + max_weight - 1)`
+admissions of others, which is `P - 1` with the defaults. Every admitted root ends
+within its run deadline, so the wall-clock wait is at most
+`ceil(P / crew_active)` root deadlines; work that would wait past `queue_expiry`
+is removed by `expire` and reported `queue_expired`, never hidden.
+
+Other per-principal limits (`shared_crew.accounting`). `StorageAccount` charges each
+principal's accepted bytes to the durable `principal_storage` ledger in `tasks.db`,
+and `would_exceed` tells admission when work would pass `PRINCIPAL_STORAGE_MB`
+(refused `storage_limit`). It is application accounting of what Crew entry points
+write, not a kernel disk quota. `SessionCreateRate` is a
+per-principal 60 s sliding window, so many tabs of one person share one allowance.
+
+Which session an internal request comes from (`shared_crew.internal_caller`). An
+agent's work reaches the gateway on the internal transport naming its calling
+session (`X-Session-Key`). The header alone is the caller's word.
+`attest_internal_session` counts a declared key only when the transport's one check,
+`member_memory_auth.session_key_is_attested`, attests it (the auth layer's
+`peer_verified`, or a per-session token the gateway signed, `X-Session-Token`); with
+no declared key, the session that signed token names is the answer. Otherwise it
+answers `""`, so the
+work is charged to the bounded Unknown bucket and a person cannot gain a second
+budget.
+
 ### Accepted work, revalidation and recovery
 
 ### Containment
