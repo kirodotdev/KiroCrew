@@ -913,6 +913,7 @@ class RunEventCoordinator(ManagerComponent):
         spec: Any,
         parent_policy: str,
         consult: Callable[[LLMEvent], object],
+        parent_revoked: Callable[[], bool] | None = None,
         sel: Callable[[], Any],
         log: _logging.Logger,
     ) -> Policy:
@@ -920,7 +921,7 @@ class RunEventCoordinator(ManagerComponent):
 
         In order: the agent spec's PreToolUse hooks; the hook gate (*consult*);
         ``parent_policy=auto`` (BEFORE the gate's grant for a low-fidelity child,
-        AFTER it otherwise); then the per-subagent approval factory, the gateway's
+        AFTER it otherwise; withdrawn once *parent_revoked* answers true); then the per-subagent approval factory, the gateway's
         approver, and with neither the headless refusal. A low-fidelity child
         request -- a backend child whose security context is absent, so any
         auto-approve would rest on the agent-authored title alone -- honours only
@@ -975,7 +976,7 @@ class RunEventCoordinator(ManagerComponent):
                     agent_role=info.agent or None,
                 ),
             ),
-            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy)),
+            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy, parent_revoked)),
             responders=(
                 CallbackResponder(
                     _factory_approver,
@@ -993,7 +994,7 @@ class RunEventCoordinator(ManagerComponent):
             child=ChildRule.enforce(
                 # For such a child the unconditional grant is tried BEFORE the
                 # gate's (identity-keyed) one.
-                grants=(ParentPolicyAuto(parent_policy), GATE_GRANT),
+                grants=(ParentPolicyAuto(parent_policy, parent_revoked), GATE_GRANT),
                 unattended=Refusal.host(
                     "child_unattended", _LOW_FIDELITY_DENY_REASON, DENY_CAUSE_SURFACE_POLICY
                 ),

@@ -617,6 +617,11 @@ def get_approval_policy(self: SessionManager, key: str) -> str:
     return self._allocation_boundary().get_approval_policy(key)
 
 
+def approval_revocation_generation(self: SessionManager, key: str) -> int:
+    """Return how many times a folded session's policy has left ``"auto"``."""
+    return self._allocation_boundary().approval_revocation_generation(key)
+
+
 def get_agent(self: SessionManager, key: str) -> str:
     """Return a folded session agent name."""
     return self._allocation_boundary().get_agent(key)

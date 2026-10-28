@@ -177,6 +177,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "allocation_predecessor": ("function", False, "f1d40e624ae4", "claims"),
     "allocation_requested_model": ("function", False, "f1d40e624ae4", "claims"),
     "any_active_turn": ("function", False, "a6632a57e602", "claims"),
+    "approval_revocation_generation": ("function", False, "028659ce42ac", "claims"),
     "await_replay_gap": ("function", True, "958babeb61c8", "teardown"),
     "aws_profile_differs_from_parent": ("function", False, "76593e568eac", "claims"),
     "aws_profile_split_possible": ("function", False, "3780bd272b7a", "claims"),

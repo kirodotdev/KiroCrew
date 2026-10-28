@@ -205,7 +205,10 @@ async def _run_inner_impl(
         await _await_owned(publication)
     finally:
         info._state_drain_active = False
+    from kiro_crew.subagent_manager.approval_lineage import approval_lineage, lineage_revoked
+
     parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+    info._approval_lineage = approval_lineage(self._manager, info, parent_policy)
     # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
     if not parent_policy and info.approval_mode == "auto":
         parent_policy = "auto"
@@ -895,6 +898,7 @@ async def _run_inner_impl(
             spec=spec,
             parent_policy=parent_policy,
             consult=_consult_gate,
+            parent_revoked=lineage_revoked(self._manager._sessions, info._approval_lineage),
             sel=lambda: sel(),
             log=logger,
         )

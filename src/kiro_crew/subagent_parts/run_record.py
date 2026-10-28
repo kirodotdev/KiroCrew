@@ -590,6 +590,10 @@ class SubagentInfo:
     # recovery writer while the worker is live re-opens the stale-overwrite race
     # the drain exists to close.
     _state_drain_active: bool = False
+    # The ``(session key, revocation count)`` pairs this run's
+    # ``parent_policy=auto`` rests on (``subagent_manager.approval_lineage``);
+    # a child of this run inherits them. Empty when no stored "auto" applies.
+    _approval_lineage: tuple[tuple[str, int], ...] = ()
     # Set only on the synthetic marker `_conversation_busy` returns for a
     # conversation held by an abandoned state writer, so the two
     # retention callers can say "still settling a state write" instead of
