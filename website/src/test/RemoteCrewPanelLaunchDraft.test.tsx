@@ -251,6 +251,75 @@ describe('RemoteCrewPanel launch draft', () => {
     expect(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })).toHaveValue('')
     await waitFor(() => expect(screen.getByRole('radio', { name: /Builder ID/i })).toBeChecked())
   })
+
+  it('fills the company sign-in a launch used into the next fresh tab, without choosing it', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+    vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(RUNNING_JOB)
+    const u = userEvent.setup()
+    const first = renderWithProviders(<RemoteCrewPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('radio', { name: /Company SSO/i }))
+    await u.type(screen.getByRole('textbox', { name: /Identity Center start URL/i }), 'https://other.awsapps.com/start')
+    await u.type(screen.getByRole('textbox', { name: /Identity Center region/i }), 'eu-west-1')
+    const launch = screen.getByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    expect(await screen.findByText('Installing Kiro Crew')).toBeInTheDocument()
+    first.unmount()
+
+    // A reload or gateway restart: a new store, the same browser storage.
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    // This computer is Builder ID, so that stays the choice ...
+    await waitFor(() => expect(screen.getByRole('radio', { name: /Builder ID/i })).toBeChecked())
+    // ... and picking company SSO finds the fields already filled.
+    await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
+    expect(screen.getByRole('textbox', { name: /Identity Center start URL/i })).toHaveValue('https://other.awsapps.com/start')
+    expect(screen.getByRole('textbox', { name: /Identity Center region/i })).toHaveValue('eu-west-1')
+  })
+
+  it.each([
+    'https://EXAMPLE.awsapps.com/start/',
+    'https://example.awsapps.com',
+    'https://example.awsapps.com/',
+  ])('fills the remembered region when this computer names the same portal: %s', async rememberedUrl => {
+    localStorage.setItem('mc-company-sign-in-url', rememberedUrl)
+    localStorage.setItem('mc-company-sign-in-region', 'ap-southeast-2')
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
+    await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
+    expect(screen.getByRole('textbox', { name: /Identity Center region/i })).toHaveValue('ap-southeast-2')
+  })
+
+  it('keeps the inherited portal over a remembered one and drops the region that belonged to it', async () => {
+    localStorage.setItem('mc-company-sign-in-url', 'https://old.awsapps.com/start')
+    localStorage.setItem('mc-company-sign-in-region', 'ap-southeast-2')
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudIdentity).mockResolvedValue({
+      identity: { account_type: 'IamIdentityCenter', start_url: 'https://example.awsapps.com/start' },
+      suggested_target: { license: 'pro', start_url: 'https://example.awsapps.com/start', region: '' },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+    const url = await screen.findByRole('textbox', { name: /Identity Center start URL/i })
+    await waitFor(() => expect(url).toHaveValue('https://example.awsapps.com/start'))
+    // That region belonged to the other portal, so the reader supplies this one's.
+    expect(screen.getByRole('textbox', { name: /Identity Center region/i })).toHaveValue('')
+  })
 })
 
 describe('instancesSlice launch draft', () => {

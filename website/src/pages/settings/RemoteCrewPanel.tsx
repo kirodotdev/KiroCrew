@@ -75,6 +75,7 @@ import { reportInstanceFailure } from '../../utils/instanceFailureReport'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -154,8 +155,12 @@ export function RemoteCrewPanel() {
   const [launchDraft] = useState(heldLaunchDraft)
   const identityDraft = launchDraft?.identity ?? null
   const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>(identityDraft?.mode ?? 'builder_id')
-  const [identityStartUrl, setIdentityStartUrl] = useState(identityDraft?.start_url ?? '')
-  const [identityRegion, setIdentityRegion] = useState(identityDraft?.region ?? '')
+  // With no held draft, the fields start from the last company sign-in submitted
+  // on this browser (here or in the Kiro sign-in form), so a reload or gateway
+  // restart does not empty them. This fills the fields only; it does not pick the
+  // Identity Center option or count as the reader's choice.
+  const [identityStartUrl, setIdentityStartUrl] = useState(() => identityDraft?.start_url ?? readCompanySignIn().startUrl)
+  const [identityRegion, setIdentityRegion] = useState(() => identityDraft?.region ?? readCompanySignIn().region)
   const [subnetId, setSubnetId] = useState(launchDraft?.subnet_id ?? '')
   const identityTouched = useRef(identityDraft !== null)
   // Render-visible twin of the ref: an explicit choice must re-render the
@@ -187,6 +192,10 @@ export function RemoteCrewPanel() {
     if (suggested?.start_url) {
       setIdentityMode('identity_center')
       setIdentityStartUrl(suggested.start_url)
+      // A remembered region belongs to the remembered portal. When this
+      // computer names a different portal, that region would be a guess, so
+      // the field goes back to empty and Launch waits for the right one.
+      if (!sameCompanyPortal(suggested.start_url, readCompanySignIn().startUrl)) setIdentityRegion('')
     }
   }, [identityQuery.data])
   // Mirrors normalize_start_url on the backend, which is the authority: the
@@ -1533,7 +1542,7 @@ export function RemoteCrewPanel() {
                   behind a different engine; omitting the id would let the server
                   default to the built-in and provision on the wrong lane. Only
                   an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
+              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion); launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
               <span className="text-[12px] text-muted">

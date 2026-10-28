@@ -28,6 +28,7 @@ import {
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
 import { Btn } from './ui'
+import { readCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { clearCachedModels } from '../providers/adapters/acp'
@@ -251,8 +252,10 @@ function Chooser({
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
   const [ssoOpen, setSsoOpen] = useState(false)
-  const [startUrl, setStartUrl] = useState('')
-  const [region, setRegion] = useState('')
+  // Seeded from the last company sign-in submitted on this browser, so a reload
+  // or gateway restart does not hand back an empty field.
+  const [startUrl, setStartUrl] = useState(() => readCompanySignIn().startUrl)
+  const [region, setRegion] = useState(() => readCompanySignIn().region)
   const startUrlReady = startUrl.trim().length > 0
   const chrome = useChrome()
   return (
@@ -311,6 +314,7 @@ function Chooser({
             onSubmit={(e) => {
               e.preventDefault()
               if (!startUrlReady || busy) return
+              rememberCompanySignIn(startUrl, region)
               onPick('idc', {
                 start_url: startUrl.trim(),
                 ...(region.trim() ? { region: region.trim() } : {}),
