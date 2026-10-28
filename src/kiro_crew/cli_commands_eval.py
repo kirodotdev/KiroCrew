@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -79,8 +80,8 @@ def _load_eval_scenarios(args: argparse.Namespace) -> list[Scenario] | None:
                     for f in scenarios_dir.iterdir()
                     if f.suffix in (".json", ".yaml", ".yml")
                 )
-                print(f"Error: scenario '{name}' not found.")
-                print(f"Available scenarios: {', '.join(available)}")
+                print(f"Error: scenario '{name}' not found.", file=sys.stderr)
+                print(f"Available scenarios: {', '.join(available)}", file=sys.stderr)
                 return None
             scenarios.append(load_scenario(resolved))
     else:
@@ -93,7 +94,8 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
     scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
     if scenarios is None:
-        return
+        # Nothing ran, so `kirocrew eval x && next` must stop.
+        sys.exit(1)
 
     total_turns = sum(len(sess.turns) for s in scenarios for sess in s.sessions)
     names = ", ".join(s.name for s in scenarios)

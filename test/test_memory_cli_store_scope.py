@@ -326,16 +326,24 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db_path = self._deleted_db_store()
-        cc._memory_cmd(_ns(mem_action="import", file=None, store=_ACME))
-        assert "Usage: kirocrew memory import" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=None, store=_ACME))
+        assert exc.value.code == 1
+        assert "Usage: kirocrew memory import" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_an_absent_file_creates_nothing(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db_path = self._deleted_db_store()
-        cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME))
-        assert "File not found" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(
+                _ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME)
+            )
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "File not found" in out.err
         assert not db_path.exists()
 
     def test_malformed_json_creates_nothing(
@@ -344,8 +352,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         bad = tmp_path / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(bad), store=_ACME))
-        assert "could not be read as JSON" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(bad), store=_ACME))
+        assert exc.value.code == 1
+        assert "could not be read as JSON" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_a_non_object_payload_creates_nothing(
@@ -356,8 +366,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         listed = tmp_path / "list.json"
         listed.write_text(json.dumps([{"key": "k"}]), encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(listed), store=_ACME))
-        assert "is not an export object" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(listed), store=_ACME))
+        assert exc.value.code == 1
+        assert "is not an export object" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_the_refusal_preserves_the_export_side_loss_signal(
@@ -369,7 +381,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         failed import had created the database, the export would answer with rows.
         """
         self._deleted_db_store()
-        cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(
+                _ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME)
+            )
         capsys.readouterr()
         cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
         out = capsys.readouterr().out
@@ -389,8 +404,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         nulled = tmp_path / "nulled.json"
         nulled.write_text(json.dumps({"semantic": None}), encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(nulled), store=_ACME))
-        assert "is not a list" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(nulled), store=_ACME))
+        assert exc.value.code == 1
+        assert "is not a list" in capsys.readouterr().err
         assert not db_path.exists()
 
     @pytest.mark.parametrize("collection", ["semantic", "episodic"])
@@ -400,8 +417,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         payload = tmp_path / f"{collection}.json"
         payload.write_text(json.dumps({collection: {"not": "a list"}}), encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
-        assert f"{collection!r} collection that is not a list" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
+        assert exc.value.code == 1
+        assert f"{collection!r} collection that is not a list" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_the_checked_collections_are_the_ones_import_memory_iterates(self) -> None:
@@ -837,10 +856,12 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
             raise PermissionError(13, "Permission denied")
 
         monkeypatch.setattr(cc, "safe_read_file", refuse)
-        cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
-        out = capsys.readouterr().out
-        assert "could not be read as JSON" in out
-        assert "Permission denied" in out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "could not be read as JSON" in err
+        assert "Permission denied" in err
         assert not db_path.exists()
 
 

@@ -411,14 +411,19 @@ class TestMemoryCli:
         assert "Migration complete" in out and "Skipped:  3" in out
 
     def test_import_requires_a_file_argument(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with _MemHarness():
+        with _MemHarness(), pytest.raises(SystemExit) as exc:
             cc._memory_cmd(_ns(mem_action="import", file=None))
-        assert "Usage: kirocrew memory import" in capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "Usage: kirocrew memory import" in capsys.readouterr().err
 
     def test_import_missing_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        with _MemHarness():
+        # A refused import must stop `memory import f && next`.
+        with _MemHarness(), pytest.raises(SystemExit) as exc:
             cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json")))
-        assert "File not found" in capsys.readouterr().out
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "File not found" in out.err
 
     def test_import_reads_through_safe_read_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1263,9 +1268,13 @@ class TestRunEval:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        with _EvalHarness([]) as h:
+        with _EvalHarness([]) as h, pytest.raises(SystemExit) as exc:
             await cc._run_eval(_ns(all_scenarios=False, scenarios=["does-not-exist"], judge=False))
-        out = capsys.readouterr().out
+        # An unknown name ran nothing, so `kirocrew eval x && next` must stop.
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        out = captured.err
         assert "scenario 'does-not-exist' not found" in out
         assert "smoke_test" in out
         h.runner.run_scenarios.assert_not_awaited()
