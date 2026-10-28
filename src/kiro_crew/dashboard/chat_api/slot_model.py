@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         _append_session_switch_notice,
         _ChatSlot,
         _context_usage_payload,
-        _history_key_for,
         _normalize_model,
         _owner_denial_response,
         _reset_slot_session,
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
         _subagents_attached_response,
         _switch_target_busy,
         _sync_served_model,
+        app_owns_slot_session,
         capabilities_of,
         deny_app_slot_access,
         effective_session_key,
@@ -956,11 +956,12 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slots_model"):
                 skipped_running.append(name)
                 continue
-            if not is_dashboard_user and session_key != _history_key_for(name):
-                # Slot ownership does not imply ownership of a linked channel
-                # session (the cancel routes' second condition): an app caller
-                # does not get to switch the model a channel thread runs on.
-                # Skipped silently, like every other slot the app does not own.
+            if not is_dashboard_user and not app_owns_slot_session(request_app, slot):
+                # Slot ownership does not imply ownership of the session the
+                # slot runs on or the transcript it writes: the per-slot
+                # checkpoint's rule, re-read inside the locks so a binding that
+                # landed while this iteration queued is the one judged. Skipped
+                # silently, like every other slot the app does not own.
                 continue
             if slot.model == model_name:
                 # The MODEL is unchanged; the routing choice may not be. A slot

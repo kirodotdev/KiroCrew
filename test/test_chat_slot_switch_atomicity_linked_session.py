@@ -182,6 +182,42 @@ class TestLinkedSlotSessionKey:
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_bulk_switch_skips_an_app_slot_writing_a_channel_transcript(self):
+        # An unbound channel-born slot runs on its own dashboard: session but
+        # writes the channel thread's transcript, so the app does not own it:
+        # the per-slot checkpoint's rule (app_owns_slot_session).
+        slot = _ChatSlot("slack_1700000000.000100")
+        slot.model = _MODEL_A
+        slot._app = "demo-app"
+        slot.channel_origin = True
+        state = _mock_state(slot, provider=None)
+        async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert (data["switched"], data["skipped_running"]) == ([], [])
+            assert slot.model == _MODEL_A
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bulk_switch_switches_an_apps_own_task_review_tab(self):
+        # A task-review tab runs on the session the taskrunner minted for it,
+        # which is the tab's own (own_session_key): the per-slot route lets its
+        # owner app switch it, and the bulk route agrees.
+        slot = _ChatSlot("task-review-abc")
+        slot.model = _MODEL_A
+        slot._app = "demo-app"
+        slot.linked_session_key = "taskrunner:t1:chat:abc"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["switched"] == ["task-review-abc"]
+            assert state.sessions.reset.await_args.args[0] == "taskrunner:t1:chat:abc"
+
+    @pytest.mark.asyncio
     async def test_workspace_switch_resets_the_linked_session(self):
         slot = _ChatSlot("test")
         slot.linked_session_key = "slack:123.456"
