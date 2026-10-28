@@ -112,6 +112,28 @@ export function safeInternalUrl(url: string | undefined): string | null {
   return url
 }
 
+const APP_DETAIL_PATH = /^\/apps\/detail\/[a-z0-9][a-z0-9-]*$/
+
+/**
+ * Router state for a note action, or `undefined` for a plain navigation.
+ *
+ * The one case is an app-update note's Update button: a `system.apps` note
+ * (gateway-written; an app cannot publish on a `system.*` channel) whose
+ * `update` action opens an app's page. That page starts its own Update flow,
+ * consent dialog included, when it is reached with `autoAction: 'update'` in
+ * router state. Router state, never a query parameter, because only an in-app
+ * click can set it; a link from another site cannot.
+ */
+export function noteActionState(
+  n: { channel?: string },
+  a: { id: string },
+  url: string,
+): { autoAction: 'update' } | undefined {
+  return n.channel === 'system.apps' && a.id === 'update' && APP_DETAIL_PATH.test(url)
+    ? { autoAction: 'update' }
+    : undefined
+}
+
 export function fmtTime(ts: string | number): string {
   const d = parseTs(ts)
   return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : fmtClockTime(d)

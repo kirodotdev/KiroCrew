@@ -95,6 +95,7 @@ from kiro_crew.config.integration_sections import (  # noqa: F401
     _DEFAULT_TUNNEL_BASE_PORT,
     _DEFAULT_WARM_SET_CAP,
     AppSettingsConfig,
+    AppUpdatesConfig,
     AwsConfig,
 )
 from kiro_crew.config.loader_agents import resolve_agent_identity
@@ -906,6 +907,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _TOP_LEVEL_DEFAULTS,
         ConfigDocument,
         _parse_app_settings,
+        _parse_app_updates,
         build_config,
         default_project_dir,
         load_config_with_content_stamp,

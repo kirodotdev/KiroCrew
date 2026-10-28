@@ -22,8 +22,16 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.aws_project_profiles import coerce_project_profiles
 from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
-from kiro_crew.config.fields import _coerce_bool, _safe_str
-from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
+from kiro_crew.config.fields import _coerce_bool, _coerce_int, _safe_str
+from kiro_crew.config.integration_sections import (
+    APP_AUTO_UPDATE_OVERRIDES,
+    APP_UPDATE_CHECK_HOURS_MAX,
+    APP_UPDATE_CHECK_HOURS_MIN,
+    APP_UPDATE_MODES,
+    AppSettingsConfig,
+    AppUpdatesConfig,
+    AwsConfig,
+)
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
 from kiro_crew.config.loader_builders import (
     _build_agent_config,
@@ -647,9 +655,36 @@ def _parse_app_settings(raw: Any) -> dict[str, AppSettingsConfig]:
     for name, entry in raw.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
-        model = _sections.SectionReader(AppSettingsConfig, entry).get("model")
-        apps[name] = AppSettingsConfig(model=model if isinstance(model, str) else "")
+        reader = _sections.SectionReader(AppSettingsConfig, entry)
+        model = reader.get("model")
+        auto_update = reader.get("auto_update")
+        apps[name] = AppSettingsConfig(
+            model=model if isinstance(model, str) else "",
+            # An unknown spelling follows the global setting: it can neither pin
+            # an app nor opt it into an update the owner did not choose.
+            auto_update=auto_update if auto_update in APP_AUTO_UPDATE_OVERRIDES else "",
+        )
     return apps
+
+
+def _parse_app_updates(raw: dict[str, Any]) -> AppUpdatesConfig:
+    """The ``app_updates`` section. An unreadable ``mode`` reads as ``off``.
+
+    ``off`` is the safe direction for the same reason ``auto_update`` falls back
+    to off: an update not applied is a note, one applied against the owner's
+    wish replaces code they did not ask to replace. The interval is clamped into
+    its bounds rather than refused, so a hand-edited ``0`` cannot make the
+    checker spin.
+    """
+    reader = _sections.SectionReader(AppUpdatesConfig, raw)
+    mode = reader.get("mode")
+    hours = _coerce_int(reader.get("check_interval_hours"), reader.default("check_interval_hours"))
+    return AppUpdatesConfig(
+        mode=mode if mode in APP_UPDATE_MODES else "off",
+        check_interval_hours=min(
+            APP_UPDATE_CHECK_HOURS_MAX, max(APP_UPDATE_CHECK_HOURS_MIN, hours)
+        ),
+    )
 
 
 def build_config(
@@ -1000,6 +1035,7 @@ def build_config(
         memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()
 
     apps = _parse_app_settings(data.get("apps", {}))
+    app_updates = _parse_app_updates(_coerced_section(data, "app_updates", _degraded))
 
     # The top-level keys read against KiroCrewConfig's own fields, and the slack
     # keys that land on top-level fields under the same names. Against the base
@@ -1113,6 +1149,7 @@ def build_config(
             else _coerce_bool(data.get("auto_update"), False)
         ),
         connections_ui=top.read("connections_ui", _safe_bool),
+        app_updates=app_updates,
         _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
         timezone=top.get("timezone"),
         snapshot_dir=top.get("snapshot_dir"),

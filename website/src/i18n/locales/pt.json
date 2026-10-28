@@ -11001,7 +11001,14 @@
       "grant_not_approved": "não aprovada",
       "grants_reconsent_api": "Acesso à API: permite que o app chame estes caminhos da API do {{productName}} com o próprio token.",
       "grants_reconsent_events": "Eventos WebSocket: permite que o app receba ou envie estes eventos do painel em tempo real.",
-      "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las."
+      "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las.",
+      "auto_update_title": "Atualizações",
+      "auto_update_label": "Atualizar automaticamente",
+      "auto_update_hint": "Sempre instala novas versões deste app sem perguntar. Nunca o mantém nesta versão. Uma atualização que pede novas permissões sempre espera por você.",
+      "auto_update_follow": "Seguir a configuração de atualizações ({{mode}})",
+      "auto_update_always": "Sempre",
+      "auto_update_never": "Nunca",
+      "auto_update_save_failed": "Não foi possível salvar a configuração de atualização deste app."
     },
     "appPage": {
       "loading_app": "Carregando app…",
@@ -19055,6 +19062,20 @@
         "none_enabled": "Nenhum app está ativado.",
         "load_failed": "Não foi possível carregar seus apps.",
         "failed_to_save": "Não foi possível salvar o modelo de {{app}}."
+      },
+      "appUpdates": {
+        "title": "Atualizações de apps",
+        "mode_label": "Atualizar apps automaticamente",
+        "mode_hint": "Desligado avisa você uma vez quando uma nova versão de um app instalado é publicada. Perguntar adiciona um botão Atualizar a esse aviso. Automático instala a versão quando o app está ocioso. Uma atualização que pede novas permissões sempre espera por você.",
+        "mode_off": "Desligado",
+        "mode_ask": "Perguntar",
+        "mode_on": "Automático",
+        "interval_label": "Procurar atualizações de apps",
+        "interval_hint": "Com que frequência o gateway atualiza os registros de apps enquanto algum app se atualiza automaticamente.",
+        "interval_hours": "A cada {{hours}} h",
+        "interval_days": "A cada {{days}} d",
+        "save_failed": "Não foi possível salvar a configuração de atualização de apps.",
+        "load_failed": "Não foi possível carregar as configurações de atualização de apps."
       }
     },
     "settingsPage": {

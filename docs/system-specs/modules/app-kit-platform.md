@@ -4704,6 +4704,101 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
 
+## 30. Installed apps update themselves only when the owner chose it
+
+`app_updates.mode` sets it for every app: `off` (the default) keeps the one bell
+note per new version that `update_notify` posts, `ask` adds an Update button to that
+note, and `on` installs the version. `apps.<name>.auto_update` overrides it for one
+app: `always` acts as `on`, `never` pins the app at its version, and the empty value
+follows the global mode. An unknown spelling of either reads as `off` or as follow,
+so a hand edit can never opt an app into an install. `app_updates.check_interval_hours`
+(1 to 168, default 6) is clamped on read. Settings → About → App updates writes the
+global pair and the app page's Updates card writes the override, both through the
+generic config PATCH (`core_config_schema._editable_config_spec`).
+
+`apps.auto_update.run_forever` is started by `service_boot` beside the gateway's own
+update coordinator and stopped first in `exit_path` (cancelled while idle, drained but
+never cancelled while an update applies; see below). It re-reads the config every
+`POLL_SECS` and runs `run_check` once per interval while `checks_wanted` is true, so
+with nothing set to update it costs a config read and no network. A check reads the
+catalog through `list_catalog_apps`, which refetches past its one-hour TTL the way
+the store listing does (it never drops a cache still within its TTL, as Discover's
+refresh button does), and refetches every registry index with fetch-then-swap. Then
+`find_candidates` lists apps whose effective mode is `on`, whose source is
+`registry:` (a catalog or trusted-registry install), whose lifecycle is `gateway`,
+and whose published version from `update_status.published_index` is strictly newer
+by `_version_newer`. A downgrade or an unpublishable version is never a candidate.
+Candidates are applied one at a time.
+
+Each apply first asks `busy_reason`: a session the app owns (`slot._app`) with a turn
+in flight, one of its cron jobs running (`CronSDK(name).list_jobs` plus
+`CronService.is_running`), or a retained startup hook not yet settled
+(`LifecycleDispatcher.startup_hooks_running`) puts it off to the next check. Then it
+calls `routes_install.apply_app_update`, the sequence `handle_update_app` runs for the
+Update endpoint: lifecycle lock, startup-hook preflight, backend stop, deregistration,
+`install_from_registry` (provenance pin, admission, clone, `update_app` with `data/`
+kept), re-registration including the running scheduler's crons, backend start, and
+`_restore_app_after_failed_update` on failure. Once it holds the lock,
+`_locked_preflight` reads the installed record again (an uninstall that won the lock
+ends the update with 404, so a queued update never reinstalls a removed app), the
+registry branch refuses a record whose source changed meanwhile, and the updater's
+`still_idle` callback runs the idle check a second time, so work that started after
+the first look puts the update off with a retryable 409 instead of being cut off.
+
+It runs inside `update_consent.refusing_permission_widening`, a ContextVar that
+`asyncio.to_thread` and the route's `copy_context` carry into the copy worker.
+`update_consent.widened_permissions` names every permission the new manifest grants
+beyond the installed one: an added `api`, `events`, `mcpTools` or `exposeToApps`
+entry, an `mcpTools` list emptied (an empty list means unrestricted), a boolean grant
+turned on, or `memory` moved up its scale. Inside the scope
+`install_from_registry` refuses on the prefetched manifest before the clone (to skip a
+build and `onInstall` whose result would be refused), and `update_app` refuses again on
+the copied manifest before any file moves, with `code` `app_update_needs_consent`. The
+same scope makes `update_app` refuse a source whose version is not newer than the
+installed one (`app_update_not_newer`), so an index row ahead of its source cannot
+downgrade an app, and makes `install_from_registry` refuse a registry entry that has
+turned self-managed (`resources: "app"`), whose registration would bypass
+`update_app`. The
+manual Update path is unchanged: there an added `api`/`events` entry is held back and
+an added `sessionApproval` disables the app until re-consent.
+
+`auto-app-updates.json` under the data home records, per app, the version last tried
+and its outcome (an app uninstalled while the check ran records nothing and posts
+nothing), with a copy kept in memory for the life of the process so a ledger
+write that fails does not make a settled version a candidate again. `updated` posts "`<name>` updated to `<version>`", the version the
+installed record reports afterwards. An apply that succeeds but leaves the installed
+version where it was (the clone carries an older `app.json` than the index row says)
+is `no_change`: one note, and that published version is not retried, so the app is
+not rebuilt every interval. `needs_consent`
+posts one Ask note, titled `<name> <version> wants new permissions` with a body that starts
+with the permissions it adds (the feed truncates a row at its end), whose "Review update"
+action (id `review`, so `noteActionState` arms nothing) only opens the app page, and that
+version is
+not retried; a newer one is. `failed` posts the error once per version, leaves the old
+version running and is retried on later checks, up to `MAX_FAILED_ATTEMPTS` (3) tries
+at one published version: each try stops and restarts the app, so a refusal that recurs
+every time (an admission denial, a withdrawn trust grant) settles instead of repeating. A retryable refusal (a startup hook
+still running) records nothing. All notes go on `system.apps`. `update_notify` skips an
+app whose effective mode is `on`, so one release is never announced by both producers;
+a `never` app is still announced, and so is an `on` app the updater cannot touch
+(`eligible_names`: not a `registry:` source).
+
+On gateway shutdown `exit_path` calls `request_stop`, so no further update starts. An
+update mid-apply (`applying()`) is awaited within the installer stop budget rather than
+cancelled, because its copy runs in a worker thread a cancel cannot stop and the
+registry pipeline's checkout restore would race it. One that outlives the budget is
+never cancelled: it is left to end with the process, as a crash during a pressed Update
+does, rather than have the restore run beside a copy still reading the checkout.
+
+`kirocrew app update <name>` posts to `/api/apps/<name>/update` through the owner-only
+socket (`app_lifecycle_client.toggle_app`). It has no file-only fallback: with no
+gateway answering it exits 1 and changes nothing, because only the gateway can stop and
+restart the app's backend and re-register its crons with the live scheduler.
+`test_app_auto_update.py` pins the parsing, the PATCH specs, the widening rules, the
+`update_app` refusal and its absence outside the scope, candidate selection, the idle
+check, each outcome's ledger entry and note, the poll cadence, the note hand-off and
+the CLI verb.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

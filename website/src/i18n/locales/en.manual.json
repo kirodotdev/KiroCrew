@@ -4796,7 +4796,14 @@
       "grant_not_approved": "not approved",
       "grants_reconsent_api": "API access: lets the app call these {{productName}} API paths with its own token.",
       "grants_reconsent_events": "WebSocket events: lets the app receive or send these real-time dashboard events.",
-      "grants_approved": "Approved: {{entries}}. The app can use them now."
+      "grants_approved": "Approved: {{entries}}. The app can use them now.",
+      "auto_update_title": "Updates",
+      "auto_update_label": "Update automatically",
+      "auto_update_hint": "Always installs new versions of this app without asking. Never keeps it at this version. An update that asks for new permissions always waits for you.",
+      "auto_update_follow": "Follow app updates setting ({{mode}})",
+      "auto_update_always": "Always",
+      "auto_update_never": "Never",
+      "auto_update_save_failed": "Couldn't save the update setting for this app."
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",
@@ -9123,6 +9130,20 @@
         "none_enabled": "No apps are enabled.",
         "load_failed": "Couldn't load your apps.",
         "failed_to_save": "Couldn't save the model for {{app}}."
+      },
+      "appUpdates": {
+        "title": "App updates",
+        "mode_label": "Update apps automatically",
+        "mode_hint": "Off tells you once when a new version of an installed app is published. Ask adds an Update button to that note. Automatic installs it once the app is idle. An update that asks for new permissions always waits for you.",
+        "mode_off": "Off",
+        "mode_ask": "Ask",
+        "mode_on": "Automatic",
+        "interval_label": "Check for app updates",
+        "interval_hint": "How often the gateway refreshes the app registries while any app updates automatically.",
+        "interval_hours": "Every {{hours}} h",
+        "interval_days": "Every {{days}} d",
+        "save_failed": "Couldn't save the app update setting.",
+        "load_failed": "Couldn't load the app update settings."
       }
     },
     "worldsPage": {

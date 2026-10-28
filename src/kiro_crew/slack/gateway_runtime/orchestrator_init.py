@@ -7,7 +7,7 @@ for the type checker; this module assigns them.
 
 Orchestrator fields read: none.
 Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
-``_app_token``, ``_approval_mode``, ``_auto_migrate_task``, ``_background_tasks``,
+``_app_token``, ``_app_update_task``, ``_approval_mode``, ``_auto_migrate_task``, ``_background_tasks``,
 ``_batch_progress``, ``_bot_token``, ``_cfg``, ``_channel_handles``,
 ``_channel_restart_gen``, ``_channel_restart_lock``, ``_channel_restart_tasks``,
 ``_channel_transports_started``, ``_config_subs``, ``_console_script_repair_task``,
@@ -214,6 +214,7 @@ def __init__(
     # installed. Cancelled on shutdown so stalled network or installer work
     # cannot hold the process open.
     self._update_check_task = None
+    self._app_update_task = None
     # Periodic governance-profile re-projection; cancelled at shutdown beside the
     # distribution refresher, so no rebuild starts into a closing gateway.
     self._profile_watch_task = None

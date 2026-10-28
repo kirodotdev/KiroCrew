@@ -9,7 +9,7 @@ Orchestrator fields read: ``_background_tasks``, ``_bot_token``, ``_cfg``,
 ``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
 ``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
-Orchestrator fields written: ``_configured_host``, ``_dashboard_port``,
+Orchestrator fields written: ``_app_update_task``, ``_configured_host``, ``_dashboard_port``,
 ``_dashboard_runner``, ``_feature_video_task``, ``_local_only``, ``_marker_write_task``,
 ``_member_reconcile_task``, ``_memory_startup``, ``_persistence_watchdog_task``,
 ``_profile_watch_task``, ``_session_environments_ready``, ``_sign_in_refresher_task``,
@@ -1312,6 +1312,19 @@ async def run(self: GatewayOrchestrator) -> None:
     self._update_check_task.set_name("update-coordinator")
     self._background_tasks.add(self._update_check_task)
     self._update_check_task.add_done_callback(self._background_tasks.discard)
+
+    # Installed-app updates (``app_updates``): their own loop, because an app
+    # update restarts one app's backend, not the gateway, and waits on that
+    # app's own work rather than the gateway-wide drain. It needs the
+    # dashboard state for its notes, its idle check and the cron scheduler.
+    if self.dashboard_state is not None:
+        from kiro_crew.apps import auto_update as _app_auto_update
+
+        self._app_update_task = asyncio.create_task(
+            _app_auto_update.run_forever(self.dashboard_state), name="app-auto-update"
+        )
+        self._background_tasks.add(self._app_update_task)
+        self._app_update_task.add_done_callback(self._background_tasks.discard)
 
     # ── Announce the dashboard URL — deliberately NOT behind the probe ──
     # The HTTP port is already listening (bound by _init_dashboard above), and

@@ -243,6 +243,18 @@ class PublishConfig:
     )
 
 
+#: ``app_updates.mode`` values. ``off`` keeps the one bell note per new version,
+#: ``ask`` adds an Update button to that note, and ``on`` applies the update.
+APP_UPDATE_MODES = ("off", "ask", "on")
+
+#: ``apps.<name>.auto_update`` values: follow the global mode, always, never.
+APP_AUTO_UPDATE_OVERRIDES = ("", "always", "never")
+
+#: Bounds on ``app_updates.check_interval_hours``.
+APP_UPDATE_CHECK_HOURS_MIN = 1
+APP_UPDATE_CHECK_HOURS_MAX = 168
+
+
 @dataclass
 class AppSettingsConfig:
     """The user's own settings for one installed app, ``apps.<name>``."""
@@ -258,6 +270,43 @@ class AppSettingsConfig:
             "pinned on the agent or crew all win over it; it wins over the global "
             "default. A model this account cannot run is withheld like any other "
             "pin.",
+        ),
+    )
+    auto_update: str = field(
+        default="",
+        metadata=_meta(
+            "Update automatically",
+            "Overrides 'Update apps automatically' for this app. Empty follows the "
+            "global setting, 'always' updates this app automatically whatever the "
+            "global setting says, and 'never' keeps it at its installed version.",
+            enum=list(APP_AUTO_UPDATE_OVERRIDES),
+        ),
+    )
+
+
+@dataclass
+class AppUpdatesConfig:
+    """How installed apps are kept current, ``app_updates``."""
+
+    mode: str = field(
+        default="off",
+        metadata=_meta(
+            "Update apps automatically",
+            "'off' tells you once when a new version of an installed app is "
+            "published. 'ask' does the same and puts an Update button on the note. "
+            "'on' installs it once the app is idle, through the same steps as the "
+            "Update button. An update that asks for new permissions always waits "
+            "for you.",
+            enum=list(APP_UPDATE_MODES),
+        ),
+    )
+    check_interval_hours: int = field(
+        default=6,
+        metadata=_meta(
+            "Check interval (hours)",
+            "How often the gateway refreshes the app registries and looks for "
+            "newer versions of installed apps while 'Update apps automatically' "
+            "is on, or when any app is set to update always. 1 to 168.",
         ),
     )
 

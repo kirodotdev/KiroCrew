@@ -3,7 +3,7 @@
 The run marker's writer and self-clear, the signal handlers, the bounded cleanup of
 every service, and the final exit.
 
-Orchestrator fields read: ``_adaptive_controller``, ``_auto_migrate_task``,
+Orchestrator fields read: ``_adaptive_controller``, ``_app_update_task``, ``_auto_migrate_task``,
 ``_channel_handles``, ``_channel_restart_tasks``, ``_console_script_repair_task``,
 ``_dashboard_port``, ``_dashboard_runner``, ``_feature_video_task``, ``_handler_tasks``,
 ``_inbound_replay_task``, ``_marker_clear_pending``, ``_marker_write_task``,
@@ -76,6 +76,21 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     update_stop_deadline = asyncio.get_running_loop().time() + UPDATE_INSTALLER_STOP_SECS
     for task in installer_tasks:
         task.cancel()
+    # An app update is drained, not cancelled: its copy runs in a worker thread
+    # a cancel cannot stop, and cancelling the coroutine around it would run the
+    # registry pipeline's checkout restore while that worker still reads the
+    # checkout. The loop is told to start nothing new; one mid-apply is awaited
+    # within the same budget and is never cancelled.
+    app_update_drain: set[asyncio.Task[Any]] = set()
+    app_update_task = self._app_update_task
+    if app_update_task is not None and not app_update_task.done():
+        from kiro_crew.apps import auto_update as _app_auto_update
+
+        _app_auto_update.request_stop()
+        if _app_auto_update.applying():
+            app_update_drain.add(app_update_task)
+        else:
+            app_update_task.cancel()
     # Stop speculative session starts before anything below awaits. One still
     # debouncing would otherwise spawn an agent mid-teardown that close_all()
     # cannot see. They are awaited with the session teardown further down.
@@ -167,9 +182,16 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
             logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
         self.dashboard_state.file_indexes.stop_all()
 
-    if installer_tasks:
+    if installer_tasks or app_update_drain:
         remaining = update_stop_deadline - asyncio.get_running_loop().time()
-        _done, pending = await asyncio.wait(installer_tasks, timeout=max(0.0, remaining))
+        _done, pending = await asyncio.wait(
+            installer_tasks | app_update_drain, timeout=max(0.0, remaining)
+        )
+        # An app update that outlives the budget is left running, never
+        # cancelled: a cancel lands in the coroutine around the copy worker,
+        # whose cleanup would restore the checkout while that worker still
+        # copies from it. Left alone, it ends with the process, as a crash
+        # during a pressed Update does.
         if pending:
             # Named, because the stuck task may be the update coordinator or
             # a dashboard-started policy apply; whoever chases an orphaned

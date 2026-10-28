@@ -10846,7 +10846,14 @@
       "grant_not_approved": "nicht genehmigt",
       "grants_reconsent_api": "API-Zugriff: erlaubt der App, diese {{productName}}-API-Pfade mit ihrem eigenen Token aufzurufen.",
       "grants_reconsent_events": "WebSocket-Ereignisse: erlaubt der App, diese Echtzeit-Ereignisse des Dashboards zu empfangen oder zu senden.",
-      "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen."
+      "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen.",
+      "auto_update_title": "Updates",
+      "auto_update_label": "Automatisch aktualisieren",
+      "auto_update_hint": "Immer installiert neue Versionen dieser App ohne Rückfrage. Nie belässt sie bei dieser Version. Ein Update, das neue Berechtigungen verlangt, wartet immer auf dich.",
+      "auto_update_follow": "App-Update-Einstellung folgen ({{mode}})",
+      "auto_update_always": "Immer",
+      "auto_update_never": "Nie",
+      "auto_update_save_failed": "Die Update-Einstellung dieser App konnte nicht gespeichert werden."
     },
     "appPage": {
       "loading_app": "App wird geladen…",
@@ -18759,6 +18766,20 @@
         "none_enabled": "Keine Apps aktiviert.",
         "load_failed": "Deine Apps konnten nicht geladen werden.",
         "failed_to_save": "Das Modell für {{app}} konnte nicht gespeichert werden."
+      },
+      "appUpdates": {
+        "title": "App-Updates",
+        "mode_label": "Apps automatisch aktualisieren",
+        "mode_hint": "Aus meldet einmal, wenn eine neue Version einer installierten App veröffentlicht wird. Fragen ergänzt diese Meldung um eine Schaltfläche Aktualisieren. Automatisch installiert sie, sobald die App untätig ist. Ein Update, das neue Berechtigungen verlangt, wartet immer auf dich.",
+        "mode_off": "Aus",
+        "mode_ask": "Fragen",
+        "mode_on": "Automatisch",
+        "interval_label": "Nach App-Updates suchen",
+        "interval_hint": "Wie oft das Gateway die App-Registrys aktualisiert, solange eine App sich automatisch aktualisiert.",
+        "interval_hours": "Alle {{hours}} Std.",
+        "interval_days": "Alle {{days}} Tg.",
+        "save_failed": "Die App-Update-Einstellung konnte nicht gespeichert werden.",
+        "load_failed": "Die App-Update-Einstellungen konnten nicht geladen werden."
       }
     },
     "settingsPage": {

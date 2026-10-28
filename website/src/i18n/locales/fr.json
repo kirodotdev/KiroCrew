@@ -11001,7 +11001,14 @@
       "grant_not_approved": "non approuvée",
       "grants_reconsent_api": "Accès à l’API : permet à l’app d’appeler ces chemins de l’API {{productName}} avec son propre jeton.",
       "grants_reconsent_events": "Événements WebSocket : permet à l’app de recevoir ou d’envoyer ces événements du tableau de bord en temps réel.",
-      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
+      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant.",
+      "auto_update_title": "Mises à jour",
+      "auto_update_label": "Mettre à jour automatiquement",
+      "auto_update_hint": "Toujours installe les nouvelles versions de cette application sans demander. Jamais la garde à cette version. Une mise à jour qui demande de nouvelles autorisations attend toujours ton accord.",
+      "auto_update_follow": "Suivre le réglage des mises à jour ({{mode}})",
+      "auto_update_always": "Toujours",
+      "auto_update_never": "Jamais",
+      "auto_update_save_failed": "Impossible d'enregistrer le réglage de mise à jour de cette application."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",
@@ -19055,6 +19062,20 @@
         "none_enabled": "Aucune application n’est activée.",
         "load_failed": "Impossible de charger tes applications.",
         "failed_to_save": "Impossible d’enregistrer le modèle pour {{app}}."
+      },
+      "appUpdates": {
+        "title": "Mises à jour des applications",
+        "mode_label": "Mettre à jour les applications automatiquement",
+        "mode_hint": "Désactivé te prévient une fois quand une nouvelle version d'une application installée est publiée. Demander ajoute un bouton Mettre à jour à cette note. Automatique l'installe dès que l'application est inactive. Une mise à jour qui demande de nouvelles autorisations attend toujours ton accord.",
+        "mode_off": "Désactivé",
+        "mode_ask": "Demander",
+        "mode_on": "Automatique",
+        "interval_label": "Rechercher les mises à jour",
+        "interval_hint": "Fréquence à laquelle la passerelle actualise les registres d'applications tant qu'une application se met à jour automatiquement.",
+        "interval_hours": "Toutes les {{hours}} h",
+        "interval_days": "Tous les {{days}} j",
+        "save_failed": "Impossible d'enregistrer le réglage de mise à jour des applications.",
+        "load_failed": "Impossible de charger les réglages de mise à jour des applications."
       }
     },
     "settingsPage": {

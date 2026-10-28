@@ -178,6 +178,11 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "agent.sandbox": ("strict", "auto", "off"),
     "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
     "agent.sandbox_allow_no_isolation": (False, True),
+    # ``on`` installs new versions of installed apps without a click. Only from
+    # the repository each app is already trusted for and never with an added
+    # permission, but it is still code that starts running unasked, so a card
+    # moving toward ``on`` says it widens.
+    "app_updates.mode": ("off", "ask", "on"),
     "dashboard.tailscale.enabled": (False, True),
     "dashboard.tailscale.trust_identity": (False, True),
     "dashboard.tailscale.bind_refresh_chains": (True, False),
@@ -214,6 +219,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.role_models.subagent",
         "agent.soft_stop_budget_secs",
         "agent.tool_search",
+        "app_updates.check_interval_hours",
         "auto_update",
         "computer_use.max_tree_nodes",
         "computer_use.screenshot_max_px",

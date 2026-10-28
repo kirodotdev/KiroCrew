@@ -1,6 +1,7 @@
 """Installing an app from a local path, updating one in place, and registering an external app.
 
-``handle_install_app``, ``handle_update_app`` with the cron resync an update drives, and
+``handle_install_app``, ``handle_update_app`` and the :func:`apply_app_update` sequence it
+shares with the automatic updater (with the cron resync an update drives), and
 ``handle_register_external``.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
@@ -15,7 +16,7 @@ import json
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -48,6 +49,9 @@ from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 logger = logging.getLogger("kiro_crew.apps.routes")
 
 
@@ -61,21 +65,6 @@ async def handle_update_app(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "app_update")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
-    info = get_app(name)
-    if not info:
-        return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-
-    # Apps with lifecycle != "gateway" handle their own updates
-    lifecycle = info.get("lifecycle", "gateway")
-    if lifecycle != "gateway":
-        return web.json_response(
-            {
-                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint"
-            },
-            status=400,
-        )
-
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -83,78 +72,217 @@ async def handle_update_app(request: web.Request) -> web.Response:
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
+    source = body.get("source")
+    state = request.app.get("state")
+    status, payload = await apply_app_update(
+        request.match_info["name"],
+        source=source if isinstance(source, str) else None,
+        cron_service=getattr(state, "crons", None) if state else None,
+    )
+    if status < 400:
+        return web.json_response(payload)
+    # Every refusal carries a machine-readable ``code``; a manager error with
+    # none of its own gets the generic one.
+    return web.json_response(
+        {**payload, "code": payload.get("code") or "app_update_failed"}, status=status
+    )
 
-    source = body.get("source", info.get("source", ""))
 
-    # Registry-installed apps: re-clone from registry.
-    # Same order as the local-source branch below: stop the backend and scrub
-    # its resources BEFORE the files are replaced. For an already-installed
-    # app ``install_from_registry`` reaches ``update_app``, which renames the
-    # live tree aside and copies the new one in -- on Windows that fails with a
-    # sharing violation (WinError 32) while the backend still holds a file open
-    # under the tree. A failed install must not leave the app broken either:
-    # the failure path restores what was there (``_restore_app_after_failed_update``),
-    # exactly as the local-source branch does.
-    if is_registry_source(source):
-        registry_name = registry_name_from_source(source)
-        async with app_lifecycle_lock(name):
-            # Preflight BEFORE the stop so a retryable refusal leaves app state
-            # untouched (app-kit-platform: refusal "without mutating app state").
-            # ``install_from_registry`` re-checks at its own replacement boundary.
-            startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
-            if startup_refusal is not None:
-                return startup_refusal
+async def _startup_refusal_body(name: str) -> tuple[int, dict[str, Any]] | None:
+    """:func:`_refuse_while_startup_hook_runs` as a status and body, or ``None``."""
+    refusal = await _refuse_while_startup_hook_runs(name, action="update")
+    if refusal is None:
+        return None
+    return refusal.status, json.loads(refusal.text or "{}")
 
-            # Stop the backend, then deregister old resources -- same order as
-            # uninstall and the disable rollback. Stopping pops the tracking record,
-            # so the health watch cannot re-register the OLD manifest's MCP servers
-            # after the scrub (see app-kit-platform §17).
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), stop_app_backend, name
+
+async def apply_app_update(
+    name: str,
+    *,
+    source: str | None = None,
+    cron_service: Any = None,
+    caller: str = "dashboard",
+    refuse_permission_widening: bool = False,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Update the installed app *name* and answer ``(http status, body)``.
+
+    The one update sequence, shared by the Update button
+    (:func:`handle_update_app`) and the automatic updater
+    (``kiro_crew.apps.auto_update``), so an update nobody pressed takes the same
+    steps a pressed one does: under the app lifecycle lock, the admission
+    re-check, backend stop, deregistration, the copy that keeps ``data/``,
+    re-registration including the running scheduler's crons, backend start, and
+    restoring the old version when the copy fails.
+
+    *source* overrides the recorded source (the route's request body). With
+    *refuse_permission_widening*, an update whose new version declares a
+    permission the installed one does not is refused with
+    ``app_update_needs_consent`` before any file moves.
+
+    *still_idle*, when given, is awaited under the lifecycle lock just before the
+    backend stops; a non-empty answer (why the app is busy) puts the update off
+    with a retryable 409 and changes nothing. The automatic updater passes its
+    idle check here so work that started after its first look is not cut off.
+
+    The installed record is read again under the lock: an uninstall or a source
+    change that won the lock first ends the update there, so a queued update
+    can never reinstall an app the owner just removed.
+    """
+    info = await asyncio.to_thread(get_app, name)
+    if not info:
+        return 404, {"error": f"app {name!r} not installed", "code": "app_not_installed"}
+
+    # Apps with lifecycle != "gateway" handle their own updates
+    lifecycle = info.get("lifecycle", "gateway")
+    if lifecycle != "gateway":
+        return 400, {
+            "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint",
+            "code": "app_lifecycle_self_managed",
+        }
+
+    # Local: these three would otherwise become names the routes facade serves.
+    from contextlib import nullcontext
+
+    from kiro_crew.apps.update_consent import refusing_permission_widening
+
+    recorded = info.get("source", "")
+    recorded = recorded if isinstance(recorded, str) else ""
+    source = source or recorded
+    scope = refusing_permission_widening() if refuse_permission_widening else nullcontext()
+    with scope:
+        if is_registry_source(source):
+            return await _update_from_registry(
+                name, source, cron_service, caller, still_idle, recorded_source=recorded
             )
-            await _deregister_app_off_loop(name)
+        if not source:
+            return 400, {
+                "error": "source path required (not found in installed metadata)",
+                "code": "app_source_missing",
+            }
+        return await _update_from_path(name, source, cron_service, caller, still_idle)
 
-            reg_install = await install_from_registry(registry_name)
-            if not reg_install.get("ok"):
-                await _restore_app_after_failed_update(name)
-                sel().log_api_access(
-                    caller="dashboard",
-                    operation="app_update",
-                    outcome="failed",
-                    resources=name,
-                    error=reg_install.get("error", ""),
-                )
-                return web.json_response(reg_install, status=400)
-            # Live read, not the pre-update ``info`` snapshot: ``update_app`` drops
-            # ``enabled`` when the new version adds ``permissions.sessionApproval``,
-            # and a backend started here would run an app the UI shows as disabled.
-            still_enabled = await _app_may_run_after_install(name)
-            if still_enabled:
-                reg_result = await _register_app_off_loop(name)
-                await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), start_app_backend, name
-                )
-                reg_install["registration"] = reg_result.to_dict()
-        sel().log_api_access(
-            caller="dashboard", operation="app_update", outcome="completed", resources=name
+
+async def _locked_preflight(
+    name: str, still_idle: Callable[[], Awaitable[str]] | None
+) -> tuple[int, dict[str, Any]] | None:
+    """The checks an update makes once it holds the lifecycle lock, before it stops anything.
+
+    The app must still be installed, no retained startup hook may be running,
+    and *still_idle* (when given) must answer ``""``.
+    """
+    if await asyncio.to_thread(get_app, name) is None:
+        return 404, {"error": f"app {name!r} not installed", "code": "app_not_installed"}
+    startup_refusal = await _startup_refusal_body(name)
+    if startup_refusal is not None:
+        return startup_refusal
+    if still_idle is not None:
+        busy = await still_idle()
+        if busy:
+            return 409, {
+                "error": f"cannot update {name!r} now: {busy}",
+                "code": "app_busy",
+                "retryable": True,
+                "app": name,
+            }
+    return None
+
+
+async def _update_from_registry(
+    name: str,
+    source: str,
+    cron_service: Any,
+    caller: str,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
+    *,
+    recorded_source: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Re-clone a registry-installed app and swap it in.
+
+    *recorded_source* is the installed record's source as read before the lock,
+    which the locked re-read is compared with. It differs from *source* when the
+    request names a source override; ``None`` means *source* is the recorded one.
+
+    Same order as :func:`_update_from_path`: stop the backend and scrub its
+    resources BEFORE the files are replaced. For an already-installed app
+    ``install_from_registry`` reaches ``update_app``, which renames the live tree
+    aside and copies the new one in -- on Windows that fails with a sharing
+    violation (WinError 32) while the backend still holds a file open under the
+    tree. A failed install must not leave the app broken either: the failure
+    path restores what was there (``_restore_app_after_failed_update``).
+    """
+    registry_name = registry_name_from_source(source)
+    async with app_lifecycle_lock(name):
+        # Preflight BEFORE the stop so a retryable refusal leaves app state
+        # untouched (app-kit-platform: refusal "without mutating app state").
+        # ``install_from_registry`` re-checks at its own replacement boundary.
+        refusal = await _locked_preflight(name, still_idle)
+        if refusal is not None:
+            return refusal
+        # Re-read under the lock: an earlier holder may have moved the app to a
+        # different source, and this update must not act on the stale one.
+        current = await asyncio.to_thread(get_app, name)
+        expected = source if recorded_source is None else recorded_source
+        now_source = current.get("source", "") if current else ""
+        # Coerced as ``recorded_source`` was, so a non-string field compares equal.
+        now_source = now_source if isinstance(now_source, str) else ""
+        if not current or now_source != expected:
+            return 409, {
+                "error": f"app {name!r} changed while this update waited; nothing was updated",
+                "code": "app_changed",
+                "retryable": True,
+            }
+
+        # Stop the backend, then deregister old resources -- same order as
+        # uninstall and the disable rollback. Stopping pops the tracking record,
+        # so the health watch cannot re-register the OLD manifest's MCP servers
+        # after the scrub (see app-kit-platform §17).
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), stop_app_backend, name
         )
-        return web.json_response(reg_install)
+        await _deregister_app_off_loop(name)
 
-    if not source:
-        return web.json_response(
-            {"error": "source path required (not found in installed metadata)"},
-            status=400,
-        )
+        reg_install = await install_from_registry(registry_name)
+        if not reg_install.get("ok"):
+            await _restore_app_after_failed_update(name)
+            sel().log_api_access(
+                caller=caller,
+                operation="app_update",
+                outcome="failed",
+                resources=name,
+                error=reg_install.get("error", ""),
+            )
+            return 400, reg_install
+        # Live read, not a pre-update snapshot: ``update_app`` drops ``enabled``
+        # when the new version adds ``permissions.sessionApproval``, and a
+        # backend started here would run an app the UI shows as disabled.
+        if await _app_may_run_after_install(name):
+            reg_result = await _register_app_off_loop(name)
+            await _resync_app_crons_after_update(cron_service, name, caller)
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), start_app_backend, name
+            )
+            reg_install["registration"] = reg_result.to_dict()
+    sel().log_api_access(caller=caller, operation="app_update", outcome="completed", resources=name)
+    return 200, reg_install
 
+
+async def _update_from_path(
+    name: str,
+    source: str,
+    cron_service: Any,
+    caller: str,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Copy a local source directory over the installed app."""
     # Per-app lifecycle lock: the stop → deregister → copy → re-register
     # sequence must not interleave with another update/install/uninstall of
     # the same app — update_app moves user data through a shared
     # ``.{name}-data-tmp`` path, so an interleaving can destroy it.
-    # (The registry branch above holds the same lock around the same sequence.)
     async with app_lifecycle_lock(name):
-        startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
-        if startup_refusal is not None:
-            return startup_refusal
+        refusal = await _locked_preflight(name, still_idle)
+        if refusal is not None:
+            return refusal
 
         # Stop the backend, then deregister old resources — same order as uninstall and
         # the disable rollback. Stopping pops the tracking record, so the health watch
@@ -168,19 +296,24 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # Off-loop: blocking filesystem copy (see handle_install_app).
         # expected_name makes update_app itself reject a source whose
         # manifest names a different app than the one this lock guards.
+        # ``copy_context`` carries the permission-widening scope into the
+        # executor thread, which ``run_in_executor`` alone would not.
+        import contextvars
+
+        ctx = contextvars.copy_context()
         up_result = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), lambda: update_app(source, expected_name=name)
+            subprocess_executor(), lambda: ctx.run(update_app, source, expected_name=name)
         )
         if not up_result.ok:
             await _restore_app_after_failed_update(name)
             sel().log_api_access(
-                caller="dashboard",
+                caller=caller,
                 operation="app_update",
                 outcome="failed",
                 resources=name,
                 error=up_result.error,
             )
-            return web.json_response(up_result.to_dict(), status=400)
+            return 400, up_result.to_dict()
 
         # Re-register with the new manifest only if the app is STILL enabled.
         # ``update_app`` drops ``enabled`` when the new version adds
@@ -200,36 +333,32 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # failure is logged and audited, never a failed update: the files
             # and registry are already current, and the next registration
             # pass applies the same definitions.
-            await _resync_app_crons_after_update(request, name)
+            await _resync_app_crons_after_update(cron_service, name, caller)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
 
-    sel().log_api_access(
-        caller="dashboard", operation="app_update", outcome="completed", resources=name
-    )
+    sel().log_api_access(caller=caller, operation="app_update", outcome="completed", resources=name)
     resp: dict[str, Any] = up_result.to_dict()
     if up_reg:
         resp["registration"] = up_reg.to_dict()
-    return web.json_response(resp)
+    return 200, resp
 
 
-async def _resync_app_crons_after_update(request: web.Request, name: str) -> None:
-    """Register the updated app's crons with the running scheduler, if there is one.
+async def _resync_app_crons_after_update(cron_service: Any, name: str, caller: str) -> None:
+    """Bring the running scheduler's jobs for *name* in line with its updated manifest.
 
-    Split out of :func:`handle_update_app` so the no-service case (a test app
-    with no ``state.crons``, a gateway booting without a scheduler) and the
-    audit shape stay readable there. Mirrors ``hooks_integration.on_app_enable``:
-    the same bridge call, the same ``app_crons_register`` SEL rows.
+    Both update branches call it, so the no-service case (a test app with no
+    ``state.crons``, a gateway booting without a scheduler) and the audit shape
+    live in one place. Mirrors ``hooks_integration.on_app_enable``: the same
+    bridge call, the same ``app_crons_register`` SEL rows.
     """
-    state = request.app.get("state")
-    cron_service = getattr(state, "crons", None) if state else None
     if cron_service is None:
         return
     try:
         registered = await register_app_crons_with_service(name, cron_service)
         sel().log_api_access(
-            caller="dashboard",
+            caller=caller,
             operation="app_crons_register",
             outcome="completed",
             resources=f"app={name} crons={registered}",
@@ -237,7 +366,7 @@ async def _resync_app_crons_after_update(request: web.Request, name: str) -> Non
     except Exception as exc:
         logger.warning("Cron registration after updating %s failed: %s", name, exc)
         sel().log_api_access(
-            caller="dashboard",
+            caller=caller,
             operation="app_crons_register",
             outcome="failed",
             resources=name,

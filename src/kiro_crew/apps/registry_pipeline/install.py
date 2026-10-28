@@ -548,6 +548,36 @@ async def install_from_registry(
         )
         return {"ok": False, "name": name, "error": f"blocked by admission policy: {denied}"}
 
+    # An automatic update refuses any permission the new version adds. Asked of
+    # the prefetched manifest here only to skip a clone, build and ``onInstall``
+    # whose result would be refused anyway; ``update_app`` asks again of the
+    # cloned manifest, which is the answer that binds.
+    from kiro_crew.apps import update_consent
+
+    if update_consent.permission_widening_refused() and admission_manifest is not None:
+        from kiro_crew.apps.manager import get_app_manifest
+
+        installed_manifest = await asyncio.to_thread(get_app_manifest, name)
+        if installed_manifest is None:
+            # No baseline to compare with: refuse rather than read "unknown" as
+            # "nothing approved", which a version declaring less would pass.
+            return {
+                "ok": False,
+                "name": name,
+                "error": update_consent.UNREADABLE_BASELINE_REFUSAL,
+                "code": update_consent.NEEDS_CONSENT_CODE,
+            }
+        widened = update_consent.widened_permissions(
+            installed_manifest.permissions, admission_manifest.permissions
+        )
+        if widened:
+            return {
+                "ok": False,
+                "name": name,
+                "error": update_consent.consent_refusal(widened),
+                "code": update_consent.NEEDS_CONSENT_CODE,
+            }
+
     # NOTE: the provenance signer is computed LATER, from the identity-checked
     # CLONED manifest — not from this pre-clone prefetch. An update can pull a
     # commit whose manifest is not signed (or is signed by someone else);
@@ -579,6 +609,16 @@ async def install_from_registry(
         }
 
     is_self_managed = entry.get("resources") == "app"
+    # An automatic update never turns a gateway-managed app into one that
+    # registers itself: that path writes the new manifest through
+    # ``register_external_app`` and never reaches ``update_app``'s consent check.
+    if is_self_managed and update_consent.permission_widening_refused():
+        return {
+            "ok": False,
+            "name": name,
+            "error": "the new version registers its own resources, which needs your approval",
+            "code": update_consent.NEEDS_CONSENT_CODE,
+        }
     if log_lines is None:
         log_lines = []
 
@@ -1488,6 +1528,9 @@ async def install_from_registry(
             "message": result.message,
             "error": result.error,
         }
+        error_code = getattr(result, "error_code", "")
+        if isinstance(error_code, str) and error_code:
+            outcome["code"] = error_code
         if result.notice:
             # e.g. ``session_approval_reconsent``: the app was left disabled on
             # purpose and the routes must neither start it nor report plain success.
