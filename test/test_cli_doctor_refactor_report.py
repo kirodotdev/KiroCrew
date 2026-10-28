@@ -462,7 +462,7 @@ Vector Memory (in-process embeddings)
   embeddings:  ✅ always-on
 
 Speech-to-Text
-  status:      ⏹ disabled (enable from dashboard → Settings → Speech-to-Text)
+  status:      ⏹ disabled (enable from dashboard → Settings → Voice → Speech-to-Text)
   ffmpeg:      ✅ available
 
 Slack Integration
@@ -654,7 +654,7 @@ Speech-to-Text
   engine:      ❌ install the voice extra
   model:       ⏹ base.en not downloaded yet (148 MB, fetched on first use)
   ffmpeg:      ❌ not found
-               Fix: download the audio decoder from the dashboard (Settings → Speech-to-Text), or install ffmpeg into /usr/local/bin
+               Fix: download the audio decoder from the dashboard (Settings → Voice → Speech-to-Text), or install ffmpeg into /usr/local/bin
 
 Slack Integration
   status:      ⏭  not configured (optional)

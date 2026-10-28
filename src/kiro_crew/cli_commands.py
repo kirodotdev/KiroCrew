@@ -392,8 +392,9 @@ def _tailnet(args: argparse.Namespace) -> None:
         print(
             f"❌ Cannot tell which port the dashboard is on, so refusing to publish "
             f"{port} — nothing is verified to be listening there, and `tailscale "
-            f"serve` would expose whatever is. Start the dashboard "
-            f"(`kirocrew dashboard`) and re-run, or name the port yourself with "
+            f"serve` would expose whatever is. Start the gateway that serves the "
+            f"dashboard (`kirocrew gateway`, or `kirocrew service install` to keep "
+            f"it running) and re-run, or name the port yourself with "
             f"`kirocrew tailnet up --port <port>`.",
             file=sys.stderr,
         )

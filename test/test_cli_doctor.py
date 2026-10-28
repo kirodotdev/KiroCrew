@@ -12,6 +12,7 @@ channel sections and the cron and directory censuses live in
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -121,6 +122,33 @@ class TestFfmpegLinuxHintResolvable:
         assert "dashboard" in cli_doctor._FFMPEG_LINUX_HINT
         assert decoder.artifact_for("Linux", "x86_64") is not None
         assert decoder.artifact_for("Linux", "aarch64") is not None
+
+
+class TestSttSettingsPathMatchesTheDashboard:
+    """The doctor's Speech-to-Text pointer names the tab and section the UI shows.
+
+    It once said ``Settings → Speech-to-Text``, a tab that does not exist: the
+    controls are a section of the Voice tab. The expected path is built from the
+    English catalog's own labels, so renaming the tab or the section in the UI
+    fails here instead of leaving the doctor pointing at nothing.
+    """
+
+    _LOCALES = Path(__file__).resolve().parents[1] / "website" / "src" / "i18n" / "locales"
+
+    def _ui_path(self) -> str:
+        manual = json.loads((self._LOCALES / "en.manual.json").read_text(encoding="utf-8"))
+        catalog = json.loads((self._LOCALES / "en.json").read_text(encoding="utf-8"))
+        tab = manual["settings"]["tabs"]["voice"]["label"]
+        section = catalog["pages"]["settings"]["voicePanel"]["speech_to_text"]
+        return f"Settings → {tab} → {section}"
+
+    def test_the_path_matches_the_dashboard_labels(self) -> None:
+        from kiro_crew.doctor_checks import features
+
+        assert features._STT_SETTINGS_PATH == self._ui_path()
+
+    def test_the_ffmpeg_hint_uses_that_path(self) -> None:
+        assert f"({self._ui_path()})" in cli_doctor._FFMPEG_LINUX_HINT
 
 
 class TestDataHome:

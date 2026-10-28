@@ -49,8 +49,12 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
 # desktop matrix ships; on any other ISA the fetch is refused and the second
 # clause is the remedy), and ``/usr/local/bin`` is both a real
 # ``_FFMPEG_CANDIDATE_DIRS`` entry and the conventional manual-install prefix.
+# Where the Speech-to-Text controls live in the dashboard: a section of the Voice
+# tab, not a tab of its own. The labels are the English catalog's
+# ``settings.tabs.voice.label`` and ``pages.settings.voicePanel.speech_to_text``.
+_STT_SETTINGS_PATH = "Settings → Voice → Speech-to-Text"
 _FFMPEG_LINUX_HINT = (
-    "download the audio decoder from the dashboard (Settings → Speech-to-Text), "
+    f"download the audio decoder from the dashboard ({_STT_SETTINGS_PATH}), "
     "or install ffmpeg into /usr/local/bin"
 )
 
@@ -186,7 +190,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     stt_active = cfg.stt.enabled
 
     if not stt_active:
-        print("  status:      ⏹ disabled (enable from dashboard → Settings → Speech-to-Text)")
+        print(f"  status:      ⏹ disabled (enable from dashboard → {_STT_SETTINGS_PATH})")
     else:
         print(f"  provider:    ✅ {cfg.stt.provider}")
 
