@@ -7578,9 +7578,9 @@
       "configured_agent_not_ready": "{{productName}} está configurado para usar {{name}}, que todavía no está listo en este host.",
       "use_kiro_cli_instead": "Usar Kiro CLI en su lugar",
       "switch_agent_later_in_settings": "Puedes cambiar de agente en cualquier momento en Ajustes > Harness del agente.",
-      "remote_only_question": "¿Solo usas Crews en otros equipos?",
-      "remote_only_skip": "Omitir la configuración del agente",
-      "remote_only_failed": "No se pudo abrir el formulario del Crew remoto. Vuelve a intentarlo."
+      "remote_only_question": "¿Tus Crews se ejecutan en otro equipo?",
+      "remote_only_skip": "Conectarse a un Crew en otra máquina",
+      "remote_only_failed": "No se pudo abrir el formulario de conexión. Vuelve a intentarlo."
     },
     "linkPreview": {
       "copied": "Copiado",

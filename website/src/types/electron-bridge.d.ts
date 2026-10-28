@@ -89,7 +89,7 @@ declare global {
     set: (action: CloseAction) => Promise<CloseAction>
   }
 
-  /** First-run setup's "only using crews on other machines" exit. `start`
+  /** First-run setup's "connect to a crew on another machine" exit. `start`
    *  opens the desktop app's remote-crew form; on "switching" the window is
    *  about to leave this page for the crew's dashboard. */
   interface RemoteCrewSetupAPI {

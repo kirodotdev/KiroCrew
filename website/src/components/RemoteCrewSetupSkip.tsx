@@ -4,7 +4,7 @@ import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 
 /**
- * First-run setup's "only using crews on other machines" exit.
+ * First-run setup's "connect to a crew on another machine" exit.
  *
  * The desktop app's main process owns the whole switch (the crew form, stopping
  * the gateway it started, turning "Run a local gateway" off and reconnecting),

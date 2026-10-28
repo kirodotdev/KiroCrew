@@ -48,11 +48,11 @@ fail-closed: a broken higher-priority Kiro CLI is shown as needing repair and is
 not skipped in favor of a later candidate. Remote tunnel sessions check the
 remote gateway host.
 
-A user who will only use crews on other machines can skip that setup: the
-screen's "Skip agent setup" link opens the remote-crew form, and saving it stops
-the gateway this app started, saves the crew for the launch port, turns "Run a
-local gateway" off and reconnects the main window to the crew
-(`runtime/gateway/remote-switch.js`). The link appears only in the main window,
+A user who will only use crews on other machines can connect to one instead of
+that setup: the screen's "Connect to a crew on another machine" link opens the
+remote-crew form, and saving it stops the gateway this app started, saves the
+crew for the launch port, turns "Run a local gateway" off and reconnects the
+main window to the crew (`runtime/gateway/remote-switch.js`). The link appears only in the main window,
 and only while the gateway on the port is one this app spawned and still runs.
 Undo it with the failure dialog's Start Local Gateway or Settings → Developer.
 

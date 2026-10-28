@@ -7328,9 +7328,9 @@
       "configured_agent_not_ready": "{{productName}} 已设置为使用 {{name}}，但它在此主机上尚未就绪。",
       "use_kiro_cli_instead": "改用 Kiro CLI",
       "switch_agent_later_in_settings": "你可以随时在“设置 > 代理运行框架”中切换代理。",
-      "remote_only_question": "只使用其他机器上的 Crew？",
-      "remote_only_skip": "跳过代理设置",
-      "remote_only_failed": "无法打开远程 Crew 表单。请重试。"
+      "remote_only_question": "你的 Crew 在另一台电脑上运行？",
+      "remote_only_skip": "连接到其他机器上的 Crew",
+      "remote_only_failed": "无法打开连接表单。请重试。"
     },
     "linkPreview": {
       "copied": "已复制",

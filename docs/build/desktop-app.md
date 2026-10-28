@@ -904,10 +904,10 @@ Hosting setup in the gateway provides one implementation and one UI for the
 desktop app, local browser, remote browser, Linux, and Windows.
 
 The desktop app adds one exit to that screen for a user who will only use crews
-on other machines: **Skip agent setup** opens the remote-crew form, and saving
-it stops the gateway this app started, saves the crew for the launch port, turns
-"Run a local gateway" off and reconnects the main window to the crew, so that
-crew's own setup runs where its agents will
+on other machines: **Connect to a crew on another machine** opens the
+remote-crew form, and saving it stops the gateway this app started, saves the
+crew for the launch port, turns "Run a local gateway" off and reconnects the
+main window to the crew, so that crew's own setup runs where its agents will
 (`runtime/gateway/remote-switch.js`). The link shows only in the main window and
 only while the port's gateway is this app's own child; an adopted gateway is not
 the app's to stop. If the gateway does not stop, nothing is saved and the app

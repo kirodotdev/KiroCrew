@@ -526,7 +526,7 @@ function createIpcRegistrar({
       }
     });
 
-    // First-run setup's "only using crews on other machines" exit. It stops the
+    // First-run setup's "connect to a crew on another machine" exit. It stops the
     // gateway this app started and reconnects the main window to a crew the
     // user names, so it is an action on the machine in front of the user and
     // takes the full three-gate check. The supervisor then decides from its own

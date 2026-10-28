@@ -7328,9 +7328,9 @@
       "configured_agent_not_ready": "{{productName}} は {{name}} を使用するよう設定されていますが、このホストではまだ準備ができていません。",
       "use_kiro_cli_instead": "代わりに Kiro CLI を使用",
       "switch_agent_later_in_settings": "エージェントは「設定 > エージェントハーネス」でいつでも切り替えられます。",
-      "remote_only_question": "別のマシンのクルーだけを使いますか？",
-      "remote_only_skip": "エージェントのセットアップをスキップ",
-      "remote_only_failed": "リモートクルーのフォームを開けませんでした。もう一度お試しください。"
+      "remote_only_question": "クルーは別のコンピューターで動いていますか？",
+      "remote_only_skip": "別のマシンのクルーに接続",
+      "remote_only_failed": "接続フォームを開けませんでした。もう一度お試しください。"
     },
     "linkPreview": {
       "copied": "コピー済み",

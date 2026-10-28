@@ -212,7 +212,7 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
   set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
 });
 
-// First-run setup's "only using crews on other machines" exit. `available`
+// First-run setup's "connect to a crew on another machine" exit. `available`
 // resolves true only where `start` can work; `start` opens the remote-crew form
 // and resolves "switching", "cancelled" or "unavailable". Neither takes an
 // argument: the main process decides everything from the sender. Absent in

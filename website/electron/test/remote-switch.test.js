@@ -14,12 +14,17 @@ const {
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function fakeStore(initial = {}) {
-  const data = { ...initial };
+function fakeStore(initial = {}, { beforeSet = () => {}, afterSet = () => {} } = {}) {
+  const data = structuredClone(initial);
   return {
     data,
-    get: (key, fallback) => (Object.prototype.hasOwnProperty.call(data, key) ? data[key] : fallback),
-    set: (key, value) => { data[key] = value; },
+    // Like electron-store, reads are snapshots, not references to durable data.
+    get: (key, fallback) => structuredClone(Object.prototype.hasOwnProperty.call(data, key) ? data[key] : fallback),
+    set: (key, value) => {
+      beforeSet(key, value);
+      data[key] = structuredClone(value);
+      afterSet(key, value);
+    },
   };
 }
 
@@ -50,6 +55,7 @@ function harness({
   freed = true,
   isWindows = false,
   quitting = false,
+  failures = {},
 } = {}) {
   const events = [];
   const state = {
@@ -62,17 +68,23 @@ function harness({
   };
   const prompts = [];
   const dialogs = [];
+  const starts = [];
+  const logs = [];
   const owner = createRemoteSwitch({
     store,
     port,
     backendUrl: `http://localhost:${port}`,
     dialog: {
-      showMessageBox: async (parent, options) => { dialogs.push(options); events.push(`dialog:${options.title}`); },
+      showMessageBox: async (parent, options) => {
+        dialogs.push(options);
+        events.push(`dialog:${options.title}`);
+        if (failures.dialog) throw failures.dialog;
+      },
     },
     path,
     dirname: "/virtual/electron",
     isWindows,
-    log: () => {},
+    log: (message) => logs.push(message),
     mainWindow: () => (main === undefined ? window : main),
     quitting: () => quitting,
     promptRemoteCrew: async (parent, promptPort, draft, labels) => {
@@ -97,10 +109,17 @@ function harness({
       state.child = null;
     },
     waitForPortFree: async () => { events.push("waitForPortFree"); return freed; },
-    startGateway: async () => { events.push(`startGateway:local=${state.runLocalGateway}`); },
-    showLoadingThenConnect: async (target, url) => { events.push(`connect:${url}`); },
+    startGateway: async () => {
+      starts.push({ local: state.runLocalGateway, config: store.get("remoteHosts", {})[String(port)] });
+      events.push(`startGateway:local=${state.runLocalGateway}`);
+      if (failures.start) throw failures.start;
+    },
+    showLoadingThenConnect: async (target, url) => {
+      events.push(`connect:${url}`);
+      if (failures.connect) throw failures.connect;
+    },
   });
-  return { owner, store, window, state, events, prompts, dialogs };
+  return { owner, store, window, state, events, prompts, dialogs, starts, logs };
 }
 
 test("offered only to the main window on a gateway this app spawned and still runs", () => {
@@ -204,6 +223,98 @@ test("a port that does not free keeps the local gateway and says so", async () =
   assert.equal(h.store.data.runLocalGateway, true);
   assert.equal(h.dialogs.at(-1).message, STOP_FAILED_MESSAGE);
   assert.deepEqual(h.events.slice(-2), ["startGateway:local=true", "connect:http://localhost:5476"]);
+});
+
+for (const key of ["remoteHosts", "runLocalGateway"]) {
+  for (const phase of ["beforeSet", "afterSet"]) {
+    test(`${key} throws ${phase}: restores the local gateway before reconnecting`, async () => {
+      const hosts = { 5476: { defaultName: "My crew" }, 5477: { host: "other.example.com" } };
+      const writes = [];
+      let injected = false;
+      const store = fakeStore({ runLocalGateway: true, remoteHosts: hosts }, {
+        [phase]: (writtenKey, value) => {
+          writes.push({ key: writtenKey, value: structuredClone(value) });
+          if (writtenKey === key && !injected) {
+            injected = true;
+            throw new Error("settings disk full");
+          }
+        },
+      });
+      const h = harness({ store });
+      assert.equal(await h.owner.switchToRemoteCrew(h.window), "switching");
+      await flush();
+      await flush();
+
+      assert.equal(injected, true);
+      assert.deepEqual(store.data.remoteHosts, hosts, "only this port's SSH fields are cleared");
+      assert.equal(store.data.runLocalGateway, true);
+      assert.equal(h.state.runLocalGateway, true);
+      assert.equal(h.state.switching, false);
+      assert.equal(h.state.startFailure, null);
+      assert.deepEqual(h.starts, [{ local: true, config: hosts[5476] }], "crew cleared BEFORE restart");
+      assert.deepEqual(h.events.slice(-2), ["startGateway:local=true", "connect:http://localhost:5476"]);
+      assert.match(h.dialogs.at(-1).message, /Could not save the remote crew settings/);
+      assert.match(h.dialogs.at(-1).message, /writable and has free space/);
+      assert.ok(h.logs.some((message) => message.includes("settings disk full")));
+      assert.equal(writes[0].key, "remoteHosts");
+      assert.equal(writes[0].value[5476].host, CREW.host);
+      if (key === "runLocalGateway") assert.equal(writes[1].value, false);
+    });
+  }
+}
+
+test("reconciliation write failures are logged without skipping restart or reconnect", async () => {
+  let remoteWrites = 0;
+  const store = fakeStore({ runLocalGateway: true, remoteHosts: {} }, {
+    beforeSet: (key) => {
+      if (key === "remoteHosts" && ++remoteWrites === 1) return;
+      throw new Error(`cannot write ${key}`);
+    },
+  });
+  const h = harness({ store });
+  await h.owner.switchToRemoteCrew(h.window);
+  await flush();
+  await flush();
+
+  assert.equal(store.data.remoteHosts[5476].host, CREW.host, "failed clear must not pretend it succeeded");
+  assert.equal(store.data.runLocalGateway, true);
+  assert.equal(h.state.runLocalGateway, true);
+  // The real startGateway refuses to spawn over this still-configured crew.
+  assert.equal(h.starts[0].local, true, "still attempts the guarded launch path");
+  assert.equal(h.starts[0].config.host, CREW.host);
+  assert.deepEqual(h.events.slice(-2), ["startGateway:local=true", "connect:http://localhost:5476"]);
+  assert.ok(h.logs.some((message) => message.includes("clearing the crew failed")));
+  assert.ok(h.logs.some((message) => message.includes("restoring the local gateway setting failed")));
+  assert.match(h.dialogs.at(-1).message, /Could not save the remote crew settings/);
+});
+
+test("a rejected error dialog and restart still reach connection recovery", async () => {
+  const store = fakeStore({ runLocalGateway: true, remoteHosts: {} }, {
+    beforeSet: () => { throw new Error("settings disk full"); },
+  });
+  const h = harness({ store, failures: { dialog: new Error("dialog closed"), start: new Error("start failed") } });
+  await h.owner.switchToRemoteCrew(h.window);
+  await flush();
+  await flush();
+
+  assert.deepEqual(store.data.remoteHosts, {});
+  assert.equal(h.state.runLocalGateway, true);
+  assert.deepEqual(h.starts, [{ local: true, config: undefined }]);
+  assert.deepEqual(h.events.slice(-2), ["startGateway:local=true", "connect:http://localhost:5476"]);
+  assert.ok(h.logs.some((message) => message.includes("showing the failure dialog failed")));
+  assert.ok(h.logs.some((message) => message.includes("starting the gateway failed")));
+});
+
+test("a rejected reconnect shows an actionable dialog without undoing a completed switch", async () => {
+  const h = harness({ failures: { connect: new Error("connection failed") } });
+  await h.owner.switchToRemoteCrew(h.window);
+  await flush();
+  await flush();
+
+  assert.equal(h.store.data.remoteHosts[5476].host, CREW.host);
+  assert.equal(h.state.runLocalGateway, false, "do not restart locally over a possible remote tunnel");
+  assert.match(h.dialogs.at(-1).message, /could not reconnect.*Quit Kiro Crew and reopen it/);
+  assert.ok(h.logs.some((message) => message.includes("reconnecting failed")));
 });
 
 test("one switch at a time", async () => {

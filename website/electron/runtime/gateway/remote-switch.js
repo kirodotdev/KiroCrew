@@ -1,6 +1,6 @@
 "use strict";
 
-const { getRemoteHostConfig, isSelectablePort } = require("../../host-config");
+const { getRemoteHostConfig, isSelectablePort, setRemoteHostConfig } = require("../../host-config");
 const { setLocalGatewayEnabled } = require("../../local-gateway");
 const {
   remoteCrewDraft,
@@ -134,6 +134,18 @@ function createRemoteSwitch({
     return "switching";
   }
 
+  async function showSwitchFailure(window, message) {
+    try {
+      await dialog.showMessageBox(window, {
+        type: "error",
+        title: "Kiro Crew — could not switch",
+        message,
+      });
+    } catch (error) {
+      log(`remote switch: showing the failure dialog failed: ${error && error.message}`);
+    }
+  }
+
   async function performSwitch(window, fields) {
     log(`remote switch: replacing the local gateway on :${port} with a remote crew`);
     // The stop below is deliberate, and the liveness monitor would read it as
@@ -166,39 +178,54 @@ function createRemoteSwitch({
 
     if (!freed) {
       log(`remote switch: :${port} is still held; keeping the local gateway`);
-      await dialog.showMessageBox(window, {
-        type: "error",
-        title: "Kiro Crew — could not switch",
-        message: STOP_FAILED_MESSAGE,
-      });
-      if (window.isDestroyed() || quitting()) return;
-      await startGateway();
-      if (window.isDestroyed() || quitting()) return;
-      await showLoadingThenConnect(window, backendUrl);
-      return;
+      await showSwitchFailure(window, STOP_FAILED_MESSAGE);
+    } else {
+      // Written only once the port is free: until then the gateway on it is this
+      // app's own, and a crew recorded for the port would make every reader treat
+      // that gateway as the crew.
+      try {
+        const { saved, error } = saveRemoteCrewConfig(store, port, fields);
+        if (!saved) throw new Error(error);
+        setLocalGatewayEnabled(store, false);
+        setRunLocalGateway(false);
+        setGatewayOwnership("none");
+        log(`remote switch: crew ${fields.host} saved for :${port}; local gateway turned off`);
+      } catch (error) {
+        log(`remote switch: saving the crew failed after the stop: ${error && error.message}`);
+        // A store write can throw after changing its value. Clear this port's
+        // crew before allowing any local restart, preserving names/other ports.
+        try {
+          setRemoteHostConfig(store, port, {});
+        } catch (restoreError) {
+          log(`remote switch: clearing the crew failed: ${restoreError && restoreError.message}`);
+        }
+        try {
+          setLocalGatewayEnabled(store, true);
+        } catch (restoreError) {
+          log(`remote switch: restoring the local gateway setting failed: ${restoreError && restoreError.message}`);
+        }
+        setRunLocalGateway(true);
+        await showSwitchFailure(window, "Could not save the remote crew settings. "
+          + "Kiro Crew will try to reconnect to the gateway on this computer. "
+          + "Check that your settings folder is writable and has free space, then try again.");
+      }
     }
-
-    // Written only once the port is free: until then the gateway on it is this
-    // app's own, and a crew recorded for the port would make every reader treat
-    // that gateway as the crew.
-    const { saved, error } = saveRemoteCrewConfig(store, port, fields);
-    if (!saved) {
-      log(`remote switch: saving the crew failed after the stop: ${error}`);
-      await startGateway();
-      if (window.isDestroyed() || quitting()) return;
-      await showLoadingThenConnect(window, backendUrl);
-      return;
-    }
-    setLocalGatewayEnabled(store, false);
-    setRunLocalGateway(false);
-    setGatewayOwnership("none");
-    log(`remote switch: crew ${fields.host} saved for :${port}; local gateway turned off`);
-    // The same path a client-only launch takes: the managed tunnel, the crew's
-    // token over SSH, and the failure dialog (Edit Remote Crew, Start Local
-    // Gateway) when nothing answers.
-    await startGateway();
     if (window.isDestroyed() || quitting()) return;
-    await showLoadingThenConnect(window, backendUrl);
+    // If clearing the crew failed, startGateway's existing crew-on-port guard
+    // still prevents a local spawn there; reconnect exposes its recovery dialog.
+    try {
+      await startGateway();
+    } catch (error) {
+      log(`remote switch: starting the gateway failed: ${error && error.message}`);
+    }
+    if (window.isDestroyed() || quitting()) return;
+    try {
+      await showLoadingThenConnect(window, backendUrl);
+    } catch (error) {
+      log(`remote switch: reconnecting failed: ${error && error.message}`);
+      if (window.isDestroyed() || quitting()) return;
+      await showSwitchFailure(window, "Kiro Crew could not reconnect. Quit Kiro Crew and reopen it.");
+    }
   }
 
   return { canSwitchToRemoteCrew, switchToRemoteCrew };
