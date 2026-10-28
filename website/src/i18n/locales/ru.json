@@ -11977,7 +11977,6 @@
         "save_failed": "Не удалось сохранить цвет сессии"
       },
       "sessionMessageCard": {
-        "needs_you": "Требуется действие",
         "open_session": "Открыть {{name}}",
         "show_less": "Показать меньше",
         "show_more": "Показать больше",

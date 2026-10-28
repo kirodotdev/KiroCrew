@@ -11810,7 +11810,6 @@
         "save_failed": "Impossible d’enregistrer la couleur de session"
       },
       "sessionMessageCard": {
-        "needs_you": "Action requise",
         "open_session": "Ouvrir {{name}}",
         "show_less": "Afficher moins",
         "show_more": "Afficher plus",

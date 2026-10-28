@@ -11810,7 +11810,6 @@
         "save_failed": "Impossibile salvare il colore della sessione"
       },
       "sessionMessageCard": {
-        "needs_you": "Richiede attenzione",
         "open_session": "Apri {{name}}",
         "show_less": "Mostra di meno",
         "show_more": "Mostra di più",
