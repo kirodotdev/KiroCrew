@@ -1102,3 +1102,80 @@ async def test_steered_delivery_stamps_meta_relay_on_the_consumed_row(tmp_path):
     assert relay, "the consumed-steer row must carry meta.relay"
     assert relay["via"] == "session_send"
     assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_steered_delivery_carries_meta_relay_on_the_live_steer_push(tmp_path):
+    """The live ``steer_push`` frame carries ``meta.relay``: an open tab draws the
+    steered row from that frame, so without it the row shows the raw provenance
+    prefix until a reload.
+
+    Mutation guard: drop the ``push_payload`` relay stamp and the frame has none.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+    frames: list[tuple[str, dict]] = []
+    real_broadcast = state.broadcast_ws
+
+    def _record(kind, payload, *args, **kwargs):
+        frames.append((kind, payload))
+        return real_broadcast(kind, payload, *args, **kwargs)
+
+    state.broadcast_ws = _record
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="live steered relay",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    pushes = [
+        payload
+        for kind, payload in frames
+        if kind == "steer_push" and "live steered relay" in payload["content"]
+    ]
+    assert len(pushes) == 1
+    relay = (pushes[0].get("meta") or {}).get("relay")
+    assert relay, "the live steer frame must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_peer_steer_keeps_meta_relay_on_its_queue_entry(tmp_path):
+    """A peer steer the turn never takes is requeued WITH ``meta.relay``, so the
+    row the drain later writes still draws the incoming card instead of a raw
+    ``[sent by session …]`` bubble.
+
+    Mutation guard: drop ``relay`` from the ``_steer_attachment_meta`` record and
+    the requeued entry has no sender.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="steered but never consumed",
+        steer=True,
+    )
+    assert out["steered"] is True
+    # The turn ends without the consumption echo: the teardown requeues the steer.
+    pending = [m for m in target._pending_steers if "steered but never consumed" in m]
+    assert len(pending) == 1, "an accepted steer stays pending until the turn consumes it"
+
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if "steered but never consumed" in q["content"])
+    relay = (entry.get("meta") or {}).get("relay")
+    assert relay, "the requeued entry must carry meta.relay for the drain to union"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
