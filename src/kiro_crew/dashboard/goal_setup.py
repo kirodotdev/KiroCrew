@@ -90,6 +90,16 @@ def kickoff_prompt(
     )
     if has_krs:
         step3 += T("goal_setup.kickoff_has_milestones")
+    # The Heartbeat is the switch that makes the mate work on its own, so the
+    # moment a goal is saved is when it is offered; once on, nothing is asked.
+    if (rec.get("schedules") or {}).get(member_goals.CADENCE_HEARTBEAT):
+        step1_tail = T("goal_setup.kickoff_ask_nothing")
+    else:
+        step1_tail = T(
+            "goal_setup.kickoff_heartbeat_tools"
+            if has_mate_tools
+            else "goal_setup.kickoff_heartbeat_no_tools"
+        )
     lines = [
         crewmate_prompts.fill(
             "goal_setup.kickoff_head",
@@ -97,7 +107,8 @@ def kickoff_prompt(
             goal_id=goal_id,
             goal=member_goals.scrub_text(goal["text"]),
             listing="\n".join(listing),
-        ),
+        )
+        + step1_tail,
         crewmate_prompts.fill("goal_setup.kickoff_step2", n=n),
         step3 + T("goal_setup.kickoff_unmeasured"),
         T(
@@ -171,13 +182,9 @@ def _goal_prompt(goal_id: str, slug: str = "") -> Build:
     return build
 
 
-#: The Heartbeat in the check-ins offer. It is off by default and only a check-ins
-#: card or the Goals tab turns it on, so the offer names it and what each wake costs.
-_HEARTBEAT_OFFER = (
-    "and what the Heartbeat does: a run every so often that keeps the work moving "
-    "while they are away, with this chat staying quiet and your Dashboard tab "
-    "showing what it did, each run using credits."
-)
+#: The reminders a confirmed milestones card offers. The Heartbeat is not among
+#: them: it was offered when the goal was saved (``kickoff_prompt``), asked once.
+_REMINDERS = (member_goals.CADENCE_DAILY, member_goals.CADENCE_WEEKLY, member_goals.CADENCE_MONTHLY)
 
 
 def milestones_prompt(
@@ -195,7 +202,7 @@ def milestones_prompt(
     if not krs:
         return None
     sched = rec.get("schedules") or {}
-    any_on = any(sched.get(c) for c in member_goals.CADENCES)
+    any_on = any(sched.get(c) for c in _REMINDERS)
     lines = [crewmate_prompts.text("goal_setup.milestones_head"), ""]
     for kr in krs:
         text = member_goals.scrub_text(str(kr.get("text") or ""))
@@ -209,22 +216,9 @@ def milestones_prompt(
     if any_on:
         lines.append(crewmate_prompts.text("goal_setup.milestones_running"))
     elif has_mate_tools:
-        lines.append(
-            "Reply in the user's language: acknowledge them in a sentence, then offer "
-            "check-ins with set_check_ins. Say in one plain sentence each what the Daily "
-            "Goal Reminder, the Weekly report and the Monthly review would do for them, "
-            + _HEARTBEAT_OFFER
-            + " Propose the ones that fit this goal, and let the card decide."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_offer_tools"))
     else:
-        lines.append(
-            "Reply in the user's language: acknowledge them in a sentence, then offer "
-            "check-ins. Say in one plain sentence each what the Daily Goal Reminder, the "
-            "Weekly report and the Monthly review would do for them, "
-            + _HEARTBEAT_OFFER
-            + " Suggest the ones that fit this goal, and tell the user they turn them on "
-            "on your Goals tab (the Heartbeat on your Schedules tab)."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_offer_no_tools"))
     if dashboard_line:
         lines.extend(["", dashboard_line])
     return "\n".join(lines)

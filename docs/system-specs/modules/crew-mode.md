@@ -1327,15 +1327,33 @@ is one real turn of that crewmate: `_run_chat` with a hidden kickoff
 (`_synthetic_payload=True`, actor `gateway`) and NO transcript row for it, so the
 user sees only the mate's own reply, which stays in its session context. The
 kickoff carries the whole welcome, since no system prompt explains it
-(`mate_welcome.welcome_kickoff`, wording in one place): it introduces itself by its
-label in everyday words with no developer terms; says it is the user's first
-mate (`FIRST_WELCOME`) -- or, when the roster already holds a mate besides
-Mate and `default`, one more teammate on their crew (`FIRST_WELCOME_WITH_CREW`) -- a
-teammate who remembers what they work on together and keeps at it over days; says it
-can help right now with getting Kiro Crew set up, sorting out anything not working in
-it, or showing the user around (those three only); and finishes by asking what the
-user would like to call it (the name in question is the mate's own). The kickoff
-is written as plain principles, and the greeting itself is the model's own words.
+(`mate_welcome.welcome_kickoff`, wording in one place). Its first sentence asks what
+the user would like to call it (the name in question is the mate's own). It then
+says what a mate is, in everyday words with no developer terms: always on, handed a
+whole area of the user's work rather than one task, keeping track of the goals it is
+given and following up unasked, and learning how the user likes things done. It says
+it is the user's first mate (`FIRST_WELCOME`), or one more mate on their crew when
+the roster already holds a mate besides Mate and `default` (`FIRST_WELCOME_WITH_CREW`).
+It ends by saying that once it has a name it will show the user how to work with it
+and then suggest something for it to own. It never offers to set up or fix Kiro Crew
+and lists no features. The kickoff is written as plain principles, and the greeting
+itself is the model's own words; because the kickoff stays in the session context,
+its instructions for the next turns carry over to them. The introduction comes
+first and choosing a goal comes last. In the reply to the name, the mate says how to
+work with it (talk to it here any time; it takes a whole area and keeps at it,
+handing hands-on parts to helpers and reporting back) and shows the user around with
+one `guide_start` whose three `ui.show` steps the kickoff names by id: the profile
+card's Profile (`members.profile-tab`), Schedules (`members.schedule-tab`) and Goals
+(`members.goals-tab`) tabs. The Dashboard, the side panel's first tab, it names in
+words: its opener (`members.details`) carries a condition the guide cannot check, so
+it has no guide plan, and one such step refuses the whole guide. That reply ends by asking whether to look at the user's recent work.
+When the user agrees, the mate reads its memory, the user's recent sessions and chat
+history, names two or three areas of what it saw that it could own, and asks which
+to track as its goal (or, with nothing to go on, what part of their work to hand
+it), naming only work it saw. On a pick it proposes the goal with `set_goal`. Saving
+the goal starts the ordinary goal setup, whose `[Goal set]` turn asks, while the
+Heartbeat is off, whether the mate should keep track of the goal on its own, and then
+hands the milestone research to a worker (see the goal-setup nudge below).
 When the user answers with a name, that later turn says plainly that the mate now
 goes by it and calls the `kirocrew-mate` tool `update_self` with `display_name`
 (`POST /api/member/self/update`, `handlers/member_self.py`), which renames ONLY the calling
@@ -2492,7 +2510,14 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   mate one hidden turn once its thread is idle (waiting at most ten
   minutes; a newer save, of that goal or another, replaces a waiting nudge).
   It names the goal that changed by number and id, lists every goal, and asks
-  the crewmate to say back that goal in a sentence, hand the research to ONE
+  the crewmate to say back that goal in a sentence and, while the Heartbeat is off,
+  ask once in plain words whether to keep track of the goal on its own between
+  chats (a wake every so often that keeps the work moving while the user is away,
+  the chat quiet, the Dashboard tab showing what it did, each run using credits),
+  naming the Heartbeat only after the user answers, since they do not know the word
+  yet; on yes it proposes `set_check_ins` with the Heartbeat on
+  (`goal_setup.kickoff_heartbeat_tools`, or without the mate tools a pointer to the
+  Schedules tab; with the Heartbeat on it asks nothing else). It then hands the research to ONE
   worker session (`session_create`, a self-contained brief with `session_send`)
   and end the turn so the chat stays free -- nothing waits or polls -- then
   propose milestones with `set_key_results` (each linked with `goal_ids`) when
@@ -2508,12 +2533,12 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   `crewmate.key_results` card (its Apply step sets
   `REQ_CARD_KEY_RESULTS_APPLY`; a Goals-tab edit and an Undo do not) always
   sends a second hidden turn, `[Milestones confirmed]`, the same way, listing
-  each milestone with the goals it serves: with no
-  check-in on it offers them with `set_check_ins` (the Daily Goal Reminder, the
-  Weekly report, the Monthly review, and the Heartbeat, which is off by default:
-  a wake every so often that keeps the work moving while the user is away, the
-  chat quiet, the Dashboard tab showing what it did, each run using credits),
-  otherwise it says what the mate works on first.
+  each milestone with the goals it serves: with none of the three reminders on
+  (the Daily Goal Reminder, the Weekly report, the Monthly review; the Heartbeat is
+  not counted, since the goal-setup nudge already asked about it) it offers those
+  three with `set_check_ins` (`goal_setup.milestones_offer_tools`, or on the Goals
+  tab without the mate tools), and with one already on it says what the mate works
+  on first. It never offers the Heartbeat.
 - the **build-your-page line** (`goal_reminder.dashboard_line`): only while the
   mate's Dashboard tab shows nothing of its own -- no package bound to it
   (`dashboard_agentic.bound_package`) and the suggestions page
