@@ -1121,8 +1121,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 349
-_MCP_TABLE_DIGEST = "efaf8d3069c6e00a62116ee290a1b17a6d09cc6520f34b2d69d7caa3fa91f79f"
+_MCP_TABLE_ROWS = 378
+_MCP_TABLE_DIGEST = "8b905c4a0457cc18ad927749a62b66b058e6f49b9022563f8d1e6484e4922b20"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
