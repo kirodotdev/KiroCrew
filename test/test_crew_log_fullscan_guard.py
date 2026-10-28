@@ -36,7 +36,7 @@ from kiro_crew.crew_log import CrewLog, bus, eager, emit, lease
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import projection_catalogue, slot_prime
 from kiro_crew.crew_log import store as crew_log_store
-from kiro_crew.crew_log import store_cuts, store_paths
+from kiro_crew.crew_log import store_cuts, store_paths, store_units
 from kiro_crew.crew_log.session_tree import SessionTree
 from kiro_crew.testing.wait import await_until
 
@@ -385,17 +385,20 @@ def test_a_warm_session_read_that_earns_a_savepoint_reads_only_the_gap(meter):
     assert meter.entries + meter.hashed <= SAVEPOINT_GAP + ENTRY_SLACK, meter
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="full root listing on every slot read: store_units.session_units_by_slot lists "
-    "every unit dir before its cache check; fixed by #24274 "
-    "(crew_log/store_units.py)",
-)
-def test_a_warm_baseline_does_not_list_the_crew_log_root(meter):
+def test_a_warm_baseline_does_not_list_the_crew_log_root(meter, monkeypatch):
+    """Once a second listing a racy window later confirms the root, a warm read lists nothing.
+
+    The window is elapsed time on ``store_units._monotonic_ns``, held here and stepped
+    past by hand, so the confirming listing never waits on the real clock.
+    """
+    now = [1_000_000_000_000]
+    monkeypatch.setattr(crew_log_store, "_monotonic_ns", lambda: now[0])
     units = _board_slot()
     _other_slots()
     _subscribe_baseline()
     assert slot_prime.drain(30), "the cold prime must finish"
+    now[0] += store_units._RACY_WINDOW_NS + 1
+    _subscribe_baseline()  # the confirming listing, a full window after the first
     _append_work(units[-1], 1, "list")
     with meter.measure():
         _subscribe_baseline()
