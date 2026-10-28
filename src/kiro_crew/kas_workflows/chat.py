@@ -95,6 +95,16 @@ def is_plan_handoff(harness_tool_id: str) -> bool:
     return harness_tool_id == wire.TOOL_UPDATE_WORKFLOW
 
 
+def needs_a_person(event: Any) -> bool:
+    """Whether no approval mode, grant or hook may answer this chat request.
+
+    A KAS plan handoff (:func:`is_plan_handoff`) always waits on the person's
+    card. The chat model's own questions arrive as ``_kiro/userInput`` and are
+    answered on the elicitation card (``acp.elicitation``), not here.
+    """
+    return is_plan_handoff(str(getattr(event, "harness_tool_id", "") or ""))
+
+
 def is_question(event: Any) -> bool:
     """Whether a chat permission request is a KAS ``user_input`` question.
 

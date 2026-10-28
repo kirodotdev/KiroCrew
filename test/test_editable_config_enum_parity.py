@@ -36,6 +36,9 @@ _SCHEMA_DECLARES_NO_ENUM: dict[str, str] = {
     "dashboard.user_technical_level": "plain string in the schema",
     # The schema types it as a string; Settings offers ``JUDGE_PROVIDERS``.
     "decisions.nudge_wake.provider": "plain string in the schema",
+    # The schema types it as a string and the loader reads any other value as
+    # the default; Settings offers "" plus ``KAS_CREATOR_EFFORT_LEVELS``.
+    "agent.kas_creator_effort": "plain string in the schema",
 }
 
 

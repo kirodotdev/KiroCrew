@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 from kiro_crew.acp import relaunch_reload, stale_compaction
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.launch_tuning import switch_barrier
+from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     EVENT_COMPACTION_STATUS,
@@ -368,6 +369,20 @@ async def stream_unsolicited(
                 yield self._to_llm_event(e)
     finally:
         await record_live_children_after_turn(client)
+
+
+async def stream_observe(self: AcpProvider) -> AsyncIterator[LLMEvent]:
+    """Yield a turn the engine started on this session itself (KAS's wake).
+
+    Sends nothing (:meth:`AcpSessionProvider.stream_observe`). Only a session
+    on a shared runtime can be observed, which is the only kind a KAS
+    workflow run is parented by; any other client is refused.
+    """
+    if not isinstance(self._client, AcpSessionProvider):
+        raise AcpError("This session cannot observe an engine-started turn.")
+    async with aclosing(self._client.stream_observe()) as events:
+        async for e in events:
+            yield self._to_llm_event(e)
 
 
 async def compact(self: AcpProvider, context: str = "") -> None:

@@ -390,6 +390,7 @@ from kiro_crew.hooks import (  # noqa: F401
     validate_file_path,
 )
 from kiro_crew.image_artifacts import register_images_off_loop
+from kiro_crew.kas_workflows import chat as kas_chat  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
@@ -1017,6 +1018,7 @@ async def _run_chat(
         full_message = turn.full_message
         if (
             not is_slash
+            and not turn._kas_observe
             and _message_is_typed
             and turn._directive_user_origin
             and not turn._turn_provenance_restored
@@ -1039,6 +1041,9 @@ async def _run_chat(
         # re-apply build_message's provenance so only the user's text is upgraded.
         if _agent_started:
             event_stream = turn._agent_turn_stream = client.stream_unsolicited()
+        elif turn._kas_observe:
+            # Reads the turn KAS started on this session itself; sends nothing.
+            event_stream = client.stream_observe()
         elif is_slash:
             event_stream = client.stream_command(message)
         else:
