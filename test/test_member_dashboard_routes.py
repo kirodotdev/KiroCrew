@@ -36,7 +36,6 @@ from kiro_crew.platform.context import redact_via_context
 _REAL_MEMBER_SLUG = members_mod.member_slug
 _REAL_CANONICAL_KEY = members_mod.canonical_member_key
 
-pytestmark = pytest.mark.asyncio
 
 MEMBER = "Fleet Conductor"
 SLUG = "fleet-conductor"
@@ -143,6 +142,7 @@ def _q(path: str, **extra) -> str:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_a_crewmate_with_no_dashboard_answers_the_empty_state_not_a_404():
     async with _client() as client:
         resp = await client.get(_q(""))
@@ -154,6 +154,7 @@ async def test_a_crewmate_with_no_dashboard_answers_the_empty_state_not_a_404():
         assert body["instance_version"] == 0
 
 
+@pytest.mark.asyncio
 async def test_an_empty_record_with_no_default_is_not_composed(caplog):
     """Nothing to compose, so nothing is attempted -- and nothing is logged.
 
@@ -175,6 +176,7 @@ async def test_an_empty_record_with_no_default_is_not_composed(caplog):
     assert not [r for r in caplog.records if "could not fill" in r.getMessage()]
 
 
+@pytest.mark.asyncio
 async def test_the_body_is_the_shape_the_contract_fixes():
     async with _client() as client:
         # Adopted through the store: the adopt ROUTE is not part of this layer, and
@@ -187,6 +189,7 @@ async def test_the_body_is_the_shape_the_contract_fixes():
         assert body["state"] == "live"
 
 
+@pytest.mark.asyncio
 async def test_a_member_whose_name_does_not_derive_the_slug_is_refused(monkeypatch):
     async with _client() as client:
         monkeypatch.setattr(
@@ -197,6 +200,7 @@ async def test_a_member_whose_name_does_not_derive_the_slug_is_refused(monkeypat
         assert (await resp.json())["code"] == "member_slug_mismatch"
 
 
+@pytest.mark.asyncio
 async def test_a_name_not_in_config_is_a_404(monkeypatch):
     async with _client() as client:
         monkeypatch.setattr(
@@ -207,6 +211,7 @@ async def test_a_name_not_in_config_is_a_404(monkeypatch):
         assert (await resp.json())["code"] == "member_not_found"
 
 
+@pytest.mark.asyncio
 async def test_a_slug_two_crews_share_serves_neither(monkeypatch):
     async with _client() as client:
         monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER, "Other"])
@@ -215,6 +220,7 @@ async def test_a_slug_two_crews_share_serves_neither(monkeypatch):
         assert (await resp.json())["code"] == "dashboard_slug_ambiguous"
 
 
+@pytest.mark.asyncio
 async def test_a_request_with_no_member_is_refused():
     async with _client() as client:
         resp = await client.get(f"/api/members/{SLUG}/dashboard")
@@ -222,6 +228,7 @@ async def test_a_request_with_no_member_is_refused():
         assert (await resp.json())["code"] == "missing_member"
 
 
+@pytest.mark.asyncio
 async def test_the_preview_read_serves_the_staged_page_and_links_to_the_tab():
     """The read the Dashboard tab makes for a preview.
 
@@ -240,6 +247,7 @@ async def test_the_preview_read_serves_the_staged_page_and_links_to_the_tab():
     assert instance.read(SLUG).instance_version == 0
 
 
+@pytest.mark.asyncio
 async def test_a_preview_read_with_nothing_staged_is_a_404_the_tab_can_name():
     async with _client() as client:
         resp = await client.get(_q("", preview="1"))
@@ -261,6 +269,7 @@ def _template_at_the_ceiling() -> str:
     return page
 
 
+@pytest.mark.asyncio
 async def test_a_template_page_at_the_frames_ceiling_previews_applies_and_draws(monkeypatch):
     """The template-folder path at the ceiling, end to end, with the scrub off the loop.
 
@@ -295,6 +304,7 @@ async def test_a_template_page_at_the_frames_ceiling_previews_applies_and_draws(
     assert on_loop == [False, False]
 
 
+@pytest.mark.asyncio
 async def test_a_preview_read_the_store_refuses_answers_in_the_stores_words(monkeypatch):
     """A store refusal on the staged read (a linked session directory raises
     `InstanceError`) is the route's structured answer, not aiohttp's bare 500."""
@@ -315,6 +325,7 @@ async def test_a_preview_read_the_store_refuses_answers_in_the_stores_words(monk
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_a_live_dashboard_comes_back_with_its_values_filled_in(monkeypatch):
     """The frame renders ``rendered_html``: the page under the data island the host built.
 
@@ -450,6 +461,7 @@ def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
     assert "used" in out["items"][0]["summary"]
 
 
+@pytest.mark.asyncio
 async def test_a_stale_copy_is_still_composed_with_its_values(monkeypatch, tmp_path):
     """A STALE copy renders. It is the state where the copy cannot be compared
     against its source, not a state where it stopped working.
@@ -501,6 +513,7 @@ async def test_a_stale_copy_is_still_composed_with_its_values(monkeypatch, tmp_p
     assert json.loads(island)["fields"] == {"credits": 2.5}
 
 
+@pytest.mark.asyncio
 async def test_a_page_whose_values_cannot_be_read_still_answers_without_them(monkeypatch):
     from kiro_crew import dashboard_feed
 
@@ -522,6 +535,7 @@ async def test_a_page_whose_values_cannot_be_read_still_answers_without_them(mon
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_every_route_denies_an_app_caller_and_gates_the_values_it_serves():
     """Read off the source, because a passing request proves only the open path.
 
@@ -577,6 +591,7 @@ _VALUE_SERVING_READS = frozenset({"api_member_dashboard", "api_session_dashboard
 _SESSION_READS = frozenset({"api_session_dashboard"})
 
 
+@pytest.mark.asyncio
 async def test_a_non_owner_cannot_read_a_crewmates_values():
     """The gate, exercised rather than read off the source.
 
@@ -607,6 +622,7 @@ async def test_a_non_owner_cannot_read_a_crewmates_values():
     )
 
 
+@pytest.mark.asyncio
 async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
     """The boot path binds these routes DEFERRED, so the paths are written twice.
 
@@ -634,6 +650,7 @@ async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
     )
 
 
+@pytest.mark.asyncio
 async def test_the_instance_store_and_the_route_agree_on_the_states():
     """The four state words the frame branches on are the store's own constants."""
     assert {
@@ -738,6 +755,7 @@ class TestTheSlugChecks:
     """A slug the member resolver REFUSES and one it merely disagrees with are
     different answers, and both arrive as an exception rather than as a comparison."""
 
+    @pytest.mark.asyncio
     async def test_an_invalid_slug_is_refused_before_the_member_is_read(self, monkeypatch):
         def _raise(_slug):
             raise routes.MemberSlugError("not a slug")
@@ -748,6 +766,7 @@ class TestTheSlugChecks:
             assert resp.status == 400, await resp.text()
             assert (await resp.json())["code"] == "invalid_member_slug"
 
+    @pytest.mark.asyncio
     async def test_a_member_whose_slug_cannot_be_derived_is_a_mismatch(self, monkeypatch):
         def _raise(_name, _config=None):
             raise routes.MemberSlugError("no slug for this name")
@@ -1196,6 +1215,7 @@ class TestOneCrewmateResolvesToOneSlug:
         assert _REAL_CANONICAL_KEY("oncall", cfg) == "oncall"
         assert _REAL_CANONICAL_KEY("ONCALL", cfg) == "ONCALL"
 
+    @pytest.mark.asyncio
     async def test_the_tab_opened_on_a_lowercase_name_reads_the_members_own_page(
         self, _floor_monkeypatch
     ) -> None:
@@ -1594,6 +1614,7 @@ class TestTheStagedComposedPage:
     older gateway left holding a package payload reads as nothing staged.
     """
 
+    @pytest.mark.asyncio
     async def test_a_package_left_staged_by_an_older_gateway_is_nothing_to_preview(
         self,
     ) -> None:
@@ -1618,6 +1639,7 @@ class TestTheStagedComposedPage:
         assert resp.status == 404, body
         assert body["code"] == "no_preview", body
 
+    @pytest.mark.asyncio
     async def test_a_staged_template_still_answers_its_own_preview(self) -> None:
         """Both readers answer None for the other's payload, so one page comes back."""
         instance.stage_preview(SLUG, template_id="fixture-board")
@@ -1800,6 +1822,7 @@ class TestThePageIsToldWhenThePersonLastSpoke:
         assert routes._person_last_spoke(None, SLUG, MEMBER, None) == ""
         assert routes._person_last_spoke(_ChatState({}, _Broken({})), SLUG, MEMBER, None) == ""
 
+    @pytest.mark.asyncio
     async def test_the_composed_page_carries_the_stamp(self, monkeypatch) -> None:
         """Through the route: `_serve` reads it off the loop and hands it to the page."""
         from kiro_crew import dashboard_feed
