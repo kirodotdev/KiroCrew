@@ -10698,6 +10698,24 @@
         "tool_search_label": "Поиск инструментов",
         "tool_search_description": "Загружать отложенные спецификации инструментов MCP по требованию."
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Сессия Kiro CLI",
+      "no_folder": "Папка не записана",
+      "loading": "Загрузка разговора…",
+      "show_earlier": "Показать более ранние сообщения",
+      "no_messages": "В этой сессии нет сообщений для показа.",
+      "you": "Ты",
+      "kiro": "Kiro",
+      "truncated": "Сокращено для предпросмотра. Когда ты продолжишь, сообщение перенесётся целиком.",
+      "skipped": "Некоторые строки этой сессии не удалось прочитать, они не показаны.",
+      "continue_hint": "«Продолжить в Crew» откроет новый чат со всем контекстом этой сессии. Сессия в твоём терминале останется как есть.",
+      "continue": "Продолжить в Crew",
+      "continuing": "Копирование…",
+      "continue_failed": "Не удалось продолжить эту сессию",
+      "opened_without_project": "Новый чат готов, но откроется без папки проекта: {{reason}}",
+      "open_chat": "Открыть чат",
+      "close": "Закрыть"
     }
   },
   "hooks": {
@@ -13634,7 +13652,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "Обычные",
       "kind_section_mate": "От напарников",
-      "filter_crew_description": "Показывать только чаты Crew Mode"
+      "filter_crew_description": "Показывать только чаты Crew Mode",
+      "history_source": "Источник истории",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Поиск по сессиям Kiro CLI",
+      "kiro_cli_loading": "Загрузка сессий…",
+      "kiro_cli_empty": "Пока нет сессий kiro-cli из твоего терминала.",
+      "kiro_cli_no_folder": "Без папки"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

@@ -22,6 +22,7 @@ import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { historyRowIdentity } from './rowIdentity'
 import { DisclosureChevron, dateSegment } from './chrome'
 import type { SidebarScope } from './scope'
+import { CrewHistoryOnly, HistorySourceTabs } from './KiroCliHistory'
 
 /** The splitter, the footer and the pane, as the sidebar root draws them. */
 export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
@@ -102,11 +103,16 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
             when open — never a Right/Down glyph swap, never a counter-rotation
             when closed. */}
         <span className="flex items-center gap-3 shrink-0">
+          {/* Clear empties Crew's own history, so it is offered only on the
+              Crew tab: on the Kiro CLI tab it would read as clearing the
+              terminal sessions, which Crew never deletes. */}
           {historyOpen && history.length > 0 && (
-            <button
-              className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all"
-              onClick={async e => { e.stopPropagation(); await clearClosedSessionsWithConfirm() }}
-            >{i18nT('pages.chatSidebar.clear')}</button>
+            <CrewHistoryOnly>
+              <button
+                className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all"
+                onClick={async e => { e.stopPropagation(); await clearClosedSessionsWithConfirm() }}
+              >{i18nT('pages.chatSidebar.clear')}</button>
+            </CrewHistoryOnly>
           )}
           <DisclosureChevron open={historyOpen} size={16} className="text-text-strong" />
         </span>
@@ -122,6 +128,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
+            <HistorySourceTabs height={historyHeight} connected={connected} crew={() => (<>
             <div className="px-2 pb-1">
               <div className="relative">
                 <SearchInput className="w-full" placeholder={i18nT('pages.chatSidebar.search_older_sessions')} value={historyFilter} onChange={e => setHistoryFilter(e.target.value)} />
@@ -361,6 +368,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
               {historyHasMore && <div className="flex justify-center py-2 text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle rounded-md" onMouseDown={e => { e.preventDefault(); dispatch(fetchHistory(true)) }}>{i18nT('pages.chatSidebar.load_more')}</div>}
             </div>
+            </>)} />
           </motion.div>
         )}
       </AnimatePresence>

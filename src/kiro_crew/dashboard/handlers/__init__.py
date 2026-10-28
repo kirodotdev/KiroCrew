@@ -458,6 +458,8 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_session_detail,
     api_session_directive,
     api_session_keepalive,
+    api_session_kiro_cli_list,
+    api_session_kiro_cli_read,
     api_session_meta,
     api_session_tool_policy,
     api_sessions,

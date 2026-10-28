@@ -10552,6 +10552,24 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Session Kiro CLI",
+      "no_folder": "Aucun dossier enregistré",
+      "loading": "Chargement de la conversation…",
+      "show_earlier": "Afficher les messages précédents",
+      "no_messages": "Cette session ne contient aucun message à afficher.",
+      "you": "Toi",
+      "kiro": "Kiro",
+      "truncated": "Raccourci pour l’aperçu. Le message complet est repris quand tu continues.",
+      "skipped": "Certaines lignes de cette session n’ont pas pu être lues et ne sont pas affichées.",
+      "continue_hint": "« Continuer dans Crew » ouvre une nouvelle conversation avec tout le contexte de cette session. La session de ton terminal reste telle quelle.",
+      "continue": "Continuer dans Crew",
+      "continuing": "Copie en cours…",
+      "continue_failed": "Impossible de continuer cette session",
+      "opened_without_project": "La nouvelle conversation est prête, mais elle s’ouvre sans dossier de projet : {{reason}}",
+      "open_chat": "Ouvrir la conversation",
+      "close": "Fermer"
     }
   },
   "hooks": {
@@ -13417,7 +13435,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "Normal",
       "kind_section_mate": "Des coéquipiers",
-      "filter_crew_description": "Afficher uniquement les discussions Crew Mode"
+      "filter_crew_description": "Afficher uniquement les discussions Crew Mode",
+      "history_source": "Source de l’historique",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Rechercher dans les sessions Kiro CLI",
+      "kiro_cli_loading": "Chargement des sessions…",
+      "kiro_cli_empty": "Aucune session kiro-cli de ton terminal pour l’instant.",
+      "kiro_cli_no_folder": "Aucun dossier"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

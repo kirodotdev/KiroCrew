@@ -989,6 +989,53 @@ the retained candidate keeps its stable source-item identity rather than derivin
 identity from its transcript. A growing source session therefore remains tied to
 the same provenance ledger entry.
 
+### Terminal kiro-cli sessions (`kiro_cli_sessions.py`, `dashboard/kiro_cli_continue.py`)
+
+The Older Sessions pane's **Kiro CLI** tab lists the kiro-cli sessions a person
+ran in a terminal, read from kiro-cli's own store (`kiro_sessions_dir()`, the
+`<sid>.json` envelope and `<sid>.jsonl` event log). Crew's own sessions,
+sub-agents, crons and consolidation runs live in the same directory and every
+envelope carries `session_created_reason: "subagent"`, so that field decides
+nothing. `is_terminal_session` is the one listing rule: a session is refused
+when the session map joins it to a Crew session or it is a copy Continue
+made (below), when it has a
+`parent_session_id`, when it is untitled, when its title starts with a Crew turn
+block (`[AGENT SYSTEM PROMPT]`, `[SESSION CONTEXT` ...) or its agent is a Crew
+skill view, or when its `cwd` is inside the data home, the workspaces root, the
+default or legacy home, or passes through a Crew-only directory name
+(`.kirocrew`, `.kirocrew-dev`, `.kirocrew-pods`, `kirocrew-workspace`,
+`.kiro/crew`). `kiro-cli chat --list-sessions --all-cwds` was measured as the
+alternative source and not used: it took ~12 s over ~11,000 sessions and lists
+the legacy SQLite store as well, where a head read of the envelopes takes ~1 s
+cold and ~0.1 s once the per-file `(mtime, size)` cache is warm.
+
+Every route takes a session id that must match kiro-cli's UUID shape and is
+resolved to a direct child of the sessions directory; nothing else from the
+request names a path. The three routes are owner-only: an app token, an internal
+caller and a non-owner dashboard session are refused, and a session the list
+would not show answers 404 like a missing one. The preview pages back from the
+newest visible message (user and assistant text only), redacts assistant text
+before its per-message cap, and skips a record that is not UTF-8 JSON.
+
+**Continue in Crew copies, never moves.** `snapshot_session` reads the pair and
+stats both files before and after, retrying while either changed and refusing
+`kiro_cli_session_busy` after five attempts; a last record without its newline
+is a write in progress and is left out. A corrupt log is refused rather than
+copied, because `session/load` would fail on it. The snapshot becomes a version-2
+transfer bundle (origin `kiro-cli`) and is installed by
+`session_transfer.install_validated_bundle`, the same path an arriving bundle
+takes: a new slot, Layer B written under a fresh sid, the arrival folder. The
+terminal's files are never written, so `kiro-cli chat --resume-id <sid>` still
+resumes the original, and continuing the same session twice makes two
+independent chats. kiro-cli titles a copy from its first prompt (the person's
+terminal prompt) and records the folder it is loaded in, so a copy whose join a
+reset or failed start dropped would read as a terminal session; each copy's sid
+is therefore kept in `<data home>/kiro-cli-continued.json` (newest 5,000) and
+counted as Crew's by the listing rule. The chat's project is the session's `cwd` when it still
+exists and passes the project picker's checks (not sensitive, not overlapping
+the data home); otherwise the chat opens without one and the answer carries
+`project_skipped`.
+
 ### Chats in the whole-install export (`portability.py`)
 
 Settings → Import / Export carries dashboard chats only when the export asks:

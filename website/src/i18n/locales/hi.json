@@ -10406,6 +10406,24 @@
         "tool_search_label": "उपकरण खोज",
         "tool_search_description": "माँग पर स्थगित MCP उपकरण विनिर्देश लोड करें।"
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI सत्र",
+      "no_folder": "कोई फ़ोल्डर दर्ज नहीं",
+      "loading": "बातचीत लोड हो रही है…",
+      "show_earlier": "पहले के संदेश दिखाओ",
+      "no_messages": "इस सत्र में दिखाने के लिए कोई संदेश नहीं है।",
+      "you": "तुम",
+      "kiro": "Kiro",
+      "truncated": "प्रीव्यू के लिए छोटा किया गया है। जारी रखने पर पूरा संदेश साथ जाएगा।",
+      "skipped": "इस सत्र की कुछ पंक्तियाँ पढ़ी नहीं जा सकीं, इसलिए नहीं दिखाई गईं।",
+      "continue_hint": "Crew में जारी रखो चुनने पर इस सत्र के पूरे संदर्भ के साथ एक नई चैट खुलेगी। तुम्हारे टर्मिनल का सत्र जैसा है वैसा ही रहेगा।",
+      "continue": "Crew में जारी रखो",
+      "continuing": "कॉपी हो रहा है…",
+      "continue_failed": "यह सत्र जारी नहीं रखा जा सका",
+      "opened_without_project": "नई चैट तैयार है, पर यह प्रोजेक्ट फ़ोल्डर के बिना खुलेगी: {{reason}}",
+      "open_chat": "चैट खोलो",
+      "close": "बंद करो"
     }
   },
   "hooks": {
@@ -13200,7 +13218,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "सामान्य",
       "kind_section_mate": "साथियों से",
-      "filter_crew_description": "केवल Crew Mode चैट दिखाओ"
+      "filter_crew_description": "केवल Crew Mode चैट दिखाओ",
+      "history_source": "इतिहास का स्रोत",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI सत्र खोजो",
+      "kiro_cli_loading": "सत्र लोड हो रहे हैं…",
+      "kiro_cli_empty": "तुम्हारे टर्मिनल से अभी कोई kiro-cli सत्र नहीं है।",
+      "kiro_cli_no_folder": "कोई फ़ोल्डर नहीं"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

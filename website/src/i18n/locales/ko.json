@@ -10260,6 +10260,24 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI 세션",
+      "no_folder": "기록된 폴더 없음",
+      "loading": "대화를 불러오는 중…",
+      "show_earlier": "이전 메시지 보기",
+      "no_messages": "이 세션에는 표시할 메시지가 없습니다.",
+      "you": "나",
+      "kiro": "Kiro",
+      "truncated": "미리 보기용으로 줄였습니다. 계속하면 전체 메시지가 그대로 이어집니다.",
+      "skipped": "이 세션의 일부 줄을 읽을 수 없어 표시하지 않았습니다.",
+      "continue_hint": "Crew에서 계속하면 이 세션의 전체 컨텍스트로 새 채팅이 열립니다. 터미널의 세션은 그대로 유지됩니다.",
+      "continue": "Crew에서 계속",
+      "continuing": "복사하는 중…",
+      "continue_failed": "이 세션을 계속할 수 없습니다",
+      "opened_without_project": "새 채팅이 준비되었지만 프로젝트 폴더 없이 열립니다: {{reason}}",
+      "open_chat": "채팅 열기",
+      "close": "닫기"
     }
   },
   "hooks": {
@@ -12983,7 +13001,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "일반",
       "kind_section_mate": "크루메이트에서",
-      "filter_crew_description": "Crew Mode 채팅만 보기"
+      "filter_crew_description": "Crew Mode 채팅만 보기",
+      "history_source": "기록 출처",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI 세션 검색",
+      "kiro_cli_loading": "세션을 불러오는 중…",
+      "kiro_cli_empty": "아직 터미널에서 실행한 kiro-cli 세션이 없습니다.",
+      "kiro_cli_no_folder": "폴더 없음"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

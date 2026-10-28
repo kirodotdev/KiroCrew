@@ -6126,6 +6126,24 @@
       "session_queued": "This session: {{queued}} queued",
       "session_queued_hint": "Agents this session started are waiting for a free slot while fewer run at once.",
       "load_failed": "Could not check for queued agents"
+    },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI session",
+      "no_folder": "No folder recorded",
+      "loading": "Loading the conversation…",
+      "show_earlier": "Show earlier messages",
+      "no_messages": "This session has no messages to show.",
+      "you": "You",
+      "kiro": "Kiro",
+      "truncated": "Shortened for the preview. The whole message carries over when you continue.",
+      "skipped": "Some lines of this session couldn't be read and aren't shown.",
+      "continue_hint": "Continue in Crew opens a new chat with this session's full context. The session in your terminal stays as it is.",
+      "continue": "Continue in Crew",
+      "continuing": "Copying…",
+      "continue_failed": "Couldn't continue this session",
+      "opened_without_project": "The new chat is ready, but it opens without a project folder: {{reason}}",
+      "open_chat": "Open the chat",
+      "close": "Close"
     }
   },
   "hooks": {
@@ -7309,7 +7327,14 @@
       "broadcast_open_unknown": "Not confirmed · open",
       "broadcast_delivery_hint": "No running work is interrupted: a running turn reads it after its current tool call; an idle session starts a new turn.",
       "broadcast_retry": "Retry {{n}} failed",
-      "folder_renamed_to": "Folder renamed to {{name}}"
+      "folder_renamed_to": "Folder renamed to {{name}}",
+      "history_source": "History source",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Search Kiro CLI sessions",
+      "kiro_cli_loading": "Loading sessions…",
+      "kiro_cli_empty": "No kiro-cli sessions from your terminal yet.",
+      "kiro_cli_no_folder": "No folder"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",

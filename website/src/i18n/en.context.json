@@ -927,6 +927,10 @@
     "crewWorkerKit.current_directions": "Muted line on the behavior-directions row of the Add abilities preview, under the incoming directions. {{directions}} is the crewmate's current directions text, which the incoming directions will overwrite.",
     "crewWorkerKit.done_replaced": "Sentence in the confirmation after an add succeeds, shown when it replaced the crewmate's behavior directions. May follow the \"Added N to NAME.\" sentence or stand alone.",
     "crewEditorNext.band_remove_stale": "Error in the mate abilities view when Remove is refused because the displayed revision changed; nothing was removed, the list refreshes, and the user must check it and press the Remove button again.",
-    "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant."
+    "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant.",
+    "components.kiroCliSessionPreview.you": "Speaker label above the person's own turns in the read-only preview of a kiro-cli terminal session; names the human who typed the message, not a pronoun in a sentence.",
+    "components.kiroCliSessionPreview.kiro": "Speaker label above the assistant's turns in the same preview; the product name Kiro, kept as is.",
+    "pages.chatSidebar.history_tab_crew": "Tab in the sidebar's Older Sessions pane that lists the product's own saved chats; Crew is the product name, kept as is.",
+    "pages.chatSidebar.history_tab_kiro_cli": "Tab beside it listing the sessions the person ran with the kiro-cli command-line tool in a terminal; the tool's name, kept as is."
   }
 }

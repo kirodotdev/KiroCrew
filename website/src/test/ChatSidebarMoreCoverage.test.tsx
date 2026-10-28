@@ -53,6 +53,8 @@ vi.mock('framer-motion', async () => {
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    // The pane's history tabs (components/ui/tabs) read it for their sliding pill.
+    useReducedMotion: () => true,
     LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })

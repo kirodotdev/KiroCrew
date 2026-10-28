@@ -10552,6 +10552,24 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "kiroCliSessionPreview": {
+      "title": "Sessione di Kiro CLI",
+      "no_folder": "Nessuna cartella registrata",
+      "loading": "Caricamento della conversazione…",
+      "show_earlier": "Mostra messaggi precedenti",
+      "no_messages": "Questa sessione non ha messaggi da mostrare.",
+      "you": "Tu",
+      "kiro": "Kiro",
+      "truncated": "Accorciato per l’anteprima. Il messaggio completo viene mantenuto quando continui.",
+      "skipped": "Alcune righe di questa sessione non sono leggibili e non vengono mostrate.",
+      "continue_hint": "Continua in Crew apre una nuova chat con tutto il contesto di questa sessione. La sessione nel tuo terminale resta com’è.",
+      "continue": "Continua in Crew",
+      "continuing": "Copia in corso…",
+      "continue_failed": "Impossibile continuare questa sessione",
+      "opened_without_project": "La nuova chat è pronta, ma si apre senza cartella di progetto: {{reason}}",
+      "open_chat": "Apri la chat",
+      "close": "Chiudi"
     }
   },
   "hooks": {
@@ -13417,7 +13435,14 @@
       "kind_section_crew": "Crew Mode",
       "kind_section_normal": "Normale",
       "kind_section_mate": "Dai compagni",
-      "filter_crew_description": "Mostra solo le chat Crew Mode"
+      "filter_crew_description": "Mostra solo le chat Crew Mode",
+      "history_source": "Origine della cronologia",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Cerca sessioni di Kiro CLI",
+      "kiro_cli_loading": "Caricamento delle sessioni…",
+      "kiro_cli_empty": "Ancora nessuna sessione kiro-cli dal tuo terminale.",
+      "kiro_cli_no_folder": "Nessuna cartella"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

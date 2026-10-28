@@ -26,6 +26,7 @@ import kiro_crew.dashboard.handlers as _h
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
     guard_owner_surface_routes,
+    require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
     _NOT_TRANSCRIPT_OWNER,
@@ -598,6 +599,113 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
     # Archives contain LLM output; redact credentials and exfiltration URLs before serving.
     redacted = await asyncio.to_thread(lambda: redact(raw))
     return web.Response(text=redacted, content_type="application/x-ndjson")
+
+
+def _crew_owned_kiro_cli_sids(state: DashboardState) -> frozenset[str]:
+    """Every kiro-cli session id that is Crew's: joined in the session map, or a
+    copy "Continue in Crew" made (:func:`kiro_cli_sessions.continued_sids`).
+
+    **Blocking**: the map's iteration holds ``session_map._MAP_LOCK``, a thread
+    lock a writer can hold across its file write, so this runs in a thread. The
+    LIVE map, when there is one, so a session joined since the file was last
+    written is still treated as Crew's.
+    """
+    from kiro_crew import kiro_cli_sessions
+    from kiro_crew.session_map import SessionMap
+
+    live = getattr(getattr(state, "sessions", None), "_session_map", None)
+    reader = getattr(live, "mapped_sids_by_key", None)
+    mapping = reader() if callable(reader) else SessionMap().mapped_sids_by_key()
+    return frozenset(mapping.values()) | kiro_cli_sessions.continued_sids()
+
+
+def _int_query(request: web.Request, name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(int(request.query.get(name, str(default))), high))
+    except (TypeError, ValueError):
+        return default
+
+
+async def api_session_kiro_cli_list(request: web.Request) -> web.Response:
+    """GET /api/kiro-cli/sessions — the kiro-cli sessions the owner started in a terminal.
+
+    Query params: ``limit`` (default 50, max 200), ``offset``, ``q`` (a
+    case-insensitive match on title or folder). Returns ``{sessions, total,
+    has_more}``, each row ``{id, title, cwd, created_at, updated_at}``; which
+    sessions qualify is :func:`kiro_crew.kiro_cli_sessions.is_terminal_session`.
+
+    The owner's own dashboard only: an app token, an internal caller and a
+    non-owner dashboard session are all refused, because these are the person's
+    terminal conversations, which no Crew surface owns.
+    """
+    from kiro_crew import kiro_cli_sessions
+
+    refusal = await require_owner_dashboard_request(request, "kiro_cli_session_list")
+    if refusal is not None:
+        return refusal
+    state: DashboardState = request.app["state"]
+    limit = _int_query(request, "limit", 50, 1, 200)
+    offset = _int_query(request, "offset", 0, 0, 1_000_000)
+    query = sanitize_string(request.query.get("q", "")).strip()[:256]
+
+    def _list() -> dict:
+        owned = _crew_owned_kiro_cli_sids(state)
+        return kiro_cli_sessions.list_terminal_sessions(
+            owned, query=query, offset=offset, limit=limit
+        )
+
+    return web.json_response(await asyncio.to_thread(_list))
+
+
+async def api_session_kiro_cli_read(request: web.Request) -> web.Response:
+    """GET /api/kiro-cli/sessions/{sid} — a read-only page of one terminal session.
+
+    ``sid`` must be a kiro-cli session id (a UUID); it is resolved to a file
+    directly inside kiro-cli's sessions dir and nothing else from the request
+    reaches the filesystem. Query params: ``before`` (page end, exclusive) and
+    ``limit`` (default 100, max 500); the answer's ``start`` is the next older
+    page's ``before``. A session Crew owns, or one the History list would not
+    show, answers 404 like a missing one. Assistant text is redacted before it is
+    served, the same as every other history read; the person's own turns are
+    shown as they typed them.
+    """
+    from kiro_crew import kiro_cli_sessions
+
+    refusal = await require_owner_dashboard_request(request, "kiro_cli_session_read")
+    if refusal is not None:
+        return refusal
+    state: DashboardState = request.app["state"]
+    sid = request.match_info.get("sid", "")
+    not_found = web.json_response(
+        {"error": "kiro-cli session not found", "code": "kiro_cli_session_not_found"},
+        status=404,
+    )
+    if not kiro_cli_sessions.valid_session_id(sid):
+        return not_found
+    limit = _int_query(request, "limit", kiro_cli_sessions.PREVIEW_DEFAULT_LIMIT, 1, 500)
+    before: int | None = None
+    if "before" in request.query:
+        before = _int_query(request, "before", 0, 0, 10_000_000)
+
+    def _read() -> dict | None:
+        paths = kiro_cli_sessions.session_paths(sid)
+        meta = kiro_cli_sessions.read_envelope_meta(paths[0]) if paths else None
+        if meta is None or not kiro_cli_sessions.is_terminal_session(
+            meta,
+            owned_sids=_crew_owned_kiro_cli_sids(state),
+            crew_roots=kiro_cli_sessions.crew_working_roots(),
+        ):
+            return None
+        # Redacted BEFORE the preview's length cap: a credential split by the
+        # cut would leave a partial token the patterns cannot match.
+        return kiro_cli_sessions.read_preview(
+            sid, before=before, limit=limit, sanitize_assistant=redact
+        )
+
+    page = await asyncio.to_thread(_read)
+    if page is None:
+        return not_found
+    return web.json_response(page)
 
 
 # Every ``api_session*`` handler is an owner surface, so a private member's
