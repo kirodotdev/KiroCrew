@@ -5,7 +5,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryPastes, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** A queued row's paste blocks (`queueEntryPastes` put them there): what the
@@ -155,7 +155,11 @@ export const queueReducers = {
       // The queued row's paste blocks go with the text: the user row renders
       // them as the chip at once (`recollapsePastes` on render) instead of
       // showing the expanded paste until the next reconcile finds the blocks.
-      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queuedRowPastes(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) }
+      // A peer's queued `session_send` names its sender (`meta.relay`) on the
+      // frame, so the rebuilt row draws the incoming session-message card. Read
+      // from the FRAME only: the gateway drops the sender when the entry is
+      // edited, and only the frame says so.
+      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queuedRowPastes(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta), ...queueEntryRelay(meta) }
       if (queue_id && sendId) rowMeta.queueId = queue_id
       if (at >= 0 && clientTs) rowMeta.clientTs = clientTs
       delete rowMeta.optimistic

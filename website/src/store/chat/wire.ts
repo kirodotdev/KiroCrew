@@ -7,6 +7,7 @@ import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { findTokenRanges, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
+import { readRelay, type RelaySender } from '../../pages/chat/sessionRelay'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -105,6 +106,14 @@ export type QueueEntryAttachments = { files?: string[]; dirs?: string[] }
 export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
   const q = readMessageQuote(meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : undefined)
   return q ? { quote: q } : {}
+}
+
+/** The gateway-set cross-session sender (`meta.relay`) of a queued peer send,
+ *  validated the way the transcript reads it, so the `queue_pop` rebuild draws
+ *  the same incoming card a reload does. */
+export function queueEntryRelay(meta: unknown): { relay?: RelaySender } {
+  const relay = readRelay(meta && typeof meta === 'object' ? (meta as ChatMessage['meta']) : undefined)
+  return relay ? { relay } : {}
 }
 
 /** Display correlation only; no other queue metadata grants client authority. */
