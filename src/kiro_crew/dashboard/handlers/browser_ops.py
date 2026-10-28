@@ -68,7 +68,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.browser_harness import ops as harness_ops
-from kiro_crew.browser_harness import secret_mask, url_gate
+from kiro_crew.browser_harness import url_gate
 from kiro_crew.browser_harness.budgets import (
     DECISION_HEADROOM_S,
     ENSURE_TIMEOUT_S,
@@ -178,19 +178,6 @@ def build_context(
     def _frames() -> Any:
         return frame_ops(hub, session_key)
 
-    def _page_cdp() -> Any:
-        # The stream's own session, on the tab this session is bound to: the mask's
-        # box query runs in an isolated world there, never through the helper.
-        sess = hub.get(session_key)
-        stream = sess.stream if sess is not None else None
-        if (
-            stream is None
-            or not stream.session_id
-            or stream.target_id != hub.target_of(session_key)
-        ):
-            return None
-        return stream.relay, stream.session_id
-
     return harness_ops.OpContext(
         helper=supervisor.call,
         step=_step,
@@ -203,8 +190,6 @@ def build_context(
         mark=_mark,
         record=_record,
         frames=_frames,
-        session_key=session_key,
-        page_cdp=_page_cdp,
     )
 
 
@@ -636,13 +621,9 @@ async def _fenced_op(
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}
     except Exception as exc:  # noqa: BLE001 - a helper or the daemon raised
-        # A helper's error can quote the page: masked like any page read.
-        # Masked before it is cut, so no prefix of a value survives the cut.
-        lines = secret_mask.redact(key, str(exc)).strip().splitlines()
-        error = (lines[0] if lines else type(exc).__name__)[:300]
-        logger.warning("browser op %s failed: %s", op, error)
+        logger.warning("browser op %s failed: %s", op, exc)
         _audit(request, "error", type(exc).__name__)
-        return {"ok": False, "code": "browser_error", "error": error}
+        return {"ok": False, "code": "browser_error", "error": _safe(exc)}
     _audit(request, "allowed")
     if not hub.in_control(key):
         await follow_current_tab(hub, key, supervisor)

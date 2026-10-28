@@ -46,7 +46,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.browser_harness import secret_mask
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 
@@ -202,12 +201,6 @@ class OpContext:
     #: read at call time, or ``None`` when no stream holds the tab: then a frame ref
     #: is stale and the outline marks those frames as not read.
     frames: Callable[[], Any] = lambda: None
-    #: The caller's live session key: what the page shows of a value the person
-    #: typed through a quick ask is masked by it (``browser_harness.secret_mask``).
-    session_key: str = ""
-    #: ``(relay, session_id)`` of the live stream on the caller's tab, or ``None``:
-    #: where the mask finds the values' boxes for a screenshot.
-    page_cdp: Callable[[], Any] = lambda: None
 
 
 def screenshot_dir(home: Path) -> Path:
@@ -330,13 +323,6 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
         # Focus is inside a cross-origin frame: judge the field there, or nothing.
         value = inner if inner is not None else {**value, "unreadable": True}
     return value
-
-
-async def _read(ctx: OpContext, method: str, *args: Any) -> Any:
-    """:func:`_page` for a read whose CONTENT goes out (to the agent, the decision
-    model, the fast loop's state): a value the person typed through a quick ask is
-    masked in it (``secret_mask``). The guards' own reads stay :func:`_page`."""
-    return secret_mask.redact(ctx.session_key, await _page(ctx, method, *args))
 
 
 async def _in_control(ctx: OpContext) -> bool:
@@ -550,7 +536,7 @@ async def _with_frames(ctx: OpContext, nodes: list[Any]) -> list[Any]:
 
 async def _snapshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     await _step(ctx, "Read the page")
-    data = await _read(ctx, "snapshot")
+    data = await _page(ctx, "snapshot")
     if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
         return refusal("snapshot_error", "snapshot walker returned no data")
     nodes = await _with_frames(ctx, data["nodes"])
@@ -797,7 +783,7 @@ async def _wait_for(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     await _step(ctx, f"Wait for {'text' if want_present else 'text to go'}")
     start = ctx.now()
     for _ in range(max(1, int(WAIT_MAX_S / WAIT_POLL_S)) + 1):
-        present = await _text_present(ctx, target)
+        present = bool(await _page(ctx, "textPresent", target))
         if want_present and present:
             return {"ok": True, "matched": "present", "text": target}
         if not want_present and not present:
@@ -811,24 +797,13 @@ async def _wait_for(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-async def _text_present(ctx: OpContext, target: str) -> bool:
-    """Is *target* on the page? While a quick-ask copy is held, judged on the
-    masked visible text, so a guess cannot be confirmed one character at a time."""
-    if secret_mask.live(ctx.session_key) is None:
-        return bool(await _page(ctx, "textPresent", target))
-    seen = await _read(ctx, "observe", {"text": True})
-    text = seen.get("text") if isinstance(seen, dict) else None
-    # The visible text (the viewport), masked; the unmasked check reads the body.
-    return isinstance(text, str) and target in text
-
-
 async def _console(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     limit = args.get("limit", CONSOLE_CAP)
     if isinstance(limit, bool) or not isinstance(limit, int):
         limit = CONSOLE_CAP
     limit = max(1, min(limit, CONSOLE_CAP))
     await _step(ctx, "Read the console")
-    messages = await _read(ctx, "consoleMessages", limit)
+    messages = await _page(ctx, "consoleMessages", limit)
     return {"ok": True, "messages": messages if isinstance(messages, list) else []}
 
 
@@ -854,12 +829,7 @@ async def _screenshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
         )
     await _step(ctx, "Take a screenshot")
     path = _screenshot_path(ctx)
-    if not await secret_mask.masked_shot(ctx, path):
-        return refusal(
-            "asked_value_on_page",
-            "the page shows a value the user typed through `ask` and it could not be "
-            "masked; use snapshot instead, or take the screenshot after the page moves on",
-        )
+    await ctx.helper("screenshot", path=str(path))
     if not await asyncio.to_thread(path.exists):
         return refusal("screenshot_error", "the browser wrote no image")
     return {"ok": True, "path": str(path)}
@@ -941,19 +911,8 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             "user_in_control",
             "the user has taken over the browser; wait for them to hand it back",
         )
-    raw = handler
-
-    async def masked(c: OpContext, a: dict[str, Any]) -> dict[str, Any]:
-        # What the helper answered (a title, a URL, a tab list) is page content too.
-        got = await raw(c, a)
-        out = secret_mask.redact(c.session_key, got)
-        if op in ("navigate", "back") and isinstance(got, dict):
-            # The URL as the page reported it, never the masked copy the agent gets.
-            secret_mask.seen_url(c.session_key, got.get("url"))
-        return out  # type: ignore[no-any-return]
-
     if ctx.decisions is not None:
-        return await ctx.decisions.run(op, args, ctx, masked)  # type: ignore[no-any-return]
+        return await ctx.decisions.run(op, args, ctx, handler)  # type: ignore[no-any-return]
     if names_target_only(op, args):
         return needs_ref()
-    return await masked(ctx, args)
+    return await handler(ctx, args)

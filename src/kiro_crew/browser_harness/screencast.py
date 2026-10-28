@@ -54,7 +54,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from kiro_crew.browser_harness import secret_mask
 from kiro_crew.browser_harness.frames import FrameOps, FrameRegistry, enable_auto_attach
 
 logger = logging.getLogger(__name__)
@@ -1202,32 +1201,12 @@ class LiveStream:
             and _same_scroll(value, scroll)
         ):
             opaque = clip_mask_rects(frames, self.scale, width, height, limit=MASK_BOX_LIMIT)
-            shown = await self._value_rects(width, height, scroll)
-            self._rec_boxes = rects + opaque + (shown or [])
-            # A quick-ask value the page draws is painted in the replay too, so a
-            # frame whose value boxes are unknown is not kept. The card is left alone.
-            self._mask_ok = shown is not None
+            self._rec_boxes = rects + opaque
+            self._mask_ok = True
             if force:
                 self._rec_last = list(self._rec_boxes)
                 self._rec_last_size = (width, height)
         return list(rects)
-
-    async def _value_rects(
-        self, width: int, height: int, scroll: tuple[float, float] | None
-    ) -> list[list[int]] | None:
-        """Frame-pixel boxes of the quick-ask values this page draws; ``None``: unknown."""
-        if secret_mask.live(self.session_key) is None:
-            return []
-        found = await secret_mask.value_boxes(self.relay, self.session_id, self.session_key)
-        if found is None:
-            return None
-        if (
-            found.boxes
-            and scroll is not None
-            and not _same_scroll({"sx": found.scroll[0], "sy": found.scroll[1]}, scroll)
-        ):
-            return None
-        return clip_mask_rects(found.boxes, self.scale, width, height, limit=secret_mask.BOX_LIMIT)
 
     async def _frame_boxes(self) -> list[Any]:
         """Secret-field boxes inside the tab's cross-origin iframes, in page CSS pixels.

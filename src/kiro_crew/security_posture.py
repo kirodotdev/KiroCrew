@@ -1756,33 +1756,6 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redactor is handed in by the route rather than chosen here, so the module "
         "applies the gateway's own redactor and cannot substitute a weaker one.",
     ),
-    (
-        "Browser page reads after a quick ask",
-        "browser_harness/ops.py",
-        "Every walker read whose content goes out (snapshot, console, the decision "
-        "model's outline, the fast loop's state) and every op result, on their way "
-        "to the agent. A value the person typed through a quick ask (a password, a "
-        "one-time code, a sign-in's username) is masked by `secret_mask` while its "
-        "copy is held; this is not the credential redactor.",
-    ),
-    (
-        "A browser op's error text",
-        "dashboard/handlers/browser_ops.py",
-        "A helper failure's text on its way to the agent and the gateway log. A held "
-        "quick-ask value is masked (`secret_mask`) before the text is cut.",
-    ),
-    (
-        "Browser turn replay",
-        "browser_harness/recording.py",
-        "Every replay event and the turn's start URL, on their way to disk. A held "
-        "quick-ask value is masked (`secret_mask`) before it is written.",
-    ),
-    (
-        "A browser op's replay mark",
-        "browser_harness/live_hub.py",
-        "The page URL an op's replay event is stamped with, masked (`secret_mask`) "
-        "when the mark is taken, before the op can leave the origin.",
-    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1795,9 +1768,6 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
-        # Defines the quick-ask masker (`redact`, `_redact`) its callers apply; the
-        # registered browser sinks are those callers, so this module emits nothing.
-        "browser_harness/secret_mask.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).

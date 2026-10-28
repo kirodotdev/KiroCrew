@@ -51,8 +51,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from kiro_crew.browser_harness import secret_mask
-
 logger = logging.getLogger(__name__)
 
 #: Directory under the data home every recording lives in.
@@ -866,7 +864,6 @@ class LiveRecorder:
         # A size from the last turn is not this one's: a point before the first
         # frame falls back to the shown frame's own size.
         rec.frame_w = rec.frame_h = 0
-        url = secret_mask.redact(session_key, url)
         self._submit(session_key, lambda: self.store.start_turn(session_key, turn_id, ts, url))
 
     def turn_ended(self, session_key: str) -> None:
@@ -888,7 +885,6 @@ class LiveRecorder:
         if rec is None or not rec.turn_id or not url:
             return
         turn_id = rec.turn_id
-        url = secret_mask.redact(session_key, url)
         self._submit(session_key, lambda: self.store.note_url(session_key, turn_id, url))
 
     # ── frames ─────────────────────────────────────────────────────────────
@@ -999,9 +995,6 @@ class LiveRecorder:
             # size can change before the frame the replay shows (a settle frame).
             event = {**event, "fw": rec.frame_w, "fh": rec.frame_h}
         turn_id = rec.turn_id
-        # Every event whole (URL, label, args, result), the agent's and the
-        # person's: a quick-ask value the page showed back is masked here too.
-        event = secret_mask.redact(session_key, event)
         self._submit(session_key, lambda: self.store.add_event(session_key, turn_id, event))
 
     def user_input(self, session_key: str, event: Any, url: str = "") -> None:
@@ -1070,9 +1063,6 @@ class LiveRecorder:
             "type", rec.typed_ts, rec.typed_url, args={"chars": chars, "secret": True}
         )
         turn_id = rec.turn_id
-        # Every event whole (URL, label, args, result), the agent's and the
-        # person's: a quick-ask value the page showed back is masked here too.
-        event = secret_mask.redact(session_key, event)
         self._submit(session_key, lambda: self.store.add_event(session_key, turn_id, event))
 
     # ── deletion ───────────────────────────────────────────────────────────

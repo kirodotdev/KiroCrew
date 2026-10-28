@@ -41,7 +41,6 @@ from typing import Any
 
 from kiro_crew.browser_harness import budgets as _budgets
 from kiro_crew.browser_harness import ops as _ops
-from kiro_crew.browser_harness import secret_mask
 
 logger = logging.getLogger(__name__)
 
@@ -421,9 +420,7 @@ async def _capture(ctx: _ops.OpContext) -> bytes | None:
     path = None
     try:
         path = await asyncio.to_thread(_ops._screenshot_path, ctx)
-        # A value the person typed through a quick ask is painted out, or no frame.
-        if not await secret_mask.masked_shot(ctx, path, max_dim=IMAGE_MAX_DIM):
-            return None
+        await ctx.helper("screenshot", path=str(path), max_dim=IMAGE_MAX_DIM)
         data = await asyncio.to_thread(path.read_bytes)
     except Exception:  # noqa: BLE001 - no frame is the text path, never a failed op
         logger.debug("browser decisions: frame capture failed", exc_info=True)
@@ -469,7 +466,7 @@ def _inside(x: float, y: float, rect: Any) -> bool:
 async def _snapshot(ctx: _ops.OpContext) -> tuple[str, str, list[Any]] | None:
     """``(outline, title, nodes)`` of the current page, or ``None``."""
     try:
-        data = await _ops._read(ctx, "snapshot")
+        data = await _ops._page(ctx, "snapshot")
     except Exception:  # noqa: BLE001 - no outline means no decision, never a failed op
         logger.debug("browser decisions: snapshot failed", exc_info=True)
         return None

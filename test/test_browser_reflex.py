@@ -387,28 +387,6 @@ def test_a_code_terminal_stops_it(seam, tmp_path):
     assert result["stop"] == "until" and game.pressed == [] and seam.provider.calls == []
 
 
-def test_a_stop_text_cannot_confirm_a_held_quick_ask_value(seam, tmp_path):
-    from types import SimpleNamespace
-
-    from kiro_crew.browser_harness import secret_mask
-
-    game = Game()
-    game.over = True  # the page's own raw-text check would say yes
-    game.typed = ["Sekret9!"]
-    ask = SimpleNamespace(
-        spec=SimpleNamespace(kind="credentials"), origin="https://game.example", top_origin=""
-    )
-    secret_mask.hold("chat-mask", ask, {"password": "Sekret9!"})
-    try:
-        ctx = _ctx(game, tmp_path, session_key="chat-mask")[0]
-        # The fake's raw check answers yes to this text; the masked visible text
-        # does not hold it, so the loop must not stop on the raw answer.
-        result = _run({**GAME, "until_text": "Game over", "max_steps": 2}, ctx)
-    finally:
-        secret_mask.drop("chat-mask")
-    assert result.get("stop") != "until" and "Sekret9" not in json.dumps(result)
-
-
 def test_a_takeover_stops_it_at_the_next_step(seam, tmp_path):
     game = Game()
     checks = {"n": 0}

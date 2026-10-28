@@ -24,7 +24,6 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.browser_harness import quick_ask as qa
-from kiro_crew.browser_harness import secret_mask
 from kiro_crew.browser_harness.budgets import ASK_WAIT_S
 from kiro_crew.browser_harness.live_hub import LiveHub, get_live_hub
 from kiro_crew.browser_harness.takeover import USER
@@ -303,10 +302,6 @@ async def _act(
             # meanwhile (the turn folded it), and a late write or click must not land.
             if ask.outcome or asyncio.get_running_loop().time() >= ask.deadline:
                 return _fail(409, "stale")
-            if action == "fill":
-                # Kept for the mask before the first write: what the page shows
-                # of them afterwards never reaches the agent (``secret_mask``).
-                secret_mask.hold(key, ask, values or {})
             if action == "fill" and ask.spec.sign_in_takeover:
                 assert values is not None
                 await qa.sign_in(probe, ask, values, getattr(stream, "frames", None))

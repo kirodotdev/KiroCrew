@@ -57,7 +57,6 @@ from typing import Any
 from kiro_crew.browser_harness import decide as _decide
 from kiro_crew.browser_harness import ops as _ops
 from kiro_crew.browser_harness import reflex_space as _space
-from kiro_crew.browser_harness import secret_mask as _secret_mask
 from kiro_crew.browser_harness.reflex_space import Move, Space
 
 logger = logging.getLogger(__name__)
@@ -422,7 +421,7 @@ def _higher(a: str, b: str) -> str:
 
 
 async def _cells(ctx: _ops.OpContext, selector: str) -> list[dict[str, Any]] | None:
-    found = await _ops._read(ctx, "cells", selector)
+    found = await _ops._page(ctx, "cells", selector)
     if (
         not isinstance(found, dict)
         or not found.get("ok")
@@ -470,15 +469,10 @@ class Loop:
             opts["region"] = plan.region
         if plan.read:
             opts["read"] = plan.read
-        # While a quick-ask copy is held, the stop text is judged on the masked
-        # text here, never by the page's raw-text check (a guess must not confirm).
-        masked_until = bool(plan.until_text) and _secret_mask.live(self.ctx.session_key) is not None
-        if masked_until:
-            opts["text"] = True
-        elif plan.until_text:
+        if plan.until_text:
             opts["until"] = plan.until_text
         try:
-            seen = await _ops._read(self.ctx, "observe", opts)
+            seen = await _ops._page(self.ctx, "observe", opts)
         except Exception:  # noqa: BLE001 - mid-navigation; the caller judges a None
             logger.debug("reflex: observe failed", exc_info=True)
             return None
@@ -520,11 +514,7 @@ class Loop:
             rows=rows,
             mut=mut if isinstance(mut, int) else 0,
             url=str(seen.get("url", "")),
-            until_hit=(
-                plan.until_text in str(seen.get("text") or "")
-                if masked_until
-                else bool(seen.get("until"))
-            )
+            until_hit=bool(seen.get("until"))
             or bool(plan.until_url and plan.until_url in str(seen.get("url", ""))),
         )
 
@@ -928,7 +918,7 @@ async def run(ctx: _ops.OpContext, args: dict[str, Any]) -> dict[str, Any]:
         if refused is not None:
             return refused
         try:
-            seen = await _ops._read(ctx, "observe", {"table": True, "text": True})
+            seen = await _ops._page(ctx, "observe", {"table": True, "text": True})
         except Exception:  # noqa: BLE001 - unreadable page: nothing can be pointed to
             seen = None
         page = ""

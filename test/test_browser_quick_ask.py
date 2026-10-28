@@ -31,7 +31,6 @@ from test_browser_live_routes import _app, _post
 
 from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.browser_harness import quick_ask as qa
-from kiro_crew.browser_harness import secret_mask
 from kiro_crew.dashboard.handlers import browser_ask
 from kiro_crew.dashboard.handlers import browser_live as live_mod
 from kiro_crew.dashboard.routes import browser_live as route_slice
@@ -297,7 +296,6 @@ def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     lh.reset_live_hub()
     yield
     lh.reset_live_hub()
-    secret_mask._HELD.clear()  # a fill's copy for the mask is process-wide
 
 
 @pytest.fixture
@@ -669,21 +667,6 @@ async def test_fill_writes_only_into_the_bound_nodes_and_leaks_nowhere(
     # Both fields are marked as the person's before the write, so the walker, the
     # frame mask and the screenshot guard withhold them afterwards.
     assert page.nodes[page.refs["e3"]].get("asked") and page.nodes[page.refs["e4"]].get("asked")
-    # And a copy is held for the mask: what the page shows of them afterwards
-    # reaches the agent masked (``secret_mask``), and the copy itself is in no log.
-    from kiro_crew.browser_harness import ops
-
-    held = secret_mask.live(KEY)
-    assert held is not None and set(held.values) == {"octocat", CANARY}
-
-    async def helper(name: str, **kw: Any) -> Any:
-        title = f"Hi octocat, pw {CANARY}"
-        return {"url": "https://github.com/", "title": title, "nodes": []} if name == "js" else None
-
-    snap = await ops.run_op("snapshot", {}, ops.OpContext(helper=helper, session_key=KEY))
-    assert snap["ok"] and "octocat" not in json.dumps(snap) and CANARY not in json.dumps(snap)
-    for surface in (caplog.text, json.dumps(sel_rows, default=str)):
-        assert CANARY not in surface and "octocat" not in surface
 
 
 async def test_an_answer_that_waited_on_the_fence_past_the_turn_lands_nothing() -> None:
