@@ -506,6 +506,17 @@ class TestAdoptedRecoveryRebindsOwnership:
             adopted_pids=[111],
             adopted_start_times={111: "old"},
         )
+        # The re-bind attributes the owners it re-captures against the spawn this
+        # gateway recorded for the app, so the record has to be present for these
+        # cases to reach the promotion logic they exercise. Refusal on an
+        # unattributed set has its own pins in test_apps_backend_coverage.py.
+        monkeypatch.setattr(
+            bmod,
+            "_read_pidfile",
+            lambda: {"ad": {"pid": 0, "start_time": None, "port": 9240, "spawn_instance": "sp-ad"}},
+        )
+        monkeypatch.setattr(bmod, "group_vouching_available", lambda: True)
+        monkeypatch.setattr(bmod, "_env_spawn_instance", lambda _pid: "sp-ad")
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["ad"] = ap

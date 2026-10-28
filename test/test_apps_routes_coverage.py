@@ -48,6 +48,7 @@ from apps_routes_coverage_helpers import (
 from dashboard_owner_helpers import as_owner
 
 import kiro_crew.apps.routes as routes_mod
+from kiro_crew.apps.backend import clear_backend_notice, record_backend_notice
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -1199,3 +1200,29 @@ class TestLifecycleRoutesAreOwnerOnly:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert resp.status == 403
         assert routes_mod.get_app(APP)["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_app_carries_the_backend_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused adoption at boot has no response of its own, so the app's status
+    (the list and the detail read) is where the user meets it."""
+
+    _setup_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(routes_mod, "get_app", lambda name: {"name": name})
+    monkeypatch.setattr(routes_mod, "list_apps", lambda: [{"name": APP}])
+    monkeypatch.setattr(routes_mod, "list_app_processes", lambda: [])
+    record_backend_notice(APP, "port 9999 is held; stop it")
+    try:
+        async with TestClient(TestServer(_make_app())) as client:
+            one = await (await client.get(f"/api/apps/{APP}")).json()
+            [listed] = await (await client.get("/api/apps")).json()
+        clear_backend_notice(APP)
+        async with TestClient(TestServer(_make_app())) as client:
+            cleared = await (await client.get(f"/api/apps/{APP}")).json()
+    finally:
+        clear_backend_notice(APP)
+    assert one["backend_notice"] == "port 9999 is held; stop it"
+    assert listed["backend_notice"] == "port 9999 is held; stop it"
+    assert "backend_notice" not in cleared

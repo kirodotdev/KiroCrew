@@ -433,7 +433,13 @@ class TestResolveAppBackendUrl:
         monkeypatch.setattr(routes_mod, "get_app_manifest", lambda n: None)
         assert _resolve_app_backend_url(APP) is None
 
-    def test_self_managed_fixed_port_from_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_gateway_managed_fixed_port_refuses_without_a_tracked_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT F1: a gateway-managed (entryPoint) app whose tracked port is absent
+        (adoption refused) must NOT fall through to the fixed manifest port -- that
+        port lives in the app's own writable app.json and could point at an
+        unattributed listener the proxy would then sign with the app secret."""
         monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
         monkeypatch.setattr(
             routes_mod,
@@ -443,9 +449,14 @@ class TestResolveAppBackendUrl:
                 mcpServers={},
             ),
         )
-        assert _resolve_app_backend_url(APP) == "http://127.0.0.1:7801"
+        assert _resolve_app_backend_url(APP) is None
 
-    def test_auto_port_falls_back_to_mcp_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_gateway_managed_auto_port_refuses_without_a_tracked_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT F1: an entryPoint app with an MCP server declared still refuses when
+        untracked -- the MCP fallback is reserved for self-managed apps, so a
+        gateway-managed backend never routes to an unattributed listener."""
         monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
         monkeypatch.setattr(
             routes_mod,
@@ -458,9 +469,26 @@ class TestResolveAppBackendUrl:
         monkeypatch.setattr(
             routes_mod, "resolve_mcp_backend_url", lambda servers: "http://127.0.0.1:7778"
         )
+        assert _resolve_app_backend_url(APP) is None
+
+    def test_self_managed_app_falls_back_to_mcp_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A genuinely self-managed app -- NO entryPoint, so the gateway never spawns
+        it -- still resolves via its declared MCP server URL."""
+        monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
+        monkeypatch.setattr(
+            routes_mod,
+            "get_app_manifest",
+            lambda n: SimpleNamespace(
+                backend=SimpleNamespace(entryPoint=None, port="auto"),
+                mcpServers={"x": {"url": "http://127.0.0.1:7778/mcp"}},
+            ),
+        )
+        monkeypatch.setattr(
+            routes_mod, "resolve_mcp_backend_url", lambda servers: "http://127.0.0.1:7778"
+        )
         assert _resolve_app_backend_url(APP) == "http://127.0.0.1:7778"
 
-    def test_non_numeric_port_falls_back_instead_of_raising(
+    def test_self_managed_without_mcp_is_unresolvable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
@@ -468,7 +496,7 @@ class TestResolveAppBackendUrl:
             routes_mod,
             "get_app_manifest",
             lambda n: SimpleNamespace(
-                backend=SimpleNamespace(entryPoint="server.py", port="not-a-port"),
+                backend=SimpleNamespace(entryPoint=None, port="auto"),
                 mcpServers={},
             ),
         )

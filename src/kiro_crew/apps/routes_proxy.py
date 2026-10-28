@@ -151,12 +151,19 @@ def _resolve_app_backend_url(name: str) -> str | None:
     if not manifest:
         return None
 
-    # backend.routes field contains the base URL for some apps
-    if manifest.backend.entryPoint and manifest.backend.port != "auto":
-        try:
-            return f"http://127.0.0.1:{int(manifest.backend.port)}"
-        except ValueError:
-            pass
+    # A gateway-MANAGED backend (one that declares an entryPoint, so backend.py
+    # spawns and tracks it) has no self-managed URL to fall back to: its only
+    # legitimate address is the tracked port resolved above. Step 1 already
+    # returned None here, which means tracking refused -- adoption could not
+    # attribute whatever holds the port. Falling through to the fixed
+    # ``manifest.backend.port`` (or an MCP URL) would route authenticated,
+    # app-secret-signed dashboard traffic to that unattributed listener, which is
+    # exactly what the adoption refusal exists to prevent -- and the fixed port
+    # lives in app.json inside the app's own writable directory, so it is not a
+    # trustworthy address once tracking has refused. Refuse the route instead; the
+    # manifest/MCP fallbacks below are reserved for self-managed apps.
+    if manifest.backend.entryPoint:
+        return None
 
     # 3. Fallback: derive from the MCP server URL (common for self-managed apps)
     # e.g. crew-companion declares mcpServers."crew-companion".url =

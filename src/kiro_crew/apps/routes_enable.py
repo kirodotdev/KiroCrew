@@ -42,6 +42,7 @@ from kiro_crew.apps.manager import (
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.apps.routes_lifecycle import (
+    _attach_backend_notice,
     _deregister_app_off_loop,
     _redact_warning,
     _refuse_while_startup_hook_runs,
@@ -367,6 +368,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
+            _attach_backend_notice(resp, name)
 
         # Resolve declared dependencies (if any)
         deps_data = manifest.get("dependencies")

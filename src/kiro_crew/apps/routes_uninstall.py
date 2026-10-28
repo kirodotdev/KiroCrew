@@ -641,6 +641,15 @@ async def _run_uninstall(
                     else uninstall_app(name, keep_data=keep_data)
                 ),
             )
+        if result.ok:
+            # Provenance invalidation is done INSIDE uninstall_app (the shared
+            # transaction both this handler and the offline CLI go through): it
+            # durably revokes the spawn row BEFORE the destructive step and leaves the
+            # revoked tombstone in place as the fence a committed uninstall needs. The
+            # handler does not touch the record itself — a second delete here would
+            # remove that tombstone and reopen the stop-races-uninstall race it exists
+            # to close.
+            pass
 
         # Step 6: drop the resume pointer of every conversation the app owned.
         #
@@ -782,6 +791,10 @@ async def _run_uninstall(
                             await asyncio.to_thread(platform_compat.rmtree_force, ws_dir)
                             uninstall_log.append(f"Removed workspace for {app_reg_name}")
     if not result.ok:
+        # Step 5 (uninstall_app) failed and restored the app's files, so the app is
+        # still installed. The spawn-provenance record was never touched — it is
+        # deleted only at the commit boundary above, on result.ok — so there is
+        # nothing to restore: the still-installed app keeps attributing its backend.
         sel().log_api_access(
             caller="dashboard",
             operation=operation,

@@ -43,6 +43,7 @@ from apps_backend_coverage_helpers import (
     _install_fake_socket,
     _manifest,
     _StopSpawn,
+    _stub_listeners,
 )
 
 import kiro_crew.apps.backend as bmod
@@ -150,16 +151,6 @@ def _join_started(*threads: threading.Thread) -> float:
         if thread.ident is not None:
             thread.join(max(0.0, deadline - time.monotonic()))
     return time.monotonic() - started
-
-
-def _stub_listeners(monkeypatch: pytest.MonkeyPatch, listeners: list[Any]) -> None:
-    """Pin the port->PID lookup the adoption path reads its owners from.
-
-    ``find_port_listeners`` never raises and folds every failure (tool absent,
-    wedged probe) into ``[]``, so an empty stub covers the unavailable case too.
-    """
-
-    monkeypatch.setattr(bmod.platform_compat, "find_port_listeners", lambda _port: listeners)
 
 
 # ---------------------------------------------------------------------------
@@ -882,9 +873,18 @@ class TestAdoptExistingInstance:
         # installed.json; in production start_app_backend only ever runs for an enabled
         # app. The gate itself is pinned by TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        # Adoption is gated on provenance: only a listener the gateway can attribute
+        # to the spawn it recorded for this app is adopted. Every case below is about
+        # WHICH owners get recorded, so the record is present here and vouches the
+        # listener whatever pid the case stubs. The verdict matrix has its own class.
+        bmod._write_pidfile(
+            {"adoptee": {"pid": 0, "start_time": None, "port": 0, "spawn_instance": "sp-adoptee"}}
+        )
+        monkeypatch.setattr(bmod, "group_vouching_available", lambda: True)
+        monkeypatch.setattr(bmod, "_env_spawn_instance", lambda _pid: "sp-adoptee")
         return spawn_root
 
-    def _run(self, port: int) -> AppProcess | None:
+    def _run(self, port: int) -> Any:
         return bmod._start_app_backend_body("adoptee", _manifest("server.py", port=str(port)))
 
     def test_a_healthy_instance_is_adopted_with_its_listening_pids(

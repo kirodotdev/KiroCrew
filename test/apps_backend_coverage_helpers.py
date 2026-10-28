@@ -213,3 +213,13 @@ def spawn_root_fixture(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: None)
     _install_fake_socket(monkeypatch, connect_exc=OSError("connection refused"))
     return root
+
+
+def _stub_listeners(monkeypatch: pytest.MonkeyPatch, listeners: list[Any]) -> None:
+    """Pin the port->PID lookup the adoption path reads its owners from.
+
+    ``find_port_listeners`` never raises and folds every failure (tool absent,
+    wedged probe) into ``[]``, so an empty stub covers the unavailable case too.
+    """
+
+    monkeypatch.setattr(bmod.platform_compat, "find_port_listeners", lambda _port: listeners)

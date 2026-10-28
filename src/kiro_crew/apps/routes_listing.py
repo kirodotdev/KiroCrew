@@ -30,7 +30,7 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manifest import app_endpoint_allowed
 from kiro_crew.apps.registry import _strip_git_target_userinfo, resolve_installed_trust_repository
-from kiro_crew.apps.routes_lifecycle import _redact_warning
+from kiro_crew.apps.routes_lifecycle import _attach_backend_notice, _redact_warning
 from kiro_crew.apps.update_status import attach_update, attach_updates
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
 from kiro_crew.sel import sel
@@ -133,6 +133,7 @@ async def handle_list_apps(request: web.Request) -> web.Response:
                 "healthy": proc["healthy"],
                 "pid": proc["pid"],
             }
+        _attach_backend_notice(app, app["name"])
         health = hook_health.get(app["name"])
         if health:
             if health.get("issues"):
@@ -353,7 +354,8 @@ async def handle_get_app(request: web.Request) -> web.Response:
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(await asyncio.to_thread(_installed_app_detail, name, info))
+    payload = await asyncio.to_thread(_installed_app_detail, name, info)
+    return web.json_response(_attach_backend_notice(payload, name))
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:

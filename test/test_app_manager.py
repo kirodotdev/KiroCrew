@@ -1362,3 +1362,334 @@ class TestListing:
 
     def test_get_manifest_not_installed(self, app_home):
         assert get_app_manifest("nonexistent") is None
+
+
+class TestUninstallRevokesBackendProvenance:
+    """GPT F1: provenance invalidation lives in the SHARED uninstall transaction.
+
+    The CLI uninstall (`kirocrew app uninstall` -> cli_commands -> uninstall_app)
+    reached ``uninstall_app`` directly and never revoked the spawn record, so an
+    offline uninstall left the row valid: a same-name reinstall plus a process that
+    survived the pre-uninstall SIGTERM would be adopted as the new app's backend
+    through the tree route. Revoking inside ``uninstall_app`` closes BOTH the CLI and
+    the dashboard paths at one seam.
+    """
+
+    def _seed_row(self, name: str) -> dict:
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        row = {
+            "pid": 54321,
+            "start_time": "st-54321",
+            "port": 9100,
+            "spawn_instance": "sp-old-install",
+        }
+        pf._write_pidfile({name: dict(row)})
+        return row
+
+    def test_uninstall_revokes_the_spawn_record_so_a_survivor_is_refused(
+        self, tmp_path, app_home
+    ) -> None:
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-app")).ok
+        row = self._seed_row("prov-app")
+        # The shared transaction the CLI goes through.
+        assert uninstall_app("prov-app").ok
+        # GPT F1: the revoked tombstone is LEFT in place (not deleted) as the durable
+        # fence a committed uninstall needs, so a stop racing the uninstall cannot
+        # resurrect provenance and a same-name reinstall's adopt path refuses the
+        # old-install survivor.
+        live = pf._read_pidfile().get("prov-app")
+        assert live is not None and live.get("revoked") is True, live
+        attributed, reason = pf._adoption_provenance("prov-app", [row["pid"]])
+        assert attributed is False, reason
+
+    def test_the_uninstall_tombstone_blocks_a_racing_stop_restore(self, tmp_path, app_home) -> None:
+        """GPT F1: after a committed uninstall, a concurrent gateway stop that tries to
+        RESTORE the forgotten row (an ordinary stop that found a detached survivor)
+        must not resurrect a non-revoked row. The tombstone's presence makes
+        _restore_app_pid (name-present early-return) refuse, so the restore is a
+        no-op and adoption stays refused."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-race")).ok
+        original = self._seed_row("prov-race")
+        assert uninstall_app("prov-race").ok
+        # Simulate the racing stop's restore of the pre-stop (non-revoked) row.
+        pf._restore_app_pid("prov-race", {k: v for k, v in original.items()})
+        live = pf._read_pidfile().get("prov-race")
+        assert (
+            live is not None and live.get("revoked") is True
+        ), "the restore must not overwrite the uninstall tombstone with a live row"
+        attributed, _ = pf._adoption_provenance("prov-race", [original["pid"]])
+        assert attributed is False
+
+    def test_uninstall_with_no_row_still_writes_a_tombstone(self, tmp_path, app_home) -> None:
+        """GPT F1 final hole: when the row is ALREADY ABSENT at revoke time (a stop
+        removed it first in the race), uninstall must still write a bare revoked
+        tombstone — otherwise a stop restoration after the uninstall resurrects
+        provenance and a same-name reinstall adopts the removed app's listener."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-norow")).ok
+        pf._write_pidfile({})  # no spawn row for this app at revoke time
+        assert uninstall_app("prov-norow").ok
+        live = pf._read_pidfile().get("prov-norow")
+        assert (
+            live is not None and live.get("revoked") is True
+        ), "uninstall must leave a tombstone even when no row existed at revoke time"
+        # A racing stop's later restore cannot resurrect provenance.
+        pf._restore_app_pid(
+            "prov-norow", {"pid": 777, "start_time": "s7", "port": 9, "spawn_instance": "i7"}
+        )
+        attributed, _ = pf._adoption_provenance("prov-norow", [777])
+        assert attributed is False
+
+    def test_uninstall_refuses_when_the_revocation_cannot_persist(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT F2 at the uninstall seam: a durable revoke that cannot land
+        (ENOSPC/EDQUOT) must ABORT the uninstall rather than delete the files and
+        leave a live-vouching row behind, so the app and its (restorable) record
+        survive for a retry once the disk is writable."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-app2")).ok
+        self._seed_row("prov-app2")
+        # Make the durable revoke fail to confirm (swallowed write).
+        monkeypatch.setattr(pf, "_write_pidfile", lambda data: False)
+        result = uninstall_app("prov-app2")
+        assert not result.ok
+        assert result.error_code == "provenance_not_revoked", result.error
+        # The app is still installed (destructive step refused).
+        assert (app_home / "apps" / "prov-app2").is_dir()
+
+    def test_a_failed_uninstall_unrevokes_the_still_installed_apps_row(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT F1: the uninstall revokes the row BEFORE the destructive step, so when
+        that step fails and rolls back, the still-installed app's row must be
+        UN-revoked — otherwise adoption/rebind rejects the app's own live backend.
+        _restore_app_pid is setdefault (it sees the revoked row still present and
+        refuses), so the rollback uses _unrevoke_app_pid, which clears the stamp."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-app3")).ok
+        row = self._seed_row("prov-app3")
+        # Let the durable revoke succeed, then make the destructive delete fail so the
+        # uninstall rolls back with the row already stamped revoked.
+        import shutil as _shutil
+
+        def _boom(*_a, **_k):
+            raise OSError("simulated rmtree failure")
+
+        monkeypatch.setattr(_shutil, "rmtree", _boom)
+        result = uninstall_app("prov-app3")
+        assert not result.ok, result
+        # App is still installed, and its row is un-revoked so adoption accepts the
+        # recorded leader again.
+        assert (app_home / "apps" / "prov-app3").is_dir()
+        live = pf._read_pidfile().get("prov-app3")
+        assert live is not None and not live.get("revoked"), live
+        monkeypatch.setattr(pf, "_proc_start_time", lambda _pid: row["start_time"])
+        attributed, reason = pf._adoption_provenance("prov-app3", [row["pid"]])
+        assert attributed is True, reason
+
+    def test_uninstall_holds_the_lifecycle_flock_across_revoke_and_removal(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT 6.1: an in-flight spawn can overwrite uninstall's revocation unless the
+        uninstall holds ``app_backend_lifecycle_flock(name)`` across BOTH the revoke
+        and the file removal — the spawn path holds the same cross-process lock while
+        it persists its pidfile record. Assert the flock is entered and still held when
+        the revoke runs AND when the destructive removal runs, and released afterward.
+        """
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+        from kiro_crew.apps.backend_runtime import tracking as tr
+
+        assert install_app(_make_app_source(tmp_path, name="prov-flock")).ok
+        self._seed_row("prov-flock")
+
+        held = {"depth": 0}
+        events: list[str] = []
+
+        import contextlib as _ctxlib
+
+        real_flock = tr.app_backend_lifecycle_flock
+
+        @_ctxlib.contextmanager
+        def _tracking_flock(app_name: str):
+            with real_flock(app_name):
+                held["depth"] += 1
+                events.append(f"enter:{app_name}")
+                try:
+                    yield
+                finally:
+                    events.append(f"exit:{app_name}")
+                    held["depth"] -= 1
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.backend_runtime.tracking.app_backend_lifecycle_flock", _tracking_flock
+        )
+
+        real_revoke = pf.revoke_backend_provenance
+
+        def _revoke_under_lock(name: str):
+            assert held["depth"] > 0, "revoke ran WITHOUT the lifecycle flock held"
+            events.append("revoke")
+            return real_revoke(name)
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.backend_runtime.pidfile.revoke_backend_provenance", _revoke_under_lock
+        )
+
+        import shutil as _shutil
+
+        real_rmtree = _shutil.rmtree
+
+        def _rmtree_under_lock(*a, **k):
+            assert held["depth"] > 0, "file removal ran WITHOUT the lifecycle flock held"
+            events.append("rmtree")
+            return real_rmtree(*a, **k)
+
+        monkeypatch.setattr(_shutil, "rmtree", _rmtree_under_lock)
+
+        assert uninstall_app("prov-flock").ok
+        # Both the revoke and the removal happened inside one held flock window.
+        assert "enter:prov-flock" in events and "exit:prov-flock" in events, events
+        assert (
+            events.index("enter:prov-flock")
+            < events.index("revoke")
+            < events.index("exit:prov-flock")
+        ), events
+        assert (
+            events.index("enter:prov-flock")
+            < events.index("rmtree")
+            < events.index("exit:prov-flock")
+        ), events
+        assert held["depth"] == 0, "the flock must be released after the uninstall"
+
+    def test_a_refused_uninstall_whose_grant_restore_also_fails_returns_a_note_not_a_500(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """Opus 5.5: when the durable revoke fails (full disk) the uninstall restores
+        the withdrawn grant and returns ``provenance_not_revoked``. If the SAME full
+        disk makes that restore config write raise too, an unguarded restore would
+        escape as a 500 / CLI traceback with the grant left withdrawn. The restore is
+        guarded: the uninstall still returns the structured refusal, now carrying a
+        note telling the user to re-grant."""
+        from kiro_crew.apps import manager as mgr
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-grant")).ok
+        self._seed_row("prov-grant")
+        # Revoke cannot persist (full disk).
+        monkeypatch.setattr(pf, "_write_pidfile", lambda data: False)
+
+        # And the grant-restore config write also fails on the same full disk.
+        def _restore_boom(*_a, **_k):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(mgr, "_restore_trust_grant", _restore_boom)
+
+        result = uninstall_app("prov-grant")
+        assert not result.ok
+        assert result.error_code == "provenance_not_revoked", result.error
+        assert "re-grant" in result.error, result.error
+        # The app is still installed (nothing destroyed), ready for a retry.
+
+    def test_a_lifecycle_lock_acquisition_failure_restores_the_grant_not_a_500(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT 6.1 / Opus 5.5: the grant is withdrawn BEFORE the lifecycle flock is
+        entered. Entering it goes through ``flock_exclusive`` -> ``file_lock``, which
+        raises ``OSError`` after the 300s ceiling (and on EACCES/ENOENT opening the
+        lockfile). An unguarded entry failure escaped OUTSIDE both restore arms,
+        leaving the installed app's execution grant withdrawn with no restore and a
+        CLI traceback / HTTP 500. Assert the acquisition failure is compensated: the
+        grant is restored and a retryable structured refusal is returned, with nothing
+        destroyed."""
+        from kiro_crew.apps import manager as mgr
+
+        assert install_app(_make_app_source(tmp_path, name="prov-lockfail")).ok
+        self._seed_row("prov-lockfail")
+
+        # The grant exists before the uninstall; track whether it is restored after
+        # the acquisition failure withdraws it.
+        restored = {"count": 0}
+        real_restore = mgr._restore_trust_grant
+
+        def _tracking_restore(*a, **k):
+            restored["count"] += 1
+            return real_restore(*a, **k)
+
+        monkeypatch.setattr(mgr, "_restore_trust_grant", _tracking_restore)
+
+        import contextlib as _ctxlib
+
+        @_ctxlib.contextmanager
+        def _flock_that_cannot_be_acquired(app_name: str):
+            # Mirror file_lock giving up after the 300s ceiling.
+            raise OSError("Resource temporarily unavailable")
+            yield  # pragma: no cover - never reached
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.backend_runtime.tracking.app_backend_lifecycle_flock",
+            _flock_that_cannot_be_acquired,
+        )
+
+        result = uninstall_app("prov-lockfail")
+        assert not result.ok
+        assert result.error_code == "lifecycle_lock_unavailable", result.error
+        assert "retry" in result.error.lower(), result.error
+        # The grant was restored (not left withdrawn) ...
+        assert restored["count"] == 1, "the withdrawn grant must be restored on acquire failure"
+        # ... and nothing was destroyed: the app is still installed, ready for retry.
+        assert (app_home / "apps" / "prov-lockfail").is_dir()
+
+    def test_a_partial_rmtree_that_deleted_the_record_keeps_the_row_revoked(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """rmtree is not atomic, so a partial failure can delete
+        installed.json BEFORE it raises — and the surviving backend this revoke
+        guards against can itself cause that partial failure (open handles on
+        Windows). The uninstall's except arm must then NOT un-revoke the old spawn
+        row: with the record gone the uninstall effectively removed the app, so
+        restoring the row would re-arm it for whatever a same-name reinstall rebinds
+        the declared port with. The restore is gated on the SAME installed-state
+        check the trust-grant restore uses (``_read_installed(name) == meta``), so a
+        deleted/changed record leaves the row revoked (fail-closed). Fails without
+        the gate (the old code un-revoked on ``revoke_committed`` alone)."""
+        from kiro_crew.apps import manager as mgr
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+        from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir
+
+        assert install_app(_make_app_source(tmp_path, name="prov-partial")).ok
+        row = self._seed_row("prov-partial")
+        app_root = app_dir("prov-partial")
+        meta_path = app_root / INSTALLED_META_FILENAME
+
+        real_rmtree = mgr.shutil.rmtree
+
+        def _rmtree_that_deletes_the_record_then_fails(path, *args, **kwargs):
+            # Model a non-atomic rmtree: installed.json is already gone when it
+            # raises partway (the real failure mode a surviving backend's open
+            # handle triggers mid-delete on Windows).
+            if str(path) == str(app_root):
+                meta_path.unlink(missing_ok=True)
+                raise OSError("simulated: deletion failed after removing installed.json")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(mgr.shutil, "rmtree", _rmtree_that_deletes_the_record_then_fails)
+
+        result = uninstall_app("prov-partial")
+        assert not result.ok
+        # The record was deleted by the partial rmtree, so the row MUST stay revoked:
+        # un-revoking it would let a same-name reinstall adopt whatever rebinds the port.
+        live = pf._read_pidfile().get("prov-partial")
+        assert (
+            live is not None and live.get("revoked") is True
+        ), f"a partial uninstall that deleted installed.json must leave the row revoked: {live}"
+        attributed, _ = pf._adoption_provenance("prov-partial", [row["pid"]])
+        assert attributed is False

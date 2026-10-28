@@ -7,6 +7,7 @@ setup. These are aiohttp-compatible handler functions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import hmac as _hmac
@@ -21,10 +22,11 @@ import stat
 import sys
 import sys as _sys
 import time
+from dataclasses import dataclass
 from email.utils import formatdate
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
 import yarl
@@ -34,9 +36,17 @@ import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.backend import (
+    PidfileRevokeFailed,
+    _unrevoke_app_pid,
+    app_backend_lifecycle_flock,
+    backend_notice,
+    capture_backend_provenance,
     get_app_backend_port,
     list_app_processes,
+    quarantine_backend,
+    record_backend_notice,
     recorded_backend_port,
+    revoke_backend_provenance,
     start_app_backend,
     stop_app_backend,
     unstopped_backend_port,
@@ -315,13 +325,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resync_app_crons_after_update,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
+        _UPDATE_NOT_RESTARTED_NOTICE,
+        _UPDATE_PROVENANCE_WRITE_FAILED_NOTICE,
         _app_may_run_after_install,
+        _attach_backend_notice,
         _check_min_version,
         _deregister_app_off_loop,
+        _hold_backend_lifecycle_flock,
+        _invalidate_provenance_before_restart,
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
+        _replace_installed_app_with_provenance,
+        _ReplaceOutcome,
         _restore_app_after_failed_update,
+        _restore_provenance_after_failed_update,
+        _revoke_provenance_before_replacement,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,

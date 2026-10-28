@@ -20,6 +20,7 @@ from kiro_crew.apps.backend_runtime.pidfile import (
     _proc_start_time,
     _read_pidfile,
     _write_pidfile,
+    quarantine_backend,
 )
 from kiro_crew.apps.backend_runtime.termination import _REAP_POLL_INTERVAL, _REAP_SIGTERM_GRACE
 from kiro_crew.sel import sel
@@ -408,6 +409,7 @@ def _reap_stale_app_backends() -> int:
     # enable/disable that wrote during the scan is merged, not clobbered. Drop an
     # entry ONLY if it still equals what we handled: a mid-scan re-record (new
     # pid) yields a different entry that must be kept.
+    dropped: list[str] = []
     with _pidfile_lock:
         current = _read_pidfile()
         for app_name, handled_entry in handled.items():
@@ -417,7 +419,26 @@ def _reap_stale_app_backends() -> int:
                 handled_entry.get("pid"), handled_entry.get("start_time")
             ):
                 current.pop(app_name, None)
-        _write_pidfile(current)
+                dropped.append(app_name)
+        removal_persisted = _write_pidfile(current)
+    # When the row removal could not be persisted (ENOSPC/EDQUOT -- the same
+    # failure the quarantine mechanism exists for), the stale row survives on
+    # disk and still vouches for whatever rebinds the port, including a
+    # SIGTERM-survivor forked into the reaped group. Quarantine every name whose
+    # removal did not land so the LATER adopt in THIS generation refuses the
+    # survivor: the in-memory quarantine set needs no disk write, so it holds
+    # under the very disk-full that defeated the removal. Done outside the lock
+    # because quarantine_backend takes _pidfile_lock itself (non-reentrant).
+    if not removal_persisted and dropped:
+        for app_name in dropped:
+            quarantine_backend(
+                app_name, "startup stale-reap could not persist orphaned-row removal"
+            )
+        logger.warning(
+            "Startup stale-reap could not persist pidfile row removal for %d app(s); "
+            "quarantined them so a later adopt refuses the orphaned-row survivor",
+            len(dropped),
+        )
     if reaped:
         logger.info("Startup stale-reap: terminated %d orphaned app backend(s)", len(reaped))
     if group_reaped:

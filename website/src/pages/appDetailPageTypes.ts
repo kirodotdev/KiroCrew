@@ -60,6 +60,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   enabled?: boolean
   sessionApprovalConsentPending?: boolean
   approvedGrants?: { api?: string[]; events?: string[] }
+  /** Server prose: why the backend is not running and what the user must do. */
+  backendNotice?: string
   managed?: string
   source?: string
   installedAt?: string

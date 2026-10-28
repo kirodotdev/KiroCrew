@@ -86,9 +86,9 @@ class TestStopSpawnedBackend:
 
 class TestStopAdoptedBackend:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's instant PID wait, moved verbatim; tracked for a de-flake pass
-    def _fast_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bmod, "_wait_for_pids", lambda _pids, timeout=2.0: None)
+    def _fast_wait(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's instant PID wait, moved verbatim; tracked for a de-flake pass
+        _floor_monkeypatch.setattr(bmod, "_wait_for_pids", lambda _pids, timeout=2.0: None)
 
     @pytest.fixture()
     def kills(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
@@ -121,6 +121,55 @@ class TestStopAdoptedBackend:
         # Tracking is restored so a retry after re-adoption is possible.
         assert bmod._processes["ext"] is ap
         assert bmod._allocated_ports["ext"] == ap.port
+
+    def test_an_ordinary_adopted_stop_leaving_a_replacement_keeps_the_row(
+        self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT F1: an ORDINARY adopted stop (``_retry_if_serving`` is None) signals
+        the recorded PIDs and reports success, but the app's own spawn-tree
+        supervisor can leave a REPLACEMENT listener on the port. The pidfile row is
+        the only handle a later re-enable has to re-attribute that survivor; dropped,
+        re-enable refuses the app's own replacement as "no spawn recorded" with no
+        self-correcting path. The row must be put back when the port still listens,
+        matching the spawned-root ordinary-stop restore.
+        """
+
+        row = {
+            "pid": 111,
+            "start_time": "st-111",
+            "port": bmod._MIN_PORT + 12,
+            "spawn_instance": "sp-a",
+        }
+        self._track(adopted_pids=[111], adopted_start_times={111: "st-111"}, healthy=True)
+        bmod._write_pidfile({"ext": dict(row)})
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st-111")
+        # The recorded PID is signalled and gone, but a replacement supervisor still
+        # answers the port -> ordinary stop tolerates it and returns success.
+        monkeypatch.setattr(bmod, "_port_is_listening", lambda _port: True)
+        assert bmod.stop_app_backend("ext") is True
+        # The recovery row survives so the replacement stays attributable.
+        assert bmod._read_pidfile().get("ext") == row
+
+    def test_an_ordinary_adopted_stop_with_a_clean_port_drops_the_row(
+        self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The complement: when the port is silent after an ordinary adopted stop
+        (no replacement survived), the row is dropped as before -- re-persisting it
+        on every clean stop would let a later start re-adopt a backend that genuinely
+        stopped instead of launching fresh."""
+
+        row = {
+            "pid": 111,
+            "start_time": "st-111",
+            "port": bmod._MIN_PORT + 12,
+            "spawn_instance": "sp-a",
+        }
+        self._track(adopted_pids=[111], adopted_start_times={111: "st-111"}, healthy=True)
+        bmod._write_pidfile({"ext": dict(row)})
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st-111")
+        monkeypatch.setattr(bmod, "_port_is_listening", lambda _port: False)
+        assert bmod.stop_app_backend("ext") is True
+        assert "ext" not in bmod._read_pidfile()
 
     def test_only_identity_verified_pids_are_signalled(
         self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch

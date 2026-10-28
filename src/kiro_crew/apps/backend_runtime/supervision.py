@@ -16,6 +16,7 @@ import time
 from typing import Literal
 
 from kiro_crew.apps.backend_runtime import _FACADE
+from kiro_crew.apps.backend_runtime.pidfile import _adoption_provenance
 from kiro_crew.apps.backend_runtime.ports import _capture_adopted_owners
 from kiro_crew.apps.backend_runtime.probe import (
     HealthProbeOutcome,
@@ -38,6 +39,7 @@ from kiro_crew.apps.backend_runtime.tracking import (
     _restart_attempts,
 )
 from kiro_crew.apps.execution import app_execution_denied, third_party_ceiling_closed
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(_FACADE)
 
@@ -144,6 +146,14 @@ def _rebind_adopted_owners(ap: AppProcess, health_path: str) -> bool:
     Reuses the adoption-time consistency sandwich (:func:`_capture_adopted_owners`), so a
     responder that exits mid-capture cannot hand ownership to a bystander. Returns False
     when ownership cannot be established, which the caller treats as "do not promote".
+
+    Attribution is re-asked on the re-captured set, not inherited from the adoption
+    that installed this record. The set can be a DIFFERENT population: this path runs
+    after an adopted backend stops answering, so an unrelated listener that answers the
+    declared health path in its place would otherwise be written into the owner record
+    and promoted -- the same "outlives its app and rebinds that port" shape
+    :func:`_adoption_provenance` exists to refuse, reached through recovery instead of
+    through a start.
     """
     try:
         captured = _capture_adopted_owners(ap.app_name, ap.port, health_path)
@@ -164,6 +174,26 @@ def _rebind_adopted_owners(ap: AppProcess, health_path: str) -> bool:
         )
         return False
     pids, start_times = captured
+    attributed, provenance = _adoption_provenance(ap.app_name, pids)
+    if not attributed:
+        try:
+            sel().log_api_access(
+                caller="gateway",
+                operation="app_backend_adopt",
+                outcome="refused_unattributed",
+                resources=f"{ap.app_name} port={ap.port} rebind provenance={provenance}",
+            )
+        except Exception as exc:
+            logger.debug("SEL audit failed for app %s rebind refusal: %s", ap.app_name, exc)
+        logger.warning(
+            "App %s: refusing to re-bind the instance on port %s (pids %s): %s. "
+            "Leaving it unhealthy rather than managing a listener this gateway does not own.",
+            ap.app_name,
+            ap.port,
+            pids,
+            provenance,
+        )
+        return False
     with _lock:
         if _processes.get(ap.app_name) is not ap:
             return False
@@ -417,8 +447,10 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
     Liveness is checked cheapest-first. For a backend we spawned, ``Popen.poll()``
     answers from an already-reaped exit status with no syscall to the app at all and is
     DECISIVE — an exited process cannot come back on its own, so one observation demotes
-    it and the watch stops. An adopted backend has no ``Popen`` handle (it belongs to
-    another supervisor) and is judged by the health endpoint alone.
+    it and the watch stops. An adopted backend has no ``Popen`` handle — it is a survivor
+    of a prior gateway generation that this gateway re-adopted because it could attribute
+    the listener to the spawn it had recorded — so it is judged by the health endpoint
+    alone.
 
     An HTTP failure from a process that is still alive is NOT decisive: it may be a slow
     request or a GC pause, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses

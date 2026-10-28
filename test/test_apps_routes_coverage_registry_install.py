@@ -184,6 +184,140 @@ class TestRegistryInstall:
         assert body["registration"]["agents"] == []
         assert calls == ["stop", "deregister"]
 
+    @pytest.mark.asyncio
+    async def test_replacing_an_installed_app_revokes_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A registry Update (install over an INSTALLED app) revokes the spawn row.
+
+        The Update button reaches the registry-install endpoint, which replaces the
+        app's files while reusing its port. Without revoking the pre-update spawn row, a
+        detached survivor of the old version would stay attributable and a re-enable
+        would adopt it as the updated backend -- the attribution gap this PR closes. So
+        a replace runs the provenance transaction: the row is revoked before the
+        replace. Removing that transaction (the un-wrapped install the finding reported)
+        leaves ``revoke_backend_provenance`` uncalled, turning this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)  # the app is already installed -> was_installed is True
+        enable_app(APP)
+        revoked: list[str] = []
+        monkeypatch.setattr(
+            routes_mod, "revoke_backend_provenance", lambda n: revoked.append(n) or {}
+        )
+
+        async def _ok(name: str, **kwargs: Any) -> dict[str, Any]:
+            return {"ok": True, "name": APP, "log": "updated"}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _ok)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install", json={"name": APP})
+            assert resp.status == 201
+        # The pre-update row was revoked before (and invalidated after) the replace, so
+        # the surviving old backend is not attributable.
+        assert APP in revoked, "a registry replace of an installed app must revoke provenance"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_replace_restores_the_running_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clone/build failure on a registry Update puts the app back the way it was.
+
+        The transaction stops the backend and deregisters the app's resources before it
+        clones. When the clone/build then fails, nothing landed -- so the unchanged app
+        must be restored: its resources re-registered and a runnable backend restarted.
+        Without that restore the app is left enabled but unavailable, its agents, skills,
+        crons and MCP servers gone. The handler re-registers (``register_app``) and
+        restarts (``start_app_backend``); removing the restore call turns this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async def _failed(name: str, **kw: Any) -> dict[str, Any]:
+            return {"ok": False, "name": APP, "error": "build failed"}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _failed)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install", json={"name": APP})
+            assert resp.status == 400
+        assert "register" in calls, "a failed registry replace must re-register the old app"
+        assert "start" in calls, "a failed registry replace must restart the old backend"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_revoke_restores_the_running_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A revoke that cannot be confirmed refuses the replace AND restores the app.
+
+        The transaction durably revokes the pre-update spawn row before touching files;
+        when that revoke cannot be persisted (disk full) the replace is refused with
+        nothing destroyed. But the stop+deregister already happened, so the unchanged app
+        must be restored -- re-registered and restarted -- not left enabled but
+        unavailable. Removing the restore call turns this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        from kiro_crew.apps.backend_runtime.pidfile import PidfileRevokeFailed
+
+        def _boom(name: str) -> dict[str, Any]:
+            raise PidfileRevokeFailed("ENOSPC")
+
+        monkeypatch.setattr(routes_mod, "revoke_backend_provenance", _boom)
+
+        async def _ok(name: str, **kw: Any) -> dict[str, Any]:
+            return {"ok": True, "name": APP}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _ok)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install", json={"name": APP})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "provenance_not_revoked"
+        assert (
+            "register" in calls and "start" in calls
+        ), "a refused (revoke-failed) registry replace must restore the old app"
+
+    @pytest.mark.asyncio
+    async def test_a_client_install_result_restores_the_running_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A replace that resolves to client-only install still restores the old app.
+
+        When an installed app's manifest changes to client-only on an unsupported host,
+        the replace returns ``needsClientInstall`` -- an uncommitted failure, nothing
+        landed. The handler returns that result at an early branch, but the transaction
+        already stopped and deregistered the app, so it must be restored first. Without
+        the restore the unchanged app is left enabled with its backend stopped and its
+        resources removed. Removing the restore call turns this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async def _client(name: str, **kw: Any) -> dict[str, Any]:
+            return {"ok": False, "name": APP, "needsClientInstall": True}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _client)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install", json={"name": APP})
+            assert resp.status == 200
+            assert (await resp.json())["needsClientInstall"] is True
+        assert (
+            "register" in calls and "start" in calls
+        ), "a client-install replace must restore the old app"
+
 
 # ---------------------------------------------------------------------------
 # POST /api/apps/registry/install-stream (SSE)
@@ -272,6 +406,138 @@ class TestRegistryInstallStream:
         assert done["ok"] is True
         assert done["registration"]["agents"] == []
         assert calls == ["stop", "deregister"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_replace_of_an_installed_app_revokes_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SSE Update route also revokes the spawn row when it replaces an app.
+
+        Same gap as the non-stream route: the detail page's Update button goes through
+        this handler, which replaces an installed app's files while reusing its port.
+        The replace must run the provenance transaction so a detached survivor of the
+        old version is revoked and cannot be adopted as the updated backend. Removing
+        the transaction leaves ``revoke_backend_provenance`` uncalled, turning this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)  # already installed -> was_installed is True
+        enable_app(APP)
+        revoked: list[str] = []
+        monkeypatch.setattr(
+            routes_mod, "revoke_backend_provenance", lambda n: revoked.append(n) or {}
+        )
+
+        async def _ok(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": True, "name": name}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _ok)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install-stream", json={"name": APP})
+            assert resp.status == 200
+            events = _sse_events(await resp.text())
+        name, payload = events[-1]
+        assert name == "done"
+        assert json.loads(payload)["ok"] is True
+        assert APP in revoked, "a streaming registry replace must revoke provenance"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_streaming_replace_restores_the_running_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SSE Update route also restores the old app when the replace fails.
+
+        Same rollback as the non-stream route: the transaction stops and deregisters the
+        app before the clone, so a clone/build failure must restore it (re-register +
+        restart) rather than leave it enabled but unavailable. Removing the restore call
+        turns this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async def _failed(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": False, "name": APP, "error": "build failed"}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _failed)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install-stream", json={"name": APP})
+            assert resp.status == 200
+            events = _sse_events(await resp.text())
+        assert json.loads(events[-1][1])["ok"] is False
+        assert (
+            "register" in calls and "start" in calls
+        ), "a failed streaming registry replace must restore the old app"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_streaming_revoke_restores_the_running_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A revoke that cannot be confirmed on the SSE route refuses AND restores.
+
+        The stop+deregister already ran, so a refused (revoke-failed) replace must
+        restore the unchanged app. Removing the restore call turns this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        from kiro_crew.apps.backend_runtime.pidfile import PidfileRevokeFailed
+
+        def _boom(name: str) -> dict[str, Any]:
+            raise PidfileRevokeFailed("ENOSPC")
+
+        monkeypatch.setattr(routes_mod, "revoke_backend_provenance", _boom)
+
+        async def _ok(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": True, "name": APP}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _ok)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install-stream", json={"name": APP})
+            assert resp.status == 200
+            events = _sse_events(await resp.text())
+        done = json.loads(events[-1][1])
+        assert done["code"] == "provenance_not_revoked"
+        assert (
+            "register" in calls and "start" in calls
+        ), "a refused (revoke-failed) streaming replace must restore the old app"
+
+    @pytest.mark.asyncio
+    async def test_a_streaming_client_install_result_restores_the_running_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SSE route also restores the old app when the replace needs client install.
+
+        Same uncommitted-failure handling as the non-stream route: a replace that
+        resolves to client-only install landed nothing, so the stopped/deregistered app
+        is restored before the ``done`` event. Removing the restore call turns this red.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async def _client(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": False, "name": APP, "needsClientInstall": True}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _client)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/registry/install-stream", json={"name": APP})
+            assert resp.status == 200
+            events = _sse_events(await resp.text())
+        assert json.loads(events[-1][1])["needsClientInstall"] is True
+        assert (
+            "register" in calls and "start" in calls
+        ), "a streaming client-install replace must restore the old app"
 
     @pytest.mark.asyncio
     async def test_failed_install_reports_done_with_error(

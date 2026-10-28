@@ -99,6 +99,13 @@ export type InstalledApp = {
   migratedTo?: string
   orphaned?: boolean
   updateAvailable?: boolean
+  /**
+   * Why this app's backend is not running, when only the user can fix it -- a
+   * port held by a process the gateway did not start, or an update that skipped
+   * its restart. Server prose naming the port and the step to take; absent when
+   * the backend is fine.
+   */
+  backend_notice?: string
   manifest: {
     name: string
     version: string

@@ -22,6 +22,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.backend import backend_notice, record_backend_notice
+from kiro_crew.apps.bridges import RegistrationResult
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
@@ -44,8 +46,13 @@ from kiro_crew.apps.registry import (
 )
 from kiro_crew.apps.routes_art import _SAFE_REPO_RE, _is_safe_repo_identifier
 from kiro_crew.apps.routes_lifecycle import (
+    _UPDATE_NOT_RESTARTED_NOTICE,
+    _UPDATE_PROVENANCE_WRITE_FAILED_NOTICE,
     _app_may_run_after_install,
+    _attach_backend_notice,
     _register_app_off_loop,
+    _replace_installed_app_with_provenance,
+    _restore_app_after_failed_update,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
@@ -192,7 +199,43 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # single acquisition covering clone/build → copy → register → backend.
     async with app_lifecycle_lock(name):
         was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
-        result = await install_from_registry(name)
+        # Replacing an INSTALLED app reuses its port, so the pre-update spawn row would
+        # keep vouching for a detached survivor of the old version until it is revoked.
+        # Route the replace through the shared provenance transaction (the same one the
+        # update endpoint uses) so a survivor is never adopted as the updated backend.
+        # A fresh install has no row to protect and no restart-gating, so it runs the
+        # plain path. ``restart_gated`` says whether a confirmed revoke lets the
+        # post-install restart proceed (fresh installs always may).
+        restart_gated = True
+        if was_installed:
+            replace = await _replace_installed_app_with_provenance(
+                name, lambda: install_from_registry(name)
+            )
+            if replace.kind == "revoke_failed":
+                # The transaction stopped and deregistered the app before the failed
+                # revoke. Put it back the way it was found -- re-register resources and
+                # restart a runnable backend -- so the unchanged app is not left enabled
+                # but unavailable. Matches the update endpoint's rollback.
+                await _restore_app_after_failed_update(name)
+                err = (
+                    f"not updating {name!r}: its backend spawn record could not be "
+                    f"durably revoked (disk full?). Free space and retry."
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_registry_install",
+                    outcome="failed",
+                    resources=name,
+                    error=err,
+                )
+                return web.json_response(
+                    {"ok": False, "error": err, "code": "provenance_not_revoked"}, status=400
+                )
+            assert replace.result is not None
+            result = replace.result
+            restart_gated = replace.provenance_dropped
+        else:
+            result = await install_from_registry(name)
 
         # Redact install log and error before returning to client — build output
         # may contain internal hostnames, package URLs, or credential fragments.
@@ -208,8 +251,54 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             result["error"] = cleaned_err
 
         if result.get("needsClientInstall"):
+            if was_installed:
+                # Client-only install on an unsupported host: nothing landed, but the
+                # transaction already stopped and deregistered the old version. Restore
+                # it so the unchanged app is not left enabled with its backend stopped
+                # and resources removed (same uncommitted-failure handling as a clean
+                # rollback).
+                await _restore_app_after_failed_update(name)
             return web.json_response(result, status=200)
         if not result.get("ok"):
+            # A replace that landed on disk but could not persist its new spawn row
+            # (committed=True) is NOT restored and NOT restarted — the row stays revoked
+            # so a survivor is refused — and the failure is surfaced coded so the UI
+            # does not show a clean success. A clean install/rollback failure just
+            # returns its own error.
+            if was_installed and result.get("committed"):
+                if await _app_may_run_after_install(result["name"]):
+                    reg = await _register_app_off_loop(result["name"])
+                    result["registration"] = reg.to_dict()
+                record_backend_notice(
+                    name, _UPDATE_PROVENANCE_WRITE_FAILED_NOTICE.format(name=name)
+                )
+                err = result.get("error") or (
+                    "the updated backend's spawn record could not be persisted"
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_registry_install",
+                    outcome="failed",
+                    resources=name,
+                    error=err,
+                )
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "error": err,
+                        "code": "provenance_not_recorded",
+                        "name": name,
+                        "registration": result.get("registration"),
+                        "backend_notice": backend_notice(name),
+                    },
+                    status=500,
+                )
+            if was_installed:
+                # Clean rollback: the clone/build failed and nothing landed, but the
+                # transaction already stopped and deregistered the old version. Restore
+                # it (re-register + restart a runnable backend) so the unchanged app is
+                # usable again, matching the update endpoint.
+                await _restore_app_after_failed_update(name)
             sel().log_api_access(
                 caller="dashboard",
                 operation="app_registry_install",
@@ -221,24 +310,38 @@ async def handle_registry_install(request: web.Request) -> web.Response:
 
         may_run = await _app_may_run_after_install(result["name"], fresh_install=not was_installed)
         if not may_run:
-            # The install transaction owns the live state. An update that newly asks
-            # for session control leaves the app disabled, but this also preserves a
-            # user's existing disabled state without depending on response wording.
-            reg = await _suspend_app_for_session_approval_reconsent(result["name"])
+            if was_installed:
+                # The provenance transaction already stopped and deregistered the old
+                # version; a disabled app simply stays scrubbed (no re-suspend, which
+                # would stop+deregister a second time). Empty registration, matching
+                # the update endpoint's disabled outcome.
+                reg = RegistrationResult()
+            else:
+                # Fresh install that asks for session control: the install transaction
+                # owns the live state and leaves the app disabled pending re-consent.
+                reg = await _suspend_app_for_session_approval_reconsent(result["name"])
         else:
-            # Auto-register resources
+            # Auto-register resources (the transaction deregistered the old version
+            # on the replace path, so this republishes the updated manifest).
             reg = await _register_app_off_loop(result["name"])
             # Spawn the backend now so apps with a server are reachable immediately —
             # without this the backend only starts on the next gateway reboot (via
             # start_enabled_app_backends), leaving the app's UI with "no reachable
             # backend" until then. No-op for apps that declare no backend. Run in a
             # thread because start_app_backend blocks on a health-check poll.
-            await _start_backend_after_install(result["name"])
+            #
+            # A replace whose revoke could NOT be invalidated (``restart_gated`` false)
+            # is NOT restarted: starting onto the retained row would adopt an old-code
+            # survivor as the updated backend. Record a notice so the user is told.
+            if restart_gated:
+                await _start_backend_after_install(result["name"])
+            else:
+                record_backend_notice(name, _UPDATE_NOT_RESTARTED_NOTICE.format(name=name))
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
     )
-    return web.json_response(result, status=201)
+    return web.json_response(_attach_backend_notice(result, result["name"]), status=201)
 
 
 async def handle_registry_install_stream(request: web.Request) -> web.StreamResponse:
@@ -342,22 +445,82 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     async def _locked_install() -> dict[str, Any]:
         async with app_lifecycle_lock(name):
             was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
-            r = await install_from_registry(name, log_lines=streaming_log)
+            # Replacing an INSTALLED app routes through the shared provenance
+            # transaction (see handle_registry_install) so a detached survivor of the
+            # old version is revoked before the replace and never adopted as the new
+            # backend. A fresh install has no row to protect and runs the plain path.
+            restart_gated = True
+            if was_installed:
+                replace = await _replace_installed_app_with_provenance(
+                    name, lambda: install_from_registry(name, log_lines=streaming_log)
+                )
+                if replace.kind == "revoke_failed":
+                    # Restore the stopped/deregistered app before returning, so the
+                    # unchanged app is not left enabled but unavailable (matches the
+                    # update endpoint and the non-stream route).
+                    await _restore_app_after_failed_update(name)
+                    return {
+                        "ok": False,
+                        "name": name,
+                        "error": (
+                            f"not updating {name!r}: its backend spawn record could not "
+                            f"be durably revoked (disk full?). Free space and retry."
+                        ),
+                        "code": "provenance_not_revoked",
+                    }
+                assert replace.result is not None
+                r = replace.result
+                restart_gated = replace.provenance_dropped
+                if not r.get("ok") and r.get("committed"):
+                    # Landed on disk but the new spawn row could not be persisted: the
+                    # row stays revoked and the backend is NOT restarted. Surface it
+                    # coded and record the cause as a notice.
+                    if await _app_may_run_after_install(r["name"]):
+                        reg = await _register_app_off_loop(r["name"])
+                        r["registration"] = reg.to_dict()
+                    record_backend_notice(
+                        name, _UPDATE_PROVENANCE_WRITE_FAILED_NOTICE.format(name=name)
+                    )
+                    r["ok"] = False
+                    r.setdefault(
+                        "error", "the updated backend's spawn record could not be persisted"
+                    )
+                    r.setdefault("code", "provenance_not_recorded")
+                    r["backend_notice"] = backend_notice(name)
+                    return r
+                if not r.get("ok"):
+                    # Clean rollback: nothing landed, but the transaction stopped and
+                    # deregistered the old version. Restore it so the unchanged app is
+                    # usable again (matches the update endpoint and non-stream route).
+                    await _restore_app_after_failed_update(name)
+            else:
+                r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
                 may_run = await _app_may_run_after_install(
                     r["name"], fresh_install=not was_installed
                 )
                 if not may_run:
-                    # Match the non-stream and update routes: live enabled state,
-                    # rather than notice wording, decides whether resources may run.
-                    reg = await _suspend_app_for_session_approval_reconsent(r["name"])
+                    if was_installed:
+                        # The provenance transaction already stopped and deregistered
+                        # the old version; a disabled app stays scrubbed (no re-suspend,
+                        # which would stop+deregister twice).
+                        reg = RegistrationResult()
+                    else:
+                        # Fresh install asking for session control: leave it disabled
+                        # pending re-consent.
+                        reg = await _suspend_app_for_session_approval_reconsent(r["name"])
                     r["registration"] = reg.to_dict()
                 else:
                     reg = await _register_app_off_loop(r["name"])
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
-                    # backend-less apps.
-                    await _start_backend_after_install(r["name"])
+                    # backend-less apps. A replace whose revoke could not be invalidated
+                    # (``restart_gated`` false) is NOT restarted -- starting onto the
+                    # retained row would adopt an old-code survivor -- and a notice says so.
+                    if restart_gated:
+                        await _start_backend_after_install(r["name"])
+                    else:
+                        record_backend_notice(name, _UPDATE_NOT_RESTARTED_NOTICE.format(name=name))
                     r["registration"] = reg.to_dict()
             return r
 
