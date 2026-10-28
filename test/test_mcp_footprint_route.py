@@ -30,8 +30,6 @@ from kiro_crew.dashboard import token_auth
 from kiro_crew.dashboard.handlers import gateway_footprint as mcp_footprint
 from kiro_crew.mcp_gateway import footprint
 
-pytestmark = pytest.mark.asyncio
-
 OWNER = "owner-subject"
 PATH = "/api/mcp-gateway/footprint"
 
@@ -100,6 +98,7 @@ async def _get(app: web.Application, query: dict[str, str] | None = None) -> tup
         return resp.status, body
 
 
+@pytest.mark.asyncio
 async def test_no_credential_is_refused_before_the_handler(
     reading: dict[str, Any],
 ) -> None:
@@ -111,6 +110,7 @@ async def test_no_credential_is_refused_before_the_handler(
     assert "sessions" not in reading
 
 
+@pytest.mark.asyncio
 async def test_an_app_credential_is_refused_by_the_app_scope(
     reading: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -125,6 +125,7 @@ async def test_an_app_credential_is_refused_by_the_app_scope(
     assert "sessions" not in reading
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("user", "app_claim"),
     [
@@ -143,6 +144,7 @@ async def test_anyone_but_the_owner_is_refused(
     assert "sessions" not in reading
 
 
+@pytest.mark.asyncio
 async def test_the_owner_gets_numbers_and_chat_names_only(
     reading: dict[str, Any],
 ) -> None:
@@ -224,6 +226,7 @@ def test_a_settings_only_server_counts_on_both_sides_when_it_cannot_share(
     assert with_it.with_sharing_bytes == 100 * 1024
 
 
+@pytest.mark.asyncio
 async def test_unanswered_pool_stats_null_both_figures(
     reading: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -252,6 +255,7 @@ async def test_unanswered_pool_stats_null_both_figures(
     assert body["using_now_bytes"] is None and body["with_sharing_bytes"] is None
 
 
+@pytest.mark.asyncio
 async def test_shared_now_reads_the_running_routing_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -285,6 +289,7 @@ async def test_shared_now_reads_the_running_routing_set(
     assert captured["routed"] == frozenset({"DOCS_MCP", "SLACK_MCP"})
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["exclusive", "draining"])
 async def test_unlisted_private_or_draining_backends_null_both_figures(
     reading: dict[str, Any], monkeypatch: pytest.MonkeyPatch, field: str

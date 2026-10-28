@@ -35,8 +35,6 @@ from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.dashboard.handlers import agent_panel_record, member_dashboard
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
-pytestmark = pytest.mark.asyncio
-
 RECORD_PATH = "/api/agent-panel/dashboard/record"
 JOB_ID = "stock-poll"
 CRON_KEY = f"cron:{JOB_ID}"
@@ -109,6 +107,7 @@ def _custom_fold() -> dict[str, Any]:
 # ----------------------------------------------------------------- who may write
 
 
+@pytest.mark.asyncio
 async def test_the_door_needs_the_internal_secret(bound_cron):
     async with _client(internal=False) as c:
         resp = await _post(c, {"type": "stock_check", "data": {"price": 1}})
@@ -116,6 +115,7 @@ async def test_the_door_needs_the_internal_secret(bound_cron):
         assert (await resp.json())["code"] == "internal_secret_required"
 
 
+@pytest.mark.asyncio
 async def test_the_door_closes_with_the_crew_panel_switch(bound_cron, monkeypatch):
     """A record is a dashboard value, so the switch that withdraws the dashboard
     surface withdraws this door with it."""
@@ -126,6 +126,7 @@ async def test_the_door_closes_with_the_crew_panel_switch(bound_cron, monkeypatc
         assert (await resp.json())["code"] == "crew_panel_disabled"
 
 
+@pytest.mark.asyncio
 async def test_an_app_token_caller_is_turned_away_like_every_member_route(bound_cron):
     """The 404 the member routes give an app identity, BEFORE any identity is read:
     an installed app's own grant is a separate decision and is not made here."""
@@ -142,6 +143,7 @@ async def test_an_app_token_caller_is_turned_away_like_every_member_route(bound_
         assert resp.status == 404, await resp.text()
 
 
+@pytest.mark.asyncio
 async def test_a_caller_that_is_not_an_attested_cron_is_refused(bound_cron, monkeypatch):
     _scope_is(monkeypatch, _shared.MemberScope("dashboard:chat-1", True, "", None))
     async with _client() as c:
@@ -152,6 +154,7 @@ async def test_a_caller_that_is_not_an_attested_cron_is_refused(bound_cron, monk
         assert (await resp.json())["code"] == "caller_not_cron"
 
 
+@pytest.mark.asyncio
 async def test_an_unverified_cron_key_is_refused(bound_cron, monkeypatch):
     """A header that merely asserts ``cron:<id>`` resolves to nothing: the scope says
     the transport could not vouch for it."""
@@ -162,6 +165,7 @@ async def test_an_unverified_cron_key_is_refused(bound_cron, monkeypatch):
         assert (await resp.json())["code"] == "caller_not_cron"
 
 
+@pytest.mark.asyncio
 async def test_a_cron_bound_to_no_crewmate_is_refused(bound_cron, monkeypatch):
     _scope_is(monkeypatch, _shared.MemberScope(CRON_KEY, True, "", _execution(None)))
     async with _client() as c:
@@ -172,6 +176,7 @@ async def test_a_cron_bound_to_no_crewmate_is_refused(bound_cron, monkeypatch):
         assert "bind the job" in body["error"]
 
 
+@pytest.mark.asyncio
 async def test_a_member_the_config_no_longer_holds_is_a_409(bound_cron, monkeypatch):
     from kiro_crew import execution_context
 
@@ -188,6 +193,7 @@ async def test_a_member_the_config_no_longer_holds_is_a_409(bound_cron, monkeypa
 # ------------------------------------------------------------ what a record may be
 
 
+@pytest.mark.asyncio
 async def test_a_body_that_is_not_json_is_refused(bound_cron):
     async with _client() as c:
         resp = await c.post(RECORD_PATH, data=b"not json", headers=_headers())
@@ -195,6 +201,7 @@ async def test_a_body_that_is_not_json_is_refused(bound_cron):
         assert (await resp.json())["code"] == "invalid_json"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body, code",
     [
@@ -230,6 +237,7 @@ async def test_a_malformed_record_is_refused_before_anything_is_appended(
     assert appended == []
 
 
+@pytest.mark.asyncio
 async def test_a_record_over_the_byte_ceiling_is_refused(bound_cron):
     async with _client() as c:
         resp = await _post(c, {"type": "stock_check", "data": {"blob": "n" * 9000}})
@@ -237,6 +245,7 @@ async def test_a_record_over_the_byte_ceiling_is_refused(bound_cron):
         assert (await resp.json())["code"] == "record_too_large"
 
 
+@pytest.mark.asyncio
 async def test_a_record_nested_too_deep_is_refused(bound_cron):
     deep: dict[str, Any] = {"v": 1}
     for _ in range(9):
@@ -247,6 +256,7 @@ async def test_a_record_nested_too_deep_is_refused(bound_cron):
         assert (await resp.json())["code"] == "record_too_deep"
 
 
+@pytest.mark.asyncio
 async def test_a_record_nested_a_thousand_deep_is_a_400_not_a_crash(bound_cron):
     """Parser-valid JSON can nest far past the ceiling. The depth walk stops at the
     ceiling, so the route answers the documented refusal rather than raising
@@ -260,6 +270,7 @@ async def test_a_record_nested_a_thousand_deep_is_a_400_not_a_crash(bound_cron):
         assert (await resp.json())["code"] == "record_too_deep"
 
 
+@pytest.mark.asyncio
 async def test_a_lone_surrogate_in_a_record_is_a_refusal_not_a_crash(bound_cron):
     """A JSON-escaped lone surrogate parses and serializes but cannot be encoded as
     UTF-8; the size check answers "does not fit" rather than raising."""
@@ -274,6 +285,7 @@ async def test_a_lone_surrogate_in_a_record_is_a_refusal_not_a_crash(bound_cron)
         assert (await resp.json())["code"] == "record_too_large"
 
 
+@pytest.mark.asyncio
 async def test_a_record_at_the_depth_ceiling_is_taken(bound_cron):
     deep: dict[str, Any] = {"v": 1}
     for _ in range(7):
@@ -283,6 +295,7 @@ async def test_a_record_at_the_depth_ceiling_is_taken(bound_cron):
         assert resp.status == 200, await resp.text()
 
 
+@pytest.mark.asyncio
 async def test_the_quota_refuses_the_record_past_the_window(bound_cron, monkeypatch):
     """Counted at the door, so a wedged script is bounded whatever it sends; a refused
     record is answered 429 and never queued."""
@@ -300,6 +313,7 @@ async def test_the_quota_refuses_the_record_past_the_window(bound_cron, monkeypa
     assert len(appended) == agent_panel_record.RECORD_QUOTA_PER_MINUTE
 
 
+@pytest.mark.asyncio
 async def test_a_refused_record_costs_a_quota_slot_too(bound_cron, monkeypatch):
     """The quota is counted BEFORE the body is read, so a script retrying a bad payload
     in a loop is throttled to 429 rather than parsed and scrubbed once per retry."""
@@ -317,6 +331,7 @@ async def test_a_refused_record_costs_a_quota_slot_too(bound_cron, monkeypatch):
     assert appended == []
 
 
+@pytest.mark.asyncio
 async def test_a_type_that_looks_like_a_credential_is_refused_not_stored(bound_cron):
     """The grammar admits a token-shaped name; a type is a key the door cannot scrub, so
     one the scrubber would change is refused rather than persisted or echoed."""
@@ -374,6 +389,7 @@ def test_colliding_keys_are_suffixed_in_linear_time():
     assert len(scrubbed) == 50 and not any(secret in key for key in scrubbed)
 
 
+@pytest.mark.asyncio
 async def test_a_record_over_the_ceiling_is_refused_before_it_is_scrubbed(bound_cron, monkeypatch):
     """The raw record is measured before the scrub walks it, so an oversize payload never
     reaches the regex pass."""
@@ -404,6 +420,7 @@ def test_the_quota_window_slides():
 # ------------------------------------------------- the append, and what it stamps
 
 
+@pytest.mark.asyncio
 async def test_a_record_lands_stamped_by_the_gateway_and_folds_for_the_page(bound_cron):
     """The round trip the feature is: the script sends type and data, the gateway stamps
     writer and member, and the ``custom`` fold answers ``latest.<type>`` with all of it."""
@@ -429,6 +446,7 @@ async def test_a_record_lands_stamped_by_the_gateway_and_folds_for_the_page(boun
     assert folded["wrote"] == 1
 
 
+@pytest.mark.asyncio
 async def test_the_body_cannot_set_who_wrote_it_or_for_whom(bound_cron):
     """``writer``, ``member``, ``crew_key`` and ``src`` in the body are IGNORED: the
     entry carries the gateway's reading of the caller and nothing the script said."""
@@ -451,6 +469,7 @@ async def test_the_body_cannot_set_who_wrote_it_or_for_whom(bound_cron):
     assert row["crew_key"] == agent_panel.crew_key(CREW)
 
 
+@pytest.mark.asyncio
 async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cron):
     """``ScriptContext`` redacts before it posts, but it is one caller and not the gate:
     a script posting through ``ctx._post`` sends whatever it holds. The DOOR scrubs
@@ -483,6 +502,7 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
     assert row["data"]["rows"][1] == 7 and row["data"]["n"] == 1
 
 
+@pytest.mark.asyncio
 async def test_a_value_with_two_tokens_loses_both_at_the_door(bound_cron):
     """The keyed judgement runs on the CLEANED value: a header value carrying an access
     key the bare scrub catches AND a bearer only its key reveals keeps neither."""
@@ -500,6 +520,7 @@ async def test_a_value_with_two_tokens_loses_both_at_the_door(bound_cron):
     assert "abcdefghijklmnopqrstuvwxyz0123" not in json.dumps(row["data"])
 
 
+@pytest.mark.asyncio
 async def test_a_record_that_only_fits_before_scrubbing_is_judged_on_what_lands(bound_cron):
     """The size is measured on the scrubbed record, the bytes the fold re-measures."""
     from kiro_crew.dashboard.handlers import agent_panel_record as door
@@ -524,6 +545,7 @@ async def test_a_record_that_only_fits_before_scrubbing_is_judged_on_what_lands(
     assert seen == [{"small": 1}]
 
 
+@pytest.mark.asyncio
 async def test_the_latest_record_per_type_wins_and_other_types_stay(bound_cron):
     async with _client() as c:
         for price, kind in ((1, "stock_check"), (2, "stock_check"), (9, "weather")):
@@ -549,6 +571,7 @@ def test_every_accepted_record_type_is_a_bindable_fold_path_segment():
         assert not fold.custom_type_name_ok(name), name
 
 
+@pytest.mark.asyncio
 async def test_the_fold_is_in_the_type_catalog_a_page_binds_from(bound_cron):
     """``dashboard_types`` lists ``custom`` with ``latest`` as an open-keyed map, and the
     seq it has been folded through advances once a record lands."""
@@ -567,6 +590,7 @@ async def test_the_fold_is_in_the_type_catalog_a_page_binds_from(bound_cron):
     assert reached["custom"] is not None and reached["custom"] >= 1
 
 
+@pytest.mark.asyncio
 async def test_a_crewmate_whose_thread_never_ran_has_no_log_to_append_to(bound_cron, monkeypatch):
     monkeypatch.setattr(member_dashboard, "_newest_unit", lambda _slot: "")
     async with _client() as c:
@@ -577,6 +601,7 @@ async def test_a_crewmate_whose_thread_never_ran_has_no_log_to_append_to(bound_c
         assert "open its chat" in body["error"]
 
 
+@pytest.mark.asyncio
 async def test_an_entry_over_the_logs_line_ceiling_is_not_reported_as_stored(
     bound_cron, monkeypatch
 ):
@@ -587,6 +612,7 @@ async def test_an_entry_over_the_logs_line_ceiling_is_not_reported_as_stored(
         assert (await resp.json())["code"] == "record_too_large"
 
 
+@pytest.mark.asyncio
 async def test_an_append_that_does_not_land_is_reported_as_failed(bound_cron, monkeypatch):
     monkeypatch.setattr(crew_log_emit, "on_dashboard_custom", lambda *_a, **_k: False)
     app = _mounted()
@@ -597,6 +623,7 @@ async def test_an_append_that_does_not_land_is_reported_as_failed(bound_cron, mo
         assert not app["state"].broadcasts, "a record that did not land must push nothing"
 
 
+@pytest.mark.asyncio
 async def test_a_record_with_the_crew_log_off_is_refused_not_shrugged(bound_cron, monkeypatch):
     monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
     async with _client() as c:
