@@ -13,8 +13,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import weakref
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from aiohttp import web
 
@@ -242,6 +243,69 @@ def _sessions_named(
     return [row for _, row in matched]
 
 
+#: In-flight full-list computations of ``GET /api/sessions``, per event loop, by key.
+#: A slot close, a session delete or a newly opened tab pushes a ``history`` refresh
+#: to every open tab, so N tabs ask for the same O(all transcripts) listing at the
+#: same instant. A request whose key
+#: matches an in-flight computation awaits it instead of starting its own. This is
+#: NOT a cache: an entry is removed the moment its computation finishes, so a
+#: request arriving after that recomputes. Weak on the loop so a closed test loop
+#: leaves nothing behind. Each entry is the shared task and its joiner count.
+_LISTING_FLIGHTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[tuple, list[Any]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+#: How many shared listings started, and how many requests joined one already
+#: running. Their ratio says whether the single-flight shares anything.
+listing_flight_counts: dict[str, int] = {"listing_flight_started": 0, "listing_flight_joined": 0}
+
+
+async def _single_flight(key: tuple, compute: Callable[[], Coroutine[Any, Any, Any]]) -> Any:
+    """Await the in-flight ``compute()`` for *key*, starting it when none runs.
+
+    The shared work runs in its own task behind ``asyncio.shield``, so a waiter
+    that is cancelled (a tab closed mid-request) leaves the work running for the
+    others. An exception reaches every waiter, and the entry is dropped when the
+    task finishes either way, so the next request recomputes. A flight that had
+    joiners logs one DEBUG line with their count and its duration.
+
+    Separate from ``history_search._Flight`` on purpose: that one joins blocking
+    ``search_sessions`` calls on worker threads at the log level, while this one
+    is awaited on the event loop, so a waiter holds no executor thread, and it
+    covers the handler's own filtering after the scan (name, app ownership,
+    ``user_only``), which a log-level flight never sees.
+    """
+    loop = asyncio.get_running_loop()
+    flights = _LISTING_FLIGHTS.setdefault(loop, {})
+    entry = flights.get(key)
+    if entry is None:
+        task = loop.create_task(compute())
+        entry = [task, 0]
+        flights[key] = entry
+        listing_flight_counts["listing_flight_started"] += 1
+        started = loop.time()
+
+        def _done(t: "asyncio.Task[Any]") -> None:
+            if flights.get(key) is entry:
+                del flights[key]
+            if entry[1]:
+                logger.debug(
+                    "sessions listing flight: %d joiner(s), %.0f ms",
+                    entry[1],
+                    (loop.time() - started) * 1000,
+                )
+            # Retrieve the outcome so an error every waiter abandoned is not
+            # logged as "exception was never retrieved".
+            if not t.cancelled():
+                t.exception()
+
+        task.add_done_callback(_done)
+    else:
+        entry[1] += 1
+        listing_flight_counts["listing_flight_joined"] += 1
+    return await asyncio.shield(entry[0])
+
+
 async def api_sessions(request: web.Request) -> web.Response:
     """GET /api/sessions — list conversation session files.
 
@@ -305,69 +369,90 @@ async def api_sessions(request: web.Request) -> web.Response:
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
     user_only = (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
     exclude_incognito = _wants_incognito_excluded(request)
-    # list_sessions() globs, stats, and reads the first line of EVERY session file
-    # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
-    # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
-    # the event loop freezes chat, heartbeat, and every other coroutine for the
-    # full duration. Offload to a worker thread.
-    all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
-    if exclude_incognito:
-        # BEFORE paging, so ``limit`` counts eligible rows and a restricted
-        # session at the head of the list cannot hide an eligible one behind it.
-        # This is the cheap half (the row's own mode); the page below re-judges
-        # each row's ON-DISK line under its lock, beside the preview read.
-        all_sessions = [
-            s for s in all_sessions if not is_incognito_transcript(s.get("memory_mode"))
-        ]
-    if "name" in request.query:
-        # Before the app filter, which reads each row's transcript under its lock.
-        all_sessions = _sessions_named(
-            state.conversation_log._canonical_key, all_sessions, request.query["name"]
-        )
+    log = state.conversation_log
+    name = request.query["name"] if "name" in request.query else None
     request_app = str(request.get("app") or "")
+
+    async def _full_list() -> tuple[int, list[dict]]:
+        """The filtered, unpaginated list, plus the app-scoped count for the audit."""
+        # list_sessions() globs, stats, and reads the first line of EVERY session file
+        # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
+        # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
+        # the event loop freezes chat, heartbeat, and every other coroutine for the
+        # full duration. Offload to a worker thread.
+        all_sessions = await asyncio.to_thread(log.list_sessions)
+        if exclude_incognito:
+            # BEFORE paging, so ``limit`` counts eligible rows and a restricted
+            # session at the head of the list cannot hide an eligible one behind it.
+            # This is the cheap half (the row's own mode); the page below re-judges
+            # each row's ON-DISK line under its lock, beside the preview read.
+            all_sessions = [
+                s for s in all_sessions if not is_incognito_transcript(s.get("memory_mode"))
+            ]
+        if name is not None:
+            # Before the app filter, which reads each row's transcript under its lock.
+            all_sessions = _sessions_named(log._canonical_key, all_sessions, name)
+        app_count = len(all_sessions)
+        if request_app:
+            # Before every count, so ``total`` and ``has_more`` describe the app's
+            # own list rather than the size of everyone else's.
+            all_sessions = await asyncio.to_thread(
+                _app_owned_sessions, log, request_app, all_sessions
+            )
+            app_count = len(all_sessions)
+        if user_only:
+
+            def _user_rows(sessions: list[dict]) -> list[dict]:
+                if request_app:
+                    owned: list[dict] = []
+                    for row in sessions:
+                        key = row.get("key", "")
+                        if _is_machine_only_session(key):
+                            continue
+                        try:
+                            with log._locked(key):
+                                if _app_owns_transcript(
+                                    log, request_app, key
+                                ) and _has_user_content(log, row):
+                                    owned.append(row)
+                        except HistoryLockTimeout:
+                            continue
+                    return owned
+                return [s for s in sessions if _is_user_listed_row(log, s)]
+
+            all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
+        return app_count, all_sessions
+
+    # Identical concurrent listings share ONE computation; each request then
+    # slices its own page, so different offsets and limits share it too. The key
+    # holds every input of ``_full_list``: the log, the directory's write epoch,
+    # the name filter, the app scope, ``exclude_incognito`` and ``user_only``.
+    # Through the epoch, a request after an in-process write that has already
+    # invalidated the cache computes its own listing. That guarantee assumes one
+    # writer process per data home: a write from another process does not move
+    # the epoch.
+    # ``exclude_open`` and ``preview`` stay per request.
+    flight_key = (id(log), log.write_epoch(), name, request_app, exclude_incognito, user_only)
+    app_count, all_sessions = await _single_flight(flight_key, _full_list)
     if request_app:
-        # Before every count, so ``total`` and ``has_more`` describe the app's
-        # own list rather than the size of everyone else's.
-        all_sessions = await asyncio.to_thread(
-            _app_owned_sessions, state.conversation_log, request_app, all_sessions
-        )
-        _audit_app_allow(request_app, "session_list", f"sessions={len(all_sessions)}")
+        _audit_app_allow(request_app, "session_list", f"sessions={app_count}")
     if exclude_open:
         from kiro_crew.dashboard.chat_utils import listing_slot_snapshot
 
-        # One snapshot for the filter and the publish tracker: a session this listing
+        # Judged after the shared listing returns, against the slots open at that
+        # moment, so a session resumed while the scan ran is not listed. One
+        # snapshot serves the filter and the publish tracker: a session this listing
         # shows as a row counts as newly open when its slot is next published.
         is_open = _open_row_test(state, listing_slot_snapshot(state))
         all_sessions = [s for s in all_sessions if not is_open(s.get("key", ""))]
-    if user_only:
-        log = state.conversation_log
-
-        def _user_rows(sessions: list[dict]) -> list[dict]:
-            if request_app:
-                owned: list[dict] = []
-                for row in sessions:
-                    key = row.get("key", "")
-                    if _is_machine_only_session(key):
-                        continue
-                    try:
-                        with log._locked(key):
-                            if _app_owns_transcript(log, request_app, key) and _has_user_content(
-                                log, row
-                            ):
-                                owned.append(row)
-                    except HistoryLockTimeout:
-                        continue
-                return owned
-            return [s for s in sessions if _is_user_listed_row(log, s)]
-
-        all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
     # one list. The client advances its offset by the number of rows it received,
     # so filtering on its side instead would skip or repeat rows across pages.
     total = len(all_sessions)
-    page = all_sessions[offset : offset + limit]
+    # Copy the page's rows: the list is shared with every request that joined the
+    # computation, and the preview step below writes into its rows.
+    page = [dict(s) for s in all_sessions[offset : offset + limit]]
     if want_preview:
-        log = state.conversation_log
 
         def _attach_previews(sessions: list[dict]) -> None:
             def _sanitize(text: str) -> str:

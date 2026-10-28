@@ -365,7 +365,7 @@ class SessionCatalogProjection:
         except OSError:
             return sessions, False
         memo_dir = os.fspath(self._log._dir)
-        memo_key = (dir_stat.st_mtime_ns, self._log._dir_write_epoch())
+        memo_key = (dir_stat.st_mtime_ns, self._log.write_epoch())
         if keys is None:
             memoized = history_listing_memo.lookup(memo_dir, memo_key)
             if memoized is not None:
@@ -541,7 +541,7 @@ class SessionCatalogProjection:
         sessions = list(by_canon.values())
         sessions.sort(key=lambda s: s.get("modified", 0), reverse=True)
         # Only a complete listing that no in-process write raced is reusable.
-        if keys is None and complete and reusable and self._log._dir_write_epoch() == memo_key[1]:
+        if keys is None and complete and reusable and self._log.write_epoch() == memo_key[1]:
             history_listing_memo.store(memo_dir, memo_key, built_at, sessions)
         return sessions, complete
 
@@ -578,7 +578,7 @@ class SessionCatalogProjection:
         if keys is not None or not query or limit <= 0:
             return self._search_sessions(query, limit, keys=keys)
         slot = (str(self._log._dir), query, limit)
-        epoch = self._log._dir_write_epoch()
+        epoch = self._log.write_epoch()
         with _flights_lock:
             running = _flights.get(slot)
             if running is None or running.epoch != epoch:

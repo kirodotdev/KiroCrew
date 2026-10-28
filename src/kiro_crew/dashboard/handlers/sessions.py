@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (  # noqa: F401
         _DASHBOARD_SLOT_STEM_RE,
+        _LISTING_FLIGHTS,
         _MACHINE_NAMESPACES,
         _SHORT_SLOT_NAME_RE,
         _AppOwnedKeys,
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
         _search_excluding_incognito,
         _session_meta_row,
         _sessions_named,
+        _single_flight,
         _wants_incognito_excluded,
         api_session_archive_list,
         api_session_archive_read,
@@ -75,6 +77,7 @@ if TYPE_CHECKING:
         api_session_meta,
         api_sessions,
         api_sessions_search,
+        listing_flight_counts,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.summaries import (  # noqa: F401
         _SUMMARIZE_MAX_SESSIONS,

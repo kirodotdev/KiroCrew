@@ -298,22 +298,16 @@ def test_listing_past_the_metadata_cache_reads_no_heads(
     _assert_sees_a_write(log, second, query)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F2: concurrent identical /api/sessions requests each run their own scan",
-)
 def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fake_clock) -> None:
     """12 identical requests in flight together run one scan of the history directory.
 
     The count is ``os.scandir`` of the directory, not calls to a listing method.
-    A join placed in the handler, before ``ConversationLog.list_sessions``,
-    waits out :data:`LISTING_GATE_CEILING_S` and fails by name.
+    The join is the handler's ``history_reads._single_flight``; a join moved
+    anywhere else waits out :data:`LISTING_GATE_CEILING_S` and fails by name.
 
     The requests are held in flight together, so the verdict does not depend on
-    thread scheduling. The first scan waits until all 12 requests have entered
-    ``ConversationLog.list_sessions``, and each request gets its own worker
-    thread. The whole-listing memo is taken out, because it answers a request
+    thread scheduling. The first scan waits until all 12 requests have reached
+    the join, and each request gets its own worker thread. The whole-listing memo is taken out, because it answers a request
     that starts after another one finished, which is not a shared scan.
     """
     requests = 12
@@ -328,15 +322,16 @@ def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fa
     lock = threading.Lock()
     gate = {"entered": 0, "first_scan_held": False, "timed_out": False}
     all_entered = threading.Event()
-    real_list_sessions = ConversationLog.list_sessions
+    from kiro_crew.dashboard.handlers.sessions_parts import history_reads
 
-    def entering_list_sessions(self: ConversationLog, *args: Any, **kwargs: Any) -> Any:
-        if not args and kwargs.get("keys") is None:
-            with lock:
-                gate["entered"] += 1
-                if gate["entered"] >= requests:
-                    all_entered.set()
-        return real_list_sessions(self, *args, **kwargs)
+    real_join = history_reads._single_flight
+
+    async def entering_join(key: tuple, compute: Any) -> Any:
+        with lock:
+            gate["entered"] += 1
+            if gate["entered"] >= requests:
+                all_entered.set()
+        return await real_join(key, compute)
 
     counting_scandir = os.scandir
 
@@ -349,7 +344,7 @@ def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fa
                 gate["timed_out"] = True
         return counting_scandir(path)
 
-    monkeypatch.setattr(ConversationLog, "list_sessions", entering_list_sessions)
+    monkeypatch.setattr(history_reads, "_single_flight", entering_join)
     monkeypatch.setattr(os, "scandir", holding_scandir)
 
     from kiro_crew.dashboard.handlers.sessions_parts.history_reads import api_sessions
@@ -366,9 +361,9 @@ def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fa
     totals = asyncio.run(_all())
     if gate["timed_out"]:
         harness_fail(
-            f"only {gate['entered']} of {requests} requests entered "
-            "ConversationLog.list_sessions while the first scan was held; if the join "
-            "moved out of list_sessions, hold the scan on the new join point"
+            f"only {gate['entered']} of {requests} requests reached "
+            "history_reads._single_flight while the first scan was held; if the join "
+            "moved, hold the scan on the new join point"
         )
     if io.scandirs == 0:
         harness_fail("12 listings scanned the history directory 0 times; the scandir spy missed")
