@@ -124,9 +124,11 @@ export function useNewSessionPicks({
   // the create carries both: a pending "reviewer" template must not become the
   // "reviewer" member on send. Cleared with the name.
   const pendingAgentKindRef = useRef<'member' | 'template' | undefined>(undefined)
+  const [pendingAgentKind, _setPendingAgentKind] = useState<'member' | 'template' | undefined>(undefined)
   const setPendingAgent = useCallback((v: string, kind?: 'member' | 'template') => {
     pendingAgentRef.current = v
     pendingAgentKindRef.current = v ? kind : undefined
+    _setPendingAgentKind(v ? kind : undefined)
     _setPendingAgent(v)
   }, [])
   const [pendingModel, _setPendingModel] = useState('')  // model for next new slot
@@ -162,7 +164,7 @@ export function useNewSessionPicks({
   // to the ChatInput chip that opened it while the menu is open (#10616).
   const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDropdown)
   return {
-    pendingAgent, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModel, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, modelBtnRect, anchorModelBtn,
+    pendingAgent, pendingAgentRef, pendingAgentKind, pendingAgentKindRef, setPendingAgent, pendingModel, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, modelBtnRect, anchorModelBtn,
   }
 }
 

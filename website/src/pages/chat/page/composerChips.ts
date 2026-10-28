@@ -6,6 +6,7 @@ import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort } from '
 import { useKirocrewConfigReader } from '../../../hooks/useKirocrewConfigReader'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import { i18nT } from '../../../i18n/t'
+import { isCrewmateChat } from '../../../lib/agentMemorySource'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
@@ -22,6 +23,8 @@ interface ComposerChipsOptions {
   /** The configured default agent and the one a new session would open on. */
   defaultAgent: string | undefined
   pendingAgent: string
+  /** The namespace `pendingAgent` was picked from; the next session is created in it. */
+  pendingAgentKind: 'member' | 'template' | undefined
   installedAgents: KiroCrewAgent[]
   provider: ReturnType<typeof useProvider>
   /** The roster the picker offers. */
@@ -45,6 +48,7 @@ export function useComposerChips({
   currentSlot,
   defaultAgent,
   pendingAgent,
+  pendingAgentKind,
   installedAgents,
   provider,
   availableModels,
@@ -65,8 +69,15 @@ export function useComposerChips({
     enabled: !!_slotAgentName,
   })
   // The agent the composer's "set as default" row acts on: the active slot's
-  // agent, else whichever agent a new session would open on.
-  const _modelPinAgent = currentSlot?.agent || pendingAgent || defaultAgent || 'default'
+  // agent, else the agent picked for the next new session, each judged by its
+  // own kind. Only a crewmate has an agents.<name> entry to write, so a template
+  // session gets '' and the row is not offered. With no pick, a new session is
+  // created on the default template.
+  const _modelPinCandidate = currentSlot ? currentSlot.agent || '' : pendingAgent
+  const _modelPinKind = currentSlot ? currentSlot.agent_kind : pendingAgentKind
+  const _modelPinAgent = _modelPinCandidate && isCrewmateChat(_modelPinKind, _modelPinCandidate, installedAgents)
+    ? _modelPinCandidate
+    : ''
   const _modelPinCfg = installedAgents.find(a => a.name === _modelPinAgent)
   // Writes agents.<name>.model in config.json. Invalidates the resolved-model
   // queries so a slot showing an inherited value picks the new pin up without a

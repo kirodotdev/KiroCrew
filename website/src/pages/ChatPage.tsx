@@ -227,7 +227,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     closeToTrigger: () => setModelDropdown(false),
   })
   const {
-    pendingAgent, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModel, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, modelBtnRect, anchorModelBtn,
+    pendingAgent, pendingAgentRef, pendingAgentKind, pendingAgentKindRef, setPendingAgent, pendingModel, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, modelBtnRect, anchorModelBtn,
   } = useNewSessionPicks({
     modelDropdown,
   })
@@ -741,6 +741,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     currentSlot,
     defaultAgent,
     pendingAgent,
+    pendingAgentKind,
     installedAgents,
     provider,
     availableModels,

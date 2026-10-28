@@ -39,7 +39,11 @@ function harness() {
     currentSlot: { key: 'slot-a', agent: 'builder', model: 'm-2' } as ChatSlot,
     defaultAgent: 'default',
     pendingAgent: '',
-    installedAgents: [],
+    pendingAgentKind: undefined,
+    installedAgents: [
+      { name: 'builder', selection_kind: 'member' },
+      { name: 'kirocrew', selection_kind: 'template' },
+    ] as Opts['installedAgents'],
     provider: provider as never,
     availableModels: [],
     codexPairModels: false,
@@ -84,6 +88,46 @@ describe('pinning the shown model to the agent', () => {
     const note = (opts.dispatch as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]).find(a => a.type?.endsWith('addNotification'))
     expect(note.payload).toMatchObject({ kind: 'agent', priority: 'critical', title, body })
     expect(typeof note.payload.ts).toBe('string')
+  })
+
+  it('offers no pin row on a template session, which has no agents.<name> to write', () => {
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-t', agent: 'kirocrew', agent_kind: 'template' } as ChatSlot })
+    expect(hook.result.current._modelPinAgent).toBe('')
+  })
+
+  it('offers no pin row on a template-stamped slot even when a crewmate shares its name', () => {
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-t', agent: 'builder', agent_kind: 'template' } as ChatSlot })
+    expect(hook.result.current._modelPinAgent).toBe('')
+  })
+
+  it('reads a kind-less slot through the roster', () => {
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-old', agent: 'kirocrew' } as ChatSlot })
+    expect(hook.result.current._modelPinAgent).toBe('')
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-old', agent: 'builder' } as ChatSlot })
+    expect(hook.result.current._modelPinAgent).toBe('builder')
+  })
+
+  it('judges the pick for the next new session by the kind it was picked from', () => {
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, currentSlot: undefined, pendingAgent: 'builder', pendingAgentKind: 'template' })
+    expect(hook.result.current._modelPinAgent).toBe('')
+    hook.rerender({ ...opts, currentSlot: undefined, pendingAgent: 'builder', pendingAgentKind: 'member' })
+    expect(hook.result.current._modelPinAgent).toBe('builder')
+  })
+
+  it('reads an agent-less slot as the default template, not as the pending pick', () => {
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-bare', agent: '' } as ChatSlot, pendingAgent: 'builder', pendingAgentKind: 'member' })
+    expect(hook.result.current._modelPinAgent).toBe('')
+  })
+
+  it('offers no pin row before a new session with no pick, which starts on the default template', () => {
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, currentSlot: undefined, defaultAgent: 'builder' })
+    expect(hook.result.current._modelPinAgent).toBe('')
   })
 })
 
