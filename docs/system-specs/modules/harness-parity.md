@@ -196,6 +196,11 @@ exists, it uses the factory's member-aware `select_provider_backend` authority.
 `GET /api/slash-commands` has no session key, so it lists `/todos` from the
 default `agent.acp_backend` capability only; a member session routed to a
 different harness is still judged by the gate above when the command is sent.
+The same default decides the rest of the list on a harness in
+`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS): the list keeps only the commands
+the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`, `/prompts`,
+`/side`, `/workflow`), because the slash gate reads the same set and answers
+every other harness command with a notice.
 
 A **route** is not a harness, and is not expressed as one. KAS runs either
 through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`),

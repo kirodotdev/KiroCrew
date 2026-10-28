@@ -462,6 +462,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_MEMBER_PANEL": "Crew-side: panel MCP tools",
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": "Crew-side: Crew runs the spec hooks",
     "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",
+    "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": "Crew-side: dashboard answers harness commands",
     "ACP_BACKENDS_CONTEXT_RECYCLE": "Crew-side: session recycle on full context",
     "ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT": "Crew-side: worker prompt in the context block",
 }

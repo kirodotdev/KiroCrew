@@ -188,6 +188,9 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
+   * - ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``
+     - pre-session registry query (whether the dashboard answers every harness
+       command itself, and which commands the ``/`` menu lists)
    * - ``ACP_BACKENDS_EFFORT_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` effort keys are written,
        read back at construction and cleared)
@@ -941,6 +944,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_STEER,

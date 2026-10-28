@@ -416,6 +416,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "to the model as text, or answers a harness that would have run it, which "
         "is a defect"
     ),
+    "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": (
+        "whether the dashboard answers every harness command itself and leaves the "
+        "ones it cannot serve out of the / menu. It names a harness with no command "
+        "channel rather than a feature a reader gains, and the commands that matter "
+        "for choosing a harness already have lines of their own. A wrong membership "
+        "either hides commands a harness would have run, or offers rows that only "
+        "ever reach the model as text, which is a defect"
+    ),
     "ACP_BACKENDS_HOOKS_LIST": (
         "which backend's agent may ask its client for the hooks matching a trigger, and "
         "have the client run one. Nothing a reader choosing a harness can act on: Crew "

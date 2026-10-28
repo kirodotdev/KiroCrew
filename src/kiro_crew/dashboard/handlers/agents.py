@@ -48,6 +48,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     model_registry_namespace,
     selectable_backend_values,
     selectable_stored_backend_values,
@@ -285,6 +286,7 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
+    _DASHBOARD_SERVED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
@@ -1607,11 +1609,16 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # explicit "not available in the dashboard" rejection in chat_runner), but
     # the suggestion payload must not advertise them: a menu entry that only
     # ever produces a warning is an inert affordance.
+    offered = _SLASH_COMMANDS - blocked_commands
+    # The same holds for a harness with no command channel: the slash gate
+    # answers each of its harness commands with a notice, so list only what the
+    # dashboard serves there. /compact stays: it has a gate of its own, which
+    # sends the engine's compaction verb or explains that the harness compacts
+    # by itself, and never gives that notice.
+    if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
+        offered = offered & (_DASHBOARD_SERVED_SLASH_COMMANDS | {"/compact"})
     return web.json_response(
-        [
-            {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")}
-            for c in sorted(_SLASH_COMMANDS - blocked_commands)
-        ]
+        [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
     )
 
 

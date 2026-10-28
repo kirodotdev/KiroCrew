@@ -34,10 +34,10 @@ from kiro_crew.security import redact
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _BLOCKED_SLASH_COMMANDS,
-        ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         ACP_BACKENDS_COMPACT,
         ACP_BACKENDS_LOCAL_CLEAR,
+        ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
         MAX_PROMPT_BYTES,
         DashboardState,
         KiroCrewConfig,
@@ -690,6 +690,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             return _Flow.END
 
     # ── Harness commands on KAS, which has no command channel ──
+    # (``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``; GET /api/slash-commands reads the
+    # same set to leave these commands out of the / menu.)
     # The session handle runs a command natively only on kiro-cli; KAS gets it
     # as session/prompt text, and KAS has no built-in /clear there, so the
     # model reads "/clear" as a request and the conversation stays. KAS also
@@ -709,7 +711,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
         _command_backend = await _slash_command_backend(state, session_key)
-        if _command_backend == ACP_BACKEND_KAS or (
+        if _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS or (
             _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
         ):
             turn_exit.local_command = first_word

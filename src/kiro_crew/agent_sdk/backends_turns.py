@@ -622,6 +622,27 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
     }
 )
 
+# Backends where the dashboard answers every harness command itself, because the
+# harness has no way to run one. A member's harness command never reaches it:
+# ``/clear`` is dropped the way ``reset_conversation`` does, any other command
+# gets a notice, and ``GET /api/slash-commands`` lists only the commands the
+# dashboard serves without the harness (``/agent <name>``, ``/clear``, ``/goal``,
+# ``/prompts``, ``/side``, ``/workflow``), plus ``/compact``, which has a gate of
+# its own.
+#
+# - kas: refuses ``_kiro.dev/commands/execute`` with -32603 for every command
+#   (``test/fixtures/acp_frames/kas/commands-refused-live.jsonl``), and its
+#   ``available_commands_update`` lists only custom agents and skills, so a
+#   ``/help`` or ``/context`` sent as prompt text reaches the model as a message.
+#
+# kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
+# claude is not a member: its harness owns its own command set. codex, opencode,
+# pi, deepseek, goose and copilot are not members: each serves the commands it
+# knows from its own prompt handler, so their other commands keep the prompt
+# path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the ``/clear`` most of them lack). A
+# harness added later stays out until its command handling is checked.
+ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS})
+
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli
 # (and KAS, its relay) emit a ``_kiro.dev/metadata`` notification carrying
