@@ -236,7 +236,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   return (
     <div className="my-1">
       <button
-        className={`flex items-center gap-2 px-4 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${needsAttention ? 'ring-warn hover:ring-warn/80' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
+        className={`flex items-center gap-2 px-3 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${needsAttention ? 'ring-warn hover:ring-warn/80' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
         onClick={() => { userToggled.current = true; setExpanded(e => !e) }}
         aria-expanded={expanded}
         aria-label={`${expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse') : i18nT('pages.chat.collapsibleToolGroup.expand')} ${labelText}`}
@@ -253,8 +253,9 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
         ) : (
           // Lucide, never a text glyph: AUTOSDE use-lucide-icons / no-emoji-as-icons
           // are blocking on src/**/*.tsx, and the label carries the name, so the
-          // indicator is decorative.
-          <ChevronRight size={14} aria-hidden="true" className={`flex-shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+          // indicator is decorative. 13px and px-3 match RecoveryCard and
+          // CompactionCard, so stacked disclosure rows share one chevron column.
+          <ChevronRight size={13} aria-hidden="true" className={`flex-shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
         )}
         <span>{labelNode}</span>
       </button>
