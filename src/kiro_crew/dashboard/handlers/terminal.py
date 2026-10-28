@@ -568,6 +568,29 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         refused = "local_refused=1"
     # A local shell remembers its chat, so binding that chat retires it.
     local_chat_slot = chat_slot if remote_argv is None and isinstance(chat_slot, str) else ""
+    # "Open in kiro-cli": the PTY runs the chat's own kiro-cli conversation. The
+    # query names the chat and nothing else; the argv, its folder and the hold
+    # on the conversation come from prepare_kiro_cli_launch below.
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import CODE_ENDED as kiro_cli_ended
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import (
+        CODE_UNSUPPORTED as _KIRO_CLI_UNSUPPORTED,
+    )
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import (
+        KiroCliLaunch,
+        audit_kiro_cli_open,
+        prepare_kiro_cli_launch,
+    )
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import (
+        refusal_message as kiro_cli_refusal_message,
+    )
+
+    kiro_cli_slot = request.query.get("kiro_cli_slot")
+    if not isinstance(kiro_cli_slot, str) or not kiro_cli_slot:
+        kiro_cli_slot = ""
+    elif remote_slot:
+        remote_error = "A terminal opens kiro-cli or a remote shell, not both"
+        error_code = _KIRO_CLI_UNSUPPORTED
+        refused = "kiro_cli_refused=1"
     if remote_error:
         _sel().log_api_access(
             caller=caller,
@@ -639,11 +662,58 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         )
         return refusal_ws
 
+    kiro_cli_launch: KiroCliLaunch | None = None
+    if kiro_cli_slot and not existing:
+        # A reconnect to a live kiro-cli tab reattaches above; only a new one
+        # hands the conversation over. Refused before any reservation exists.
+        # At the cap the open goes ahead only if a detached shell can give up
+        # its slot (the eviction below). Probed and put back in one synchronous
+        # step, before the handover, so a refused open hands nothing over.
+        probe = _take_shell_to_evict(registry, max_sessions, time.monotonic())
+        if probe is not None:
+            _restore_evicted_shell(registry, probe)
+        if len(registry) >= max_sessions and probe is None:
+            _sel().log_api_access(
+                caller=caller,
+                operation="terminal.ws.open",
+                outcome="denied",
+                source="dashboard",
+                resources=f"max_sessions={max_sessions}",
+            )
+            return web.Response(status=429, text=f"Max {max_sessions} terminal sessions")
+        if request.query.get("kiro_cli_open") == "1":
+            kiro_cli_launch, kiro_cli_code = await prepare_kiro_cli_launch(
+                request, kiro_cli_slot, session_id
+            )
+        else:
+            # A tab redialing a kiro-cli session that has since ended (a gateway
+            # restart, the orphan reaper) must not hand the chat over again by
+            # itself: only the user's own open, or retry, sends kiro_cli_open=1.
+            kiro_cli_launch, kiro_cli_code = None, kiro_cli_ended
+        if kiro_cli_launch is None:
+            audit_kiro_cli_open(
+                caller, "denied", f"session={session_id},code={kiro_cli_code}"
+            )
+            refusal_ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+            await refusal_ws.prepare(request)
+            await _close_terminal_ws_bounded(
+                refusal_ws,
+                error_message=kiro_cli_refusal_message(kiro_cli_code),
+                error_code=kiro_cli_code,
+            )
+            return refusal_ws
+        if session_id in registry:
+            # Another opener took this id while the handover awaited.
+            kiro_cli_launch.release()
+            return web.Response(status=409, text="Terminal session is already being opened")
+
     # Reserve slot synchronously before any await to prevent race condition.
     # At the cap, the longest-detached shell gives up its slot in the same step;
     # it ends only once this open goes ahead, and returns to its slot otherwise.
     evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
     if not existing and len(registry) >= max_sessions:
+        if kiro_cli_launch is not None:
+            kiro_cli_launch.release()
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.open",
@@ -661,7 +731,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     try:
         ws = web.WebSocketResponse(heartbeat=30, timeout=300)
         cwd = ""
-        if placeholder:
+        if placeholder and kiro_cli_launch is not None:
+            # Resolved and checked by the handover; a client cwd never applies.
+            cwd = kiro_cli_launch.cwd
+        elif placeholder:
             try:
                 requested_cwd = request.query.get("cwd")
                 if requested_cwd:
@@ -769,9 +842,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             if remote_argv is not None:
                 argv, cwd = remote_argv, os.path.expanduser("~")
                 env = _remote_pty_env({"KIROCREW_TERMINAL": "1"})
+            elif kiro_cli_launch is not None:
+                argv = list(kiro_cli_launch.argv)
             try:
                 wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
             except Exception as exc:
+                if kiro_cli_launch is not None:
+                    kiro_cli_launch.release()
                 registry.pop(session_id, None)
                 placeholder = False
                 _sel().log_api_access(
@@ -788,7 +865,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             sess = _TerminalSession(
                 session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws, shell=shell,  # wokeignore:rule=master
                 fence_shells=fence_shells, remote=remote_argv is not None,
-                chat_slot=local_chat_slot,
+                chat_slot=kiro_cli_launch.slot_key if kiro_cli_launch else local_chat_slot,
+                kiro_cli_session_key=kiro_cli_launch.session_key if kiro_cli_launch else "",
             )
             registry[session_id] = sess
             placeholder = False
@@ -818,7 +896,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 shell=shell,
                 fence_shells=fence_shells,
                 remote=remote_argv is not None,
-                chat_slot=local_chat_slot,
+                chat_slot=kiro_cli_launch.slot_key if kiro_cli_launch else local_chat_slot,
+                # From here the session's teardown releases the conversation.
+                kiro_cli_session_key=kiro_cli_launch.session_key if kiro_cli_launch else "",
             )
             ready_marker: bytes | None = None
             close_cancelled: asyncio.CancelledError | None = None
@@ -867,6 +947,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         # and the local bash ready-marker do not apply to it.
                         argv, cwd = remote_argv, os.path.expanduser("~")
                         env = _remote_pty_env({"TERM": "xterm-256color", "KIROCREW_TERMINAL": "1"})
+                    elif kiro_cli_launch is not None:
+                        # kiro-cli itself, exec'd with no shell between: the argv is
+                        # the gateway's own (see terminal_kiro_cli), so no shell ever
+                        # parses it, and the bash ready-marker does not apply.
+                        argv = list(kiro_cli_launch.argv)
                     elif _is_bash_shell(shell):
                         token = uuid.uuid4().hex
                         ready_marker = (
@@ -989,6 +1074,16 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # displaced shell untouched: it goes back unless its id was opened afresh.
         if evicted is not None and not _restore_evicted_shell(registry, evicted):
             await _end_evicted_shell(request.app, evicted, max_sessions)
+        if kiro_cli_launch is not None:
+            # A published kiro-cli session owns the hold now (its teardown frees
+            # it). Any other way out of this block started nothing: give it back.
+            live = registry.get(session_id)
+            if live is None or live.kiro_cli_session_key != kiro_cli_launch.session_key:
+                kiro_cli_launch.release()
+
+    if kiro_cli_launch is not None:
+        audit_kiro_cli_open(caller, "ok", f"session={session_id},chat={kiro_cli_launch.slot_key}")
+        kiro_cli_launch.announce()
 
     # The placement check above ran before this shell was published, and a bind
     # in between skipped the then-unpublished reservation: read it again now
@@ -1542,9 +1637,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TERMINAL_FD_CLOSE_TIMEOUT_S,
         _child_exit_status,
         _format_idle,
+        _kill_session_process,
         _notify_shell_failed,
         _orphan_timeout_s,
         _record_orphan_reap,
+        _release_kiro_cli_hold,
         _shell_failure_note,
         _sweep_terminals,
         reap_orphaned_terminals,

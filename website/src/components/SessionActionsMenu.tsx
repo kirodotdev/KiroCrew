@@ -9,6 +9,7 @@ import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import ExportSessionItem from './ExportSessionItem'
 import ImportSessionItem from './ImportSessionItem'
 import CrewBoardMenuItem from './CrewBoardMenuItem'
+import OpenInKiroCliItem from './OpenInKiroCliItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import SourceLinksSubmenu from './SourceLinksSubmenu'
 import { SessionTurnLimitSubmenu } from './SessionTurnLimitMenu'
@@ -563,6 +564,10 @@ export default function SessionActionsMenu({
           </span>
         )}
       </Item>,
+      // Continue this conversation in kiro-cli in the docked terminal. Beside
+      // Reload because both hand the chat's agent process over; self-hiding when
+      // the terminal is off or the chat does not run on kiro-cli.
+      <OpenInKiroCliItem key="open-in-kiro-cli" slotKey={slotKey} running={isRunning} Item={Item} />,
     ],
     // Close session — terminal, destructive (red). An adopted remote-crew row
     // passes closeNeutral: removing the local copy is reversible (the session
