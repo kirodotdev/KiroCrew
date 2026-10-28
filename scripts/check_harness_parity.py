@@ -419,6 +419,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # kiro-cli 2.35.1 --agent off disk; KAS 0.66.70 via customAgents: the spec's
     # own MCP server reached the session with an EMPTY session/new array.
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": None,
+    "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

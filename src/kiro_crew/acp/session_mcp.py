@@ -116,6 +116,7 @@ from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
 )
+from kiro_crew.template_mcp_additions import merge_at_spawn
 from kiro_crew.user_json import loads_user_jsonc
 
 logger = logging.getLogger(__name__)
@@ -742,7 +743,12 @@ def _session_spec_and_snapshot_for(
     apply the same verdict through :func:`trusted_project_agent_spec`; the
     unresolved-ref diagnostic on every host keeps the plain resolution.
     """
-    return _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
+    spec, snapshot = _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
+    # The one read every array host's servers come from, so a template Crew does
+    # not own gets its approved additions merged here, at spawn, and never in its
+    # file (``template_mcp_additions.merge_at_spawn``). A derived or Crew-owned spec
+    # comes back unchanged, so the snapshot still vouches for exactly those bytes.
+    return merge_at_spawn(agent, spec), snapshot
 
 
 def _agent_spec_and_snapshot_for(

@@ -882,6 +882,61 @@ reconcile that failed is reported in the danger tint instead of the usual
 user sees is not honesty — the sessions did restart, but against a config that
 may not match the sources, and that is the one thing the caller needs told.
 
+### Per-template MCP additions
+
+A server the user approves for an agent template on a change card is recorded in
+`template-mcp-additions/additions.json` under the data home
+(`src/kiro_crew/template_mcp_additions.py`): owner-only, every write atomic, every
+read-modify-write under its own lock. It is kept outside every spec file because a
+spec is not where it would survive: the conductor installers rebuild their map to
+exactly the Crew servers on every pass, and a third-party installer may rewrite its
+own spec. One record keyed by template name.
+
+- **Not for the default agent or the worker.** `kirocrew.json` already holds every
+  server installed through the MCP page, and `kirocrew-worker` mirrors it, so the
+  record refuses both (`DEFAULT_TEMPLATES`, `DEFAULT_REASON`); the request points
+  the user at the MCP page instead. A crewmate's own service templates are refused
+  (`CREWMATE_REASON`): a crewmate's servers change through its own capabilities.
+  Every other template Kiro Crew writes (`agent_files.OWNED_KIRO_AGENT_FILES`: the
+  heartbeat, which copies a fixed server list, and the background agents) is refused
+  with `BUILT_IN_REASON`. A refused template is never merged, even from a
+  hand-edited record.
+- **No launch line from the agent.** An entry is the gateway-resolved server entry
+  (`command`/`args`/`env` or `url`/`headers`, `type`, `timeout`) plus who approved it,
+  when, and the card id. The caller builds the entry; the record only stores it.
+- **No trust.** `autoApprove`, `allowedTools` and every key outside `ENTRY_KEYS` are
+  refused on write and skipped on read. A merge adds the server and its `@server`
+  mount in `tools`, never a grant, so its tools prompt until the user grants them
+  separately and every grant still passes `_filter_auto_approve` (POLICY ∩ PROFILE
+  unchanged).
+- **One merge, ADD-only.** `merge_into` / `merge_into_spec` is the only path: a name
+  the template already declares keeps its own entry. The exception is an entry that
+  declares no transport, only a restriction (a checkout's or the dashboard's
+  switch-off keys, `RESTRICTION_KEYS`): the approved entry is its launch and the
+  restriction is layered on top, so it narrows the server instead of withholding it. It runs in the conductor
+  installers, right after `_conductor_mcp_servers` (the deprecated
+  `kirocrew-ledger-conductor` alias reads and writes its successor's record), and at
+  spawn for every template Kiro Crew does not write (`merge_at_spawn`, never written
+  to the file): in every branch of the KAS read (user level, crewmate folder, project
+  checkout after its key filter, keeping only its switch-off keys for an approved
+  server, a bound app agent) and in the array hosts' read.
+- **Where it reaches.** A conductor is supported on every backend that runs a spec's
+  servers (`agent_sdk.drivers.acp.backend_delivers_spec_servers`) and refused with
+  `NO_SPEC_SERVERS_REASON` on pi, whose projection is broker-only. A template Kiro
+  Crew does not write is reached at spawn only on
+  `ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN` (KAS, claude, codex). kiro-cli loads such
+  a template from its own file with no per-session channel, and Crew never writes a
+  spec it does not own, so `addition_support(template, backend)` answers unsupported
+  there with `UNSUPPORTED_REASON` and the card refuses.
+- **Reach and removal.** `addition_reach` names every template one addition reaches
+  (the goal conductor and its deprecated alias share one record; a refused template
+  answers `()`). `remove_addition(..., card_id=...)` takes away only that card's
+  approval. `kirocrew doctor` lists each template's additions.
+- **Applying it.** The record adds no reload path. After a write, the caller
+  rebuilds the specs and applies the change to running sessions through the gate
+  below (`live_sessions_apply_mcp_live`); a session that cannot apply it live picks it
+  up on the next session.
+
 ### Live reconcile: when no restart is needed at all
 
 kiro-cli 2.10.0+ watches `~/.kiro/agents` and `mcp.json` and reconciles a

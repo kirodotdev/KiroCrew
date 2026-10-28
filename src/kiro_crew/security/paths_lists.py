@@ -408,6 +408,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``sandbox._CREW_READONLY_LEAVES``, which this entry does not touch: the
     # reader it fences is the AGENT'S OWN FILE TOOLS.
     "member-memory-bindings",
+    "template-mcp-additions",  # approved MCP entries' env/headers; as the bindings above
     "security_events.jsonl",
     # Rotated SEL segments. sel_rotation.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records

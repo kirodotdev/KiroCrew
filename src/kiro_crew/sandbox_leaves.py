@@ -697,6 +697,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # Gateway resolve-once artifacts choose the entry point substituted for an
     # approved npm launcher. The installer runs in the unsandboxed gateway.
     "mcp/resolved",
+    # The per-template MCP additions record (``template_mcp_additions``): the servers
+    # the user approved for a template on a change card, merged into that template's
+    # spec on the next rebuild. A sandboxed writer could add a server it chose and
+    # have it launched. Read-only, not hidden: no sandboxed reader needs it, but it
+    # holds only launch entries the agent specs carry too. Every writer runs in the
+    # gateway or the CLI, outside the sandbox.
+    "template-mcp-additions",
     # This gateway's stable random identity (``gateway_identity.GATEWAY_ID_FILE``). The
     # Remote Crew cycle guard compares it to refuse a chain that loops back on itself,
     # so a sandboxed writer would choose whether a loop is detected. The read path
@@ -804,6 +811,9 @@ _CREW_READONLY_TARGETS: list[str] = _crew_home_entries(_CREW_READONLY_LEAVES)
 _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # The per-listener gateway credential (``run/gateway-<port>.secret``).
     "run",
+    # Approved per-template MCP server entries: an entry's ``env`` or ``headers`` can
+    # carry a credential, and no foreign child reads the record.
+    "template-mcp-additions",
     # The SEL trust root and the audit key inside it.
     "trust",
     "sel_hmac.key",

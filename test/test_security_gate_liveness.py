@@ -548,7 +548,11 @@ def _url_payload_command(n: int) -> str:
 #: the carve-out's first word in ``exfil_bash``. No rule, pattern or verdict moved.
 #: Raised by 5, from 32,793, for ``vm_stat``, ``uptime`` and ``free`` in the read-only
 #: allowlist of ``readonly_bash`` plus their two-line note. Table data, no matcher change.
-_PACKAGE_LINE_BUDGET = 32_798
+#:
+#: Raised again, from 32,798, by one line: the per-template MCP additions record joins
+#: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
+#: ``headers`` can hold an API key and only the floor masks it from a foreign child.
+_PACKAGE_LINE_BUDGET = 32_799
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

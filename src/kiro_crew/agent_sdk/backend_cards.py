@@ -367,6 +367,12 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
+        "whether a server the user approved for a template Crew does not own reaches "
+        "that template's sessions here. The approval card asks the same question for "
+        "the session it is raised in and refuses with its own reason, so a card line "
+        "would repeat a refusal the user already meets where it applies"
+    ),
     "ACP_BACKENDS_MATE_WORKER_KIT": (
         "whether a crewmate's worker may run here with its kit. A worker always runs "
         "on its crewmate's backend, so the choice it depends on is the member "

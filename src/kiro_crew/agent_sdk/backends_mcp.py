@@ -484,3 +484,24 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # and load of a resident session with a changed array, so none inherits a skip
 # whose wrong grant leaves a server unmounted with nothing red to say why.
 ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
+
+# Backends on which a per-template MCP addition reaches a session of a template
+# Crew does NOT own (a third-party or other custom agent) without Crew writing into
+# that template's spec file (``template_mcp_additions.merge_at_spawn``). The
+# addition is merged into the spec as the session reads it at spawn: KAS takes the
+# whole definition over the wire (``harness.kas.resolve_projected_spec``, captured live in
+# ``test/fixtures/acp_frames/kas/saved-spec-live.jsonl``); claude and codex
+# build their ``session/new`` array from ``session_mcp._session_spec_and_snapshot_for``,
+# each with a live capture of a spec-declared server running in the session
+# (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``,
+# ``test/fixtures/acp_frames/codex/saved-spec-projection-live.jsonl``).
+# kiro-cli is not a member: it reads ``--agent`` off disk at spawn and has no
+# per-session channel for a whole spec, and Crew never writes a spec it does not
+# own. pi is not a member: its projection is broker-only, so a declared server does
+# not reach it. deepseek, opencode, goose and copilot read the same array but have no
+# live capture of a spec-declared server running, so none inherits the claim.
+# Templates Crew owns (default, worker, conductors) are merged by their installer and
+# reach every backend; this set is only about the others.
+ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN = frozenset(
+    {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+)

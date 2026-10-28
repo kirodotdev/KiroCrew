@@ -218,7 +218,14 @@ def resolve_projected_spec(
         if not kas_agents_mod.agent_spec_absent(service_dir, agent):
             return kas_agents_mod.load_agent_spec(service_dir, agent), service_dir
     if not kas_agents_mod.agent_spec_absent(agents_dir, agent):
-        return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
+        # A user-level template Crew does not own gets the servers the user approved
+        # for it merged here, at spawn, and never written into its file
+        # (``template_mcp_additions.merge_at_spawn``; a Crew-owned spec already
+        # carries them from its installer, so it comes back unchanged).
+        from kiro_crew.template_mcp_additions import merge_at_spawn
+
+        spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+        return spec, agents_dir
     # Crewmate scope. A name the user level does NOT declare may be a crewmate's
     # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
     # §5.3): resolution reads this folder, the session agent picker does not, so
@@ -236,11 +243,21 @@ def resolve_projected_spec(
         # A platform server switched on with no transport is never launched from
         # here: the gateway supplies that server.
         drop_partial_platform_servers(mate_spec)
-        return mate_spec, mate_dir
+        # Trusted like a user-level spec, so its approved additions merge here too.
+        from kiro_crew.template_mcp_additions import merge_at_spawn
+
+        return merge_at_spawn(agent, mate_spec), mate_dir
     declared, project = project_agent_spec(agent, work_dir)
+    # Every branch below hands its spec through ``merge_at_spawn``: the servers the
+    # user approved for this template reach whichever spec KAS is given.
+    from kiro_crew.template_mcp_additions import merge_at_spawn
+
     if not declared:
         try:
-            return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
+            return (
+                merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent)),
+                agents_dir,
+            )
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.
@@ -269,6 +286,19 @@ def resolve_projected_spec(
             ", ".join(dropped),
         )
     spec = {k: project[k] for k in PROJECT_SPEC_HONOURED_KEYS if k in project}
+    # The checkout's keys are filtered above; the approved additions come from the
+    # user's own record, never from the checkout. The checkout's switch-off keys for
+    # an approved server (a mute, switched-off tools) are kept, and only those, and
+    # are layered onto the servers that one merge produced, so the record is read
+    # once and a server approved meanwhile cannot launch unmuted.
+    from kiro_crew.acp.session_mcp import _project_restrictions
+
+    spec = merge_at_spawn(agent, spec)
+    merged = spec.get("mcpServers")
+    if isinstance(merged, dict):
+        for name, kept in _project_restrictions(project).items():
+            if isinstance(merged.get(name), dict):
+                merged[name] = {**merged[name], **kept}
     if work_dir is None:  # unreachable: ``project_agent_spec`` declares nothing without one
         return spec, agents_dir
     return spec, paths_mod.project_agents_dir(work_dir)
@@ -642,7 +672,9 @@ class KasHarness(MembershipHarness):
             if snapshot is not None and snapshot.spec is not None:
                 spec, prompt_dir = snapshot.spec, agents_dir
             elif bound is not None:
-                spec, prompt_dir = bound, agents_dir
+                from kiro_crew.template_mcp_additions import merge_at_spawn
+
+                spec, prompt_dir = merge_at_spawn(agent, bound), agents_dir
             else:
                 try:
                     spec, prompt_dir = resolve_projected_spec(agents_dir, agent, work_dir)

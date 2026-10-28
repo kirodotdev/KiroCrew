@@ -78,6 +78,23 @@ that child write access to only the random staging directory; it cannot cover
 `record.json` or another resolution. After validating the tree, the gateway
 process renames it into `mcp/resolved/` and writes `record.json`.
 
+The `template-mcp-additions/` directory holds the servers the user approved for
+an agent template on a change card (`template_mcp_additions`), which the next
+rebuild merges into that template's spec and a spawn merges into a template Crew
+does not own. It is sealed the same way: denied to the file-tool gate
+(`_WRITE_PROTECTED_HOME_PATHS`), mounted read-only by the OS sandbox and
+pre-created so the seal holds on a fresh home (`_CREW_READONLY_LEAVES`,
+`_CREW_PRECREATE_READONLY_DIR_LEAVES`), not satisfiable by a planted symlink
+(`_CREW_NOFOLLOW_READONLY_DIR_LEAVES`), and withheld from foreign harness children
+because an entry's `env` or `headers` can carry a credential
+(`_CREW_CHILD_WITHHELD_LEAVES`). That withholding is enforced by putting the leaf on
+the read floor (`_CREW_SECRET_LEAVES`), the list an enforced adapter's OS mask and the
+file-tool read gate are built from. Without the seal a sandboxed writer could record a
+server of its choosing. Every writer runs in the gateway or the CLI. The record
+carries no trust: `autoApprove`, `allowedTools` and every key outside
+`ENTRY_KEYS` are refused on write and skipped on read, so a merged server's tools
+still reach the PreToolUse gate and POLICY ∩ PROFILE is unchanged.
+
 ### Member memory boundaries
 
 Cold subagent continuation restores app ownership from the canonical

@@ -134,6 +134,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # Pre-creation gives Linux concrete bind targets on a fresh install.
     "mcp-launch-approvals",
     "mcp/resolved",
+    # The per-template MCP additions record, on the same argument: an absent record
+    # reads as no additions, so an empty directory is the same answer, and the bind
+    # is live, so the gateway's first write is seen. Without this entry the seal
+    # skips the directory until that write, which is the window a sandboxed shell
+    # would use to plant a record the next rebuild merges.
+    "template-mcp-additions",
     # The skill projection's side files, on the ``profiles`` argument. (1) Every reader
     # resolves a record, a lease or the ledger by name under it and treats a missing
     # one as absent, so an empty directory is no record, no lease and no ledger,
@@ -168,6 +174,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "pi-gate",
     "mcp-launch-approvals",
     "mcp/resolved",
+    "template-mcp-additions",
     "skill-projection",
     "seed-provenance",
 )
@@ -247,6 +254,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
     "mcp/resolved": (
         "sealed resolved MCP launches",
         "the agent could replace the executable the gateway substitutes for an approved launch",
+    ),
+    "template-mcp-additions": (
+        "sealed template MCP additions",
+        "the agent could record a server of its choosing that the next rebuild mounts",
     ),
     "skill-projection": (
         "sealed skill-view records",
