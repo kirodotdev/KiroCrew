@@ -688,6 +688,13 @@ your forge username in that thread: comment `<id>` is a question for you.
 available: an issue came into your scope, or a new one was opened. Run your normal
 selection; the wake names a candidate, not an order.
 
+`[crew wake: pickup-due (K claimable, F of M slots free)]` means you have room and
+more to choose from than the watcher last saw: a slot freed, or an issue became
+claimable (new, newly in scope, or back after leaving). Run your normal selection.
+If nothing is worth taking, record the sweep and end the turn — you are not woken
+again until there is more room or another candidate, and there is no frequent idle
+turn to fall back on.
+
 ## Never
 
 - Never modify the repository's CI or gate configuration: `.github/` where the repo

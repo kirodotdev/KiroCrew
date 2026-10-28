@@ -182,12 +182,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     #: (:func:`_validated_label`), not trusted because a settings form produced it.
     "needs_human_label": "crew: needs human",
     "commit_trailer": "Crew: {name} (Kiro Crew Issue Radar)",
-    #: Seconds between the crew's FALLBACK idle turns (its auto-nudge loop). The
-    #: watcher wakes a crew on every signal it can see without a model -- an unblock,
-    #: a human answer, a scope label or new issue, a mention -- so this clock only
-    #: covers what the watcher misses, and every tick is a full model turn. Repo-wide
-    #: like the TTL; clamped to :data:`CREW_IDLE_SECS_RANGE` on read and write.
-    "crew_idle_secs": 300,
+    #: Seconds between the crew's FALLBACK idle turns (its auto-nudge loop) while no
+    #: item is in an acting phase. The watcher wakes a crew on every signal it can see
+    #: without a model -- an unblock, a human answer, a scope label or new issue, a
+    #: mention, room plus claimable work -- so this clock only covers what the
+    #: watcher misses, and every tick is a full model turn; a day by default. A crew
+    #: with an acting item runs at ``ACTIVE_IDLE_SECS`` or this value, whichever is
+    #: shorter. Repo-wide like the TTL; clamped to :data:`CREW_IDLE_SECS_RANGE` on
+    #: read and write.
+    "crew_idle_secs": 86400,
 }
 
 #: The bounds ``crew_idle_secs`` is clamped to: auto-nudge's own interval range.

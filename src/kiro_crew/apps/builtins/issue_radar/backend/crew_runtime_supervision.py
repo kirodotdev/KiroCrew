@@ -31,7 +31,7 @@ from .crew_runtime_session import (
     _slot_key,
     _turn_model_items,
     autoapprove_scope,
-    crew_idle_secs,
+    crew_loop_gap,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
@@ -726,9 +726,11 @@ async def watchdog_cycle(
                     slot = await ensure_crew_session(state, owner, repo, crew)
                 if not loop.active:
                     await svc.update(loop.id, active=True)
-                # The fallback clock follows the repo setting: a loop armed before
-                # the operator changed ``crew_idle_secs`` is retimed here, in place.
-                idle = await crew_idle_secs(owner, repo, root)
+                # The clock follows the crew's items and the repo setting: the
+                # short gap while an item is acting, the backstop otherwise
+                # (``crew_loop_gap``). Retimed here, in place, and only when the
+                # interval moved, so a steady crew costs no loop write.
+                idle = await crew_loop_gap(owner, repo, crew, root)
                 current_idle = getattr(loop, "idle_secs", None)
                 if isinstance(current_idle, int) and current_idle != idle:
                     await svc.update(loop.id, idle_secs=idle)

@@ -1661,9 +1661,10 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         client = _WakeClient()
         client.add_issue(5, ["bug"])
         woken, wake = await self._sweep(client)
-        # First observation: the backlog is recorded, nobody is woken.
-        self.assertEqual(woken, {})
-        wake.assert_not_awaited()
+        # First observation: the backlog is recorded and names no issue. The one wake
+        # is pickup-due -- the crew has room and #5 to choose from.
+        self.assertEqual(woken, {crew["id"]: [cr.SIG_PICKUP_DUE]})
+        self.assertEqual(self._reasons(wake), ["pickup-due (1 claimable, 3 of 3 slots free)"])
 
         client.add_issue(6, ["bug", "ui"])
         client.add_issue(7, ["docs"])
@@ -1727,7 +1728,8 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         client = _WakeClient()
         client.add_issue(5, ["bug"])
         _, wake = await self._sweep(client)
-        wake.assert_not_awaited()
+        # No new-issue reason for what was already open; the room is pickup-due's.
+        self.assertEqual(self._reasons(wake), ["pickup-due (1 claimable, 3 of 3 slots free)"])
 
         client.add_issue(6, [])
         client.add_issue(7, [cr.CLAIM_LABEL])

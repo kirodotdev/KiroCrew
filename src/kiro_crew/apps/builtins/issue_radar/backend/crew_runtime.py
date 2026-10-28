@@ -61,6 +61,13 @@ from kiro_crew.apps.manager import is_app_enabled  # noqa: F401
 from kiro_crew.atomic_write import atomic_write, read_json_or
 
 from . import crew_store, github_client, provider, store
+from .crew_runtime_pickup import (
+    PICKUP_SECTION,
+    claimable_numbers,
+    fold_pickup_reasons,
+    settle_pickup,
+    stage_pickup,
+)
 from .crew_runtime_session import is_live
 from .crew_runtime_supervision import wake_crew, watchdog_cycle
 
@@ -70,6 +77,7 @@ from .crew_runtime_supervision import wake_crew, watchdog_cycle
 # owner that binds the name, and a write -- ``monkeypatch.setattr``, ``mock.patch`` -- reaches
 # every owner holding it (:mod:`kiro_crew._facade_mirror`). Owners never import this module. New
 # work goes to the owner of its responsibility:
+#   ``crew_runtime_pickup`` -- the pickup-due decision: room plus claimable work
 #   ``crew_runtime_prompt`` -- the brief, the nudge and the turn prompt
 #   ``crew_runtime_session`` -- the crew's slot, minting its grant, launch and turn dispatch
 #   ``crew_runtime_supervision`` -- trust reconciliation, wake, watchdog, hooks, revocation
@@ -783,11 +791,14 @@ async def detect_human_answers(
 #
 # Each one seeds on first observation, like every other signal here: a crew seen for
 # the first time (or whose scope changed) records what is already there and wakes for
-# nothing, so connecting a repo cannot wake a crew for its whole backlog. And each is
-# committed only when the wake STARTED a turn: ``wake_crew`` drops a wake on a crew
-# that is mid-turn, so a signal recorded as handled then would be lost until the idle
-# clock. Uncommitted, the next sweep finds it again. A mention is kept as a pending
-# reason instead, because its comment cursor has already moved past it.
+# nothing, so connecting a repo cannot wake a crew for its whole backlog. The same read
+# also feeds ``pickup-due`` (:mod:`.crew_runtime_pickup`): one wake, not one per issue,
+# when the crew has room and more to choose from than it last saw -- the case a full
+# crew would otherwise wait out on its idle clock. And each is committed only when the wake
+# STARTED a turn: ``wake_crew`` drops a wake on a crew that is mid-turn, so a signal
+# recorded as handled then would be lost until the idle clock. Uncommitted, the next
+# sweep finds it again. A mention is kept as a pending reason instead, because its
+# comment cursor has already moved past it.
 #
 # Cost, per sweep and repo with a live crew: one open-issues read (by update time,
 # labels included); for mentions on GitHub one repository-comments read, on GitLab one
@@ -819,7 +830,7 @@ def wake_checks_path(owner: str, repo: str, root: Path | None = None) -> Path:
 def read_wake_checks(owner: str, repo: str, root: Path | None = None) -> dict[str, Any]:
     """The state, with every section present. A missing or foreign file is empty,
     which seeds rather than wakes on the next sweep."""
-    out: dict[str, Any] = {"scope": {}, "new_mark": {}, "mentions": {}}
+    out: dict[str, Any] = {"scope": {}, "new_mark": {}, "mentions": {}, PICKUP_SECTION: {}}
     path = wake_checks_path(owner, repo, root)
     if not path.is_file():
         return out
@@ -957,6 +968,7 @@ async def detect_new_work(
     before = json.dumps(checks, sort_keys=True)
     reasons: dict[str, list[str]] = {}
     staged: dict[str, dict[str, Any]] = {}
+    pickup_due: dict[str, str] = {}
     live_ids = [str(c.get("id")) for c in live]
 
     issues = await asyncio.to_thread(partial(_read_open_issues, key))
@@ -976,6 +988,7 @@ async def detect_new_work(
                 partial(crew_store.list_work_items, owner, repo, cid, scope)
             )
             mine = {n for it in items if isinstance(n := it.get("number"), int)}
+            open_count = sum(1 for it in items if it.get("phase") not in crew_store.TERMINAL_PHASES)
             free = [
                 (number, labels)
                 for number, labels, _stamp in rows
@@ -986,11 +999,20 @@ async def detect_new_work(
                 _scope_wakes(checks, cid, crew_scope, free, rows, complete, reasons, staged)
             else:
                 _new_issue_wakes(checks, cid, free, rows, reasons, staged)
+            stage_pickup(
+                checks,
+                cid,
+                claimable_numbers(free, crew_scope),
+                open_count,
+                int(crew.get("max_open") or 0),
+                staged,
+                pickup_due,
+            )
 
     await _detect_mentions(key, live, checks, rows, issues is not None, reasons)
 
     # Crews that are gone (retired, deleted, paused) keep no state here.
-    for section in ("scope", "new_mark"):
+    for section in ("scope", "new_mark", PICKUP_SECTION):
         for cid in [c for c in checks[section] if c not in live_ids]:
             checks[section].pop(cid, None)
     pending = checks["mentions"].get("pending")
@@ -1000,7 +1022,7 @@ async def detect_new_work(
 
     if json.dumps(checks, sort_keys=True) != before:
         await asyncio.to_thread(partial(write_wake_checks, owner, repo, checks, scope))
-    return reasons, {"checks": checks, "staged": staged}
+    return reasons, {"checks": checks, "staged": staged, "pickup_due": pickup_due}
 
 
 def _scope_wakes(
@@ -1152,6 +1174,7 @@ async def settle_new_work(
         if "mark" in staged:
             checks["new_mark"][cid] = staged["mark"]
             changed = True
+        changed = settle_pickup(checks, cid, staged) or changed
     pending = checks["mentions"].get("pending")
     if isinstance(pending, dict):
         for cid in [c for c in pending if results.get(c)]:
@@ -1281,6 +1304,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not due:
         if stale:
             await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
+        fold_pickup_reasons(plan.get("pickup_due") or {}, reasons, woken)
         await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan)
         return woken
 
@@ -1324,6 +1348,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         reasons.setdefault(crew_id, []).append(f"#{item.get('number')} {', '.join(signals)}")
 
     await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
+    fold_pickup_reasons(plan.get("pickup_due") or {}, reasons, woken)
     await _wake_and_settle(state, key, crews_by_id, reasons, scope, plan)
     return woken
 
@@ -1410,6 +1435,7 @@ async def _enrich(key: provider.RepoKey, prs: list[int]) -> dict[int, dict[str, 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
+    "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_pickup",
     "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_prompt",
     "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_session",
     "kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_supervision",
@@ -1424,6 +1450,12 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_pickup import (  # noqa: F401
+        _CREW_LABEL_PREFIX,
+        _MAX_PICKUP_NUMBERS,
+        SIG_PICKUP_DUE,
+        _stored_state,
+    )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_prompt import (  # noqa: F401
         _BRIEF_PATH,
         BRIEF_SENTINEL,
@@ -1442,6 +1474,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_session import (  # noqa: F401
         _HAS_SECURITY,
+        ACTIVE_IDLE_SECS,
         APP_NAME,
         DEFAULT_IDLE_SECS,
         GRANT_SOURCE,
@@ -1460,6 +1493,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _turn_model_items,
         autoapprove_scope,
         crew_idle_secs,
+        crew_loop_gap,
         dispatch_crew_turn,
         ensure_crew_session,
         launch_crew,
