@@ -451,6 +451,10 @@ class ConversationLog:
         self._title_scan_cache: _LRUCache[tuple[tuple[tuple[int, int, int], int], int, object]] = (
             _LRUCache(_METADATA_CACHE_MAX)
         )
+        #: size or inode moves on every write path in this repo; ctime moves on POSIX only
+        self._has_messages_cache: _LRUCache[tuple[CacheIdentity, int, bool]] = _LRUCache(
+            _METADATA_CACHE_MAX
+        )
         #: Bounded identity-keyed LRU of formatted ``recent()`` windows keyed by
         #: (key, max_messages, roles). The tail-read fast path intentionally
         #: never warms ``_msg_cache`` (it returns a partial view), so a session
@@ -650,6 +654,33 @@ class ConversationLog:
                 except UnreadableRecord:
                     return True
         return False
+
+    def listing_has_messages(self, key: str) -> bool:
+        """:meth:`has_messages` for the Older Sessions listing, memoized per file.
+
+        The listing asks this of every untitled transcript on each refresh. An
+        answer is reused while the file's stamp and this log's write generation
+        both match, so an unchanged transcript costs one ``stat`` instead of the
+        per-key lock and an open. Only the listing calls this: the callers that
+        gate memory on the answer keep the locked, uncached :meth:`has_messages`.
+        """
+        path = self._path(key)
+        # Generation BEFORE the stat, as in list_sessions: a write landing
+        # between them bumps it and the publish below discards itself.
+        gen = self._cache_gen(key)
+        try:
+            identity = self._cache_identity(os.stat(path))
+        except OSError:
+            # Absent or unstattable: the locked read decides, uncached.
+            return self.has_messages(key)
+        cached = self._has_messages_cache.get(key)
+        if cached is not None and cached[0] == identity and cached[1] == self._cache_gen(key):
+            return cached[2]
+        result = self.has_messages(key)
+        self._publish_if_current(
+            self._has_messages_cache, key, (identity, gen, result), key=key, gen=gen
+        )
+        return result
 
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.

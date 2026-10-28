@@ -157,7 +157,7 @@ def _has_user_content(log: object, row: dict) -> bool:
     if row.get("title", key) != key:
         return True
     try:
-        return bool(log.has_messages(key))  # type: ignore[attr-defined]
+        return bool(log.listing_has_messages(key))  # type: ignore[attr-defined]
     except OSError:
         # Unreadable is not empty: never hide what could not be read.
         return True

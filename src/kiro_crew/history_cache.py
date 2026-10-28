@@ -668,6 +668,7 @@ class HistoryCacheCoordinator:
             self._log._page_index_cache.pop(ident, None)
             self._log._meta_cache.pop(ident, None)
             self._log._title_scan_cache.pop(ident, None)
+            self._log._has_messages_cache.pop(ident, None)
             self._log._file_change_cache.pop(ident, None)
             self._log._tab_id_by_key.pop(ident, None)
             self._log._folded_cache.pop(ident, None)
