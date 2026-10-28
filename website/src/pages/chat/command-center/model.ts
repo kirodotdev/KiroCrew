@@ -7,6 +7,7 @@ import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
+import { crewApprovalDecidableHere } from '../../../lib/crewMode'
 
 export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'needs_input' | 'stopped'
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
@@ -70,15 +71,12 @@ export interface AttentionItem {
   approval?: PendingApproval
   approvalMode?: ApprovalModeKey
   native?: boolean
-  /** A conductor's rollup item (All Dashboards, where its workers are not
-   *  listed): the conductor's key. The item is info with a way to that chat,
-   *  whose Crew panel lists the waiting workers, and draws no Approve or Reject.
-   *  A worker's OWN approval item is untouched here: it keeps its decision
-   *  buttons on every surface until the part that adds the conductor's approval
-   *  card moves it onto that card (`crewApprovalDecidableHere`). */
+  /** A Crew Mode worker's approval, decided only on this conductor's approval
+   *  card (`crewApprovalDecidableHere`): the item is info with a link to that
+   *  card, and draws no Approve or Reject. */
   crewCard?: string
-  /** On that rollup item: how many of the conductor's workers wait on a tool
-   *  decision. */
+  /** On a conductor's own rollup item (All Dashboards): how many of its workers
+   *  wait on a tool decision. */
   crewCount?: number
 }
 /** The command an approval asks about, as the transcript would title it. Empty
@@ -258,11 +256,17 @@ export function buildCommandCenter(source: CommandCenterSources) {
       addAttention({ id: `session-input:${s.key}`, slot: s.key, kind: 'open_session' })
     }
   }
-  // A worker's own approval item keeps its decision buttons here (conductor
-  // side panel): nothing else draws them yet. The part that adds the
-  // conductor's approval card turns these into links to that card
-  // (`crewApprovalDecidableHere`). The fleet rollup below is info only: All
-  // Dashboards lists no worker, so the conductor carries their wait.
+  // The one rule: a Crew Mode worker's approval is decided on its conductor's
+  // card, so here it is info that links there (edge review R3 G4).
+  const surface = source.root === null ? 'session_dashboards' : 'conductor_side_panel'
+  const rowByKey = new Map(slots.map(s => [s.key, s]))
+  for (let i = 0; i < attention.length; i++) {
+    const item = attention[i]
+    const row = rowByKey.get(item.slot)
+    if (item.kind === 'approval' && row?.crew_root && !crewApprovalDecidableHere(row, surface)) {
+      attention[i] = { ...item, crewCard: row.crew_root, native: undefined }
+    }
+  }
   const crewWaiting = source.crewWaiting || {}
   for (const s of slots) {
     const count = crewWaiting[s.key] ?? 0

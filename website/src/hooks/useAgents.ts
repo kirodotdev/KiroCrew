@@ -71,6 +71,13 @@ function keepIfEqual(prev: KiroCrewAgent[], next: KiroCrewAgent[]): KiroCrewAgen
   return jsonEqual(prev, next) ? prev : next
 }
 
+/** The catalog's Crew Mode fields as one comparable string: which agent is the
+ *  conductor and which templates count as conductors. A gateway without Crew Mode
+ *  sends neither, which is its own value. */
+function crewCatalogIdentity(agent: string | undefined, conductorAgents: readonly string[] | undefined): string {
+  if (agent === undefined && conductorAgents === undefined) return ''
+  return `${agent ?? ''}|${(conductorAgents ?? []).join(',')}`
+}
 
 export function useAgents(refreshTrigger: number, sessionKey?: string, projectDir?: string) {
   const [choices, setChoices] = useState<KiroCrewAgent[]>(NO_CHOICES)
@@ -98,6 +105,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // module variable, and `keepIfEqual` keeps the agent arrays when the roster is
   // unchanged, so without this a new `agent.crew_mode_agent` left the picker
   // hiding the old conductor and offering the new one.
+  const [crewCatalogKey, setCrewCatalogKey] = useState('')
   const reload = useCallback(() => {
     setReloading(true)
     setReloadTick(t => t + 1)
@@ -134,6 +142,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // lib/crewMode (the Crew Mode switch, the picker filter) sees this catalog's
       // conductor on the same render as its rows.
       setCrewModeCatalog(d.crew_mode_agent, d.conductor_agents)
+      setCrewCatalogKey(crewCatalogIdentity(d.crew_mode_agent, d.conductor_agents))
       // Every `refresh` frame and every session switch refetches the catalog,
       // and the reply is almost always the roster already held. Keeping the
       // held array then keeps every memo downstream of it, including the
@@ -164,13 +173,15 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // Conductor templates never reach a chat's picker: Crew Mode is the way in.
   const pickerChoices = useMemo(
     () => withoutConductors(memberChoices ? choices : withoutCoveredCrewmates(choices)),
-    [choices, memberChoices],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- crewCatalogKey stands for the conductor set withoutConductors reads from lib/crewMode
+    [choices, memberChoices, crewCatalogKey],
   )
   // The picker's rows as of the last successful load, for display-only labels
   // that must agree with the picker on when a same-name pair exists (#19472).
   const displayPickerChoices = useMemo(
     () => withoutConductors(memberChoices ? displayChoices : withoutCoveredCrewmates(displayChoices)),
-    [displayChoices, memberChoices],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- same conductor-set dependency as pickerChoices
+    [displayChoices, memberChoices, crewCatalogKey],
   )
 
   return { agents, displayAgents, choices: pickerChoices, displayChoices: displayPickerChoices, defaultAgent, error, reload, reloading }

@@ -111,23 +111,6 @@ describe('command center projection', () => {
     expect(model.workItems.map(i => i.state)).toEqual(['blocked', 'waiting'])
     expect(model.blocked).toBe(1)
   })
-  it('keeps a Crew Mode worker\'s approval decidable in the conductor side panel: no card redirect until the card ships', () => {
-    // The conductor's own approval card is a later part. Until it lands, nothing
-    // else draws the decision, so the worker's item must keep `native` and carry
-    // no `crewCard` (which would swap the buttons for a link to a card that is
-    // not there). Red when the redirect runs on this surface.
-    const model = buildCommandCenter(sources({
-      slots: [slot('root', { crew_mode_root: true }), slot('worker', { created_by: 'root', crew_root: 'root', pending_approval: true,
-        pending_approval_info: { origin: 'native', request_id: 'rid', request_mid: 'mid', tool: 'Shell', tool_input: 'ls', tool_kind: 'execute' } })],
-    }))
-    const item = model.attention.find(a => a.kind === 'approval' && a.slot === 'worker')
-    expect(item).toMatchObject({ native: true })
-    expect(item?.crewCard).toBeUndefined()
-    // The fleet rollup is the one crew item, and only where the fleet asks for it.
-    expect(model.attention.some(a => a.crewCard)).toBe(false)
-    const fleet = buildCommandCenter(sources({ root: null, slots: [slot('root', { crew_mode_root: true })], crewWaiting: { root: 1 } }))
-    expect(fleet.attention.filter(a => a.crewCard)).toMatchObject([{ slot: 'root', crewCard: 'root', crewCount: 1 }])
-  })
   it('deduplicates approvals exposed by both feeds and preserves exact request IDs', () => {
     const model = buildCommandCenter(sources({
       slots: [slot('root', { pending_approval: true, pending_approval_info: { origin: 'coordinator', request_id: 'req', tool: 'shell', tool_input: 'pwd', tool_kind: 'execute' } })],

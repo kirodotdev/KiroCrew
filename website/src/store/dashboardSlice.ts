@@ -12,7 +12,7 @@ import { bumpLastTsOverlay, dropCaughtUpLastTs, pruneLastTsOverlay, slotLastTsOf
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
-import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
 export { selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
@@ -1883,12 +1883,15 @@ function countUnreadByMode(
   if (unread.length === 0) return 0
   const surfaceByKey = new Map(slots.map(s => [s.key, slotSurfaceKey(s)]))
   const isHeldOrphan = heldOrphanTest(new Set(surfaceByKey.keys()), heldKeys, holdChannels, listPartial)
+  // A Crew Mode crew member is no row of the person's lists (its root's Crew
+  // panel lists it), so its unread entry is kept for that panel but not counted.
+  const crewMembers = crewMemberKeys(slots)
   // The chat surface ('') counts every slot the chat page renders, legacy
   // Autopilot slots included (see `isChatPageSurface`).
   const isChatSurface = mode === ''
   let count = 0
   for (const k of unread) {
-    if (isHeldOrphan(k)) continue
+    if (isHeldOrphan(k) || crewMembers.has(k)) continue
     const sk = surfaceByKey.get(k) ?? ''
     if (isChatSurface ? isChatPageSurface(sk) : sk === mode) count++
   }

@@ -19,6 +19,7 @@ import TranscriptScrollShell from '../TranscriptScrollShell'
 import TurnNavigationMinimap from '../TurnNavigationMinimap'
 import WelcomeView from '../../../components/WelcomeView'
 import { useMarkTranscriptShown } from '../../../hooks/useAckCronNotesInView'
+import CrewModeWelcome from '../../../components/CrewModeWelcome'
 import SessionPulseSurveyCard from '../../../components/SessionPulseSurveyCard'
 import { ChatFooter } from '..'
 import type { ChatConfig } from '../ChatSettings'
@@ -59,6 +60,10 @@ interface ChatTranscriptViewProps {
   turnRowMayBeLive: (it: TurnItem) => boolean
   setInput: (next: string | ((prev: string) => string)) => void
   isWelcomeState: boolean
+  /** The chat runs on the conductor (crewModeSwitch): the welcome hero is the Crew Mode page. */
+  crewModeOn: boolean
+  /** Opens the side panel task board (crewModeSwitch); unset when this chat has no Overview. */
+  openTaskBoard?: () => void
   chatConfig: ChatConfig
   scrollerRef: RefObject<HTMLDivElement>
   bindScroller: Dispatch<SetStateAction<HTMLDivElement | null>>
@@ -94,7 +99,7 @@ interface ChatTranscriptViewProps {
  */
 export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
-  slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
+  slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, approve, dismissApproval, currentSlot, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
@@ -139,7 +144,10 @@ export default function ChatTranscriptView({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.18 }}
         >
-          <WelcomeView setInput={setInput} />
+          {/* Not a persistent element changing form: the user's own click
+              on the Crew Mode chip (which stays put) asks for a different
+              page, and CrewModeWelcome fades and pops in on its own. */}
+          {crewModeOn ? <CrewModeWelcome chatKey={activeSlot ?? undefined} onOpenTaskBoard={openTaskBoard} /> : <WelcomeView setInput={setInput} />}
         </motion.div>
       ) : (
       <>

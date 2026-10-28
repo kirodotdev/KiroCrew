@@ -15,10 +15,17 @@
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
 export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-conductor'
 
+/** The longest steer a person may type into a worker: the server's
+ *  `MAX_SEND_MESSAGE_CHARS`, which the steer route and the worker's own composer
+ *  send both refuse past (`message_too_long`). */
+export const CREW_STEER_MAX_CHARS = 50_000
+
+let configuredAgent = DEFAULT_CREW_MODE_AGENT
 // Empty until a catalog says the gateway runs Crew Mode: a chat restored on a
 // conductor template before that read lands, or on a gateway without Crew Mode,
 // is an ordinary chat, so no picker row, chord or memory switch treats it otherwise.
 let conductors: ReadonlySet<string> = new Set()
+let gatewayHasCrewMode = false
 
 /** Record the catalog's Crew Mode facts. Called by `useAgents` on every load.
  *
@@ -33,21 +40,45 @@ export function setCrewModeCatalog(
   agent: string | undefined,
   conductorAgents: readonly string[] | undefined,
 ): void {
+  configuredAgent = agent || DEFAULT_CREW_MODE_AGENT
   if (agent === undefined && conductorAgents === undefined) {
     conductors = new Set()
+    gatewayHasCrewMode = false
     return
   }
-  conductors = new Set([...(conductorAgents ?? []), agent || DEFAULT_CREW_MODE_AGENT])
+  gatewayHasCrewMode = true
+  conductors = new Set([...(conductorAgents ?? []), configuredAgent])
+}
+
+/** Whether the gateway has said it runs Crew Mode (its catalog carried the Crew
+ *  Mode fields). `false` before the first catalog read and on a gateway without
+ *  Crew Mode, where every read that would narrow the person's view to Crew Mode's
+ *  rules is left as it is today. */
+export function gatewayRunsCrewMode(): boolean {
+  return gatewayHasCrewMode
 }
 
 /** Back to the state before any catalog landed. For tests, and for nothing else. */
 export function resetCrewModeCatalog(): void {
+  configuredAgent = DEFAULT_CREW_MODE_AGENT
   conductors = new Set()
+  gatewayHasCrewMode = false
+}
+
+/** The agent a chat switches to when Crew Mode is turned on. */
+export function crewModeAgent(): string {
+  return configuredAgent
 }
 
 /** Whether `name` is one of the gateway's conductors. */
 export function isConductorAgent(name: string | null | undefined): boolean {
   return !!name && conductors.has(name)
+}
+
+/** Whether a session on `agent` in namespace `kind` runs a conductor TEMPLATE. A
+ *  crewmate that carries a conductor's name is that crewmate, not a conductor. */
+export function runsConductor(agent: string | null | undefined, kind: string | null | undefined): boolean {
+  return kind !== 'member' && isConductorAgent(agent)
 }
 
 /** Whether a session on `agent` in namespace `kind` is in Crew Mode: on any
@@ -58,21 +89,51 @@ export function runsCrewMode(agent: string | null | undefined, kind: string | nu
   return conductors.has(agent) || (!!stamp && stamp === agent)
 }
 
+/** Whether `name` is the default agent: the switch is offered only there. The
+ *  literal `kirocrew` counts only while no default agent is configured; with
+ *  one configured, a chat on the `kirocrew` template is that template. */
+export function isDefaultAgentName(name: string, defaultAgent: string | undefined): boolean {
+  if (name === '') return true
+  return defaultAgent ? name === defaultAgent : name === 'kirocrew'
+}
+
 /** Crew Mode needs a Persistent chat: an Incognito or Temporary session may not
  *  open sessions, so a conductor there could not conduct. */
 export function memoryModeAllowsCrewMode(memoryMode: string | undefined): boolean {
   return (memoryMode ?? 'persistent') === 'persistent'
 }
 
-/** Rows of a normal chat's agent picker. The rule it will carry: every conductor
- *  left out, since the composer's Crew Mode switch is the way onto one; crewmates
- *  kept whatever their name. On this part the rule is INERT -- every row passes
- *  through -- because the switch is not here yet and the picker is still the one
- *  way onto a conductor template. The part that adds the switch turns the rule
- *  on here, in this one function; the picker, the Split View pane picker and the
- *  keyboard cycle (`agentCycleTarget`) already read through it. */
+/** Rows of a normal chat's agent picker: every conductor left out, since the
+ *  composer's Crew Mode switch (this part) is the way onto one; crewmates kept
+ *  whatever their name. The picker and the Split View pane picker read through
+ *  this one function; the keyboard cycle (`agentCycleTarget`) skips conductors on
+ *  its own. On a gateway without Crew Mode no template is a conductor, so every
+ *  row passes. */
 export function withoutConductors<T extends { name: string; selection_kind?: string }>(choices: T[]): T[] {
-  return choices
+  return choices.filter(c => c.selection_kind === 'member' || !isConductorAgent(c.name))
+}
+
+/** Every surface that can show a session's pending tool approval. Listed so one
+ *  test walks them all; a new surface joins the list and the rule below. */
+export const CREW_APPROVAL_SURFACES = [
+  'conductor_card',       // the conductor's approval card stack (CrewApprovalCards)
+  'worker_main_pane',     // the worker's own composer in the main pane
+  'worker_split_pane',    // the worker's composer in a Split View pane
+  'conductor_side_panel', // the conductor side panel's Approvals and attention tab
+  'session_dashboards',   // All Dashboards' Needs you section
+] as const
+export type CrewApprovalSurface = typeof CREW_APPROVAL_SURFACES[number]
+
+/** Whether *surface* may draw decision buttons (Approve, Reject, Trust) for
+ *  *slot*'s pending tool approval. The one rule, for every surface: a Crew Mode
+ *  worker's approval (a row with `crew_root`) is decided ONLY on its conductor's
+ *  approval card; every other surface shows it as info with a way to that card.
+ *  A session that is no worker keeps its usual controls everywhere. */
+export function crewApprovalDecidableHere(
+  slot: { crew_root?: string | null } | null | undefined, surface: CrewApprovalSurface,
+): boolean {
+  if (!slot?.crew_root) return true
+  return surface === 'conductor_card'
 }
 
 /** The person's own session list: a Crew Mode root's workers are left out while

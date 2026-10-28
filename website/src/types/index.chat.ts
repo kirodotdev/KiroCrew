@@ -644,6 +644,8 @@ export interface NotificationChannel {
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
+  /** A coordinator record's instance: pins a decision to that one record. */
+  request_instance?: string
   tool_purpose?: string
   tool: string
   tool_input: string

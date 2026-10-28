@@ -100,20 +100,31 @@ export function openCrewSession(dispatch: ReturnType<typeof useAppDispatch>, key
 export async function reopenCrewWorker(
   dispatch: ReturnType<typeof useAppDispatch>, getState: () => RootState, key: string, title: string, keepPanel = false,
 ): Promise<boolean> {
+  return (await reopenCrewSession(dispatch, getState, key, title, keepPanel)).ok
+}
+
+/** `reopenCrewWorker`, saying also whether the reopened session took the view
+ *  (`activated`) and under which key. A caller that moves the person somewhere
+ *  after the reopen moves them only when `activated` is true: false means they
+ *  picked another session while it was pending, and that newer pick wins. */
+export async function reopenCrewSession(
+  dispatch: ReturnType<typeof useAppDispatch>, getState: () => RootState, key: string, title: string, keepPanel = false,
+): Promise<{ ok: boolean; activated: boolean; key: string }> {
   try {
     const resuming = dispatch(resumeFromHistory({ key: `dashboard_${key}`, title }))
     const resumed = await resuming.unwrap()
-    if (!resumed.ok) return false
+    if (!resumed.ok) return { ok: false, activated: false, key }
+    const opened = resumed.key || key
     // The resume thunk decides whether its answer may take the view: a newer
     // resume, or a session the person opened while this one was pending, wins
     // (`resumeFromHistory.fulfilled`). When it declined, the worker is reopened
     // as a tab but the person stays where they went; switching here anyway
     // would undo their newer pick.
-    if (getState().chat.lastResumeActivation?.requestId !== resuming.requestId) return true
-    openCrewSession(dispatch, resumed.key || key, keepPanel)
-    return true
+    if (getState().chat.lastResumeActivation?.requestId !== resuming.requestId) return { ok: true, activated: false, key: opened }
+    openCrewSession(dispatch, opened, keepPanel)
+    return { ok: true, activated: true, key: opened }
   } catch {
-    return false
+    return { ok: false, activated: false, key }
   }
 }
 

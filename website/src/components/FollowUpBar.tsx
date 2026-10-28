@@ -331,7 +331,8 @@ function ChipError({ error }: { error: string }) {
  * name is never truncated regardless of this.
  */
 function useInstantTip(option: string, hint: string) {
-  const { tip, tipHandlers, tipId } = useSharedInstantTip()
+  // Below, so it never covers an approval card's buttons above the chips.
+  const { tip, tipHandlers, tipId } = useSharedInstantTip({ placement: 'below' })
   const tipNode = (
     <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] whitespace-pre-wrap break-words">
       <div className="text-text text-[12px]">{option}</div>
