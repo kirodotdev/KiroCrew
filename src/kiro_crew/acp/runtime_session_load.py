@@ -11,7 +11,8 @@ Instance fields written: ``_session_cwds``, ``_session_inits_in_flight``, ``_ses
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_remote_workspace_agents``, ``_require_launch_bound_for_session_open``,
+``_send_session_open``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -103,6 +104,9 @@ async def load_session(
     if not self._can_load_session:
         raise AcpRuntimeError("Backend does not advertise session/load support")
     agent = await self._source_agent(agent)
+    # Checked before the resume's setup as well as in _send_session_open,
+    # exactly as create_session checks before its admission gate.
+    await self._require_launch_bound_for_session_open()
 
     # Re-declare the pooled broker stubs so a resumed session keeps talking
     # to the broker — same injection as create_session() and the AcpClient
@@ -262,6 +266,7 @@ async def load_session(
     kas_agents = None
     payload_snapshot = None
     request_identity = ""
+    kas_built_on = None
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -275,6 +280,7 @@ async def load_session(
         # Mirrors create_session: the vault identity the request goes out under,
         # for the KAS catalog recorder (a load echoes the select too).
         request_identity = kas_extras.vault_identity
+        kas_built_on = kas_extras.main_spec_episode
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
         # on load exactly as they did on new.  ``include_user_servers=True``
@@ -327,7 +333,13 @@ async def load_session(
         # docs/system-specs/modules/acp-client.md "loading a session
         # triggers MCP re-initialization") — so it gets the same budget.
         request_sent_at = time.time()
-        resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params, timeout=budget)
+        resp = await self._send_session_open(
+            METHOD_SESSION_LOAD,
+            load_params,
+            timeout=budget,
+            built_on=kas_built_on,
+            built_for=active_agent,
+        )
 
         # A genuine resume echoes "modes" in the response (same signal AcpClient
         # keys on). Anything else means load did not actually restore state.

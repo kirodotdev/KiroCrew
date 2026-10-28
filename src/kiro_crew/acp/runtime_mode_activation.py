@@ -11,7 +11,9 @@ Instance fields written: ``_native_skill_projection``, ``_skill_projection_gener
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
 ``_skill_projection_unadopted``, ``_switched_models``.
 
-Instance fields read: ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
+Instance fields read: ``_agent``, ``_check_mode_frame``, ``_launch_agent``,
+``_launch_copy_source``,
+``_spawn_skill_projection``,
 ``_wire_mode_id``, ``_work_dir``.
 """
 
@@ -23,7 +25,12 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp._dispatch import parse_session_modes, set_mode_params
-from kiro_crew.acp.session_handle import AcpModeNotFound, AcpRuntimeError, AcpSessionHandle
+from kiro_crew.acp.session_handle import (
+    AcpModeNotFound,
+    AcpRuntimeError,
+    AcpSessionHandle,
+    check_mode_frame,
+)
 from kiro_crew.acp.types import ACP_BACKENDS_MARKDOWN_AGENT_SPECS, METHOD_SET_MODE
 from kiro_crew.agent import markdown_spec_for_agent
 from kiro_crew.metrics.events import SKILL_VIEW_FALLBACKS, emit_counter
@@ -488,6 +495,32 @@ def _refuse_if_view_superseded(
     )
 
 
+async def _check_mode_frame(
+    self: AcpRuntime, mode_agent: str, projection: Any, alias: str | None
+) -> None:
+    """Check one start-bracket ``set_mode`` frame right before it is sent.
+
+    Both checks a session open on the same name or view runs:
+    :func:`~kiro_crew.agent.require_main_spec_projected` for *mode_agent*,
+    then the launch bound of what the frame names. A view alias *projection*
+    published is checked as a view, as a session open on a process launched on
+    that view is: refused while an episode is open. A bare name, which kiro-cli
+    resolves on its own (no projection, none that decides the agent, or the
+    launch agent with no view), is bound by name, and refused while an episode
+    is open too. Run for each attempt, so a retry or a newer adopted view is
+    checked on the view it actually names. The one mode-frame check,
+    :func:`~kiro_crew.acp.session_handle.check_mode_frame`, which a
+    mid-session switch runs too.
+    """
+    await check_mode_frame(
+        mode_agent,
+        self._work_dir,
+        projection,
+        alias,
+        bound_to=self._launch_copy_source(mode_agent),
+    )
+
+
 async def _activate_mode_bracketed(
     self: AcpRuntime,
     session_id: str,
@@ -528,7 +561,8 @@ async def _activate_mode_bracketed(
       payload's OWN snapshot. No gate call on this path: a second snapshot for one
       consumed load is the defect, not a safeguard.
     * otherwise -- the spec is consumed HERE: kiro-cli reads it from disk at
-      ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send,
+      ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send, by
+      ``require_main_spec_projected`` and then the snapshot,
       because a stale mirror activated here mounts and auto-approves a server the
       default agent does not have.
 
@@ -540,7 +574,9 @@ async def _activate_mode_bracketed(
     """
     from kiro_crew.agent import (
         DerivedSpecStale,
+        ForkGovernanceUnresolved,
         require_fresh_derived_spec,
+        require_main_spec_projected,
         require_unchanged_derived_spec,
     )
 
@@ -548,10 +584,16 @@ async def _activate_mode_bracketed(
         mode_snapshot = payload_snapshot
     else:
         try:
+            # The main-spec part of the spawn's start gate, for the agent
+            # this line activates: the main spec's agent switched to here
+            # passed no spawn gate. Bounded to the unreadable-spec episode.
+            # Before the snapshot, so the snapshot judges whatever the
+            # gate's own rebuild wrote.
+            await asyncio.to_thread(require_main_spec_projected, mode_agent, self._work_dir)
             mode_snapshot = await asyncio.to_thread(
                 require_fresh_derived_spec, mode_agent, self._work_dir
             )
-        except DerivedSpecStale as exc:
+        except (DerivedSpecStale, ForkGovernanceUnresolved) as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
     try:
@@ -659,6 +701,17 @@ async def _activate_mode_bracketed(
         # agent (an older alias, or the authored spec kiro-cli cached) is proven
         # to match the spec on disk, so none is activated in its place. Every other
         # error propagates as before.
+        # Every frame this bracket writes on kiro-cli is checked right before
+        # it is sent (_check_mode_frame), on the view or name that attempt
+        # names. A wire-registered definition is one Crew read and sent,
+        # checked where the host's harness built it. A name the projection
+        # does not decide is checked once first, before its alias is
+        # resolved, so it gets the episode's refusal (its SEL denial and early
+        # retry) rather than the projection's "no view".
+        if not wire_registered and (
+            projection_now is None or not projection_now.decides(mode_agent)
+        ):
+            await self._check_mode_frame(mode_agent, projection_now, None)
         params = set_mode_params(session_id, mode_id or mode_agent)
         # Translated from the projection this bracket adopted and sent as
         # fixed wire params -- past the send's own translation, which reads
@@ -711,6 +764,11 @@ async def _activate_mode_bracketed(
             if sent_alias is not None:
                 self._refuse_if_view_unverified(mode_agent, used_generation)
             try:
+                if not wire_registered:
+                    # A wire-registered definition activates the payload its
+                    # session open was checked on (built_on); kiro-cli reads no
+                    # file for it, so only the other frames are checked here.
+                    await self._check_mode_frame(mode_agent, projection_now, sent_alias)
                 await self._send_and_await(METHOD_SET_MODE, wire, timeout=budget, **untranslated)
             except AcpModeNotFound as exc:
                 if sent_alias is None or exc.mode_id != sent_alias:

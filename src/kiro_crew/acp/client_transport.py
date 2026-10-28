@@ -13,10 +13,11 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_stdin_lock``, ``_stdin_stalled``.
 
-Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
+Instance fields read: ``_agent``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+``_cancelled``, ``_kill_sent``, ``_launch_unbound``, ``_launch_view_source``, ``_mcp_report``,
+``_mode_frame_awaited``,
 ``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
-``_turn_done``, ``memory_mode``.
+``_turn_done``, ``_work_dir``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
     METHOD_SESSION_UPDATE,
+    METHOD_SET_MODE,
     METHOD_SET_MODEL,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
@@ -75,6 +77,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_FORBIDDEN_MODES
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -86,6 +89,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.client")
 
 _R = TypeVar("_R")
+
+#: The requests that open a session on the running process. Each is checked
+#: against the launch it runs on before it is written (:func:`_send_request`).
+#: ``session/fork`` is deliberately absent: only claude forks at a message, and a
+#: claude launch has no kiro launch to bind. Add it if a bound launch ever sends it.
+_SESSION_OPEN_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME})
+#: The requests :func:`_send_request` checks against the launch bound: the
+#: session opens and the ``set_mode`` that activates the launch agent on one.
+#: kiro-cli resolves that ``set_mode``'s bare name on an unbound launch exactly as
+#: it resolves an open's, so the shared runtime refuses it during an episode too.
+_CHECKED_METHODS = _SESSION_OPEN_METHODS | {METHOD_SET_MODE}
 
 
 def _is_safe_oauth_url(url: str) -> bool:
@@ -223,6 +237,30 @@ async def _send_request(
     """
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
+    if method in _CHECKED_METHODS:
+        # The shared runtime's rule (AcpRuntime._require_launch_bound_for_session_open):
+        # a launch with no prepared view is bound by name again, and a view is
+        # checked as a view: refused while an unreadable-main-spec episode is
+        # open, whatever file it was built from. The refusal is the shared one
+        # (one SEL denial and the early retry), raised as AcpError, which
+        # ensure_ready answers by ending this child and launching a fresh view.
+        # Only a kiro-cli launch records a binding; other hosts open unchecked.
+        # Checked right before the send: the frame activates the agent this
+        # process already holds, so the time of its write changes nothing.
+        unbound = getattr(self, "_launch_unbound", False)
+        view_source = None if unbound else getattr(self, "_launch_view_source", None)
+        if unbound or view_source is not None:
+            try:
+                await asyncio.to_thread(
+                    functools.partial(
+                        require_main_spec_launch_bound,
+                        self._agent,
+                        self._work_dir,
+                        view_source=view_source,
+                    )
+                )
+            except ForkGovernanceUnresolved as exc:
+                raise AcpError(str(exc)) from exc
 
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:

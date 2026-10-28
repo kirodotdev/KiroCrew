@@ -12,13 +12,14 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
 ``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
-``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
-``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
-``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
-``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
-``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
-``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
+``_launch_cwd_roots``, ``_launch_process_cwd``,
+``_launch_unbound``, ``_launch_view_source``, ``_max_age_secs``, ``_max_rss_depth``,
+``_max_rss_mb``, ``_native_launch_resources``, ``_native_launch_sources``,
+``_native_launch_view_alias``, ``_native_skill_projection``, ``_pid``, ``_process``,
+``_process_instance``, ``_process_tree_confirmed_dead``, ``_prompt_capabilities``,
+``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``, ``_skill_projection_generation``,
+``_spawn_monotonic``, ``_spawn_skill_projection``, ``_spawn_start_token``, ``_start_time``,
+``_stderr_task``, ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
@@ -482,6 +483,25 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # (_activate_mode_bracketed), and holding the object keeps its
             # lease -- and them -- out of the prune.
             self._spawn_skill_projection = projection
+            # With no view for the launch agent kiro-cli resolves the bare
+            # ``--agent`` name itself, after the start gate. An app's launch copy
+            # is a file Crew wrote, but no start during an unreadable-main-spec
+            # episode can be shown not to load the kept file, so it is checked the
+            # same way: refused while an episode is open, and a later session that
+            # inherits either launch (agent=None) is checked again.
+            self._launch_unbound = not self._launch_agent and (
+                projection is None or not projection.decides(self._agent)
+            )
+            self._launch_view_source = None
+            from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+            if self._launch_unbound or self._launch_agent:
+                try:
+                    await asyncio.to_thread(
+                        require_main_spec_launch_bound, self._agent, self._work_dir
+                    )
+                except ForkGovernanceUnresolved as exc:
+                    raise AcpRuntimeError(str(exc)) from exc
             if projection is not None:
                 # Deliberately do NOT set spawn_agent_name here. The shared
                 # runtime activates the launched agent through
@@ -528,6 +548,10 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                     # any prepared view, so the session's control plane and the
                     # launch steering record below are judged from it.
                     await asyncio.to_thread(_adopt_launch_copy_view, projection, self._launch_agent)
+                elif not self._launch_unbound:
+                    # The process runs this view for life, so every later
+                    # session open on it is checked as a view's.
+                    self._launch_view_source = projection.view_source(launch_view_alias)
                 if not self._member_context and not self._native_launch_sources:
                     if not await asyncio.to_thread(
                         acp_driver.inherits_default_resources, self._work_dir

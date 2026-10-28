@@ -13,11 +13,14 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
-``_expect_mcp_reports``, ``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``,
-``_mcp_gateway_socket``, ``_member_context``,
-``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
-``_native_skill_projection``, ``_session_queues``, ``_tool_search_wire``, ``_wire_mode_id``,
-``_work_dir``.
+``_expect_mcp_reports``, ``_launch_agent``, ``_launch_copy_spec``,
+``_launch_unbound``, ``_launch_view_source``,
+``_mcp_gateway_overlay``,
+``_mcp_gateway_socket``, ``_member_context``, ``_native_launch_resources``,
+``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
+``_require_launch_bound_for_session_open``,
+``_require_payload_built_on_current_episode``, ``_session_queues``, ``_tool_search_wire``,
+``_wire_mode_id``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -927,3 +930,68 @@ def _start_mount_check(
         opened_at=request_sent_at,
         alive=lambda: session_id in self._session_queues,
     )
+
+
+async def _require_launch_bound_for_session_open(self: AcpRuntime) -> None:
+    """Check a session opened on this process against the launch it runs on.
+
+    Every ``session/new`` and ``session/load`` starts on the agent the process
+    was launched as: a session that names no agent stays on it and sends no
+    ``set_mode``, and a named one runs on it until its ``set_mode``. When that
+    launch had no prepared view (``_launch_unbound``), kiro-cli resolves the
+    bare ``--agent`` name again for the new session and starts that spec's
+    MCP server commands, so the check the launch passed is run again
+    (:func:`kiro_crew.agent.require_main_spec_launch_bound`). When it had a
+    view (``_launch_view_source`` marks the launch as a view's), the session
+    runs that view, which the process keeps for life, so it is checked as a
+    view: refused while an episode is open, whatever file it was built from.
+    A refusal is the shared one: one SEL denial and the early retry.
+    """
+    # An unbound launch and an app's launch copy are checked by name: refused
+    # while an episode is open.
+    if getattr(self, "_launch_unbound", False) or getattr(self, "_launch_agent", None):
+        view_source = None
+    elif (view_source := getattr(self, "_launch_view_source", None)) is None:
+        return
+    from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+    try:
+        await asyncio.to_thread(
+            require_main_spec_launch_bound,
+            self._agent,
+            self._work_dir,
+            view_source=view_source,
+        )
+    except ForkGovernanceUnresolved as exc:
+        raise AcpRuntimeError(str(exc)) from exc
+
+
+async def _check_session_open(
+    self: AcpRuntime, built_on: tuple[int, bool] | None, built_for: str
+) -> None:
+    """The check :meth:`_send_session_open` runs right before its send."""
+    await self._require_launch_bound_for_session_open()
+    if built_on is not None:
+        await self._require_payload_built_on_current_episode(built_for, built_on)
+
+
+async def _require_payload_built_on_current_episode(
+    self: AcpRuntime, agent: str, built_on: tuple[int, bool]
+) -> None:
+    """Refuse an open whose wire payload was built before the current episode reading.
+
+    The host's own launch bound (``KasHarness.session_extras``), run again
+    against the reading the payload was built on. A healthy host passes at
+    once.
+    """
+    from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+    try:
+        await asyncio.to_thread(
+            require_main_spec_launch_bound,
+            agent,
+            self._work_dir,
+            before=built_on,
+        )
+    except ForkGovernanceUnresolved as exc:
+        raise AcpRuntimeError(str(exc)) from exc

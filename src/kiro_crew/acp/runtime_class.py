@@ -132,6 +132,9 @@ class AcpRuntime:
     _copy_native_launch_sources = _rt_setup._copy_native_launch_sources
     _guard_unresolved_mcp_refs = _rt_setup._guard_unresolved_mcp_refs
     _start_mount_check = _rt_setup._start_mount_check
+    _require_launch_bound_for_session_open = _rt_setup._require_launch_bound_for_session_open
+    _check_session_open = _rt_setup._check_session_open
+    _require_payload_built_on_current_episode = _rt_setup._require_payload_built_on_current_episode
     # ``session/new`` end to end: ``kiro_crew.acp.runtime_session_create``.
     create_session = _rt_create.create_session
     _collect_late_start = _rt_create._collect_late_start
@@ -173,6 +176,7 @@ class AcpRuntime:
     _served_default_after_mode = _rt_mode._served_default_after_mode
     _refuse_if_view_superseded = _rt_mode._refuse_if_view_superseded
     _activate_mode_bracketed = _rt_mode._activate_mode_bracketed
+    _check_mode_frame = _rt_mode._check_mode_frame
     # JSON-RPC over the child's stdin: ``kiro_crew.acp.runtime_wire``.
     send_request = _rt_wire.send_request
     send_notification = _rt_wire.send_notification
@@ -186,6 +190,7 @@ class AcpRuntime:
     send_error = _rt_wire.send_error
     _one_at_a_time_ahead = _rt_wire._one_at_a_time_ahead
     _send_and_await = _rt_wire._send_and_await
+    _send_session_open = _rt_wire._send_session_open
     # Alive, busy, dead or due to recycle: ``kiro_crew.acp.runtime_liveness``.
     is_alive = _rt_liveness.is_alive
     stdin_reader_may_live = _rt_liveness.stdin_reader_may_live
@@ -348,6 +353,12 @@ class AcpRuntime:
         # whose on-disk total bounds every read of the record.
         self._native_launch_view_alias: str | None = None
         self._native_launch_resources: list[Any] | None = None
+        # The kiro-cli launch's binding, checked at every session open
+        # (_require_launch_bound_for_session_open): True when kiro-cli got the
+        # bare name, else the source file of the view it got ("" if unknown,
+        # None for a backend that takes no view).
+        self._launch_unbound = False
+        self._launch_view_source: str | None = None
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
@@ -710,6 +721,20 @@ class AcpRuntime:
         if agent and self._launch_agent and agent == self._agent:
             return self._launch_agent
         return agent
+
+    def _launch_copy_source(self, agent: str | None) -> str | None:
+        """The file kiro-cli runs for *agent* when it is this runtime's launch copy.
+
+        Crew writes the copy under a reserved name and kiro-cli loads that name
+        (``apps.agent_launch``), so a launch, session open or ``set_mode`` that
+        activates this runtime's own agent runs that file, never a spec a name
+        lookup reaches. ``None`` for any other agent and with no launch copy.
+        """
+        if agent and self._launch_agent and agent == self._agent:
+            from kiro_crew.config.paths import kiro_agents_dir
+
+            return str(kiro_agents_dir() / f"{self._launch_agent}.json")
+        return None
 
     def crew_agent_name(self, name: str) -> str:
         """*name* as Crew records it: this runtime's launch copy reads as its own agent."""

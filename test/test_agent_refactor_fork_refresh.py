@@ -1100,6 +1100,58 @@ def test_a_conductor_installer_hold_is_rebuilt_even_beside_an_unchanged_template
     assert calls == [1, 1], "an installer's hold may clear with nothing on disk changing"
 
 
+def test_an_unreadable_main_spec_episode_is_rebuilt_beside_an_unchanged_template_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The template-hold probe may skip a rebuild only while nothing but templates hold.
+
+    A rebuild is what closes an unreadable-main-spec episode, so an open one is
+    retried even when an earlier pass left an unchanged shared-template hold.
+    Mutation pin: dropping the episode from the probe leaves it refused until a restart.
+    """
+    calls: list[int] = []
+
+    def fake_reporting(**kw: Any) -> tuple[Path, bool]:
+        calls.append(1)
+        kw["_held_out"].append(True)
+        return Path("kirocrew.json"), False
+
+    monkeypatch.setattr(agent, "rebuild_agent_config_reporting", fake_reporting)
+    monkeypatch.setattr(fork_refresh, "shared_template_hold_unchanged", lambda _gen: True)
+    monkeypatch.setattr(agent, "_rebuild_incomplete", False)
+    monkeypatch.setattr(
+        agent, "_rebuild_answer_generation", agent._answer_generation_after_profile_poll()
+    )
+    monkeypatch.setattr(agent, "_conductor_spec_held", True)
+    monkeypatch.setattr(agent, "_conductor_installers_held", False)
+    monkeypatch.setattr(agent, "_main_spec_unreadable", False)
+    agent.reproject_for_ceiling_change()
+    assert calls == [], "an unchanged template-only hold is not rebuilt"
+    monkeypatch.setattr(agent, "_main_spec_unreadable", True)
+    agent.reproject_for_ceiling_change()
+    assert agent.retry_held_conductor_specs() is False
+    assert calls == [1, 1], "an open unreadable-spec episode keeps its retry"
+
+
+def test_the_profile_watch_keeps_retrying_while_an_unreadable_episode_is_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An open episode is a hold for the profile watch too, whatever the conductor memo says."""
+    calls: list[int] = []
+    generation = agent._answer_generation_after_profile_poll()
+    monkeypatch.setattr(agent, "reproject_for_ceiling_change", lambda: calls.append(1))
+    monkeypatch.setattr(agent, "_projected_ceiling_generation", generation)
+    monkeypatch.setattr(agent, "_rebuild_incomplete", False)
+    monkeypatch.setattr(agent, "_conductor_spec_held", False)
+    monkeypatch.setattr(agent, "_profile_watch_generation", None)
+    monkeypatch.setattr(agent, "_main_spec_unreadable", False)
+    agent.reproject_for_profile_change()
+    assert calls == [], "a projected generation with no hold needs nothing"
+    monkeypatch.setattr(agent, "_main_spec_unreadable", True)
+    agent.reproject_for_profile_change()
+    assert calls == [1], "an open episode is retried although the memo says projected"
+
+
 def test_an_unchanged_template_hold_still_rebuilds_when_the_answer_moved_mid_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

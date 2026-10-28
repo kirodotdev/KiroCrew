@@ -1198,7 +1198,12 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # absent by design: it is a pure in-memory lookup that performs no filesystem
 # work and can never reach the denial log line.
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The fork shadow check and the main-spec start gate's project lookup, both
+    # reached from ``require_fork_governance``. The no-view launch bound reads the
+    # declaring FILES (it checks their identity), so it is pinned in the files table
+    # below.
     "kiro_crew/agent_parts/spec_rebuild.py": [("require_fork_governance", "unknown")],
+    "kiro_crew/agent_parts/spec_unreadable.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery_parts/project_agents.py": [
         ("forward:operation", "forward:source"),
     ],
@@ -1219,6 +1224,7 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],
+    # The no-view launch bound, checking which project files declare a name.
     # No ``kiro_crew/apps/manager_lookup.py`` entry: the app-command guard scans no
     # checkout, and reads the user level through the screened walk in
     # ``acp.managed_agent_shadow``, not through these roster helpers.
