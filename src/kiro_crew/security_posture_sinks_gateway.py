@@ -843,4 +843,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
     ),
+    (
+        "A Crew Mode root's worker list and timeline",
+        "dashboard/handlers/crew_workers.py",
+        "The side panel's worker cards (a closed worker's saved title, the ledger "
+        "line through the board's deep redactor) and every timeline bar and mark "
+        "label, which are slices of transcript rows: each passes exfiltration-URL "
+        "and credential redaction (the display battery for timeline labels) "
+        "before it reaches the browser.",
+    ),
 )

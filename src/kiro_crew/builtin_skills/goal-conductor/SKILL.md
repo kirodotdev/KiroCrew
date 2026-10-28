@@ -372,6 +372,16 @@ Each cycle:
    `blocked` and `question` differ by who must act. That is why they are separate
    values, and why you must not treat one as the other.
 
+   **A person's steer outranks your decision.** When the person types into a
+   worker from the Crew panel, its item gets a `steer` event (`kind: steer`, the
+   person's own words, redacted). Before any `action=decide`, and before any
+   instruction you send a worker, read that item's events (`work_ledger_read`
+   with `item_id=<id>`, no `compact`) and look for `steer` events newer than your
+   last decision. Follow them and never overrule, undo or re-send against them;
+   a steer that conflicts with your plan wins and you re-plan around it. A steer
+   never moves the acceptance bar: the verdict still comes from
+   `accept_eval.py`.
+
    A `blocked` or `question` row may also carry the worker's `reason`: `approval`
    (a tool approval timed out) or `needs_human` (only a person can unblock it).
    No reason means the item moves on its own (a build, a service). Tell your workers to

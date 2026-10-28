@@ -344,7 +344,11 @@ async def fork_session(
         child._created_by = caller_key
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
-        posture["trust"] = bool(getattr(live_caller, "_trust", False))
+        from kiro_crew.dashboard.approval_posture import trust_carries
+
+        # A card-scoped trust ("Trust this crew member") covers the caller's own
+        # tools only, so a fork does not inherit it (``trust_carries``).
+        posture["trust"] = trust_carries(live_caller)
         posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
         child._trust = posture["trust"]
         child._trust_reads = posture["trust_reads"]

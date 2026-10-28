@@ -213,6 +213,16 @@ three of them:
   read the reply with `session_read_message`.
 - **`progress`** — informational. Do nothing.
 
+**A person's steer outranks your decision.** When the person types into a crew
+member from the Crew panel, the item gets a `steer` event (`kind: steer`, the
+person's own words). Before any `action=decide` or any instruction you send a
+crew member, read that item's events (`work_ledger_read` with `item_id=<id>`, no
+`compact`) and look for `steer` events newer than your last decision. Follow
+them; never overrule, undo or re-send against them. If a steer conflicts with
+your plan, the steer wins and you re-plan around it. A steer never changes the
+acceptance bar: the verdict still comes from `accept_eval.py`, never from a
+steer.
+
 **A claimed `pr` is not an acceptance condition.** When a worker reports a pull
 request while the item's stored `acceptance` still holds a placeholder, the batch
 deliberately leaves that item out rather than reading the claim as the bar.

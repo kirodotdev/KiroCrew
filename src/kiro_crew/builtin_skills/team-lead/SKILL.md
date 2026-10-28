@@ -166,6 +166,11 @@ artifacts by path. `session_adopt` would move the sessions themselves, but it
 is not in your auto-approved set and costs an approval per call, so it is the
 owner's consolidation verb rather than your merge mechanism.
 
+**The person's steer outranks you.** A `steer` event on an item is the person
+typing into that worker. Read the item's events before every `action=decide`,
+follow any steer newer than your last decision, and never overrule it. The
+acceptance bar stays the evaluator's (goal-conductor, step 2).
+
 **Add a tracker when one patrol read no longer fits.** The signals are
 concrete: your `compact` ledger read comes back cut, the items span more than
 one ledger or machine, or you catch yourself skipping items in a cycle. Then

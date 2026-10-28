@@ -73,6 +73,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # companion's), and calls none itself. The rows are written by the SEL,
         # which is the sink.
         "metrics/provider.py",
+        # Pure derivation: `redact_labels` takes the redactor as an argument and
+        # applies it to labels it derived; the module emits nothing. The egress is
+        # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
+        # display battery in.
+        "crew_timeline.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).

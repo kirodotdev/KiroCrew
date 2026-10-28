@@ -413,6 +413,41 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
 
 
+def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> None:
+    """Record the person's queued steers into a Crew Mode worker as they are delivered.
+
+    A send the person typed into a busy worker is queued with ``(root, worker)``
+    on its entry (``chat_send.mark_crew_steer``). The ``steer`` event is written
+    HERE, when the drain hands the entry to the worker, from the entry's text as it
+    is now (an edit while queued is what the worker gets), so a cancelled entry
+    records nothing. Off the drain's path: a tracked task, and a fault never
+    blocks the turn. The marker is in memory only, so an entry a restart restores
+    is delivered and never recorded.
+    """
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
+
+    for item in consumed:
+        marker = item.pop(CREW_STEER_QUEUE_KEY, None)
+        if not (isinstance(marker, tuple) and len(marker) == 2):
+            continue
+        root, worker = marker
+        text = item.get("content")
+        if not isinstance(text, str) or not text:
+            continue
+        try:
+            from kiro_crew.dashboard.handlers import crew_workers
+
+            task = asyncio.get_running_loop().create_task(
+                crew_workers.person_steer(state, root, worker, text)
+            )
+            tasks = getattr(state, "_background_tasks", None)
+            if isinstance(tasks, set):
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+        except Exception:
+            logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -606,6 +641,7 @@ async def _start_next_queued_turn(
         )
     if next_msg is None:
         return False
+    _record_queued_crew_steers(state, consumed)
 
     # A successor turn is now certain to dispatch (every no-successor path above
     # already returned False), so the predecessor turn's assistant bubble must be

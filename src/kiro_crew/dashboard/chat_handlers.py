@@ -55,6 +55,7 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
     parse_autocompact_pct,
 )
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
+from kiro_crew.dashboard.approval_posture import trust_carries  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch
@@ -107,12 +108,23 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _slot_not_found,
 )
 from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
+    _CREW_PERSON_STEER,
+    _HELD_CREW_STEERS,
+    CREW_STEER_QUEUE_KEY,
+    _api_chat_send,
+    _person_crew_worker_root,
     _send_binds_agent,
     _send_harness_command,
     _send_writes_persona,
     _sweep_stale_permissions,
+    _take_held,
     api_chat,
+    crew_steer_consumed,
+    crew_steer_discarded,
+    crew_steer_requeued,
     decided_message_handling,
+    hold_crew_steer,
+    mark_crew_steer,
     steer_is_auto,
     write_sse_or_abort,
 )

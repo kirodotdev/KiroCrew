@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _start_next_queued_turn,
         _unblock_pending_waits,
         compaction_in_flight,
+        crew_steer_discarded,
         deny_app_slot_access,
         effective_session_key,
         logger,
@@ -589,6 +590,7 @@ async def stop_slot_turn(
             slot._steer_automation.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)
             slot._steer_possibly_delivered.discard(_discarded)
+            crew_steer_discarded(slot, _discarded)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)

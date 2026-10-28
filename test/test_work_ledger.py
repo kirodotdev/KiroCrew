@@ -1447,6 +1447,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # named there is the unit's own header slot, never a caller-supplied value,
         # and the relay writes nothing to the store.
         "crew_log/work_relay.py",
+        # The Crew panel's steer route reads ONE thing, the binding of the crew
+        # member the person typed into, to land the ``steer`` event on that member's
+        # item. Same principal argument as the Crew page below: the caller is the
+        # dashboard OWNER (cookie, owner-gated), the member is a live session of the
+        # root's own tree the route resolved itself, and no key reaches a payload.
+        "dashboard/handlers/crew_workers.py",
         # The operator-run cleanup sweep behind ``kirocrew ledger-sweep``.
         # It is a seam deliberately, and it does not weaken the rule the
         # allowlist exists for: it resolves NO caller identity — there is no

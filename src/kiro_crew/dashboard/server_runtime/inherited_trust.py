@@ -129,10 +129,12 @@ def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], Non
         # trust to full auto-approve on the read ``parent_trusted`` makes; over a
         # ``normal`` slot it would undo an explicit revoke. So a slot gets its
         # ``"auto"`` back only if it still exists, still carries no standing trust
-        # flag, and its policy is still the empty string this suspension left.
+        # flag, and its policy is still the empty string this suspension left. A
+        # card-scoped trust counts as standing here: it never stores ``"auto"``, so
+        # putting the override's back would hand that trust to its children.
         for slot_key, key in suspended:
             slot = state._slots.get(slot_key)
-            if slot is None or trust_carries(slot) or slot._trust_reads:
+            if slot is None or slot._trust or slot._trust_reads:
                 continue
             try:
                 if state.sessions.get_approval_policy(key) != "":

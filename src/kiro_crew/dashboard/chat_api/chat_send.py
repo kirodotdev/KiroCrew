@@ -211,8 +211,190 @@ async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict 
         return False, None
 
 
+#: Request key the send path stamps when the person typed into a Crew Mode worker:
+#: ``(root, worker, message)``, read by :func:`api_chat` once the send succeeded.
+_CREW_PERSON_STEER = "kirocrew_crew_person_steer"
+
+#: Queue-entry key naming ``(root, worker)`` on a person's queued send into a
+#: Crew Mode worker; the drain records the steer when it delivers that entry.
+CREW_STEER_QUEUE_KEY = "_crew_person_steer"
+
+
+def mark_crew_steer(entry: dict[str, Any], root: str, worker: str) -> None:
+    """Mark queue *entry* as the person's steer into *worker* of Crew Mode *root*.
+
+    In memory only, like a held steer: an entry a restart restores comes off a
+    writable file, so it is still delivered but never recorded as the person's.
+    """
+    entry[CREW_STEER_QUEUE_KEY] = (root, worker)
+
+
+#: A person's steer written into a crew member's running turn and not yet read by
+#: it: slot key -> steer text -> ``(root, worker)``. Recorded on the ledger when the
+#: turn reads it (:func:`crew_steer_consumed`), moved onto the queue entry when the
+#: turn's end requeues it (:func:`crew_steer_requeued`), and dropped when it is taken
+#: back or discarded (:func:`crew_steer_discarded`), so a withdrawn steer is never
+#: on the ledger. In memory only: a restart loses the record, never adds one.
+_HELD_CREW_STEERS: dict[str, dict[str, tuple[str, str]]] = {}
+
+
+def hold_crew_steer(slot_key: str, message: str, root: str, worker: str) -> bool:
+    """Hold *message*'s record until the running turn reads it (see above).
+
+    ``True`` only when this call made the hold. An earlier unread steer of the same
+    text keeps its hold, and the caller must not drop it when its own attempt fails
+    (the duplicate is refused, but the first one is still read and recorded).
+    """
+    held = _HELD_CREW_STEERS.setdefault(slot_key, {})
+    if message in held:
+        return False
+    held[message] = (root, worker)
+    return True
+
+
+def _take_held(slot_key: str, message: str) -> tuple[str, str] | None:
+    held = _HELD_CREW_STEERS.get(slot_key)
+    if not held:
+        return None
+    marker = held.pop(message, None)
+    if not held:
+        _HELD_CREW_STEERS.pop(slot_key, None)
+    return marker
+
+
+def crew_steer_consumed(state: Any, slot: Any, message: str) -> None:
+    """The running turn read *message*: record the held steer, off the turn's path."""
+    marker = _take_held(getattr(slot, "key", ""), message)
+    if marker is None:
+        return
+    try:
+        import asyncio
+
+        from kiro_crew.dashboard.handlers import crew_workers
+
+        task = asyncio.get_running_loop().create_task(
+            crew_workers.person_steer(state, marker[0], marker[1], message)
+        )
+        tasks = getattr(state, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+    except Exception:
+        logger.warning("crew steer: a read steer was not recorded", exc_info=True)
+
+
+def crew_steer_requeued(slot: Any, message: str, entry: dict[str, Any] | None) -> None:
+    """*message* went back into the queue: the drain records it when it delivers it."""
+    marker = _take_held(getattr(slot, "key", ""), message)
+    if marker is not None and entry is not None:
+        mark_crew_steer(entry, *marker)
+
+
+def crew_steer_discarded(slot: Any, message: str) -> None:
+    """*message* was taken back or thrown away unread: it is never recorded."""
+    _take_held(getattr(slot, "key", ""), message)
+
+
+def _person_crew_worker_root(request: web.Request, state: Any, slot: Any, app: str) -> str:
+    """The Crew Mode root *slot* works for when the dashboard owner typed into it, else ``""``.
+
+    Only the person's own send counts: no app token, the owner's dashboard request,
+    and a slot the slot list stamps as some root's worker. ``""`` for every send
+    while ``crew_mode.APPROVAL_ROUTING_LIVE`` is off (the Crew panel part turns it
+    on), so a send typed into a crew member's own composer is an ordinary send until
+    then. No I/O.
+    """
+    if app:
+        return ""
+    try:
+        from kiro_crew import crew_mode
+
+        if not crew_mode.APPROVAL_ROUTING_LIVE:
+            return ""
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        if not is_owner_dashboard_request(request):
+            return ""
+        from kiro_crew.dashboard.session_control_parts.session_create import _frame_parents
+
+        # The lineage the slot frame reads: a session its conductor released is a
+        # plain session again, and an adopted one belongs to its new conductor.
+        crew_root, _is_root = crew_mode.live_stamps(
+            state._slots, _frame_parents(state), settled=crew_mode.lineage_is_settled()
+        ).get(slot.key, ("", False))
+        return crew_root
+    except Exception:
+        logger.debug("crew steer: could not tell whether this send is to a worker", exc_info=True)
+        return ""
+
+
 async def api_chat(request: web.Request) -> web.StreamResponse:
-    """POST /api/chat — send message to a slot, stream response via SSE."""
+    """POST /api/chat — send message to a slot, stream response via SSE.
+
+    A send the person types into a Crew Mode worker's own composer is a steer, the
+    same as the side panel's steer route: once it was accepted, the one person-steer
+    transaction (``crew_workers.person_steer``) writes its ``steer`` event on the
+    ledger that holds the worker's item, and a JSON receipt carries ``ledger_event``
+    and ``ledger_error`` so the composer never shows a recorded steer that was only
+    delivered.
+    """
+    resp = await _api_chat_send(request)
+    pending = request.get(_CREW_PERSON_STEER)
+    # Only an accepted send is a steer; its receipt is always a plain 200.
+    if not pending or resp.status != 200:
+        return resp
+    root, worker, message = pending
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    receipt: Any = None
+    if isinstance(resp, web.Response) and resp.content_type == "application/json":
+        try:
+            receipt = json.loads(resp.text or "{}")
+        except ValueError:
+            receipt = None
+    if isinstance(receipt, dict) and receipt.get("stopped"):
+        # Stop landed while the send was held: nothing reached the crew member.
+        return resp
+    if isinstance(receipt, dict) and receipt.get("steered") is True:
+        # Written into the running turn, not read yet: recorded when the turn reads
+        # it (``crew_steer_consumed``), never if the person takes it back first.
+        receipt.update(ledger_event=None, ledger_error=None, ledger_pending=True)
+        return web.json_response(receipt)
+    state = request.app["state"]
+    queue_id = receipt.get("queue_id") if isinstance(receipt, dict) else None
+    if isinstance(receipt, dict) and receipt.get("queued") is True and not queue_id:
+        # The turn's teardown requeued the steer while it was being written. The
+        # hold set before the write already moved onto its entry
+        # (``crew_steer_requeued``), and the drain may have delivered and recorded
+        # it by now: record nothing here, and never look the entry up by its text.
+        receipt.update(ledger_event=None, ledger_error=None, ledger_pending=True)
+        return web.json_response(receipt)
+    if isinstance(queue_id, str) and queue_id:
+        # Queued, not delivered: the steer is recorded when the drain hands the
+        # entry to the worker (with its text as edited then), and never when the
+        # person cancels it first (edge review R2 F5).
+        slot = (getattr(state, "_slots", None) or {}).get(worker)
+        entry = next(
+            (e for e in (getattr(slot, "_queue", None) or []) if e.get("id") == queue_id),
+            None,
+        )
+        if entry is not None:
+            mark_crew_steer(entry, root, worker)
+            receipt.update(ledger_event=None, ledger_error=None, ledger_pending=True)
+            return web.json_response(receipt)
+    try:
+        recorded = await crew_workers.person_steer(state, root, worker, message)
+    except Exception:
+        logger.warning("crew steer: the composer's steer was not recorded", exc_info=True)
+        recorded = {"ledger_event": None, "ledger_error": "not_recorded"}
+    if isinstance(receipt, dict):
+        receipt.update(recorded)
+        return web.json_response(receipt)
+    return resp
+
+
+async def _api_chat_send(request: web.Request) -> web.StreamResponse:
+    """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
@@ -700,6 +882,38 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
+    # The person typing into a Crew Mode worker steers it: the same length limit as
+    # the side panel's steer route, refused before anything is queued or shown, and
+    # the steer recorded on the worker's item once the send is accepted.
+    _crew_root = _person_crew_worker_root(request, state, slot, request_app)
+    if _crew_root:
+        from kiro_crew.dashboard.session_control_parts.session_messaging import (
+            MAX_SEND_MESSAGE_CHARS,
+        )
+
+        if len(message) > MAX_SEND_MESSAGE_CHARS:
+            return web.json_response(
+                {
+                    "error": f"message exceeds {MAX_SEND_MESSAGE_CHARS} characters",
+                    "code": "message_too_long",
+                },
+                status=400,
+            )
+        if _crew_root not in state._slots:
+            # The worker's conductor is closed: the same admission the side
+            # panel's steer route makes (a live root), checked before anything is
+            # queued or delivered, so no worker turn starts behind the "reopen
+            # it" notice. The person reopens the conductor to keep working.
+            return web.json_response(
+                {
+                    "error": "this crew member's conductor is closed; reopen it to keep working",
+                    "code": "crew_root_closed",
+                    "root": _crew_root,
+                },
+                status=409,
+            )
+        request[_CREW_PERSON_STEER] = (_crew_root, slot.key, message)
+
     from kiro_crew.dashboard import responsive_chat
 
     _responsive_eligible = False
@@ -771,6 +985,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _responsive_steer_kwargs: dict[str, Any] = (
                 {"responsive": True} if _responsive_eligible else {}
             )
+            _crew_held = request.get(_CREW_PERSON_STEER)
+            # Held from before the write: the turn can read it before the RPC returns.
+            _crew_owns_hold = False
+            if _crew_held:
+                _crew_owns_hold = hold_crew_steer(slot.key, message, _crew_held[0], _crew_held[1])
             outcome = await steer_into_running_turn(
                 state,
                 slot,
@@ -794,6 +1013,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 attachments=user_meta,
                 **_responsive_steer_kwargs,
             )
+            if _crew_owns_hold and outcome not in (STEER_STEERED, STEER_REQUEUED):
+                # Refused outright: drop it. A requeued steer keeps its hold, which
+                # the teardown's requeue moves onto the entry (or the turn's read
+                # records, or a Stop drops); the RPC can return before either ran.
+                crew_steer_discarded(slot, message)
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
             if outcome == STEER_REQUEUED:

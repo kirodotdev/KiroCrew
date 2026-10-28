@@ -63,8 +63,9 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ("dashboard/channel_slots.py", "surface_channel_session"): (
         "excluded: linked_session_key=session_key and channel_origin=True at birth"
     ),
-    ("dashboard/chat_api/chat_send.py", "api_chat"): (
-        "person: a dashboard send that opens its own tab; request_slot_origin is USER only "
+    ("dashboard/chat_api/chat_send.py", "_api_chat_send"): (
+        "person: a dashboard send that opens its own tab (api_chat's body, behind the "
+        "Crew Mode steer split); request_slot_origin is USER only "
         "with no app token and no attested cron creator (else APP with app=, or CRON)"
     ),
     ("dashboard/chat_api/resume.py", "_materialise_slot_from_history"): _RESTORED,

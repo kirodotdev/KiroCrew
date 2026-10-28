@@ -647,8 +647,9 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
 # A destination containing ``|`` changes the displayed label because Slack splits
 # native links at the first pipe, while ``>`` closes the native link early.
 _LINK_RE = SLACK_MARKDOWN_LINK
-# Headings: # text → *text*
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+# Headings: # text → *text*. The text starts at a non-space, so the run of spaces
+# and the text cannot both claim the same characters (no polynomial backtracking).
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(\S.*)$")
 # Horizontal rule: --- or *** or ___ (3+ chars)
 _HR_RE = re.compile(r"^[\s]*([-*_])\1{2,}\s*$")
 # Strikethrough: ~~text~~ → ~text~
@@ -726,7 +727,9 @@ def _convert_tables(text: str) -> str:
 
 # ── Mermaid → text ──
 
-_MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+# ``[ \t]*`` rather than ``\s*`` before the newline: ``\s`` matches the newline too, so
+# an unclosed block of blank lines backtracked polynomially. The body is stripped.
+_MERMAID_BLOCK_RE = re.compile(r"```mermaid[ \t]*\n(.*?)```", re.DOTALL)
 # graph/flowchart edges: A[label] -->|text| B[label]  or  A --> B
 _GRAPH_EDGE_RE = re.compile(
     r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"

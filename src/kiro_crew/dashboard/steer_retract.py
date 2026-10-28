@@ -376,13 +376,18 @@ def withdraw_stale_offers(state: "DashboardState", slot: "_ChatSlot") -> None:
 
 def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) -> None:
     """Take *record*'s steer out of the turn and do what the person asked with it."""
+    from kiro_crew.dashboard.chat_handlers import crew_steer_discarded, crew_steer_requeued
+
     held = dict(slot._steer_attachment_meta.get(record.message) or {})
     _forget(slot, record.message)
     _mark_retracted(state, slot, record)
+    if record.action != RETRACT_QUEUE:
+        # Never reached the turn: a person's steer into a crew member is not recorded.
+        crew_steer_discarded(slot, record.message)
     if record.action == RETRACT_QUEUE:
         # The queue admission is the audience that held when the person asked,
         # before the clear could suspend and let that audience change.
-        queue_for_next_turn(
+        qid = queue_for_next_turn(
             state,
             slot,
             record.message,
@@ -390,6 +395,9 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
             attachments=attachment_meta(held),
             quote=quote_meta(held).get("quote"),
             admission=record.admission,
+        )
+        crew_steer_requeued(
+            slot, record.message, next((e for e in slot._queue if e.get("id") == qid), None)
         )
     logger.info("steer taken back for slot %s (%s)", slot.key, record.action)
 

@@ -390,8 +390,31 @@ def _interactive_approval(
                     resources=_safe_title,
                 )
 
-        # Post approval buttons to Slack DM if available
-        if self.slack and self._owner_id:
+        # Post approval buttons to Slack DM if available. Not for a Crew Mode crew
+        # member's request (its spawn, its subagents) once the routing is live: the
+        # conductor's card is the one place it is decided. Read from the lineage the
+        # slot frame reads, so a released crew member gets its buttons again; off
+        # while ``crew_mode.APPROVAL_ROUTING_LIVE`` is, and on any fault.
+        _crew_member = False
+        if approval_slot and self.dashboard_state is not None:
+            try:
+                from kiro_crew import crew_mode
+
+                if crew_mode.APPROVAL_ROUTING_LIVE:
+                    from kiro_crew.dashboard.session_control_parts.session_create import (
+                        _frame_parents,
+                    )
+
+                    _crew_member = bool(
+                        crew_mode.live_stamps(
+                            self.dashboard_state._slots or {},
+                            _frame_parents(self.dashboard_state),
+                            settled=crew_mode.lineage_is_settled(),
+                        ).get(approval_slot, ("", False))[0]
+                    )
+            except Exception:
+                logger.debug("crew member check failed for %s", approval_slot, exc_info=True)
+        if self.slack and self._owner_id and not _crew_member:
             try:
                 # Resolve parent thread context for threaded approval prompts
                 thread_ts: str | None = None

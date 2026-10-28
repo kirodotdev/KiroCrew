@@ -1,4 +1,4 @@
-"""``kirocrew.crew_mode.*`` -- how Crew Mode is used, in five counters.
+"""``kirocrew.crew_mode.*`` -- how Crew Mode is used, in six counters.
 
 Answers four questions and nothing else: how often Crew Mode is turned on and what
 share of new chats that is, how many dispatched runs finish, how many steers a run
@@ -34,6 +34,9 @@ CREW_MODE_RUNS_FINISHED = "kirocrew.crew_mode.runs_finished"
 
 #: One per finished run, with the number of person steers it took, bucketed.
 CREW_MODE_STEERS_PER_RUN = "kirocrew.crew_mode.steers_per_run"
+
+#: One per person steer into a crew member, by whether it landed on a ledger item.
+CREW_MODE_STEERS = "kirocrew.crew_mode.steers"
 
 #: One per crew member report on a Crew Mode chat that says it is stuck or needs the
 #: person (``blocked`` or ``question``), by status and reason.
@@ -79,6 +82,10 @@ def record_new_chat(*, crew_mode: bool) -> None:
 def record_run_finished(state: Any, steers: Any) -> None:
     emit_counter(CREW_MODE_RUNS_FINISHED, {"state": _member(state, RUN_STATES)})
     emit_counter(CREW_MODE_STEERS_PER_RUN, {"steers": steer_bucket(steers)})
+
+
+def record_steer(*, on_item: bool) -> None:
+    emit_counter(CREW_MODE_STEERS, {"on_item": bool(on_item)})
 
 
 def record_worker_report(status: Any, reason: Any) -> None:

@@ -247,8 +247,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
+                # it as a steer, and only an unreserved slot has its queued text
+                # started now, the composer's own two questions.
+                ("handlers/crew_workers.py", "_deliver_as_person"),
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
-                ("chat_api/chat_send.py", "api_chat"),
+                ("chat_api/chat_send.py", "_api_chat_send"),
                 ("responsive_chat.py", "accept"),
                 ("chat_regenerate.py", "_destructive_history_busy"),
                 ("chat_regenerate.py", "api_chat_slot_edit_resend"),
@@ -263,7 +267,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         # way api_send_message starts one (spawn_guarded_turn, then slot.task).
         # The Daily Goal Reminder's hidden turn shares the same publisher.
         ("mate_welcome.py", "dispatch_hidden_turn"),
-        ("chat_api/chat_send.py", "api_chat"),
+        ("chat_api/chat_send.py", "_api_chat_send"),
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),
         ("chat_rewind.py", "api_chat_slot_rewind"),
