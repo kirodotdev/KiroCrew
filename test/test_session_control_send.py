@@ -1088,3 +1088,92 @@ async def test_a_send_names_its_peer_origin_to_the_session_entry_point(tmp_path,
     assert out["steered"] is False and out["started"] is False
     assert calls == [("peer", True, False), ("peer", False, True)]
     assert any("route me" in q.get("content", "") for q in target._queue)
+
+
+# ── The gateway-set structured sender (meta.relay) on the delivered row ──
+#
+# The receiver's transcript draws the incoming session-message card from this
+# structured field, NOT by parsing the ``[sent by session …]`` prefix (which a
+# peer could type into its own composer). So every delivery arm must stamp it.
+
+
+def test_idle_delivery_stamps_meta_relay_on_the_user_row(tmp_path, monkeypatch):
+    """The idle-target run arm stamps ``meta.relay`` on the user row it appends."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    async def _fake_run_chat(_state, _slot, _prompt):
+        return None
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        out = await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="do the thing"
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return out
+
+    asyncio.run(_drive())
+
+    rows = [
+        m
+        for m in target.messages
+        if m.get("role") == "user" and m.get("content", "").endswith("do the thing")
+    ]
+    assert len(rows) == 1
+    relay = (rows[0].get("meta") or {}).get("relay")
+    assert relay, "the run-arm user row must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+    # The structured key names the SAME sender the provenance prefix does.
+    assert relay["senderKey"] in rows[0]["content"]
+
+
+def test_busy_target_carries_meta_relay_on_the_queue_entry(tmp_path):
+    """A busy target queues; the entry carries ``meta.relay`` so the drain unions
+    it onto the row it later appends."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="queued relay"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "queued relay" in q.get("content", ""))
+    relay = (entry.get("meta") or {}).get("relay")
+    assert relay, "the queued entry must carry meta.relay for the drain to union"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_steered_delivery_stamps_meta_relay_on_the_consumed_row(tmp_path):
+    """A steer into a running target stamps ``meta.relay`` on the consumed-steer
+    row, so the steered bubble also draws the incoming card."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="steered relay",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    rows = [m for m in target.messages if "steered relay" in m.get("content", "")]
+    assert len(rows) == 1
+    relay = (rows[0].get("meta") or {}).get("relay")
+    assert relay, "the consumed-steer row must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]

@@ -993,6 +993,7 @@ class _ChatSlot:
         state: DashboardState,
         *,
         extra_meta: dict[str, Any] | None = None,
+        relay_meta: dict[str, Any] | None = None,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1032,6 +1033,12 @@ class _ChatSlot:
             # win a collision: a caller's extra fields are descriptive, and the
             # drain's authorization input must not be replaceable from here.
             _meta: dict[str, Any] = dict(extra_meta or {})
+            # The gateway-set cross-session sender (``meta.relay``) rides the queue
+            # entry so the drain unions it onto the row it later appends — the one
+            # path a queued peer send reaches the transcript. Descriptive, applied
+            # before the containment update so an authorization key still wins.
+            if relay_meta:
+                _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
             self.queue_append(prompt, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
@@ -1048,7 +1055,11 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        self.append("user", prompt, "msg msg-u")
+        # The run arm has no queue entry, so a cross-session sender stamp is
+        # applied directly to the user row it appends (``extra_meta`` is queue-only).
+        self.append(
+            "user", prompt, "msg msg-u", meta={"relay": dict(relay_meta)} if relay_meta else None
+        )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)
