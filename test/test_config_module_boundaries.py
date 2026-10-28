@@ -317,6 +317,7 @@ _OWNER_CONFIG_IMPORTS = {
     },
     "kiro_crew.config.sections_dashboard": {
         "kiro_crew.config.fields",
+        "kiro_crew.config.sections_shared_crew",
         "kiro_crew.config.sections_tailnet",
     },
     "kiro_crew.config.sections_dashboard_hosts": {"kiro_crew.config.sections_dashboard"},

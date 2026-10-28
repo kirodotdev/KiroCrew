@@ -1038,6 +1038,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _degraded,
             key_present="tailscale" in dashboard_data,
         ),
+        shared_crew=_sections.shared_crew_config_from(dashboard_data.get("shared_crew")),
         restore_sessions=section.get("restore_sessions"),
         crewmate_threads=section.read("crewmate_threads", _safe_bool),
         crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import overload
 
 from kiro_crew.config.fields import _meta
+from kiro_crew.config.sections_shared_crew import SharedCrewConfig
 from kiro_crew.config.sections_tailnet import TailscaleConfig
 
 # The terminal apps the desktop shell can open in a project directory
@@ -164,6 +165,15 @@ class DashboardConfig:
         metadata=_meta(
             "Tailscale",
             "Reach the dashboard over your tailnet via `tailscale serve`.",
+        ),
+    )
+    shared_crew: SharedCrewConfig = field(
+        default_factory=SharedCrewConfig,
+        metadata=_meta(
+            "Shared Crew",
+            "Fair admission and per-person limits for a shared Crew. Not active in "
+            "this build yet: nothing reads these settings, so changing one does nothing.",
+            restart=True,
         ),
     )
     restore_sessions: bool = field(
