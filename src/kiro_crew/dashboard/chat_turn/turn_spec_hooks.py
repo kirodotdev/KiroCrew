@@ -243,11 +243,12 @@ async def _notice_spec_hooks_run_nowhere(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message: the chat runs, the message waits for the turn, and the row names the
-    installed version, the minimum and the upgrade command."""
-    notice = getattr(client, "steer_upgrade_notice", "")
-    if isinstance(notice, str) and notice:
-        append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+    message, and one whose KAS drops its agent's prompt: the chat runs, and each row
+    names the installed version, the minimum and the upgrade command."""
+    for name in ("steer_upgrade_notice", "agent_prompt_upgrade_notice"):
+        notice = getattr(client, name, "")
+        if isinstance(notice, str) and notice:
+            append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).

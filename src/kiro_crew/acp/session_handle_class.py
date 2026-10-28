@@ -636,6 +636,9 @@ class AcpSessionHandle:
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
+        # The upgrade notice when that batch's prompt is dropped by the KAS this
+        # process runs (``harness.kas.kas_agent_prompt_issue``); "" otherwise.
+        self.kas_agent_prompt_notice: str = ""
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").

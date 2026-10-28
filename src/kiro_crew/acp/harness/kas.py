@@ -84,6 +84,27 @@ __all__ = [
 #: and is bounded by its own shape.
 _DRIFT_WARNED_VERSION: tuple[int, int, int] | None = None
 
+#: Oldest kiro-cli whose KAS applies a ``customAgents`` prompt: 2.33.1 ships KAS
+#: 0.66.58 (``kas/worker-kit-live.jsonl``, ``kas/markdown-agent-live.jsonl``).
+#: KAS 0.66.43 (kiro-cli 2.32.0) dropped the prompt of every custom agent.
+KAS_AGENT_PROMPT_MIN_KIRO_CLI: tuple[int, int, int] = (2, 33, 1)
+
+
+def kas_agent_prompt_issue(version: tuple[int, int, int] | None) -> str:
+    """The upgrade notice for a relay-route KAS on kiro-cli *version*, or ``""``.
+
+    Warn, never refuse: the chat still runs, without the agent's own prompt. An
+    unknown version says nothing, as for the steer floor (``steer_version_issue``).
+    """
+    if version is None or version >= KAS_AGENT_PROMPT_MIN_KIRO_CLI:
+        return ""
+    installed, minimum = (".".join(map(str, v)) for v in (version, KAS_AGENT_PROMPT_MIN_KIRO_CLI))
+    return (
+        f"kiro-cli {installed} is older than {minimum}, so KAS drops this agent's own "
+        "prompt and the chat runs without it. Update it: run 'kiro-cli update', "
+        "then restart Kiro Crew."
+    )
+
 
 def warn_kas_vocabulary_drift(version: tuple[int, int, int] | None) -> None:
     """Say once per kiro-cli release, at KAS spawn, that the installed kiro-cli
@@ -304,6 +325,10 @@ class KasHarness(MembershipHarness):
 
     backend = ACP_BACKEND_KAS
 
+    #: :func:`kas_agent_prompt_issue` for the process this harness last spawned:
+    #: set at each spawn, so it describes the engine running, not the one on disk.
+    agent_prompt_notice = ""
+
     # ── Seam 1: spawn ──
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
@@ -352,6 +377,8 @@ class KasHarness(MembershipHarness):
                 bundle.node_version or "?",
                 ctx.agent or "<none>",
             )
+            # Crew's own engine: kiro-cli's release says nothing about it.
+            self.agent_prompt_notice = ""
             return SpawnPlan(
                 argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
                 spawn_label=KAS_BUNDLE_SPAWN_LABEL,
@@ -370,7 +397,9 @@ class KasHarness(MembershipHarness):
         # The vocabulary tables were measured on named releases; say so once per
         # release when this is not one of them. Off the loop: one bounded
         # ``--version`` spawn on the first call per binary, cached thereafter.
-        warn_kas_vocabulary_drift(await asyncio.to_thread(installed_kiro_cli_version))
+        kiro_cli_version = await asyncio.to_thread(installed_kiro_cli_version)
+        warn_kas_vocabulary_drift(kiro_cli_version)
+        self.agent_prompt_notice = kas_agent_prompt_issue(kiro_cli_version)
 
         # Reads the vault off the loop and never raises.
         host_auth = await vault_holds_identity_off_loop()
@@ -469,6 +498,7 @@ class KasHarness(MembershipHarness):
         )
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
+        handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""
 
     async def session_extras(
         self,

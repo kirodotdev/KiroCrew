@@ -266,6 +266,32 @@ class TestModeBinding:
         assert [a["id"] for a in handle.kas_registered_agents] == ["kirocrew"]
 
     @pytest.mark.asyncio
+    async def test_new_and_resumed_sessions_carry_the_notice_their_spawn_recorded(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """The runtime keeps the harness that spawned its process, so the notice the
+        relay spawn recorded for kiro-cli 2.32.0 reaches session/new and session/load."""
+        from kiro_crew.acp.harness import kas as kas_harness
+
+        monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: False)
+        monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: (2, 32, 0))
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsn", agent="kirocrew", sandbox_mode="off", acp_backend="kas"
+        )
+        session_file = tmp_path / "prior.jsonl"
+        session_file.write_text("", encoding="utf-8")
+        try:
+            await runtime.spawn()
+            new = await runtime.create_session(cwd=tmp_path / "wsn", agent="kirocrew")
+            loaded = await runtime.load_session(
+                str(session_file), "kas-mode-session", cwd=tmp_path / "wsn", agent="kirocrew"
+            )
+        finally:
+            await runtime.kill()
+        for handle in (new, loaded):
+            assert "kiro-cli 2.32.0 is older than 2.33.1" in handle.kas_agent_prompt_notice
+
+    @pytest.mark.asyncio
     async def test_runtime_default_agent_is_activated_without_explicit_request(
         self, mode_stub, crew_agent, tmp_path
     ):

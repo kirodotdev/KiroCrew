@@ -173,7 +173,8 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
 # read with ``load_agent_spec`` and bound with ``customAgents`` plus
 # ``session/set_mode`` got its body applied as the prompt and its ``tools``
 # applied. KAS 0.66.43 (kiro-cli 2.32.0) dropped the prompt of every custom
-# agent, JSON or markdown.
+# agent, JSON or markdown. Below kiro-cli 2.33.1 the relay route still runs, and a
+# new chat gets an upgrade notice (``acp.harness.kas.kas_agent_prompt_issue``).
 ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose agent's MCP SERVERS come from the USER-LEVEL spec alone, so a

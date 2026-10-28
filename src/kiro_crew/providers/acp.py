@@ -472,6 +472,13 @@ class AcpProvider(LLMProvider):
         )
 
     @property
+    def agent_prompt_upgrade_notice(self) -> str:
+        """The upgrade notice when the KAS this session runs drops its agent's prompt,
+        else ``""``. Recorded when the session registered its ``customAgents``."""
+        notice = getattr(self._client, "kas_agent_prompt_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 
