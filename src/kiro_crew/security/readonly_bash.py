@@ -47,6 +47,11 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "whoami",
     "hostname",
     "uname",
+    # Memory/load counters: no option writes or runs a program. Kept off: `sysctl`
+    # (`-w`, `key=value` write) and `ps` / `top` (`ps e` prints other envs).
+    "vm_stat",
+    "uptime",
+    "free",
     "readlink",
     "realpath",
     "basename",

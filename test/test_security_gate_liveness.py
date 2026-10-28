@@ -546,7 +546,9 @@ def _url_payload_command(n: int) -> str:
 #: reader (words with quote state and raw offsets, redirections, the live separator)
 #: that the ``rm`` floor's segment walk moved into, net of the walk it replaced, and
 #: the carve-out's first word in ``exfil_bash``. No rule, pattern or verdict moved.
-_PACKAGE_LINE_BUDGET = 32_793
+#: Raised by 5, from 32,793, for ``vm_stat``, ``uptime`` and ``free`` in the read-only
+#: allowlist of ``readonly_bash`` plus their two-line note. Table data, no matcher change.
+_PACKAGE_LINE_BUDGET = 32_798
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
