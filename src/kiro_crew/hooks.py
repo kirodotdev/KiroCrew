@@ -901,6 +901,18 @@ _FIRST_PARTY_READ_ONLY_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+# The file-search built-ins whose "command" is a needle, not a shell command, so
+# the curl/wget egress rows are pure false positives on them
+# (``GateFacts.is_file_search_builtin`` / ``_tier_exfil``). Narrower than
+# ``_HOST_READ_ONLY_BUILTIN_TOOLS``: ``fs_read`` is a plain read and ``web_fetch``
+# / ``web_search`` reach the network, none of which is a pattern-over-files
+# search; only ``grep`` (regex over file contents) and ``glob`` (path pattern
+# walk) are. The exemption keys on the host-stamped ``mcp_tool`` identity in this
+# set AND ``kind == "search"`` on top of the argument shape, so a non-search call
+# that carries only a ``pattern`` argument keeps the exfil tier.
+_SEARCH_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset({"grep", "glob"})
+
+
 # Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate does not
 # branch on this set, and must not start: `tool_kind` arrives verbatim from the ACP
 # `kind` field, so any denylist of mutating kinds is incomplete by construction
