@@ -7,10 +7,11 @@ plus the shared read-only resolver they build on.
 
 The resolver contract under test: ``cron_folders.json`` is OWNED by the
 dashboard (its state rewrites the file wholesale), so non-dashboard surfaces
-resolve read-only. Two paths may create a missing folder, and both go through
-the dashboard's own folder service rather than appending to the file: the MCP
-path through ``POST /api/cron-folders``, and app-cron registration in the
-gateway through the creator the dashboard wires onto its CronService.
+resolve read-only. A missing folder may be created only through the dashboard's
+own folder service, never by appending to the file: the MCP tools and the CLI
+through ``POST /api/cron-folders`` (one shared resolver, two transports), and
+app-cron registration in the gateway through the creator the dashboard wires
+onto its CronService.
 """
 
 from __future__ import annotations
@@ -496,7 +497,44 @@ class TestSurfacesAcceptFolder:
         svc = CronService(base_dir=config_dir())
         assert [j.folder_id for j in svc.list_jobs() if j.name == "veille-job"] == ["aaaa1111"]
 
-    def test_cli_add_refuses_unknown_folder_without_creating_a_job(self, folders_on_disk, capsys):
+    def test_cli_add_creates_a_missing_folder_through_the_gateway(
+        self, folders_on_disk, monkeypatch, capsys
+    ):
+        # Same contract as the cron_add tool: a missing NAME is created through
+        # the dashboard's endpoint (the CLI's create leg), then the job is filed.
+        import argparse
+
+        from kiro_crew import cli_commands
+        from kiro_crew.cron import CronService
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            cli_commands,
+            "_create_cron_folder",
+            lambda name: calls.append(name) or {"id": "dddd4444", "name": name},
+        )
+        before = (config_dir() / "cron_folders.json").read_bytes()
+        cli_commands._cron_dispatch(
+            argparse.Namespace(
+                cron_action="add",
+                name="fresh",
+                message="go",
+                every=300,
+                cron_expr=None,
+                channel=None,
+                approval_mode="",
+                agent="",
+                silent=False,
+                folder="Missing",
+            )
+        )
+        assert calls == ["Missing"]
+        svc = CronService(base_dir=config_dir())
+        assert [j.folder_id for j in svc.list_jobs() if j.name == "fresh"] == ["dddd4444"]
+        # The file is the dashboard's: the CLI never wrote it.
+        assert (config_dir() / "cron_folders.json").read_bytes() == before
+
+    def test_cli_add_refuses_an_unknown_id_without_creating_a_job(self, folders_on_disk, capsys):
         import argparse
 
         from kiro_crew.cli_commands import _cron_dispatch
@@ -514,7 +552,7 @@ class TestSurfacesAcceptFolder:
                     approval_mode="",
                     agent="",
                     silent=False,
-                    folder="Missing",
+                    folder="deadbeef",
                 )
             )
         assert "not found" in capsys.readouterr().err

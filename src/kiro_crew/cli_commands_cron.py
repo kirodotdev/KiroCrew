@@ -143,6 +143,34 @@ def _cron_add_fail(msg: str, *, audit_kind: str = "") -> NoReturn:
     sys.exit(1)
 
 
+def _cron_folder_ref(ref: str) -> tuple[str, str | None]:
+    """Resolve ``--folder`` for ``cron add`` / ``cron update``, creating a missing name.
+
+    The same resolver the ``cron_add`` / ``cron_update`` tools run
+    (``mcp_cron._resolve_cron_folder_via``: empty -> ungrouped, exact id,
+    case-insensitive name, an ambiguous name or unreadable store refused, an
+    id-shaped miss refused), with the CLI's transport as its create leg:
+    ``_create_cron_folder`` POSTs to the running gateway's
+    ``/api/cron-folders``. Returns ``(folder_id, error)``.
+    """
+    # In-function: the facade mirrors every module-level import of its owners.
+    from kiro_crew.cli_commands_gateway_api import _create_cron_folder
+    from kiro_crew.mcp_cron import _resolve_cron_folder_via
+
+    return _resolve_cron_folder_via(ref, _create_cron_folder)
+
+
+#: ``cron list --folder`` value that selects jobs filed in no folder.
+_CRON_LIST_UNGROUPED = "-"
+
+
+def _cron_folder_label(folder_id: str, names: dict[str, str]) -> str:
+    """A job's folder as ``cron list`` prints it: its name, else its raw id."""
+    if not folder_id:
+        return "(none)"
+    return names.get(folder_id) or folder_id
+
+
 def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     """``kirocrew cron add``: validate every field, then ONE locked ``add_job``.
 
@@ -312,18 +340,6 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         # sentinel resolves to no pinned provider id and is stored as unset.
         if model_registry.to_provider_id(model, "claude_code") == "":
             model = ""
-    # Resolve BEFORE add_job so a typo'd folder never leaves an orphaned
-    # job behind. Existing folders only: cron_folders.json is owned by the
-    # dashboard (its state rewrites the file wholesale), so a CLI-side
-    # create could be silently clobbered by the next Schedule-page folder
-    # operation.
-    folder_id = ""
-    if folder_ref:
-        found = lookup_cron_folder_id(folder_ref)
-        if found.error:
-            _cron_add_fail(found.error)
-        folder_id = found.folder_id
-
     if script:
         kind = "script"
     elif command:
@@ -380,6 +396,17 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         # re-vets at fire time against ITS CWD, so a raw relative spec would
         # fail every wake. An already-absolute spec round-trips unchanged.
         script = f"{script_file}:{func}"
+
+    # ── Folder: resolved after every vet and BEFORE add_job, the position
+    # cron_add resolves it in. After the vets, so a refused job never creates
+    # a folder; before add_job, so an unresolvable reference never leaves an
+    # orphaned job behind. A missing name is created through the running
+    # gateway (``_cron_folder_ref``), never by writing cron_folders.json here.
+    folder_id = ""
+    if folder_ref:
+        folder_id, folder_err = _cron_folder_ref(folder_ref)
+        if folder_err:
+            _cron_add_fail(folder_err)
 
     # ── Session shape: the store's defaults, exactly as cron_add and the
     # dashboard POST forward them. One defaulting policy across every create
@@ -511,14 +538,35 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 
     action = getattr(args, "cron_action", None)
     if action == "list":
+        # Read-only on folders: the filter resolves an EXISTING folder and never
+        # creates one, and an unknown or ambiguous reference is an error rather
+        # than an empty listing that reads as "no jobs there".
+        folder_filter = getattr(args, "folder", None)
+        want_folder: str | None = None
+        if folder_filter is not None:
+            ref = folder_filter.strip()
+            if ref in ("", _CRON_LIST_UNGROUPED):
+                want_folder = ""
+            else:
+                found = lookup_cron_folder_id(ref)
+                if found.error:
+                    print(f"Error: {found.error}", file=sys.stderr)
+                    sys.exit(1)
+                want_folder = found.folder_id
+        from kiro_crew.cron import load_cron_folders
+
+        folder_names = {f["id"]: f["name"] for f in load_cron_folders()}
         jobs = svc.list_jobs(include_disabled=True)
+        if want_folder is not None:
+            jobs = [j for j in jobs if (j.folder_id or "") == want_folder]
         if not jobs:
-            print("No cron jobs.")
+            print("No cron jobs." if want_folder is None else "No cron jobs in that folder.")
             return
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=j.timezone or "")
-            print(f"  {status} {j.id}  {j.name}  ({sched})  {j.message[:60]}")
+            folder = _cron_folder_label(j.folder_id or "", folder_names)
+            print(f"  {status} {j.id}  {j.name}  ({sched})  [folder: {folder}]  {j.message[:60]}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
@@ -672,12 +720,33 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             kwargs["agent_id"] = agent_val
         if getattr(args, "approval_mode", None) is not None:
             kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
-        if not kwargs:
+        folder_ref = getattr(args, "folder", None)
+        if not kwargs and folder_ref is None:
             print("Provide at least one field to update")
             return
         if "every_secs" in kwargs and "cron_expr" in kwargs:
             print("Provide --every or --cron, not both")
             return
+        if folder_ref is not None:
+            # Same contract as cron_update's ``folder``: "" ungroups, a missing
+            # name is created through the running gateway. Resolved last, after
+            # every other check, and only for a job that exists, so a refused or
+            # mistyped update never leaves a new empty folder behind.
+            if folder_ref.strip() and svc.get_job(args.job_id) is None:
+                sel().log_api_access(
+                    caller="cli",
+                    operation="cron.update",
+                    outcome="not_found",
+                    source="cli",
+                    resources=f"job_id={args.job_id} reason=not_found",
+                )
+                print(f"Job not found: {args.job_id}")
+                return
+            folder_id, folder_err = _cron_folder_ref(folder_ref)
+            if folder_err:
+                print(f"Error: {folder_err}", file=sys.stderr)
+                sys.exit(1)
+            kwargs["folder_id"] = folder_id
         try:
             updated = svc.update_job(args.job_id, **kwargs)
         except ValueError as e:
@@ -690,6 +759,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 # Same rationale as cron.add: the agent picks the sandboxed
                 # subprocess, so the value belongs in the audit trail.
                 audit_resources += f" agent={kwargs['agent_id'] or 'default'}"
+            if "folder_id" in kwargs:
+                audit_resources += f" folder={kwargs['folder_id'] or '(ungrouped)'}"
             sel().log_api_access(
                 caller="cli",
                 operation="cron.update",

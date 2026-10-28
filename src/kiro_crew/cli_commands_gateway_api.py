@@ -6,7 +6,8 @@ secret ``_internal_secret`` reads. Every request goes through
 that very connection is proven to be this install's recorded gateway. ``_spawn`` lists subagents or
 starts one (``_spawn_run``, which waits for the result unless told not to);
 ``_artifact`` lists, saves, shows, updates and deletes artifacts and lists an
-artifact's versions.
+artifact's versions. ``_create_cron_folder`` creates the missing Schedule-page
+folder a ``kirocrew cron add/update --folder`` names, through the dashboard.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
 name here as ``kiro_crew.cli_commands.<name>``, and a patch through the facade reaches
@@ -75,6 +76,63 @@ def _peer_refusal() -> type[Exception]:
     from kiro_crew.cli_server_peer import _GatewayPeerRefused
 
     return _GatewayPeerRefused
+
+
+def _create_cron_folder(name: str) -> dict[str, object]:
+    """Create a Schedule-page cron folder through the running gateway; never locally.
+
+    The CLI's ``create`` leg for ``mcp_cron._resolve_cron_folder_via``: POSTs
+    ``{"name": name}`` to the dashboard's own ``/api/cron-folders`` -- the
+    handler that creates a folder under the folder lock and persists it through
+    ``DashboardState.create_cron_folder`` -- exactly as the ``cron_add`` tool
+    does. ``cron_folders.json`` is owned by the dashboard, which rewrites it
+    wholesale, so a create written here would be lost on its next save; with no
+    gateway there is simply no create.
+
+    Returns the endpoint's JSON (``{"id": ..., "name": ...}``) or
+    ``{"error": ...}``. The port is resolved instance-aware, as ``cron trigger``
+    resolves it, so a ``--port auto`` sibling never receives the secret.
+    """
+    # In-function: a module-scope import would surface on the cli_commands facade.
+    from kiro_crew.loopback_http import deadline_expired
+    from kiro_crew.port_resolution import resolve_client_port_ex
+
+    port, _evidence_backed = resolve_client_port_ex(None)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/cron-folders",
+        data=json.dumps({"name": name}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Secret": _internal_secret(port),
+        },
+        method="POST",
+    )
+    try:
+        with _gateway_send(req, port, 10, "cli_cron_folder_create") as resp:
+            raw = resp.read()
+            made = json.loads(raw) if raw else {}
+    except _peer_refusal() as exc:
+        return {"error": f"gateway ownership not verified: {exc}"}
+    except urllib.error.HTTPError as exc:
+        try:
+            return {"error": str(json.loads(exc.read()).get("error") or f"{exc.code} {exc.reason}")}
+        except Exception:
+            return {"error": f"{exc.code} {exc.reason}"}
+    except (urllib.error.URLError, OSError) as exc:
+        if deadline_expired(exc):
+            # Something took the request, so the folder may exist now: say so
+            # rather than inviting a retry that could make a second one.
+            return {
+                "error": f"gateway on port {port} is up but busy; the folder may have been "
+                "created -- check `kirocrew cron list` or the Schedule page before retrying"
+            }
+        return {
+            "error": f"gateway not running (cannot reach dashboard on port {port}): "
+            "start it or pass an existing folder"
+        }
+    except ValueError:
+        return {"error": "gateway returned an unreadable answer"}
+    return made if isinstance(made, dict) else {"error": "gateway returned an unreadable answer"}
 
 
 def _spawn_row_text(row: dict[str, object]) -> str:

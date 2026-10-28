@@ -73,7 +73,13 @@ Examples:
         formatter_class=_fmt,
     )
     cron_sub = cron_parser.add_subparsers(dest="cron_action")
-    cron_sub.add_parser("list", help="List cron jobs")
+    cron_list = cron_sub.add_parser("list", help="List cron jobs")
+    cron_list.add_argument(
+        "--folder",
+        default=None,
+        help='Only list jobs in this existing Schedule-page folder, by name or id; "-" '
+        'or "" lists jobs in no folder.',
+    )
     cron_add = cron_sub.add_parser(
         "add",
         help="Add a cron job",
@@ -213,8 +219,9 @@ Examples:
     cron_add.add_argument(
         "--folder",
         default="",
-        help="Schedule-page folder to file the job in (existing folder name or id). "
-        "The CLI does not create folders — create them in the dashboard's Schedule page.",
+        help="Schedule-page folder to file the job in, by name or id. A missing "
+        "name is created through the running gateway (start it first); an unknown id "
+        "is refused.",
     )
     cron_add.add_argument(
         "--approval-mode",
@@ -266,6 +273,12 @@ Examples:
         choices=["auto", "default"],
         default=None,
         help='Tool approval mode ("auto" to auto-approve, "default" to reset)',
+    )
+    cron_update.add_argument(
+        "--folder",
+        default=None,
+        help='Move the job to this Schedule-page folder, by name or id; "" moves it '
+        "out of its folder. A missing name is created through the running gateway.",
     )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)

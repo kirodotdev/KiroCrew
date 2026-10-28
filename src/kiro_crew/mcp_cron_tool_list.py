@@ -69,7 +69,8 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": "If true, return a JSON document instead "
                         "of text: one record per owned job with its mode, "
-                        "schedule, context settings, prompt, and folded "
+                        "schedule, context settings, prompt, Schedule-page "
+                        "folder ({id, name}, or null when ungrouped), and folded "
                         "run-history counts (runs, failures, distinct results, "
                         "runs that found nothing to do). Takes precedence over "
                         "verbose and over ids' implied verbose, because it "

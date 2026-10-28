@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from kiro_crew.config.loader import read_local_secret
-from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz
+from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz, load_cron_folders
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -238,6 +238,8 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
     """
     kept = jobs[:_JSON_MAX_JOBS]
     stats, unavailable = _fetch_history_stats([j.id for j in kept])
+    # Read once, read-only: the dashboard owns cron_folders.json.
+    folder_names = {f["id"]: f["name"] for f in load_cron_folders()}
 
     records: list[dict[str, Any]] = []
     used = 0
@@ -265,6 +267,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
             # has not been shown to be idle, and a consumer must be able to
             # tell those two apart.
             "history": history,
+            "folder": _json_folder(getattr(job, "folder_id", "") or "", folder_names),
         }
         # Measure what this record actually costs SERIALIZED, then decide. The
         # alternative -- assemble everything and check at the end -- has no way
@@ -288,6 +291,21 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
     if unavailable:
         payload["history_unavailable_reason"] = unavailable
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _json_folder(folder_id: str, names: dict[str, str]) -> dict[str, Any] | None:
+    """A job's Schedule-page folder as a JSON record: ``{id, name}``, or None if ungrouped.
+
+    ``name`` is None when the id names no folder the store holds (deleted, or
+    the store is unreadable), so a consumer never mistakes a raw id for a name.
+    """
+    if not folder_id:
+        return None
+    name = names.get(folder_id)
+    return {
+        "id": folder_id,
+        "name": _sanitize(name)[:_MSG_PREVIEW_LEN] if name else None,
+    }
 
 
 def _job_kind(job: Any) -> str:

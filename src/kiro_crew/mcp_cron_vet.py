@@ -18,7 +18,9 @@ import logging
 import os
 import re
 import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.cron import CronJob, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
@@ -788,6 +790,23 @@ _CRON_FOLDER_ID_RE = re.compile(r"[0-9a-f]{8}")
 def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str | None]:
     """Resolve a cron-folder reference (id or name) to a folder id, creating it.
 
+    The MCP ``cron_add`` / ``cron_update`` binding of
+    :func:`_resolve_cron_folder_via`: a missing name is created through
+    ``POST /api/cron-folders`` on this tool's own gateway client, under the
+    caller's session key. The resolve-and-create contract itself lives in that
+    one function, which the CLI calls with its own transport.
+    """
+    return _resolve_cron_folder_via(
+        ref,
+        lambda name: _post("/api/cron-folders", {"name": name}, session_key=session_key),
+    )
+
+
+def _resolve_cron_folder_via(
+    ref: str, create: Callable[[str], dict[str, Any]]
+) -> tuple[str, str | None]:
+    """Resolve a cron-folder reference (id or name), creating a missing name via *create*.
+
     Returns ``(folder_id, error)``; ``""`` with no error means ungrouped (empty
     reference). The matching itself is ``cron.lookup_cron_folder_id`` — one
     implementation of "empty / exact id / case-insensitive name / refuse an
@@ -799,11 +818,15 @@ def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str
       created: folder ids are minted server-side, so a folder literally named
       after a hex id is never what the caller meant (same contract as the chat
       sidebar-folder resolver).
-    * A missing NAME is created through ``POST /api/cron-folders`` — the
-      dashboard's own endpoint — so the create happens under the same lock and
-      lands in the same in-memory list as a Schedule-page create; appending to
-      ``cron_folders.json`` directly from this process would be clobbered by
-      the dashboard's next wholesale save of its own list.
+    * A missing NAME is created by *create*, which must POST ``{"name": ...}``
+      to the dashboard's own ``/api/cron-folders`` endpoint and return its JSON
+      answer (``{"id": ...}`` or ``{"error": ...}``) — so the create happens
+      under the same lock and lands in the same in-memory list as a
+      Schedule-page create; appending to ``cron_folders.json`` directly from
+      this process would be clobbered by the dashboard's next wholesale save
+      of its own list. The MCP tool passes its gateway client
+      (:func:`_resolve_cron_folder`); ``kirocrew cron`` passes the CLI's
+      peer-verified one. Neither ever writes the file.
 
     Any non-missing error is passed through untouched: an ambiguous name must
     stay a refusal here too, never a second folder with the same name.
@@ -819,7 +842,9 @@ def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str
             f"cron folder not found: {redact(ref)} — folder ids are minted "
             "server-side; pass a folder name to create one"
         )
-    made = _post("/api/cron-folders", {"name": ref}, session_key=session_key)
+    made = create(ref)
+    if not isinstance(made, dict):
+        return "", f"could not create cron folder {redact(ref)}: no id returned"
     if made.get("error"):
         return "", f"could not create cron folder {redact(ref)}: {made['error']}"
     fid = str(made.get("id") or "")
