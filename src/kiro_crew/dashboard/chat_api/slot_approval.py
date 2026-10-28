@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         slot_not_found,
         yolo_policy_permits,
     )
+    from kiro_crew.kas_workflows import chat as kas_chat
 
 
 async def _internal_session_approval_refusal(
@@ -633,6 +634,11 @@ async def apply_approval_mode(
                     # not an answer to it, and the card stays open.
                     continue
                 if not fut.done():
+                    # A KAS plan handoff or question waits for the person under
+                    # every mode: approving a question would pick its first
+                    # answer (chat_runner marks the card ``person_only``).
+                    if _get_pattern_from_pending(_slot, aid, "person_only") == "1":
+                        continue
                     fut.set_result("approved")
                     # Persist resolved state into the permission message. The
                     # periodic flush skips non-dirty slots, so the mark must
@@ -711,6 +717,21 @@ async def apply_approval_mode(
 
     state.push_slots_update()
     return web.json_response({"ok": True, "mode": mode})
+
+
+def _note_permission_answer(messages: list[dict], request_id: str, label: str) -> None:
+    """Write the picked answer's label into a question card's permission row."""
+    for msg in reversed(messages):
+        if msg.get("role") != "permission":
+            continue
+        try:
+            meta = json.loads(msg.get("cls", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(meta, dict) and meta.get("request_id") == request_id:
+            meta["answer"] = label
+            msg["cls"] = json.dumps(meta)
+            return
 
 
 def _get_pattern_from_pending(slot: _ChatSlot, request_id: str, field: str) -> str:
@@ -856,7 +877,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or not request_id
             or not isinstance(request_mid, str)
             or not request_mid
-            or action not in ("approved", "rejected", "rejected_once")
+            or action not in ("approved", "rejected", "rejected_once", "answer")
         ):
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
@@ -945,6 +966,39 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # resolves one. The user's own tool prompts live on the slot future
         # handled above. Same 404 as any other out-of-scope target.
         return slot_not_found()
+    # The chat's own KAS question (kas_workflows.chat.hold_question) settles
+    # only on a picked answer or a dismiss: any approve-family action would
+    # pick the first answer for the person, so it is refused before any side
+    # effect (a trust click must not widen the slot on the way, either).
+    held_question = kas_chat.held_question(fut)
+    answer_label: str | None = None
+    if action == "answer":
+        if held_question is None or fut is None:
+            return web.json_response(
+                {"error": "no pending question", "code": "question_not_pending"}, status=404
+            )
+        answers = body.get("answers")
+        if not isinstance(answers, dict):
+            return web.json_response(
+                {"error": "answers must be an object", "code": "invalid_answer"}, status=400
+            )
+        try:
+            # An option id for a legacy-bridge question; the answer TEXT
+            # (typed, or ``"Title [a, b]"``) for a ``_kiro/userInput`` one.
+            option_id = held_question.answer_value(answers)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc), "code": "invalid_answer"}, status=400)
+        kas_chat.record_answer(fut, option_id)
+        answer_label = held_question.display_for(option_id)
+        action = "approved"
+    elif held_question is not None and action not in ("rejected", "rejected_once"):
+        return web.json_response(
+            {
+                "error": "this card asks a question: answer it or dismiss it",
+                "code": "question_needs_answer",
+            },
+            status=409,
+        )
     # A state-level approval carries only a boolean decision and has no owning
     # slot, canonical command card, or scoped-pattern store.  Do not let a
     # durable-trust action fall through to ``resolve_state_approval`` as ``True``:
@@ -1109,16 +1163,21 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # Flagging the slot dirty is required for it to survive a RESTART too: the
     # periodic flush skips non-dirty slots.
     if request_id:
-        if _mark_permission_resolved(
-            (
-                [message for message in owner.messages if row_mid(message) == request_mid]
-                if strict_native
-                else owner.messages
-            ),
-            request_id,
-            original_action if original_action in ("trust", "trust_reads") else resolved,
-        ):
+        _rows = (
+            [message for message in owner.messages if row_mid(message) == request_mid]
+            if strict_native
+            else owner.messages
+        )
+        if original_action == "answer":
+            _decision = "answered"
+        elif original_action in ("trust", "trust_reads"):
+            _decision = original_action
+        else:
+            _decision = resolved
+        if _mark_permission_resolved(_rows, request_id, _decision):
             owner._dirty = True
+            if answer_label is not None:
+                _note_permission_answer(_rows, request_id, answer_label)
     # Broadcast first to ensure frontend is unblocked
     if request_id:
         state.broadcast_ws(

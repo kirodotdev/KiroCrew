@@ -281,7 +281,10 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     else:
         spawn_injected = []
 
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
+    # An observe turn is not a prompt the person submitted (see _turn_build_prompt).
+    injected = (
+        [] if turn._kas_observe else await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
+    )
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)
@@ -321,7 +324,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # the person ticked in the pill since its last snapshot (todo_sync_prompt),
     # which is how a click reaches a live agent instead of being reverted by
     # its next full snapshot.
-    if not is_slash:
+    if not is_slash and not turn._kas_observe:
         full_message, _todo_sync_rendered, _todo_recovery_carried = await _checklist_resync(
             slot,
             full_message,
@@ -445,6 +448,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         and not _turn_provenance_restored
         and not _is_synthetic
         and not is_slash
+        and not turn._kas_observe
         and message not in _SYNTHETIC_RECOVERY_MSGS
         and not _synthetic_recovery_turn
     ):

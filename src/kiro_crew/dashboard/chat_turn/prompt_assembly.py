@@ -595,6 +595,12 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             outcome="bypass",
             metadata={"command": first_word, "slot": slot.key},
         )
+    elif turn._kas_observe:
+        # Nothing is sent on an observe turn, so nothing is built for it: a
+        # context build here would spend this turn's re-injection and
+        # replay debts on a prompt that never goes out.
+        full_message = message
+        turn.full_message = full_message
     elif state.context_builder:
 
         # Length of the message as the user's text stands NOW (after any

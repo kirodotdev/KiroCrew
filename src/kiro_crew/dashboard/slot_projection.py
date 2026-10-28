@@ -39,6 +39,50 @@ def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
     return current - at < STOP_DECLINED_ESCALATION_SECS
 
 
+def kas_slot_needs_person(slot_key: str) -> bool:
+    """Whether a KAS-native workflow run reporting into *slot_key* waits on a person.
+
+    Gap 8: the sidebar's ``needs_input`` flag only ever read the chat's OWN
+    ``ask_question`` hold (``slot._question_pending``), so a chat whose Kiro
+    Agent workflow is parked on a step approval, a question or any non-user park
+    looked merely busy — its "Needs your answer" line and the needs-you filter
+    never fired. This folds the workflow hold into that same flag.
+
+    Read-only and side-effect free, for a hot per-slot poll:
+
+    * it reads the router singleton that is ALREADY running, through the module
+      global, and never calls ``get_router()`` — which would construct one, so a
+      gateway with KAS off (or no run yet) must pay nothing and build nothing;
+    * ``None`` singleton (KAS never used this process) answers ``False`` at once;
+    * any error reading the rows answers ``False`` — a sidebar flag must never
+      raise on the slots poll.
+
+    A run "needs a person" exactly when its row carries ``controls.needsAttention``
+    (the one rule ``wire.run_controls`` already derives: a step approval / question
+    wait, or a non-user park) or a ``blocking`` step — the same predicate the
+    frontend row uses (``kasModel.needsAttention``).
+    """
+    if not slot_key:
+        return False
+    try:
+        from kiro_crew.kas_workflows import router as _kas_router
+
+        router = getattr(_kas_router, "_ROUTER", None)
+        if router is None:
+            return False
+        for row in router.rows():
+            if not isinstance(row, dict) or row.get("slotKey") != slot_key:
+                continue
+            controls = row.get("controls")
+            if isinstance(controls, dict) and controls.get("needsAttention"):
+                return True
+            if row.get("blocking"):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def resolved_row_identity(slot: Any) -> str:
     """The identity the sidebar renders this slot under: its own local key.
 
@@ -357,7 +401,12 @@ class SlotProjection:
             and bool(rows)
             and last_conv_role == "assistant"
         )
-        needs_input = bool(slot._question_pending)
+        # Gap 8: a workflow parked on a person counts as needs-input too, so the
+        # chat's sidebar line, status and the needs-you filter fire for it — not
+        # only for the chat's own ``ask_question`` hold.
+        needs_input = bool(slot._question_pending) or kas_slot_needs_person(
+            str(getattr(slot, "key", "") or "")
+        )
         interrupted = not turn_in_flight and is_turn_interrupted(rows)
 
         pending_approval_info: dict[str, str] | None = None

@@ -277,6 +277,27 @@ def tool_approval_timeout_secs() -> float:
     return window
 
 
+def person_wait_window_secs() -> float:
+    """How long a turn waits for a PERSON-ONLY decision: a KAS plan handoff or question.
+
+    Such a request is the person's call under every approval mode, and an
+    answer nobody gave is not a decline, so it does not take
+    ``agent.tool_approval_timeout_secs`` (600s by default) like a tool
+    approval. It waits as long as the turn can: the turn ceiling (the running
+    turn's own limit, else :func:`chat_turn_timeout_secs`) and the budget left
+    in the running turn, each less the same :data:`APPROVAL_TURN_MARGIN_SECS`,
+    so the "went unanswered" card still lands inside the turn instead of the
+    ceiling relabelling it a turn timeout. ``0.0`` when no budget is left, which
+    the caller reads exactly as it reads :func:`tool_approval_timeout_secs`'s.
+    """
+    ceiling = current_turn_limit_secs() or chat_turn_timeout_secs()
+    window = max(0.0, ceiling - APPROVAL_TURN_MARGIN_SECS)
+    remaining = _turn_budget_remaining()
+    if remaining is None:
+        return window
+    return min(window, max(0.0, remaining - APPROVAL_TURN_MARGIN_SECS))
+
+
 def format_approval_no_budget_card() -> str:
     """User-facing text for a prompt that arrived with no time left to answer it.
 

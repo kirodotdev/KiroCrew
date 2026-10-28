@@ -510,6 +510,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes through the credential + exfiltration-URL chain before egress.",
     ),
     (
+        "Kiro Workflows API responses",
+        "dashboard/handlers/kas_workflows.py",
+        "Run rows, recipe details, step transcripts and error text the Kiro Workflows "
+        "routes serve to the dashboard. Each JSON body and error passes through the "
+        "credential + exfiltration-URL chain (_redact_obj) on its way out.",
+    ),
+    (
         "Kiro Workflows run messages",
         "kas_workflows/router.py",
         "Run and step names, step notes, held approval titles, commands and plan text, "

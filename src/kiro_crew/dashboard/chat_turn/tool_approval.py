@@ -26,6 +26,7 @@ from kiro_crew.hooks import (
     hook_gate_kwargs,
     identity_grant_covers_child,
 )
+from kiro_crew.kas_workflows.chat import needs_a_person as kas_needs_a_person
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
@@ -37,6 +38,8 @@ from kiro_crew.trust_patterns import redirect_outside_grant as _redirect_outside
 from kiro_crew.trust_patterns import timed_grant_deadline as _timed_grant_deadline
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.dashboard.chat_runner import (
         Refusal,
         _matches_trusted_pattern,
@@ -208,6 +211,27 @@ def _auto_approve_reason(slot: Any, yolo_active: bool) -> str:
     if str(getattr(slot, "_trust_scope", "") or ""):
         return "trust_scope"
     return "trust"
+
+
+def _kas_step_mode_reader(state: Any, slot: Any) -> Callable[[], tuple[str, str]]:
+    """How a KAS workflow step reads its parent chat's approval mode, when it asks.
+
+    The same flags this chat's own tool calls consult, in the same precedence
+    (:func:`_auto_approve_reason`): the process-wide override or this chat's
+    trust (session or scoped) is ``trust``; ``_trust_reads`` alone is
+    ``trust_reads``; anything else is ``normal``. Read at request time, not
+    captured, so the picker's change reaches the next step.
+    """
+
+    def read() -> tuple[str, str]:
+        yolo = bool(state.is_yolo_active())
+        if yolo or _slot_is_trusted(slot):
+            return "trust", _auto_approve_reason(slot, yolo)
+        if getattr(slot, "_trust_reads", False):
+            return "trust_reads", "trust_reads"
+        return "normal", ""
+
+    return read
 
 
 def _persistable_session_policy(slot: Any, yolo_active: bool) -> str:
@@ -410,6 +434,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # paths may honor it (unconditional grants: trust-all / YOLO /
     # native crew) and which must not (content-matching paths).
     _child_grant_eligible = event.child_unconditional_grant_eligible
+    # KAS's workflow plan handoff, and a KAS ``user_input`` question
+    # this chat's own model asks (one ``allow_once`` per answer, so
+    # any approval would pick the first answer), are always the
+    # person's call: they pass no grant rung (session trust, YOLO,
+    # native crew, trusted patterns, trust-reads, a hook
+    # auto-approve) and reach the card, which the mode-switch sweep
+    # also leaves pending (``person_only``).
+    _kas_person_only = kas_needs_a_person(event)
+    turn._kas_person_only = _kas_person_only
+    if _kas_person_only:
+        _child_grant_eligible = False
     if _child_low_fidelity:
         # Diagnostic for a path that is otherwise invisible in
         # logs: without it a trust-all session watching its
@@ -571,6 +606,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     event.mcp_server_name,
                     event.tool_name,
                 )
+        if _kas_person_only and tool_result.action == TOOL_AUTO_APPROVE:
+            tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
             # The hook layer granted this by NAME (its
             # `auto_approve_tools` globs, or the read-only allowlist).
@@ -1029,6 +1066,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         and not yolo_active
         and cmd
         and not _child_low_fidelity
+        and not _kas_person_only
     ):
         # Trust-reads never auto-approves git: git reads
         # ``.git/config`` on every invocation and ``core.fsmonitor``

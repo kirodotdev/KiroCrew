@@ -209,6 +209,22 @@ def _register_workflow_lifecycle(app: web.Application, state: DashboardState) ->
             state.task_runner.defer_workflow_attachment()
 
     async def _workflow_shutdown(_app: web.Application) -> None:
+        # The KAS workflow router owns a session-less query process for catalog
+        # and history reads; it is stopped here with the workflow service.
+        from kiro_crew.dashboard.handlers.kas_workflows import cancel_kas_boot_recovery
+        from kiro_crew.kas_workflows.router import (
+            close_router,
+            install_dashboard_hooks,
+            install_turn_starter,
+        )
+
+        cancel_kas_boot_recovery()
+        install_turn_starter(None)
+        install_dashboard_hooks(None)
+        try:
+            await close_router()
+        except Exception:  # noqa: BLE001 -- shutdown must reach the drain below
+            logger.debug("KAS workflow router close failed", exc_info=True)
         task = state.workflow_startup_task
         if task is None:
             return
@@ -231,6 +247,28 @@ def _kick_workflow_initialization(state: DashboardState) -> None:
     """Called only after listener bind and successful credential publication."""
     if state.workflow_startup_task is not None or state.workflow_startup_stopping:
         return
+    # A KAS workflow run's end is shown in its chat as an observe turn; the
+    # router (created only on first use) sends it through the chat slots.
+    try:
+        from kiro_crew.dashboard.handlers.kas_workflows import (
+            observe_turn_starter,
+            start_kas_boot_recovery,
+        )
+        from kiro_crew.kas_workflows.router import (
+            dashboard_hooks,
+            install_dashboard_hooks,
+            install_turn_starter,
+        )
+
+        install_turn_starter(observe_turn_starter(state))
+        # Bell notes for held asks and the outcome/note rows reach the
+        # dashboard only through these hooks.
+        install_dashboard_hooks(dashboard_hooks(state))
+        # Reattach this gateway's own interrupted runs once KAS's owner window
+        # has passed; it gates itself on the backend and the KAS switch.
+        start_kas_boot_recovery(state)
+    except Exception:  # noqa: BLE001 -- a run's end then goes unshown, nothing else
+        logger.debug("KAS workflow observe starter not installed", exc_info=True)
     task = asyncio.create_task(_initialize_workflow_service(state), name="workflow-initialization")
     state.workflow_startup_task = task
     state._background_tasks.add(task)
