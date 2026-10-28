@@ -666,7 +666,9 @@ class DashboardConfig:
                         "help": (
                             "Ceiling on concurrent terminal sessions across every chat, "
                             "server-wide. Each chat's activity bar caps its own terminals "
-                            "below this; a session beyond the ceiling is refused."
+                            "below this. At the ceiling, opening a terminal ends the shell "
+                            "that has had no browser attached the longest (at least a "
+                            "minute) and posts a notice; with none, the open is refused."
                         ),
                     },
                 },

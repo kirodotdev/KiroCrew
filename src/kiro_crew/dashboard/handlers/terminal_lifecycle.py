@@ -509,6 +509,22 @@ def _take_shell_to_evict(
     return sid, sess, now - detached_at
 
 
+def _restore_evicted_shell(
+    registry: dict[str, _TerminalSession | None],
+    evicted: tuple[str, _TerminalSession, float],
+) -> bool:
+    """Put back, untouched, a shell ``_take_shell_to_evict`` removed for an open
+    that did not go ahead. Synchronous, so no opener sees the slot in between.
+    False when its id was opened afresh meanwhile: the shell cannot go back, and
+    the caller must end it with ``_end_evicted_shell`` instead.
+    """
+    sid, sess, _idle_s = evicted
+    if sid in registry:
+        return False
+    registry[sid] = sess
+    return True
+
+
 async def _end_evicted_shell(
     app: web.Application,
     evicted: tuple[str, _TerminalSession, float],

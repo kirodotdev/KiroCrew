@@ -50,6 +50,7 @@ from kiro_crew.dashboard.handlers.terminal_lifecycle import (
     _end_evicted_shell,
     _handle_pty_reader_end,
     _kill_session,
+    _restore_evicted_shell,
     _sess_alive,
     _sess_pid,
     _take_shell_to_evict,
@@ -640,7 +641,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
 
     # Reserve slot synchronously before any await to prevent race condition.
     # At the cap, the longest-detached shell gives up its slot in the same step;
-    # it is torn down below, once this placeholder holds the slot.
+    # it ends only once this open goes ahead, and returns to its slot otherwise.
     evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
     if not existing and len(registry) >= max_sessions:
         _sel().log_api_access(
@@ -658,8 +659,6 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         registry[session_id] = None
 
     try:
-        if evicted is not None:
-            await _end_evicted_shell(request.app, evicted, max_sessions)
         ws = web.WebSocketResponse(heartbeat=30, timeout=300)
         cwd = ""
         if placeholder:
@@ -679,6 +678,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             except (OSError, ValueError, asyncio.TimeoutError, _PathProbeBusy):
                 registry.pop(session_id, None)
                 placeholder = False
+                # The placeholder held the displaced shell's slot, so the shell
+                # goes back in this same step: during the refusal's awaits below
+                # another opener sees the cap full rather than a free slot.
+                if evicted is not None:
+                    displaced, evicted = evicted, None
+                    if not _restore_evicted_shell(registry, displaced):
+                        await _end_evicted_shell(request.app, displaced, max_sessions)
                 _sel().log_api_access(
                     caller=caller,
                     operation="terminal.ws.open",
@@ -699,6 +705,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 )
                 return ws
         await ws.prepare(request)
+        if evicted is not None:
+            # The directory resolved and the socket is up, so the open goes
+            # ahead: only now does the shell it displaces end.
+            ending, evicted = evicted, None
+            await _end_evicted_shell(request.app, ending, max_sessions)
 
         if existing:
             # Reconnect to existing PTY.
@@ -974,6 +985,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # release retires that ownership before another handler can reserve it.
         if placeholder:
             registry.pop(session_id, None)
+        # An open refused, failed or cancelled before going ahead leaves the
+        # displaced shell untouched: it goes back unless its id was opened afresh.
+        if evicted is not None and not _restore_evicted_shell(registry, evicted):
+            await _end_evicted_shell(request.app, evicted, max_sessions)
 
     # The placement check above ran before this shell was published, and a bind
     # in between skipped the then-unpublished reservation: read it again now

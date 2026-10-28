@@ -144,21 +144,26 @@ class TestApiTerminalWs:
 
     @pytest.mark.asyncio
     async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
-        # The evicted shell's slot must already be this opener's placeholder when
-        # the teardown starts awaiting, or another opener could take it meanwhile.
-        # Detached a billion seconds before the clock's origin: past the 60 s floor
-        # against any real monotonic reading the handler takes.
+        # The evicted shell's slot must already be this opener's placeholder at
+        # the first await (here the socket handshake), or another opener could
+        # take it meanwhile. Detached a billion seconds before the clock's origin:
+        # past the 60 s floor against any real monotonic reading the handler takes.
         old = _make_session(session_id="old", alive=True, disconnect=-1e9)
         registry = {"old": old, "busy": _make_session(session_id="busy")}
         req = _make_request(registry=registry, session_id="new")
         seen = {}
+        ws = AsyncMock()
+
+        async def handshake(_request):
+            seen["at_first_await"] = dict(registry)
+
+        ws.prepare.side_effect = handshake
 
         class _Stop(Exception):
             pass
 
         async def end_evicted(_app, evicted, cap):
             seen["evicted"], seen["cap"] = evicted[0], cap
-            seen["registry"] = dict(registry)
             raise _Stop
 
         with (
@@ -166,15 +171,144 @@ class TestApiTerminalWs:
             patch.object(
                 terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
             ),
+            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
             patch.object(terminal, "_end_evicted_shell", side_effect=end_evicted),
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             with pytest.raises(_Stop):
                 await terminal.api_terminal_ws(req)
+        assert seen["at_first_await"] == {"busy": registry["busy"], "new": None}
         assert seen["evicted"] == "old" and seen["cap"] == 2
-        assert seen["registry"] == {"busy": registry["busy"], "new": None}
-        # A teardown that fails still releases this opener's reservation.
+        # A teardown that fails still releases this opener's reservation, and a
+        # shell whose teardown began is not put back.
         assert registry == {"busy": registry["busy"]}
+
+    @staticmethod
+    def _at_the_cap(cwd_probe):
+        """Two shells at a cap of two, one detached long enough to give way, and a
+        request for a new id whose ``?cwd=`` resolves through ``cwd_probe``."""
+        old = _make_session(session_id="old", alive=True, disconnect=-1e9)
+        busy = _make_session(session_id="busy")
+        registry = {"old": old, "busy": busy}
+        req = _make_request(registry=registry, session_id="new")
+        req.query = {"cwd": "/requested"}
+        patches = (
+            patch.object(terminal, "_sel"),
+            patch.object(
+                terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
+            ),
+            patch.object(terminal.web, "WebSocketResponse", return_value=AsyncMock()),
+            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()),
+            patch.object(terminal, "_run_path_probe", AsyncMock(side_effect=cwd_probe)),
+            patch.object(terminal, "_end_evicted_shell", AsyncMock()),
+        )
+        return old, busy, registry, req, patches
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_cwd_at_the_cap_puts_the_displaced_shell_back(self):
+        # The open is refused before it goes ahead, so the detached shell and its
+        # jobs survive, back under their own id, and no reap is announced.
+        old, busy, registry, req, patches = self._at_the_cap(OSError("no such directory"))
+        with patches[0], patches[1], patches[2], patches[3] as close, patches[4]:
+            with patches[5] as end_evicted:
+                await terminal.api_terminal_ws(req)
+        assert close.await_args.kwargs["error_code"] == "terminal_invalid_cwd"
+        end_evicted.assert_not_awaited()
+        assert registry == {"old": old, "busy": busy}
+        assert registry["old"] is old and old.last_ws_disconnect == -1e9
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_cwd_at_the_cap_returns_the_slot_before_the_refusal(self):
+        # The refusal's handshake and close await. The placeholder and the
+        # displaced shell share one slot, so by the first of those awaits the
+        # shell is back and the placeholder gone: an opener arriving then sees
+        # the cap full, not a free slot it could take while the shell returns.
+        old, busy, registry, req, patches = self._at_the_cap(OSError("no such directory"))
+        seen = []
+        ws = AsyncMock()
+
+        async def handshake(_request):
+            seen.append(("prepare", dict(registry)))
+
+        async def close(_ws, **_kwargs):
+            seen.append(("close", dict(registry)))
+
+        ws.prepare.side_effect = handshake
+        with (
+            patches[0],
+            patches[1],
+            patches[4],
+            patches[5] as end_evicted,
+            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal, "_close_terminal_ws_bounded", side_effect=close),
+        ):
+            await terminal.api_terminal_ws(req)
+        cap_full = {"old": old, "busy": busy}
+        assert seen == [("prepare", cap_full), ("close", cap_full)]
+        end_evicted.assert_not_awaited()
+        assert len(registry) == 2 and registry == cap_full
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_open_at_the_cap_puts_the_displaced_shell_back(self):
+        old, busy, registry, req, patches = self._at_the_cap(asyncio.CancelledError())
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with patches[5] as end_evicted, pytest.raises(asyncio.CancelledError):
+                await terminal.api_terminal_ws(req)
+        end_evicted.assert_not_awaited()
+        assert registry == {"old": old, "busy": busy}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_open_ends_the_displaced_shell_once_its_id_is_reopened(self):
+        # While the probe waited, a dial for the displaced shell's own id opened a
+        # fresh entry there: the shell cannot go back, so it ends instead of
+        # running on untracked.
+        fresh = _make_session(session_id="old")
+        holder = {}
+
+        async def reopened_then_refused(*_args, **_kwargs):
+            holder["registry"]["old"] = fresh
+            raise OSError("no such directory")
+
+        old, busy, registry, req, patches = self._at_the_cap(reopened_then_refused)
+        holder["registry"] = registry
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with patches[5] as end_evicted:
+                await terminal.api_terminal_ws(req)
+        end_evicted.assert_awaited_once()
+        assert end_evicted.await_args.args[1][:2] == ("old", old)
+        assert end_evicted.await_args.args[2] == 2
+        assert registry == {"old": fresh, "busy": busy}
+
+    @pytest.mark.asyncio
+    async def test_an_open_that_goes_ahead_ends_the_displaced_shell_before_spawning(self):
+        # The directory resolves, so the displaced shell ends ahead of the new
+        # shell's spawn. The spawn then fails only to stop before the read loop.
+        order = []
+
+        async def end_evicted(_app, evicted, cap):
+            order.append(("end", evicted[0], cap))
+
+        async def spawn(*_args, **_kwargs):
+            order.append(("spawn",))
+            raise RuntimeError("stop before read loop")
+
+        old, busy, registry, req, patches = self._at_the_cap(lambda *_a, **_k: "/resolved")
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patch.object(terminal, "_end_evicted_shell", side_effect=end_evicted),
+            patch.object(terminal.platform_compat, "IS_POSIX", True),
+            patch.object(terminal.platform_compat, "IS_WINDOWS", False),
+            patch.object(terminal._pty, "openpty", return_value=os.pipe()),
+            patch.object(terminal.fcntl, "ioctl", lambda *a: None),
+            patch.object(terminal.asyncio, "create_subprocess_exec", AsyncMock(side_effect=spawn)),
+        ):
+            await terminal.api_terminal_ws(req)
+        assert order == [("end", "old", 2), ("spawn",)]
+        assert registry == {"busy": busy}
 
     @pytest.mark.asyncio
     async def test_rejects_when_reservation_placeholder_held(self):
