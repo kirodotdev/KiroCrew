@@ -2670,9 +2670,10 @@ the count of CPUs the process may run on, which a CPU-set restriction
 (`--cpuset-cpus`, `taskset`) narrows below the host's core count, and never below
 one thread, so the event loop keeps a core
 wherever there is one to spare. A process that may use 12 or more CPUs defaults
-to eight threads instead (`_LARGE_HOST_MIN_CORES`, `_LARGE_HOST_EMBED_THREADS`):
-inference scales near-linearly from 4 to 8 threads, and 8 still leaves four cores
-free; background bulk work defaults to one. A normal-thread value equal to that four-thread default reads as
+to six threads instead (`_LARGE_HOST_MIN_CORES`, `_LARGE_HOST_EMBED_THREADS`):
+inference scales near-linearly from 4 to 8 threads, but with embeds running beside
+memory searches on a 32-CPU x86 host, 8 threads raised the p95 of the searches
+they overlapped by 61% against 4 while 6 left it unchanged, so the default is 6; background bulk work defaults to one. A normal-thread value equal to that four-thread default reads as
 the default policy rather than as operator intent, because a whole-document config
 save materializes it. Any other explicit normal or bulk thread setting is honored
 within the CPUs the process may run on, inside the existing configuration range

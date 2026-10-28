@@ -166,11 +166,14 @@ _COLD_LOAD_WAIT_SECS = 30.0
 _DEFAULT_EMBED_THREADS = 4
 # A host with at least _LARGE_HOST_MIN_CORES usable CPUs defaults to
 # _LARGE_HOST_EMBED_THREADS instead. Inference scales near-linearly from 4 to 8
-# threads (2,400 chars on a 16-core Graviton3: 8.4 s -> 4.2 s), and at 12 cores
-# 8 threads still leaves four free. _DEFAULT_EMBED_THREADS stays 4 because it is
+# threads (2,400 chars on a 16-core Graviton3: 8.4 s -> 4.2 s), but an embed
+# competes with the memory searches and agent turns running beside it: on a
+# 32-CPU x86 host with embeds back to back, 8 threads raised the p95 of the
+# memory searches they overlapped from 1.29 s to 2.07 s against 4, while 6 cut
+# embed time 15% and left that p95 at 1.30 s. At 12 cores 6 leaves half free. _DEFAULT_EMBED_THREADS stays 4 because it is
 # also the value every saved config.json carries (see _embed_threads).
 _LARGE_HOST_MIN_CORES = 12
-_LARGE_HOST_EMBED_THREADS = 8
+_LARGE_HOST_EMBED_THREADS = 6
 # One shared model and worker serve every store within this queue budget.
 _MAX_PENDING_EMBEDS = 8
 _INTERACTIVE_QUEUE_RESERVE = 2
@@ -327,7 +330,7 @@ def _embed_threads() -> int:
     llama.cpp the whole box. It is a ceiling on the default, not a replacement
     for it. A process that may use :data:`_LARGE_HOST_MIN_CORES` or more CPUs
     defaults to :data:`_LARGE_HOST_EMBED_THREADS` instead: a 16-core host
-    answers 8, an 8-core laptop 4.
+    answers 6, an 8-core laptop 4.
 
     A raw value EQUAL to the default is default policy, not operator intent.
     ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and

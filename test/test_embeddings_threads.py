@@ -88,14 +88,14 @@ class TestEmbedThreads:
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
 
-    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (11, 4), (16, 8)])
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (11, 4), (16, 6)])
     def test_unset_leaves_one_core_free(self, monkeypatch, cores, expected) -> None:
         """Unset means llama.cpp never gets the whole box.
 
         Handing every core to the batch pool starves the event loop the gateway
         answers on, which a 2-vCPU host feels hardest. The 16-core expectation
         is the one that matters twice: the cap is a CEILING on the default, so
-        a big host answers the large-host 8, not 15.
+        a big host answers the large-host 6, not 15.
         """
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         _pin_cores(monkeypatch, cores)
@@ -103,7 +103,7 @@ class TestEmbedThreads:
         if cores > 1:
             assert embeddings_mod._embed_threads() < cores
 
-    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 8)])
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (4, 3), (16, 6)])
     def test_the_declared_default_in_config_is_not_operator_intent(
         self, monkeypatch, cores, expected
     ) -> None:
@@ -140,24 +140,24 @@ class TestEmbedThreads:
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == configured
 
-    @pytest.mark.parametrize("cores,expected", [(8, 4), (11, 4), (12, 8), (16, 8), (64, 8)])
-    def test_a_large_host_defaults_to_eight_threads(self, monkeypatch, cores, expected) -> None:
-        """Twelve or more usable CPUs default to 8 threads; fewer keep 4.
+    @pytest.mark.parametrize("cores,expected", [(8, 4), (11, 4), (12, 6), (16, 6), (64, 6)])
+    def test_a_large_host_defaults_to_six_threads(self, monkeypatch, cores, expected) -> None:
+        """Twelve or more usable CPUs default to 6 threads; fewer keep 4.
 
-        Inference time on the shipped model scales near-linearly from 4 to 8
-        threads (2,400 chars: 8.4 s to 4.2 s on a 16-core Graviton3), and at 12
-        cores 8 threads still leaves four free. Laptops (8 cores or fewer) keep 4.
+        More threads embed faster, but past 6 an embed slowed the memory searches
+        running beside it (see ``_LARGE_HOST_EMBED_THREADS``). Laptops (8 cores
+        or fewer) keep 4.
         """
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         _pin_cores(monkeypatch, cores)
         assert embeddings_mod._embed_threads() == expected
 
-    def test_a_large_host_without_an_affinity_api_defaults_to_eight(self, monkeypatch) -> None:
-        """macOS and Windows read the host count, and a 16-core one gets 8."""
+    def test_a_large_host_without_an_affinity_api_defaults_to_six(self, monkeypatch) -> None:
+        """macOS and Windows read the host count, and a 16-core one gets 6."""
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         monkeypatch.delattr(os, "sched_getaffinity", raising=False)
         monkeypatch.setattr(os, "cpu_count", lambda: 16)
-        assert embeddings_mod._embed_threads() == 8
+        assert embeddings_mod._embed_threads() == 6
 
     def test_a_small_cpu_set_on_a_large_host_keeps_four(self, monkeypatch) -> None:
         """The large-host default reads the CPUs this process may use, not the box."""
@@ -174,14 +174,14 @@ class TestEmbedThreads:
             embeddings_mod, "_read_memory_config", lambda: {"embedding_bulk_threads": 0}
         )
         _pin_cores(monkeypatch, 16)
-        assert embeddings_mod.bulk_embed_threads() == 8
+        assert embeddings_mod.bulk_embed_threads() == 6
 
     def test_the_help_says_4_cannot_be_pinned_on_a_large_host(self, monkeypatch) -> None:
-        """A typed 4 on a 16-CPU host runs 8, and the operator help must say so.
+        """A typed 4 on a 16-CPU host runs 6, and the operator help must say so.
 
         4 is the declared default, so it is read as the default; on 12 or more
-        usable CPUs that default is the large-host 8. Help that promised "4 can
-        be pinned anywhere above 4 CPUs" would make an operator's cap of 4 run 8.
+        usable CPUs that default is the large-host 6. Help that promised "4 can
+        be pinned anywhere above 4 CPUs" would make an operator's cap of 4 run 6.
         """
         import dataclasses
 
