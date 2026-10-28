@@ -418,8 +418,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
-        "api_workflow_author api_workflow_definition_get api_workflow_definition_run "
-        "api_workflow_definition_update api_workflow_definitions "
+        "api_workflow_author api_workflow_definition_get api_workflow_definition_remove "
+        "api_workflow_definition_run api_workflow_definition_update api_workflow_definitions "
         "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
         "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
         "api_workflow_run_rerun api_workflow_runs"
@@ -462,7 +462,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 97
+    assert len(expected) == 98
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
