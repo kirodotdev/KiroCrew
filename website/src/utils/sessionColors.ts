@@ -292,3 +292,54 @@ export function resolveDefaultColor(setting: DefaultColorSetting, slotCount: num
   if (setting === 'auto') return slotCount % PALETTE_SIZE
   return setting
 }
+
+
+// ── Cross-session message card: sender avatar ──
+//
+// A small fixed palette for the coloured initials avatar on a session-message
+// card (incoming/outgoing), picked deterministically from the sender's id so
+// one session always wears one colour. Theme-safe mid-tone hues that read on
+// both the dark and light surfaces, with `getContrastingTextColor` choosing the
+// initials' black/white. Kept HERE, beside the session palette, because this is
+// the colour-literal home the theme-colors checker already excludes — a card or
+// component importing `senderAvatarColor` carries no raw hex of its own.
+
+/** The avatar hue ramp: six distinct, theme-safe mid-tones. */
+export const AVATAR_PALETTE: readonly string[] = [
+  '#4f86c6', // blue
+  '#4caf93', // teal
+  '#b5793a', // amber
+  '#a85cc4', // purple
+  '#c2566a', // rose
+  '#5b8f3e', // green
+]
+
+/** djb2 over the key → a stable index into {@link AVATAR_PALETTE}. Empty keys
+ *  fold to the first colour rather than throwing, so a missing sender id is
+ *  still drawn. */
+export function senderAvatarIndex(key: string): number {
+  if (!key) return 0
+  let h = 5381
+  for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) | 0
+  return Math.abs(h) % AVATAR_PALETTE.length
+}
+
+/** The avatar fill and its readable initials colour for a sender *key*. */
+export function senderAvatarColor(key: string): { bg: string; fg: string } {
+  const bg = AVATAR_PALETTE[senderAvatarIndex(key)]
+  return { bg, fg: getContrastingTextColor(bg) }
+}
+
+/** Up to two uppercase initials for a sender's display *title*: the first
+ *  letter of each of its first two words, or the first two letters when it is a
+ *  single word. Non-letter leading characters (an `@`, a `#`) are skipped so a
+ *  handle still yields letters; a title with none falls back to its first two
+ *  characters, and an empty title to `"?"`. */
+export function senderInitials(title: string): string {
+  const cleaned = (title || '').trim()
+  if (!cleaned) return '?'
+  const words = cleaned.split(/\s+/).map(w => w.replace(/^[^\p{L}\p{N}]+/u, '')).filter(Boolean)
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase()
+  const one = words[0] || cleaned
+  return one.slice(0, 2).toUpperCase()
+}

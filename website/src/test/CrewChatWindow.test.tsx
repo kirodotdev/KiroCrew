@@ -879,7 +879,10 @@ describe('CrewChatWindow', () => {
     // A guide offer row reads the local guide store, which a peer's window has none of.
     // An elicitation card answers through THIS hub's slot route; the peer's ask lives
     // on the peer, so the window leaves it to the SDK default, which draws it read-only.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation'])
+    // The session-message cards name the sender (and open it) from THIS hub's
+    // session roster, where a peer's session keys mean nothing: a peer's window
+    // draws those rows through the store-free default too.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_relay_incoming', 'session_send_tool'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
