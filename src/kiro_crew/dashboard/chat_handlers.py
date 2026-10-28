@@ -691,6 +691,9 @@ _SESSION_RELOAD_NOTICE = (
 #: mark a request delivered that never reached the session.
 #: ``CHAT_BANNER_META_KEY`` is set only from the body's validated ``banner``
 #: field, so ``meta.banner`` cannot skip its length cap and redaction.
+#: ``relay`` is the cross-session sender the delivery path stamps on a
+#: ``session_send`` row; the transcript draws it as a card naming that session, so a
+#: caller-supplied one would show a message as another session's.
 RESERVED_ROW_META_KEYS = frozenset(
     {
         "decisions_strip",
@@ -699,6 +702,7 @@ RESERVED_ROW_META_KEYS = frozenset(
         "slack_sender",
         "slack_request",
         CHAT_BANNER_META_KEY,
+        "relay",
     }
 )
 

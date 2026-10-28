@@ -32,7 +32,13 @@ class TestSteerForwarding:
             {"ok": True, "target": "chat-2", "started": False, "steered": True},
         )
         assert sent.path == "/api/session-control/send"
-        assert sent.body == {"target": "chat-2", "message": "stop that", "steer": True}
+        # ``receipt`` asks the gateway for this call's outgoing-card record.
+        assert sent.body == {
+            "target": "chat-2",
+            "message": "stop that",
+            "steer": True,
+            "receipt": True,
+        }
         assert sent.session_key == "dashboard:chat-1-100"
 
     def test_omitting_steer_forwards_false_rather_than_nothing(self) -> None:
