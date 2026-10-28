@@ -2025,20 +2025,28 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
      when one is known (`_wait_gateway_ready`). Only this fork path verifies
      readiness before printing success. A replacement that exits prints
      `Replacement gateway (pid N) died immediately (exit status S)` and exits
-     1 at once. One still running at the deadline prints `Replacement gateway
-     (pid N) did not become ready within Ns. It is still running but not
-     serving port P.` and exits 1. The readiness deadline is read from the
-     environment each time the fork path runs: it defaults to 60 s because a
-     loaded install can take 25-35 s to boot; `KIROCREW_RESTART_READY_TIMEOUT`
-     overrides it, fractional values round up to whole seconds, the result is
-     clamped to 15..180 s, and an unset, non-numeric, non-finite, zero or
-     negative value falls back to the default. A set value that falls back
-     or gets clamped prints one `KIROCREW_RESTART_READY_TIMEOUT='V' ...;
-     using Ns.` line to stderr. When the deadline exceeds
-     15 s, the wait prints one `Still starting (Ns elapsed), continuing to
-     wait...` line on the first check after 15 s. The service path (step 1)
-     does not use this deadline and is unchanged. On both paths, the
-     token-URL wait after a successful restart keeps its fixed 15 s budget.
+     1 at once. It says `Nothing is serving port P` only when a probe of
+     `/api/ready` gets no HTTP answer; when the port still answers HTTP (even
+     a 404 from an unrelated server), it prints `Replacement gateway (pid N)
+     exited at once (exit status S). Port P still answers HTTP.` without
+     claiming the listener is a gateway, names the live `gateway.lock` holder
+     when the lock names one, and calls it the desktop app when it runs from
+     the `backend-dist` bundle (`_died_replacement_message`). Exit code and
+     audit record are the same in both cases. One still running at the
+     deadline prints `Replacement gateway (pid N) did not become ready within
+     Ns. It is still running but not serving port P.` and exits 1. The
+     readiness deadline is read from the environment each time the fork path
+     runs: it defaults to 60 s because a loaded install can take 25-35 s to
+     boot; `KIROCREW_RESTART_READY_TIMEOUT` overrides it, fractional values
+     round up to whole seconds, the result is clamped to 15..180 s, and an
+     unset, non-numeric, non-finite, zero or negative value falls back to the
+     default. A set value that falls back or gets clamped prints one
+     `KIROCREW_RESTART_READY_TIMEOUT='V' ...; using Ns.` line to stderr. When
+     the deadline exceeds 15 s, the wait prints one `Still starting (Ns
+     elapsed), continuing to wait...` line on the first check after 15 s. The
+     service path (step 1) does not use this deadline and is unchanged. On
+     both paths, the token-URL wait after a successful restart keeps its
+     fixed 15 s budget.
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
 

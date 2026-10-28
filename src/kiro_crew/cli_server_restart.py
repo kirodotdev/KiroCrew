@@ -614,6 +614,68 @@ def _wait_gateway_ready(
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
+def _config_dir_owner() -> tuple[int, bool] | None:
+    """The live ``gateway.lock`` holder as ``(pid, from_desktop_bundle)``, or ``None``.
+
+    Best effort, for wording only: a free lock and any probe failure both return
+    ``None``. ``from_desktop_bundle`` reads the same ``backend-dist`` path
+    component :func:`platform_compat.is_bundled_interpreter` reads for this
+    process, in the holder's executable path where the host reports one (Linux,
+    macOS) and in its command line otherwise (the only source Windows has).
+    """
+    try:
+        holder = lock_holder(config_dir())
+    except (LockProbeError, OSError):
+        return None
+    if holder.pid is None or not holder.alive:
+        return None
+    where = platform_compat.process_executable_path(
+        holder.pid
+    ) or platform_compat.process_command_line(holder.pid)
+    segments = (where or "").replace("\\", "/").split("/")
+    return holder.pid, platform_compat.BUNDLED_BACKEND_DIST_DIRNAME in segments[:-1]
+
+
+def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> str:
+    """What ``restart`` prints when the replacement gateway exited at once.
+
+    It claims nothing is serving *port* only after a probe gets no HTTP answer.
+    An HTTP answer does not identify the listener as a gateway, so the message
+    names only the answering port. A replacement refused because another process
+    still owns the config dir can leave that owner's gateway answering; "nothing
+    is serving" would send the operator to debug a dashboard that is up.
+    The owner is named only when the lock names one.
+    """
+    logs = "   To see why it exited, run: kirocrew logs -f"
+    if _probe_gateway_ready(port) == 0:
+        return (
+            f"❌ Replacement gateway (pid {pid}) died immediately "
+            f"(exit status {exit_status}). Nothing is serving port {port}.\n"
+            f"   A replacement that exits at once is usually refused startup — "
+            f"another process still owning {config_dir()}, or a broken config.\n"
+            f"{logs}"
+        )
+    owner = ""
+    found = _config_dir_owner()
+    if found is not None:
+        holder_pid, from_desktop = found
+        if from_desktop:
+            owner = (
+                f"   The Kiro Crew desktop app (pid {holder_pid}) owns {config_dir()}, "
+                f"so the replacement was refused. Restart it from the app.\n"
+            )
+        else:
+            owner = (
+                f"   pid {holder_pid} still owns {config_dir()}, "
+                f"so the replacement was refused.\n"
+            )
+    return (
+        f"❌ Replacement gateway (pid {pid}) exited at once "
+        f"(exit status {exit_status}). Port {port} still answers HTTP.\n"
+        f"{owner}{logs}"
+    )
+
+
 def _print_token_url(port: int) -> None:
     """Wait for the gateway to come up, then print a fresh token URL."""
     deadline = time.monotonic() + _RESTART_TOKEN_WAIT
@@ -987,13 +1049,7 @@ def _restart(cli_port: int | None = None) -> None:
             resources=f"port={port} via=fork pid={pid} reason={reason}",
         )
         if verdict == _READY_DIED:
-            print(
-                f"❌ Replacement gateway (pid {pid}) died immediately "
-                f"(exit status {exit_status}). Nothing is serving port {port}.\n"
-                f"   A replacement that exits at once is usually refused startup — "
-                f"another process still owning {config_dir()}, or a broken config.\n"
-                f"   To see why it exited, run: kirocrew logs -f"
-            )
+            print(_died_replacement_message(pid, exit_status, port))
             tail = _gateway_log_lines_since(log_mark)
             if tail:
                 print("   Its last lines in gateway.log:")

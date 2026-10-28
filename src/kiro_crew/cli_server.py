@@ -805,6 +805,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RESTART_STOP_TIMEOUT,
         _RESTART_TOKEN_TTL,
         _RESTART_TOKEN_WAIT,
+        _config_dir_owner,
+        _died_replacement_message,
         _gateway_log_lines_since,
         _gateway_log_mark,
         _GatewayLogMark,
