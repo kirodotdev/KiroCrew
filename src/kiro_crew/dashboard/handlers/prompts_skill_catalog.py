@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.prompts_caller_gates import (
     _deny_non_owner_skill_operation,
     _named_slot,
     _sel,
+    logger,
 )
 from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
@@ -596,15 +597,18 @@ def _skill_name_too_long(name: str, tool_name: str, **metadata: str) -> web.Resp
     ``GET /api/skills/{name}`` already answers the same name with this coded 400
     (``prompts_skill_edits.api_skill_detail``).
     """
-    _sel().log_tool_invocation(
-        session_key="",
-        agent="api",
-        source="dashboard",
-        tool_name=tool_name,
-        tool_kind="skill",
-        outcome="rejected",
-        metadata={"name": name, **metadata, "reason": "name_too_long"},
-    )
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name=tool_name,
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"name": name, **metadata, "reason": "name_too_long"},
+        )
+    except Exception:  # noqa: BLE001 — the refusal is decided; never 500 on an audit write
+        logger.debug("Could not audit skill name_too_long refusal", exc_info=True)
     return web.json_response(
         {"error": "skill name is too long", "code": "name_too_long"}, status=400
     )

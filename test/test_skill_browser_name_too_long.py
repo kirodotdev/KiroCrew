@@ -19,7 +19,8 @@ from skill_browser_helpers import (  # noqa: F401 -- the fixture is requested by
     fake_home_fixture,
 )
 
-import kiro_crew.dashboard.handlers.prompts_skill_catalog as catalog_mod
+import kiro_crew.dashboard.handlers.prompts as prompts
+from kiro_crew.skills import skills_dir
 
 ROUTES = (
     ("/-/tree", "api_skill_tree"),
@@ -41,7 +42,7 @@ def _raise(exc: OSError):
 @pytest.fixture
 def sel(monkeypatch) -> MagicMock:
     m = MagicMock()
-    monkeypatch.setattr(catalog_mod, "_sel", lambda: m)
+    monkeypatch.setattr(prompts, "_sel", lambda: m)
     return m
 
 
@@ -59,7 +60,7 @@ def sel(monkeypatch) -> MagicMock:
     ],
 )
 async def test_a_too_long_name_is_a_coded_400(fake_home, monkeypatch, sel, suffix, tool_name, exc):
-    monkeypatch.setattr(catalog_mod, "_resolve_skill_root", _raise(exc))
+    monkeypatch.setattr(prompts, "_resolve_skill_root", _raise(exc))
     async with TestClient(TestServer(_make_app(_state()))) as client:
         resp = await client.get(f"/api/skills/{'a' * 300}{suffix}")
         assert resp.status == 400
@@ -72,9 +73,25 @@ async def test_a_too_long_name_is_a_coded_400(fake_home, monkeypatch, sel, suffi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("suffix, _tool_name", ROUTES)
+async def test_a_failed_audit_write_still_answers_400(fake_home, monkeypatch, suffix, _tool_name):
+    def _broken_sel():
+        raise RuntimeError("SEL unavailable")
+
+    monkeypatch.setattr(prompts, "_sel", _broken_sel)
+    monkeypatch.setattr(
+        prompts, "_resolve_skill_root", _raise(OSError(errno.ENAMETOOLONG, "File name too long"))
+    )
+    async with TestClient(TestServer(_make_app(_state()))) as client:
+        resp = await client.get(f"/api/skills/{'a' * 300}{suffix}")
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "name_too_long"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix, _tool_name", ROUTES)
 async def test_any_other_oserror_is_left_alone(fake_home, monkeypatch, sel, suffix, _tool_name):
     monkeypatch.setattr(
-        catalog_mod, "_resolve_skill_root", _raise(OSError(errno.EACCES, "Permission denied"))
+        prompts, "_resolve_skill_root", _raise(OSError(errno.EACCES, "Permission denied"))
     )
     async with TestClient(TestServer(_make_app(_state()))) as client:
         resp = await client.get(f"/api/skills/demo{suffix}")
@@ -82,9 +99,9 @@ async def test_any_other_oserror_is_left_alone(fake_home, monkeypatch, sel, suff
     sel.log_tool_invocation.assert_not_called()
 
 
-def _is_dir_raises_on_a_long_name(home) -> bool:
+def _is_dir_raises_on_a_long_name(root) -> bool:
     try:
-        (home / ("a" * 300)).is_dir()
+        (root / ("a" * 300)).is_dir()
     except OSError:
         return True
     return False
@@ -96,8 +113,15 @@ def _is_dir_raises_on_a_long_name(home) -> bool:
 async def test_the_real_resolver_refuses_a_too_long_name(
     fake_home, sel, suffix, _tool_name, prefix
 ):
-    """No fake: the resolver's own ``is_dir()`` raises on a 300-byte component."""
-    if not _is_dir_raises_on_a_long_name(fake_home):
+    """No fake: the resolver's own ``is_dir()`` raises on a 300-byte component.
+
+    The skills roots exist, as on any install: a POSIX lookup under a MISSING
+    root stops at ``ENOENT`` before it reaches the long component.
+    """
+    roots = (skills_dir(), fake_home / ".kiro" / "skills")
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+    if not all(_is_dir_raises_on_a_long_name(root) for root in roots):
         # Windows reports a missing path, and a pathlib that swallows every
         # OSError in is_dir() never reaches the handler with one.
         pytest.skip("this host's Path.is_dir() does not raise on a too-long name")
