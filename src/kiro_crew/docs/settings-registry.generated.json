@@ -1129,6 +1129,12 @@
       "description": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message."
     },
     {
+      "id": "developer.use-kiro-workflows-when-kiro-agent-server-is-configured",
+      "label": "Use Kiro Workflows when Kiro Agent Server is configured",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.use-kiro-workflows-when-kiro-agent-server-is-configured"
+    },
+    {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",

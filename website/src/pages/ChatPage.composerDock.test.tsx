@@ -34,6 +34,7 @@ vi.mock('../chat-core/composer/Composer', () => ({ Composer: forwardRef(({ child
 vi.mock('./chat/SubagentProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/TaskProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/WorkflowProgressBar', () => ({ default: () => null }))
+vi.mock('../apps/workflows/kas/KasChatDock', () => ({ KasChatDock: () => null }))
 vi.mock('./chat/KnowledgePicker', () => ({ KnowledgePicker: (p: Captured) => { seen.knowledge = p; return null } }))
 vi.mock('../app-sdk/ChatScrollChrome', async (orig) => ({ ...(await orig<typeof import('../app-sdk/ChatScrollChrome')>()), JumpToBottomButton: () => null }))
 // The dock reads where the chat runs (a react-query read); here it runs on this machine.

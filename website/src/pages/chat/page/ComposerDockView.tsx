@@ -26,6 +26,7 @@ import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
 import { Input } from '../../../components/ui'
 import { KnowledgeBubbleChip } from '../ChatPageMessageContent'
+import { KasChatDock } from '../../../apps/workflows/kas/KasChatDock'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import type { useFileMentionActions } from './composerFileMentions'
 import type { usePageFlags } from './pageEnvironment'
@@ -420,6 +421,11 @@ export default function ComposerDockView({
                   onSkip={() => knowledgeFetch.clearResults()}
                 />
               ) : null}
+              {/* Several live KAS workflows in this chat gather here, collapsed
+                  (KasChatDock draws nothing for fewer than two, or off KAS). */}
+              <div className="px-4 pb-2 mx-auto w-full empty:hidden" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                <KasChatDock slotKey={activeSlot} />
+              </div>
               {(pendingQuestion || restoredQuestionNotice) && (
                 <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <PendingQuestionCard

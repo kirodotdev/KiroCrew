@@ -46,6 +46,9 @@ import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
+import { KasInlineRunCard, extractKasWorkflowId, isKasRunWorkflowTool } from '../../apps/workflows/kas/KasInlineRunCard'
+import { KasTurnMarkerRow, parseKasTurnMarker, KasEventMarkerRow, parseKasEventMarker } from '../../apps/workflows/kas/KasTurnMarker'
+import { KasWorkflowToolLine, kasWorkflowToolKind } from '../../apps/workflows/kas/KasWorkflowToolLine'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import SubagentCompletionCard from './SubagentCompletionCard'
@@ -334,9 +337,9 @@ function lastErrorIndex(messages: readonly ChatMessage[]): number {
 export function createTranscriptRenderers(
   o: TranscriptRendererOptions,
 ): readonly MessageRenderer[] {
-  const toolLine = (m: ChatMessage, ctx: MessageRenderContext) => {
+  const toolLineContent = (m: ChatMessage, ctx: MessageRenderContext) => {
     const dKey = toolDisclosureKey(m, ctx.key)
-    return ctx.row(
+    return (
       <ToolCallLine
         message={m}
         running={o.toolRunning ? o.toolRunning(m, ctx) : ctx.running}
@@ -348,10 +351,10 @@ export function createTranscriptRenderers(
         appInPanel={o.appInPanel}
         onOpenApp={o.onOpenApp}
         transcriptHot={o.transcriptHot}
-      />,
-      true,
+      />
     )
   }
+  const toolLine = (m: ChatMessage, ctx: MessageRenderContext) => ctx.row(toolLineContent(m, ctx), true)
   // Narrowed once here so the crewmate entry below can close over a definite
   // identity instead of re-asserting `o.crewmate` inside its render.
   const crewmate = o.crewmate
@@ -406,6 +409,17 @@ export function createTranscriptRenderers(
     //    grouping logic uses, so a launch card and TurnBlock can never
     //    disagree about whether a row is a launch. ──
     {
+      // The gateway's KAS workflow turn markers (launch / reconnect / observe):
+      // machinery rows, drawn as one quiet notice instead of a user bubble.
+      id: 'kas_turn_marker',
+      roles: ['user'],
+      match: m => parseKasTurnMarker(m) !== null,
+      render: (m, ctx) => {
+        const marker = parseKasTurnMarker(m)
+        return marker ? ctx.row(<KasTurnMarkerRow key={ctx.key} marker={marker} />, true) : null
+      },
+    },
+    {
       // A cross-session message this session RECEIVED (`session_send` /
       // `session_broadcast`): the gateway stamped `meta.relay` on the delivered
       // user row, so it draws as the INCOMING session-message card from that
@@ -433,6 +447,32 @@ export function createTranscriptRenderers(
       },
     },
     {
+      // The gateway's KAS run-end / step-note rows (role 'notice', carrying
+      // meta.kas_event): drawn as one localized notice line (gap 10).
+      id: 'kas_event_marker',
+      roles: ['*'],
+      match: m => parseKasEventMarker(m) !== null,
+      render: (m, ctx) => {
+        const marker = parseKasEventMarker(m)
+        return marker ? ctx.row(<KasEventMarkerRow key={ctx.key} marker={marker} />, true) : null
+      },
+    },
+    {
+      // KAS's own run_workflow (agent.kas_workflows): the run's live card,
+      // with its steps, controls and approvals, where the launch happened.
+      id: 'kas_run_workflow_tool',
+      roles: ['tool'],
+      match: m => isKasRunWorkflowTool(m),
+      render: (m, ctx) => {
+        const workflowId = extractKasWorkflowId(m)
+        if (!workflowId) return toolLine(m, ctx)
+        return ctx.row(
+          <KasInlineRunCard key={ctx.key} workflowId={workflowId} fallback={toolLineContent(m, ctx)} />,
+          true,
+        )
+      },
+    },
+    {
       id: 'workflow_run_tool',
       roles: ['tool'],
       match: m => !!m.content?.startsWith('🔧') && isWorkflowRunTool(m),
@@ -452,6 +492,19 @@ export function createTranscriptRenderers(
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
         return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} />, true)
+      },
+    },
+    {
+      // KAS's other workflow tools (validate / inspect / update / save / send):
+      // a compact line with a verdict badge and an Open-run link, instead of the
+      // generic tool pill (gap 26). run_workflow is handled above and wins.
+      id: 'kas_workflow_tool_line',
+      roles: ['tool'],
+      match: m => !!m.content?.startsWith('🔧') && kasWorkflowToolKind(m) !== null,
+      render: (m, ctx) => {
+        const kind = kasWorkflowToolKind(m)
+        if (!kind) return toolLine(m, ctx)
+        return ctx.row(<KasWorkflowToolLine key={ctx.key} message={m} kind={kind} fallback={toolLineContent(m, ctx)} />, true)
       },
     },
     {

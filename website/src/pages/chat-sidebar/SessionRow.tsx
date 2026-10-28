@@ -27,6 +27,7 @@ import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { DndDraggable, DndDroppable } from '../../components/dnd'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { useKasSidebarActivity } from '../../apps/workflows/kas/useKasWorkflows'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatTag, SessionLink } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
@@ -374,10 +375,20 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
-  const wf = useMemo(
+  const wfCrew = useMemo(
     () => (wfCount === undefined ? undefined : { count: wfCount, name: wfRawName ?? '', phase: wfRawPhase ?? '' }),
     [wfCount, wfRawName, wfRawPhase],
   )
+  // The chat's KAS-native runs (agent.kas_workflows), from the shared state
+  // poll narrowed to this row; inert unless the KAS workflows preview is on and
+  // the backend is KAS. A Crew run outranks it: both cannot normally coexist.
+  const kasWf = useKasSidebarActivity(localSlotKey)
+  const wf = wfCrew ?? (kasWf ? { count: kasWf.count, name: kasWf.name, phase: kasWf.phase } : undefined)
+  // Gap 8: a Kiro Agent workflow in this chat that is parked on a person (a step
+  // approval / question, or a non-user park). A Crew dynamic-workflow run never
+  // sets this. Drives the dedicated "needs you" status line below, ranked with
+  // the owed-decision cluster rather than the "working" signals.
+  const wfNeedsYou = !wfCrew && !!kasWf?.attention
     // The conductor lane's count cluster, built HERE so it can sit inside the card's
     // own meta group. The lane hands over numbers and renders none of this itself,
     // which is what keeps one card implementation across every lane.
@@ -705,6 +716,29 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
           </div>
         ),
+      },
+      {
+        // Gap 8: a Kiro Agent workflow in this chat is parked on a person (a
+        // step approval / question, or a non-user park). Ranked ABOVE
+        // needs_input so the workflow-specific label wins when a workflow is
+        // the reason; a bare ask_question hold (wfNeedsYou false) falls through
+        // to needs_input below. Above every "working" signal, because the chat
+        // is holding for the user. Warn ink, static glyph: nothing is running.
+        // `slot_projection` also folds this hold into `s.needs_input`
+        // server-side; this fires from the client poll too.
+        key: 'workflow_needs_you',
+        when: wfNeedsYou,
+        build: () => {
+          const label = (wfActive?.count ?? 0) > 1
+            ? i18nT('pages.chatSidebar.workflows_need_you', { count: wfActive?.count ?? 0 })
+            : i18nT('pages.chatSidebar.workflow_needs_you', { name: wfName })
+          return (
+            <div className={ROW_STATUS_LINE_CLS} title={label} data-testid="row-workflow-needs-you">
+              <Workflow size={ROW_ICON_PX} className="shrink-0 text-warn" aria-hidden />
+              <span className="truncate font-medium text-warn">{label}</span>
+            </div>
+          )
+        },
       },
       {
         // An unanswered question card. Above every "working" signal for the

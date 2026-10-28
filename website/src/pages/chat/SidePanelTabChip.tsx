@@ -21,7 +21,7 @@ import { TAB_CHIP_ID_ATTR, TerminalTabTitle } from './SidePanelTabNav'
  *
  *  A component rather than inline JSX inside the map: each chip owns its own
  *  long-press drag state, and a hook cannot be called from a loop. */
-function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onClose, onCloseDirect, closeOthersDisabled, closeRightDisabled, onCloseOthers, onCloseRight, onCloseAll }: {
+function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onClose, onCloseDirect, closeOthersDisabled, closeRightDisabled, onCloseOthers, onCloseRight, onCloseAll, badge }: {
   tab: PanelTab
   active: boolean
   separator: boolean
@@ -39,6 +39,9 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
   onCloseOthers: () => void
   onCloseRight: () => void
   onCloseAll: () => void
+  /** Count / status pill rendered after this chip's label (gap 8: the
+   *  Workflows tab's needs-you / live-run badge). */
+  badge?: ReactNode
 }) {
   // Same hold as the terminal strip: move to reorder, lift in place for the menu.
   const { itemProps, dragging } = useLongPressReorder({ onHoldRelease: openTabCloseMenu })
@@ -64,7 +67,8 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
         // Centered in the group's gap-2.
         <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
       )}
-      <TabChip chipId={tab.id} tab={tab} active={active} onSelect={onSelect} onClose={onCloseDirect} />
+      <TabChip chipId={tab.id} tab={tab} active={active} onSelect={onSelect} onClose={onCloseDirect} badge={badge} />
+
     </Reorder.Item>
     </TabCloseMenu>
   )

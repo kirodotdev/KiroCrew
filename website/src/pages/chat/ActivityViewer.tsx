@@ -44,6 +44,8 @@ import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
+import { KasChatRuns } from '../../apps/workflows/kas/KasChatRuns'
+import { useKasSidebarActivity, useKasWorkflowsEnabled } from '../../apps/workflows/kas/useKasWorkflows'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 
 const STATUS = {
@@ -1174,7 +1176,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     refetchInterval: 2500,
   })
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
-  const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length
+  // The tab's badge counts this chat's live KAS runs too (like the IDE's
+  // "Workflows 1"); inert unless the KAS workflows preview is on.
+  const kasLive = useKasSidebarActivity(slot ?? '')
+  const { enabled: kasEnabled } = useKasWorkflowsEnabled()
+  const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length + (kasLive?.count ?? 0)
 
   // Subagent events are subscribed eagerly at WS connect time — no need to toggle here.
 
@@ -1380,17 +1386,27 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           {wfRunsError && (
             <ErrorNotice message={i18nT('pages.chat.activityViewer.workflow_runs_load_failed')} askAgent />
           )}
-          {wfRunsForSlot.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
-              <span className="text-[24px]"><Workflow className="lucide-inline" /></span>
-              <span className="text-[13px]">{i18nT('pages.chat.activityViewer.no_workflow_runs')}</span>
-              <span className="text-[11px] text-center px-4">
-                {i18nT('pages.chat.activityViewer.ask_me_to_use_a_dynamic_workflow_to_runs_from_th')}
-              </span>
-            </div>
-          ) : (
-            wfRunsForSlot.map(r => <WorkflowSidebarRow key={r.run_id} row={r} />)
-          )}
+          {/* KAS runs this chat parents, above the Crew runs (only while the KAS
+              workflows preview is on, the backend is KAS, and runs exist). */}
+          <KasChatRuns slotKey={slot}>
+            {hasKasRuns =>
+              wfRunsForSlot.length === 0 ? (
+                hasKasRuns ? null : (
+                  <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
+                    <span className="text-[24px]"><Workflow className="lucide-inline" /></span>
+                    <span className="text-[13px]">{i18nT('pages.chat.activityViewer.no_workflow_runs')}</span>
+                    <span className="text-[11px] text-center px-4">
+                      {kasEnabled
+                        ? i18nT('apps.workflows.kas.empty_hint')
+                        : i18nT('pages.chat.activityViewer.ask_me_to_use_a_dynamic_workflow_to_runs_from_th')}
+                    </span>
+                  </div>
+                )
+              ) : (
+                wfRunsForSlot.map(r => <WorkflowSidebarRow key={r.run_id} row={r} />)
+              )
+            }
+          </KasChatRuns>
         </div>
       )}
 
