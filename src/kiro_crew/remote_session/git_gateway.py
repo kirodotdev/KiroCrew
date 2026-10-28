@@ -505,24 +505,20 @@ def _helper_argv(value: str, exec_path: str, git: str = "") -> Optional[list[str
 
 
 async def _kill_child(process: asyncio.subprocess.Process) -> None:
-    """Stop a credential CLI that overran or whose lookup was cancelled.
+    """Stop a credential CLI that overran or whose lookup was cancelled, with its
+    whole process tree, on every OS, then reap it under a bound.
 
-    On Windows the whole tree goes (``taskkill /T``): ``az`` is ``az.cmd``, whose
-    Python child would otherwise outlive ``cmd.exe`` holding the stdout pipe.
-    Elsewhere the child is killed as before.
+    A descendant can hold the stdout pipe after its parent dies: ``az`` is
+    ``az.cmd`` on Windows, whose Python child outlives ``cmd.exe``, and
+    ``git credential fill`` runs its helpers as children on POSIX. Killing only
+    the parent would leave the reap waiting on that pipe past the lookup's own
+    deadline. ``kill_and_reap`` signals the tree (each CLI runs in its own
+    session), drains the pipes, bounds the wait and is shielded from a second
+    cancel.
     """
-    if _kills_process_tree():
-        from kiro_crew.platform_compat import kill_process_tree_async
+    from kiro_crew.platform_compat import kill_and_reap
 
-        with contextlib.suppress(OSError, ValueError):
-            await kill_process_tree_async(process.pid)
-    with contextlib.suppress(ProcessLookupError):
-        process.kill()
-
-
-def _kills_process_tree() -> bool:
-    """Whether a stopped CLI's whole process tree is killed (Windows)."""
-    return os.name == "nt"
+    await kill_and_reap(process)
 
 
 async def _run_quiet(
@@ -544,13 +540,12 @@ async def _run_quiet(
         out, _ = await asyncio.wait_for(process.communicate(stdin), _GH_TIMEOUT_SECS)
     except asyncio.TimeoutError:
         await _kill_child(process)
-        await process.wait()
         raise _NoCredential(f"{os.path.basename(argv[0])} timed out") from None
     except asyncio.CancelledError:
         # A torn-down session cancels a lookup mid-run: the child must not
-        # outlive it. Shielded so a second cancel cannot skip the reap.
-        await asyncio.shield(_kill_child(process))
-        await asyncio.shield(process.wait())
+        # outlive it. ``_kill_child`` is shielded, so a second cancel cannot
+        # skip the kill or the reap.
+        await _kill_child(process)
         raise
     if process.returncode:
         raise _NoCredential(f"{os.path.basename(argv[0])} has no login")
@@ -890,7 +885,6 @@ async def login_status(host: str) -> str:
             code = await asyncio.wait_for(process.wait(), _GH_TIMEOUT_SECS)
         except asyncio.TimeoutError:
             await _kill_child(process)
-            await process.wait()
             continue
         if code == 0:
             return "signed_in"
