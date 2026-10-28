@@ -5,8 +5,11 @@ restriction is the security property, not a simplification: a ``.desktop`` file 
 an arbitrary command line, and ``~/.local/share/applications`` is writable by the
 agent's own user. Accepting it would let the agent write ``Exec=<anything>`` and then
 "launch an application" to run it. So an entry is accepted only when the file and its
-directory are root-owned and not group/world writable, and the resolved executable is
-root-owned too. That mirrors the Windows driver's refusal of user-writable install
+directory are root-owned and not group/world writable, and the executable is vetted
+the same way along its WHOLE canonical path. A bare ``Exec`` name is resolved from the
+fixed system bin directories, never from ``PATH`` (which can lead with an
+agent-writable ``~/.local/bin``), and the launch executes the canonical path it vetted,
+so no symlink the agent controls can be retargeted between the check and the exec. That mirrors the Windows driver's refusal of user-writable install
 roots. The model passes a NAME; the argv comes from the vetted entry, with every
 freedesktop field code (``%f``, ``%U``, ...) stripped so no caller text reaches it.
 """
@@ -17,7 +20,6 @@ import configparser
 import os
 import re
 import shlex
-import shutil
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -29,6 +31,7 @@ from kiro_crew.computer_use.types import (
     LaunchIdentity,
     NoSuchLaunchTarget,
 )
+from kiro_crew.platform_compat import trusted_system_bin_quiet
 
 #: System application directories. User directories are excluded on purpose (see the
 #: module docstring).
@@ -48,6 +51,9 @@ class InstalledApp:
     name: str
     argv: tuple[str, ...]
     wm_class: str
+    #: The canonical, vetted executable. ``argv[0]`` keeps the entry's own spelling
+    #: (multi-call binaries dispatch on it); this is what actually gets executed.
+    executable: str = ""
 
 
 def _root_owned(path: str) -> bool:
@@ -61,9 +67,31 @@ def _root_owned(path: str) -> bool:
         st = os.stat(path)
     except OSError:
         return False
-    if st.st_uid == os.getuid() or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if st.st_uid == linux_x11._uid() or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         return False
     return not os.access(path, os.W_OK)
+
+
+def _vetted_executable(name: str) -> "str | None":
+    """The canonical path to run for an ``Exec`` argv[0], or ``None`` when untrusted.
+
+    Every component of the canonical path must be unwritable by the agent's user, so
+    neither the file nor any directory above it can be swapped after the check.
+    """
+    found = name if os.path.isabs(name) else trusted_system_bin_quiet(name)
+    if not found:
+        return None
+    real = os.path.realpath(found)
+    if not os.path.isfile(real) or not os.access(real, os.X_OK):
+        return None
+    path = real
+    while True:
+        if not _root_owned(path):
+            return None
+        parent = os.path.dirname(path)
+        if parent == path:
+            return real
+        path = parent
 
 
 def _parse(path: str) -> "InstalledApp | None":
@@ -94,15 +122,15 @@ def _parse(path: str) -> "InstalledApp | None":
         return None
     if not argv:
         return None
-    exe = argv[0] if os.path.isabs(argv[0]) else shutil.which(argv[0])
-    if not exe or not _root_owned(os.path.realpath(exe)):
+    exe = _vetted_executable(argv[0])
+    if not exe:
         return None
-    argv[0] = exe
     return InstalledApp(
         desktop_id=os.path.basename(path)[: -len(".desktop")],
         name=name,
         argv=tuple(argv),
         wm_class=entry.get("StartupWMClass", "").strip(),
+        executable=exe,
     )
 
 
@@ -178,6 +206,7 @@ def spawn_detached(desktop_id: str) -> None:
         raise OSError(2, f"{desktop_id} is no longer installed")
     subprocess.Popen(  # noqa: S603 - argv comes from a root-owned .desktop entry
         list(app.argv),
+        executable=app.executable,
         cwd=os.path.expanduser("~"),
         env=linux_x11.session_env(),
         stdin=subprocess.DEVNULL,

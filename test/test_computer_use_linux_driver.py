@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 from unittest import mock
+
+import pytest
 
 from kiro_crew.computer_use import linux_atspi, linux_driver, linux_input, linux_launch, linux_x11
 from kiro_crew.computer_use.linux_atspi import (
@@ -29,6 +32,10 @@ from kiro_crew.computer_use.types import (
     DragRequest,
     SnapshotRequest,
 )
+
+# The driver reads uids, /proc and root-owned paths; off Linux those facts differ,
+# and Windows does not collect this file at all (windows-collect-ignore.txt).
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux driver")
 
 _real_wayland_session = linux_driver.wayland_session
 _x11_session = mock.patch.object(linux_driver, "wayland_session", return_value=False)
@@ -57,8 +64,15 @@ class RoleTest(unittest.TestCase):
         self.assertEqual(linux_driver._compact_role("description list"), "descriptionlist")
 
     def test_secure_roles(self) -> None:
-        self.assertTrue(linux_driver._is_secure("password text"))
-        self.assertFalse(linux_driver._is_secure("text"))
+        def node(role: str, role_id: int = 61, unknown: bool = False) -> Node:
+            return Node(ref=Ref(":1.1", "/a"), depth=1, role=role, role_id=role_id,
+                        role_unknown=unknown)  # fmt: skip
+
+        self.assertTrue(linux_driver._is_secure(node("password text")))
+        self.assertFalse(linux_driver._is_secure(node("text")))
+        # Fail closed: the role NUMBER alone, or an unreadable role, counts as secure.
+        self.assertTrue(linux_driver._is_secure(node("unknown", linux_atspi.ROLE_PASSWORD_TEXT)))
+        self.assertTrue(linux_driver._is_secure(node("unknown", unknown=True)))
 
 
 class KeyChordTest(unittest.TestCase):
@@ -139,7 +153,9 @@ class _FakeClient:
                 node.failed = True
                 continue
             node.role = spec["role"]
-            node.role_id = hash(spec["role"]) & 0xFF
+            node.role_id = linux_atspi.ROLE_PASSWORD_TEXT if "password" in node.role else 61
+            node.role_unknown = spec.get("role_unknown", False)
+            node.children_failed = spec.get("children_failed", False)
             node.name = spec.get("name", "")
             node.states = frozenset(spec.get("states", {STATE_SHOWING}))
             node.interfaces = frozenset(spec.get("ifaces", {COMPONENT}))
@@ -211,6 +227,8 @@ class WalkTest(unittest.TestCase):
     def test_numbering_elision_and_secure_redaction(self) -> None:
         snap = linux_driver.LinuxBackend()._walk(self.app, SnapshotRequest(want_image=False))
         roles = [(e.index, e.role, e.title, e.depth) for e in snap.elements]
+        # The window keeps its own title, not the last element's name ("User").
+        self.assertEqual(snap.window_title, "Demo")
         # The unnamed panel is elided (depth passes through), the hidden button skipped.
         self.assertEqual(
             roles,
@@ -310,7 +328,9 @@ class TextReadTest(unittest.TestCase):
         def fake_batch(msgs, **_kw):
             out = []
             for msg in msgs:
-                member, body = msg.header.fields[linux_atspi.HeaderFields.member], msg.body
+                from jeepney import HeaderFields
+
+                member, body = msg.header.fields[HeaderFields.member], msg.body
                 calls.append((member, body))
                 if member == "Get":
                     out.append((("i", 2),))
@@ -447,6 +467,187 @@ class WaylandTest(unittest.TestCase):
     def test_status_needs_no_x_display(self) -> None:
         status = self.backend.status()
         self.assertTrue(status.supported, status.reason)
+
+
+class FailClosedWalkTest(unittest.TestCase):
+    """A read the driver could not complete never yields a capturable window."""
+
+    def _walk(self, tree: "dict[str, dict]"):
+        info = linux_x11.WindowInfo(
+            xid=7, pid=42, title="Demo", wm_instance="demo", wm_class="Demo", window_type="",
+            x=100, y=100, width=400, height=300, viewable=True, hidden=False,
+        )  # fmt: skip
+        with (
+            mock.patch.object(linux_driver.linux_atspi, "client", return_value=_FakeClient(tree)),
+            mock.patch.object(linux_driver.linux_x11, "window_info", return_value=info),
+        ):
+            app = AppRef(name="Demo", pid=42, window_id=7, window_title="Demo")
+            return linux_driver.LinuxBackend()._walk(app, SnapshotRequest(want_image=False))
+
+    def _tree(self, **user: object) -> "dict[str, dict]":
+        tree = {k: dict(v) for k, v in TREE.items()}
+        tree["/panel"]["kids"] = ["/ok", "/user"]
+        tree["/user"].update(user)
+        return tree
+
+    def test_unknown_role_is_treated_as_secure(self) -> None:
+        snap = self._walk(self._tree(role="unknown", role_unknown=True))
+        rec = next(e for e in snap.elements if e.secure)
+        self.assertEqual((rec.title, rec.value), ("", ""))
+        self.assertTrue(snap.has_secure)
+
+    def test_failed_child_list_truncates_the_walk(self) -> None:
+        tree = self._tree()
+        tree["/panel"]["children_failed"] = True
+        self.assertTrue(self._walk(tree).truncated)
+
+    def test_unreadable_node_truncates_the_walk(self) -> None:
+        tree = self._tree()
+        tree["/panel"]["kids"] = ["/ok", "/gone"]  # /gone has no spec: read fails
+        self.assertTrue(self._walk(tree).truncated)
+
+    def test_role_name_failure_is_not_cached(self) -> None:
+        client = linux_atspi.AtspiClient()
+        node = Node(ref=Ref(":1.1", "/a"), depth=1, role_id=61)
+        with mock.patch.object(client, "call", side_effect=linux_atspi.CallError("NoReply")):
+            self.assertEqual(client._role_name(node), "unknown")
+        self.assertTrue(node.role_unknown)
+        self.assertNotIn(61, client._role_names)
+        fresh = Node(ref=Ref(":1.1", "/b"), depth=1, role_id=61)
+        with mock.patch.object(client, "call", return_value=("push button",)):
+            self.assertEqual(client._role_name(fresh), "push button")
+        self.assertFalse(fresh.role_unknown)
+
+
+class KeystrokeFallbackTest(unittest.TestCase):
+    """The XTest fallback checks focus once, so the text must not be able to move it."""
+
+    def setUp(self) -> None:
+        info = linux_x11.WindowInfo(
+            xid=7, pid=42, title="Demo", wm_instance="demo", wm_class="Demo", window_type="",
+            x=100, y=100, width=400, height=300, viewable=True, hidden=False,
+        )  # fmt: skip
+        self.patches = [
+            mock.patch.object(linux_driver.linux_atspi, "client", return_value=_FakeClient(TREE)),
+            mock.patch.object(linux_driver.linux_x11, "window_info", return_value=info),
+            mock.patch.object(linux_driver.linux_input, "type_text"),
+            mock.patch.object(linux_driver.linux_input, "caps_lock_conflict", return_value=False),
+        ]
+        for patch in self.patches:
+            patch.start()
+        self.backend = linux_driver.LinuxBackend()
+        self.app = AppRef(name="Demo", pid=42, window_id=7, window_title="Demo")
+        snap = self.backend._walk(self.app, SnapshotRequest(want_image=False))
+        self.ok = next(e for e in snap.elements if e.title == "OK")
+
+    def tearDown(self) -> None:
+        for patch in self.patches:
+            patch.stop()
+
+    def test_embedded_tab_refused_before_any_keystroke(self) -> None:
+        for text in ("a\tx", "a\nx", "a\x1bx"):
+            result = self.backend.type_text(self.app, self.ok, text)
+            self.assertFalse(result.ok, text)
+            self.assertIn("computer_press_key", result.text)
+        linux_driver.linux_input.type_text.assert_not_called()
+
+    def test_caps_lock_refused_before_any_keystroke(self) -> None:
+        with mock.patch.object(linux_driver.linux_input, "caps_lock_conflict", return_value=True):
+            result = self.backend.type_text(self.app, self.ok, "abc")
+        self.assertFalse(result.ok)
+        self.assertIn("Caps Lock", result.text)
+        linux_driver.linux_input.type_text.assert_not_called()
+
+
+class CapsLockTest(unittest.TestCase):
+    def test_only_cased_text_conflicts(self) -> None:
+        with mock.patch.object(linux_input, "_need") as need:
+            self.assertFalse(linux_input.caps_lock_conflict("123 -+"))
+        need.assert_not_called()
+
+    def test_locked_caps_with_letters_conflicts(self) -> None:
+        with (
+            mock.patch.object(linux_input, "_need", return_value=(object(), object())),
+            mock.patch.object(linux_input.linux_x11, "_dpy", return_value=1),
+            mock.patch.object(linux_input, "_kb_state", return_value=(1, linux_input._LOCK_MASK)),
+        ):
+            self.assertTrue(linux_input.caps_lock_conflict("abc"))
+        with (
+            mock.patch.object(linux_input, "_need", return_value=(object(), object())),
+            mock.patch.object(linux_input.linux_x11, "_dpy", return_value=1),
+            mock.patch.object(linux_input, "_kb_state", return_value=(1, 0)),
+        ):
+            self.assertFalse(linux_input.caps_lock_conflict("abc"))
+
+
+class LaunchExecutableTest(unittest.TestCase):
+    """A bare Exec name never resolves through PATH, and the canonical path is run."""
+
+    def test_planted_path_shim_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.symlink("/usr/bin/true", os.path.join(tmp, "thunar-shim"))
+            with mock.patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ.get('PATH', '')}"}):
+                self.assertIsNone(linux_launch._vetted_executable("thunar-shim"))
+
+    def test_bare_name_resolves_from_system_bin(self) -> None:
+        found = linux_launch._vetted_executable("true")
+        assert found is not None
+        self.assertEqual(found, os.path.realpath(found))
+
+    def test_agent_owned_absolute_path_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            link = os.path.join(tmp, "app")
+            os.symlink("/usr/bin/true", link)
+            # The link's target is root-owned, but the launch would run the canonical
+            # path, so only that path's ownership decides; a user-owned copy fails.
+            self.assertEqual(
+                linux_launch._vetted_executable(link), os.path.realpath("/usr/bin/true")
+            )
+            copy = os.path.join(tmp, "copy")
+            with open("/usr/bin/true", "rb") as src, open(copy, "wb") as dst:
+                dst.write(src.read())
+            os.chmod(copy, 0o755)
+            self.assertIsNone(linux_launch._vetted_executable(copy))
+
+    def test_spawn_runs_the_vetted_path(self) -> None:
+        app = linux_launch.InstalledApp(
+            desktop_id="demo", name="Demo", argv=("demo", "--x"), wm_class="",
+            executable="/usr/bin/true",
+        )  # fmt: skip
+        with (
+            mock.patch.object(linux_launch, "installed_apps", return_value=(app,)),
+            mock.patch.object(linux_launch.linux_x11, "session_env", return_value={}),
+            mock.patch.object(linux_launch.subprocess, "Popen") as popen,
+        ):
+            linux_launch.spawn_detached("demo")
+        self.assertEqual(popen.call_args.args[0], ["demo", "--x"])
+        self.assertEqual(popen.call_args.kwargs["executable"], "/usr/bin/true")
+
+
+class X11ConnectionLossTest(unittest.TestCase):
+    def test_lost_connection_is_dropped_and_reopened(self) -> None:
+        lib = mock.Mock()
+        lib.XOpenDisplay.return_value = 0xBEEF
+        with (
+            mock.patch.object(linux_x11, "_display", 0xDEAD),
+            mock.patch.object(linux_x11, "_ensure_lib", return_value=lib),
+            mock.patch.object(linux_x11, "display_name", return_value=":1"),
+            mock.patch.object(linux_x11, "xauthority", return_value=""),
+        ):
+            linux_x11._connection_lost[0] = True
+            self.assertEqual(linux_x11._dpy(), 0xBEEF)
+            self.assertFalse(linux_x11._connection_lost[0])
+            lib.XCloseDisplay.assert_not_called()
+            lib.XSetIOErrorExitHandler.assert_called_once()
+
+    def test_old_libx11_is_refused(self) -> None:
+        fake = mock.Mock(spec=["XInitThreads"])
+        with (
+            mock.patch.object(linux_x11, "_lib", None),
+            mock.patch.object(linux_x11.ctypes, "CDLL", return_value=fake),
+        ):
+            with self.assertRaises(linux_x11.X11Unavailable):
+                linux_x11._ensure_lib()
 
 
 if __name__ == "__main__":

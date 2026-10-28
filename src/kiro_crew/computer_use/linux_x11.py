@@ -29,6 +29,8 @@ import os
 import threading
 from dataclasses import dataclass
 
+from kiro_crew.platform_compat import effective_uid
+
 logger = logging.getLogger(__name__)
 
 # ── Xlib constants ──
@@ -122,13 +124,22 @@ def _record_error(_dpy, event):  # pragma: no cover - called from C
     return 0
 
 
+#: Set by the IO-error exit handler; :func:`_dpy` then drops the dead connection.
+_connection_lost = [False]
+
+
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
 def _io_error(_dpy):  # pragma: no cover - called from C
-    # Returning from an IO error handler still makes Xlib exit; raising is not
-    # possible from C. The best available is to log loudly. Losing the X server is a
-    # desktop teardown, at which point the gateway has larger problems.
-    logger.error("X11 connection lost (IO error)")
+    logger.warning("X11 connection lost (IO error); computer use will reconnect")
     return 0
+
+
+@ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+def _io_error_exit(_dpy, _user_data):  # pragma: no cover - called from C
+    # libX11 calls exit() after the IO error handler UNLESS an exit handler is set
+    # and returns (libX11 >= 1.7). Returning here keeps the gateway alive: Xlib marks
+    # the display dead, later calls on it fail fast, and the next _dpy() reopens.
+    _connection_lost[0] = True
 
 
 class X11Unavailable(RuntimeError):
@@ -141,6 +152,13 @@ def _ensure_lib() -> ctypes.CDLL:
         return _lib
     path = ctypes.util.find_library("X11") or "libX11.so.6"
     lib = ctypes.CDLL(path)
+    if not hasattr(lib, "XSetIOErrorExitHandler"):
+        # Without it, losing the X server (a logout, a DCV session restart) would
+        # exit() the WHOLE gateway from inside Xlib. Refuse rather than risk that.
+        raise X11Unavailable(
+            "libX11 is older than 1.7 (no XSetIOErrorExitHandler); a lost X connection "
+            "would terminate the gateway, so computer use stays off"
+        )
     lib.XInitThreads.restype = ctypes.c_int
     lib.XInitThreads()
     lib.XOpenDisplay.restype = ctypes.c_void_p
@@ -185,6 +203,8 @@ def _ensure_lib() -> ctypes.CDLL:
     lib.XSetErrorHandler.argtypes = [_ERROR_HANDLER_TYPE]
     lib.XSetIOErrorHandler.restype = ctypes.c_void_p
     lib.XSetIOErrorHandler.argtypes = [ctypes.c_void_p]
+    lib.XSetIOErrorExitHandler.restype = None
+    lib.XSetIOErrorExitHandler.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     lib.XSetErrorHandler(_record_error)
     lib.XSetIOErrorHandler(ctypes.cast(_io_error, ctypes.c_void_p))
     _lib = lib
@@ -195,7 +215,9 @@ def _ensure_lib() -> ctypes.CDLL:
 
 
 def _uid() -> int:
-    return os.getuid()
+    """This process's uid, or -1 off POSIX (no per-user runtime paths exist there)."""
+    uid = effective_uid()
+    return -1 if uid is None else uid
 
 
 def display_name() -> str:
@@ -252,6 +274,15 @@ _DESKTOP_SESSIONS = {
 }
 
 
+def read_comm(pid: int) -> str:
+    """``/proc/<pid>/comm``, decoded so a non-UTF-8 process name cannot raise."""
+    try:
+        with open(f"/proc/{pid}/comm", "rb") as handle:
+            return handle.read().decode("utf-8", "surrogateescape").strip()
+    except OSError:
+        return ""
+
+
 def _detect_desktop() -> str:
     uid = _uid()
     try:
@@ -264,8 +295,7 @@ def _detect_desktop() -> str:
         try:
             if os.stat(f"/proc/{entry}").st_uid != uid:
                 continue
-            with open(f"/proc/{entry}/comm", encoding="utf-8") as handle:
-                comm = handle.read().strip()
+            comm = read_comm(int(entry))
         except OSError:
             continue
         desktop = _DESKTOP_SESSIONS.get(comm)
@@ -275,7 +305,7 @@ def _detect_desktop() -> str:
 
 
 def session_env() -> dict[str, str]:
-    """Environment for a child (xdotool, an app launch) that must reach the same session."""
+    """Environment for an app launch that must reach the same desktop session."""
     env = dict(os.environ)
     display = display_name()
     if display:
@@ -302,18 +332,20 @@ def session_env() -> dict[str, str]:
         desktop = _detect_desktop()
         if desktop:
             env["XDG_CURRENT_DESKTOP"] = desktop
-    # Ask Qt to load its AT-SPI bridge too (GTK and Chromium read org.a11y.Status).
-    env.setdefault("QT_ACCESSIBILITY", "1")
-    env.setdefault("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1")
-    # LibreOffice only starts its accessibility bridge when told to; legacy GTK 2 apps
-    # read GNOME_ACCESSIBILITY.
-    env.setdefault("SAL_ACCESSIBILITY_ENABLED", "1")
-    env.setdefault("GNOME_ACCESSIBILITY", "1")
+    # No toolkit accessibility switch is forced here: GTK, Qt and LibreOffice read
+    # org.a11y.Status.IsEnabled, which connecting to the bus already sets.
     return env
 
 
 def _dpy() -> int:
     global _display
+    if _connection_lost[0]:
+        # The server went away. XCloseDisplay on a dead connection would touch the
+        # broken socket again, so the struct is abandoned (a one-off leak per lost
+        # server) and a fresh connection is opened below.
+        _display = None
+        _atoms.clear()
+        _connection_lost[0] = False
     if _display:
         return _display
     lib = _ensure_lib()
@@ -329,6 +361,7 @@ def _dpy() -> int:
     dpy = lib.XOpenDisplay(name.encode())
     if not dpy:
         raise X11Unavailable(f"cannot open X display {name!r}")
+    lib.XSetIOErrorExitHandler(dpy, ctypes.cast(_io_error_exit, ctypes.c_void_p), None)
     _display = dpy
     _atoms.clear()
     return dpy

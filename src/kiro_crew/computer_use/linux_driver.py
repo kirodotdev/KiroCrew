@@ -34,6 +34,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from typing import Callable
 
 from kiro_crew.computer_use import (
@@ -51,7 +52,7 @@ from kiro_crew.computer_use.linux_atspi import (
     COORD_SCREEN,
     COORD_WINDOW,
     EDITABLE_TEXT,
-    PROPS,
+    ROLE_PASSWORD_TEXT,
     STATE_ACTIVE,
     STATE_CHECKED,
     STATE_DEFUNCT,
@@ -91,7 +92,6 @@ from kiro_crew.computer_use.types import (
     PLATFORM_LINUX,
     REFUSAL_ACCESSIBILITY_NEEDS_INDEX,
     REFUSAL_SECURE_TARGET,
-    TOOL_GET_STATE,
     TOOL_LIST_APPS,
     AppRef,
     BackendStatus,
@@ -141,7 +141,7 @@ def wayland_session() -> bool:
         return kind == "wayland"
     if os.environ.get("WAYLAND_DISPLAY"):
         return True
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{linux_x11._uid()}"
     try:
         return any(
             n.startswith("wayland-") and not n.endswith(".lock") for n in os.listdir(runtime)
@@ -178,6 +178,16 @@ _REFUSE_ELEMENT_BUTTON = (
 _ERR_NO_ACTION = (
     "element {index} in {app} advertises no action this platform can perform. Try a "
     "parent or child element from computer_get_state"
+)
+_ERR_CAPS_LOCK = (
+    "computer_type_text refused: Caps Lock is on, so synthetic key presses would flip "
+    "the case of every letter. Ask the user to turn Caps Lock off, or target an editable "
+    "text field, which takes the text directly"
+)
+_ERR_CONTROL_CHAR = (
+    "computer_type_text refused: the text contains the control character {char}, which "
+    "could move keyboard focus to another element mid-string. Type the text without it "
+    "and send navigation keys (Tab, Return, Escape) with computer_press_key"
 )
 _ERR_ACTION_FAILED = "{verb} on element {index} in {app} failed ({detail})"
 _ERR_POINT_NOT_OWNED = (
@@ -287,8 +297,17 @@ def _meaningful_actions(actions: "tuple[str, ...]") -> tuple[str, ...]:
     return tuple(a for a in actions if a and a.lower() not in _GENERIC_ACTIONS)
 
 
-def _is_secure(role: str) -> bool:
-    return "password" in role
+def _focus_moving_char(text: str) -> str:
+    """The first control character in *text*, rendered for an error, or ``""``."""
+    for char in text:
+        if unicodedata.category(char) == "Cc":
+            return repr(char)
+    return ""
+
+
+def _is_secure(node: Node) -> bool:
+    """Fail closed: a node whose role could not be read may be a password entry."""
+    return node.role_unknown or node.role_id == ROLE_PASSWORD_TEXT or "password" in node.role
 
 
 def _compact_role(role: str) -> str:
@@ -329,11 +348,7 @@ def _guarded(label: str, run: "Callable[[], DriverResult]") -> DriverResult:
 
 
 def _comm(pid: int) -> str:
-    try:
-        with open(f"/proc/{pid}/comm", encoding="utf-8") as handle:
-            return handle.read().strip()
-    except OSError:
-        return ""
+    return linux_x11.read_comm(pid)
 
 
 def _app_ref(info: linux_x11.WindowInfo) -> AppRef:
@@ -351,8 +366,8 @@ class LinuxBackend(ComputerUseBackend):
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        #: window_key -> (refs by element index, depths by element index)
-        self._walks: dict[str, tuple[list[Ref], list[int]]] = {}
+        #: window_key -> AT-SPI ref of each element, by element index
+        self._walks: dict[str, list[Ref]] = {}
         #: Wayland has no window ids a client can see, so each AT-SPI top-level frame
         #: gets a synthetic one, stable for this process's lifetime.
         self._wl_ids: dict[Ref, int] = {}
@@ -569,8 +584,15 @@ class LinuxBackend(ComputerUseBackend):
             client.read_basic(frontier, child_limit=MAX_CHILDREN_PER_NODE)
             next_frontier: list[Node] = []
             for node in frontier:
-                if node.failed or STATE_DEFUNCT in node.states:
+                if node.failed:
+                    # An unreadable node could be a password entry: the walk cannot
+                    # vouch for the window, so it loses its screenshot.
+                    truncated = True
                     continue
+                if STATE_DEFUNCT in node.states:
+                    continue
+                if node.children_failed:
+                    truncated = True
                 if node.depth > 0 and STATE_SHOWING not in node.states:
                     continue  # off-screen or collapsed: not something the model can act on
                 if len(kept) >= req.max_nodes:
@@ -593,14 +615,14 @@ class LinuxBackend(ComputerUseBackend):
                     truncated = True
                 next_frontier.extend(Node(ref=k, depth=node.depth + 1) for k in kids)
             frontier = next_frontier
-        secure_positions = {i for i, n in enumerate(kept) if _is_secure(n.role)}
+        secure_positions = {i for i, n in enumerate(kept) if _is_secure(n)}
         client.read_details(kept, text_limit=req.text_limit, skip_text=secure_positions)
 
         # Pre-order assembly over the kept set, so indentation is containment.
         by_ref = {n.ref: n for n in kept}
         if info is not None:
             ox, oy = float(info.x), float(info.y)
-            width, height, title = float(info.width), float(info.height), info.title
+            width, height, win_title = float(info.width), float(info.height), info.title
         else:
             # Wayland: extents are already window-relative, and the window's own
             # frame says how big it is. Its position on screen is unknowable.
@@ -608,10 +630,9 @@ class LinuxBackend(ComputerUseBackend):
             width = height = 0.0
             if _valid_extents(root.extents):
                 width, height = float(root.extents[2]), float(root.extents[3])  # type: ignore[index]
-            title = ""
+            win_title = ""
         records: list[ElementRec] = []
         refs: list[Ref] = []
-        depths: list[int] = []
         focused_index = -1
         focused_node: "Node | None" = None
         # Each stack entry carries the RENDERED depth: an elided wrapper passes its own
@@ -620,7 +641,7 @@ class LinuxBackend(ComputerUseBackend):
         stack: list[tuple[Node, int]] = [(root, 0)]
         while stack:
             node, depth = stack.pop()
-            secure = _is_secure(node.role)
+            secure = _is_secure(node)
             title = "" if secure else _clean(node.name, req.text_limit)
             value = ""
             if not secure:
@@ -702,7 +723,6 @@ class LinuxBackend(ComputerUseBackend):
                 )
             )
             refs.append(node.ref)
-            depths.append(depth)
         if focused_index >= 0:
             from dataclasses import replace
 
@@ -710,16 +730,16 @@ class LinuxBackend(ComputerUseBackend):
         selected = ""
         if (
             focused_node is not None
-            and not _is_secure(focused_node.role)
+            and not _is_secure(focused_node)
             and TEXT in focused_node.interfaces
         ):
             selected = self._selected_text(focused_node.ref, req.text_limit)
         with self._lock:
-            self._walks[app.window_key] = (refs, depths)
+            self._walks[app.window_key] = refs
         return Snapshot(
             app=app,
             elements=tuple(records),
-            window_title=title or app.window_title,
+            window_title=win_title or app.window_title,
             captured_at=time.monotonic(),
             truncated=truncated,
             depth_truncated=depth_truncated,
@@ -803,7 +823,7 @@ class LinuxBackend(ComputerUseBackend):
             walk = self._walks.get(app.window_key)
         if walk is None:
             raise ComputerUseError(_ERR_NO_WALK.format(app=label))
-        refs, _depths = walk
+        refs = walk
         if rec.index >= len(refs):
             raise ComputerUseError(_ERR_ELEMENT_GONE.format(index=rec.index, app=label))
         client = linux_atspi.client()
@@ -811,7 +831,7 @@ class LinuxBackend(ComputerUseBackend):
         client.read_basic([node])
         if node.failed or STATE_DEFUNCT in node.states:
             raise ComputerUseError(_ERR_ELEMENT_GONE.format(index=rec.index, app=label))
-        secure = _is_secure(node.role)
+        secure = _is_secure(node)
         if secure or rec.secure:
             if for_write:
                 raise ComputerUseError(
@@ -969,7 +989,7 @@ class LinuxBackend(ComputerUseBackend):
         deadline = time.monotonic() + FOCUS_SETTLE_SECS
         while True:
             live = client.live(node.ref)
-            if not live.failed and STATE_FOCUSED in live.states and not _is_secure(live.role):
+            if not live.failed and STATE_FOCUSED in live.states and not _is_secure(live):
                 break
             if time.monotonic() >= deadline:
                 return _ERR_FOCUS_NOT_HELD.format(index=rec.index, app=label)
@@ -1021,6 +1041,16 @@ class LinuxBackend(ComputerUseBackend):
                         what="keystrokes", verb="typing into a non-text element"
                     ),
                 )
+            control = _focus_moving_char(text)
+            if control:
+                # Focus is verified ONCE, on this element. A Tab, newline or Escape in
+                # the keystroke stream can move focus mid-string (into a password field
+                # the next element over), and every later character would land there
+                # unchecked. Navigation goes through computer_press_key, which
+                # re-checks the target each time.
+                return DriverResult(ok=False, text=_ERR_CONTROL_CHAR.format(char=control))
+            if linux_input.caps_lock_conflict(text):
+                return DriverResult(ok=False, text=_ERR_CAPS_LOCK)
             refusal = self._focus(app, rec)
             if refusal:
                 return DriverResult(ok=False, text=refusal)
@@ -1205,4 +1235,4 @@ class LinuxBackend(ComputerUseBackend):
             logger.debug("closing the X display failed", exc_info=True)
 
 
-__all__ = ["LinuxBackend", "PROPS", "TOOL_GET_STATE"]
+__all__ = ["LinuxBackend"]

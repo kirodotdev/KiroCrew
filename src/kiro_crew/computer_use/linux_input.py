@@ -181,13 +181,63 @@ def _bind() -> "tuple[ctypes.CDLL, ctypes.CDLL]":
         ]
         x11.XSendEvent.restype = ctypes.c_int
         x11.XFlush.argtypes = [ctypes.c_void_p]
+        x11.XkbGetState.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(_XkbStateRec)]
+        x11.XkbGetState.restype = ctypes.c_int
         _bound = True
     return x11, _xtst
+
+
+class _XkbStateRec(ctypes.Structure):
+    _fields_ = [
+        ("group", ctypes.c_ubyte),
+        ("locked_group", ctypes.c_ubyte),
+        ("base_group", ctypes.c_ushort),
+        ("latched_group", ctypes.c_ushort),
+        ("mods", ctypes.c_ubyte),
+        ("base_mods", ctypes.c_ubyte),
+        ("latched_mods", ctypes.c_ubyte),
+        ("locked_mods", ctypes.c_ubyte),
+        ("compat_state", ctypes.c_ubyte),
+        ("grab_mods", ctypes.c_ubyte),
+        ("compat_grab_mods", ctypes.c_ubyte),
+        ("lookup_mods", ctypes.c_ubyte),
+        ("compat_lookup_mods", ctypes.c_ubyte),
+        ("ptr_buttons", ctypes.c_ushort),
+    ]
+
+
+_XKB_USE_CORE_KBD = 0x0100
+_LOCK_MASK = 0x02
+
+
+def _kb_state(x11: ctypes.CDLL, dpy: int) -> "tuple[int, int]":
+    """``(active group, locked modifiers)`` of the core keyboard. ``(0, 0)`` on failure."""
+    state = _XkbStateRec()
+    if x11.XkbGetState(dpy, _XKB_USE_CORE_KBD, ctypes.byref(state)) != 0:
+        return 0, 0
+    return int(state.group), int(state.locked_mods)
+
+
+def caps_lock_conflict(text: str) -> bool:
+    """True when Caps Lock is on and *text* has a cased letter it would flip.
+
+    XTest sends key PRESSES, not characters, so a locked Caps Lock turns a requested
+    ``a`` into ``A`` while the tool reports success. The driver refuses instead of
+    typing the wrong text; toggling the user's lock state behind their back is worse.
+    """
+    if not any(ch.lower() != ch.upper() for ch in text):
+        return False
+    x11, _xtst = _need()
+    with linux_x11._lock:
+        _group, locked = _kb_state(x11, linux_x11._dpy())
+    return bool(locked & _LOCK_MASK)
 
 
 def available() -> "tuple[bool, str]":
     try:
         _bind()
+    except linux_x11.X11Unavailable as exc:
+        return False, str(exc)
     except OSError as exc:
         return False, f"libXtst is not loadable ({exc}); install libxtst6"
     return True, ""
@@ -196,6 +246,8 @@ def available() -> "tuple[bool, str]":
 def _need() -> "tuple[ctypes.CDLL, ctypes.CDLL]":
     try:
         return _bind()
+    except linux_x11.X11Unavailable as exc:
+        raise ComputerUseUnsupported(str(exc)) from exc
     except OSError as exc:
         raise ComputerUseUnsupported(f"libXtst is not loadable ({exc}); install libxtst6") from exc
 
@@ -274,14 +326,20 @@ def _remap(x11: ctypes.CDLL, dpy: int, keycode: int, sym: int) -> None:
     x11.XSync(dpy, 0)
 
 
-def _press_sym(x11: ctypes.CDLL, xtst: ctypes.CDLL, dpy: int, sym: int, spare: "list[int]") -> None:
-    """Press and release whatever produces *sym*, shifting or remapping as needed."""
+def _press_sym(
+    x11: ctypes.CDLL, xtst: ctypes.CDLL, dpy: int, sym: int, spare: "list[int]", group: int = 0
+) -> None:
+    """Press and release whatever produces *sym*, shifting or remapping as needed.
+
+    Levels are read in the ACTIVE keyboard group: a user switched to a second layout
+    gets that layout's symbols from a key press, so group 0 would pick wrong keys.
+    """
     keycode = int(x11.XKeysymToKeycode(dpy, sym))
     shift = False
     if keycode:
-        if int(x11.XkbKeycodeToKeysym(dpy, keycode, 0, 0)) == sym:
+        if int(x11.XkbKeycodeToKeysym(dpy, keycode, group, 0)) == sym:
             pass
-        elif int(x11.XkbKeycodeToKeysym(dpy, keycode, 0, 1)) == sym:
+        elif int(x11.XkbKeycodeToKeysym(dpy, keycode, group, 1)) == sym:
             shift = True
         else:
             keycode = 0  # only reachable through AltGr or another group: remap instead
@@ -309,9 +367,10 @@ def type_text(text: str) -> None:
     spare = [0]
     with linux_x11._lock:
         dpy = linux_x11._dpy()
+        group, _locked = _kb_state(x11, dpy)
         try:
             for ch in text:
-                _press_sym(x11, xtst, dpy, char_keysym(ch), spare)
+                _press_sym(x11, xtst, dpy, char_keysym(ch), spare, group)
         finally:
             if spare[0]:
                 # Give the last press time to be read, then unbind the spare keycode.

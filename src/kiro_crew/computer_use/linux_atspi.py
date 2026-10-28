@@ -28,8 +28,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from jeepney import DBusAddress, HeaderFields, MessageType, new_method_call
-from jeepney.io.blocking import open_dbus_connection
+from kiro_crew.computer_use import linux_x11
+
+# ``jeepney`` is a Linux-only dependency (setup.cfg gates it on sys_platform), and
+# every computer_use module must import on any OS, so it is imported where it is
+# used, never at module scope.
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,11 @@ STATE_VERTICAL = 29
 STATE_VISIBLE = 30
 STATE_MANAGES_DESCENDANTS = 31
 STATE_READ_ONLY = 43
+
+#: ``ATSPI_ROLE_PASSWORD_TEXT``. The secure check keys on the role NUMBER as well as
+#: the name, so a failed ``GetRoleName`` lookup can never turn a password entry into
+#: an ordinary text field.
+ROLE_PASSWORD_TEXT = 40
 
 #: Batch deadline. Generous, because a large Chromium tree answers slowly, but finite.
 CALL_TIMEOUT_SECS = 4.0
@@ -129,9 +137,16 @@ class Node:
     failed: bool = False
     #: True when only a bounded prefix of the children was read.
     children_capped: bool = False
+    #: True when a child-list call failed, so the subtree read is incomplete.
+    children_failed: bool = False
+    #: True when the role name could not be read. The driver treats such a node as
+    #: secure: it cannot prove the node is not a password entry.
+    role_unknown: bool = False
 
 
 def _call(ref: Ref, iface: str, method: str, sig: str = "", body: tuple = ()) -> Any:
+    from jeepney import DBusAddress, new_method_call
+
     addr = DBusAddress(ref.path, bus_name=ref.bus, interface=iface)
     return new_method_call(addr, method, sig, body)
 
@@ -169,13 +184,17 @@ class AtspiClient:
 
     def _session_address(self) -> str:
         return (
-            os.environ.get("DBUS_SESSION_BUS_ADDRESS") or f"unix:path=/run/user/{os.getuid()}/bus"
+            os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+            or f"unix:path=/run/user/{linux_x11._uid()}/bus"
         )
 
     def _ensure(self) -> Any:
         if self._conn is not None:
             return self._conn
         try:
+            from jeepney import DBusAddress, MessageType, new_method_call
+            from jeepney.io.blocking import open_dbus_connection
+
             session = open_dbus_connection(bus=self._session_address())
             bus_addr = DBusAddress(
                 "/org/a11y/bus", bus_name="org.a11y.Bus", interface="org.a11y.Bus"
@@ -245,6 +264,8 @@ class AtspiClient:
                 return self._batch_locked(messages, timeout)
 
     def _batch_locked(self, messages: "list[Any]", timeout: float) -> list[Any]:
+        from jeepney import HeaderFields, MessageType
+
         conn = self._ensure()
         serials: dict[int, int] = {}
         for position, message in enumerate(messages):
@@ -323,12 +344,17 @@ class AtspiClient:
     # ── reading nodes ──
 
     def _role_name(self, node: Node) -> str:
+        if node.role_id == ROLE_PASSWORD_TEXT:
+            return "password text"
         name = self._role_names.get(node.role_id)
         if name is None:
             try:
                 name = str(self.call(node.ref, ACCESSIBLE, "GetRoleName")[0])
             except CallError:
-                name = "unknown"
+                # Never cached: a timeout from a slow application must not pin this
+                # role id to a non-secure name for the life of the client.
+                node.role_unknown = True
+                return "unknown"
             self._role_names[node.role_id] = name
         return name
 
@@ -387,6 +413,7 @@ class AtspiClient:
                 kid_msgs.append(_call(node.ref, ACCESSIBLE, "GetChildAtIndex", "i", (index,)))
         for (node, kind), result in zip(plan, self.batch(kid_msgs)):
             if isinstance(result, CallError):
+                node.children_failed = True
                 continue
             if kind == "all":
                 node.children = [Ref(str(b), str(p)) for b, p in result[0]]
