@@ -98,6 +98,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Defines the shared external-text redactor used by output boundaries and
         # creation guards. It emits nothing itself.
         "external_text.py",
+        # Gate-side: the KAS agent projection asks whether the redactor WOULD
+        # change a third-party MCP server's literal env value and WITHHOLDS the
+        # value from the wire when it would. Nothing it emits is redacted text.
+        "acp/kas_agents.py",
         # Consumes that redactor as a yes/no predicate, not as a rewrite:
         # `is_dispatchable_member_name` asks whether a stored Crew Member name
         # WOULD need redaction and refuses the pin when it would. Nothing is

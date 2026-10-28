@@ -569,7 +569,8 @@ def _project_mcp_servers(
       declared server's env routinely holds tokens. Every server is filtered; the
       classes differ only in what survives. A server Crew did not author loses
       ``headers`` and every env value except a reference to a name the edition
-      relays (:data:`_ENV_REFERENCE`), which carries no value. One of Crew's
+      relays (:data:`_ENV_REFERENCE`), which carries no value, and a boolean
+      literal :func:`_relayable_literal` allows. One of Crew's
       OWN managed servers additionally keeps ``KIROCREW_HOME``, because that key is the only
       reason managed env is projected at all: without it the shims read a
       different data home than the gateway. A managed entry still lives in a
@@ -607,10 +608,14 @@ def _project_mcp_servers(
     exemption is still right: the day the wire carries ``type``, a governed
     session keeps its control plane with no further change here.
 
-    A non-managed server therefore starts without its credentials and may fail to
-    authenticate — which is still strictly better than today, where it does not
-    start at all. The drop is logged with KEY NAMES ONLY so an operator can see
-    why, without the value reaching a log.
+    A non-managed server therefore starts with its boolean flags but without any
+    other literal, and may fail to authenticate or miss a setting. The drop is logged with KEY NAMES
+    ONLY so an operator can see why, without the value reaching a log.
+
+    Hoisting the entry into the session-level array would not keep its env
+    local: :func:`hoist_servers_for_session` puts it in ``session/new``'s own
+    ``mcpServers``, the same wire, and hoists the entry as projected here. The
+    filter is therefore the one place the env is decided.
 
     Note what this canNOT reach: ``command``, ``args`` and ``url`` are how the
     server is launched or addressed, so a secret embedded THERE (an ``--api-key``
@@ -749,6 +754,76 @@ def _project_mcp_servers(
     return out
 
 
+#: The only literal values a third-party server's env may send over the KAS
+#: wire: a boolean, ``true`` or ``false``, matched case-insensitively after
+#: trimming. No secret is a boolean, so this holds by construction, with no
+#: guess about which key names or value shapes carry one. Everything else,
+#: numbers included (a PIN is digits), is withheld and named in the log; the
+#: rest of the env reaches the server through a local launcher that keeps it
+#: off the wire.
+_RELAYABLE_BOOLEANS = frozenset({"true", "false"})
+
+#: A key NAME printed in the log as written. Only a plain word the redactor
+#: leaves alone is printed; any other name is counted.
+_PLAIN_WORD = re.compile(r"[A-Za-z0-9._-]{1,256}")
+
+#: A camelCase boundary (``accessKey`` -> ``access_Key``), so a credential word
+#: joined by case alone still ends a segment for the shared class.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _credential_shaped_env_key(key: str) -> bool:
+    """Whether the env KEY *key* names a credential.
+
+    The one shared answer, ``config.sections_agent_env.AGENT_ENV_CREDENTIAL_CLASS``,
+    on the name split at punctuation and camelCase (``encryptionKey`` reads as
+    ``ENCRYPTION_KEY``), plus the gateway's own credential prefixes.
+    """
+    from kiro_crew.config.sections_agent_env import AGENT_ENV_CREDENTIAL_CLASS
+    from kiro_crew.mcp_gateway.hashing import is_secret_env_key
+    from kiro_crew.mcp_gateway.manager import is_credential_env_key
+
+    normal = _NON_ALNUM.sub("_", _CAMEL_BOUNDARY.sub("_", key)).upper()
+    if is_secret_env_key(normal) or is_credential_env_key(normal):
+        return True
+    return bool(AGENT_ENV_CREDENTIAL_CLASS.search(normal))
+
+
+def _relayable_literal(key: str, value: Any) -> bool:
+    """Whether a third-party server's literal env *value* under *key* may cross the wire.
+
+    Only a boolean (:data:`_RELAYABLE_BOOLEANS`), and only when the KEY is not
+    credential-shaped (:func:`_credential_shaped_env_key`) and the credential
+    redactor would leave the value unchanged alone and spelled beside its key,
+    through :func:`kiro_crew.external_text.redact_external_text` so an edition's
+    extra patterns apply. The value is relayed as written.
+    """
+    if not isinstance(value, str) or not isinstance(key, str):
+        return False
+    if value.strip().lower() not in _RELAYABLE_BOOLEANS:
+        return False
+    if _credential_shaped_env_key(key):
+        return False
+    from kiro_crew.external_text import redact_external_text
+
+    return all(
+        redact_external_text(text) == text for text in (value, f"{key}={value}", f"{key}: {value}")
+    )
+
+
+def _loggable_key_names(keys: list[str]) -> str:
+    """*keys* for a log line: a name shown only when it is itself a plain word the
+    redactor leaves alone, so a credential-shaped NAME is counted, never printed."""
+    from kiro_crew.external_text import redact_external_text
+
+    shown = sorted(k for k in keys if _PLAIN_WORD.fullmatch(k) and redact_external_text(k) == k)
+    hidden = len(keys) - len(shown)
+    if hidden:
+        shown.append(f"{hidden} unnamed")
+    return ", ".join(shown)
+
+
 def _withhold_credential_fields(
     projected: dict[str, Any],
     *,
@@ -758,14 +833,18 @@ def _withhold_credential_fields(
     """Strip credential-bearing fields from one projected server entry in place.
 
     Returns the FIELD NAMES something was withheld from, for the caller's log —
-    never a value, and never the withheld env keys, since a key name in a
-    third-party server's env is itself operator-supplied.
+    never a value. For a server Crew did not author the ``env`` entry also names
+    the withheld keys (:func:`_loggable_key_names`), so a missing setting can be
+    found; a key name that is not a plain word the redactor leaves alone is
+    counted, never printed.
 
     A value that is exactly ``${NAME}`` with *NAME* in *relayed* survives on
     every server (:data:`_ENV_REFERENCE`); *managed* also keeps ``_MANAGED_ENV_KEYS_KEPT``, but only as a
     literal: KAS expands ``${...}`` wherever it appears in a value, so a kept
     key holding ``${KIRO_API_KEY}`` would carry the credential under a managed
-    name.
+    name. A server Crew did not author also keeps every literal
+    :func:`_relayable_literal` passes (a boolean flag), so such a flag reaches
+    it as it does on kiro-cli, which reads the spec off disk.
     Everything else goes either way, ``headers`` included. A managed server has
     no legitimate ``headers`` (all four are local stdio processes), so retaining
     it would only forward whatever a hand edit put there. ``env`` is reported
@@ -787,18 +866,27 @@ def _withhold_credential_fields(
         withheld.append("env")
         return withheld
 
-    kept = {
-        k: v
-        for k, v in env.items()
-        if isinstance(k, str)
-        and (
-            (isinstance(v, str) and "${" not in v)
-            if managed and k in _MANAGED_ENV_KEYS_KEPT
-            else _is_relayed_reference(v, relayed)
-        )
-    }
+    kept: dict[str, Any] = {}
+    dropped: list[str] = []
+    for k, v in env.items():
+        if not isinstance(k, str):
+            continue
+        if managed and k in _MANAGED_ENV_KEYS_KEPT:
+            keep = isinstance(v, str) and "${" not in v
+        else:
+            keep = _is_relayed_reference(v, relayed) or (not managed and _relayable_literal(k, v))
+        if keep:
+            kept[k] = v
+        else:
+            dropped.append(k)
     if len(kept) != len(env):
-        withheld.append("env")
+        # A third-party server's withheld keys are named so the operator can see
+        # which setting went missing; a name that is not itself a plain word the
+        # redactor leaves alone is counted instead. A managed server's are not:
+        # any extra key on Crew's own entry is a hand edit.
+        withheld.append(
+            f"env ({_loggable_key_names(dropped)})" if dropped and not managed else "env"
+        )
     if kept:
         projected["env"] = kept
     else:

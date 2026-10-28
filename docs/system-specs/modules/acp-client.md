@@ -3040,8 +3040,8 @@ a member-specific sandbox or direct-MCP capability.
 KAS projects the gateway's validated `KIROCREW_BOUND_PORT` as `KIROCREW_PORT`
 for native managed MCP servers because native children do not inherit the
 gateway environment. The listener address comes from the gateway, not an editable
-agent spec. Declared secrets and arbitrary environment values remain withheld,
-and non-managed servers receive no gateway port.
+agent spec. Declared secrets remain withheld, a managed server relays no other
+literal, and non-managed servers receive no gateway port.
 
 An `env` value that is exactly `${NAME}` survives projection on every projected server
 when the edition lists `NAME` through
@@ -3051,6 +3051,23 @@ the name and never the value, and a launcher's per-process variable reaches an
 MCP child that KAS starts with a minimal environment of its own. Any other
 reference is withheld, because the KAS environment also holds credentials such as
 the CLI's `KIRO_API_KEY`.
+
+A server Crew did not author also keeps each literal `env` value that is exactly
+`true` or `false` (case-insensitive, trimmed; `kas_agents._relayable_literal`), so
+a server that takes boolean feature flags from `env` starts with them on KAS as it
+does on kiro-cli, which reads the spec off disk. No secret is a boolean, so the
+rule needs no guess about which names or shapes carry one. A boolean is still
+withheld when its key matches the shared `AGENT_ENV_CREDENTIAL_CLASS` (split at
+punctuation and camelCase) or the credential redactor would change it alone or
+beside its key. Every other literal, numbers included, is withheld; #25362 tracks
+relaying it through a local launcher so env stays off the wire. The INFO line
+names the withheld keys whose names are plain words the redactor leaves alone and
+counts the rest, never a
+value. Crew's own managed servers relay no literal but
+`KIROCREW_HOME`. Hoisting does not change this: `hoist_servers_for_session` moves
+an entry into `session/new`'s own `mcpServers`, the same frame, as projected.
+Pinned by `test/test_kas_agents_mcp_env_relay.py`; the residual (a secret with no
+credential shape under an innocent key) is stated in `security.md`'s threat model.
 
 The provider factory selects `agent.member_acp_backend` for member-DM session
 keys and the configured default backend otherwise; a stored `kiro` in the member

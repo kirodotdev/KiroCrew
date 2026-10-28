@@ -168,8 +168,8 @@ class TestMcpServersProjection:
     def test_a_relayed_reference_reaches_a_third_party_server(self, relayed_names):
         """KAS starts an MCP child with a minimal environment of its own, so a
         launcher's per-process value reaches the child only through a reference
-        to a name the edition relays. The literal beside it, and a reference
-        wrapped in literal text, do not."""
+        to a name the edition relays. The credential-keyed literal beside it, and
+        a reference wrapped in literal text, do not."""
         out = to_client_custom_agent(
             "a",
             _spec(
@@ -178,7 +178,7 @@ class TestMcpServersProjection:
                         "command": "vendor",
                         "env": {
                             "BROKER_URL": "${LAUNCHER_BROKER_URL}",
-                            "LAUNCH_NONCE": "n0nce",
+                            "LAUNCH_TOKEN": "n0nce",
                             "AUTH": "Bearer ${SECRET}",
                         },
                     }
@@ -284,7 +284,7 @@ class TestMcpServersProjection:
                     mcpServers={
                         "third-party": {
                             "command": "x",
-                            "env": {"REF": "${LAUNCHER_BROKER_URL}", "LIT": "sk-live"},
+                            "env": {"REF": "${LAUNCHER_BROKER_URL}", "LIT_TOKEN": "sk-live"},
                         }
                     }
                 ),
@@ -326,7 +326,11 @@ class TestMcpServersProjection:
         with caplog.at_level("INFO"):
             to_client_custom_agent(
                 "a",
-                _spec(mcpServers={"third-party": {"command": "x", "env": {"K": "sekrit"}}}),
+                _spec(
+                    mcpServers={
+                        "third-party": {"command": "x", "env": {"SERVICE_PASSWORD": "sekrit"}}
+                    }
+                ),
                 "p",
             )
         assert "third-party" in caplog.text

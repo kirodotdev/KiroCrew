@@ -491,9 +491,14 @@ spec declares. Both decisions are
 recorded as security events: `mcp_auto_approve_withheld` for a grant taken away,
 `mcp_auto_approve_honoured` for an owner-written one kept.
 
-On the KAS wire, `env` and `headers` are withheld from every entry — `env`
+On the KAS wire, `headers` are withheld from every entry and `env` is filtered
+per key — `env`
 routinely holds tokens, and a remote entry's `headers` can hold a static
-`Authorization`. Two `env` exceptions. A value that is exactly `${NAME}`
+`Authorization`. Three `env` exceptions. A literal on a server Crew did not
+author survives only when it is exactly `true` or `false` (any case), its key is
+not credential-shaped (`TOKEN`, `SECRET`, `PASSWORD`, `KEY`, `accessKey` …), and the
+credential redactor would not rewrite it. So `FEATURE_X_ENABLED=true` reaches the
+server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A value that is exactly `${NAME}`
 survives on any server when the edition lists `NAME` through
 `McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
 KAS resolves it at spawn, so only the name crosses the wire. Any other reference
