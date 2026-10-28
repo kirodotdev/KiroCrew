@@ -562,6 +562,7 @@ A listed triple passes; an unlisted one fails.
 | `table-row-merge` | Two index rows glued onto one physical line. Both links resolve, so every link-graph check stays green while the table renders one row short and a file loses its entry |
 | `code-coupled-completeness` | A packaged doc named in a string literal under `website/src` and absent from `CODE_COUPLED_DOCS`. An unrecorded coupling can be renamed apart silently |
 | `dead-identifier` | A backticked identifier absent from every first-party code tree. **Report-only** unless `--strict-identifiers`, because the class mixes real rot with names the repo cannot adjudicate |
+| `anchor-exists` | A link written under `docs/` whose `#fragment` names no anchor in its markdown target: no heading slugs to it (GitHub's rule, repeats numbered `-1`, `-2`) and no tag carries it as an `id` or `name`. The file resolves, so the broken-link check stays green while the reader lands at the top of the page. Point the link at the heading's real slug, or put an `<a id>` where it should land |
 
 Three checks skip a doc whose genre names things that do not exist yet
 (`docs/request-for-change/`, which carries the plans, and `docs/task-specs/`):
