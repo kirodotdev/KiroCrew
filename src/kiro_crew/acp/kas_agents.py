@@ -69,6 +69,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_permissions import (
     AUTO_APPROVABLE_CAPABILITIES,
     allowed_tools_to_permissions,
@@ -561,7 +562,9 @@ def _project_mcp_servers(
       ``autoApprove`` KEY, and none may ever be added"); relaying one copied from
       a spec would grant through this path what that rule refuses on the other,
       and on KAS there is no wire slot for hooks at all. Auto-approve reaches KAS
-      only as ``permissions``, derived from the ceiling-filtered ``allowedTools``.
+      only as ``permissions``, derived from the ceiling-filtered ``allowedTools``;
+      the verbs the kiro-cli route keeps join that input in
+      :func:`to_client_custom_agent` (:mod:`kiro_crew.acp.kas_auto_approve`).
     * **``env`` and ``headers``** — projection puts these on the wire, and a
       declared server's env routinely holds tokens. Every server is filtered; the
       classes differ only in what survives. A server Crew did not author loses
@@ -930,6 +933,16 @@ def to_client_custom_agent(
         merged.extend(g for g in _MEMBER_PANEL_GRANTS if g not in merged)
         allowed_tools_input = merged
 
+    # Read before the autoApprove refs join the list: whether the operator wrote an
+    # allowlist is a fact about `allowedTools`, not about a server's autoApprove.
+    allowlist_present = isinstance(allowed_tools_input, list)
+    # A server's `autoApprove` has no KAS slot; the verbs the kiro-cli route would
+    # keep join the derivation input and meet the same ceiling below.
+    auto_approved = auto_approve_refs(spec)
+    if auto_approved:
+        base_allowed = allowed_tools_input if isinstance(allowed_tools_input, list) else []
+        allowed_tools_input = [*base_allowed, *(r for r in auto_approved if r not in base_allowed)]
+
     # Two inputs, one of them governed twice. The derivation is `allowedTools`
     # and nothing else; the spec's own `permissions` block is then folded in by
     # `merge_user_permissions`, which intersects it with the same ceiling instead
@@ -952,7 +965,7 @@ def to_client_custom_agent(
         ),
         # The list's PRESENCE, not its content: an empty list is still the operator
         # saying "auto-approve nothing", and a block must not answer that for them.
-        allowlist_present=isinstance(allowed_tools_input, list),
+        allowlist_present=allowlist_present,
         agent_id=agent_id,
     )
     # `toolsSettings` has no wire slot, but KAS's `permissions` is its
@@ -966,7 +979,7 @@ def to_client_custom_agent(
         audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
             refs, outcome, reason, agent_id
         ),
-        allowlist_present=isinstance(allowed_tools_input, list),
+        allowlist_present=allowlist_present,
         agent_id=agent_id,
         source="translated `toolsSettings`",
     )
