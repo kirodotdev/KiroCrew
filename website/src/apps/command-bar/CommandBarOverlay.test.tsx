@@ -470,7 +470,7 @@ describe('CommandBarOverlay rows', () => {
     // constructed inert and activated by entering the scope, and the assertion is on
     // the call site because the leak was the construction, not the search.
     const src = overlaySource()
-    expect(src).toContain("useSessionsProvider({ active: scope === 'sessions' })")
+    expect(src).toMatch(/useSessionsProvider\(\{ active: scope === 'sessions'(, openSessionKeys)? \}\)/)
     expect(src).not.toMatch(/useSessionsProvider\(\{\s*\}\)/)
   })
 

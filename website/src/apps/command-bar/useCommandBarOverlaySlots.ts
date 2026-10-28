@@ -28,6 +28,7 @@ export function useCommandBarOverlaySlots({
   debounced,
   query,
   sessions,
+  openSessionsKey,
   recentSessions,
   artifacts,
   folderSortMode,
@@ -40,7 +41,7 @@ export function useCommandBarOverlaySlots({
   setSelected,
 }: Pick<
   ReturnType<typeof useCommandBarOverlayEngines>,
-  'sessions' | 'recentSessions' | 'artifacts' | 'folderSortMode' | 'folders' | 'runningMates' | 'mates'
+  'sessions' | 'openSessionsKey' | 'recentSessions' | 'artifacts' | 'folderSortMode' | 'folders' | 'runningMates' | 'mates'
 > & {
   scope: Scope
   debounced: string
@@ -61,10 +62,18 @@ export function useCommandBarOverlaySlots({
     isError,
     refetch: refetchSessions,
   } = useQuery({
-    queryKey: ['command-bar', 'sessions', scopedQuery],
+    // The open-session set is part of the key: these rows are ranked by it (#21290),
+    // so a session opened since the last search must re-rank the cached rows.
+    queryKey: ['command-bar', 'sessions', scopedQuery, openSessionsKey],
     queryFn: () => Promise.resolve(sessions.search(scopedQuery)) as Promise<Result[]>,
     enabled: searchArmed,
     staleTime: 15_000,
+    // Hold the rows on screen across a change of the open-session set only, the
+    // way the crewmates view holds them across its running set: a slot added in
+    // the background must not blank the list or reset the selection. A change of
+    // the query still drops them.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey?.[2] === scopedQuery ? prev : undefined,
   })
 
   /**

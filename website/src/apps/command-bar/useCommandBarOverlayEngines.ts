@@ -40,7 +40,11 @@ export function useCommandBarOverlayEngines({
   // Constructed here but INERT until the sessions view is entered: the hook's own
   // ['instances'] query would otherwise fire on a warm install the moment the root
   // opened, which is exactly the request this surface promises not to make.
-  const sessions = useSessionsProvider({ active: scope === 'sessions' })
+  // The sessions open right now; the search ranks their hits above history (#21290).
+  const openSessionKeys = useMemo(() => new Set(liveSlots.map(slot => slot.key)), [liveSlots])
+  // The same set as a stable string, so the cached search rows re-rank when it changes.
+  const openSessionsKey = useMemo(() => [...openSessionKeys].sort().join('\u0000'), [openSessionKeys])
+  const sessions = useSessionsProvider({ active: scope === 'sessions', openSessionKeys })
   // The sessions view's LISTING engine. Constructed here and inert: the hook reads
   // live slots out of the store and reads a localStorage preference, but issues no
   // request until `search()` is called, and the only call site is gated on the
@@ -249,6 +253,7 @@ export function useCommandBarOverlayEngines({
 
   return {
     sessions,
+    openSessionsKey,
     recentSessions,
     apps,
     chatFoldersRef,

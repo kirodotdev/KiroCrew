@@ -185,6 +185,7 @@ export default function CommandBarOverlay({
   useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
   const {
     sessions,
+    openSessionsKey,
     recentSessions,
     apps,
     chatFoldersRef,
@@ -296,7 +297,8 @@ export default function CommandBarOverlay({
     mateQuery, matesError, matesSearchError, refetchMates,
     rowsAnswerTheQuery, slots, rowCount, scopeLoading, scopeFetching,
   } = useCommandBarOverlaySlots({
-    scope, debounced, query, sessions, recentSessions, artifacts, folderSortMode, folders, runningMates, mates,
+    scope, debounced, query, sessions, openSessionsKey, recentSessions, artifacts, folderSortMode, folders,
+    runningMates, mates,
     argCommand, ranked, selected, setSelected,
   })
 
