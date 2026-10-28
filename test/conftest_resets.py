@@ -1115,6 +1115,7 @@ def _reset_materialized_agents_snapshot():
             ("_MATERIALIZED_AGENTS", frozenset()),
             ("_MATERIALIZED_AGENTS_READY", False),
             ("_MATERIALIZED_COMPLETE", False),
+            ("_MATERIALIZED_SKIPPED", None),
             ("_MATERIALIZED_MATE_ONLY", frozenset()),
             ("_MATERIALIZED_AGENTS_GENERATION", 0),
             ("_MATERIALIZED_REFRESH_APPLIED", 0),
@@ -1128,6 +1129,11 @@ def _reset_materialized_agents_snapshot():
         for name in ("_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
             if hasattr(loader_mod, name):
                 setattr(loader_mod, name, {})
+        # The agent catalog's scan gate remembers a stamp of a snapshot this reset
+        # just dropped; a fresh gate makes the next fetch scan.
+        catalog_mod = sys.modules.get("kiro_crew.dashboard.handlers.agent_catalog")
+        if catalog_mod is not None and hasattr(catalog_mod, "_REFRESH_GATE"):
+            catalog_mod._REFRESH_GATE = catalog_mod._RefreshGate()
 
     clear()
     try:

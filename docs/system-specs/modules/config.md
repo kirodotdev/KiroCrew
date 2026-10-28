@@ -2187,7 +2187,21 @@ The snapshot is only ever rebuilt off-loop:
   files are still on disk, and drops everything else the scan no longer sees. A
   failed directory listing keeps the whole previous user-level snapshot. An
   incomplete scan never heals the default agent. `materialized_snapshot_complete()`
-  reads the flag, in memory.
+  reads the flag, in memory, and `materialized_skipped_stems()` the user-level
+  stems the installed scan skipped (`None` while unknown: no snapshot yet, a failed
+  listing, an incomplete crewmate scan). It returns `True` when its snapshot was
+  installed, `False` when the scan raised or a later refresh had already landed.
+- The agent-catalog fetch (`dashboard/handlers/agent_catalog.py`) gates its
+  rescan. It stamps both agents directories with `agents_dir_revision` plus the
+  publish count (`materialized_agents_generation()`), records the stamp with the
+  installed scan's skipped stems and refresh ticket (`materialized_refresh_ticket()`)
+  only after a refresh that landed with the stamp unchanged across it, and skips
+  the rescan while all three still match, so one unparseable spec stays skipped
+  under its own key and a snapshot another caller's refresh installed is never
+  served as the recorded one. A stamp `agents_dir_revision`
+  cannot prove (Windows, a symlinked spec, more than 64 entries younger than 2 s)
+  scans on every fetch, outside the gate's lock. `catalog_scan_hit` and
+  `catalog_scan_miss` count the two outcomes.
 - `schedule_materialized_agents_refresh()` — safe from anywhere: offloads to the
   default executor when a loop is running, refreshes inline when not.
 - `publish_materialized_agents(names)` — pure set union, no I/O, so it is safe on
@@ -2211,9 +2225,11 @@ back for that turn rather than block.
 `reset_dangling_default_agent` points `default_agent` back at the shipped
 `default` crew when the template the current default binds has been REMOVED — an
 earlier landed snapshot in this process let it dispatch and the current one does
-not. It runs only through `refresh_materialized_agents(heal_default=True)`, which
-only the owner's agent-catalog fetch passes (`dashboard/handlers/agent_catalog.py`),
-and only after a complete scan; the removal evidence is bounded
+not. It runs through `refresh_materialized_agents(heal_default=True)` after a
+complete scan, and on every owner agent-catalog fetch over a complete snapshot
+(`dashboard/handlers/agent_catalog.py`), whether or not that fetch rescanned,
+because it reads inputs the catalog's stamp does not cover (`config.local.json`,
+the edition's agents, the alias workspace's `.kiro/agents`); the removal evidence is bounded
 (`_MATERIALIZED_SEEN_MAX`, 4096 names). It declines on any uncertainty: an unreadable
 or degraded config, a missing `default` alias, a default already `default`, a
 template the edition still supplies, or a template the row's workspace
