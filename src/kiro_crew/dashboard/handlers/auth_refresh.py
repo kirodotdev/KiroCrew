@@ -51,6 +51,7 @@ from kiro_crew.dashboard.token_auth import (
     revoke_access_cookie,
 )
 from kiro_crew.sel import sel as _sel_fn
+from kiro_crew.shared_crew.identity import viewer_principal
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +434,10 @@ async def api_auth_me(request: web.Request) -> web.Response:
             # carries a token, a subject or an expiry -- both are one bit about
             # the request the caller just made.
             "owner_ok": owner_ok,
+            # The viewer's Shared Crew principal, as the auth middleware derived
+            # it (``shared_crew.identity``): id, kind and display label only.
+            # Unknown when no verified evidence named a person.
+            "principal": viewer_principal(request).to_public_dict(),
         }
     )
 
