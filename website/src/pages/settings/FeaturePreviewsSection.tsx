@@ -18,6 +18,7 @@ import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
+import { KAS_WORKFLOWS_CONFIG_KEY, useKasWorkflowsSetting } from '../../apps/workflows/kas/useKasWorkflows'
 import { i18nT } from '../../i18n/t'
 
 
@@ -195,6 +196,7 @@ export function FeaturePreviewsSection() {
     setGatewayRestarting(false)
     setRestartFailed(false)
   }, [sharedCrewNeedsRestart])
+  const kasWorkflows = useKasWorkflowsSetting()
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -432,6 +434,35 @@ export function FeaturePreviewsSection() {
           checked={crewmateHarness}
           onChange={v => setPreviewFlag(PREVIEW_CREWMATE_HARNESS, v)}
         />
+      </SettingsCard>
+      {/* Kiro Workflows on Kiro Agent: ONE gateway-wide opt-in
+          (`agent.kas_workflows`) that turns on every KAS-native surface at once
+          — the Workflows tab, the Task Runner, chat workflow tools and boot
+          recovery — but only when the agent backend is Kiro Agent. The single
+          switch replaced a per-device preview flag and a separate chat-workflows
+          toggle, so this card holds nothing else: creator-step effort and the
+          dock layout moved to the Kiro Agent section of Customize > Workflows,
+          shown there only while this switch is on.
+
+          A gateway setting, not a localStorage preview flag, so it carries a
+          `configKey` and is reached from Settings search like any other setting.
+          When the backend is not Kiro Agent the switch still saves (gateway-wide,
+          each chat picks it up on its next session) but says it has no effect
+          until the backend is Kiro Agent. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.kas_workflows')}
+          description={
+            kasWorkflows.loaded && !kasWorkflows.kasBackend
+              ? `${i18nT('pages.developer.featurePreviewsTab.kas_workflows_desc')} ${i18nT('pages.developer.featurePreviewsTab.kas_workflows_off_backend')}`
+              : i18nT('pages.developer.featurePreviewsTab.kas_workflows_desc')
+          }
+          checked={kasWorkflows.on}
+          disabled={kasWorkflows.save.isPending}
+          configKey={KAS_WORKFLOWS_CONFIG_KEY}
+          onChange={v => kasWorkflows.save.mutate(v)}
+        />
+        {kasWorkflows.save.isError && <ErrorNotice message={i18nT('pages.developer.featurePreviewsTab.kas_workflows_failed')} />}
       </SettingsCard>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
           and the Install button for the pinned engine. It lives here, not on the

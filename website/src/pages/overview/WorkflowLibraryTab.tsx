@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Bot,
   GitBranch,
   Library,
   ListTree,
@@ -30,6 +31,8 @@ import { i18nT } from '../../i18n/t'
 import SegmentedControl from '../../components/SegmentedControl'
 import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
 import WorkflowsRuns from '../../apps/workflows/WorkflowsRuns'
+import KasWorkflowsPanel from '../../apps/workflows/kas/KasWorkflowsPanel'
+import { KasEngineGate } from '../../apps/workflows/kas/KasEngineGate'
 
 interface EditorState {
   name: string
@@ -87,7 +90,52 @@ function errorText(error: unknown): string {
     : i18nT('pages.overview.workflowLibrary.request_failed')
 }
 
+/**
+ * Customize > Workflows. On a Kiro Agent backend (with the KAS workflows
+ * preview on) it opens in Kiro Agent mode, with the Crew library one segment
+ * away as "Crew scripts"; on every other backend it is the Crew library alone,
+ * exactly as before.
+ */
 export default function WorkflowLibraryTab() {
+  return (
+    <KasEngineGate fallback={<CrewWorkflowLibrary />}>
+      <KasWorkflowLibrary />
+    </KasEngineGate>
+  )
+}
+
+type WorkflowEngineView = 'kas' | 'crew'
+
+function KasWorkflowLibrary() {
+  const [engineView, setEngineView] = useState<WorkflowEngineView>('kas')
+  const engineSwitch = (
+    <div className="mb-4">
+      <SegmentedControl<WorkflowEngineView>
+        segments={[
+          { key: 'kas', label: i18nT('apps.workflows.kas.kiro_agent'), icon: <Bot size={14} /> },
+          { key: 'crew', label: i18nT('apps.workflows.kas.crew_scripts'), icon: <Library size={14} /> },
+        ]}
+        value={engineView}
+        onChange={setEngineView}
+        layoutId="workflow-engine-view"
+        collapse={false}
+      />
+    </div>
+  )
+  if (engineView === 'crew') return <CrewWorkflowLibrary engineSwitch={engineSwitch} />
+  return (
+    <Card className="min-h-[520px]">
+      <CardTitle className="flex-wrap">
+        <Workflow className="lucide-inline" />
+        {i18nT('apps.workflows.workflowsPage.workflows')}
+      </CardTitle>
+      {engineSwitch}
+      <KasWorkflowsPanel />
+    </Card>
+  )
+}
+
+function CrewWorkflowLibrary({ engineSwitch }: { engineSwitch?: ReactNode } = {}) {
   const queryClient = useQueryClient()
   const [view, setView] = useState<WorkflowManagementView>('library')
   const [filter, setFilter] = useState('')
@@ -294,6 +342,7 @@ export default function WorkflowLibraryTab() {
           </span>
         ) : null}
       </CardTitle>
+      {engineSwitch}
       <div className="mb-4">
         <SegmentedControl<WorkflowManagementView>
           segments={[
