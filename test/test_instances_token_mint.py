@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import await_until
 
 
 class TestTokenMint:
@@ -881,10 +882,10 @@ class TestTokenMintGeneric:
 
         async def _cancel_mid_mint() -> None:
             task = asyncio.create_task(tm.mint_remote_token("cd-1", ttl="20h", timeout_secs=30.0))
-            await asyncio.wait_for(waiting.wait(), timeout=5)
+            await await_until(waiting, what="the mint parked in communicate()")
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=5)
+                await await_until(task, what="the cancelled mint")
 
         asyncio.run(_cancel_mid_mint())
         assert killed == [(proc.pid, platform_compat.SIGKILL)]
