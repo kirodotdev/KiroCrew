@@ -1408,6 +1408,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
+    # Same reason, same place: while a terminal runs this conversation in
+    # kiro-cli, the turn would be refused at admission anyway, and refusing here
+    # leaves no unanswered user row behind (which would read as an interrupted
+    # turn). The admission check stays the authority for every other way in.
+    from kiro_crew.dashboard.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
+
+    if is_held(effective_session_key(slot)):
+        return web.json_response({"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409)
 
     # Fair admission (Shared Crew), charged to the initiator and decided before the
     # user row is recorded, so a refusal leaves nothing behind. The reservation

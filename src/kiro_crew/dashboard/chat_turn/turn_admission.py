@@ -339,6 +339,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._dispatch_lock = _dispatch_lock
     await _dispatch_lock.acquire()
     turn._dispatch_lock_held = True
+    # Under the same lock "Open in kiro-cli" takes for its handover: while a
+    # terminal runs this conversation in kiro-cli, starting this chat's own
+    # agent process would put a second writer on the same kiro-cli session.
+    from kiro_crew.dashboard.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
+
+    if is_held(session_key):
+        slot.append("error", HELD_TURN_REFUSAL, "msg msg-err")
+        return _Flow.END
     selected_binding = _current_binding(turn)
     turn.selected_binding = selected_binding
     registered_slot = state._slots.get(slot.key)

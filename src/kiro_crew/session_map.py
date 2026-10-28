@@ -734,6 +734,30 @@ class SessionMap:
         # already diverged on exactly this sentinel.
         return bounded_session_id(entry.get("discarded_sid")) or ""
 
+    def live_sid(self, key: str) -> tuple[str, str, str]:
+        """Read-only, in-memory: ``(sid, provider, cwd)`` *key* would resume now.
+
+        Each is ``""`` when unset; an absent provider label means kiro-cli, as
+        everywhere in this map. Folded through the same aliases :meth:`get`
+        folds, so a chat reopened from history reads its own entry. Unlike
+        :meth:`mapped_sid` it never answers from ``discarded_sid``: an id that
+        was emptied in place is not one to resume. Unlike :meth:`get` it neither
+        stats the transcript nor prunes, so it is safe on the event loop; a
+        caller about to resume through something other than ``session/load``
+        (the terminal's ``kiro-cli chat --resume-id``) checks the files itself
+        with :func:`session_files_resumable`.
+        """
+        entry = self._resolve_alias(key)[1]
+        if not entry:
+            return "", "", ""
+        provider = entry.get("provider")
+        cwd = entry.get("cwd")
+        return (
+            bounded_session_id(entry.get("sid")) or "",
+            provider if isinstance(provider, str) else "",
+            cwd if isinstance(cwd, str) else "",
+        )
+
     def _note_bind(self, key: str) -> None:
         """Announce one COMMITTED channel binding. The choke point both bind paths use.
 

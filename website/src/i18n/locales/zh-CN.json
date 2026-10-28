@@ -6514,7 +6514,8 @@
       "touch_select_done": "已选择范围 — 点按复制",
       "use_here": "在此窗口使用终端",
       "use_starting_directory": "使用终端起始目录",
-      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。"
+      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。",
+      "kiro_cli_refused_message": "此聊天的 kiro-cli 未打开（{{reason}}）。重新连接即可重试。"
     },
     "codeBlock": {
       "add_comment": "添加评论",
@@ -8491,7 +8492,20 @@
       "mute": "静音此会话",
       "unmute": "取消静音此会话",
       "mute_failed": "无法静音此会话",
-      "unmute_failed": "无法取消静音此会话"
+      "unmute_failed": "无法取消静音此会话",
+      "open_in_kiro_cli": "在 kiro-cli 中打开",
+      "open_in_kiro_cli_tooltip": "在终端的 kiro-cli 中继续此对话。kiro-cli 退出前，此聊天会暂停。",
+      "open_in_kiro_cli_default_agent": "使用 kiro-cli 的默认代理打开。{{agent}} 没有 kiro-cli 可以加载的代理文件。",
+      "kiro_cli_check_failed": "无法检查 kiro-cli",
+      "kiro_cli_blocked_no_session": "尚无对话",
+      "kiro_cli_blocked_no_log": "缺少对话日志",
+      "kiro_cli_blocked_no_project": "缺少项目文件夹",
+      "kiro_cli_blocked_not_installed": "未安装 kiro-cli",
+      "kiro_cli_blocked_already_open": "已打开",
+      "kiro_cli_blocked_unavailable": "不可用",
+      "kiro_cli_blocked_terminals_full": "终端标签页已满",
+      "kiro_cli_blocked_project_agent": "项目有自己的 kiro-cli 配置",
+      "kiro_cli_blocked_ended": "kiro-cli 已退出"
     },
     "sessionTurnLimit": {
       "all_sessions": "所有会话：打开设置",

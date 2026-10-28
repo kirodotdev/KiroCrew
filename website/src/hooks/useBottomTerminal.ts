@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { safeGetItem, safeGetSessionItem, safeRemoveItem, safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 import { createTerminalHydrateRuling } from '../utils/terminalHydrateRuling'
+import { armKiroCliOpen } from '../utils/terminalRegistry'
 
 /* ── App-wide bottom terminal panel ───────────────────────────────────────
  * A single docked terminal panel shared by the ENTIRE app (every route), as
@@ -34,6 +35,9 @@ export interface TermTab {
    *  shell for. Sent with the socket, so the gateway refuses a local shell once
    *  that chat runs on a Session Environment, whatever the browser last read. */
   chatSlot?: string
+  /** "Open in kiro-cli": the chat whose own kiro-cli conversation this tab runs.
+   *  The gateway builds the command from that chat; nothing else is sent. */
+  kiroCliSlot?: string
   /** User label; absent means follow the shell's live title. */
   name?: string
 }
@@ -396,6 +400,23 @@ export function addTab(cwd?: string, chatSlot?: string): string | null {
   }
   const id = mintId()
   set({ ...state, open: true, tabs: [...state.tabs, { id, cwd, ...(chatSlot ? { chatSlot } : {}) }], activeId: id })
+  return id
+}
+
+/** "Open in kiro-cli": a new tab running chat `slot`'s own kiro-cli conversation.
+ *  An open tab for the same chat is focused instead (the gateway lets one
+ *  terminal hold a conversation). Returns the tab's id, or null at the cap. */
+export function addKiroCliTab(slot: string): string | null {
+  const existing = state.tabs.find(t => t.kiroCliSlot === slot)
+  if (existing) {
+    set({ ...state, open: true, activeId: existing.id })
+    return existing.id
+  }
+  if (state.tabs.length >= MAX_TERMINALS) return null
+  const id = mintId()
+  // Before the tab exists, so its first connection finds the intent armed.
+  armKiroCliOpen(id)
+  set({ ...state, open: true, tabs: [...state.tabs, { id, kiroCliSlot: slot }], activeId: id })
   return id
 }
 

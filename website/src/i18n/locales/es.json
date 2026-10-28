@@ -6742,7 +6742,8 @@
       "touch_select_done": "Rango seleccionado: toca Copiar",
       "use_here": "Usar la terminal aquí",
       "use_starting_directory": "Usar el directorio inicial del terminal",
-      "use_starting_directory_hint": "Abre un shell nuevo en el directorio de terminal configurado en el servidor (dashboard.terminal.cwd o, si no existe, el directorio personal del servidor). El comando fallido no se vuelve a enviar."
+      "use_starting_directory_hint": "Abre un shell nuevo en el directorio de terminal configurado en el servidor (dashboard.terminal.cwd o, si no existe, el directorio personal del servidor). El comando fallido no se vuelve a enviar.",
+      "kiro_cli_refused_message": "kiro-cli no se abrió para este chat ({{reason}}). Vuelve a conectar para intentarlo de nuevo."
     },
     "codeBlock": {
       "add_comment": "Añadir comentario",
@@ -8765,7 +8766,20 @@
       "mute": "Silenciar esta sesión",
       "unmute": "Dejar de silenciar esta sesión",
       "mute_failed": "No se pudo silenciar esta sesión",
-      "unmute_failed": "No se pudo reactivar el sonido de esta sesión"
+      "unmute_failed": "No se pudo reactivar el sonido de esta sesión",
+      "open_in_kiro_cli": "Abrir en kiro-cli",
+      "open_in_kiro_cli_tooltip": "Continúa esta conversación en kiro-cli en la terminal. Este chat se pausa hasta que kiro-cli termine.",
+      "open_in_kiro_cli_default_agent": "Se abre con el agente predeterminado de kiro-cli. {{agent}} no tiene un archivo de agente que kiro-cli pueda cargar.",
+      "kiro_cli_check_failed": "No se pudo comprobar kiro-cli",
+      "kiro_cli_blocked_no_session": "aún sin conversación",
+      "kiro_cli_blocked_no_log": "falta el registro de la conversación",
+      "kiro_cli_blocked_no_project": "falta la carpeta del proyecto",
+      "kiro_cli_blocked_not_installed": "kiro-cli no instalado",
+      "kiro_cli_blocked_already_open": "ya abierto",
+      "kiro_cli_blocked_unavailable": "no disponible",
+      "kiro_cli_blocked_terminals_full": "pestañas de terminal llenas",
+      "kiro_cli_blocked_project_agent": "el proyecto tiene su propia configuración de kiro-cli",
+      "kiro_cli_blocked_ended": "kiro-cli terminó"
     },
     "sessionTurnLimit": {
       "all_sessions": "Todas las sesiones: abrir Ajustes",

@@ -6628,7 +6628,8 @@
       "touch_select_done": "श्रेणी चयनित — कॉपी टैप करें",
       "use_here": "टर्मिनल यहाँ उपयोग करें",
       "use_starting_directory": "टर्मिनल की शुरुआती डायरेक्टरी इस्तेमाल करो",
-      "use_starting_directory_hint": "सर्वर पर कॉन्फ़िगर की गई टर्मिनल डायरेक्टरी में नया शेल खोलता है (dashboard.terminal.cwd, नहीं तो सर्वर की होम डायरेक्टरी)। विफल कमांड दोबारा नहीं भेजी जाती।"
+      "use_starting_directory_hint": "सर्वर पर कॉन्फ़िगर की गई टर्मिनल डायरेक्टरी में नया शेल खोलता है (dashboard.terminal.cwd, नहीं तो सर्वर की होम डायरेक्टरी)। विफल कमांड दोबारा नहीं भेजी जाती।",
+      "kiro_cli_refused_message": "इस चैट के लिए kiro-cli नहीं खुला ({{reason}})। फिर से कोशिश करने के लिए दोबारा कनेक्ट करो।"
     },
     "codeBlock": {
       "add_comment": "टिप्पणी जोड़ें",
@@ -8628,7 +8629,20 @@
       "mute": "यह सत्र म्यूट करो",
       "unmute": "यह सत्र अनम्यूट करो",
       "mute_failed": "यह सत्र म्यूट नहीं हो सका",
-      "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका"
+      "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका",
+      "open_in_kiro_cli": "kiro-cli में खोलो",
+      "open_in_kiro_cli_tooltip": "यह बातचीत टर्मिनल में kiro-cli में जारी रखो। kiro-cli बंद होने तक यह चैट रुकी रहती है।",
+      "open_in_kiro_cli_default_agent": "kiro-cli के डिफ़ॉल्ट एजेंट से खुलता है। {{agent}} की कोई एजेंट फ़ाइल नहीं है जिसे kiro-cli लोड कर सके।",
+      "kiro_cli_check_failed": "kiro-cli की जाँच नहीं हो सकी",
+      "kiro_cli_blocked_no_session": "अभी कोई बातचीत नहीं",
+      "kiro_cli_blocked_no_log": "बातचीत का लॉग नहीं मिला",
+      "kiro_cli_blocked_no_project": "प्रोजेक्ट फ़ोल्डर नहीं मिला",
+      "kiro_cli_blocked_not_installed": "kiro-cli इंस्टॉल नहीं है",
+      "kiro_cli_blocked_already_open": "पहले से खुला है",
+      "kiro_cli_blocked_unavailable": "उपलब्ध नहीं",
+      "kiro_cli_blocked_terminals_full": "टर्मिनल टैब भरे हुए",
+      "kiro_cli_blocked_project_agent": "प्रोजेक्ट का अपना kiro-cli कॉन्फ़िगरेशन है",
+      "kiro_cli_blocked_ended": "kiro-cli बंद हो गया है"
     },
     "sessionTurnLimit": {
       "all_sessions": "सभी सत्र: सेटिंग्स खोलो",

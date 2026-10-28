@@ -19,7 +19,7 @@ from kiro_crew.dashboard import (
     handlers_instances,
     handlers_project,
 )
-from kiro_crew.dashboard.handlers import external_terminal
+from kiro_crew.dashboard.handlers import external_terminal, kiro_cli_launch
 from kiro_crew.dashboard.handlers.auth_mobile import api_auth_mobile_link
 from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_logout,
@@ -51,6 +51,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/terminal/redact", handlers.api_terminal_redact)
     app.router.add_post("/api/terminal/complete", handlers.api_terminal_complete)
     app.router.add_delete("/api/terminal/sessions/{session_id}", handlers.api_terminal_delete)
+    # "Open in kiro-cli": whether a chat can be opened in kiro-cli in the
+    # terminal (the open itself is the terminal WS, ?kiro_cli_slot=).
+    app.router.add_get("/api/terminal/kiro-cli/{slot}", kiro_cli_launch.api_chat_slot_kiro_cli)
     # External terminal app: the owner's approval, then the desktop shell's
     # machine-only redemption (see handlers/external_terminal.py).
     app.router.add_post("/api/terminal/external", external_terminal.api_terminal_external)

@@ -48,6 +48,8 @@ import {
   useTerminalManualRetry,
   useTerminalInvalidCwd,
   useTerminalWrongMachine,
+  useTerminalKiroCliRefusal,
+  armKiroCliOpen,
   retryTerminalConnection,
 } from '../utils/terminalRegistry'
 
@@ -518,6 +520,33 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES[0].url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?remote_slot=chat-1`)
     })
 
+    it('names only the chat for a kiro-cli tab: no cwd, no other slot', () => {
+      const id = session('dial-kiro-cli')
+      armKiroCliOpen(id)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/w', 'chat-2', 'chat-3', 'chat 1')
+      expect(WS_INSTANCES[0].url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?kiro_cli_slot=chat%201&kiro_cli_open=1`)
+    })
+
+    it('a kiro-cli tab the user did not just open (restored, redocked) only reattaches', () => {
+      const id = session('kiro-cli-restored')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, 'chat-1')
+      expect(WS_INSTANCES[WS_INSTANCES.length - 1].url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?kiro_cli_slot=chat-1`)
+    })
+
+    it('asks to open kiro-cli only on the first dial, never on a redial after it started', () => {
+      vi.useFakeTimers()
+      const id = session('kiro-cli-redial')
+      armKiroCliOpen(id)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, 'chat-1')
+      const first = WS_INSTANCES[WS_INSTANCES.length - 1]
+      expect(first.url).toContain('kiro_cli_open=1')
+      act(() => { first.simulateOpen(); first.simulateJson({ type: 'ready' }); first.simulateClose() })
+      act(() => { vi.advanceTimersByTime(60_000) })
+      const redial = WS_INSTANCES[WS_INSTANCES.length - 1]
+      expect(redial).not.toBe(first)
+      expect(redial.url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?kiro_cli_slot=chat-1`)
+    })
+
     it('is idempotent — a second mount reuses the first socket', () => {
       const id = session('idempotent')
       const first = new FakeTerm()
@@ -688,6 +717,25 @@ describe('terminalRegistry', () => {
       act(() => { retryTerminalConnection(id) })
       expect(result.current.wrongMachine).toBe(false)
       expect(WS_INSTANCES).toHaveLength(2)
+    })
+    it('parks a kiro-cli tab the gateway refused, naming the refusal, until the user retries', () => {
+      vi.useFakeTimers()
+      const id = session('kiro-cli-refused')
+      armKiroCliOpen(id)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, 'chat-1')
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      const { result } = renderHook(() => ({ status: useTerminalConnStatus(id), refusal: useTerminalKiroCliRefusal(id) }))
+      act(() => { ws.simulateJson({ type: 'error', code: 'kiro_cli_busy', message: 'x' }); ws.simulateClose() })
+      expect(result.current).toEqual({ status: 'disconnected', refusal: 'kiro_cli_busy' })
+      // No automatic redial: it would only meet the same refusal.
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current.refusal).toBeUndefined()
+      expect(WS_INSTANCES).toHaveLength(2)
+      // The user's own retry asks to open again.
+      expect(WS_INSTANCES[1].url).toContain('kiro_cli_open=1')
     })
     it('redials a shell whose placement could not be read, instead of parking it', () => {
       vi.useFakeTimers()

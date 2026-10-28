@@ -523,6 +523,13 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
     )
 
 
+def _open_in_kiro_cli(session_key: str) -> bool:
+    """Whether a terminal runs *session_key*'s conversation in kiro-cli now."""
+    from kiro_crew.dashboard.kiro_cli_handoff import is_held
+
+    return is_held(session_key)
+
+
 async def _runs_on_a_session_environment(session_key: str) -> bool:
     """Whether ``session_key`` is bound to a remote Session Environment profile.
 
@@ -606,6 +613,10 @@ async def _eager_spawn(
                 # simply stands down.
                 return
             session_key = effective_session_key(slot)
+            if _open_in_kiro_cli(session_key):
+                # The conversation runs in kiro-cli in a terminal: a second
+                # process loading it now would write the same session.
+                return
             if await _runs_on_a_session_environment(session_key):
                 # Its start creates or wakes a billed remote workspace: that is
                 # left to the first real message, whichever signal armed this.
@@ -815,6 +826,7 @@ async def _eager_spawn(
                 state.get_slot(slot.key) is not slot
                 or slot.running
                 or _slot_binding(slot) != _bound
+                or _open_in_kiro_cli(session_key)
             ):
                 return
             if shutdown_event.is_set():

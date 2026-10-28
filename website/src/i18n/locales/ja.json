@@ -6514,7 +6514,8 @@
       "touch_select_done": "範囲を選択 — コピーをタップ",
       "use_here": "ここでターミナルを使う",
       "use_starting_directory": "ターミナルの開始ディレクトリを使用",
-      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。"
+      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。",
+      "kiro_cli_refused_message": "このチャットの kiro-cli は開きませんでした ({{reason}})。もう一度試すには再接続してください。"
     },
     "codeBlock": {
       "add_comment": "コメントを追加",
@@ -8491,7 +8492,20 @@
       "mute": "このセッションをミュート",
       "unmute": "このセッションのミュートを解除",
       "mute_failed": "このセッションをミュートできませんでした",
-      "unmute_failed": "このセッションのミュートを解除できませんでした"
+      "unmute_failed": "このセッションのミュートを解除できませんでした",
+      "open_in_kiro_cli": "kiro-cli で開く",
+      "open_in_kiro_cli_tooltip": "この会話をターミナルの kiro-cli で続けます。kiro-cli が終了するまで、このチャットは一時停止します。",
+      "open_in_kiro_cli_default_agent": "kiro-cli の既定のエージェントで開きます。{{agent}} には kiro-cli が読み込めるエージェントファイルがありません。",
+      "kiro_cli_check_failed": "kiro-cli を確認できませんでした",
+      "kiro_cli_blocked_no_session": "まだ会話がありません",
+      "kiro_cli_blocked_no_log": "会話ログがありません",
+      "kiro_cli_blocked_no_project": "プロジェクトフォルダーがありません",
+      "kiro_cli_blocked_not_installed": "kiro-cli 未インストール",
+      "kiro_cli_blocked_already_open": "既に開いています",
+      "kiro_cli_blocked_unavailable": "利用できません",
+      "kiro_cli_blocked_terminals_full": "ターミナルタブが上限です",
+      "kiro_cli_blocked_project_agent": "プロジェクトに独自の kiro-cli 設定があります",
+      "kiro_cli_blocked_ended": "kiro-cli は終了しました"
     },
     "sessionTurnLimit": {
       "all_sessions": "すべてのセッション：設定を開く",
