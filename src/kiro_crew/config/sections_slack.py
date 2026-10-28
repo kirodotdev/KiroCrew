@@ -193,6 +193,20 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    agent_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Sessions",
+            "Run Slack threads as Slack agent sessions: threads show a live status "
+            "and title, and Slack's native Stop button cancels the turn. Adds the "
+            "agent view (features.agent_view), the assistant:write scope and the "
+            "agent-session events to the generated app manifest; an installed app "
+            "needs that manifest update and a reinstall before it takes effect, and "
+            "until then Slack behaves as before. Slack cannot switch an app back "
+            "from agent_view to assistant_view. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
 
 
 ACTIVATION_ALWAYS = "always"  # Process every message
