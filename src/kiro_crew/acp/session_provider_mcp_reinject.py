@@ -71,7 +71,21 @@ def mark_mcp_config_changed(self: AcpSessionProvider) -> None:
         # left set here would make the first turn on it attempt a verb the host
         # was never measured to take.
         return
+    if _mcp_independent(self):
+        return
     self._mcp_reinject_pending = True
+
+
+def _mcp_independent(self: AcpSessionProvider) -> bool:
+    """Whether a local MCP config change has nothing to change in this session.
+
+    A Kiro Cloud session (``AcpRuntime.set_cloud_sandbox``) sends no MCP
+    servers, so the writer's change is already applied to it: there is no
+    projection to re-send. Re-loading it anyway would also run outside the
+    cloud start's ``hold_cloud_resume``, and the approvals KAS replays on that
+    load would be rejected as unroutable instead of reaching the user's card.
+    """
+    return self._runtime.is_cloud_sandbox is True
 
 
 async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
@@ -107,6 +121,11 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
     teardown is the record-keeping eviction instead.
     """
     if not getattr(self, "_mcp_reinject_pending", False):
+        return
+    if _mcp_independent(self):
+        # Nothing to re-send (see ``_mcp_independent``); a mark that reached it
+        # some other way is dropped rather than turned into a reload.
+        self._mcp_reinject_pending = False
         return
     old = self._handle
     sid = old.session_id

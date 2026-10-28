@@ -45,11 +45,14 @@ def _handle(**overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _runtime(backend: str = ACP_BACKEND_KAS, *, alive: bool = True) -> SimpleNamespace:
+def _runtime(
+    backend: str = ACP_BACKEND_KAS, *, alive: bool = True, cloud: bool = False
+) -> SimpleNamespace:
     new_handle = _handle(model="")
     kept: list[str] = []
     runtime = SimpleNamespace(
         acp_backend=backend,
+        is_cloud_sandbox=cloud,
         _agent="kirocrew",
         is_alive=lambda: alive,
         evict_session=AsyncMock(),
@@ -93,6 +96,43 @@ class TestTheMark:
         provider = _provider(_runtime(ACP_BACKEND_KIRO))
         assert provider.mcp_config_wire_reinject is False
         provider.mark_mcp_config_changed()
+        assert provider._mcp_reinject_pending is False
+
+
+class TestACloudSession:
+    """A Kiro Cloud session sends no MCP servers, so a local MCP edit has nothing
+    to change in it. Re-loading it anyway would run outside the cloud start's
+    resume hold, and the approvals KAS replays on that load would be rejected
+    as unroutable instead of reaching the user's approval card."""
+
+    def test_it_ignores_the_mark(self) -> None:
+        provider = _provider(_runtime(cloud=True))
+        provider.mark_mcp_config_changed()
+        assert provider._mcp_reinject_pending is False
+
+    @pytest.mark.asyncio
+    async def test_it_never_reloads_even_with_a_mark_pending(self) -> None:
+        runtime = _runtime(cloud=True)
+        provider = _provider(runtime)
+        old = provider._handle
+        provider._mcp_reinject_pending = True
+        await provider.apply_pending_mcp_reinjection()
+        runtime.evict_session.assert_not_awaited()
+        runtime.load_session.assert_not_awaited()
+        assert provider._handle is old
+        assert provider._mcp_reinject_pending is False
+
+    def test_the_writer_neither_resets_nor_marks_it(self) -> None:
+        """The dashboard writer's gate: a cloud session must not force a reset of
+        every live session, and the mark it hands out must not stick."""
+        from kiro_crew.mcp_hot_reload import (
+            live_sessions_apply_mcp_live,
+            mark_reinjecting_providers,
+        )
+
+        provider = _provider(_runtime(cloud=True))
+        assert live_sessions_apply_mcp_live([provider]) is True
+        mark_reinjecting_providers([provider])
         assert provider._mcp_reinject_pending is False
 
 
