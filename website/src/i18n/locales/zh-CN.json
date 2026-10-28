@@ -11520,6 +11520,14 @@
         "session_colors": "会话颜色",
         "save_failed": "无法保存会话颜色"
       },
+      "sessionMessageCard": {
+        "needs_you": "需要你处理",
+        "open_session": "打开 {{name}}",
+        "show_less": "收起",
+        "show_more": "显示更多",
+        "this_session": "当前会话",
+        "to_recipient": "已发送给 {{name}}"
+      },
       "sessionFlyout": {
         "new": "新建",
         "new_chat": "新建聊天",

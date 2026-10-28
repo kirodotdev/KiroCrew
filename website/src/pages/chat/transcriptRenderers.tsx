@@ -54,6 +54,9 @@ import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
 import UserMessage from './UserMessage'
+import SessionMessageCard from './SessionMessageCard'
+import { isSessionSendTool, parseSessionSend, readRelay, stripRelayPrefix } from './sessionRelay'
+import { i18nT } from '../../i18n/t'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
 import { CardCornersContext } from '../../cards/cardCorners'
@@ -403,6 +406,33 @@ export function createTranscriptRenderers(
     //    grouping logic uses, so a launch card and TurnBlock can never
     //    disagree about whether a row is a launch. ──
     {
+      // A cross-session message this session RECEIVED (`session_send` /
+      // `session_broadcast`): the gateway stamped `meta.relay` on the delivered
+      // user row, so it draws as the INCOMING session-message card from that
+      // trusted field. Refines `user` and precedes the generic bubble;
+      // the body has its `[sent by session …]` provenance opener stripped, since
+      // the card names the sender structurally. A message the person typed carries
+      // no `meta.relay` and is never a card.
+      id: 'session_relay_incoming',
+      roles: ['user'],
+      match: m => readRelay(m.meta) !== null,
+      render: (m, ctx) => {
+        const relay = readRelay(m.meta)
+        if (!relay) return null
+        const title = o.sessions?.get(relay.senderKey) || relay.senderKey
+        return ctx.row(
+          <SessionMessageCard
+            key={ctx.key}
+            direction="incoming"
+            sender={{ key: relay.senderKey, title }}
+            body={stripRelayPrefix(m.content)}
+            onOpenSession={o.onSessionOpen}
+          />,
+          true,
+        )
+      },
+    },
+    {
       id: 'workflow_run_tool',
       roles: ['tool'],
       match: m => !!m.content?.startsWith('🔧') && isWorkflowRunTool(m),
@@ -422,6 +452,34 @@ export function createTranscriptRenderers(
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
         return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} />, true)
+      },
+    },
+    {
+      // This session's OWN `session_send` tool call: the OUTGOING session-message
+      // card, with the target as the body's `@tag`. Refines the generic
+      // tool line and must precede it; a call whose args will not parse falls
+      // through to that line. `session_broadcast` (many targets) is left to the
+      // generic line — one `@tag` cannot name a fan-out.
+      id: 'session_send_tool',
+      roles: ['tool'],
+      match: m => !!m.content?.startsWith('🔧') && isSessionSendTool(m),
+      render: (m, ctx) => {
+        const call = parseSessionSend(m)
+        if (!call) return toolLine(m, ctx)
+        const selfKey = o.slot ?? o.activeSession ?? ''
+        const selfTitle = (selfKey && o.sessions?.get(selfKey)) || i18nT('pages.chat.sessionMessageCard.this_session')
+        const recipientTitle = o.sessions?.get(call.target) || call.target
+        return ctx.row(
+          <SessionMessageCard
+            key={ctx.key}
+            direction="outgoing"
+            sender={{ key: selfKey || 'self', title: selfTitle }}
+            recipient={{ key: call.target, title: recipientTitle }}
+            body={call.message}
+            onOpenSession={o.onSessionOpen}
+          />,
+          true,
+        )
       },
     },
     {
