@@ -4,6 +4,7 @@ import { useAppSelector, type useAppDispatch } from '../../store'
 import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { useToolPillVisible } from '../../store/toolPillRegistry'
 import { api, ApiError } from '../../api/client'
+import type { KasQuestionItem } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { safeSetItem, safeGetItem } from '../../utils/safeStorage'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -51,6 +52,35 @@ const APPROVAL_NUDGE_THRESHOLD = 3
 const EMPTY_SPAWN_APPROVALS: ReturnType<typeof selectSlotPendingSpawnApprovals> = []
 
 export const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
+
+/** The chat's OWN Kiro Agent question carried on a permission card's
+ *  `meta.kas_question` (G2), in the shape of one `/state` `questions[]` entry.
+ *  Only a card with this is a question card; `workflowId`/`nodeId` are null on
+ *  it (not a workflow step), so only what the form renders is typed. */
+export interface KasChatQuestionMeta {
+  key: string
+  title?: string | null
+  questions: KasQuestionItem[]
+}
+
+/** Parse `meta.kas_question`, tolerating either an object or a JSON string
+ *  (permission rows are rehydrated from a JSON blob). Returns null for anything
+ *  that is not a well-formed question, so a malformed payload falls back to the
+ *  ordinary Allow / Reject card rather than crashing the composer. */
+export function parseKasQuestion(raw: unknown): KasChatQuestionMeta | null {
+  let value = raw
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return null
+    }
+  }
+  if (!value || typeof value !== 'object') return null
+  const o = value as Record<string, unknown>
+  if (typeof o.key !== 'string' || !Array.isArray(o.questions) || o.questions.length === 0) return null
+  return o as unknown as KasChatQuestionMeta
+}
 
 export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch }: {
   slotId: string | null
@@ -102,6 +132,9 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   const activeSlot = slotId
   const approvalMeta = pendingApproval?.meta as Record<string, unknown> | undefined
   const approvalId = approvalMeta?.approval_id as string | undefined
+  // G2: a card carrying a KAS question (chat's own `user_input`, person-only)
+  // is answered with the real answers, not Allow / Reject.
+  const kasQuestion = parseKasQuestion(approvalMeta?.kas_question)
   const approvalToolInput = (approvalMeta?.tool_input as string) || ''
   const approvalIsReadOnly = !!(approvalMeta?.is_read_only)
   const approvalFullCommand = (approvalMeta?.full_command as string) || ''
@@ -293,7 +326,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch])
 
   return {
-    pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
+    pendingApproval, hasApproval, approvalId, kasQuestion, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,

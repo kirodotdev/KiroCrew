@@ -7,6 +7,7 @@ import { useStableMessageKey } from '../../chat-core/transcript/useStableMessage
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { isWorkflowRunTool } from './WorkflowRunCard'
+import { isKasRunWorkflowTool } from '../../apps/workflows/kas/KasInlineRunCard'
 import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
@@ -23,7 +24,7 @@ import { i18nT } from '../../i18n/t'
 // (WorkflowRunCard), so it must never be folded into the collapsible tool-call
 // group — treat it as a non-tool, always-visible item.
 const isWorkflowRunItem = (it: TurnItem) =>
-  it.kind === 'single' && it.msg.role === 'tool' && isWorkflowRunTool(it.msg)
+  it.kind === 'single' && it.msg.role === 'tool' && (isWorkflowRunTool(it.msg) || isKasRunWorkflowTool(it.msg))
 // Same for a spawn_run launch (SubagentRunCard): folding it into "Worked
 // through N steps" would leave a spawned wave with no visible record in
 // scrollback.

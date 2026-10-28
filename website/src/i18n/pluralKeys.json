@@ -310,7 +310,11 @@
   "pages.mcpManagement.approval_title",
   "pages.mcpManagement.confirm_will_share",
   "apps.issueRadar.components.threads.show_earlier",
+  "apps.workflows.kas.dock_workflows",
+  "apps.workflows.kas.dock_needs_you",
+  "apps.workflows.kas.dock_more",
   "apps.workflows.kas.group_summary_input",
   "apps.workflows.kas.group_summary_failed",
-  "apps.workflows.kas.group_summary_steps"
+  "apps.workflows.kas.group_summary_steps",
+  "apps.workflows.kas.load_more"
 ]

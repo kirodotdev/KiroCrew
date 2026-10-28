@@ -38,6 +38,7 @@ import ErrorBoundary from '../../components/ErrorBoundary'
 import { fetchFileRead } from '../../utils/fileReadQuery'
 import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
+import { useKasSidebarActivity } from '../../apps/workflows/kas/useKasWorkflows'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import type { ChatPin } from '../../api/pins'
@@ -277,6 +278,26 @@ export default function SidePanel({
   const terminalEnabled = useTerminalEnabled() && remoteEnvironment !== undefined
   const placementRef = useRef(remoteEnvironment)
   placementRef.current = remoteEnvironment
+  // Gap 8: this chat's Kiro Agent workflow activity, from the shared KAS state
+  // poll narrowed to this slot (inert unless the KAS preview is on and the
+  // backend is KAS). Drives the Workflows tab chip's needs-you / live-run badge
+  // and the pick-a-panel grid badge — the chat chrome never showed either.
+  const kasWf = useKasSidebarActivity(slot)
+  const workflowsBadge = kasWf
+    ? kasWf.attention
+      ? (
+        <span
+          className="inline-flex items-center justify-center w-2 h-2 rounded-full bg-warn shrink-0"
+          role="img"
+          aria-label={i18nT('pages.chat.sidePanel.workflow_needs_you')}
+          title={i18nT('pages.chat.sidePanel.workflow_needs_you')}
+          data-testid="side-tab-workflow-needs-you"
+        />
+      )
+      : kasWf.count > 0
+        ? <span className="tabular-nums" data-testid="side-tab-workflow-count">{kasWf.count}</span>
+        : null
+    : null
   // Whether to offer the Summary row at all. Read from the panel's OWN endpoint
   // and under the SAME query key the Summary tab uses, so this is one cheap
   // request per slot that doubles as that tab's prefetch rather than a second
@@ -685,6 +706,7 @@ export default function SidePanel({
               onCloseOthers={() => handleCloseTabs(dynamicTabs.filter(tab => tab.id !== t.id))}
               onCloseRight={() => handleCloseTabs(dynamicTabs.slice(i + 1))}
               onCloseAll={() => handleCloseTabs(dynamicTabs)}
+              badge={t.kind === 'workflows' ? workflowsBadge : undefined}
             />
           ))}
         </Reorder.Group>
@@ -885,6 +907,11 @@ export default function SidePanel({
                   ? `${Object.values(subagents).filter(s => s.status === 'running' || s.status === 'tool').length} running`
                   : item.kind === 'logs' && toolLog.length > 0
                     ? `${toolLog.length} calls`
+                    : item.kind === 'workflows' && kasWf
+                      // Gap 8: needs-you outranks a plain run count on the grid too.
+                      ? (kasWf.attention
+                          ? i18nT('pages.chat.sidePanel.workflow_needs_you')
+                          : kasWf.count > 0 ? i18nT('pages.chat.sidePanel.workflows_running', { count: kasWf.count }) : null)
                     : null
                 const descKey = NEW_MENU_DESC_KEY[item.kind]
                 return (
@@ -897,7 +924,7 @@ export default function SidePanel({
                       <span className="shrink-0 opacity-80">{item.icon}</span>
                       <span className="text-[13px] font-medium">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
                       {badge && (
-                        <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium shrink-0">{badge}</span>
+                        <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium shrink-0" data-testid={item.kind === 'workflows' ? 'side-grid-workflow-badge' : undefined}>{badge}</span>
                       )}
                     </div>
                     {descKey && (
