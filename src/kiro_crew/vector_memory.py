@@ -133,6 +133,7 @@ from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
 from kiro_crew.vector_memory_runtime import store_bookkeeping as _store_bookkeeping
+from kiro_crew.vector_memory_runtime import term_index as _term_index  # noqa: F401
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
     _EmbeddingVector,
     _RecallQuery,

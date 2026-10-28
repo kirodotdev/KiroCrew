@@ -77,6 +77,7 @@ RUNTIME_MODULES = frozenset(
         "retirement",
         "semantic",
         "store_bookkeeping",
+        "term_index",
         "text_scoring",
         "write_outcomes",
     }

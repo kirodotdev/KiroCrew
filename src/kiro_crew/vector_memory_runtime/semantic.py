@@ -15,6 +15,7 @@ import logging
 import re
 import struct
 import sys
+import threading
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from kiro_crew.lesson_validation import order_by_request_relevance
 from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
 from kiro_crew.vector_memory_runtime import lessons as _lessons
+from kiro_crew.vector_memory_runtime import term_index as _term_index
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
 
@@ -113,6 +115,45 @@ def _scoring_row_tokens(scoring: _SemanticScoringSet):
         return tokens
 
     return row_tokens
+
+
+def _scoring_term_index(store: VectorMemoryStore, scoring: _SemanticScoringSet, identities):
+    """``(index, key texts)`` for the set, built on first use; ``None`` without one.
+
+    Texts ``2i`` and ``2i + 1`` of the :class:`~term_index.RowTermIndex` are row
+    ``i``'s key text and lowercased value, the two texts the V1 loop scores. A
+    value is fixed for the set's lifetime; a key text also reads the row's
+    identity, so the key texts indexed are kept and the loop tokenizes one that
+    has changed since. One build per set:
+    concurrent first builds wait for it rather than each stemming every row.
+    ``None`` without numpy or past :data:`~term_index.MAX_TERM_IDS`, and the
+    loop keeps the per-text memo.
+    """
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    if not vm._HAS_NUMPY:
+        return None
+    derived = scoring.derived
+    if "term_index" in derived:
+        return derived["term_index"]
+    with derived.setdefault("term_index_lock", threading.Lock()):
+        if "term_index" not in derived:
+            texts: list[str] = []
+            key_texts: list[str] = []
+            for raw in scoring.rows:
+                key = str(raw["key"])
+                identity = identities.get(key)
+                label = (
+                    key
+                    if identity is None
+                    else store._fact_label({"key": key, "identity": identity})
+                )
+                key_texts.append(label.replace("_", " ").replace(".", " "))
+                texts.append(key_texts[-1])
+                texts.append(str(raw["value_json"]).lower())
+            index = _term_index.RowTermIndex.build(texts, vm.np)
+            derived["term_index"] = None if index is None else (index, tuple(key_texts))
+    return derived["term_index"]
 
 
 # Rows widened to float64 at a time when scoring against the resident matrix.
@@ -921,14 +962,23 @@ def semantic_candidates_v1(
         row_tokens = _text_scoring._row_stem_tokens_for_scan(2 * len(all_rows))
 
     blocked = store._ineligible_ids()
+    indexed = _scoring_term_index(store, scoring, identities) if scoring is not None else None
+    hits = indexed[0].query(query_words) if indexed is not None else None
     for i, raw in enumerate(all_rows):
         key = raw["key"]
         if blocked and record_meta.record_id_for("fact", key) in blocked:
             continue
         identity = identities.get(key)
         label = key if identity is None else store._fact_label({"key": key, "identity": identity})
-        key_words = row_tokens(label.replace("_", " ").replace(".", " "))
-        val_words = row_tokens(raw["value_json"].lower())
+        key_text = label.replace("_", " ").replace(".", " ")
+        if hits is not None and indexed is not None and indexed[1][i] == key_text:
+            # The query's terms in each text, which is all the scoring below
+            # reads of them: intersecting with query_words again changes nothing.
+            key_words = hits.matched(2 * i)
+            val_words = hits.matched(2 * i + 1)
+        else:
+            key_words = row_tokens(key_text)
+            val_words = row_tokens(raw["value_json"].lower())
         key_overlap = len(query_words & key_words)
         val_overlap = len(query_words & val_words)
         kw_raw = key_overlap * 3 + val_overlap
