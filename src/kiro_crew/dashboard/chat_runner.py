@@ -367,6 +367,7 @@ from kiro_crew.hooks import (  # noqa: F401
     validate_file_path,
 )
 from kiro_crew.image_artifacts import register_images_off_loop
+from kiro_crew.kas_workflows import chat as kas_chat  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
@@ -960,6 +961,7 @@ async def _run_chat(
         full_message = turn.full_message
         if (
             not is_slash
+            and not turn._kas_observe
             and _message_is_typed
             and turn._directive_user_origin
             and not turn._turn_provenance_restored
@@ -975,13 +977,15 @@ async def _run_chat(
             note = getattr(client, "note_user_message", None)
             if note is not None:
                 note(turn.user_typed_message)
-        # The prefixes added after assembly made the prompt a plain string again;
-        # re-apply build_message's provenance so only the user's text is upgraded.
-        event_stream = (
-            client.stream_command(message)
-            if is_slash
-            else client.stream(_segment_user_span(turn, full_message))
-        )
+        if turn._kas_observe:
+            # Reads the turn KAS started on this session itself; sends nothing.
+            event_stream = client.stream_observe()
+        elif is_slash:
+            event_stream = client.stream_command(message)
+        else:
+            # The prefixes added after assembly made the prompt a plain string again;
+            # re-apply build_message's provenance so only the user's text is upgraded.
+            event_stream = client.stream(_segment_user_span(turn, full_message))
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS

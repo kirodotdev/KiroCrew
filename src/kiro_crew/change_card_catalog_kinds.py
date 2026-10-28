@@ -195,6 +195,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "dashboard.shared_crew.tailnet_direct": (False, True),
     "skills.approval_required": (True, False),
     "telemetry.beacon_enabled": (False, True),
+    # On, a Kiro Agent chat's model can start multi-step Kiro Workflows runs
+    # (kiro_crew.kas_workflows), so turning it on reads as a widen.
+    "agent.kas_workflows": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen
@@ -209,6 +212,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.completion_keep",
         "agent.completion_keep_chars",
         "agent.fallback_model",
+        "agent.kas_creator_effort",
         "agent.model",
         "agent.provider",
         "agent.reasoning_effort",

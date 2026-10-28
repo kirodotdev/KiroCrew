@@ -47,6 +47,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import _TRANSIENT_ROLES, DashboardState
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.kas_workflows import chat as kas_chat
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
 
@@ -259,6 +260,22 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             return web.json_response({"error": "index is not a user message"}, status=400)
         else:
             index = raw_index - disk_older
+
+        # A Kiro Workflows run launched from this message or after it may be
+        # driven by the very conversation this rewind discards: refused while
+        # one is still live (paused included), like the Kiro IDE's checkpoint
+        # guard. Before any mutation, so a refusal changes nothing. The same
+        # guard runs on edit-resend and regenerate (``kas_chat.rewind_refusal``).
+        kas_refusal = kas_chat.rewind_refusal(slot.key, msgs[index].get("ts"))
+        if kas_refusal is not None:
+            return web.json_response(
+                {
+                    "error": kas_refusal["error"],
+                    "code": kas_chat.REWIND_REFUSED_CODE,
+                    "runs": kas_refusal["runs"],
+                },
+                status=409,
+            )
 
         # Capture orphan info before any mutation, so we can clean up the
         # kiro-cli session file even if the swap path errors out partway.

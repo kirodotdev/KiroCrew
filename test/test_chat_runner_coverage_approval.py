@@ -30,6 +30,7 @@ from chat_runner_coverage_helpers import (
 
 from kiro_crew import name_grant
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.providers.base import LLMEvent
 from kiro_crew.trust_patterns import (
     GrantDeadline,
     base_trust_patterns,
@@ -79,6 +80,166 @@ class TestRunChatAutoApproveRungs:
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
         ):
             yield
+
+    @pytest.mark.asyncio
+    async def test_a_kas_plan_handoff_asks_even_in_trust(self, tmp_path):
+        """KAS's ``update_workflow`` plan approval passes no grant rung, Trust included."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trust = True
+        plan = _permission(
+            title="Add 2 workflow steps to wf_1",
+            tool_input="{}",
+            tool_kind="other",
+            is_shell=False,
+        )
+        plan.harness_tool_id = "update_workflow"
+        _set_stream(client, [plan, _complete()])
+        prompted: list[str] = []
+
+        def _allow_once_when_registered():
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                prompted.append("card")
+                future.set_result("approved")
+
+        state.push_slots_update.side_effect = _allow_once_when_registered
+        await _drive(state, slot)
+
+        assert prompted == ["card"], "the plan reached the person's card"
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+
+    @staticmethod
+    def _kas_question(*, answers_only: bool = True) -> LLMEvent:
+        """A ``user_input`` question the chat's own KAS session asks.
+
+        The shape of kiro-agent's legacy bridge (``acp-event-adapter.ts``
+        ``handleUserInputViaPermissionRequest``): the question as the title, one
+        ``allow_once`` option per answer, no reject, no ``_meta.kiro.toolId``.
+        """
+        question = _permission(
+            title="Which branch should I target?",
+            tool_input="",
+            tool_kind="other",
+            is_shell=False,
+        )
+        question.options = [{"id": "q1-main", "label": "main"}, {"id": "q1-dev", "label": "dev"}]
+        question.kas_builtin_ids = True
+        question.answers_only = answers_only
+        return question
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("grant", ["trust", "yolo", "native_crew", "hook"])
+    async def test_a_kas_question_from_the_chat_waits_for_the_person(self, tmp_path, grant):
+        """No approval mode, grant or hook picks an answer to the chat's own KAS question.
+
+        "Approving" a legacy-bridge question selects its first ``allow_once``
+        option, i.e. answers it with the first label. Each rung must leave it
+        on the card, marked ``person_only`` so the mode-switch sweep leaves it
+        too, and here the person declines, so nothing is ever approved.
+        """
+        from kiro_crew.hooks import TOOL_AUTO_APPROVE, ToolHookResult
+
+        context_builder = None
+        if grant == "hook":
+            context_builder = MagicMock()
+            context_builder.hooks.on_tool_call.return_value = ToolHookResult(
+                action=TOOL_AUTO_APPROVE
+            )
+            context_builder.build_message.return_value = ("hello", None)
+        state, client = _runner_state(tmp_path, context_builder=context_builder)
+        slot = _slot()
+        if grant == "trust":
+            slot._trust = True
+        elif grant == "yolo":
+            state.is_yolo_active = MagicMock(return_value=True)
+        _set_stream(client, [self._kas_question(), _complete()])
+        prompted: list[dict] = []
+
+        def _decline_when_registered():
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                (card,) = [m for m in slot.messages if m.get("role") == "permission"]
+                prompted.append(json.loads(card["cls"]))
+                future.set_result("rejected")
+
+        state.push_slots_update.side_effect = _decline_when_registered
+        with patch.object(
+            chat_runner,
+            "_native_crew_should_auto_approve",
+            return_value=grant == "native_crew",
+        ):
+            await _drive(state, slot)
+
+        assert len(prompted) == 1, "the question reached the person's card"
+        assert prompted[0].get("person_only") == "1"
+        client.approve_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pick, sent",
+        [
+            pytest.param("q1-dev", "q1-dev", id="answered"),
+            # No surface may answer for the person: an approval with no pick is
+            # a dismissal, never the first answer.
+            pytest.param(None, None, id="approved-without-an-answer"),
+        ],
+    )
+    async def test_a_kas_question_card_lists_its_answers_and_sends_the_pick(
+        self, tmp_path, pick, sent
+    ):
+        """G2: the card carries the answers (the workflow question shape) and the pick reaches KAS.
+
+        The answer goes back as that option's id (``select_permission_option``),
+        never as an approve, which would select the first ``allow_once`` answer.
+        """
+        from kiro_crew.kas_workflows import chat as kas_chat
+
+        state, client = _runner_state(tmp_path)
+        client.select_permission_option = AsyncMock(return_value=True)
+        slot = _slot()
+        _set_stream(client, [self._kas_question(), _complete()])
+        cards: list[dict] = []
+
+        def _answer_when_registered():
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                (card,) = [m for m in slot.messages if m.get("role") == "permission"]
+                cards.append(json.loads(card["cls"]))
+                if pick is not None:
+                    kas_chat.record_answer(future, pick)
+                future.set_result("approved")
+
+        state.push_slots_update.side_effect = _answer_when_registered
+        await _drive(state, slot)
+
+        (meta,) = cards
+        payload = meta["kas_question"]
+        assert payload["key"] == "req-cov-1"
+        assert payload["workflowId"] is None and payload["slot"] == slot.key
+        (asked,) = payload["questions"]
+        assert asked["prompt"] == "Which branch should I target?"
+        assert [o["label"] for o in asked["options"]] == ["main", "dev"]
+        assert asked["multiSelect"] is False and asked["freeText"] is False
+        client.approve_tool.assert_not_awaited()
+        if sent is None:
+            client.select_permission_option.assert_not_awaited()
+        else:
+            client.select_permission_option.assert_awaited_once_with("req-cov-1", sent)
+            assert any("→ dev" in (m.get("content") or "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_kas_tool_approval_under_trust_is_still_auto_approved(self, tmp_path):
+        """Control: a KAS request that offers a reject is a tool approval, and Trust answers it."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trust = True
+        _set_stream(client, [self._kas_question(answers_only=False), _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert not [m for m in slot.messages if m.get("role") == "permission"]
 
     @pytest.mark.asyncio
     async def test_a_non_shell_approval_mints_no_shell_witness(self, tmp_path):

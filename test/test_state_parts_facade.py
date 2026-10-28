@@ -486,6 +486,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_hook_continuation_depth": ("value", "0"),
     "_human_seen": ("value", "False"),
     "_infra_retries": ("value", "0"),
+    "_kas_observing": ("value", "False"),
     "_last_enqueue_ts": ("value", "''"),
     "_last_stop_reason": ("value", "''"),
     "_last_turn_auth_required": ("value", "False"),

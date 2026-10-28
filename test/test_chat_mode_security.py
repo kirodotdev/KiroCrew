@@ -705,6 +705,172 @@ async def test_app_yolo_approval_is_refused_and_audited_as_the_app(state) -> Non
     assert audit.log_api_access.call_args.kwargs["caller"] == "crew-keyboard"
 
 
+@pytest.mark.parametrize("body", [{"mode": "trust", "slot": "s1"}, {"mode": "trust"}])
+@pytest.mark.asyncio
+async def test_switching_to_trust_leaves_a_person_only_card_pending(state, body) -> None:
+    """The Trust sweep approves pending cards, but never a KAS question or plan.
+
+    Approving a KAS ``user_input`` question picks its first answer, so a card
+    chat_runner marked ``person_only`` stays for the person; its sibling
+    ordinary tool card is approved as before.
+    """
+    slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+    loop = asyncio.get_running_loop()
+    question = loop.create_future()
+    tool = loop.create_future()
+    question_row = slot.append(
+        "permission",
+        "Which branch should I target?",
+        json.dumps({"request_id": "req-q", "person_only": "1"}),
+    )
+    tool_row = slot.append("permission", "Running: ls", json.dumps({"request_id": "req-t"}))
+    slot.register_approval("req-q", question, question_row)
+    slot.register_approval("req-t", tool, tool_row)
+
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/mode", json=body)
+        assert resp.status == 200
+
+    assert not question.done(), "the question still waits for the person"
+    assert tool.result() == "approved"
+
+
+def _held_kas_question(state, slot_key: str = "s1"):
+    """A chat slot holding the chat's own KAS question card, as chat_runner leaves it."""
+    from kiro_crew.kas_workflows import chat as kas_chat
+    from kiro_crew.kas_workflows.asks import chat_question
+
+    slot = state.get_or_create_slot(slot_key, origin=SlotOrigin.USER)
+    question = chat_question(
+        request_id="req-q",
+        tool_call_id="tc-q",
+        title="Which branch should I target?",
+        options=[{"id": "q1-main", "label": "main"}, {"id": "q1-dev", "label": "dev"}],
+        slot=slot_key,
+        created_at=1.0,
+    )
+    assert question is not None
+    meta = {"request_id": "req-q", "person_only": "1", "kas_question": question.to_payload()}
+    row = slot.append("permission", "Which branch should I target?", json.dumps(meta))
+    future = asyncio.get_running_loop().create_future()
+    kas_chat.hold_question(future, question)
+    slot.register_approval("req-q", future, row)
+    return slot, future
+
+
+def _card_meta(slot) -> dict:
+    (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+    return json.loads(row["cls"])
+
+
+@pytest.mark.parametrize("answer", ["dev", ["dev"], "q1-dev"])
+@pytest.mark.asyncio
+async def test_a_kas_question_card_is_answered_with_the_picked_answer(state, answer) -> None:
+    from kiro_crew.kas_workflows import chat as kas_chat
+
+    slot, future = _held_kas_question(state)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/approve",
+            json={"action": "answer", "request_id": "req-q", "answers": {"tc-q": answer}},
+        )
+        assert resp.status == 200
+    # The runner reads the pick off the future it waits on, never the first answer.
+    assert future.result() == "approved"
+    assert kas_chat.take_answer(future) == "q1-dev"
+    meta = _card_meta(slot)
+    assert meta["resolved"] == "answered"
+    assert meta["answer"] == "dev"
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [{"other": "dev"}, {"tc-q": "staging"}, {"tc-q": ["main", "dev"]}, {"tc-q": ""}, "dev"],
+)
+@pytest.mark.asyncio
+async def test_a_kas_question_card_refuses_an_answer_it_does_not_offer(state, answers) -> None:
+    from kiro_crew.kas_workflows import chat as kas_chat
+
+    slot, future = _held_kas_question(state)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/approve",
+            json={"action": "answer", "request_id": "req-q", "answers": answers},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "invalid_answer"
+    assert not future.done()
+    assert kas_chat.take_answer(future) is None
+
+
+@pytest.mark.parametrize(
+    "action", ["approved", "trust", "trust_reads", "trust_command", "trust_base", "yolo"]
+)
+@pytest.mark.asyncio
+async def test_no_approve_action_answers_a_kas_question_card(state, action) -> None:
+    """Approving would pick the first answer: refused before any side effect."""
+    slot, future = _held_kas_question(state)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/approve",
+            json={"action": action, "request_id": "req-q", "pattern": "x"},
+        )
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "question_needs_answer"
+    assert not future.done()
+    assert slot._trust is False
+    assert "resolved" not in _card_meta(slot)
+
+
+@pytest.mark.asyncio
+async def test_a_kas_question_card_is_dismissed_by_reject(state) -> None:
+    slot, future = _held_kas_question(state)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/approve", json={"action": "rejected", "request_id": "req-q"}
+        )
+        assert resp.status == 200
+    assert future.result() == "rejected"
+    assert _card_meta(slot)["resolved"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_on_a_card_that_asks_nothing_is_refused(state) -> None:
+    slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+    row = slot.append("permission", "Running: ls", json.dumps({"request_id": "req-t"}))
+    future = asyncio.get_running_loop().create_future()
+    slot.register_approval("req-t", future, row)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/approve",
+            json={"action": "answer", "request_id": "req-t", "answers": {"tc": "x"}},
+        )
+        assert resp.status == 404
+        assert (await resp.json())["code"] == "question_not_pending"
+    assert not future.done()
+
+
+@pytest.mark.asyncio
+async def test_the_global_resolver_never_approves_a_kas_question(state) -> None:
+    """``/api/approvals/{id}/approve`` (and a Slack Allow) resolve through here."""
+    slot, future = _held_kas_question(state)
+    assert state.resolve_approval("req-q", True) is False
+    assert not future.done()
+    # A dismissal still goes through.
+    assert state.resolve_approval("req-q", False) is True
+    assert future.result() == "rejected"
+
+
 @pytest.mark.asyncio
 async def test_app_trust_does_not_persist_linked_channel_trust(state) -> None:
     slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
