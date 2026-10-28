@@ -314,7 +314,7 @@ stamped by `dashboard/channel_handoff.py` for a message a channel conversation
 queued into a resumed dashboard session), is stripped for the same reason with a
 wider blast radius — it names a conversation on a network surface — and its notice
 re-runs the outbound recipient check with the principal the channel authorized on
-inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord)).
+inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery)).
 
 A send whose caller is the target's own creator (`_created_by` equals the
 caller's slot key) also sets the target's in-memory `_reports_to_creator`. With

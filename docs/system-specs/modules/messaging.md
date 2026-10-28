@@ -5555,7 +5555,7 @@ so the agent can neither read nor write it: the identity map is what an explicit
 `user:<upn>` send target resolves through, and a writable copy delivers one person's
 cron result to another. The DIRECTORY is registered rather than the file, so
 `atomic_write`'s `mkstemp` temp sibling is covered too — see
-[security](security.md#crew-data-home-secrets--governance-trust-root) for why that
+[security](security.md#channel-routing-state) for why that
 distinction is load-bearing. There is no migration from the pre-`routing/` path:
 reading the old, agent-writable location would reopen the hole.
 

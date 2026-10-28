@@ -1840,7 +1840,7 @@ against sweep completeness, and are torn down at `close_all`.
   sending a signal. The arm's own contract — both directions, the conjunction of
   conditions, and the published counters — is specified in
   [runtime-ownership.md](runtime-ownership.md), not here.
-- **Reaping abandoned agent scopes** (`session_scope_reap.py`,
+- <a id="reaping-abandoned-agent-scopes"></a>**Reaping abandoned agent scopes** (`session_scope_reap.py`,
   Linux/systemd only): each agent session runs inside a transient
   `systemd-run --user --scope` under a per-instance child of
   `kirocrew-agents.slice` (`sandbox._agents_slice_name`). `--scope` GCs a
@@ -3571,7 +3571,7 @@ DM. The refusal stays when the slot cannot take the message — no open slot, a
 closing slot, a relay archive, a slot that is not itself running the turn (a
 channel-driven turn on the resumed key), or attachments; an incognito or
 temporary session is taken like any other, since those modes keep their
-transcript and queue. See [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord).
+transcript and queue. See [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery).
 
 WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later (see
