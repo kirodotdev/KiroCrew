@@ -357,6 +357,7 @@ from kiro_crew.monitoring.models import (
     monitor_state_public_dict,
 )
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
+from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn, settles_at_release
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.bootstrap import apply_kas_cli_floor
 from kiro_crew.platform.context import (
@@ -550,7 +551,14 @@ from kiro_crew.slack.gateway_runtime.service_boot import (
 )
 from kiro_crew.slack.gateway_runtime.subagent_injection import (
     _MAX_INJECT_ATTEMPTS,
+    INLINE_CONFIRMED,
+    INLINE_DELIVER,
+    INLINE_PENDING,
+    _delivered_inline,
     _injection_slot_busy,
+    _inline_verdict,
+    _ParkedCompletion,
+    _settle_owed,
 )
 from kiro_crew.slack.gateway_runtime.subagent_report import (
     SUBAGENT_DIGEST_CHUNK_SIZE,
@@ -728,6 +736,9 @@ class GatewayOrchestrator:
     _subagent_coalescer_inst: "SubagentEventCoalescer | None"
     _batch_progress: dict[str, dict]
     _cron_injecting: dict[str, int]
+    _cron_runs_holding: set[asyncio.Task[Any]]
+    _inline_parked: dict[Any, list[_ParkedCompletion]]
+    _inline_tasks: set[asyncio.Task[Any]]
     _running_script_ids: set[str]
     task_runner: TaskRunner | None
     _runner_admission: Any
@@ -950,6 +961,13 @@ class GatewayOrchestrator:
     _route_subagent_to_tab = _subagent_injection._route_subagent_to_tab
     _inject_subagent_into_channel_parent = _subagent_injection._inject_subagent_into_channel_parent
     _finish_subagent_cron_or_notify = _subagent_injection._finish_subagent_cron_or_notify
+    _park_inline = _subagent_injection._park_inline
+    _settle_inline = _subagent_injection._settle_inline
+    _finish_parked = _subagent_injection._finish_parked
+    _route_parked_in_tab = _subagent_injection._route_parked_in_tab
+    _parent_tab = _subagent_injection._parent_tab
+    _route_completion = _subagent_injection._route_completion
+    _reset_cron_parent_when_idle = _subagent_injection._reset_cron_parent_when_idle
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:

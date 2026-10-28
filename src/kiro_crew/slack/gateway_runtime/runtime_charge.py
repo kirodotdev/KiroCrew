@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
         AcpError,
         AcpProcessDied,
+        Any,
         CronJob,
         GatewayOrchestrator,
         PromptBusyExhaustedError,
@@ -34,7 +35,10 @@ if TYPE_CHECKING:
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
         logger,
+        note_turn_landed,
         runtime_death,
+        settle_turn,
+        stop_reason_landed,
         stream_and_collect,
     )
 
@@ -223,11 +227,26 @@ async def _inject_with_retry(
     _snf_reloaded = False
     attempt = 0
     while True:
+        # This attempt's stop reason, as the cron engine records it: None until a
+        # completion is seen, so a stream that ends without one never landed.
+        stop: dict[str, str | None] = {"reason": None}
+
+        def _note_complete(event: Any, _box: dict[str, str | None] = stop) -> None:
+            _box["reason"] = str(getattr(event, "stop_reason", "") or "")
+
         try:
-            response = await stream_and_collect(client, msg, retry_transient=False)
+            response = await stream_and_collect(
+                client, msg, retry_transient=False, on_complete=_note_complete
+            )
             # The parent's turn consumed the report: the positive
             # acknowledgement an owed expiry report is cleared on.
             info._report_delivered = True
+            # Only a landed turn confirms what it received inline from a
+            # spawn_sub_agents call of its own. ``stream_and_collect`` also
+            # returns normally for a user stop, a refusal, a tool stall and a
+            # stream with no completion, and none of those landed.
+            if stop_reason_landed(stop["reason"]):
+                note_turn_landed(self.sessions, parent_key)
             return response
         except PromptBusyExhaustedError:
             # Provider is dead after exhausting prompt-busy retries.
@@ -316,6 +335,10 @@ async def _inject_with_retry(
                     label,
                 )
                 assert self.sessions is not None
+                # The reload's replay is a second turn inside this one claim,
+                # so it gets an attempt of its own: the first attempt ended
+                # without landing, and what it received inline is revoked now.
+                settle_turn(self.sessions, parent_key)
                 await self.sessions.reset(parent_key)
                 client, _is_new, _resumed = await self.sessions.get_or_create(parent_key)
                 continue
@@ -338,5 +361,9 @@ async def _inject_with_retry(
                     info.id,
                     exc_info=True,
                 )
+            # The retry is a second turn inside this one claim. This attempt
+            # ended without landing, so what it received inline is revoked now,
+            # never confirmed by the retry's landing.
+            settle_turn(self.sessions, parent_key)
             await asyncio.sleep(2**attempt)
             attempt += 1

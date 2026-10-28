@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import time
 
     from kiro_crew.subagent import (
+        _QUEUED_SPAWN_ATTEMPT_LIMIT,
         _RUN_ID_HEX_CHARS,
         _STARTUP_CAP_GATE_ROUNDS,
         AgentCheck,
@@ -769,9 +770,42 @@ def _forget_pressure_clock(self: SubagentManager, agent_id: str) -> None:
     self._admission._forget_pressure_clock_impl(agent_id)
 
 
+def carry_spawn_attempt(self: SubagentManager, agent_id: str, token: Any) -> None:
+    """Hand the parent turn attempt that spawned a queued member to its real record.
+
+    ``POST /api/spawn`` gets back a stand-in record for a member the admission
+    gate queued (a stagger, capacity or memory wait); the pump builds the real
+    one, with the same id, when the member starts. A member already started gets
+    the attempt on its live record at once; otherwise it is kept in memory, by
+    id, until the start takes it (``_take_spawn_attempt``) or the row ends
+    unstarted (``_forget_pending_start``). Bounded to
+    ``_QUEUED_SPAWN_ATTEMPT_LIMIT``, oldest dropped first: a dropped member holds
+    nothing, so its completion is delivered.
+    """
+    live = self._agents.get(agent_id)
+    if live is not None:
+        if getattr(live, "_spawned_under", None) is None:
+            live._spawned_under = token
+        return
+    carried = self.__dict__.setdefault("_queued_spawn_attempts", {})
+    carried.pop(agent_id, None)
+    carried[agent_id] = token
+    while len(carried) > _QUEUED_SPAWN_ATTEMPT_LIMIT:
+        del carried[next(iter(carried))]
+
+
+def _take_spawn_attempt(self: SubagentManager, agent_id: str) -> Any:
+    """The spawning attempt carried for ``agent_id``, removed; None when none is."""
+    carried = self.__dict__.get("_queued_spawn_attempts")
+    return carried.pop(agent_id, None) if carried else None
+
+
 def _forget_pending_start(self: SubagentManager, agent_id: str) -> None:
     """Drop what this process kept for a start that began or never will."""
     self._forget_pressure_clock(agent_id)
+    carried = self.__dict__.get("_queued_spawn_attempts")
+    if carried:
+        carried.pop(agent_id, None)
     self._floor_waits.pop(agent_id, None)
     self._held_approval_modes.pop(agent_id, None)
     self._floor_deferred_ids.discard(agent_id)

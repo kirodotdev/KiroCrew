@@ -421,6 +421,13 @@ class SubagentManager:
         # cannot see it, so the gate bounds it from this clock
         # (``agent.subagent_queue_max_wait_secs``) at each re-park.
         self._floor_waits: dict[str, tuple[int, int, int]] = {}
+        # Member id -> the parent turn attempt that spawned a member the gate
+        # queued (``api_spawn``), handed to the real record when the pump starts
+        # it (``_spawned_under``). In memory only: the token holds an asyncio
+        # task, so it never enters a queue row or the durable store. Bounded to
+        # ``_QUEUED_SPAWN_ATTEMPT_LIMIT``, oldest first (``carry_spawn_attempt``);
+        # a restart forgets it and that member holds nothing.
+        self._queued_spawn_attempts: dict[str, tuple[str, Any, int]] = {}
         self._pressure_recheck_handle: asyncio.TimerHandle | None = None
         # agent_id -> the ``approval_mode`` a durable row was accepted with, for
         # as long as it waits: the store never carries it, so a window refill
@@ -909,6 +916,8 @@ class SubagentManager:
     _pressure_lane_started = _admission_surface._pressure_lane_started
     _forget_pressure_clock = _admission_surface._forget_pressure_clock
     _forget_pending_start = _admission_surface._forget_pending_start
+    carry_spawn_attempt = _admission_surface.carry_spawn_attempt
+    _take_spawn_attempt = _admission_surface._take_spawn_attempt
     _drain_queue = _admission_surface._drain_queue
     _admit_released_start = _admission_surface._admit_released_start
     _release_admitted_start = _admission_surface._release_admitted_start
@@ -994,6 +1003,7 @@ class SubagentManager:
     _sessions_under = _terminal_surface._sessions_under
     _retain_process_handles = _terminal_surface._retain_process_handles
     notify_injection_failed = _terminal_surface.notify_injection_failed
+    suppress_retired_delivery = _terminal_surface.suppress_retired_delivery
     batch_members_pending = _terminal_surface.batch_members_pending
     batch_reports_in_flight = _terminal_surface.batch_reports_in_flight
     arm_report_in_flight = _terminal_surface.arm_report_in_flight

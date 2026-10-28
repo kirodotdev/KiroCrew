@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         consume_reinjection,
         is_keep_response,
         logger,
+        note_turn_landed,
         persist_token_record_async,
         provider_last_turn_usage,
         read_context_tokens,
@@ -214,6 +215,8 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 timeout=HEARTBEAT_TASK_TIMEOUT_SECS,
             )
             _turn_landed = stop_reason_landed(_turn_stop["reason"])
+            if _turn_landed:
+                note_turn_landed(self.sessions, session_key)
 
             if not result_text:
                 result_text = "_No response._"

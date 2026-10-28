@@ -34,6 +34,7 @@ def _make_gateway():
     gateway.dashboard_state = MagicMock()
     gateway._owner_id = "U000"
     gateway._cron_injecting = {}
+    gateway._cron_runs_holding = set()
     gateway._no_crons = False
     gateway.subagent_mgr = MagicMock()
     gateway.subagent_mgr.running = []
@@ -345,7 +346,7 @@ class TestSubagentDoneCronRouting:
         ):
             await subagent_done(info)
 
-        gateway.sessions.reset.assert_awaited_once_with("cron:j1")
+        gateway.sessions.reset.assert_awaited_once_with("cron:j1", skip_if_busy=True)
 
     @pytest.mark.asyncio
     async def test_injection_failure_does_not_propagate(self) -> None:

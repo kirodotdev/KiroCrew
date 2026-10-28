@@ -14,7 +14,9 @@ and stays the import path and the patch seam: a patch through it reaches this mo
 from __future__ import annotations
 
 import json
+import logging
 import os
+import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -27,8 +29,10 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
+    MAX_RESPONSE_LEN,
     MAX_SHORT_STRING,
     SPAWN_SUB_AGENTS_SCHEMA,
+    sanitize_string,
     validate_tool_args,
 )
 
@@ -82,6 +86,39 @@ def _held_by_a_deferral(record: Mapping[str, Any]) -> bool:
         and record.get("resuming") is not True
         and bool(str(record.get("reason_detail") or "").strip())
     )
+
+
+def _carried_in_reply(
+    blocks: list[str], block_of: Mapping[str, int], *, max_len: int = MAX_RESPONSE_LEN
+) -> list[str]:
+    """The members whose whole result block the answered reply still carries.
+
+    The reply is *blocks* joined by blank lines, and the dispatcher answers with
+    ``sanitize_response`` of it, which cuts the TAIL off a reply over *max_len*
+    (``MAX_RESPONSE_LEN``, the cut ``build_tool_response`` applies). A member
+    whose block ends past the cut never reaches the parent, so it is left for its
+    ordinary completion. Each member is judged by where its block ends
+    (*block_of*: member -> index), never by its text, since two members can
+    return identical text. Omitted members are counted and logged once.
+    """
+    ends: list[int] = []
+    end = -2
+    for block in blocks:
+        end += 2 + len(sanitize_string(block))
+        ends.append(end)
+    if not ends or ends[-1] <= max_len:
+        return sorted(block_of)  # nothing is cut
+    carried = sorted(aid for aid, i in block_of.items() if ends[i] <= max_len)
+    omitted = len(block_of) - len(carried)
+    if omitted:
+        # The facade's logger: no owner of ``mcp_tools.spawn`` binds its own.
+        logging.getLogger("kiro_crew.mcp_tools.spawn").warning(
+            "spawn_sub_agents: the reply is cut at %d chars; %d result(s) past the cut "
+            "are delivered as ordinary completions",
+            max_len,
+            omitted,
+        )
+    return carried
 
 
 #: Server-side hold per resume-poll request (seconds); under the client GET
@@ -244,6 +281,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
         agents_input=pending,
         sa_groups=sa_groups,
         cwd=cwd,
+        call_id=uuid.uuid4().hex[:12],
     )
 
 
@@ -274,10 +312,16 @@ class _SubAgentsStep(DeferredTool):
         agents_input: list[dict[str, Any]] | None = None,
         sa_groups: dict[str, bool] | None = None,
         cwd: str = "",
+        call_id: str = "",
     ) -> None:
         self.agents_input = agents_input or []
         self.sa_groups = sa_groups or {}
         self.cwd = cwd
+        # One id for this call, sent with every member POST: the gateway anchors
+        # the call to the turn attempt its first member named, so a member posted
+        # after that turn was cut never records the attempt that holds the
+        # parent's permit next. Not ``batch_id``, which carries wave semantics.
+        self.call_id = call_id
         self._submit_index = 0
         self.sa_ids = sa_ids
         self.sa_deferred = sa_deferred
@@ -297,7 +341,12 @@ class _SubAgentsStep(DeferredTool):
         self.phase = "submit" if agents_input is not None else "poll"
         self.hold = _ResumeHold(parent_session, self.deadline)
         self.resume_note: dict[str, Any] | None = None
-        self._settled_ids: set[str] = set()
+        # Members whose whole result block the collect step's reply carries
+        # (``_carried_in_reply``), and the same ids once ``on_settled`` accepted
+        # that reply. Only ``on_answered`` marks them delivered, after the frame
+        # holding them was written.
+        self._carried_ids: list[str] = []
+        self._answered_ids: list[str] = []
         # Per-child tallies the collect step computes for this call's own SEL
         # row (``outcome`` and ``metadata``), written at settle. ``None`` until a
         # collect ran: a batch the gateway refused outright settles from the
@@ -384,6 +433,8 @@ class _SubAgentsStep(DeferredTool):
             }
             if self.cwd:
                 body["cwd"] = self.cwd
+            if self.call_id:
+                body["call_id"] = self.call_id
             data = mcp_core._post("/api/spawn", body)
             self._submit_index += 1
             if data.get("transport_error"):
@@ -480,7 +531,9 @@ class _SubAgentsStep(DeferredTool):
     def _collect(self) -> str:
         # Collect results
         sa_results: list[str] = []
-        _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
+        # Settled member (done, or ended in error) -> index of its block in
+        # ``sa_results``; judged against the reply's cut in ``_carried_in_reply``.
+        _block_of: dict[str, int] = {}
         # Children the wait ended on, with the state each was last seen in. The
         # wait expiring is a fact about THIS call, not about them: they keep their
         # own execution budget, are never cancelled here, and their completion
@@ -507,11 +560,6 @@ class _SubAgentsStep(DeferredTool):
                 continue
             if sa_st.get("error"):
                 errored += 1
-                # Only mark as settled if done is also true (confirmed terminal
-                # state). An "error" without "done" could be a transport failure
-                # from _get() — the agent may still be running.
-                if sa_st.get("done"):
-                    _settled_ids.add(aid)
                 failure: dict[str, Any] = {
                     "agent": label,
                     "status": "error",
@@ -533,6 +581,11 @@ class _SubAgentsStep(DeferredTool):
                         "accepted at spawn time; its state couldn't be read now; "
                         "check spawn_status before re-spawning"
                     )
+                # Settled only when done is also true (confirmed terminal state).
+                # An "error" without "done" could be a transport failure from
+                # _get(): the agent may still be running.
+                if sa_st.get("done"):
+                    _block_of[aid] = len(sa_results)
                 sa_results.append(json.dumps(failure))
             elif not sa_st.get("done"):
                 still_running += 1
@@ -542,7 +595,6 @@ class _SubAgentsStep(DeferredTool):
                     _unsettled[aid] = "running"
             else:
                 completed += 1
-                _settled_ids.add(aid)
                 result_text = self._inline_result(aid, sa_st.get("result", ""))
                 record: dict[str, Any] = {
                     "agent": label,
@@ -555,6 +607,7 @@ class _SubAgentsStep(DeferredTool):
                     record["unverified"] = f"This agent {NO_TOOL_CALLS_NOTE}"
                 if sa_st.get("leaked_tool_call") is True:
                     record["leaked_tool_call"] = f"This agent {LEAKED_TOOL_CALL_NOTE}"
+                _block_of[aid] = len(sa_results)
                 sa_results.append(json.dumps(record))
         if _unsettled:
             sa_results.append(
@@ -596,7 +649,7 @@ class _SubAgentsStep(DeferredTool):
             sa_results.append(json.dumps(self.resume_note))
         if self.sa_errors:
             sa_results.append(json.dumps({"status": "spawn_errors", "errors": self.sa_errors}))
-        self._settled_ids = _settled_ids
+        self._carried_ids = _carried_in_reply(sa_results, _block_of)
         self._counts = {
             "completed": completed,
             "still_running": still_running,
@@ -605,13 +658,16 @@ class _SubAgentsStep(DeferredTool):
         return "\n\n".join(sa_results)
 
     def on_settled(self, text: str) -> None:
-        # Only the driver's accepted-result commit suppresses completion events
-        # and writes this tool's own row: a cancelled collection or an abandon
-        # reply has delivered no child output. The generic ``call_tool_with_logging``
-        # row is _AuditedDeferred's; this one carries the per-child tallies and the
-        # ``partial`` outcome, as the blocking tool's did.
+        # Only the driver's accepted-result commit writes this tool's own row and
+        # hands the carried members to ``on_answered``: a cancelled collection or
+        # an abandon reply has delivered no child output. The generic
+        # ``call_tool_with_logging`` row is _AuditedDeferred's; this one carries
+        # the per-child tallies and the ``partial`` outcome, as the blocking
+        # tool's did.
         if self.phase == "abandoned":
             return
+        if self._carried_ids:
+            self._answered_ids, self._carried_ids = self._carried_ids, []
         counts, self._counts = self._counts, None
         if counts is not None:
             mcp_core.sel().log_tool_invocation(
@@ -625,13 +681,23 @@ class _SubAgentsStep(DeferredTool):
                 ),
                 metadata={"spawned": len(self.sa_ids), **counts},
             )
-        settled_ids, self._settled_ids = self._settled_ids, set()
-        if settled_ids and self.parent_session:
-            try:
-                mcp_core._post(
-                    "/api/spawn/mark-collected",
-                    {"ids": list(settled_ids), "parent_session": self.parent_session},
-                    timeout=5,
-                )
-            except Exception:
-                pass  # best-effort: a missed mark leaves the completion event enabled
+
+    def on_answered(self, written: bool) -> None:
+        # The reply that carries these members is now in the parent's pipe, so
+        # their completion events must not play as a second turn. Marked only
+        # then: a torn write, a pooled backend's answer, a cancel or a crash
+        # before the write marks nothing, and each member is delivered as an
+        # ordinary completion -- a duplicate at worst, never a loss.
+        ids, self._answered_ids = self._answered_ids, []
+        if not written or not ids or not self.parent_session:
+            return
+        try:
+            mcp_core._post(
+                "/api/spawn/mark-collected",
+                # ``written``: sent only after the frame carrying these ids was
+                # written, the one mark the gateway flags a record on.
+                {"ids": ids, "parent_session": self.parent_session, "written": True},
+                timeout=5,
+            )
+        except Exception:
+            pass  # best-effort: a missed mark leaves the completion event enabled

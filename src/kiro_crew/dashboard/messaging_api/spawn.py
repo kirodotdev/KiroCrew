@@ -23,14 +23,17 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         ValidationError,
         _redact,
+        _session_turn_holding,
         _spawn_scope_refusal,
         body_int,
+        canonical_key,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
         effort_drop_reason,
         effort_pending_note,
         internal_memory_scope,
+        ledger_of,
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
@@ -231,6 +234,13 @@ async def api_spawn(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
+    # The attempt holding the caller's own session when this request arrived, read
+    # before the handler awaits anything (the body, the attestation read, the
+    # memory-mode read): a tool call reaches the gateway under the turn that issued
+    # it, and a turn cut while the handler awaits must not lend its successor's
+    # attempt to the spawn. Used below only when the body names that same session.
+    caller_session = request.headers.get("X-Session-Key", "")
+    arrived_under = _session_turn_holding(request, state, caller_session or None)
     try:
         body = await request.json()
     except Exception:
@@ -383,6 +393,21 @@ async def api_spawn(request: web.Request) -> web.Response:
     batch_id = str(body.get("batch_id", "") or "")[:32]
     if batch_id and not batch_id.isalnum():
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
+    # The ``spawn_sub_agents`` call this member belongs to (transport-layer, set
+    # by kirocrew-core): validated like batch_id, bounded, never LLM-schema.
+    call_id = body.get("call_id", "") or ""
+    if (
+        not isinstance(call_id, str)
+        or len(call_id) > 32
+        or (call_id and not (call_id.isascii() and call_id.isalnum()))
+    ):
+        return web.json_response(
+            {
+                "error": "call_id must be ASCII letters and digits, at most 32 characters",
+                "code": "invalid_call_id",
+            },
+            status=400,
+        )
     try:
         batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
     except (TypeError, ValueError):
@@ -391,6 +416,17 @@ async def api_spawn(request: web.Request) -> web.Response:
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
+    # The attempt of the parent's turn that issued this spawn, read when the
+    # request arrived (``arrived_under``); ``None`` unless the parent's own session
+    # asks while a turn holds its permit with its prompt in flight. A member of a
+    # ``spawn_sub_agents`` call records it only when it is the attempt the call's
+    # first member named (``ParentTurnLedger.call_attempt``), so a call cut between
+    # two of its POSTs records nothing for its later members. A body with no
+    # ``call_id`` (an older client, the CLI, ``spawn_run``) is judged alone.
+    spawned_under = arrived_under if parent_session and parent_session == caller_session else None
+    ledger = ledger_of(getattr(state, "sessions", None)) if call_id and parent_session else None
+    if ledger is not None:
+        spawned_under = ledger.call_attempt(canonical_key(parent_session), call_id, spawned_under)
     info = await _spawn_on_loop(
         state,
         task,
@@ -450,6 +486,23 @@ async def api_spawn(request: web.Request) -> web.Response:
     stopped = _stopped_before_start(info, counted=True)
     if stopped is not None:
         return stopped
+    # Recorded only when the same attempt still holds the permit after the
+    # spawn. A defence that changes no outcome: an attempt that ended while the
+    # spawn awaited never holds the permit again (the ledger never reuses an
+    # epoch), so recording it would hold nothing, and this way the child names
+    # no attempt rather than a dead one. A done read of this run is stamped only
+    # under the attempt it records (``api_spawn_status``), so a mark made under
+    # any other holds nothing.
+    if spawned_under is not None and (
+        _session_turn_holding(request, state, parent_session) == spawned_under
+    ):
+        info._spawned_under = spawned_under
+        # A member the admission gate queued came back as a stand-in record; the
+        # pump builds the real one, with the same id, when it starts it, so the
+        # attempt is carried to that record (``SubagentManager.carry_spawn_attempt``).
+        carry = getattr(state.subagents, "carry_spawn_attempt", None)
+        if getattr(info, "queued", False) is True and not info.done and callable(carry):
+            carry(info.id, spawned_under)
     resp: dict[str, object] = {
         "id": info.id,
         "task": task,

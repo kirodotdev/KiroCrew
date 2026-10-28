@@ -9,7 +9,8 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_active_session_keys``, ``_push_refresh``, ``_timeout_alert``.
+Instance fields written: ``_active_session_keys``, ``_finished_session_keys``, ``_push_refresh``,
+``_timeout_alert``.
 
 Instance fields read: ``_active_session_lock``, ``_history``, ``_runs``.
 """
@@ -50,15 +51,61 @@ def register_active_session_key(self: CronService, job_id: str, session_key: str
         keys = self._active_session_keys.setdefault(job_id, {})
         keys.pop(session_key, None)
         keys[session_key] = run
+        self._finished_session_keys.discard((job_id, session_key))
 
 
 def clear_active_session_key(self: CronService, job_id: str, session_key: str) -> None:
     """Retire the exact key whose SessionManager reset completed."""
     with self._active_session_lock:
+        self._finished_session_keys.discard((job_id, session_key))
         keys = self._active_session_keys.get(job_id)
         if not keys:
             return
         keys.pop(session_key, None)
+        if not keys:
+            self._active_session_keys.pop(job_id, None)
+
+
+def finish_session_key(self: CronService, job_id: str, session_key: str) -> None:
+    """The run that registered ``session_key`` has ended its turn on it.
+
+    Called by a cron engine as it releases the key's session. From here the key
+    is owed only to the cleanup after its last sub-agent, so
+    :meth:`retire_finished_session_key` retires it even while that run's claim is
+    still live (a sequence on a later step, a run between its ``finally`` and its
+    claim release). Registering the key again, by any run, takes the mark off.
+    """
+    with self._active_session_lock:
+        if session_key in (self._active_session_keys.get(job_id) or {}):
+            self._finished_session_keys.add((job_id, session_key))
+
+
+def retire_finished_session_key(self: CronService, job_id: str, session_key: str) -> None:
+    """Retire ``session_key`` unless the job's live run registered it and still needs it.
+
+    For a cleanup that runs after a finished run, outside any run's claim: the last
+    sub-agent's idle cleanup. A stable key (a persistent job's, a sequence step's)
+    is re-attributed to each run that registers it, so a newer run of the job may
+    own it now, waiting for the permit or already holding it. That run's reap and
+    cancel targeting needs the key, and its own finalizer retires it
+    (:meth:`clear_active_session_key`). A key the live run has ended its turn on
+    (:meth:`finish_session_key`) is owed only to this cleanup, so it is retired
+    even under the live claim. A key the live claim did not register, or any key
+    when the job has no live claim, is popped as that method pops it.
+    """
+    live = self._claims.get(job_id)
+    with self._active_session_lock:
+        keys = self._active_session_keys.get(job_id)
+        if not keys or session_key not in keys:
+            return
+        if (
+            live is not None
+            and keys[session_key] is live
+            and (job_id, session_key) not in self._finished_session_keys
+        ):
+            return
+        keys.pop(session_key, None)
+        self._finished_session_keys.discard((job_id, session_key))
         if not keys:
             self._active_session_keys.pop(job_id, None)
 

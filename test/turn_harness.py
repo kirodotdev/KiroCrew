@@ -639,6 +639,8 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "mark_first_turn_history_owed": False,
     "mark_needs_reinjection": None,
     "mark_provider_switch_replay": False,
+    # A turn that ended on end_turn notes it; the healthy session records it.
+    "note_turn_landed": None,
     "provider_switch_replay_pending": False,
     "record_failure": False,
     "record_success": None,

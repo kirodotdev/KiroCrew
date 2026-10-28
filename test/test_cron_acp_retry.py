@@ -36,6 +36,7 @@ def gw_and_cb() -> tuple[Any, Callable[[], Any], Callable[..., Any]]:
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._no_crons = False
     gw._interactive_approval = MagicMock(return_value="interactive_cb")
 
@@ -57,10 +58,16 @@ class TestCronAcpRetry:
         """AcpError with 'not running' resets session and retries once."""
         gw, get_cb, capture_cron = gw_and_cb
         call_count = 0
+        held_at_reset: list[set[Any]] = []
+        run_tasks: list[Any] = []
+        gw.sessions.reset = AsyncMock(
+            side_effect=lambda *_a, **_k: held_at_reset.append(set(gw._cron_runs_holding))
+        )
 
         async def mock_stream(*args: Any, **kwargs: Any) -> str:
             nonlocal call_count
             call_count += 1
+            run_tasks.append(asyncio.current_task())
             if call_count == 1:
                 raise AcpError("ACP process not running")
             return "success after retry"
@@ -90,6 +97,12 @@ class TestCronAcpRetry:
         assert call_count == 2  # First call fails, retry succeeds
         assert result == "success after retry"
         gw.sessions.reset.assert_awaited()
+        # The retry re-enters the callback in the run's own task, so the run
+        # still holds its entry across the reset and the retry, and the
+        # outermost frame drops it when the run ends.
+        assert run_tasks[0] is run_tasks[1]
+        assert held_at_reset[0] == {run_tasks[0]}
+        assert gw._cron_runs_holding == set()
 
     def test_acp_process_exited_triggers_retry(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
         """AcpError with 'process exited' resets session and retries once."""
@@ -379,3 +392,91 @@ class TestCronAcpRetry:
 
         # No retry for non-retryable errors
         assert call_count == 1
+
+    def test_the_run_holds_its_task_through_a_transient_backoff_and_drops_it_on_exit(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A transient error after the acquire and before dispatch takes the transient
+        arm: it releases the session, sleeps, and re-enters the callback in the same
+        task. The run is still the run through the backoff, so its task stays in
+        ``_cron_runs_holding``; the retry's claim then fails before it acquires, and
+        the run's task leaves the set on that exit too."""
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.sessions.get_or_create = AsyncMock(
+            side_effect=[(MagicMock(), True, False), RuntimeError("the retry cannot claim")]
+        )
+        err = AcpError("backend throttled the request")
+        err.transient = True
+        gw.ctx_builder.build_message = MagicMock(side_effect=err)  # before dispatch
+        in_backoff: list[tuple[Any, set[Any]]] = []
+
+        def backoff_delay(_attempt: int) -> float:
+            # The arm computes its backoff here, then releases and sleeps: the run's
+            # task must be held across that whole stretch, so this is where it is read.
+            in_backoff.append((asyncio.current_task(), set(gw._cron_runs_holding)))
+            return 0.0
+
+        job = CronJob(
+            id="j-transient",
+            name="test-transient",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=AsyncMock(return_value="x")),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.transient_retry_delay", side_effect=backoff_delay),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+        ):
+
+            async def _init_and_run() -> None:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                with pytest.raises(RuntimeError):
+                    await cb(job)
+
+            asyncio.run(_init_and_run())
+
+        assert in_backoff, "the transient arm did not run"
+        run_task, held = in_backoff[0]
+        assert held == {run_task}, f"the run's task was not held through the backoff: {held!r}"
+        assert gw._cron_runs_holding == set(), "a run that ended is still held"
+
+    def test_a_run_whose_first_claim_fails_leaves_no_task_held(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A run that raises before its first acquire still drops its task."""
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.sessions.get_or_create = AsyncMock(side_effect=RuntimeError("no claim"))
+        job = CronJob(
+            id="j-noclaim",
+            name="test-noclaim",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+        ):
+
+            async def _init_and_run() -> None:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                with pytest.raises(RuntimeError):
+                    await cb(job)
+
+            asyncio.run(_init_and_run())
+
+        assert gw._cron_runs_holding == set(), "a run that never acquired is still held"

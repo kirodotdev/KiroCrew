@@ -479,7 +479,12 @@ _annotate_model_fallback = annotate_model_fallback
 
 
 async def _cron_stream_with_posttoken_resume(
-    client: Any, message: str, *, job_name: str, **stream_kwargs: Any
+    client: Any,
+    message: str,
+    *,
+    job_name: str,
+    on_resume: Callable[[], None] | None = None,
+    **stream_kwargs: Any,
 ) -> tuple[str, float | None]:
     """Run a cron agent turn, resuming ONCE after a post-token transient error.
 
@@ -589,5 +594,11 @@ async def _cron_stream_with_posttoken_resume(
                 _delay,
                 exc,
             )
+            # The continuation is a second turn inside this claim. The
+            # interrupted prompt's attempt ends here, before the backoff, so
+            # what it received inline from a spawn_sub_agents call is revoked
+            # and delivered, never confirmed by the continuation's landing.
+            if on_resume is not None:
+                on_resume()
             await asyncio.sleep(_delay)
             msg = _CRON_POSTTOKEN_CONTINUE_MSG

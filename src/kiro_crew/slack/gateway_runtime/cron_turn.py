@@ -6,7 +6,6 @@ failure handler and its ``finally`` read stay plain locals of that method.
 
 Orchestrator fields read: ``_cfg``, ``_cron_injecting``, ``cron_svc``, ``ctx_builder``,
 ``sessions``, ``subagent_mgr``.
-Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -55,6 +54,7 @@ if TYPE_CHECKING:
         dataclass,
         declared_mcp_not_ready_note,
         logger,
+        note_turn_landed,
         persist_token_record_async,
         provider_fallback_active,
         provider_last_turn_usage,
@@ -66,6 +66,7 @@ if TYPE_CHECKING:
         rearm_reinjection,
         rollback_skill_bodies,
         run_in_embed_pool,
+        settle_turn,
         stop_reason_landed,
         transient_retry_delay,
         turn_stats_meta,
@@ -259,6 +260,7 @@ async def _cron_run_sequence(
                     client,
                     full_message,
                     job_name=job.name,
+                    on_resume=lambda: settle_turn(self.sessions, agent_session_key),
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
                         if job.approval_mode == "auto"
@@ -277,6 +279,9 @@ async def _cron_run_sequence(
                 # the finally must NOT restore the re-injection flag --
                 # only for a succeeded stop reason.
                 _seq_landed = stop_reason_landed(_seq_stop["reason"])
+                if _seq_landed:
+                    # This step's release confirms what it received inline.
+                    note_turn_landed(self.sessions, agent_session_key)
                 if not result_text:
                     result_text = _gate.empty_reply_placeholder()
                 result_text = _annotate_model_fallback(result_text, client)
@@ -358,6 +363,11 @@ async def _cron_run_sequence(
                 )
                 rollback_skill_bodies(self.ctx_builder, agent_session_key, landed=_seq_landed)
                 if _acq:
+                    # This step is done with its key: the last sub-agent's
+                    # cleanup may retire it while the run goes on.
+                    _finish_key = getattr(self.cron_svc, "finish_session_key", None)
+                    if callable(_finish_key):
+                        _finish_key(job.id, agent_session_key)
                     self.sessions.release(agent_session_key)
                     # Mirror the single-agent finally below: defer the
                     # reset when this agent's sub-agents are still
@@ -631,6 +641,7 @@ async def _cron_run_single(
             client,
             full_message,
             job_name=job.name,
+            on_resume=lambda: settle_turn(self.sessions, session_key),
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
                 if job.approval_mode == "auto"
@@ -650,6 +661,10 @@ async def _cron_run_single(
         # finally must NOT restore the re-injection flag -- only for a
         # succeeded stop reason.
         _turn_landed = stop_reason_landed(_turn_stop["reason"])
+        if _turn_landed:
+            # This turn's release confirms what it received inline; a turn the
+            # deadline, a stop or a reap ends first never gets here.
+            note_turn_landed(self.sessions, session_key)
 
         # Recorded, not inferred from the text: the dedup hash below
         # swaps the placeholder for its count-free twin only when the
@@ -911,6 +926,11 @@ async def _cron_run_single(
         )
         rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
         if _acquired:
+            # The run is done with its key: the last sub-agent's cleanup may
+            # retire it before the run's claim is released.
+            _finish_key = getattr(self.cron_svc, "finish_session_key", None)
+            if callable(_finish_key):
+                _finish_key(job.id, session_key)
             self.sessions.release(session_key)
             # Defer session reset if subagents are still running,
             # queued behind the concurrency/stagger gate, or

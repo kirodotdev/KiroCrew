@@ -1448,6 +1448,13 @@ class _GateMixin(ManagerComponent):
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
         self._manager._agents[agent_id] = info
+        # A member that waited in the queue gets the parent turn attempt its
+        # ``POST /api/spawn`` named (``carry_spawn_attempt``), before the pending
+        # start is forgotten with it.
+        take_attempt = getattr(self._manager, "_take_spawn_attempt", None)
+        carried = take_attempt(agent_id) if callable(take_attempt) else None
+        if carried is not None:
+            info._spawned_under = carried
         self._manager._forget_pending_start(agent_id)
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
         if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation

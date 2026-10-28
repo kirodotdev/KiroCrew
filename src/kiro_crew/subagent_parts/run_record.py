@@ -307,6 +307,33 @@ class SubagentInfo:
     # or gives up on it leaves this unset, and so does any route added later that
     # does not say so; a memory-wait expiry's owed mark is cleared only on it.
     _report_delivered: bool = False
+    # True once the parent's own blocking ``spawn_sub_agents`` call answered with
+    # a reply frame carrying this result and that frame was written to the
+    # parent's pipe (``POST /api/spawn/mark-collected``, sent only after the
+    # write). A completion route skips the injection for an announce whose every
+    # member is marked: the parent already holds the result.
+    _collected_inline: bool = False
+    # A mark on a parent that is not dashboard-born (``settles_at_release``):
+    # "pending" until the attempt holding the parent's permit when it arrived
+    # (``_inline_token``) ends, then "confirmed" if that turn landed. A revoked
+    # mark clears all three, so the completion is delivered
+    # (``kiro_crew.parent_turns``).
+    _inline_state: str = ""
+    _inline_token: tuple[str, Any, int] | None = None
+    # The attempt holding the parent's turn permit, with its prompt in flight, when
+    # the parent's own tool's spawn request arrived (``POST /api/spawn``), or None
+    # when no such turn held it then, that attempt did not hold it when the spawn
+    # returned, or the spawn did not come from the parent's own session. A done
+    # read stamps ``_seen_done_under`` only under this same attempt, so a call that
+    # reads on after its turn ended never names the attempt of whatever holds the
+    # permit next (a sibling's injection, a retry, the next turn).
+    _spawned_under: tuple[str, Any, int] | None = None
+    # The attempt holding the parent's turn permit that first read this run done
+    # through the parent's own tool (``GET /api/spawn/{id}``), stamped only when it
+    # is the spawning attempt (``_spawned_under``). A mark is held only under that
+    # same attempt, so a mark processed after it ended is never held under a
+    # retry, a next turn, an injection or a compaction holding the permit.
+    _seen_done_under: tuple[str, Any, int] | None = None
     # True once an injection of this report was given up on: every attempt the
     # gateway made failed, so at most a failure notice was queued for the
     # parent's next turn (``notify_injection_failed``). ``_on_done`` still
