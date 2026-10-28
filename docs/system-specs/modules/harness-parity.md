@@ -162,7 +162,10 @@ the crewmate's file the worker spec is built from (`resolve_worker_spec`
 past that is what the member path carries on that host: the mirrored hosts
 report `excludedTools`, hooks, `toolsSettings`, native-tool restrictions and
 auto-approval shortcuts as projection gaps
-(`agent_capabilities_consumed.projection_gaps`). Pinned by
+(`agent_capabilities_consumed.projection_gaps`). On KAS a worker spec with no
+`prompt` goes out as `"prompt": ""`, which KAS runs on its own default prompt, as
+kiro-cli does; Crew's background-worker brief is `kirocrew-lite`'s alone (#25320,
+[acp-client](acp-client.md) § v2 parity of the projected entry). Pinned by
 `test_harness_parity.py::test_the_mate_worker_takes_the_member_rule` and
 `test_mate_worker_harnesses.py`.
 This is separate from session sharing and per-session member dispatch. Both `AcpProvider` and

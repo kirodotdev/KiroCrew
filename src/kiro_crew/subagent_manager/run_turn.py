@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
         STOP_CLASS_CANCELLED,
+        TERMINAL_TOOL_STATUSES,
         TRANSIENT_RETRIES,
         Any,
         FallbackState,
@@ -864,6 +865,11 @@ async def _run_inner_impl(
     # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
     # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
     _pending_tools: dict[str, str] = {}
+    # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
+    from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
+    from kiro_crew.hooks import pre_tool_match_names
+
+    _pending_tool_ids: dict[str, PostToolIdentity] = {}
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
@@ -1336,6 +1342,17 @@ async def _run_inner_impl(
             # child could generate unbounded approval prompts until the
             # wall-clock reaper fires. Generous multiple of the parent's
             # limit: legitimate crews fan many small child tool calls.
+            # The id the request names the tool by is what the call's
+            # PostToolUse spec hooks match on.
+            if event.tool_call_id:
+                _named = post_tool_identity(
+                    client,
+                    event,
+                    is_shell=False,
+                    earlier=_pending_tool_ids.get(event.tool_call_id),
+                )
+                if _named is not None:
+                    _pending_tool_ids[event.tool_call_id] = _named
             _ask = tool_permission.Ask(event, _wire, session_key)
             # A run that is being stopped bails every request as ``stopped``
             # before any grant or person is consulted: audited, and rejected
@@ -1506,6 +1523,13 @@ async def _run_inner_impl(
                 _raw = _raw[9:]
             if event.tool_call_id:
                 _pending_tools[event.tool_call_id] = _raw
+                _named = post_tool_identity(
+                    client, event, is_shell=bool(getattr(event, "is_shell", False))
+                )
+                if _named is None:
+                    _pending_tool_ids.pop(event.tool_call_id, None)
+                else:
+                    _pending_tool_ids[event.tool_call_id] = _named
             # A gated turn runs PreToolUse hooks on the permission request
             # instead (see hooks.permission_pre_tool_block); firing here too
             # would run each twice.
@@ -1528,9 +1552,15 @@ async def _run_inner_impl(
             # branch existed, hooks registered for subagent-spawned tools
             # received PreToolUse but never PostToolUse — losing the
             # tool_response payload.
-            if self._manager.hook_store is not None:
+            # Once per call, on its terminal result: a progress frame carrying
+            # partial output is not the finished call.
+            _terminal = bool(getattr(event, "tool_final", False)) or (
+                getattr(event, "tool_status", None) in TERMINAL_TOOL_STATUSES
+            )
+            if self._manager.hook_store is not None and _terminal:
                 try:
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
+                    _named = _pending_tool_ids.pop(event.tool_call_id, None)
                     _out = _redact((event.tool_output or "")[:2000])
                     await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
@@ -1544,6 +1574,18 @@ async def _run_inner_impl(
                         agent_role=info.agent or None,
                         extra_hooks=_spec.hooks,
                         extra_hooks_cwd=_spec.cwd,
+                        # The spec's matchers are kiro-cli tool names, which a
+                        # KAS call's title is not; None keeps title matching.
+                        extra_hooks_tool_names=(
+                            pre_tool_match_names(
+                                _tool_name,
+                                tool_identity=_named.tool_identity,
+                                mcp_server=_named.mcp_server,
+                                harness_tool_id=_named.tool_id,
+                            )[1]
+                            if _named is not None and _spec.hooks
+                            else None
+                        ),
                     )
                 except Exception:
                     logger.debug(

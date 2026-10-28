@@ -8,6 +8,7 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
 from kiro_crew.deny_guidance import (
@@ -334,6 +335,17 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     the interactive card gets it before it is drawn.
     """
     slot = turn.slot
+    # The id the request names the tool by is what the call's PostToolUse
+    # spec hooks match on, as PreToolUse's do here.
+    if event.tool_call_id:
+        _post_identity = post_tool_identity(
+            turn.client,
+            event,
+            is_shell=False,
+            earlier=turn._pending_tool_ids.get(event.tool_call_id),
+        )
+        if _post_identity is not None:
+            turn._pending_tool_ids[event.tool_call_id] = _post_identity
     if turn.assistant_text and not open_construct_at_end(turn.assistant_text):
         slot._owed_segment_cut = functools.partial(_pay_permission_cut, turn)
     try:

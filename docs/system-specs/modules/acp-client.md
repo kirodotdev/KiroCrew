@@ -2125,6 +2125,37 @@ carries `_meta.kiro.versionNegotiation: "legacy"`, so KAS starts each of Crew's
 own servers once instead of twice. A non-managed or command-less entry keeps the
 host default, and the agent-block path carries no pin.
 
+**v2 parity of the projected entry (#25320).** The projection answers the same
+spec the same way kiro-cli v2 does where the wire allows it:
+
+- A spec with no `prompt` (missing or blank) is sent as `"prompt": ""`
+  (`kas_agents.resolve_prompt`), so the agent runs on KAS's own default prompt
+  alone, as it runs on kiro-cli's. The key itself must be present: KAS answers an
+  entry without it with `_kiro/customAgent/not_found` and runs the session in its
+  `vibe` mode. A non-empty prompt is layered on KAS's base prompt, not put in its
+  place. Only Crew's background agent `kirocrew-lite` gets the inline
+  `_KAS_FALLBACK_PROMPT` brief instead. Measured live on kiro-cli 2.35.1: `""`
+  registers the agent (its empty `tools` held), a missing key falls back to `vibe`.
+- `toolsSettings.subagent` becomes `subagent` rules
+  (`kas_permissions.tools_settings_to_permissions`), the capability whose
+  resource is the sub-agent's name (a KAS consent names it as such, and KAS writes
+  its own trusted sub-agents as `{capability: "subagent", match: [ids], effect:
+  "allow"}`). `availableAgents` is a `deny` over `"*"` with the listed names in
+  `exclude` (`[]`, or a value it cannot read, denies every sub-agent; a list
+  holding `"*"` emits nothing); `trustedAgents` is a name-scoped `allow` that the
+  merge puts to the governance ceiling like any authored allow. A pattern is
+  carried when it is an agent id with `*` as its only wildcard; any other is named
+  in the session-start notice, and dropping it only narrows. Measured live on
+  kiro-cli 2.35.1: the deny with the target excluded left the call to its
+  permission request, with another name excluded it was refused by the rule, and
+  the allow ran it with no request.
+- The spec's `hooks` run from Crew's turn loop (`agent_sdk/spec_hooks.py`); a
+  PostToolUse spec hook's tool matcher is matched on the id the call's permission
+  request stated, or for a call the frame classified as a shell command, KAS's
+  shell tool (`spec_hooks.post_tool_hook_tool_id`), with the call's trusted MCP server and tool name kept beside it, because KAS's `tool_call`
+  frame names no built-in tool and titles the call in prose. Pinned through a real
+  `chat_runner._run_chat` turn by `test_kas_spec_hooks_turn_loop.py`.
+
 For a derived worker, the projected payload carries both its checked specification
 snapshot and its runtime session key through create and load. Activation checks
 that same snapshot before readiness: connected tools cannot admit a revoked

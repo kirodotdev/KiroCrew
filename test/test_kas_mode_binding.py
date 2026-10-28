@@ -20,7 +20,6 @@ import pytest
 
 from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp import skill_projection  # bound before a fixture patches its paths
-from kiro_crew.acp.kas_agents import _KAS_FALLBACK_PROMPT
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
@@ -346,14 +345,14 @@ class TestModeBinding:
         assert seen["injected"][0]["prompt"] == "inlined from disk"
 
     @pytest.mark.asyncio
-    async def test_a_prompt_less_agent_falls_back_to_the_kas_prompt(
+    async def test_a_prompt_less_agent_goes_out_with_an_empty_prompt(
         self, mode_stub, crew_agent, tmp_path
     ):
-        """KAS requires a non-empty prompt where kiro-cli tolerates an empty
-        one. Crew's own prompt-less utility agents (e.g. ``kirocrew-lite``, which
-        ships ``"prompt": ""``) must fall back to the small inline KAS prompt
-        rather than crash the session. The tool allowlist still comes from the
-        spec, so the fallback never widens the agent's capabilities.
+        """A prompt-less spec runs on kiro-cli with kiro-cli's own default prompt
+        and nothing added, so on KAS it goes out with ``"prompt": ""`` and runs on
+        KAS's default alone -- not with Crew's background-worker brief,
+        which tells the model it has no tools. The tool allowlist still comes
+        from the spec.
         """
         (crew_agent / "kirocrew.json").write_text(
             json.dumps({"name": "kirocrew", "tools": ["fs_read"], "prompt": ""}),
@@ -372,8 +371,8 @@ class TestModeBinding:
             await runtime.kill()
 
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
-        assert seen["injected"][0]["prompt"] == _KAS_FALLBACK_PROMPT
-        # Tool restriction is preserved — the fallback only supplies a prompt.
+        assert seen["injected"][0]["prompt"] == ""
+        assert "prompt" in seen["injected"][0]
         assert seen["injected"][0]["tools"] == ["fs_read", "read_file", "list_directory"]
 
     @pytest.mark.asyncio

@@ -532,6 +532,7 @@ def _subagent_run(
     spec_matcher: str = "*",
     title: str = "Running: ReadFile",
     harness_tool_id: str = "",
+    mcp: tuple[str, str] = ("", ""),
     store: ScriptHookStore | None = None,
     switch_to: str = "",
     stale: bool = False,
@@ -563,15 +564,25 @@ def _subagent_run(
         if switch_to:
             yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=switch_to)
         # KAS sends the tool-call frame BEFORE the permission request.
-        yield LLMEvent(kind=EVENT_TOOL_CALL, title=title, tool_call_id="t-1")
+        yield LLMEvent(
+            kind=EVENT_TOOL_CALL,
+            title=title,
+            tool_call_id="t-1",
+            mcp_server_name=mcp[0],
+            tool_name=mcp[1],
+        )
         yield LLMEvent(
             kind=EVENT_PERMISSION_REQUEST,
             title=title,
             request_id="r-1",
             tool_call_id="t-1",
             harness_tool_id=harness_tool_id,
+            mcp_server_name=mcp[0],
+            tool_name=mcp[1],
         )
-        yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t-1", tool_output="ok")
+        yield LLMEvent(
+            kind=EVENT_TOOL_RESULT, tool_call_id="t-1", tool_output="ok", tool_final=True
+        )
 
     provider = AsyncMock()
     provider.capabilities = capabilities_for(backend)
@@ -703,6 +714,46 @@ def test_a_kas_subagent_denies_on_its_permission_request_and_fires_once(monkeypa
     provider.approve_tool.assert_not_awaited()
     (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
     assert [h.id for h in post.kwargs["extra_hooks"]] == ["spec:a1:PreToolUse:0"]
+
+
+@pytest.mark.usefixtures("healthy_host_memory")
+def test_a_kas_subagent_post_tool_use_meets_the_id_its_request_stated(monkeypatch):
+    """A spec's PostToolUse matcher is a kiro-cli tool name, which KAS's call title
+    is not, so the subagent passes the names the request's id stands for."""
+    fire, _provider = _subagent_run(ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command")
+    (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
+    assert "execute_bash" in post.kwargs["extra_hooks_tool_names"]
+
+
+@pytest.mark.usefixtures("healthy_host_memory")
+def test_a_kas_subagent_post_tool_use_meets_an_mcp_call_by_its_server_form(monkeypatch):
+    fire, _provider = _subagent_run(
+        ACP_BACKEND_KAS,
+        monkeypatch,
+        title="@probefs/read_file",
+        harness_tool_id="mcp_probefs_read_file",
+        mcp=("probefs", "read_file"),
+    )
+    (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
+    assert "@probefs/read_file" in post.kwargs["extra_hooks_tool_names"]
+
+
+@pytest.mark.usefixtures("healthy_host_memory")
+def test_a_kas_subagent_post_tool_use_waits_for_the_terminal_result(monkeypatch):
+    from kiro_crew.providers.base import EVENT_TOOL_RESULT, LLMEvent
+
+    real = LLMEvent
+
+    def _progress_first(*args, **kwargs):
+        event = real(*args, **kwargs)
+        if kwargs.get("kind") == EVENT_TOOL_RESULT:
+            event.tool_final = False
+            event.tool_status = "in_progress"
+        return event
+
+    monkeypatch.setattr("kiro_crew.providers.base.LLMEvent", _progress_first)
+    fire, _provider = _subagent_run(ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command")
+    assert not [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
 
 
 @pytest.mark.usefixtures("healthy_host_memory")

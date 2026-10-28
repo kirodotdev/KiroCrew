@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
     open_construct_at_end,
@@ -405,6 +406,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
         _raw = _raw[9:]
     if event.tool_call_id:
         _pending_tools[event.tool_call_id] = _raw
+        # Written every time, so a reused id never keeps the names an earlier
+        # call earned; its permission request may name it further.
+        _post_identity = post_tool_identity(client, event, is_shell=bool(event.is_shell))
+        if _post_identity is None:
+            turn._pending_tool_ids.pop(event.tool_call_id, None)
+        else:
+            turn._pending_tool_ids[event.tool_call_id] = _post_identity
         # The claim key binds the TOOL to its arguments, so only a call
         # that resolves to a directive tool records one: trusted
         # _meta.kiro identity first, else kiro-agent's own

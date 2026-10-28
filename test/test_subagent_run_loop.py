@@ -55,6 +55,7 @@ class TestSubagentPostToolUseHook:
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="t-1",
                 tool_output="hello world",
+                tool_final=True,
             )
 
         sessions = _mock_sessions()
@@ -129,6 +130,7 @@ class TestSubagentPostToolUseHook:
                 kind=EVENT_TOOL_RESULT,
                 tool_call_id="t-2",
                 tool_output=long_output,
+                tool_final=True,
             )
 
         sessions = _mock_sessions()
@@ -222,7 +224,9 @@ class TestSubagentPostToolUseHook:
 
         async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
             yield LLMEvent(kind=EVENT_TOOL_CALL, title="X", tool_call_id="t-4")
-            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t-4", tool_output="ok")
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="t-4", tool_output="ok", tool_final=True
+            )
             yield LLMEvent(kind=EVENT_COMPLETE)
 
         sessions = _mock_sessions()

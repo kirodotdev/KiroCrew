@@ -86,7 +86,7 @@ from kiro_crew.agent_discovery import (
     spec_by_declared_name,
     spec_welcome_message,
 )
-from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_files import LITE_AGENT_FILENAME, kas_wire_agent_id
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.hooks import (
@@ -254,16 +254,20 @@ class KasAgentSpecAbsent(KasAgentTranslationError):
         self.agent_id = agent_id
 
 
-#: System prompt fed to a prompt-less agent when projecting onto KAS. KAS
-#: requires a non-empty prompt where kiro-cli tolerates an empty one, so any
-#: agent that ships ``"prompt": ""`` (today only Crew's ``kirocrew-lite``, but
-#: the fallback is deliberately not tied to it) would otherwise crash KAS
-#: session creation. Deliberately generic and small: prompt-less agents run
-#: small system-issued text tasks (titles, summaries, tags, rephrases), so the
-#: full orchestration persona in ``prompt.md`` is both wrong and wasteful here.
-#: Only the KAS path uses this — ``resolve_prompt`` is called solely from
-#: ``build_kas_custom_agents`` — so the kiro-cli path keeps its empty-prompt
-#: behaviour (kiro-cli supplies its own default) unchanged.
+#: The prompt Crew's own background agent ``kirocrew-lite`` gets on KAS. It is the
+#: ONLY agent that gets it (:data:`_KAS_FALLBACK_PROMPT_AGENTS`): lite runs small
+#: system-issued text tasks (titles, summaries, tags, rephrases), so a short
+#: "do exactly the request, nothing else" brief keeps those replies to their
+#: format. Every other prompt-less spec -- a user's, an app's, a crewmate's
+#: worker -- is a user-chosen agent, and on kiro-cli such a spec runs with
+#: kiro-cli's own default prompt and nothing added. KAS behaves the same way when
+#: the projected ``prompt`` is ``""``: the field is required on the wire (an
+#: entry without it is refused as ``_kiro/customAgent/not_found`` and the session
+#: falls back to KAS's ``vibe`` mode), but an empty string registers the agent
+#: and its prompt adds nothing to KAS's own base prompt, as a non-empty one is
+#: layered on top of it (measured live on kiro-cli 2.35.1). So those agents send
+#: ``""`` and this text, which tells the model it has no tools, never reaches an
+#: agent that has them.
 _KAS_FALLBACK_PROMPT = """\
 You are a Kiro Crew lightweight background worker. You are dispatched by the
 system — never by a human in a chat — to perform one small, self-contained text
@@ -283,6 +287,10 @@ task is fully described in each request.
 - This is not a conversation: no user to address, no session to remember. Each
   request stands alone.
 """
+
+#: The agents that get :data:`_KAS_FALLBACK_PROMPT` when their spec has no
+#: prompt: Crew's own background agent, by its id (``agent_files.LITE_AGENT_FILENAME``).
+_KAS_FALLBACK_PROMPT_AGENTS = frozenset({Path(LITE_AGENT_FILENAME).stem})
 
 
 def _is_unsafe_prompt_path(path: Path) -> bool:
@@ -318,24 +326,20 @@ def resolve_prompt(
     * The resolved path must not be a credential/governance location or a
       pseudo-filesystem (see :func:`_is_unsafe_prompt_path`).
 
-    KAS requires a non-empty prompt where kiro-cli tolerates an empty one, so a
-    spec with no prompt (Crew's own utility agents such as ``kirocrew-lite``
-    ship ``"prompt": ""``) falls back to the small :data:`_KAS_FALLBACK_PROMPT`
-    constant instead of crashing the session. The fallback is an inline literal,
-    not a file read, so it carries none of the ``file://`` path's exfiltration /
-    decode risk. Only KAS reaches this — the kiro-cli path keeps its empty-prompt
-    behaviour untouched.
+    A spec with no prompt (missing or blank) resolves to ``""``, which KAS runs
+    on its own default prompt alone, as kiro-cli does for the same spec. Crew's
+    background agent ``kirocrew-lite`` is the one exception: it gets the small
+    inline :data:`_KAS_FALLBACK_PROMPT` brief. That text is a literal, not a file
+    read, so it carries none of the ``file://`` path's exfiltration / decode risk.
+    Only KAS reaches this — the kiro-cli path keeps its empty-prompt behaviour
+    untouched.
     """
     raw = spec.get("prompt")
     if raw is None or (isinstance(raw, str) and not raw.strip()):
-        # Missing or blank — an intentionally prompt-less agent. Substitute the
-        # fallback so KAS's non-empty-prompt requirement is met.
-        logger.warning(
-            "agent %r has no prompt; falling back to the lightweight KAS prompt "
-            "(KAS requires a non-empty prompt)",
-            agent_id,
-        )
-        return _KAS_FALLBACK_PROMPT
+        # Missing or blank — an intentionally prompt-less agent.
+        if agent_id in _KAS_FALLBACK_PROMPT_AGENTS:
+            return _KAS_FALLBACK_PROMPT
+        return ""
     if not isinstance(raw, str):
         # A non-string prompt is a malformed spec, not a prompt-less one — fail
         # loud rather than silently running with unrelated fallback text.
@@ -877,8 +881,8 @@ def to_client_custom_agent(
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
-    if not prompt.strip():
-        raise KasAgentTranslationError(f"agent {agent_id!r} prompt is empty")
+    if not isinstance(prompt, str):
+        raise KasAgentTranslationError(f"agent {agent_id!r} prompt must be a string")
 
     dropped = sorted(k for k in UNSUPPORTED_SPEC_KEYS if spec.get(k))
     if dropped:
@@ -1279,9 +1283,9 @@ def build_kas_custom_agents(
     session stays on KAS's own default mode and the operator's prompt and tool
     configuration have no effect.
 
-    A prompt-less spec (e.g. ``kirocrew-lite``) is projected with the small
-    :data:`_KAS_FALLBACK_PROMPT` so it satisfies KAS's non-empty-prompt
-    requirement instead of crashing the session (see :func:`resolve_prompt`).
+    A prompt-less spec is projected with ``"prompt": ""``, so it runs on KAS's
+    own default prompt as it does on kiro-cli; only ``kirocrew-lite`` gets the
+    small :data:`_KAS_FALLBACK_PROMPT` (see :func:`resolve_prompt`).
 
     *stub_server_names* is forwarded to :func:`_project_mcp_servers`; the caller
     holds the gateway overlay this session will inject from, so it is the only

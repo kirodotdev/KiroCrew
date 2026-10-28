@@ -906,18 +906,28 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 # The stored rows are already correct; a client
                 # reconciles from slot detail on its next fetch.
                 logger.debug("mcp-app flag broadcast failed", exc_info=True)
-    # Fire PostToolUse hooks
-    _tool_name = _pending_tools.pop(event.tool_call_id, "")
-    try:
-        _redacted_out_bounded = _redacted_out[:2000]
-        await _fire(
-            turn,
-            HOOK_EVENT_POST_TOOL_USE,
-            tool_name=_tool_name,
-            tool_response={"output": _redacted_out_bounded},
-        )
-    except Exception:
-        logger.debug("PostToolUse hook error", exc_info=True)
+    # Fire PostToolUse hooks, once per call, on its terminal result: a
+    # progress frame that carries partial output (opencode sends one) is not
+    # the finished call, and retiring the call's name on it would leave the
+    # finished result with none.
+    if _tool_terminal:
+        _tool_name = _pending_tools.pop(event.tool_call_id, "")
+        # The spec's own hooks match a tool in kiro-cli's names, which KAS's
+        # call title is not; the id the turn learned for the call names it.
+        _post_identity = turn._pending_tool_ids.pop(event.tool_call_id, None)
+        try:
+            _redacted_out_bounded = _redacted_out[:2000]
+            await _fire(
+                turn,
+                HOOK_EVENT_POST_TOOL_USE,
+                tool_name=_tool_name,
+                tool_response={"output": _redacted_out_bounded},
+                tool_id=(_post_identity.tool_id or None) if _post_identity else None,
+                tool_identity=_post_identity.tool_identity if _post_identity else "",
+                mcp_server=_post_identity.mcp_server if _post_identity else "",
+            )
+        except Exception:
+            logger.debug("PostToolUse hook error", exc_info=True)
     if (
         _tool_terminal
         and not _compact_after_turn_noticed

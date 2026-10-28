@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
 
+    from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         MonitorCompletionHook,
@@ -164,6 +165,7 @@ class _ChatTurn:
     _pending_dir_for_digest: "dict[str, str]"
     _pending_dir_tool: "dict[str, str]"
     _pending_input_digest: "dict[str, str]"
+    _pending_tool_ids: "dict[str, PostToolIdentity]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
     _produced_visible_output: "bool"

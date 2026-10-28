@@ -48,6 +48,7 @@ it passes the same ceiling the derived rules do, or it does not travel.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -1136,6 +1137,51 @@ def _chunked_rules(capability: str, effect: str, patterns: list[str]) -> list[di
     ]
 
 
+#: A sub-agent name pattern this module carries to KAS: an agent id, with ``*``
+#: as the only wildcard. ``*`` is the one glob character kiro-cli's ``fnmatch``
+#: and KAS's matcher read alike; ``?``, ``[...]``, braces and ``!`` are left out,
+#: so a pattern using them is reported rather than read two ways.
+_AGENT_GLOB_RE = re.compile(r"[A-Za-z0-9_.\-*]+")
+
+
+def _agent_glob(raw: str) -> str | None:
+    """A ``subagent`` name pattern as KAS reads it, or ``None`` when it differs."""
+    return raw if _AGENT_GLOB_RE.fullmatch(raw) else None
+
+
+def _available_agents_rules(where: str, value: Any, lost: list[str]) -> list[dict[str, Any]]:
+    """``subagent.availableAgents`` as a deny on every sub-agent it does not name.
+
+    Every failure narrows. A value that is not a list, a pattern that does not
+    translate, and a list over one rule's pattern bound are each named in *lost*,
+    and the rule denies what it cannot express, so the session spawns no more than
+    kiro-cli would let it. A list holding ``"*"`` restricts nothing and emits nothing.
+    """
+    if not isinstance(value, list):
+        lost.append(where)
+        return [{"capability": "subagent", "effect": "deny"}]
+    patterns: list[str] = []
+    for raw in value:
+        glob = _agent_glob(raw.strip()) if isinstance(raw, str) else None
+        if glob is None or len(glob) > _MAX_PATTERN_LENGTH:
+            lost.append(where)
+        else:
+            patterns.append(glob)
+    patterns = list(dict.fromkeys(patterns))
+    if "*" in patterns:
+        return []
+    if not patterns:
+        # `[]` is kiro-cli's "spawn nothing". KAS takes an unconditional deny off
+        # the agent's tool surface, which refuses the same spawns.
+        return [{"capability": "subagent", "effect": "deny"}]
+    if len(patterns) > _MAX_PATTERNS_PER_RULE:
+        # Two deny-all-but rules with different excludes deny everything between
+        # them, so the list cannot be split; it is refused whole instead.
+        lost.append(where)
+        return [{"capability": "subagent", "effect": "deny"}]
+    return [{"capability": "subagent", "match": ["*"], "exclude": patterns, "effect": "deny"}]
+
+
 def tools_settings_to_permissions(
     tools_settings: Any,
 ) -> tuple[dict[str, Any] | None, list[str]]:
@@ -1178,10 +1224,11 @@ def tools_settings_to_permissions(
         if family is None:
             lost.extend(f"{tool}.{key}" for key in sorted(settings, key=str) if settings[key])
             continue
-        # Only plain deny lists are carried: each has been run live on KAS. The
-        # deny-all-but shapes (`denyByDefault`, `fallbackAction: "deny"`,
-        # `availableAgents`) need an `exclude` rule that has not, so they are
-        # named in the notice instead of guessed at.
+        # Only shapes run live on KAS are carried: the plain deny lists, and the
+        # `subagent` rules below (a deny with an `exclude`, and a name-scoped
+        # allow). The other deny-all-but shapes (`denyByDefault`,
+        # `fallbackAction: "deny"`) match a command or a path, where `exclude`
+        # has not been run, so they are named in the notice instead of guessed at.
         handled: set[str] = set()
 
         if family == "shell":
@@ -1220,10 +1267,25 @@ def tools_settings_to_permissions(
                     converted(f"{tool}.blocked", settings.get("blocked"), url_glob),
                 )
             )
-        elif family == "subagent" and "availableAgents" in settings:
-            # An empty list means "spawn nothing", so it is named even though falsy.
-            handled.add("availableAgents")
-            lost.append(f"{tool}.availableAgents")
+        elif family == "subagent":
+            # KAS's `subagent` capability matches the sub-agent's name (its consent
+            # names it as the resource), and it is the shape KAS itself writes for
+            # trusted sub-agents (`{capability: "subagent", match: [ids], effect:
+            # "allow"}`). Run live on kiro-cli 2.35.1: a deny over "*"
+            # with the target in `exclude` let the call reach its permission
+            # request, the same deny with another name excluded refused it, and
+            # an allow naming it ran it unprompted.
+            handled.update({"availableAgents", "trustedAgents"})
+            if "availableAgents" in settings:
+                rules.extend(
+                    _available_agents_rules(
+                        f"{tool}.availableAgents", settings["availableAgents"], lost
+                    )
+                )
+            # An allow, so the merge puts it to the governance ceiling (the refs
+            # that name the sub-agent tool) and drops it when the ceiling refuses.
+            trusted = converted(f"{tool}.trustedAgents", settings.get("trustedAgents"), _agent_glob)
+            rules.extend(_chunked_rules("subagent", "allow", trusted))
 
         lost.extend(
             f"{tool}.{key}"
