@@ -1656,6 +1656,27 @@ disabled even though the field's declared default is enabled, so neither a
 malformed unrelated section nor an unreadable setting can produce cross-session
 reach.
 
+### Workflow runs: the launching session is the caller
+
+A dynamic workflow's `ctx.open_session` / `ctx.send_to_session` call
+`create_session` / `send_to_target` in-process with the run's launching session
+key as `caller_session_key` (`dashboard/workflow_session_port.py`), so every
+refusal and fence above applies to that session exactly as it does to its own
+`session_create` / `session_send`. There is no `workflow:` caller type: a run
+with no launching session (an empty key, a `cron:` key, or an unattended
+`cron-` / `workflow-` slot) is refused `no_launching_session` before these
+verbs run. A run whose captured memory mode is not `persistent` (an Incognito or
+Temporary run, or a rerun of one) is refused `restricted_memory_mode` on
+`open_session` / `send_to_session`, whoever its caller is. The HTTP scope gate in front of `/api/session-control/*`
+(`_private_caller_refusal`) is applied to the launching session by the port
+itself, with the same predicate (`member_admitted_to_scoped_surface`): a member
+it admits is carried in creator-fenced, any other private-store caller is
+refused `member_scope_denied`. `ctx.set_session_mode` resolves its target through `authorize_target`
+(operation `set_mode`), requires it to be a session the launching session
+created, and refuses a mode above that session's current mode or above the
+launching session's own posture, judged again after the write. The rest
+is in [workflows](workflows.md) (ports native to Kiro Crew).
+
 ### Owner-DM channel callers: the audience predicate
 
 The caller-side channel refusals (`linked_session_caller`, `mirrored_caller`) and

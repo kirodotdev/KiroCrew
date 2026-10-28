@@ -318,7 +318,7 @@ Four Protocols, each `Optional` on `ctx` and `None` when the host did not wire i
 All four are `@runtime_checkable` so the runner can duck-type wrappers; the
 conformance test pins that property and each method signature.
 
-Four further primitives are **injected port functions** rather than Protocols, and
+Seven further primitives are **injected port functions** rather than Protocols, and
 raise a clear `RuntimeError` naming the missing port when unwired:
 
 ```python
@@ -326,17 +326,94 @@ def nudge(self, *, idle_secs: int, message: str, max_cycles: int = 0) -> None
 async def approve(self, prompt: str) -> bool
 async def send_slack(self, target: str, text: str) -> None
 async def send_message(self, channel: str, text: str) -> None
+async def open_session(self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = "") -> str
+async def send_to_session(self, slot: str, message: str) -> dict
+async def set_session_mode(self, slot: str, mode: str) -> dict
 ```
 
 `ctx.nudge` is synchronous (it arms a loop and returns) and, like `phase`/`log`,
 returns a no-op context manager at runtime.
 
-**In the shipped gateway, `nudge` is the only wired port.** `WorkflowService`
-builds `ports = {"nudge": _nudge}` and nothing else, so a script referencing
+**In the shipped gateway, `nudge` and the three session verbs are the wired
+ports.** `WorkflowService` builds `ports = {"nudge": _nudge}` and, when the
+gateway injects a `session_port`, adds `open_session`, `send_to_session` and
+`set_session_mode` bound to the run id. A script referencing
 `ctx.cron`, `ctx.memory`, `ctx.learn`, `ctx.knowledge`, `ctx.approve`,
 `ctx.send_slack` or `ctx.send_message` is **rejected before exec** by the
 surface check (below) rather than crashing mid-run. The port plumbing and its
 tests (`test_workflows_native.py`) exist so a host can wire them.
+
+**Session verbs act AS the launching session.** A workflow runs inside the
+gateway and has no credential of its own, so the session port
+(`dashboard/workflow_session_port.py`, `WorkflowSessionPort`) presents the run's
+`session_key` as the caller of the same session-control verbs the
+`session_create` / `session_send` MCP tools reach: `open_session` is
+`session_control.create_session` (the new session is filed under the launching
+session as its creator, inherits its workspace and trust posture, and obeys
+`agent.session_control`), and `send_to_session` is `session_control.send_to_target`
+with `via="workflow"`, so the target reads `[sent by session <launcher> via
+workflow]`. No new signed caller type exists and the cron `ScriptContext` route is
+untouched. On top of those verbs the port adds only:
+
+- **A launching session is required.** An empty key, a `cron:` key, or a key
+  resolving to an unattended slot (`cron-` / `workflow-`) is refused
+  `no_launching_session`, so a system- or cron-started run cannot open sessions.
+- **Only a persistent run opens or messages sessions.** `open_session` and
+  `send_to_session` are refused `restricted_memory_mode` unless the run's own
+  captured memory mode (`WorkflowScope.memory_mode`, the strictest it inherited)
+  is `persistent`; a missing or unknown mode is refused too. A rerun keeps the
+  prior run's mode while taking the rerunning session as its caller, so a
+  persistent session rerunning an Incognito or Temporary run cannot move that
+  run's content into a persistent transcript.
+- **The session-control scope gate applies.** The verbs run in-process, so they
+  apply `_private_caller_refusal`'s rule to the launching session themselves: an
+  owner / Global caller passes, a crew member reaching a member-open surface
+  (`member_admitted_to_scoped_surface`) is admitted creator-fenced
+  (`caller_fenced=True`), any other caller bound to a private store is refused
+  `member_scope_denied`, and an unreadable execution record is refused
+  `member_identity_unavailable`.
+- **A mode stays or drops, never rises.** `set_session_mode` accepts `normal`,
+  `trust_reads` and `trust`, ranked in that order, and refuses
+  `mode_raise_refused` for a mode above the target session's current mode or
+  above the launching session's own posture (`_trust` → `trust`, `_trust_reads`
+  → `trust_reads`, else `normal`; a launching slot that closed or was replaced
+  reads as `normal`, and a Crew Mode card trust (`_trust_card_scoped`), which
+  `approval_posture.trust_carries` keeps from passing to what the session
+  starts, counts as no `_trust`). So a session the person lowered stays lowered, and the
+  mode write's `trust` arm, which also approves the session's pending tool calls,
+  is never reached from a workflow: a request for the mode a session already has
+  returns `unchanged` without running the write. A session holding a scoped
+  trust grant (`_trust_scope`) is refused `trust_scope_active`, since ending that
+  grant belongs to whoever armed it. The launcher ceiling is judged with
+  no await between it, the target checks and the mode write, and once more after
+  the write: a launching session lowered while the write suspends puts the
+  session back to the launching session's mode and the call is refused. Any
+  other mode, `yolo` included, is `mode_not_allowed`. The target
+  passes `authorize_target` and must be a session the launching session created
+  (`not_creator`); the change is the mode route's own slot-scoped
+  `apply_approval_mode`, which leaves the process-global override and channel
+  trust alone.
+- **A `workflow-opened` sidebar tag** on every session `open_session` opens,
+  applied through the auto-tag writer (`chat_auto_tag.apply_label_tag`) without
+  claiming the auto-tag once-flag, so the session's first message still gets its
+  project tag.
+- **`open_session` spends the run's agent cap.** It increments the run's
+  `AgentCounter` and refuses with `BudgetExceeded` at the budget ceiling, exactly
+  as `ctx.agent()` does.
+- **A rerun that replays earlier calls cannot open or message sessions.** On a
+  run with `replay_before > 0` (`rerun@N` with N > 0, or a restart that replays
+  finished calls), `open_session` and `send_to_session` raise a `RuntimeError`
+  naming the verb ("refused on a rerun that replays earlier calls") before any
+  port call, and the refusal is logged on the run's event stream. The run record
+  keeps no per-call proof of which sessions were opened or which messages were
+  delivered, so replaying them could either send a message twice or report an
+  undelivered one as sent. A fresh run, a rerun from call 0 and an edited rerun
+  (`replay_before == 0`) run both verbs live.
+
+Every admitted call and every refusal is recorded in the SEL under the launching
+session as `workflow_<verb>` with the run id; session-control's own `create` /
+`send` records are written as well. A refusal reaches the script as a
+`RuntimeError` (`WorkflowSessionError`) naming the verb and the code.
 
 `ctx.nudge` never arms AutoNudge directly. The workflow's `session_key` is
 caller-influenced (workflow endpoints derive it from the `X-Session-Key` header),
@@ -1383,7 +1460,10 @@ so a deliberate re-freeze could introduce a work-spawning verb the previewer sil
 ignores. Two things close that: a parity test derived from the Protocol (never a
 hand-written copy of it, which is the enumeration that would go stale), and
 `_visit_call` degrading an unclassified method to an `unknown` node rather than drawing
-nothing -- honest at run time even if the pin is ever relaxed.
+nothing -- honest at run time even if the pin is ever relaxed. `open_session` and
+`send_to_session` are modelled (`SESSION_CTX_METHODS`): each call draws one `unknown`
+`session` node, because the work it starts runs in another session and never reports
+in this run's stream; `set_session_mode` starts nothing and is narration.
 
 `website/src/apps/workflows/planModel.ts` merges the plan with the stream. Both inputs
 are coerced to text at that seam, because nothing between a script and the graph

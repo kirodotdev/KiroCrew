@@ -405,6 +405,9 @@ class _RunContext:
         self._approve_fn = ports.get("approve")
         self._send_slack_fn = ports.get("send_slack")
         self._send_message_fn = ports.get("send_message")
+        self._open_session_fn = ports.get("open_session")
+        self._send_to_session_fn = ports.get("send_to_session")
+        self._set_session_mode_fn = ports.get("set_session_mode")
 
         self._run_id = run_id
         self._author = author
@@ -440,6 +443,12 @@ class _RunContext:
             if prior_index < replay_before and isinstance(prior_fp, str) and prior_fp:
                 self._replay_indices.setdefault(prior_fp, prior_index)
         self.agent_results: dict[int, Any] = {}
+        # A rerun that replays earlier calls (``replay_before > 0``) cannot tell
+        # which sessions the prior run opened or which messages it delivered, so
+        # ``open_session`` / ``send_to_session`` are refused for the whole run
+        # rather than guessed at. A fresh or edited run (``replay_before == 0``)
+        # runs them live.
+        self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
@@ -725,6 +734,61 @@ class _RunContext:
         if self._send_message_fn is None:
             raise RuntimeError("ctx.send_message is not available (no message port wired)")
         await self._send_message_fn(channel, text)
+
+    # --- dashboard sessions. The ports act AS the run's launching session
+    #     (``_session_key``); the host decides every refusal, including a run that
+    #     has no launching session. ---
+    async def open_session(
+        self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = ""
+    ) -> str:
+        if self._open_session_fn is None:
+            raise RuntimeError("ctx.open_session is not available for this run (no session port)")
+        self._refuse_on_prefix_rerun("open_session")
+        guard = getattr(self, "_execution_guard", None)
+        if guard is not None:
+            await guard()
+        # A session is an agent the run starts, so it spends the same lifetime cap
+        # and stops at the same budget ceiling an ``agent()`` call does.
+        self._counter.increment()
+        if self.budget.would_exceed():
+            raise BudgetExceeded("budget exhausted before open_session")
+        return await self._open_session_fn(
+            caller_session_key=self._session_key,
+            name=name,
+            folder_id=folder_id,
+            agent=agent,
+            model=model,
+        )
+
+    def _refuse_on_prefix_rerun(self, verb: str) -> None:
+        if not self._prefix_rerun:
+            return
+        message = (
+            f"ctx.{verb} is refused on a rerun that replays earlier calls: the prior "
+            "run's sessions and messages cannot be replayed safely. Rerun from call 0 "
+            "or edit the script."
+        )
+        self._record(self._stream.log(self.now, message=message))
+        raise RuntimeError(message)
+
+    async def send_to_session(self, slot: str, message: str) -> dict:
+        if self._send_to_session_fn is None:
+            raise RuntimeError(
+                "ctx.send_to_session is not available for this run (no session port)"
+            )
+        self._refuse_on_prefix_rerun("send_to_session")
+        return await self._send_to_session_fn(
+            caller_session_key=self._session_key, slot=slot, message=message
+        )
+
+    async def set_session_mode(self, slot: str, mode: str) -> dict:
+        if self._set_session_mode_fn is None:
+            raise RuntimeError(
+                "ctx.set_session_mode is not available for this run (no session port)"
+            )
+        return await self._set_session_mode_fn(
+            caller_session_key=self._session_key, slot=slot, mode=mode
+        )
 
 
 class WorkflowRunner:
