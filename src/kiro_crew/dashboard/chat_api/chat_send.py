@@ -1024,6 +1024,24 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         slot.theme_consent_sha = theme_consent_sha
 
     from kiro_crew import crew_pause
+
+    # An "Open in kiro-cli" a restart cut short brings its turns in ahead of this
+    # message. Here, before the busy and queue reads, and never between them and
+    # the user row: those reads and the dispatch below stay one step with no
+    # await, so two overlapping sends still queue rather than both dispatching.
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+
+    await recover_left_open(state, slot, effective_session_key(slot))
+    # While a terminal runs this conversation in kiro-cli, the turn would be
+    # refused at admission anyway. Refused here, ahead of every branch that
+    # accepts or queues the message (the responsive path included), so nothing
+    # is taken in that cannot run and the sender keeps the draft. The admission
+    # check stays the authority for every other way in.
+    from kiro_crew.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
+
+    if is_held(effective_session_key(slot)):
+        return web.json_response({"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409)
+
     from kiro_crew.dashboard import responsive_chat
 
     # Ultra Mode "Pause all" holds this session: a send is queued, not started,
@@ -1453,14 +1471,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
-    # Same reason, same place: while a terminal runs this conversation in
-    # kiro-cli, the turn would be refused at admission anyway, and refusing here
-    # leaves no unanswered user row behind (which would read as an interrupted
-    # turn). The admission check stays the authority for every other way in.
-    from kiro_crew.dashboard.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
-
-    if is_held(effective_session_key(slot)):
-        return web.json_response({"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409)
 
     # Fair admission (Shared Crew), charged to the initiator and decided before the
     # user row is recorded, so a refusal leaves nothing behind. The reservation
@@ -1637,6 +1647,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         from kiro_crew.shared_crew.contracts import ActionOutcome, ActionType
         from kiro_crew.shared_crew.identity import actor_of
 
+        # The hold, read again in the same yield-free step that records the row
+        # and (below) reserves the turn: the early refusal above can be overtaken
+        # by an "Open in kiro-cli" that completed during one of the awaits since
+        # (the replay lookup, admission, the store pin), and admission would then
+        # refuse the turn after this message was accepted. Refused here instead;
+        # the `finally` below gives back the admission this send took.
+        if is_held(effective_session_key(slot)):
+            return web.json_response(
+                {"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409
+            )
         _actor = actor_of(request)
         stamp_message_author(_user_row_meta, _actor)
         stamp_creator_if_fresh(
