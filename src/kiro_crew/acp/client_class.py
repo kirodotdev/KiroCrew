@@ -77,7 +77,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import DerivedSpecSnapshot
 from kiro_crew.agent_sdk.capabilities import capabilities_for
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import default_workspace_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ class AcpClient:
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = default_workspace_dir()
         # Once-per-instance guard for the ensure_ready work-dir check: True
         # after the first (off-loop) mkdir, so the per-prompt warm path pays
         # no filesystem syscall at all.

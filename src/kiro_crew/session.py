@@ -576,6 +576,9 @@ class SessionManager:
     set_lifecycle_turn_active = _claims.set_lifecycle_turn_active
     mark_lifecycle_lease = _claims.mark_lifecycle_lease
     has_session = _claims.has_session
+    supersede_arm_for_new_slot = _claims.supersede_arm_for_new_slot
+    transfer_retire_arm = _claims.transfer_retire_arm
+    withdraw_retire_arm = _claims.withdraw_retire_arm
     get_provider = _claims.get_provider
     session_generation = _claims.session_generation
     _advance_session_generation = _claims._advance_session_generation
@@ -1057,6 +1060,9 @@ class SessionManager:
         if session is None or not session.provider_switch_replay:
             return False
         if session.retire_on_identity_change:
+            session.provider_switch_replay = False
+            return True
+        if getattr(session, "retire_on_arm", False) is True:
             session.provider_switch_replay = False
             return True
         if not _is_acp_provider(session.provider):

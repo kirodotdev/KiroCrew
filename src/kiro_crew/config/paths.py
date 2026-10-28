@@ -850,6 +850,38 @@ def config_dir() -> Path:
     return d
 
 
+CWD_CLEARED = ""
+"""The ``cwd`` a caller states to say the project was CLEARED, not left unspecified.
+
+``cwd`` carries two distinguishable answers and one of them is easy to write by
+accident. ``None`` means the caller has no requirement, so a stored or inherited
+directory may still be restored over it. ``CWD_CLEARED`` is a requirement: the user
+removed the project, and the claim must bind the default workspace rather than the
+directory the session previously had. A bare ``""`` at a call site reads as the absence
+of a value, which is the one thing it does not mean -- so the requirement is named.
+"""
+
+
+def default_workspace_dir() -> Path:
+    """The directory a provider binds to when it is given no working directory."""
+    return config_dir() / "workspace"
+
+
+def resolved_cwd(cwd: str, session_key: str | None = None) -> str:
+    """Resolve a directory the way a provider resolves its own ``work_dir``."""
+    if cwd:
+        return str(Path(cwd))
+    if not session_key:
+        raise ValueError(
+            "resolved_cwd() needs a session_key to resolve an empty cwd: the per-session "
+            "default is the only directory a provider binds for a cleared project"
+        )
+    # Deferred: config.loader imports this leaf at load, so a top-level import cycles.
+    from kiro_crew.config.loader import _session_work_dir
+
+    return str(_session_work_dir(session_key))
+
+
 def data_home() -> Path:
     """The resolved data home, WITHOUT re-running start-of-process maintenance.
 

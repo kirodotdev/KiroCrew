@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from kiro_crew.apps.audit_sdk import AuditSDK
-from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.dashboard.state import SlotOrigin, record_project
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 
@@ -391,7 +391,7 @@ async def acquire_worker_slot(
         ):
             raise ValueError(f"slot {canonical!r} is already leased")
         slot._app = app
-        slot.project = project
+        record_project(slot, project)
         lease = WorkerSlotLease(
             app=app, key=canonical, slot=slot, _state=state, _audit=AuditSDK(app)
         )

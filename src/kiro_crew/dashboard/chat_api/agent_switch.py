@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         person_priority,
         pin_private_agent_store,
         read_bounded_json,
+        record_project,
         relay_archive_refusal,
         release_prewarmed_session,
         resolve_agent_bindings,
@@ -584,6 +585,7 @@ async def switch_slot_agent(
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        pre_await_project_cleared = bool(getattr(slot, "project_cleared", False))
         pre_await_memory_store = slot.memory_store
 
         # Resolve workspace from agent bindings. The response value is seeded
@@ -877,7 +879,7 @@ async def switch_slot_agent(
             slot.workspace = _CommitToken(new_workspace)
             committed_workspace = slot.workspace
         if slot.project == pre_await_project:
-            slot.project = _CommitToken(new_project)
+            record_project(slot, _CommitToken(new_project))
             committed_project = slot.project
         # The store is the THIRD field of that binding, and leaving it behind
         # splits the slot in half: the turn resolves its store fresh from the new
@@ -933,6 +935,7 @@ async def switch_slot_agent(
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+                slot.project_cleared = pre_await_project_cleared
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's

@@ -28,7 +28,11 @@ from kiro_crew.metrics.sessions import (
     END_REASON_UNCLAIMED,
     record_session_ended,
 )
-from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue, allocation_identity
+from kiro_crew.session_lifecycle_parts.parked_queue import (
+    _park_queue,
+    allocation_identity,
+    take_live_entries,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.session_lifecycle import SessionLifecycleService, _SessionEntry, _TeardownScope
@@ -388,15 +392,9 @@ def _park_reset_queue(self: SessionLifecycleService, key: str, session: _Session
     Parking is bounded (``PARKED_QUEUE_MAX``); what does not fit is dropped,
     counted and logged by ``_park_queue``. Returns how many were parked.
     """
-    cancelled = session.cancelled
-    kept = tuple(entry for entry in session.queue if entry[0] not in cancelled)
-    if not kept:
-        return 0
-    wanted = {id(entry) for entry in kept}
-    remaining = [entry for entry in session.queue if id(entry) not in wanted]
-    session.queue.clear()
-    session.queue.extend(remaining)
-    _park_queue(self._owner, key, kept)
+    kept = take_live_entries(session)
+    if kept:
+        _park_queue(self._owner, key, kept)
     return len(kept)
 
 
@@ -629,6 +627,7 @@ async def destroy(
         # conditional mode preserves this independently owned sidecar.
         if not preserve_autocompact_override:
             owner.set_autocompact_pct(key, None)
+        owner._allocation_boundary().spend_retire_arm(key)
         # _origin_links deliberately survives destroy; existing callers
         # rely on the historical asymmetry with reset/remove.
         # The map delete is the destructive persistence linearization point.
@@ -792,6 +791,8 @@ async def discard_conversation(
         # successor's runs. The cancel itself happens after the teardown.
         teardown_children = self._snapshot_parent_children(key)
         owner._advance_session_generation(key)
+        # Even with nothing popped: an unregistered cold start has cached its resume SID.
+        owner._allocation_boundary().note_conversation_discarded(key)
         owner._compact_cooldown_until.pop(key, None)
         owner._compact_pending_verdict.pop(key, None)
         self._release_turn_ceiling(key, requested_key)

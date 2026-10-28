@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -40,6 +41,7 @@ from kiro_crew.aws_project_profiles import (
     bound_profile_env,
     configured_project_profiles,
 )
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
@@ -54,7 +56,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionEndingError,
     SpeculativeResumeRefused,
 )
-from kiro_crew.session_lifecycle import adopt_parked_queue
+from kiro_crew.session_lifecycle import _park_queue, adopt_parked_queue, take_live_entries
 from kiro_crew.start_priority import (
     START_QUEUE_COLD_START,
     START_QUEUE_LOG_MIN_MS,
@@ -85,6 +87,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    cwd: str | None = None,
 ) -> bool:
     """Acquire with the global lock released, then validate exact identity -- and meet the key's ending fence again.
 
@@ -99,6 +102,26 @@ async def _reacquire_and_validate(
     semaphore and ``get_or_create`` turns it into a wait for the lift and a
     fresh allocation. ``open_task_session`` passes no token and is refused
     while the fence is up, as at its entry.
+
+    ``cwd`` also validates the session's BOUND directory. It is applied when a provider is
+    CREATED and never re-applied, so a live session whose project has since changed would
+    otherwise be handed back bound to the OLD directory, and the turn's relative writes
+    would land there.
+
+    Checked HERE rather than at the reuse decision because this runs with the semaphore
+    HELD: any turn that was streaming has finished, so returning False -- which sends the
+    caller through ``_evict_stale_session`` -- cannot tear a live reply down mid-stream.
+
+    Guarded on BOTH sides being set, mirroring the pool gate: a caller passing no ``cwd``
+    states no requirement and must not evict a session serving others correctly, and a
+    provider tracking no real directory string reports no binding to disagree with.
+
+    Neither a moved directory nor a retirement arm retires a session while sub-agent work is
+    attached to it: the session is the shared runtime those children run on. An arm published
+    BEFORE the children attached is still in the registry, so this gate asks the attached-work
+    probe itself rather than trusting the publisher to have held back. The claim is then
+    served on the old binding, and the arm stays unspent for the first claim after the
+    children are gone.
     """
     if not wait_if_busy and session.semaphore.locked():
         raise SessionBusyError(key)
@@ -109,22 +132,95 @@ async def _reacquire_and_validate(
     # during that wait reads ``turn_owner`` to learn whose permit it
     # releases, and from here on that is this task's.
     session.turn_owner = asyncio.current_task()
+    children_attached: bool | None = None
     try:
-        async with self._lock:
-            self._refuse_if_ending(key, reservation)
-            still_valid = (
-                self._sessions.get(key) is session
-                and not session.retire_on_identity_change
-                and self._deps.provider_effectively_alive(session.provider)
-            )
+        while True:
+            async with self._lock:
+                verdict = self._claim_verdict(key, session, cwd, reservation, children_attached)
+            if verdict is not None:
+                break
+            children_attached = await self._attached_work_holds(key)
     except BaseException:
         # The held-semaphore contract was never returned to the caller
         # (a fence refusal above included).
         self._release_reacquired(key, session)
         raise
-    if not still_valid:
+    if not verdict:
         self._release_reacquired(key, session)
+    return verdict
+
+
+def _claim_verdict(
+    self: SessionAllocationService,
+    key: str,
+    session: Any,
+    cwd: str | None,
+    reservation: object | None,
+    children_attached: bool | None,
+) -> bool | None:
+    """Decide a reacquired claim under the registry lock; ``None`` until the probe is asked."""
+    self._refuse_if_ending(key, reservation)
+    raw_bound = getattr(session.provider, "cwd", None)
+    bound_readable = isinstance(raw_bound, str) and raw_bound != ""
+    bound_cwd = resolved_cwd(raw_bound) if isinstance(raw_bound, str) and raw_bound else ""
+    requested_cwd = resolved_cwd(cwd) if cwd else ""
+    cwd_stated = cwd is not None
+    reg_arm = self._arm_if_any(key)
+    armed_target = reg_arm.cwd if reg_arm is not None else None
+    retire_armed = armed_target is not None
+    is_registered = self._sessions.get(key) is session
+    cwd_satisfied = (
+        is_registered
+        and bound_readable
+        and (
+            (
+                cwd_stated
+                and requested_cwd == bound_cwd
+                and (armed_target is None or bound_cwd == armed_target)
+            )
+            or (not cwd_stated and (armed_target is None or bound_cwd == armed_target))
+        )
+    )
+    retire_applies = (retire_armed and not cwd_satisfied) or (
+        getattr(session, "retire_on_arm", False) is True
+    )
+    deferred = False
+    if retire_applies and is_registered:
+        if children_attached is None:
+            return None
+        if children_attached:
+            # The arm and its mark stay for the first claim after the children go.
+            deferred = True
+            retire_applies = False
+    if retire_applies:
+        session.retire_on_identity_change = True
+        session.retire_on_arm = True
+    claim_answers_arm = cwd_satisfied and not deferred
+    still_valid = (
+        is_registered
+        and not session.retire_on_identity_change
+        and not retire_applies
+        and self._deps.provider_effectively_alive(session.provider)
+    )
+    if claim_answers_arm and still_valid:
+        # Spent on acceptance: a rejected claim leaves the arm for its replacement.
+        if reg_arm is not None:
+            reg_arm.spend()
     return still_valid
+
+
+async def _attached_work_holds(self: SessionAllocationService, key: str) -> bool:
+    """Whether sub-agent work is attached to *key*, failing toward keeping the session."""
+    try:
+        answer = self._owner._has_attached_subagents(key)
+        if inspect.isawaitable(answer):
+            answer = await answer
+    except Exception:
+        self._deps.logger.warning(
+            "Sub-agent probe failed for session %s; keeping it", key, exc_info=True
+        )
+        return True
+    return bool(answer)
 
 
 def _release_reacquired(self: SessionAllocationService, key: str, session: Any) -> None:
@@ -149,6 +245,10 @@ async def _evict_stale_session(self: SessionAllocationService, key: str, session
             del self._sessions[key]
             self.advance_ownership_generation(key)
             dead = session.provider
+            if getattr(session, "retire_on_arm", False) is True and (
+                kept := take_live_entries(session)
+            ):
+                _park_queue(self._owner, key, kept)
             # Same tick as the removal. Left unrecorded, the start crumb
             # survives and the next boot calls this a crash.
             await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -440,6 +540,8 @@ async def _get_or_create_impl(
     app_launch_agent = str(extra_factory_kwargs.pop("app_launch_agent", "") or "")
     from kiro_crew.execution_context import read_session_execution
 
+    # Before the first await, so a bump during this start outranks it.
+    started_generation = self._generation(key)
     execution = await asyncio.to_thread(read_session_execution, key)
     member_context = execution is not None and execution.member_id is not None
     memory_mode = execution.memory_mode if execution is not None else "persistent"
@@ -464,6 +566,7 @@ async def _get_or_create_impl(
                     raise RuntimeError(
                         "This conversation's privacy mode changed; open a new conversation"
                     )
+                # No cwd check here: the semaphore is not held, so a reply may still be streaming.
                 alive = session.provider.is_process_alive()
                 if not alive:
                     if (
@@ -529,6 +632,7 @@ async def _get_or_create_impl(
             session,
             wait_if_busy=wait_if_busy,
             reservation=_reservation,
+            cwd=cwd,
         ):
             first_turn = session.first_turn
             if not speculative:
@@ -591,7 +695,8 @@ async def _get_or_create_impl(
     from kiro_crew.session_capabilities import prepare_runtime
 
     effective_cwd = cwd
-    if not effective_cwd and (resume_sid or native_fork):
+    # `is None`: an explicit "" is a cleared project and must not restore the stored cwd.
+    if effective_cwd is None and (resume_sid or native_fork):
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
             effective_cwd = stored_cwd
@@ -661,7 +766,8 @@ async def _get_or_create_impl(
         owner._pool_cwd,
     )
     provider_switched = False
-    cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
+    # CWD_CLEARED names the per-session default, which no pooled child is in.
+    cwd_blocks_pool = cwd == CWD_CLEARED or bool(cwd and cwd != owner._pool_cwd)
     if not owner._pool_size:
         pool_decision = "disabled"
     elif preparation.revision:
@@ -1035,6 +1141,7 @@ async def _get_or_create_impl(
             self._starting_pids.add(starting_pid)
 
     won_race_session: Any | None = None
+    stale_generation = False
     duplicate_provider: LLMProvider | None = None
     try:
         stamp = None
@@ -1164,13 +1271,32 @@ async def _get_or_create_impl(
                         self.advance_ownership_generation(key)
                     await discard_session_start(key)
                     raise
+                provider_cwd = provider.cwd
+                claim_arm = self._arm_if_any(key)
+                armed_cwd = claim_arm.cwd if claim_arm is not None else None
+                if started_generation < self._generation(key) or (
+                    armed_cwd is not None
+                    and (
+                        # A cleared arm names no directory: prepare_runtime decides where it lands.
+                        cwd != CWD_CLEARED
+                        if armed_cwd == CWD_CLEARED
+                        else armed_cwd != resolved_cwd(provider_cwd, key)
+                    )
+                ):
+                    stale_generation = True
+                    session.retire_on_identity_change = True
+                    session.retire_on_arm = True
+                elif claim_arm is not None and armed_cwd is not None:
+                    # Spent here, or it outlives its change and every later claim cold-starts.
+                    claim_arm.spend()
                 # After the registration has committed: the rollback above
                 # is behind us, so a cancelled start cannot take the parked
                 # entries down with the session it removes. What a
                 # forced stop parked for this key lands at the queue head;
                 # the drains for those entries' channels are woken by the
-                # release that ends this claim (``_wake_adopted_drains``).
-                if adopt_parked_queue(session, key):
+                # release that ends this claim (``_wake_adopted_drains``). Adoption
+                # EMPTIES that store and a stale start is evicted, so it must not adopt.
+                if not stale_generation and adopt_parked_queue(session, key):
                     session.adopted_parked = True
                 self._deps.logger.info(
                     "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
@@ -1181,8 +1307,9 @@ async def _get_or_create_impl(
                     len(self._sessions),
                 )
 
-                provider_cwd = provider.cwd
-                if not is_stateless and self._deps.is_acp_provider(provider):
+                # A stale start's SID names the discarded conversation; persisting it lets the retry resume it.
+                keep_sid = not stale_generation
+                if keep_sid and not is_stateless and self._deps.is_acp_provider(provider):
                     sid = cast(Any, provider).client._session_id
                     if sid and not defer_sid_promotion:
                         owner._session_map.set(
@@ -1197,7 +1324,7 @@ async def _get_or_create_impl(
                             "session %s; prior resumable SID stays durable",
                             key,
                         )
-                elif not is_stateless and self._deps.is_claude_provider(provider):
+                elif keep_sid and not is_stateless and self._deps.is_claude_provider(provider):
                     sid = provider.session_id
                     if sid:
                         owner._session_map.set(
@@ -1232,6 +1359,40 @@ async def _get_or_create_impl(
         if starting_pid is not None:
             self._starting_pids.discard(starting_pid)
 
+    if stale_generation:
+        # This frame holds the semaphore, so the won-race branch would self-block.
+        try:
+            await owner._evict_stale_session(key, session)
+        finally:
+            session.semaphore.release()
+        maximum = constants.won_race_max_retries
+        if _won_race_retries >= maximum:
+            raise RuntimeError(
+                f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
+                "a cold start kept starting before the project change it must honour"
+            )
+        retry_arm_rec = self._arm_if_any(key)
+        retry_arm = retry_arm_rec.cwd if retry_arm_rec is not None else None
+        if retry_arm_rec is not None and retry_arm_rec.held_for_retry:
+            retry_arm_rec.held_for_retry = False
+        return await owner.get_or_create(
+            key,
+            agent=agent,
+            channel_id=channel_id,
+            approval_policy=approval_policy,
+            model=model,
+            cwd=(retry_arm if retry_arm is not None else cwd),
+            extra_env=caller_env,
+            speculative=speculative,
+            speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
+            _won_race_retries=_won_race_retries + 1,
+            start_priority=start_priority,
+            app_name=app_name,
+            app_launch_agent=app_launch_agent,
+            **extra_factory_kwargs,
+        )
+
     if won_race_session is not None:
         if duplicate_provider is not None:
             # ``existing`` won this key and runs in the very directory the
@@ -1251,6 +1412,7 @@ async def _get_or_create_impl(
             won_race_session,
             wait_if_busy=wait_if_busy,
             reservation=_reservation,
+            cwd=cwd,
         ):
             first_turn = won_race_session.first_turn
             if not speculative:
@@ -1266,13 +1428,16 @@ async def _get_or_create_impl(
                 f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                 "session kept going stale between acquire and re-validate"
             )
+        live_rec = self._arm_if_any(key)
+        live_arm = live_rec.cwd if live_rec is not None else None
+        retry_cwd = live_arm if live_arm is not None else cwd
         return await owner.get_or_create(
             key,
             agent=session_agent,
             channel_id=channel_id,
             approval_policy=approval_policy,
             model=model,
-            cwd=cwd,
+            cwd=retry_cwd,
             extra_env=caller_env,
             speculative=speculative,
             speculative_resume=speculative_resume,

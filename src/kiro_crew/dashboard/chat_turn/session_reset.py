@@ -7,7 +7,7 @@ session permit's release, the turn identity's clear and the unclaimed-directive 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
 
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         effective_session_key,
         expire_slack_options,
         logger,
+        sel,
         subagents_attached_async,
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
@@ -93,6 +94,64 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
     _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
 
 
+def _allocation_cwd(slot: Any) -> str | None:
+    """The cwd a turn's own claim may state, which is NONE while a reset is still owed."""
+    return None if slot._pending_reset_history_key else slot.claim_cwd
+
+
+def _settle_and_transfer_arm(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str | None,
+    authorize: Callable[[str], Any] | None = None,
+    publish: bool = True,
+) -> Any:
+    """Re-point *from_key*'s arm onto the key the slot runs on now."""
+    current_key = effective_session_key(slot)
+    if authorize is not None and current_key != from_key:
+        denied = authorize(current_key)
+        if denied is not None:
+            return denied, current_key
+    if publish:
+        state.sessions.transfer_retire_arm(from_key, current_key, project)
+    elif current_key != from_key:
+        # The slot left from_key now, whether or not children let this publish on the new key.
+        state.sessions.withdraw_retire_arm(from_key)
+    return None, current_key
+
+
+def _app_owned_rebind_denied(slot: Any) -> Callable[[str], Any] | None:
+    """The authorize gate for a DEFERRED reset, which carries no request to re-check."""
+    owning_app = getattr(slot, "_app", "")
+    if not owning_app:
+        return None
+    # circular import: chat_handlers imports the runner at load, so this cannot be top-level.
+    from kiro_crew.dashboard.chat_handlers import _history_key_for
+
+    own_session = _history_key_for(slot.key)
+
+    def _denied(target_key: str) -> Any:
+        if target_key == own_session:
+            return None
+        return f"app {owning_app} does not own this slot's linked session: {target_key}"
+
+    return _denied
+
+
+def _drop_denied_deferred_reset(slot: Any, denied: Any) -> None:
+    """Drop a deferred reset whose target the owning app has no claim on."""
+    logger.warning("Dropping deferred reset for slot %s: %s", slot.key, denied)
+    sel().log_api_access(
+        caller=str(getattr(slot, "_app", "") or ""),
+        operation="chat_deferred_reset",
+        outcome="denied",
+        resources=f"slot={slot.key}",
+        error="app-owned slot rebound to a foreign session",
+    )
+    slot._pending_reset_history_key = None
+
+
 async def _consume_pending_reset(
     state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False
 ) -> bool:
@@ -154,7 +213,28 @@ async def _consume_pending_reset(
     torn_down = False
     if slot._pending_reset_history_key:
         pending_key = slot._pending_reset_history_key
-        current_key = effective_session_key(slot)
+        # Before publishing: an arm on a deferred session refuses every claim.
+        children_attached = await subagents_attached_async(
+            state, slot, pending_key, "consume_pending_reset"
+        )
+        landed_key = effective_session_key(slot)
+        if not children_attached and landed_key != pending_key:
+            children_attached = await subagents_attached_async(
+                state, slot, landed_key, "consume_pending_reset"
+            )
+        # Read once, so the directory armed is the one compared after the reset.
+        settled_cwd = slot.claim_cwd
+        denied, current_key = _settle_and_transfer_arm(
+            state,
+            slot,
+            pending_key,
+            settled_cwd,
+            _app_owned_rebind_denied(slot),
+            publish=not children_attached,
+        )
+        if denied is not None:
+            _drop_denied_deferred_reset(slot, denied)
+            return torn_down
         if pending_key != current_key:
             # The slot REBOUND after the flag was armed (a cron/workflow slot
             # gets linked when its first result is injected; a channel link can
@@ -162,14 +242,17 @@ async def _consume_pending_reset(
             # clearing the flag would tear down a session nobody is on and let
             # the slot's ACTUAL session keep the old CWD forever — the exact
             # stale-binding class this deferral exists to remove. Re-arm to the
-            # current session so the reset lands where the turns run; the
-            # producer already validated the project change belongs to this
-            # slot, and re-pointing the key needs no re-authorization (it names
-            # the slot's own live session, not a new authority).
-            slot._pending_reset_history_key = current_key
+            # current session so the reset lands where the turns run.
+            retarget = effective_session_key(slot)
+            reauthorize = _app_owned_rebind_denied(slot)
+            retarget_denied = reauthorize(retarget) if reauthorize is not None else None
+            if retarget_denied is not None:
+                _drop_denied_deferred_reset(slot, retarget_denied)
+                return torn_down
+            slot._pending_reset_history_key = retarget
             _arm_pending_reset_retry(state, slot)
             return torn_down
-        if await subagents_attached_async(state, slot, pending_key, "consume_pending_reset"):
+        if children_attached:
             # Left armed on purpose, same as the discard branch below: the
             # reset releases the shared runtime attached children run on, so
             # applying it now would discard their work. The retry task owns
@@ -198,7 +281,15 @@ async def _consume_pending_reset(
                 # the next consume lands it, at worst costing one redundant
                 # cold start after the reset tears down an already-correct
                 # idle session.
-                reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
+                # A channel member holds its lifecycle lease for life, so refuse only on a
+                # declared turn or this queued change never lands. Key AND directory are
+                # compared after: a same-key change moves only the directory.
+                reset_ok = await state.sessions.reset(
+                    pending_key, skip_if_busy=True, refuse_only_on_active_turn=True
+                )
+                superseded_mid_reset = (
+                    effective_session_key(slot) != pending_key or slot.claim_cwd != settled_cwd
+                )
             except Exception:
                 # A teardown that raised leaves the session in a state this
                 # slot cannot vouch for — neither is its withhold verdict, so
@@ -212,6 +303,20 @@ async def _consume_pending_reset(
                     exc_info=True,
                 )
             else:
+                # Re-settled on a refused teardown too, before a turn runs in the old project.
+                if superseded_mid_reset:
+                    denied_after, settled_key = _settle_and_transfer_arm(
+                        state,
+                        slot,
+                        pending_key,
+                        slot.claim_cwd,
+                        _app_owned_rebind_denied(slot),
+                    )
+                    if denied_after is not None:
+                        _drop_denied_deferred_reset(slot, denied_after)
+                    else:
+                        slot._pending_reset_history_key = settled_key
+                        _arm_pending_reset_retry(state, slot)
                 if reset_ok:
                     # The verdict describes the session that advertised the
                     # model list, and that session is gone. Dropped only on a
@@ -221,7 +326,7 @@ async def _consume_pending_reset(
                     # show a withheld model as available.
                     slot.forget_session_model_state()
                     torn_down = True
-                    if slot._pending_reset_history_key == pending_key:
+                    if not superseded_mid_reset and slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
                     # Freshness push for open tabs; verdict-driven (see
                     # _broadcast_expired_oauth_banners).
@@ -238,7 +343,9 @@ async def _consume_pending_reset(
                     # old CWD indefinitely. The bounded retry task owns the
                     # follow-up (deduped; a decline observed by the task
                     # itself does not stack a second one).
-                    _arm_pending_reset_retry(state, slot)
+                    # Not after a supersession: it re-armed, or dropped a denied reset.
+                    if not superseded_mid_reset:
+                        _arm_pending_reset_retry(state, slot)
     if allow_discard and slot._pending_discard_conversation_key:
         discard_key = slot._pending_discard_conversation_key
         if await subagents_attached_async(state, slot, discard_key, "consume_pending_discard"):

@@ -30,7 +30,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _member_names_for_slug,
     _sel,
 )
-from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.dashboard.state import DashboardState, record_project, request_slot_origin
 from kiro_crew.members import MemberSlugError
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.members")
@@ -100,7 +100,7 @@ async def _bind_member_workspace(
         return
     old_project = slot.project
     slot.workspace = member_workspace
-    slot.project = project
+    record_project(slot, project)
     if old_project != project:
         slot._pending_reset_history_key = effective_session_key(slot)
     slot._dirty = True
@@ -341,7 +341,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                         mode=members_mod.DM_SLOT_MODE,
                         origin=request_slot_origin(request.get("app", "")),
                     )
-                    slot.project = project
+                    record_project(slot, project)
                     if _pre_assigned:
                         # Stamp synchronously before the slot is visible:
                         # no await follows inside this block, so no other

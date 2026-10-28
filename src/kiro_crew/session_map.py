@@ -937,6 +937,23 @@ class SessionMap:
         self._save()
         return True
 
+    @_guarded
+    def clear_cwd(self, key: str) -> bool:
+        """Drop the stored directory for *key*, keeping the entry and its sid."""
+        entry = self._data.get(canonical_key(key))
+        if entry and entry.pop("cwd", None):
+            self._save()
+            return True
+        return False
+
+    @_guarded
+    def restore_cwd(self, key: str, cwd: str) -> None:
+        """Put back a directory ``clear_cwd`` removed, unless the entry has a new one."""
+        entry = self._data.get(canonical_key(key))
+        if entry and cwd and not entry.get("cwd"):
+            entry["cwd"] = cwd
+            self._save()
+
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped from *key* by any path, or ''.
 

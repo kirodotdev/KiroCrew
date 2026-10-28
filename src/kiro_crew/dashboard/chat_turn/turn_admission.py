@@ -89,7 +89,10 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
-    from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.session_reset import (
+        _allocation_cwd,
+        _consume_pending_reset,
+    )
     from kiro_crew.dashboard.chat_turn.slash_commands import _refuse_blocked_slash
     from kiro_crew.dashboard.chat_turn.tool_approval import _persistable_session_policy
     from kiro_crew.dashboard.chat_turn.turn_context import (
@@ -823,7 +826,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # carry different watchdog windows.
         crew_agent=crew_alias,
         model=_requested_model or None,
-        cwd=slot.project or None,
+        cwd=_allocation_cwd(slot),
         # The persisted channel stays separate from the dashboard-owned key
         # so provider startup can distinguish a linked dispatcher from a
         # direct dashboard turn.

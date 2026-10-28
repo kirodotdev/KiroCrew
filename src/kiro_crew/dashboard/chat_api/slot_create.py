@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         owner_start_priority,
         pin_private_agent_store,
         read_bounded_json,
+        record_project,
         redact_credentials,
         redact_exfiltration_urls,
         request_slot_origin,
@@ -791,7 +792,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # temporarily stale; existing named slots with an explicit project keep
         # it and continue to use the project endpoint for scope changes.
         if folder_project and folder_applied and not slot.project:
-            slot.project = folder_project
+            record_project(slot, folder_project)
         # A fresh folder per new chat, when the owner turned it on. Only for a
         # brand-new unnamed dashboard chat: a named create can reopen a saved
         # session, and apps, crons and ephemeral helpers keep their own rules. A
@@ -824,7 +825,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 session_folder_notice = "session_folder_unavailable"
         # Default project to workspace directory so file search works out of the box
         if not slot.project:
-            slot.project = await _birth_default_project(cfg, workspace)
+            record_project(slot, await _birth_default_project(cfg, workspace))
         if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)

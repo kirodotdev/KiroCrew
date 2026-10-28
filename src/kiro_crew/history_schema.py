@@ -59,6 +59,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # session that carries none clears it instead of inheriting a stale one.
         "app_agent_owner",
         "project",
+        "project_cleared",
         # Remote-execution binding: owned by the slot, so clearing it in memory
         # clears it on disk. Left unowned, a rebind or an unbind would be undone
         # on the next save by the carried-forward copy.

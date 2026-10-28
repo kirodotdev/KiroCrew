@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -39,6 +40,16 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.steer_retract import SteerClear, SteerRetract
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
+
+
+def record_project(slot: Any, project: str) -> None:
+    """Move a slot's project and its cleared marker together."""
+    had_project = bool(getattr(slot, "project", "") or "")
+    slot.project = project
+    if project:
+        slot.project_cleared = False
+    elif had_project:
+        slot.project_cleared = True
 
 
 class _ChatSlot:
@@ -87,6 +98,7 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "project",
+        "project_cleared",
         "created_at",
         "_messages",
         "_lazy_window",
@@ -395,6 +407,7 @@ class _ChatSlot:
     memory_store: str
     _memory_assignment_from_history: bool
     project: str
+    project_cleared: bool
     executor: str
     instance_id: str
     remote_slot: str
@@ -709,6 +722,13 @@ class _ChatSlot:
     def is_closing(self) -> bool:
         """Whether slot teardown currently fences new monitor admission."""
         return self._closing > 0
+
+    @property
+    def claim_cwd(self) -> str | None:
+        """The cwd a claim must state for this slot, or ``None`` to state none."""
+        if getattr(self, "project_cleared", False):
+            return CWD_CLEARED
+        return self.project or None
 
     @property
     def _dirty(self) -> bool:

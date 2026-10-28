@@ -90,6 +90,21 @@ def has_session(self: SessionManager, key: str) -> bool:
     return self._allocation_boundary().has_session(key)
 
 
+def supersede_arm_for_new_slot(self: SessionManager, key: str) -> None:
+    """Drop an arm left by a previous occupant of a recycled or torn-down slot key."""
+    self._allocation_boundary().supersede_arm_for_new_slot(key)
+
+
+def transfer_retire_arm(self: SessionManager, from_key: str, to_key: str, cwd: str | None) -> None:
+    """Move an arm onto the key a rebound slot actually runs on."""
+    self._allocation_boundary().transfer_retire_arm(from_key, to_key, cwd)
+
+
+def withdraw_retire_arm(self: SessionManager, key: str) -> None:
+    """Withdraw *key*'s arm because the slot rebound away from it."""
+    self._allocation_boundary().withdraw_retire_arm(key)
+
+
 def get_provider(self: SessionManager, key: str) -> LLMProvider | None:
     """Return the live provider for a folded key."""
     return self._allocation_boundary().get_provider(key)
@@ -167,6 +182,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    cwd: str | None = None,
 ) -> bool:
     """Acquire outside the registry lock, revalidate identity and meet the key's ending fence again."""
     return await self._allocation_boundary()._reacquire_and_validate(
@@ -174,6 +190,7 @@ async def _reacquire_and_validate(
         sess,
         wait_if_busy=wait_if_busy,
         reservation=reservation,
+        cwd=cwd,
     )
 
 

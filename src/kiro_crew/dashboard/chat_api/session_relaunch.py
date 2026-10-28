@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         logger,
         owner_start_priority,
         read_bounded_json,
+        record_project,
         relay_archive_refusal,
         schedule_eager_spawn,
         sel,
@@ -446,6 +447,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             )
         prior_workspace = slot.workspace
         prior_project = slot.project
+        prior_project_cleared = bool(getattr(slot, "project_cleared", False))
         # Commit as identity tokens (the agent handler's _CommitToken
         # precedent): ``slot.project`` has lock-free writers -- the in-turn
         # set_project directive lands during the reset await -- so a rollback
@@ -454,7 +456,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         committed_workspace = _CommitToken(ws_name)
         committed_project = _CommitToken(default_project_dir(ws_name))
         slot.workspace = committed_workspace
-        slot.project = committed_project
+        record_project(slot, committed_project)
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
 
         def _rollback() -> None:
@@ -472,6 +474,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 slot.workspace = prior_workspace  # type: ignore[union-attr]
             if slot.project is committed_project:  # type: ignore[union-attr]
                 slot.project = prior_project  # type: ignore[union-attr]
+                slot.project_cleared = prior_project_cleared  # type: ignore[union-attr]
             slot._dirty = True  # type: ignore[union-attr]
 
         # skip_if_busy: message dispatch does not take slot._lock, so a send
@@ -696,6 +699,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         old_project = slot.project
+        old_project_cleared = bool(getattr(slot, "project_cleared", False))
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
         # writes this field without the lock, and may legitimately write the
@@ -703,7 +707,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # cannot tell such a same-text write from this handler's own commit and
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
-        slot.project = committed_project
+        record_project(slot, committed_project)
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -721,6 +725,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
                 if slot.project is committed_project:
                     slot.project = old_project
+                    slot.project_cleared = old_project_cleared
                 return _slot_not_found()
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
@@ -745,6 +750,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # same 409 the sibling switch handlers use.
                 if slot.project is committed_project:
                     slot.project = old_project
+                    slot.project_cleared = old_project_cleared
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",

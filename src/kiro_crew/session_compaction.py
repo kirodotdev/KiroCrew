@@ -1080,6 +1080,8 @@ class CompactionCoordinator:
             return  # a racing successor owns the key's resume pointer now
         if session.retire_on_identity_change:
             return  # a retiring session must not re-point the key at itself
+        if getattr(session, "retire_on_arm", False) is True:
+            return  # nor one an arm has marked for retirement
         if sid:
             self._owner._session_map.set(key, sid)
 

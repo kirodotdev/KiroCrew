@@ -151,6 +151,7 @@ import sys as _sys  # noqa: E402
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.dashboard.state_parts.chat_slot import (  # noqa: E402,F401 -- re-exported; see state_parts
     _ChatSlot,
+    record_project,
 )
 from kiro_crew.dashboard.state_parts.dashboard_services import (  # noqa: E402,F401 -- re-exported; see state_parts
     _approvals_for,

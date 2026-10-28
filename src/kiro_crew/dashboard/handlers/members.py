@@ -142,6 +142,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,
+        record_project,
         request_slot_origin,
     )
     from kiro_crew.external_text import (  # noqa: F401
