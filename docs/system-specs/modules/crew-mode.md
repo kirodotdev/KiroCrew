@@ -3906,14 +3906,44 @@ Otherwise its source is the agent `kiro_agent` names (a shared template or its
 `crew-<hex>` copy), read with its prompt inlined and governed, and the file is
 what it adds to the worker base (`migration_file`, via `worker_additions`):
 prompt, servers the base lacks with their approvals and selectors, skills, and
-its restrictions. Before any write, `dry_run` merges the planned file as a
-worker session would: nothing the source has beyond the base is lost, nothing
-is gained, no switched-off server starts, the prompt is carried, and the source
-has no `hooks`. What the base withholds by design is no loss
-(`_by_design`, 2026-10-19 owner decision). A crewmate whose id is also a
-user-level agent's name is skipped. A failing crewmate is left as it was, with
-one WARNING (`MigrationReport.dry_run_failed`), and is tried again next boot. A
-written file is read back and checked, and the kit record names its source.
+its restrictions. Before any write, `plan_move` merges the planned file as a
+worker session would (`differences`; `dry_run` is the same as one sentence)
+and sorts what differs (`docs/decisions/2026-10-27-every-used-crewmate-moves-to-the-conductor.md`).
+A **loosening** keeps the crewmate where it is: a grant the worker would gain,
+a switched-off server it would start, a `hooks` entry it would not run, or a
+`permissions` / `toolsSettings` restriction it would not keep. Two are cured
+first: a server the source switched off is written `{"disabled": true}`, and a
+grant the worker would gain is taken out of the file (`_strip_grants`), so
+nothing the old agent lacked is ever granted; the user gets it only through
+the capability card (`request_capabilities`, `mate_capability_catalog`).
+A **loss** (a grant the source had beyond the base that the worker cannot
+carry, such as a built-in tool the base does not mount, or its prompt) no
+longer keeps it: it moves, and its one upgrade notice names what it lost and
+what was withheld (`change_notice`, `MigrationReport.moved_with_changes`).
+What the base withholds by design is no loss (`_by_design`, 2026-10-19 owner
+decision). An agent that cannot be read is no reason to stay either: the
+crewmate moves onto the default template's file (`_default_template_file`,
+`MigrationReport.moved_from_default`), with no kit record, and its notice says
+the agent could not be read. An agent whose spec parses but cannot be read
+governed (its `file://` prompt does not resolve) still has its stated limits
+read raw, and the default template's file never loosens them
+(`_fallback_keeping_limits`): a server it switched off is written
+`{"disabled": true}`, a tool it excludes or disables goes into
+`excludedTools`, and a grant it never had is taken out. A hook or a
+`permissions` / `toolsSettings` restriction the file cannot carry leaves it
+where it is. Governance applies as before: the source is read
+governed, and the worker session still passes POLICY ∩ PROFILE. A crewmate
+whose id is also a user-level agent's name, or a spec Kiro Crew generates, is
+skipped: its file would never be read, and giving it another file name breaks
+every reader that knows a crewmate's file by its binding key
+(`mate_capabilities.binding_is_mate`, `member_mate_tools`,
+`mate_worker._claimed_file`, the revocations keyed by file id). A binding with
+no `member_id` stays out of the migration: a `member_id` on a store that is not
+its own V2 store fails every turn (`memory_stores.require_member_memory_store`).
+A crewmate left where it was gets one WARNING (`MigrationReport.dry_run_failed`)
+and is tried again next boot. A written file is read back and checked against
+the same loosening rule, and the kit record names its source. The ledger keeps
+how each crewmate moved under `reasons.<name>`.
 Only after every candidate is proven are bindings repointed, one at a time:
 the ledger entry (`~/.kiro/mates/migrated.json`, `threads.<name>`) is written
 first as intent, then the binding is repointed (the create path's locked
@@ -3952,7 +3982,11 @@ naming why: the dry-run reason as written, else a plain cause. It is claimed
 once the same way (`worker_kept_claimed.json`), so a crewmate still left behind
 at a later start is not told again. A crewmate that moves later drops its
 unclaimed kept record (`clear_kept_owed`), and a kept notice is never claimed
-once a moved notice is owed or claimed. One claimed while the thread is busy
+once a moved notice is owed or claimed. A crewmate moved with a loss, a
+withheld gain or an unreadable agent has its sentence stored in the owed record
+(`changes`); the same one notice then appends it (`notice_prompt`,
+`upgrade_notice_changes`) and tells the conductor to raise any withheld grant
+with `request_capabilities` on the user's next message. One claimed while the thread is busy
 waits for its next turn end, like a pending report
 (`test/test_mate_upgrade_notice.py`).
 
