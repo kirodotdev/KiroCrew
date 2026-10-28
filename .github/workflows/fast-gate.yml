@@ -1,21 +1,27 @@
 name: Fast Gate
 
-# The eleven cheap, blocking gates, split out of ci.yml so two consumers can key
-# on them BEFORE the expensive matrix runs.
+# The cheap, blocking gates, split out of ci.yml so two consumers can key on
+# them BEFORE the expensive matrix runs.
 #
-# They cost 198 job-seconds in total, 70% of which is runner acquisition and
-# checkout, and they finish in ~44 seconds wall clock because they run in
-# parallel. ci.yml's heavy jobs (the eight backend shards alone are 73.7% of CI's
-# job-minutes) used to start alongside them, so a gate that went red in 20
-# seconds still let ~220 job-minutes of tests run to completion.
-#
-# Two things now depend on this workflow finishing first:
+# Two things depend on this workflow finishing first:
 #   1. ci.yml's `await-fast-gate` job, which the heavy jobs need -- so a red gate
 #      skips the matrix instead of racing it.
-#   2. The five fork-*-review.yml lanes, which used to trigger on
-#      `workflow_run: ["CI"] completed`. Waiting for all of CI put a fork PR's AI
-#      verdict ~54 minutes out (CI's median wall clock) when the gates it
-#      actually needed were green after one. They now trigger on this workflow.
+#   2. The fork-*-review.yml lanes, which trigger on this workflow's completion.
+#      Waiting for all of CI would put a fork PR's AI verdict ~54 minutes out
+#      (CI's median wall clock) when the gates it actually needs are green
+#      after one or two.
+#
+# Three jobs, not one per gate. The fourteen stdlib-only gates share one
+# `source-gates` job and run as consecutive steps: each costs seconds of real
+# work, and as separate jobs ~70% of their job-seconds went to runner
+# acquisition and checkout while every one of them held a runner slot of its
+# own. Fourteen slots per push on a repository that pushes ~1,400 times a day
+# is most of this workflow's concurrency footprint, and the two pytest-backed
+# ratchet jobs below (uv install plus pytest) are the long pole of the run, so
+# running the stdlib gates in sequence adds no wall clock to the verdict the
+# two consumers wait on. The gate steps carry `if: ${{ !cancelled() }}` so a
+# red gate does not hide the gates after it: the job fails, and every failing
+# gate is named in the same run.
 #
 # The pull_request filter matches ci.yml's, including `branches: [main]`: the
 # fork reviewers key on this workflow, so a wider filter here would newly review
@@ -58,13 +64,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  vendor-manifest:
-    name: Vendored Tree Integrity
+  source-gates:
+    name: Source Gates
     # Skipped on a push to main only while the repository variable
     # MERGE_QUEUE_ENABLED is 'true': the merge group ran every gate here on
     # this exact tree, and ci.yml's `await-fast-gate` skips on that path too.
     # With the variable unset a push to main runs every gate. The same clause
-    # sits on every job below, so the queue-on push run is all-skipped.
+    # sits on every job in this file, so the queue-on push run is all-skipped.
     if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
     # CodeBuild-hosted runner pilot (docs/ci/ci-and-reviews.md), the same
     # routing decision ci.yml's `changes` job resolves into a `linux_runner`
@@ -78,42 +84,39 @@ jobs:
     # a gate. The AWS webhook independently enforces actor admission; this
     # expression controls availability, not the security boundary.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    # Deliberately NOT gated behind the `changes` job's surface outputs:
-    # everything under src/kiro_crew/_vendor is excluded from semgrep and the
-    # AI reviewers' diff, so this checksum gate is the only content review the
-    # vendored tree gets. Hashing the ~26MB tree takes seconds, and an
-    # always-on job cannot be dodged by a path-filter edge case.
+    # Fourteen gates of a few seconds each, plus one checkout and one Python
+    # setup. A green run is well under five minutes; the cap is a hang
+    # backstop, not a budget.
+    timeout-minutes: 15
     steps:
+      # persist-credentials retained: the diff-scoped gate steps run `git fetch
+      # origin` against the same remote, through the shared diff-base resolver
+      # script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
+      # Each gate step runs unless the run was cancelled, so one red gate does
+      # not hide the verdicts of the gates after it. Every gate runs its own
+      # self-test first: a gate that has silently stopped matching reads as a
+      # green signal, which is worse than no gate.
+
       - name: Verify _vendor tree against the committed sha256 manifest
+        if: ${{ !cancelled() }}
         # Blocking gate: fails on any modified, missing, or added file under
         # src/kiro_crew/_vendor relative to scripts/vendor_manifest.sha256.
         # Legitimate vendored bumps regenerate the manifest with --write (see
         # src/kiro_crew/_vendor/README.md) so the change lands as a reviewable
-        # manifest diff. The pinned Python runtime also covers stdlib-only gates.
+        # manifest diff. Deliberately NOT path-filtered: everything under
+        # src/kiro_crew/_vendor is excluded from semgrep and the AI reviewers'
+        # diff, so this checksum gate is the only content review the vendored
+        # tree gets. Hashing the ~26MB tree takes seconds, and an always-on
+        # step cannot be dodged by a path-filter edge case.
         run: python3 scripts/verify_vendor_manifest.py
 
-  brand-lint:
-    name: Brand Name Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: brand-lint/Check the product name on the lines this change adds runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check the product name on the lines this change adds
+        if: ${{ !cancelled() }}
         # Diff-scoped on purpose. The tree still carries thousands of prose lines
         # that join the two words, from before the convention, so a whole-tree
         # gate would fail every PR until one enormous rename lands and charge the
@@ -121,10 +124,6 @@ jobs:
         # a line only reaches main through a diff that added it — and the
         # whole-tree number is still printed as a non-failing report.
         env:
-          # `base.sha`, not `origin/<base>`: the merge ref this run checks out was
-          # computed against that exact commit, so the diff cannot pick up main
-          # moves that landed after the run started. Same reasoning as the
-          # i18n gates below; see the longer note at their first use.
           BRAND_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           BRAND_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -135,20 +134,8 @@ jobs:
           python3 scripts/check_brand_name.py --test
           python3 scripts/check_brand_name.py
 
-  comment-history-lint:
-    name: Comment History Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: comment-history-lint/Check comments on the lines this change adds runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check comments on the lines this change adds
+        if: ${{ !cancelled() }}
         # Diff-scoped on purpose, like the brand-name gate above. A comment must
         # not narrate change history -- PR/issue numbers, review rounds, commit
         # SHAs, "previously", "no longer", "we now" (code-style.md). The tree
@@ -157,7 +144,6 @@ jobs:
         # regression, needs no shared baseline file for every cleanup PR to
         # fight over, and is the one set a contributor can act on.
         env:
-          # `base.sha`, not `origin/<base>`: see the brand-name gate's note.
           COMMENT_HISTORY_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           COMMENT_HISTORY_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -168,20 +154,8 @@ jobs:
           python3 scripts/check_comment_history.py --test
           python3 scripts/check_comment_history.py
 
-  focus-cue-lint:
-    name: Focus Cue Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: focus-cue-lint/Check the focus cues on the elements this change touches runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check the focus cues on the elements this change touches
+        if: ${{ !cancelled() }}
         # Diff-scoped on purpose, same reasoning as the brand gate above: the tree
         # still carries elements that opted out of the focus outline before the
         # global ring existed, so a whole-tree gate would charge that backlog to
@@ -201,20 +175,8 @@ jobs:
           python3 scripts/check_focus_cue.py --test
           python3 scripts/check_focus_cue.py
 
-  feature-map-lint:
-    name: Feature Map Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: feature-map-lint/Check the feature map covers the features this change adds runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check the feature map covers the features this change adds
+        if: ${{ !cancelled() }}
         # Structural, not line-scoped, and that is the whole design. A feature
         # arrives as a FILE appearing under the pages or handlers tree, or a route
         # entry appearing in the router — so those are what demand a map row.
@@ -223,8 +185,6 @@ jobs:
         # that asked for a map review on every UI fix would produce a map nobody
         # reads. Contract: docs/feature-map/README.md
         env:
-          # `base.sha` for the same reason as the brand gate above: the merge ref
-          # this run checks out was computed against that exact commit.
           FEATURE_MAP_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           FEATURE_MAP_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -236,20 +196,8 @@ jobs:
           python3 scripts/check_feature_map.py --test
           python3 scripts/check_feature_map.py
 
-  changelog-history:
-    name: Changelog History Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: changelog-history/Check that shipped changelog sections survived this change runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check that shipped changelog sections survived this change
+        if: ${{ !cancelled() }}
         # CHANGELOG.md is append-only history: every section already in it
         # describes software a user has installed, so a line deleted from one is
         # unrecoverable from that user's artifact. This has already happened
@@ -267,10 +215,6 @@ jobs:
         # complement: it checks the NEW section exists, not that the old ones
         # survived — which is the half that actually failed.
         env:
-          # base.sha, not origin/<base>: the merge ref this run checks out was
-          # computed against that exact commit, so the comparison cannot pick up
-          # base moves that landed after the run started. Same reasoning as the
-          # brand-name and i18n gates above.
           CHANGELOG_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           CHANGELOG_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -281,20 +225,8 @@ jobs:
           python3 scripts/check_changelog_history.py --test
           python3 scripts/check_changelog_history.py
 
-  decision-ledger-history:
-    name: Decision Ledger Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: decision-ledger-history/Check that every recorded decision survived this change runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check that every recorded decision survived this change
+        if: ${{ !cancelled() }}
         # docs/decisions/ holds the team's decisions, one immutable file each.
         # An edit or a deletion there silently rewrites what was decided, and
         # it reads as plausible in review because the reviewer looks at what
@@ -304,7 +236,6 @@ jobs:
         # recorded-decisions-are-not-regressions rule in AUTOSDE.yaml; the
         # mechanical half runs here.
         env:
-          # base.sha, not origin/<base>: same reasoning as changelog-history.
           DECISIONS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           DECISIONS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -315,20 +246,8 @@ jobs:
           python3 scripts/check_decisions_history.py --test
           python3 scripts/check_decisions_history.py
 
-  builtin-skill-scope:
-    name: Builtin Skill Scope Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check for this repository's markers in shipped skill bodies
+        if: ${{ !cancelled() }}
         # Everything under src/kiro_crew/builtin_skills/ installs on every
         # machine that installs Kiro Crew, so a skill body naming THIS
         # repository -- its GitHub slug, a src/ checkout path, a test file, a
@@ -351,20 +270,8 @@ jobs:
           python3 scripts/check_builtin_skill_scope.py --test
           python3 scripts/check_builtin_skill_scope.py
 
-  loop-bound-locks:
-    name: Loop-Bound Locks Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check for bare module-global asyncio primitives
+        if: ${{ !cancelled() }}
         # An asyncio.Lock/Event/Queue created at module scope binds to the
         # import-time (or first-use) event loop and raises RuntimeError when
         # acquired from another loop (Python 3.10+). #4800 converted every
@@ -380,20 +287,8 @@ jobs:
           python3 scripts/check_loop_bound_locks.py --test
           python3 scripts/check_loop_bound_locks.py
 
-  testpaths-coverage:
-    name: Testpaths Coverage Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check that every pytest test file sits under a collected root
+        if: ${{ !cancelled() }}
         # setup.cfg pins `testpaths`, so a test_*.py file created outside those
         # roots is silently never run — green by omission — and rots against
         # the code it claims to cover (#6577: twelve files sat uncollected in a
@@ -408,20 +303,8 @@ jobs:
           python3 scripts/check_testpaths_coverage.py --test
           python3 scripts/check_testpaths_coverage.py
 
-  cwd-relative-repo-reads:
-    name: Working-Directory Path Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check that no test reaches the repository through the working directory
+        if: ${{ !cancelled() }}
         # A structural test that reads the repository's own source has to name a
         # file, and a bare relative literal names it against whatever directory
         # the process started in. Launched from anywhere but the root, that read
@@ -439,20 +322,8 @@ jobs:
           python3 scripts/check_cwd_relative_repo_reads.py --test
           python3 scripts/check_cwd_relative_repo_reads.py
 
-  harness-parity:
-    name: Harness Parity Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: harness-parity/Check harness identity tests on the lines this change adds runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check harness identity tests on the lines this change adds
+        if: ${{ !cancelled() }}
         # Kiro Crew drives one first-class harness (kiro-cli) and adapts the
         # others. The defect class is a call site that spells "this is kiro" as
         # the ABSENCE of another harness: correct with two backends, and then it
@@ -466,8 +337,6 @@ jobs:
         # as a non-failing report. Invariants:
         # docs/system-specs/modules/harness-parity.md
         env:
-          # `base.sha` for the same reason as the brand gate: the merge ref this
-          # run checks out was computed against that exact commit.
           HARNESS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           HARNESS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -478,20 +347,8 @@ jobs:
           python3 scripts/check_harness_parity.py --test
           python3 scripts/check_harness_parity.py
 
-  memory-store-seam:
-    name: Memory Store Seam Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      # persist-credentials retained: memory-store-seam/Check that memory-context call sites name their store runs `git fetch origin`
-      # against the same remote, through the shared diff-base resolver script.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
       - name: Check that memory-context call sites name their store
+        if: ${{ !cancelled() }}
         # A named memory store is a separate SQLite silo. A build_message /
         # build_session_context call site that does not name one reads whatever
         # the resolver defaults to -- the operator's own `default` store -- for a
@@ -506,8 +363,6 @@ jobs:
         # the remaining backlog to whoever pushed next. The backlog is printed as
         # a non-failing report and pinned by test/test_memory_store_seam.py.
         env:
-          # `base.sha` for the same reason as the brand gate: the merge ref this
-          # run checks out was computed against that exact commit.
           MEMSTORE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           MEMSTORE_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -518,26 +373,15 @@ jobs:
           python3 scripts/check_memory_store_seam.py --test
           python3 scripts/check_memory_store_seam.py
 
-  docs-lint:
-    name: Docs Lint
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Verify the linter's own checks still fire
+      - name: Verify the docs linter's own checks still fire
+        if: ${{ !cancelled() }}
         # Self-test first: a gate that has silently stopped detecting anything is
         # worse than no gate, because it reads as a green signal. Each check is
         # exercised against a planted defect in a throwaway tree.
         run: python3 scripts/docs_lint.py --test
 
       - name: Lint documentation trees
+        if: ${{ !cancelled() }}
         # Blocking gate: every internal link resolves, every doc is reachable from
         # its directory index, every directory holding docs has one, no code comment
         # cites a doc that does not exist, no doc cites a source LINE past the end of

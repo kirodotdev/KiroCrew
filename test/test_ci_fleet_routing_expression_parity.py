@@ -148,20 +148,7 @@ _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 # Fixed expectations, never inferred from the workflow contents: a route
 # silently removed or a new unreviewed fleet job must fail the inventory check.
 _EXPECTED_ROUTED_JOBS = {
-    ("fast-gate.yml", "vendor-manifest"),
-    ("fast-gate.yml", "brand-lint"),
-    ("fast-gate.yml", "comment-history-lint"),
-    ("fast-gate.yml", "focus-cue-lint"),
-    ("fast-gate.yml", "feature-map-lint"),
-    ("fast-gate.yml", "changelog-history"),
-    ("fast-gate.yml", "decision-ledger-history"),
-    ("fast-gate.yml", "builtin-skill-scope"),
-    ("fast-gate.yml", "loop-bound-locks"),
-    ("fast-gate.yml", "testpaths-coverage"),
-    ("fast-gate.yml", "cwd-relative-repo-reads"),
-    ("fast-gate.yml", "harness-parity"),
-    ("fast-gate.yml", "memory-store-seam"),
-    ("fast-gate.yml", "docs-lint"),
+    ("fast-gate.yml", "source-gates"),
     ("fast-gate.yml", "static-ratchets"),
     ("fast-gate.yml", "flake-pattern-ratchet"),
     ("build.yml", "build-wheel"),

@@ -92,11 +92,11 @@ hold on its own: one that waited a third of the orphan threshold or more means
 that queue is saturated and the tick holds; prompt ones and nothing slow mean the
 queue is being served and a job that has waited a quarter of an hour in it is not
 in it at all, whatever another label's queue is doing. The typical carrier is the
-run's own sibling jobs: a fast-gate run queues fourteen jobs on one label within
-a second, and thirteen of them starting in under a minute while the fourteenth
-sits for an hour and a half is the dropped-dispatch shape exactly (a slow start on
-another label that afternoon held that orphan unhealed for six hours before this
-reading existed).
+run's own sibling jobs: a fast-gate run queues three jobs on one label within a
+second (a ci.yml run, many more), and the siblings starting in under a minute
+while one sits for an hour and a half is the dropped-dispatch shape exactly (a
+slow start on another label that afternoon held that orphan unhealed for six
+hours before this reading existed).
 
 Only when the orphan's own queue served nothing that qualifies -- a single-job
 run, or a run whose orphans span two queues -- is the fleet-wide, label-blind

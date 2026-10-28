@@ -31,12 +31,12 @@ SPEC.loader.exec_module(gate)
 
 def _gate_step() -> dict:
     workflow = yaml.safe_load(FAST_GATE.read_text(encoding="utf-8"))
-    job = workflow["jobs"].get("comment-history-lint")
-    assert job, "fast-gate.yml has no comment-history-lint job"
+    job = workflow["jobs"].get("source-gates")
+    assert job, "fast-gate.yml has no source-gates job"
     for step in job.get("steps") or []:
         if "scripts/check_comment_history.py" in str(step.get("run", "")):
             return step
-    raise AssertionError("comment-history-lint runs no check_comment_history.py step")
+    raise AssertionError("source-gates runs no check_comment_history.py step")
 
 
 class TestCiWiring:
