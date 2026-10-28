@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed, CircleSlash } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -187,6 +187,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // A retired never-launched card was not stopped by anyone.
     stopped: all.filter(a => a.status === 'stopped' && !a.approvalRetired).length,
     stalled: activeList.filter(a => a.stalled).length,
+    orphaned: activeList.filter(a => a.parentStopped).length,
   }), [all, activeList])
   // `all` already excludes native:* ids, so error entries here are managed.
   const failedIds = useMemo(() => all.filter(a => a.status === 'error').map(a => a.id), [all])
@@ -376,6 +377,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> {counts.stopped}</span>}
             {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> {counts.stalled}</span>}
+            {counts.orphaned > 0 && <span className="inline-flex items-center gap-1 text-muted/60" title="Parent turn stopped"><CircleSlash size={12} /> {counts.orphaned}</span>}
           </span>
           <span className="ml-auto shrink-0 flex items-center gap-1.5">
             {failedIds.length > 0 && (
@@ -528,6 +530,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                             stalledAt={a.stalledAt}
                           />
                         </span>
+                      </span>
+                    ) : a.parentStopped ? (
+                      <span className="text-muted/60 flex items-center gap-1">
+                        <CircleSlash size={11} className="shrink-0" />
+                        <span className="truncate">parent stopped — still running</span>
                       </span>
                     ) : (a.lastTool && <span className="block font-mono text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
                   </span>
