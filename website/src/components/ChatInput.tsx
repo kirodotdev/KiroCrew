@@ -63,6 +63,7 @@ import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from '.
 import { useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { KasComposerApprovals } from './chat-input/KasComposerApprovals'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -1292,6 +1293,7 @@ function ChatInput({
       )}
       {appActions.popover}
 
+      {!terminal.active && <KasComposerApprovals slotId={slotApprovalChrome ? slotId : null} />}
       {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}

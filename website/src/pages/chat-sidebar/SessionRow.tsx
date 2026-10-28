@@ -29,6 +29,8 @@ import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { DndDraggable, DndDroppable } from '../../components/dnd'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { useKasSessionRowStatus } from '../../apps/workflows/kas/useKasSessionRowStatus'
+import { KasRowNeedsYou } from '../../apps/workflows/kas/KasRowNeedsYou'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatTag, CrewWorkFacts } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
@@ -462,10 +464,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
-  const wf = useMemo(
+  const wfCrew = useMemo(
     () => (wfCount === undefined ? undefined : { count: wfCount, name: wfRawName ?? '', phase: wfRawPhase ?? '' }),
     [wfCount, wfRawName, wfRawPhase],
   )
+  // The Kiro Workflows half (useKasSessionRowStatus): KAS runs fill `wf` when no Crew run does.
+  const { wf, needsYou: wfNeedsYou } = useKasSessionRowStatus(localSlotKey, wfCrew)
     // The conductor lane's count cluster, built HERE so it can sit inside the card's
     // own meta group. The lane hands over numbers and renders none of this itself,
     // which is what keeps one card implementation across every lane.
@@ -826,6 +830,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
           </div>
         ),
+      },
+      {
+        // A Kiro Agent workflow here is parked on a person (KasRowNeedsYou says
+        // why it ranks above needs_input and every "working" signal).
+        key: 'workflow_needs_you',
+        when: wfNeedsYou,
+        build: () => <KasRowNeedsYou count={wfActive?.count ?? 0} name={wfName} className={ROW_STATUS_LINE_CLS} iconPx={ROW_ICON_PX} />,
       },
       {
         // An unanswered question card. Above every "working" signal for the
