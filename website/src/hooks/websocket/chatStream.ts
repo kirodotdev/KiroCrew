@@ -24,6 +24,8 @@ import type { StreamBuffers } from './streamBuffers'
 import { batchedUnlessOpen } from '../../lib/streamBatch'
 import type { VoicePlayback } from './voicePlayback'
 import type { FrameData } from './frames'
+import type { ChatMessage } from '../../types'
+import { readRelay } from '../../pages/chat/sessionRelay'
 
 export interface ChatStreamDeps {
   dispatch: AppDispatch
@@ -190,9 +192,13 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // The quote the steer carries (`messageQuote.ts`): without it another
       // tab would draw the blockquote as body text until a reload.
       const steerQuote = queueEntryQuote(steerMeta).quote
+      // The gateway-set cross-session sender of a peer's steer (`meta.relay`),
+      // validated the way the transcript reads it, so the live row draws the
+      // same incoming card a reload does.
+      const steerRelay = readRelay(steerMeta && typeof steerMeta === 'object' ? (steerMeta as ChatMessage['meta']) : undefined)
       dispatch(appendSlotMessage({
         slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(steerRetract ? { steerRetract: true } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}) }, ts: (data as { ts?: string }).ts },
+        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(steerRetract ? { steerRetract: true } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}), ...(steerRelay ? { relay: steerRelay } : {}) }, ts: (data as { ts?: string }).ts },
       }))
       // Steering is the other way to type into a busy session, so it
       // settles the rank exactly like a queued send. The server appends a
