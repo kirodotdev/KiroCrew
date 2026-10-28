@@ -178,6 +178,10 @@ class SubagentManager:
         self._teardown_sweeps_owed: list[tuple[str, AbstractSet[str], str]] = []
         self._teardown_fence_lock = threading.Lock()
         self._memory_mode_for_session = memory_mode_for_session
+        #: Parent session key -> the folder steering directories that parent
+        #: receives. Wired by the gateway (``DashboardState``); unset in a
+        #: process with no chat folders, where children get no folder steering.
+        self._parent_steering_dirs: Callable[[str], Awaitable[tuple[str, ...]]] | None = None
         self._ctx_builder = ctx_builder
         self._on_done = on_done
         #: While True the staggered pump admits nothing: the durable rows that

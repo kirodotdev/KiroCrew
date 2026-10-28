@@ -230,6 +230,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         active_project_dir,
         active_project_state,
         requesting_slot_project,
+        session_folder_steering_dirs,
         session_project_for_spawn_gate,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

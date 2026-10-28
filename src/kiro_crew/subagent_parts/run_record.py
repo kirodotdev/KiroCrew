@@ -408,6 +408,13 @@ class SubagentInfo:
     include_memory: bool = True
     include_lessons: bool = True
     include_project: bool = True
+    # The parent's folder steering directories, resolved when each run of this
+    # child starts (``SubagentManager._parent_steering_dirs``) and handed to
+    # ``build_message`` so the child follows the guides its parent follows. Kept
+    # on the record so a child this run spawns inherits the same set. In memory
+    # only: a retried, drained or continued run resolves it again from its
+    # parent, the same way a chat re-resolves its folder on every rebuild.
+    steering_dirs: tuple[str, ...] = ()
     # The memory silo this child reads and writes, or "" for the global store.
     # Carried rather than derived: `agent` above holds a kiro-cli modeId, a
     # namespace disjoint from cfg.agents, so resolving a store from it answers

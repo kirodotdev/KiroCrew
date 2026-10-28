@@ -20,7 +20,8 @@ The manager fields this module uses. Writes: ``_agents``, ``_conversations``,
 ``_ctx_builder``, ``_effective_turn_limit``, ``_ensure_dedicated_start_priced``,
 ``_fire_event``, ``_gate_exit_reset``, ``_gate_wait_mark``, ``_global_approval_mode``,
 ``_is_cc_provider``, ``_is_yolo``, ``_leave_startup``, ``_note_startup_progress``,
-``_note_tool_dispatch``, ``_note_tool_result``, ``_provider_label_of``, ``_sessions``,
+``_note_tool_dispatch``, ``_note_tool_result``, ``_parent_steering_dirs``,
+``_provider_label_of``, ``_sessions``,
 ``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
 ``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
 ``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
@@ -649,6 +650,16 @@ async def _run_inner_impl(
             via="spawn",
             dedupe_session=True,
         )
+    # The parent's folder steering, so a child spawned from a chat filed in a
+    # folder follows the same guides its parent does. build_message gates the
+    # section on the project group, so a run that withheld it skips the read.
+    info.steering_dirs = ()
+    steering_resolver = self._manager._parent_steering_dirs
+    if steering_resolver is not None and info.include_project and info.parent_session_key:
+        try:
+            info.steering_dirs = tuple(await steering_resolver(info.parent_session_key))
+        except Exception:  # noqa: BLE001 - steering is optional; it must never fail the run
+            logger.warning("Folder steering unavailable for subagent %s", info.id, exc_info=True)
     full_message, _ = await run_in_embed_pool(
         self._manager._ctx_builder.build_message,
         message,
@@ -670,6 +681,7 @@ async def _run_inner_impl(
         # A parent agent reads this reply, not a person at a dashboard, so the
         # [OPTIONS:] and card guidance has nothing to render into.
         interactive=False,
+        steering_dirs=info.steering_dirs,
     )
     # The one place the resolved scope and its cost are both known — without
     # this, "the sub-agent didn't know X" is undebuggable after the fact.

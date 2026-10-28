@@ -826,6 +826,12 @@ class DashboardState:
             from kiro_crew.subagent import set_parent_project_resolver
 
             set_parent_project_resolver(lambda key: session_project_for_spawn_gate(self, key))
+            # A child's prompt carries the folder steering its parent receives.
+            from kiro_crew.dashboard.handlers._shared import session_folder_steering_dirs
+
+            self.subagents._parent_steering_dirs = lambda key: session_folder_steering_dirs(
+                self, key
+            )
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)
