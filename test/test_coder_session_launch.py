@@ -862,7 +862,7 @@ def test_guest_meminfo_reads_one_bounded_complete_sample(monkeypatch, sample_kin
 async def test_unsaved_work_on_a_stopped_workspace_is_unknown_and_never_starts_it(
     tmp_path, monkeypatch
 ):
-    async def fake_resolve(key):
+    async def fake_resolve(key, *, wake=True):
         return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b")
 
     requests = []
@@ -901,7 +901,7 @@ async def test_health_installs_current_guest_files_when_the_guest_predates_stats
     async def health_with(guest_replies):
         installs, sent = [], []
 
-        async def fake_resolve(key):
+        async def fake_resolve(key, *, wake=True):
             shell = SimpleNamespace(workspace="crewenv-x", argv=lambda command: ["sh", command])
             return session_browse._Target(shell, "/w", "b")
 
@@ -918,6 +918,8 @@ async def test_health_installs_current_guest_files_when_the_guest_predates_stats
 
         monkeypatch.setattr(session_browse, "_resolve", fake_resolve)
         monkeypatch.setattr(session_browse, "run_collect", old_guest)
+        # The fake is dialled by a local command, like coder ssh or boxd.
+        monkeypatch.setattr(session_browse, "_command_shell_types", lambda: (SimpleNamespace,))
         monkeypatch.setattr(session_browse, "RemoteWorkerLaunch", FakeLaunch)
         health = await session_browse.session_health("k")
         assert installs == [True]
@@ -935,7 +937,7 @@ async def test_health_installs_current_guest_files_when_the_guest_predates_stats
 async def test_health_reports_stopped_without_starting(tmp_path, monkeypatch):
     from kiro_crew.coder import session_browse
 
-    async def fake_resolve(key):
+    async def fake_resolve(key, *, wake=True):
         return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b")
 
     async def stopped(target, mode, request):
@@ -980,7 +982,7 @@ async def test_health_caches_the_workspace_memory_for_the_resources_line(tmp_pat
     from kiro_crew import session_environment as se
     from kiro_crew.coder import session_browse
 
-    async def fake_resolve(key):
+    async def fake_resolve(key, *, wake=True):
         return session_browse._Target(SimpleNamespace(workspace="crewenv-x"), "/w", "b")
 
     async def running(target, mode, request):

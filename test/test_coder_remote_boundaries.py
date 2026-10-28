@@ -64,7 +64,11 @@ async def test_cleared_config_does_not_clear_persisted_placement(tmp_path, monke
     monkeypatch.setattr(
         live,
         "snapshot",
-        lambda: SimpleNamespace(session_environments=SimpleNamespace(coder_url="", profiles=[])),
+        lambda: SimpleNamespace(
+            session_environments=SimpleNamespace(
+                coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[]
+            )
+        ),
     )
     if bound:
         SessionEnvironmentChoices(tmp_path / "coder/session-choices.json").set("chat", "dev")
