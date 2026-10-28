@@ -257,6 +257,29 @@ ACP_BACKENDS_OPEN_EXTERNAL_URL = frozenset({ACP_BACKEND_KAS})
 #: ``_kiro/hooks/*`` request.
 ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 
+#: Backends that bring their OWN workflow engine, reached over the
+#: ``_kiro/workflow/*`` extension methods (:mod:`kiro_crew.kas_workflows`). For a
+#: member, the harness owns workflow definitions ("recipes"), orchestration and
+#: run history, and Crew drives and mirrors it instead of running its own
+#: ``ctx``-script engine. Every other backend keeps Crew's engine unchanged.
+#:
+#: KAS serves the methods on every connection, whatever the session's workflows
+#: setting says. That setting only gates the model-facing tools. Membership
+#: authorizes the route, and the ``workflows.kas_native`` feature preview decides
+#: whether the dashboard uses it, because the KAS surface is still pre-release.
+#:
+#: kiro-cli is not a member: it serves no ``_kiro/workflow/*`` method, so a
+#: kiro-cli chat keeps Crew's own engine.
+#:
+#: KAS's membership is captured live in
+#: ``test/fixtures/acp_frames/kas/workflow-run-live.jsonl``
+#: (``scripts/capture_kas_workflow.py``): the advertised ``extensionMethods``, the
+#: ``workflowsEnabled`` echo, a workspace recipe listed, created and invoked, the
+#: ``run_start`` .. ``run_complete`` lifecycle, step notes on ``_kiro/session/notify``,
+#: a step parked for input and answered on its own session, and load / inspect /
+#: list. ``test/test_kas_workflows_live_capture.py`` folds it through the mirror.
+ACP_BACKENDS_NATIVE_WORKFLOWS = frozenset({ACP_BACKEND_KAS})
+
 #: Backends whose session never runs the agent spec's own ``hooks``, so Crew's turn
 #: loop fires them instead
 #: (:mod:`kiro_crew.agent_sdk.spec_hooks`). KAS takes its agent over

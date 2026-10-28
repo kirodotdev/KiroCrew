@@ -420,6 +420,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # own MCP server reached the session with an EMPTY session/new array.
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": None,
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": None,
+    "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

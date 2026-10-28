@@ -87,6 +87,8 @@
         "dependency_wake_spacing_secs": 1.0,
         "interactive_command_policy": "cancel",
         "workflow_run_timeout_secs": 3600,
+        "kas_workflows": false,
+        "kas_creator_effort": "",
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
@@ -1344,6 +1346,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "agent.kas_workflows",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Workflows on Kiro Agent",
+      "help": "When the agent backend is Kiro Agent (KAS), turn on Kiro Workflows everywhere they run: the Workflows tab and the Task Runner offer their recipes and runs, dashboard chats start their Kiro Agent sessions with its workflow surface on (run_workflow, inspect_workflow, update_workflow, the /workflow-* commands and its steering), and this gateway recovers interrupted runs on boot. A workflow a chat's model starts is then a KAS run parented by that chat, and Crew's workflow_run declines to author a new script there (saved Crew workflows still run). Saved on this gateway, not per device; each chat picks it up when its next session starts. No effect unless the backend is Kiro Agent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.kas_creator_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Agent Workflow Creator Effort",
+      "help": "Reasoning effort for the step Kiro Agent (KAS) runs to write a workflow a chat asks for: low, medium, high, xhigh or max. Empty leaves KAS's own default. Applies only while Kiro Workflows on Kiro Agent is on, and only to dashboard chats. Read when each chat's session starts or reloads, so a change reaches a chat's next session.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "agent.subagent_mem_buffer_pct",
