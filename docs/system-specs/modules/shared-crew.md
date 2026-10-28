@@ -27,6 +27,19 @@ single-operator Crew.
 
 ### Principal
 
+`contracts.Principal` is the identity work and records are attributed to. Its `id`
+is `principal_id_for(provider, issuer, subject)`: a deterministic, opaque digest, so
+one person maps to one id on every device and tab without a registry, and the id does
+not reveal the login. Email and display name are never inputs; two providers asserting
+the same email are two principals. `DisplaySnapshot` is a label captured when the
+principal was seen. A rename changes it and leaves `id` alone. It carries no avatar
+URL, because a remote URL in a shared record is an outbound fetch someone else chose.
+
+`PrincipalKind` separates a person (`human`), a device with no personal identity
+(`machine`, such as an ACL-tagged tailnet node, keyed by node because every tagged
+node reports the same login), Crew automation (`system`, one bounded principal per
+named component from `Principal.system`), and `unknown`.
+
 ### Derivation
 
 ### Observed collaborators
@@ -109,5 +122,20 @@ test targets measured on one host, not product commitments.
 ### Not in this build
 
 ## 9. Records and migration
+
+Every record carries `schema_version` (`codec.SCHEMA_VERSION`). It is the Shared Crew
+record version, unrelated to the platform `CONTRACT_VERSION`. Rules:
+
+- An added optional field keeps the version. A changed meaning bumps it, and the
+  reader handles every older version.
+- A reader preserves keys it does not own (`codec.split_extra` into `extra`, written
+  back by `merge_extra`), so an older gateway's rewrite never drops a newer field.
+  Session metadata also passes through `history.carry_unowned_metadata`.
+- An enum value a newer writer added reads as the field's explicit fallback
+  (`enum_or`), not as a refusal of the whole record.
+- No migration rewrites history to add attribution. Legacy stays legacy.
+
+The contracts are pinned by `test/test_shared_crew_contracts.py`. Changing a field
+or an enum value changes that test in the same change.
 
 ### Operations
