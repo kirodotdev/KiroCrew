@@ -181,6 +181,28 @@ def spec_hook_tool_names(tool_id: str) -> tuple[str, ...] | None:
     return kas_tool_match_names(tool_id)
 
 
+def native_tool_match_names(tool_identity: str) -> tuple[str, ...] | None:
+    """The names a spec hook's matcher meets for a call kiro-cli named itself.
+
+    kiro-cli states no ``_meta.kiro.toolId`` on a permission request; the trusted
+    name it does state (``LLMEvent.tool_name``) is in its own vocabulary, often a
+    legacy alias (``shell``). Without this, an ``execute_bash`` deny would never
+    meet a ``shell`` call. Resolved through the same tables as a KAS id: the
+    canonical kiro-cli name first, then its aliases, then the name as stated. ``None`` for a name outside kiro-cli's vocabulary, so the
+    caller keeps its title fallback for other harnesses.
+    """
+    if not tool_identity:
+        return None
+    # circular import: see spec_hook_tool_names.
+    from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL, KIRO_TOOL_ALIASES
+
+    canonical = KIRO_TOOL_ALIASES.get(tool_identity, tool_identity)
+    if canonical not in KAS_TOOL_IDS_BY_KIRO_TOOL:
+        return None
+    aliases = sorted(alias for alias, name in KIRO_TOOL_ALIASES.items() if name == canonical)
+    return tuple(dict.fromkeys([canonical, *aliases, tool_identity]))
+
+
 def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
     """Warn about, and SEL-audit, a spec hook that will not run.
 
@@ -440,6 +462,29 @@ def withheld_project_spec_hooks(agent_id: str, project_dir: str | None) -> bool:
     return project_spec_hooks_withheld(agent_id, project_dir)
 
 
+def project_declares_agent(agent_id: str, project_dir: str | None) -> bool:
+    """Whether *project_dir*'s own checkout declares *agent_id* (read or not).
+
+    The application-facing form of ``session_mcp.project_agent_spec`` for a caller
+    that only needs to know whether the base agent is the checkout's own.
+    """
+    from kiro_crew.acp import session_mcp
+
+    return session_mcp.project_agent_spec(agent_id, project_dir)[0]
+
+
+def project_commands_trusted(project_dir: str | None) -> bool:
+    """Whether a checkout's own spec may choose commands that launch as the user.
+
+    The same verdict that gates a project spec's ``mcpServers`` and ``hooks``
+    (``session_mcp._project_mcp_trusted``), exposed here so application code
+    reaches it through the agent SDK.
+    """
+    from kiro_crew.acp import session_mcp
+
+    return session_mcp._project_mcp_trusted(project_dir)
+
+
 def spec_project_dir(provider: object) -> str | None:
     """The checkout *provider*'s session resolves its agent spec against, or ``None``.
 
@@ -575,6 +620,69 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
         )
         return TurnSpecHooks([], work_dir, True, True)
     return TurnSpecHooks(hooks, work_dir, False, True)
+
+
+async def floored_spec_hooks(
+    base_agent: str,
+    cwd: str | None,
+    base_spec: dict[str, Any] | None,
+    *,
+    project_source: str | None = None,
+) -> TurnSpecHooks:
+    """The PreToolUse hooks a floored run is gated on: its BASE template's.
+
+    A floored run launches as the derived ``<agent>--readonly`` spec, which drops
+    ``hooks`` so the backend runs no command it was not asked about. A denying
+    PreToolUse hook in the template must still refuse, before the remote hub's
+    person is asked, so Crew fires the base spec's PreToolUse hooks itself on
+    every permission request (``gated``). Only PreToolUse: the floor withholds
+    the template's other lifecycle commands.
+
+    *base_spec* is the spec the derivation read (``PublishedSpec.base_spec``),
+    and the hooks come from it alone. Resolving *base_agent* again could land on
+    another file: ``crew_fired_spec_hooks`` trusts a project spec only under the
+    project-agent trust verdict and otherwise reads the user-level spec of the
+    same name, while the derivation reads the project spec first. A missing or
+    unconvertible source refuses every request, since a deny hook that was never
+    loaded gave no verdict.
+
+    *project_source* is ``PublishedSpec.source_id``: the project's real path when
+    the checkout supplied *base_spec*. Its hooks are commands, so they fire only
+    when :func:`~kiro_crew.acp.session_mcp.trusted_project_agent_spec` lets that
+    checkout choose commands, the verdict an unfloored run's hooks read too.
+    Untrusted, every request is refused: its deny hooks cannot be honoured
+    without running its other commands, and a floor never weakens to "no hooks".
+    """
+    work_dir = cwd or None
+    if not isinstance(base_spec, dict):
+        logger.warning(
+            "floored base %r has no derivation source; tool calls are blocked", base_agent
+        )
+        return TurnSpecHooks([], work_dir, True, True)
+    if project_source is not None:
+        from kiro_crew.acp.session_mcp import trusted_project_agent_spec
+
+        _declared, trusted = await asyncio.to_thread(
+            trusted_project_agent_spec, base_agent, project_source
+        )
+        if trusted is None:
+            logger.warning(
+                "floored base %r comes from a project spec that is not trusted to run"
+                " commands; tool calls are blocked",
+                base_agent,
+            )
+            return TurnSpecHooks([], work_dir, True, True)
+    try:
+        hooks, _unconfirmable = await asyncio.to_thread(_convert, base_agent, base_spec)
+    except Exception:  # noqa: BLE001 - the caller fails permission requests closed
+        logger.warning(
+            "agent spec hooks for floored base %r could not be read; tool calls are blocked",
+            base_agent,
+            exc_info=True,
+        )
+        return TurnSpecHooks([], work_dir, True, True)
+    pre_tool = [hook for hook in hooks if hook.event == HOOK_EVENT_PRE_TOOL_USE]
+    return TurnSpecHooks(pre_tool, work_dir, False, True)
 
 
 async def hook_projection_stale(provider: object, agent_id: str) -> bool:

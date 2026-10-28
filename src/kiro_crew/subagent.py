@@ -80,6 +80,7 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.agent_sdk.spec_hooks import (
+    floored_spec_hooks,
     invalidate_stale_kas_session,
     refuse_stale_switch,
     replace_stale_shared_session,
@@ -228,6 +229,7 @@ from kiro_crew.subagent_parts import cancellation_surface as _cancellation_surfa
 from kiro_crew.subagent_parts import config_surface as _config_surface
 from kiro_crew.subagent_parts import continuation_surface as _continuation_surface
 from kiro_crew.subagent_parts import delivery as _delivery
+from kiro_crew.subagent_parts import external_surface as _external_surface
 from kiro_crew.subagent_parts import host_memory as _host_memory
 from kiro_crew.subagent_parts import manager as _manager
 from kiro_crew.subagent_parts import model_choice as _model_choice
@@ -266,6 +268,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     _validate_agent,
     _validate_app_agent_ownership,
     _vet_parent_available_agents,
+    _vet_remote_placement_governance,
     _vet_spawn_governance,
     agent_matches_allowlist,
     conductor_spawn_refusal,
@@ -285,6 +288,7 @@ from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     NOT_DELIVERY_STATE,
     PARKS_WHEN_SET,
     PARKS_WHEN_UNSET,
+    ExternalPlacement,
     SpawnApprovalCallback,
     SpawnApprovalUnreachable,
     SubagentEventCallback,
@@ -431,6 +435,7 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _spawn_memory_floor_and_cost,
     _startup_memory_reserve_gb,
 )
+from kiro_crew.subagent_parts.terminal_surface import _commit_panel_dismissal  # noqa: F401
 from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run_lifecycle.py via bind_component_globals
     DISMISSAL_FAILED,
     _agent_dir,
@@ -594,6 +599,7 @@ _facade_compose(
         _config_surface,
         _admission_surface,
         _continuation_surface,
+        _external_surface,
         _monitor_surface,
         _terminal_surface,
         _run_surface,
@@ -691,6 +697,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     time,
     transient_retry_delay,
     turn_spec_hooks,
+    floored_spec_hooks,
     invalidate_stale_kas_session,
     refuse_stale_switch,
     replace_stale_shared_session,

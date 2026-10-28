@@ -137,6 +137,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # nothing to render: an empty card the person cannot answer, while
         # the engine holds the tool call open for the whole window.
         elicitation=e.elicitation,
+        # Set by the subagent ladder, never by the backend; forwarded so the
+        # field-parity sweep holds and a copy cannot lose a floor.
+        approval_floor=e.approval_floor,
     )
 
 

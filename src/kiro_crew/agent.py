@@ -269,6 +269,7 @@ from kiro_crew.validation import is_registered_agent_name
 if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     from kiro_crew.agent_materialization.auto_approve import (  # noqa: F401
         _apply_allowed_tools_ceiling,
+        _audit_inherited_permissions,
         _ceiling_filtered_spec,
         _entry_is_the_declared_server,
         _filter_auto_approve,
@@ -940,6 +941,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_strip_ungoverned_auto_approve",
         "_write_derived_permissions",
         "_spec_permissions_accepted",
+        "_audit_inherited_permissions",
         "_seed_kas_permissions",
         "_may_auto_approve",
         "_apply_allowed_tools_ceiling",

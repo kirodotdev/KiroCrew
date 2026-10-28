@@ -33,6 +33,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from handlers_messaging_coverage_helpers import (
     _BAD_JSON,
+    _info,
+    _mgr,
     _payload,
     _Req,
     _run,
@@ -41,6 +43,7 @@ from handlers_messaging_coverage_helpers import (
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
+import kiro_crew.dashboard.messaging_api.spawn as spawn_mod
 from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
 
@@ -48,61 +51,6 @@ def _run_view(req: _Req, text: str) -> tuple[str, dict]:
     """Call the (privately typed) ``_apply_result_view`` with the request double."""
     view: Any = mod._apply_result_view
     return asyncio.run(view(req, text))
-
-
-def _info(**kw: Any) -> Any:
-    """A SubagentInfo double with defaults for every field the handlers read."""
-    base: dict[str, Any] = {
-        "id": "a1",
-        "task": "do it",
-        "done": False,
-        "error": "",
-        "error_code": "",
-        "result": "",
-        "result_path": "",
-        "started": 1_700_000_000.0,
-        "elapsed": 0.0,
-        "credits": 0.0,
-        "turns": 2,
-        "last_tool": "fs_read",
-        "parent_session_key": "dashboard:chat-1",
-        "agent": "kirocrew",
-        # The retry path reuses this alongside the context triple: a retry must
-        # not widen a delegated run to the global store.
-        "memory_store": "",
-        "crew": "",
-        "user_stopped": False,
-        "outcome": "",
-        "max_turns": 0,
-        "cwd": "",
-        "model": "",
-        "reasoning_effort": "",
-        "approval_mode": "",
-        "silent": False,
-        "delegation": {},
-        "_raw_task": "",
-        "include_memory": True,
-        "include_lessons": True,
-        "include_project": True,
-    }
-    base.update(kw)
-    return SimpleNamespace(**base)
-
-
-def _mgr(**kw: Any) -> Any:
-    mgr = MagicMock()
-    mgr.max_concurrent = 4
-    mgr.all_agents = []
-    mgr._agents = {}
-    mgr._tasks = {}
-    mgr.get.return_value = None
-    mgr.settle_before_delete = AsyncMock(return_value="delivered")
-    for key, val in kw.items():
-        setattr(mgr, key, val)
-    return mgr
-
-
-# ── api_spawn ──
 
 
 class TestApiSpawn:
@@ -132,6 +80,228 @@ class TestApiSpawn:
         resp = _run(mod.api_spawn, req)
         assert resp.status == 400
         assert "approval_mode" in _payload(resp)["error"]
+
+    def test_400_on_unknown_approval_floor(self) -> None:
+        mgr = _mgr()
+        req = _Req(_state(subagents=mgr), {"task": "x", "approval_floor": "relaxed"})
+        resp = _run(mod.api_spawn, req)
+        assert resp.status == 400
+        assert "approval_floor" in _payload(resp)["error"]
+        assert _payload(resp)["code"] == "invalid_approval_floor"
+        mgr.spawn.assert_not_called()
+
+    def test_400_on_a_floor_beside_an_auto_grant(self) -> None:
+        mgr = _mgr()
+        body = {"task": "x", "approval_floor": "interactive", "approval_mode": "auto"}
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "approval_floor_conflict"
+        mgr.spawn.assert_not_called()
+
+    @pytest.mark.parametrize("backend", ["claude", "codex"])
+    def test_409_on_a_floor_this_gateways_backend_cannot_carry(self, backend) -> None:
+        """Another harness pre-approves through a surface the floor cannot reach,
+        so accepting the run would drop the floor without a person or SEL row."""
+        mgr = _mgr()
+        body = {"task": "x", "approval_floor": "interactive"}
+        with patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load",
+            return_value=SimpleNamespace(agent=SimpleNamespace(acp_backend=backend)),
+        ):
+            resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_unenforceable"
+        mgr.spawn.assert_not_called()
+
+    @pytest.mark.parametrize("backend", ["claude", "codex"])
+    def test_409_on_a_floor_the_runs_own_backend_cannot_carry(self, backend) -> None:
+        """A Kiro-default gateway must still refuse a floored run sent to another
+        harness: the per-run backend is what launches it."""
+        mgr = _mgr()
+        body = {"task": "x", "approval_floor": "interactive", "backend": backend}
+
+        async def _named(_raw: object) -> tuple[str | None, None]:
+            return backend, None
+
+        with (
+            patch.object(mod, "_requested_backend", _named),
+            patch(
+                "kiro_crew.config.loader.KiroCrewConfig.load",
+                return_value=SimpleNamespace(agent=SimpleNamespace(acp_backend="")),
+            ),
+        ):
+            resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_unenforceable"
+        mgr.spawn.assert_not_called()
+
+    def test_a_run_id_is_reserved_before_the_disk_check_awaits(self, run_dirs: Path) -> None:
+        """Two concurrent requests naming one fresh id: only the first may pass."""
+        mgr = _mgr()
+        mgr.is_queued.return_value = False
+        state = _state(subagents=mgr)
+        run_id = "a" * 16
+
+        async def _both() -> list[Any]:
+            check = spawn_mod._client_run_id_refusal
+            return list(await asyncio.gather(check(state, run_id), check(state, run_id)))
+
+        try:
+            first, second = asyncio.run(_both())
+            assert first is None
+            assert second is not None and _payload(second)["code"] == "run_id_taken"
+        finally:
+            spawn_mod._RESERVED_RUN_IDS.discard(run_id)
+
+    def test_the_reservation_is_released_after_the_spawn(self, run_dirs: Path) -> None:
+        mgr = _mgr()
+        mgr.is_queued.return_value = False
+        mgr.spawn.return_value = None  # capacity refusal: nothing registered
+        body = {"task": "x", "run_id": "b" * 16}
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 429
+        assert "b" * 16 not in spawn_mod._RESERVED_RUN_IDS
+
+    def test_an_interactive_floor_reaches_the_manager(self) -> None:
+        mgr = _mgr()
+        mgr.spawn.return_value = _info()
+        body = {"task": "x", "approval_floor": "interactive"}
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 200
+        assert mgr.spawn.call_args.kwargs["approval_floor"] == "interactive"
+
+    def test_a_run_is_not_admitted_into_a_pruned_workspace_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        claimed: list[str] = []
+
+        def gone(cwd: str) -> bool:
+            claimed.append(cwd)
+            return False
+
+        monkeypatch.setattr("kiro_crew.dashboard.remote_workspaces.claim_workspace", gone)
+        mgr = _mgr()
+        mgr.spawn.return_value = _info()
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x", "cwd": str(tmp_path)}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "remote_workspace_gone"
+        assert claimed == [str(tmp_path)]
+        mgr.spawn.assert_not_called()
+
+    @pytest.fixture
+    def run_dirs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setattr(
+            "kiro_crew.subagent_persistence._agent_dir", lambda run_id: tmp_path / run_id
+        )
+        return tmp_path
+
+    def test_a_hub_chosen_run_id_names_the_run(self, run_dirs: Path) -> None:
+        """A remote hub records the name before it asks, so the run must start
+        under exactly that name for the hub's restart to find it."""
+        mgr = _mgr()
+        mgr.is_queued.return_value = False
+        mgr.spawn.return_value = _info()
+        body = {"task": "x", "run_id": "0123456789abcdef"}
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 200
+        assert mgr.spawn.call_args.kwargs["_preassigned_id"] == "0123456789abcdef"
+
+    def test_a_hub_chosen_run_id_is_reserved_while_admission_awaits(
+        self, run_dirs: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT 6.1 on ed42dea447: a hub withdrawing with DELETE while admission
+        awaits must meet ``spawn_admission_pending``, not a 404 that reads as
+        "never started". So the id is held from before the first admission await."""
+        run_id = "0123456789abcde0"
+        seen: list[bool] = []
+        real = mod.internal_memory_scope
+
+        async def scope(*args: Any, **kwargs: Any) -> Any:
+            seen.append(run_id in spawn_mod._RESERVED_RUN_IDS)
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(mod, "internal_memory_scope", scope)
+        mgr = _mgr()
+        mgr.is_queued.return_value = False
+        mgr.spawn.return_value = _info()
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x", "run_id": run_id}))
+        assert resp.status == 200
+        assert seen == [True]
+        assert run_id not in spawn_mod._RESERVED_RUN_IDS
+
+    def test_a_refusal_during_admission_releases_the_reserved_id(self, run_dirs: Path) -> None:
+        run_id = "0123456789abcde1"
+        mgr = _mgr()
+        mgr.is_queued.return_value = False
+        body = {"task": "x", "run_id": run_id, "approval_mode": "sometimes"}
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 400
+        assert run_id not in spawn_mod._RESERVED_RUN_IDS
+        mgr.spawn.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "run_id", ["../etc", "ABCDEF0123456789", "0123", 1234, "0123456789abcdef0"]
+    )
+    def test_a_malformed_run_id_is_refused(self, run_dirs: Path, run_id: object) -> None:
+        mgr = _mgr()
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x", "run_id": run_id}))
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_run_id"
+        mgr.spawn.assert_not_called()
+
+    @pytest.mark.parametrize("where", ["live", "queued", "on-disk"])
+    def test_a_run_id_in_use_is_refused_not_reused(self, run_dirs: Path, where: str) -> None:
+        mgr = _mgr()
+        mgr.is_queued.return_value = where == "queued"
+        if where == "live":
+            mgr.get.return_value = _info()
+        if where == "on-disk":
+            (run_dirs / "0123456789abcdef").mkdir()
+        body = {"task": "x", "run_id": "0123456789abcdef"}
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), body))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "run_id_taken"
+        mgr.spawn.assert_not_called()
+
+    def test_without_a_run_id_the_gateway_names_the_run(self) -> None:
+        mgr = _mgr()
+        mgr.spawn.return_value = _info()
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"}))
+        assert resp.status == 200
+        assert "_preassigned_id" not in mgr.spawn.call_args.kwargs
+
+    @staticmethod
+    def _floored_run(**kw: Any) -> Any:
+        fields = {"id": "f1", "approval_floor": "interactive", "conversation_key": ""}
+        return SimpleNamespace(**{**fields, **kw})
+
+    @pytest.mark.parametrize(
+        "run_fields,session",
+        [
+            ({}, "subagent:f1"),
+            ({"conversation_key": "subagent:conv9"}, "subagent:conv9"),
+        ],
+        ids=["run-key", "conversation-key"],
+    )
+    @pytest.mark.parametrize("via", ["parent", "caller"])
+    def test_409_when_a_floored_run_asks_for_another_run(self, run_fields, session, via) -> None:
+        """The new run would take this gateway's yolo posture, so none of its tools
+        would reach the hub; the floored caller is refused instead."""
+        mgr = _mgr(all_agents=[self._floored_run(**run_fields)])
+        body = {"task": "x", "parent_session": session} if via == "parent" else {"task": "x"}
+        req = _Req(_state(subagents=mgr), body)
+        if via == "caller":
+            req.headers["X-Session-Key"] = session
+        resp = _run(mod.api_spawn, req)
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_nested_spawn"
+        mgr.spawn.assert_not_called()
+
+    def test_an_unfloored_run_may_still_spawn(self) -> None:
+        mgr = _mgr(all_agents=[self._floored_run(approval_floor="")])
+        req = _Req(_state(subagents=mgr), {"task": "x"})
+        req.headers["X-Session-Key"] = "subagent:f1"
+        assert mod._floored_caller_refusal(req.app["state"], req, "subagent:f1") is None
 
     def test_400_on_non_alphanumeric_batch_id(self) -> None:
         req = _Req(_state(subagents=_mgr()), {"task": "x", "batch_id": "wave-1"})
@@ -366,6 +536,53 @@ class TestApiSpawnContinue:
         resp = _run(mod.api_spawn_continue, self._req(_mgr(), {"task": ""}))
         assert _payload(resp)["code"] == "task_required"
 
+    def test_409_when_a_floored_run_asks_for_a_continuation(self) -> None:
+        floored = SimpleNamespace(id="f1", approval_floor="interactive", conversation_key="")
+        mgr = _mgr(all_agents=[floored])
+        body = {"task": "x", "parent_session": "subagent:f1"}
+        resp = _run(mod.api_spawn_continue, self._req(mgr, body))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_nested_spawn"
+        mgr.continue_conversation.assert_not_called()
+
+    def test_409_when_the_continued_run_itself_ran_under_a_hubs_floor(self) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = _info(id="conv1", done=True, approval_floor="interactive")
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_relaunch_unsupported"
+        mgr.continue_conversation.assert_not_called()
+
+    def test_409_when_a_restarted_peer_would_cold_continue_a_floored_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After a restart the registry has no record, but the run resumes from
+        disk: its persisted floor still refuses the continuation."""
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(
+            mod, "read_state", lambda _rid: {"session_id": "s1", "approval_floor": "interactive"}
+        )
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_relaunch_unsupported"
+        mgr.continue_conversation.assert_not_called()
+
+    def test_503_when_the_run_record_cannot_be_read_before_a_cold_continuation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = None
+
+        def unreadable(_rid: str) -> dict:
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(mod, "read_state", unreadable)
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 503
+        assert _payload(resp)["code"] == "run_record_unavailable"
+        mgr.continue_conversation.assert_not_called()
+
     def test_429_capacity(self) -> None:
         mgr = _mgr()
         mgr.continue_conversation.return_value = None
@@ -476,6 +693,23 @@ class TestApiSpawnSteer:
 
     def test_success(self) -> None:
         mgr = _mgr(steer_run=AsyncMock(return_value=(True, "")))
+        resp = _run(mod.api_spawn_steer, self._req(mgr, {"message": "m"}))
+        assert _payload(resp) == {"id": "a1", "status": "steered"}
+
+    def test_409_when_a_follow_up_would_continue_a_floored_run(self) -> None:
+        """Opus: a queued follow-up is delivered as a continuation, a new run that
+        carries no approval_floor, so a floored run refuses it like spawn_continue.
+        Steering the running turn itself stays allowed: the floor still binds it."""
+        mgr = _mgr(
+            follow_up_run=AsyncMock(return_value=(True, "")),
+            steer_run=AsyncMock(return_value=(True, "")),
+        )
+        mgr.get.return_value = _info(id="a1", approval_floor="interactive")
+        body = {"message": "m", "mode": "follow_up"}
+        resp = _run(mod.api_spawn_steer, self._req(mgr, body))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_relaunch_unsupported"
+        mgr.follow_up_run.assert_not_called()
         resp = _run(mod.api_spawn_steer, self._req(mgr, {"message": "m"}))
         assert _payload(resp) == {"id": "a1", "status": "steered"}
 
@@ -642,6 +876,25 @@ class TestSpawnResultView:
 
 
 class TestApiSpawnStatus:
+    def test_a_run_id_still_being_admitted_is_pending_not_absent(self, monkeypatch) -> None:
+        """A hub polling a run whose spawn is still admitting (warming the project)
+        must not read 404 three times and stop watching a run about to start."""
+        from kiro_crew.dashboard.messaging_api.spawn import _RESERVED_RUN_IDS
+
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(mod, "read_state", lambda aid: None)
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "hubrun02"})
+        _RESERVED_RUN_IDS.add("hubrun02")
+        try:
+            resp = _run(mod.api_spawn_status, req)
+        finally:
+            _RESERVED_RUN_IDS.discard("hubrun02")
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "spawn_admission_pending"
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "hubrun02"})
+        assert _run(mod.api_spawn_status, req).status == 404
+
     def test_503_without_manager(self) -> None:
         req = _Req(_state(), None, match_info={"agent_id": "a1"})
         assert _run(mod.api_spawn_status, req).status == 503
@@ -925,6 +1178,14 @@ class TestApiSpawnRetry:
         assert resp.status == 409
         assert "outcome=stopped" in _payload(resp)["error"]
 
+    def test_a_run_under_a_hubs_approval_floor_is_not_retried_without_it(self) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = _info(done=True, outcome="failed", approval_floor="interactive")
+        resp = _run(mod.api_spawn_retry, self._req(mgr))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "approval_floor_relaunch_unsupported"
+        mgr.spawn.assert_not_called()
+
     def test_429_when_capacity_reached(self) -> None:
         mgr = _mgr()
         mgr.get.return_value = _info(done=True, outcome="failed")
@@ -1050,6 +1311,22 @@ class TestApiSpawnRetry:
 
 
 class TestApiSpawnDelete:
+    def test_a_run_id_still_being_admitted_is_a_conflict_not_absent(self) -> None:
+        """A hub withdrawing a spawn whose answer it lost reads 404 as "never
+        started"; while the id is reserved the admission may still start it."""
+        from kiro_crew.dashboard.messaging_api.spawn import _RESERVED_RUN_IDS
+
+        req = _Req(_state(subagents=_mgr()), None, match_info={"agent_id": "hubrun01"})
+        _RESERVED_RUN_IDS.add("hubrun01")
+        try:
+            resp = _run(mod.api_spawn_delete, req)
+        finally:
+            _RESERVED_RUN_IDS.discard("hubrun01")
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "spawn_admission_pending"
+        req = _Req(_state(subagents=_mgr()), None, match_info={"agent_id": "hubrun01"})
+        assert _run(mod.api_spawn_delete, req).status != 409
+
     def test_404_for_unknown_native_card(self) -> None:
         req = _Req(_state(), None, match_info={"agent_id": "native:gone"})
         assert _run(mod.api_spawn_delete, req).status == 404
@@ -1108,6 +1385,30 @@ class TestApiSpawnDelete:
         assert _payload(_run(mod.api_spawn_delete, req))["cancelled"] is False
         mgr.settle_before_delete.assert_awaited_once_with("a1")
 
+    def test_finished_remote_run_is_dismissed_without_a_peer_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A disconnected or pruned peer would answer a cancel with an error; a
+        # run that already finished has nothing to stop there, so the dismissal
+        # must not depend on the peer at all.
+        info = _info(executor="remote", instance_id="crew-a", remote_id="peer01", done=True)
+        mgr = _mgr(_agents={}, cancel=AsyncMock(return_value=False))
+        mgr.get.return_value = info
+        mgr.settle_before_delete = AsyncMock(return_value="delivered")
+        service = MagicMock()
+        service.ensure_restored = AsyncMock(return_value=None)
+        service.cancel = AsyncMock(side_effect=AssertionError("peer must not be called"))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.remote_subagents.get_remote_subagent_service",
+            lambda _state: service,
+        )
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        assert _payload(_run(mod.api_spawn_delete, req)) == {"ok": True, "cancelled": False}
+        service.cancel.assert_not_awaited()
+        mgr.cancel.assert_not_awaited()
+        mgr.settle_before_delete.assert_awaited_once_with("a1")
+
     def test_preserves_finished_agent_while_settlement_is_pending(self) -> None:
         info = _info(parent_session_key="dashboard:chat-1")
         mgr = _mgr(
@@ -1157,6 +1458,34 @@ class TestApiSpawnStopAll:
             "queued": 3,
         }
         mgr.cancel_for_parent.assert_awaited_once_with("slack:123.456")
+
+    def test_awaits_the_remote_restore_before_it_scans(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT 6.1: during the startup restore no remote run is registered yet, so
+        a Stop-all that did not wait for it stopped nothing and reported success."""
+        order: list[str] = []
+
+        async def restored() -> None:
+            order.append("restored")
+
+        async def cancel(_key: str) -> tuple[int, int]:
+            order.append("scanned")
+            return (1, 0)
+
+        service = MagicMock()
+        service.ensure_restored = AsyncMock(side_effect=restored)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.remote_subagents.get_remote_subagent_service",
+            lambda _state: service,
+        )
+        state = _state(subagents=_mgr(cancel_for_parent=AsyncMock(side_effect=cancel)))
+        state.get_slot.return_value = SimpleNamespace(key="chat-1", linked_session_key="")
+
+        resp = _run(mod.api_spawn_stop_all, _Req(state, {"slot": "chat-1"}))
+
+        assert _payload(resp)["running"] == 1
+        assert order == ["restored", "scanned"]
 
     @pytest.mark.parametrize("slot_app", ["", "caller-app", "other-app"])
     def test_app_token_cannot_stop_any_slot(self, slot_app: str) -> None:
