@@ -61,9 +61,17 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
-  /** Created on the dashboard: `source` is `kirocrew` AND the record carries
-   *  a member id. Listed on the roster unasked. Absent on an older gateway. */
+  /** The person created this crewmate (the Crewmates page's create, or an
+   *  approved `crewmate.create` / `crewmate.import` card): `source` is
+   *  `kirocrew` AND the record carries a member id. Never true for the reserved
+   *  `default` member. Listed on the roster even with an empty chat. Absent on
+   *  an older gateway. */
   dashboard_created?: boolean
+  /** The reserved `default` row only: its DM thread holds a message the person
+   *  sent (not a welcome, a scheduled run, an auto-nudge or a relayed
+   *  `session_send`). The roster lists `default` only when this is true.
+   *  Absent on every other row and on an older gateway. */
+  has_user_dm_message?: boolean
   /** The Crewmates-page DM thread holds at least one message (a live slot's
    *  unflushed rows included). Listed on the roster unasked. Absent on an
    *  older gateway. */
