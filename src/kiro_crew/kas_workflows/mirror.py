@@ -27,11 +27,16 @@ from kiro_crew.kas_workflows import wire
 #: Terminal runs kept per mirror. Live runs are never evicted; past runs beyond
 #: this are dropped oldest-first and stay listable from KAS on demand.
 MAX_TERMINAL_RUNS = 200
-#: Node instances kept per run (a long loop unrolls one body per iteration).
+#: Node instances kept per run (a long loop unrolls one body per iteration), and
+#: distinct node ids kept in a run's per-id maps. A known id or path is always
+#: updated; a new one past the cap is not recorded.
 MAX_PATHS_PER_RUN = 2000
 #: Project scopes whose last list membership is remembered (gap 19).
 MAX_LIST_SCOPES = 64
-#: Longest KAS text kept on a node's retry-wait line or a plan update reason.
+#: Longest KAS-authored text the mirror keeps in any field: a run's names and
+#: pause reason, a step's failure or park reason, its retry-wait line and a plan
+#: update reason. The count caps bound how many entries a run holds; this bounds
+#: each one.
 MAX_REASON_CHARS = 1000
 
 logger = logging.getLogger(__name__)
@@ -39,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _text(value: Any) -> str | None:
+    """KAS free text as the mirror keeps it: :func:`wire.as_str`, cut to :data:`MAX_REASON_CHARS`."""
+    text = wire.as_str(value)
+    return text[:MAX_REASON_CHARS] if text else None
 
 
 @dataclass
@@ -74,6 +85,10 @@ class _Run:
     #: ``{nodeId, status?, sessionId?, reason?}``. A loop body's node recurs once
     #: per iteration under one bare id; the path tells the instances apart.
     path_state: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Every node id the per-id maps above may hold, capped at
+    #: :data:`MAX_PATHS_PER_RUN` (:func:`_admit_node`). Never cleared, so a
+    #: restart cannot let a further set of ids in.
+    node_ids: set[str] = field(default_factory=set)
     queued_steps: tuple[wire.NodeDescriptor, ...] = ()
     #: Queued plan replacements KAS applied, and the latest resolution:
     #: ``(outcome, reason, at)``.
@@ -299,7 +314,7 @@ class RunMirror:
             item = wire.as_mapping(raw)
             node_id = wire.as_str(item.get("nodeId")) if item else None
             session_id = wire.as_str(item.get("sessionId")) if item else None
-            if item and node_id and session_id:
+            if item and node_id and session_id and _admit_node(run, node_id):
                 run.node_session[node_id] = session_id
                 _note_path(run, _event_path(run, item), node_id=node_id, session_id=session_id)
         return self._touched(run, before)
@@ -316,7 +331,7 @@ class RunMirror:
         if body is None or workflow_id is None:
             return None
         if method == wire.NOTIFY_RUN_START:
-            name = wire.as_str(body.get("workflowName")) or workflow_id
+            name = _text(body.get("workflowName")) or workflow_id
             run = self._ensure(workflow_id, status=wire.STATUS_RUNNING, name=name)
         else:
             existing = self._runs.get(workflow_id)
@@ -356,10 +371,11 @@ class RunMirror:
         return run
 
     def _apply_summary(self, summary: wire.RunSummary) -> bool:
-        run = self._ensure(summary.workflow_id, status=summary.status, name=summary.name)
+        name = _text(summary.name) or summary.workflow_id
+        run = self._ensure(summary.workflow_id, status=summary.status, name=name)
         before = _fingerprint(run)
-        run.name = summary.name
-        run.workflow_name = summary.workflow_name or run.workflow_name
+        run.name = name
+        run.workflow_name = _text(summary.workflow_name) or run.workflow_name
         _set_parent(run, summary.parent_session_id)
         run.created_at = summary.created_at or run.created_at
         run.started_at = summary.started_at or run.started_at
@@ -386,7 +402,7 @@ class RunMirror:
 
     def _apply_state(self, run: _Run, state: Mapping[str, Any]) -> None:
         run.name = _state_name(state, run.name)
-        run.workflow_name = wire.as_str(state.get("workflowName")) or run.workflow_name
+        run.workflow_name = _text(state.get("workflowName")) or run.workflow_name
         _set_parent(run, wire.as_str(state.get("parentSessionId")))
         run.created_at = wire.as_str(state.get("createdAt")) or run.created_at
         if _stale_live(run, wire.as_str(state.get("status"))):
@@ -394,7 +410,7 @@ class RunMirror:
             # statuses and waits are older than the end the mirror holds.
             return
         run.status = wire.as_str(state.get("status")) or run.status
-        run.pause_reason = wire.as_str(state.get("pauseReason"))
+        run.pause_reason = _text(state.get("pauseReason"))
         _apply_pause_fields(run, state)
         run.pause_pending = (
             wire.as_mapping(state.get("pausePending")) is not None
@@ -442,7 +458,7 @@ def _on_run_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
     # ENDED starts over from scratch, so only then are its node states dropped.
     restarted = run.status in wire.TERMINAL_RUN_STATUSES
     run.status = wire.STATUS_RUNNING
-    run.workflow_name = wire.as_str(body.get("workflowName")) or run.workflow_name
+    run.workflow_name = _text(body.get("workflowName")) or run.workflow_name
     run.started_at = run.started_at or now
     run.created_at = run.created_at or now
     run.ended_at = None
@@ -467,7 +483,7 @@ def _on_run_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
 
 def _on_node_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
-    if node_id is None:
+    if node_id is None or not _admit_node(run, node_id):
         return
     path = _event_path(run, body)
     # A node_start that ends a retry-wait backoff re-drives the SAME attempt:
@@ -511,13 +527,13 @@ def _on_node_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
 def _on_node_complete(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
     status = wire.as_str(body.get("status"))
-    if node_id is None or status not in wire.NODE_STATUSES:
+    if node_id is None or status not in wire.NODE_STATUSES or not _admit_node(run, node_id):
         return
     run.node_status[node_id] = status
     run.node_retry_wait.pop(node_id, None)
     ended = wire.as_str(body.get("endedAt")) or now
     run.node_ended[node_id] = ended
-    reason = wire.as_str(body.get("failureReason"))
+    reason = _text(body.get("failureReason"))
     if reason:
         run.node_reason[node_id] = reason
     else:
@@ -536,15 +552,15 @@ def _on_node_complete(run: _Run, body: Mapping[str, Any], now: str) -> None:
 
 def _on_node_paused(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
-    if node_id is None:
+    if node_id is None or not _admit_node(run, node_id):
         return
-    reason = wire.as_str(body.get("reason"))
+    reason = _text(body.get("reason"))
     path = _event_path(run, body)
     if wire.as_str(body.get("kind")) == wire.NODE_PAUSED_RETRY_WAIT:
         # INFORMATIONAL: KAS waits out a transient-error backoff and keeps
         # driving the step. Its status stays running (no Complete / Fail /
         # Reply on a live step); only the backoff line is recorded.
-        text = (reason or "")[:MAX_REASON_CHARS]
+        text = reason or ""
         run.node_retry_wait[node_id] = (text, now)
         run.node_status.setdefault(node_id, wire.STATUS_RUNNING)
         _note_path(run, path, node_id=node_id)
@@ -565,13 +581,13 @@ def _on_node_paused(run: _Run, body: Mapping[str, Any], now: str) -> None:
 def _on_loop_iteration(run: _Run, body: Mapping[str, Any], now: str) -> None:
     loop_id = wire.as_str(body.get("loopId"))
     iteration = wire.as_count(body.get("iteration"))
-    if loop_id and iteration is not None:
+    if loop_id and iteration is not None and _admit_node(run, loop_id):
         run.node_iteration[loop_id] = iteration
 
 
 def _on_watch_poll(run: _Run, body: Mapping[str, Any], now: str) -> None:
     node_id = wire.as_str(body.get("nodeId"))
-    if not node_id:
+    if not node_id or not _admit_node(run, node_id):
         return
     run.node_status.setdefault(node_id, wire.STATUS_RUNNING)
     outcome = wire.as_str(body.get("outcome"))
@@ -589,7 +605,7 @@ def _on_watch_poll(run: _Run, body: Mapping[str, Any], now: str) -> None:
 def _on_paused(run: _Run, body: Mapping[str, Any], now: str) -> None:
     run.status = wire.STATUS_PAUSED
     run.pause_pending = False
-    run.pause_reason = wire.as_str(body.get("pauseReason"))
+    run.pause_reason = _text(body.get("pauseReason"))
     run.pause_info = wire.parse_pause_info(body.get("pause"))
     run.pause_class = wire.pause_detail_class(body.get("pauseDetail"))
     # A paused event names its initiator only for an attributed pause; a step a
@@ -609,7 +625,7 @@ def _on_run_complete(run: _Run, body: Mapping[str, Any], now: str) -> None:
         root = wire.as_mapping(final.get("root"))
         if root is not None:
             _walk_node_state(run, root, depth=0)
-        run.pause_reason = wire.as_str(final.get("pauseReason"))
+        run.pause_reason = _text(final.get("pauseReason"))
         _apply_pause_fields(run, final)
     if status in wire.TERMINAL_RUN_STATUSES:
         run.ended_at = now
@@ -627,8 +643,7 @@ def _on_steps_queued(run: _Run, body: Mapping[str, Any], now: str) -> None:
     outcome = wire.as_str(resolution.get("outcome")) if resolution else None
     if outcome in wire.PLAN_UPDATE_OUTCOMES:
         assert resolution is not None and outcome is not None
-        reason = wire.as_str(resolution.get("reason"))
-        run.last_plan_update = (outcome, reason[:MAX_REASON_CHARS] if reason else None, now)
+        run.last_plan_update = (outcome, _text(resolution.get("reason")), now)
     if outcome == wire.PLAN_UPDATE_APPLIED:
         if pending:
             # replace_remaining rewrites only the not-yet-run tail of the top level.
@@ -722,9 +737,9 @@ def _clear_pause(run: _Run) -> None:
 
 def _state_name(state: Mapping[str, Any], fallback: str) -> str:
     return (
-        wire.as_str(state.get("runLabel"))
-        or wire.as_str(state.get("name"))
-        or wire.as_str(state.get("workflowName"))
+        _text(state.get("runLabel"))
+        or _text(state.get("name"))
+        or _text(state.get("workflowName"))
         or fallback
     )
 
@@ -745,7 +760,10 @@ def _walk_node_state(
     """
     if depth > wire.MAX_PLAN_DEPTH:
         return
-    node_id = wire.as_str(node.get("id")) or wire.as_str(node.get("nodeId"))
+    raw_id = wire.as_str(node.get("id")) or wire.as_str(node.get("nodeId"))
+    # A node past the id cap records nothing; its children are still walked,
+    # since a child whose id is already held keeps being updated.
+    node_id = raw_id if raw_id and _admit_node(run, raw_id) else None
     status = wire.as_str(node.get("status"))
     if node_id and status in wire.NODE_STATUSES:
         run.node_status[node_id] = status
@@ -772,21 +790,22 @@ def _walk_node_state(
             run.node_ended.pop(node_id, None)
     iteration = wire.as_count(node.get("iteration"))
     here = path
-    if depth > 0 and node_id:
+    if depth > 0 and raw_id:
         # The synthetic root (depth 0) contributes no segment.
         segment = (
             f"{wire.ITERATION_SEGMENT_PREFIX}{iteration}"
             if parent_type == "repeat" and iteration is not None
-            else node_id
+            else raw_id
         )
         here = path + (segment,)
+    if depth > 0 and node_id:
         _note_path(
             run,
             here,
             node_id=node_id,
             status=status if status in wire.NODE_STATUSES else None,
             session_id=session_id,
-            reason=wire.as_str(node.get("failureReason")),
+            reason=_text(node.get("failureReason")),
         )
         if loop_max and wire.NODE_PATH_SEP.join(here) in run.path_state:
             run.path_state[wire.NODE_PATH_SEP.join(here)]["loopMax"] = str(loop_max)
@@ -804,6 +823,21 @@ def _walk_node_state(
             item = wire.as_mapping(child)
             if item is not None:
                 _walk_node_state(run, item, depth=depth + 1, path=here, parent_type=node_type)
+
+
+def _admit_node(run: _Run, node_id: str) -> bool:
+    """Whether *node_id*'s per-id state may be written: a held id always, a new one under the cap.
+
+    Bare-id maps keep a loop body's LATEST instance under one key, so they are
+    capped by distinct ids, not by instances: tying them to the path cap would
+    freeze a long loop's current step once its 2000th instance is recorded.
+    """
+    if node_id in run.node_ids:
+        return True
+    if len(run.node_ids) >= MAX_PATHS_PER_RUN:
+        return False
+    run.node_ids.add(node_id)
+    return True
 
 
 def _note_path(

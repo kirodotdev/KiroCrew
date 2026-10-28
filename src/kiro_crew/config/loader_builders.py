@@ -34,7 +34,6 @@ from kiro_crew.config.sections import (
     COMPLETION_KEEP_CHARS_MAX,
     COMPLETION_KEEP_CHARS_MIN,
     DEFAULT_POOL_SIZE,
-    KAS_CREATOR_EFFORT_LEVELS,
     LOOP_STALL_EXIT_AFTER_DEFAULT,
     LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT,
     LOOP_STALL_EXIT_AFTER_MAX,
@@ -847,12 +846,6 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # hand-edited file and the live-bound setter agree.
         workflow_run_timeout_secs=section.read("workflow_run_timeout_secs", _safe_int, 60, 21600),
         kas_workflows=section.read("kas_workflows", _safe_bool),
-        # KAS WORKFLOW_CREATOR_EFFORT_LEVELS; anything else is KAS's default.
-        kas_creator_effort=(
-            eff
-            if (eff := section.get("kas_creator_effort")) in KAS_CREATOR_EFFORT_LEVELS
-            else section.default("kas_creator_effort")
-        ),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]
             if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)

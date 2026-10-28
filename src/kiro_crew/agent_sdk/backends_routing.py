@@ -265,15 +265,15 @@ ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 #:
 #: KAS serves the methods on every connection, whatever the session's workflows
 #: setting says. That setting only gates the model-facing tools. Membership
-#: authorizes the route, and the ``workflows.kas_native`` feature preview decides
-#: whether the dashboard uses it, because the KAS surface is still pre-release.
+#: authorizes the route, and the operator's ``agent.kas_workflows`` opt-in
+#: (:func:`kiro_crew.kas_workflows.engine.kas_workflows_enabled`) decides whether
+#: Crew uses it, because the KAS surface is still pre-release.
 #:
 #: kiro-cli is not a member: it serves no ``_kiro/workflow/*`` method, so a
 #: kiro-cli chat keeps Crew's own engine.
 #:
 #: KAS's membership is captured live in
-#: ``test/fixtures/acp_frames/kas/workflow-run-live.jsonl``
-#: (``scripts/capture_kas_workflow.py``): the advertised ``extensionMethods``, the
+#: ``test/fixtures/acp_frames/kas/workflow-run-live.jsonl``: the advertised ``extensionMethods``, the
 #: ``workflowsEnabled`` echo, a workspace recipe listed, created and invoked, the
 #: ``run_start`` .. ``run_complete`` lifecycle, step notes on ``_kiro/session/notify``,
 #: a step parked for input and answered on its own session, and load / inspect /
