@@ -2834,7 +2834,10 @@ per-sub-agent completion note. Dashboard chat only.
   `spawn_sub_agents` adds an `unverified` field to its completed record
   (`constants.NO_TOOL_CALLS_NOTE`; `GET /api/spawn/{id}` reports
   `made_no_tool_calls` for a completed live run, and a status read without it
-  attaches nothing). The
+  attaches nothing). `spawn_status` on a completed run puts the same
+  `This agent …` line (and the `LEAKED_TOOL_CALL_NOTE` one for
+  `leaked_tool_call`) ahead of the result when the flag is exactly `true`, in
+  paged and grepped reads too, so a later re-read keeps the warning. The
   note asks the parent to check reported changes on disk; it does not tell it to
   redo them. A failed or stopped run gets no note, since its own text already
   says the output is not a finished result. The dispatch is never refused and

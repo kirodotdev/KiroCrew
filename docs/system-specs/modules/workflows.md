@@ -1430,7 +1430,12 @@ write, so a subagent cannot inherit an ancestor session and inject completion
 into the parent's chat. Saved-definition, ad-hoc `source` and `intent` runs all
 refuse before HTTP when strict identity is unavailable, even if the lenient
 resolver finds an ancestor session. Authoring, cancellation and subtree reruns
-use the same strict identity rule. Durable create and update operations
+use the same strict identity rule. `workflow_status` reports the same
+`agent_error_count` and `partial_result_count` the `[Workflow completion event]`
+reports, each appended only when it is a positive integer and naming the
+`workflow_result` field that holds the detail, so a `finished` run whose agent
+calls failed does not read as clean and a clean run's line is unchanged.
+Durable create and update operations
 are deliberately absent from the model-facing MCP surface: only the dashboard's
 explicit human management and completed-session confirmation flows may call the
 mutation routes.
