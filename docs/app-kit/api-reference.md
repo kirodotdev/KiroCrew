@@ -1135,8 +1135,12 @@ POST /api/member-records/{slug}
 - **Caps.** Your `type` is letters, digits and `_` only (a path segment admits neither
   `.` nor `-`), and the whole `<app>__<type>` key is at most 64 characters; `data` is an
   object of at most 8 KiB serialized and 8 levels deep; 30 records a minute per app
-  (`429 quota_exceeded`); 64 record types kept per crewmate. Caps refuse, never
-  truncate.
+  (`429 quota_exceeded`). Those caps refuse, never truncate.
+- **64 types per crewmate, shared.** The page keeps the 64 most recently written
+  types across every writer on that crewmate: your app, other apps and script crons.
+  A 65th type is accepted and drops the least recently written type, whoever wrote
+  it; the fold's `types_omitted` counts each drop. A value you wrote can therefore
+  leave the page when other writers add types, so write it again if it must stay.
 - **Refusals.** `403 app_token_required` (no app claim: the owner and internal callers
   have their own write paths), `403 crew_panel_disabled`, `404 member_not_found`,
   `409 ambiguous_slug` (two crewmates share the slug), `409 crew_log_unavailable`

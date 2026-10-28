@@ -4341,6 +4341,13 @@ Three rules are this route's:
    not re-checked at the door: `apps.manifest_names.app_name_error` is the single
    contract every admission path runs, so no live app token carries another shape.
 
+The type bound is the fold's, not the door's: `custom` keeps `CUSTOM_TYPE_LIMIT` (64)
+types per crewmate across every writer, and a new type past it evicts the least
+recently written one whoever wrote it, counted in `types_omitted`
+(`projection_dashboard._custom_step`). So one granted app writing 64 types can push
+other apps' and crons' values off that page. The door does not refuse a new type at a
+full fold, and the app-author docs say so rather than calling this cap a refusal.
+
 An app backend with a command entry point runs as a sandboxed gateway child with the
 whole `crew-log` root hidden from it (section 0, `sandbox_leaves._CREW_HIDDEN_LEAVES`),
 so this route is the only way such an app can write a crewmate's log. A

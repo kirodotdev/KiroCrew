@@ -311,6 +311,43 @@ async def test_a_record_lands_under_the_apps_key_stamped_app_and_folds_for_the_p
     assert folded["wrote"] == 1
 
 
+async def test_the_type_cap_is_shared_and_a_new_type_evicts_another_writers_oldest(
+    installed_app,
+):
+    """The 64-type bound is the fold's, across every writer: the door accepts a 65th
+    type, and the least recently written type goes whoever wrote it. The app-author
+    docs promise exactly this, not a refusal."""
+    from kiro_crew.crew_log.projection_dashboard import CUSTOM_TYPE_LIMIT
+
+    async with _app_client("other-app") as c:
+        resp = await _post(c, {"type": "keep", "data": {"n": 1}})
+        assert resp.status == 200, await resp.text()
+    async with _app_client() as c:
+        for i in range(CUSTOM_TYPE_LIMIT):
+            # The quota is per minute and is not what is under test here.
+            agent_panel_record._recent_records.clear()
+            resp = await _post(c, {"type": f"t{i}", "data": {"n": i}})
+            assert resp.status == 200, await resp.text()
+    folded = _custom_fold()
+    assert "other_app__keep" not in folded["latest"], "the other app's oldest type stays"
+    assert len(folded["latest"]) == CUSTOM_TYPE_LIMIT
+    assert folded["types_omitted"] == 1
+    assert folded["wrote"] == CUSTOM_TYPE_LIMIT + 1
+
+
+async def test_the_app_docs_do_not_call_the_type_cap_a_refusal():
+    """The docs once said the 64-type cap refuses; the fold evicts, so the docs must
+    say the bound is shared and drops the oldest type."""
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[1] / "docs/app-kit/api-reference.md").read_text(
+        encoding="utf-8"
+    )
+    section = " ".join(doc.split("### Member records", 1)[1].split("\n### ", 1)[0].split())
+    assert "64 record types kept per crewmate. Caps refuse" not in section
+    assert "least recently written type, whoever wrote" in section
+
+
 async def test_the_body_cannot_set_who_wrote_it_or_for_whom(installed_app):
     """``writer``, ``member``, ``crew_key`` and ``src`` in the body are IGNORED: the
     entry carries the token's app claim and the path's crewmate, nothing the app said."""
