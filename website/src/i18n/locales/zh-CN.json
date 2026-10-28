@@ -12714,6 +12714,8 @@
       "sorted_by_hand": "已手动排序",
       "board_update_failed": "看板更新失败",
       "remote_sessions_not_shown_in_board_view_other": "看板列仅管理本地会话，因此 {{count}} 个远程会话不会显示在看板视图中。",
+      "search_scan_cut_short": "已搜索 {{total}} 个会话中最近的 {{searched}} 个；更早的会话未被搜索。",
+      "search_scan_cut_short_local": "已搜索此计算机上 {{total}} 个会话中最近的 {{searched}} 个；此处更早的会话未被搜索。",
       "sessions_from_instance_unavailable": "{{names}} 的会话当前不可用。",
       "checking_remote_instances": "正在检查远程 Crew…",
       "machine_group_local": "本地",

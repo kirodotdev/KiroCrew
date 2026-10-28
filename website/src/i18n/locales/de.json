@@ -12920,6 +12920,8 @@
       "board_update_failed": "Board-Aktualisierung fehlgeschlagen",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} Remote-Sitzung wird in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} Remote-Sitzungen werden in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
+      "search_scan_cut_short": "Die {{searched}} neuesten von {{total}} Sitzungen wurden durchsucht; ältere Sitzungen wurden nicht durchsucht.",
+      "search_scan_cut_short_local": "Die {{searched}} neuesten von {{total}} Sitzungen auf diesem Rechner wurden durchsucht; ältere Sitzungen hier wurden nicht durchsucht.",
       "sessions_from_instance_unavailable": "Sitzungen von {{names}} sind derzeit nicht verfügbar.",
       "checking_remote_instances": "Remote-Crews werden geprüft…",
       "machine_group_local": "Lokal",

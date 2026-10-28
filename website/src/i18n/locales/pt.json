@@ -13126,6 +13126,8 @@
       "remote_sessions_not_shown_in_board_view_one": "{{count}} sessão remota não é exibida na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
       "remote_sessions_not_shown_in_board_view_many": "{{count}} sessões remotas não são exibidas na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} sessões remotas não são exibidas na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
+      "search_scan_cut_short": "Pesquisadas as {{searched}} sessões mais recentes de {{total}}; as sessões mais antigas não foram pesquisadas.",
+      "search_scan_cut_short_local": "Pesquisadas as {{searched}} sessões mais recentes de {{total}} nesta máquina; as sessões mais antigas aqui não foram pesquisadas.",
       "sessions_from_instance_unavailable": "As sessões de {{names}} estão indisponíveis neste momento.",
       "checking_remote_instances": "Verificando crews remotas…",
       "machine_group_local": "Local",

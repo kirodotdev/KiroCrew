@@ -5,6 +5,25 @@ import { api, SEARCH_MIN_CHARS } from '../../api/client'
 import { folderNameText, collectFolderSubtreeIds } from '../../utils/folderTree'
 import type { ChatFolder } from '../../types'
 
+/** How much of this machine's session store a search read, present only when its
+ *  scan window (`session.search_scan_window`) left older sessions unsearched.
+ *  `local` is set by the federated search, whose rows also come from other crews
+ *  while the count is this machine's alone. */
+export interface SessionSearchScan { searched: number; total: number; local: boolean }
+
+/** The response's `scan`, or `null` when it is absent or not two sane counts. */
+export function sessionSearchScan(d: unknown): SessionSearchScan | null {
+  const scan = (d as { scan?: unknown } | null | undefined)?.scan as
+    | { searched?: unknown; total?: unknown; scope?: unknown }
+    | undefined
+  if (!scan || typeof scan !== 'object') return null
+  const { searched, total } = scan
+  if (!Number.isSafeInteger(searched) || !Number.isSafeInteger(total)) return null
+  const s = searched as number
+  const t = total as number
+  return s >= 0 && s < t ? { searched: s, total: t, local: scan.scope === 'local' } : null
+}
+
 /**
  * Debounced backend session-content search.  Returns `null` until the first
  * response arrives (or whenever the query drops below `SEARCH_MIN_CHARS`),
@@ -15,10 +34,14 @@ import type { ChatFolder } from '../../types'
  * Callers feed a digest of the session set + titles, so a rename — which mutates
  * a title but not the query — refreshes the backend result set. Keep the digest
  * scoped to key/title and NOT status, or idle status ticks spam `sessionsSearch`.
+ *
+ * `transform` also receives the response's scan-window note
+ * (see {@link sessionSearchScan}), so a caller can say when older sessions were
+ * not searched.
  */
 export function useDebouncedSessionSearch<T>(
   query: string,
-  transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[]) => T,
+  transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[], scan: SessionSearchScan | null) => T,
   revalidateSignal?: string,
   federated = false,
 ): T | null {
@@ -64,7 +87,7 @@ export function useDebouncedSessionSearch<T>(
       try {
         const d = await fetchSessions(q)
         if (cancelled || myToken !== token.current) return
-        setResult(transform(d.sessions || []))
+        setResult(transform(d.sessions || [], sessionSearchScan(d)))
       } catch { /* keep previous result on error */ }
       // Cleared AFTER the await: clearing first leaves a window where the debounce
       // has "finished" but the fetch is outstanding, so the effect below duplicates it.
@@ -92,7 +115,7 @@ export function useDebouncedSessionSearch<T>(
       try {
         const d = await fetchSessions(q)
         if (cancelled || myToken !== token.current) return
-        setResult(transform(d.sessions || []))
+        setResult(transform(d.sessions || [], sessionSearchScan(d)))
       } catch { /* keep previous result on error */ }
     }, 100)
     return () => { cancelled = true; clearTimeout(t) }

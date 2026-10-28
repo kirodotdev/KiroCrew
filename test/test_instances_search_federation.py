@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.dashboard import handlers_instances as hi
+from kiro_crew.history_search import SearchRows
 from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
 
@@ -118,6 +119,26 @@ async def _json_of(resp):
 
 
 class TestSearchAllEndpoint:
+    @pytest.mark.asyncio
+    async def test_reports_this_machines_scan_window_as_local(self, monkeypatch):
+        """The count is this machine's, marked so the page can say so."""
+        _enable_instances(monkeypatch)
+
+        class _CutLog:
+            def search_sessions(self, _q, _limit):
+                return SearchRows([{"key": "l1"}], searched=2000, eligible=2150)
+
+        mgr = _Mgr({"a": (True, {"sessions": [{"key": "ra1"}], "scan": {"searched": 1}})})
+        state = _state([], mgr)
+        state.conversation_log = _CutLog()
+
+        data = await _json_of(await hi.api_instances_search_sessions(_request(state)))
+        assert data["scan"] == {"searched": 2000, "total": 2150, "scope": "local"}
+
+        state.conversation_log = _Log([{"key": "l1"}])
+        data = await _json_of(await hi.api_instances_search_sessions(_request(state)))
+        assert "scan" not in data, "a peer's own scan is never carried"
+
     @pytest.mark.asyncio
     async def test_rank_interleaves_local_first_and_tags_remote_rows(self, monkeypatch):
         """Position k cycles source k-th hits, local source first; remote rows

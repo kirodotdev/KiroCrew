@@ -7189,6 +7189,8 @@
       "will_be_moved_to_older_sessions": "will be moved to older sessions.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} remote session is not shown in board view — board columns manage local sessions only.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} remote sessions are not shown in board view — board columns manage local sessions only.",
+      "search_scan_cut_short": "Searched the {{searched}} most recent of {{total}} sessions; older sessions were not searched.",
+      "search_scan_cut_short_local": "Searched the {{searched}} most recent of {{total}} sessions on this machine; older sessions here were not searched.",
       "sessions_from_instance_unavailable": "Sessions from {{names}} are unavailable right now.",
       "checking_remote_instances": "Checking remote crews…",
       "machine_group_local": "Local",

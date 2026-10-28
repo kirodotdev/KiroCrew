@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.history_search import snippet_needle_tiers, tiered_first_hit
 from kiro_crew.platform import redact_via_context as redact
@@ -23,11 +22,27 @@ _SNIPPET_RADIUS = 120  # chars of context kept on each side of a match
 _SNIPPET_MAX_LEN = 320  # hard cap on a returned snippet
 
 
-# Upper bound on ranked candidates pulled from the backend per search. Bound to
-# the backend's own scan window (imported, not copied) so we consider every
-# ranked match (bounded I/O) and post-filtering can't starve a caller whose hits
-# rank past a small page — and the two can't silently drift apart.
-_SEARCH_HISTORY_SCAN = SEARCH_SCAN_WINDOW
+def _search_history_scan(query: str = "") -> int:
+    """Upper bound on ranked candidates pulled from the backend for *query*.
+
+    For a content search, the ceiling of ``session.search_scan_window``, not its
+    current value: the backend reads the window itself and scores only that many
+    sessions, so asking for the ceiling takes every ranked match it scanned
+    (bounded I/O) and post-filtering can't starve a caller whose hits rank past a
+    small page. Reading the window here as well would be a second config read that
+    a change landing between the two could make smaller than the scan.
+
+    A ``title:`` query with nothing after its term reads titles only and is not
+    held to the window, so for it the window itself is the cap. The backend reads
+    no window on that path, so this is still the one read for the search.
+    """
+    from kiro_crew.config.sections_limits import SEARCH_SCAN_WINDOW_MAX
+    from kiro_crew.history_search import _facade_search_scan_window, split_title_scope
+
+    scope = split_title_scope(query)
+    if scope is not None and not scope.rest:
+        return _facade_search_scan_window()
+    return SEARCH_SCAN_WINDOW_MAX
 
 
 def _history_is_incognito(meta: dict) -> bool:

@@ -23,7 +23,7 @@ from typing import Any
 from kiro_crew import mcp_core
 from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
-from kiro_crew.history_search import split_title_scope
+from kiro_crew.history_search import search_coverage_note, split_title_scope
 from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
     LIST_SESSIONS_SCHEMA,
@@ -208,7 +208,10 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     # not a fixed limit*3 over-fetch: heavy incognito/workspace/date drops on
     # the first page could otherwise starve a caller whose real matches rank
     # lower, returning "no results" while hits exist.
-    ranked: list[dict] = cl.search_sessions(query, limit=mcp_core._SEARCH_HISTORY_SCAN)
+    ranked: list[dict] = cl.search_sessions(query, limit=mcp_core._search_history_scan(query))
+    # Said in the reply, empty or not: a session older than the scan window was
+    # never searched, and "no matches" must not read as "not in history".
+    coverage_note = search_coverage_note(ranked)
     # A leading ``title:`` term only picks which titles qualify; the transcript
     # was searched for the text after it, so the excerpt looks for that text too.
     scope = split_title_scope(query)
@@ -266,12 +269,16 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
             outcome="no_results",
             metadata={"query_len": len(query)},
         )
+        if coverage_note:
+            return f"No matching conversations found. {coverage_note}"
         return "No matching conversations found. Try different keywords."
 
     lines = [
         "\U0001f50e Chat history matches "
         "(snippets only — use get_chat_session to read a full thread):"
     ]
+    if coverage_note:
+        lines.append(f"_{coverage_note}_")
     for r in results:
         lines.append("\n---")
         lines.append(f"**{r['title']}**  ·  `{r['session_key']}`")

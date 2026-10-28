@@ -12920,6 +12920,8 @@
       "board_update_failed": "বোর্ড আপডেট ব্যর্থ",
       "remote_sessions_not_shown_in_board_view_one": "বোর্ড ভিউতে {{count}}টি রিমোট সেশন দেখানো হয় না — বোর্ডের কলামগুলি শুধুমাত্র স্থানীয় সেশন পরিচালনা করে।",
       "remote_sessions_not_shown_in_board_view_other": "বোর্ড ভিউতে {{count}}টি রিমোট সেশন দেখানো হয় না — বোর্ডের কলামগুলি শুধুমাত্র স্থানীয় সেশন পরিচালনা করে।",
+      "search_scan_cut_short": "{{total}}টি সেশনের মধ্যে সাম্প্রতিকতম {{searched}}টি খোঁজা হয়েছে; পুরোনো সেশনগুলি খোঁজা হয়নি।",
+      "search_scan_cut_short_local": "এই মেশিনের {{total}}টি সেশনের মধ্যে সাম্প্রতিকতম {{searched}}টি খোঁজা হয়েছে; এখানকার পুরোনো সেশনগুলি খোঁজা হয়নি।",
       "sessions_from_instance_unavailable": "{{names}} থেকে সেশনগুলি এই মুহূর্তে অনুপলব্ধ।",
       "checking_remote_instances": "রিমোট ক্রু যাচাই করা হজ্ছে…",
       "machine_group_local": "লোকাল",

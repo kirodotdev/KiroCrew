@@ -22,6 +22,7 @@ import threading
 import pytest
 
 from kiro_crew import history
+from kiro_crew.config.sections import DEFAULT_SEARCH_SCAN_WINDOW
 from kiro_crew.history import ConversationLog
 
 
@@ -176,20 +177,30 @@ class TestFoldCacheCoversTheScanWindow:
         assert log._snippet_cache.stats()["max_bytes"] == history._SEARCH_SNIPPET_BUDGET_BYTES
         assert log._msg_cache._maxsize == 8, "the transcript cache still honors cache_max"
 
-    def test_the_budget_holds_a_full_scan_window_of_ordinary_sessions(self, tmp_path):
+    def test_the_budget_holds_the_default_scan_window(self, tmp_path):
         """The ceiling has to be generous enough to not be the common case.
 
         A budget tight enough to refuse ordinary corpora would reintroduce the
-        very cliff this class exists to prevent, just measured in bytes. Pinned
-        against a deliberately roomy per-session estimate so the assertion fails
-        if someone tightens the budget without re-reasoning about the window.
+        very cliff this class exists to prevent, just measured in bytes. The window
+        is ``session.search_scan_window`` now, so an operator can raise it past
+        any byte budget; a window that outgrows the budget degrades by refused
+        admission (the sessions that fit stay cached), not by a collapse to zero
+        hits. What the budget must hold is the DEFAULT window at an ordinary
+        session size (a 230-session corpus folds to ~8 MB, ~35 KB each), and the
+        old fixed 500-session window at a deliberately roomy size, so neither the
+        budget nor the default can move without re-reasoning about the other.
         """
-        generous_session_chars = 64 * 1024
-        capacity = history._SEARCH_FOLD_BUDGET_BYTES // generous_session_chars
-        assert capacity >= history._SEARCH_SCAN_WINDOW, (
-            f"the fold budget holds only {capacity} sessions of "
-            f"{generous_session_chars} chars, fewer than the "
-            f"{history._SEARCH_SCAN_WINDOW}-session scan window"
+        ordinary_session_bytes = 48 * 1024
+        generous_session_bytes = 64 * 1024
+        budget = history._SEARCH_FOLD_BUDGET_BYTES
+        assert budget // ordinary_session_bytes >= DEFAULT_SEARCH_SCAN_WINDOW, (
+            f"the fold budget holds only {budget // ordinary_session_bytes} sessions of "
+            f"{ordinary_session_bytes} bytes, fewer than the default "
+            f"{DEFAULT_SEARCH_SCAN_WINDOW}-session scan window"
+        )
+        assert budget // generous_session_bytes >= 500, (
+            f"the fold budget holds only {budget // generous_session_bytes} sessions of "
+            f"{generous_session_bytes} bytes, fewer than the old 500-session window"
         )
 
     def test_no_thrash_across_a_corpus_larger_than_the_transcript_cache(
