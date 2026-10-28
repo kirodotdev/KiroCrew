@@ -66,7 +66,7 @@ from kiro_crew.dashboard.channel_folders import (
     folder_id_for_name,
     lookup_channel_folder,
 )
-from kiro_crew.dashboard.chat_title import apply_manual_title
+from kiro_crew.dashboard.channel_titles import rename_channel_title_live  # noqa: F401 (import path)
 from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots, effective_session_key
 from kiro_crew.dashboard.slot_persistence.message_entries import remember_unknown_row_fields
 from kiro_crew.dashboard.state import (
@@ -253,35 +253,6 @@ def project_channel_row_live(
         except Exception:
             logger.debug("channel turn projection: slot push failed", exc_info=True)
     return mid or None
-
-
-async def rename_channel_title_live(
-    dashboard_state: Any,
-    session_key: str,
-    title: str,
-) -> bool:
-    """Rename the open dashboard slot for *session_key* and keep every view aligned.
-
-    Returns ``False`` when no live slot owns the session, so the channel can fall
-    back to its conversation-log-only path. A live slot is authoritative once it
-    exists: changing only transcript metadata lets its later save rewrite the old
-    in-memory title over the new one. So the live slot is renamed through
-    :func:`~kiro_crew.dashboard.chat_title.apply_manual_title`, the code the
-    sidebar rename and ``session_rename`` share: the slot is updated
-    synchronously, its title epoch bumped so a background titler stands down,
-    the title persisted through the epoch-aware helper, then broadcast.
-
-    The save is best-effort by dashboard contract. A failed immediate metadata
-    write leaves the updated live slot authoritative, and a later slot save can
-    recover it; the dashboard's own rename endpoint makes the same trade.
-    """
-    slot = live_dashboard_slot(dashboard_state, session_key)
-    if slot is None:
-        return False
-
-    if not await apply_manual_title(dashboard_state, slot, title):
-        logger.warning("channel title update is live but not yet durable for %s", session_key)
-    return True
 
 
 def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:

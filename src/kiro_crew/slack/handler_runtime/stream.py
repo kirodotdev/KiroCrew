@@ -943,6 +943,25 @@ class _AnswerStream:
             # Flush buffered text before approval pause
             await self.flush()
 
+    async def resume_after_approval(self) -> None:
+        """The decision is in: an agent session goes back to ``processing``.
+
+        "Waiting for approval…" reads as Slack's ``suspended`` state, which shows no
+        loader and no Stop button, and the next text chunk -- the only reset the
+        base status gets -- may come only after the approved tool has run. Sent
+        through ``set_session_status``, which does nothing unless agent sessions
+        are live, so the older thread status is untouched. Gated on the approval
+        status alone: a flush that dropped the turn to message posting still left
+        the session ``suspended``. Best-effort.
+        """
+        if not self.status_dirty:
+            return
+        try:
+            # "processing" is agent_sessions.status.SESSION_STATUS_PROCESSING.
+            await self.slack.set_session_status(self.channel, self.reply_ts, "processing")
+        except Exception:
+            logger.debug("agent session resume after approval failed", exc_info=True)
+
     async def on_tool_rejected(self) -> None:
         """Close the running tool's card as failed, or note the rejection inline."""
         if self.use_slack_stream and self.active_task_id:

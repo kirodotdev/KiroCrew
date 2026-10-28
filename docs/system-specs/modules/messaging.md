@@ -4425,7 +4425,7 @@ for a request id. A button rendered before the nonce existed has no nonce segmen
 the right-to-left parse leaves part of the id where the nonce belongs and the compare
 fails closed, which is the correct answer for a press from an earlier process. Same
 mechanism as Discord's (see above); Slack carries the same per-prompt nonce in each
-button value (`slack/renderer.build_approval_token`).
+button value (`slack/approval_tokens.build_approval_token`, re-exported by `slack/renderer`).
 
 ### Telegram's durable `getUpdates` cursor
 

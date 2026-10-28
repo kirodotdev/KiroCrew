@@ -194,6 +194,13 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
+    _Reset as _TurnScopeReset,
+)
+from kiro_crew.slack.agent_sessions.fence import (
+    enter_turn,
+    exit_turn,
+)
 from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     build_working_blocks,
     deprecation_warning_block,
@@ -1031,6 +1038,9 @@ async def handle_message(
         # shutdown ``cancel_background_tasks`` may stop it, best-effort.
         track_background_task(asyncio.create_task(turn.clear_working_indicators()))
         raise
+    finally:
+        # Native Stop's write fence, opened by _run_turn, closes after the answer.
+        turn.close_turn_scope()
 
 
 # ── Slack thread auto-title ─────────────────────────────────────────────

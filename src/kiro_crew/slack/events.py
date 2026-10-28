@@ -98,6 +98,8 @@ from kiro_crew.session_lifecycle import (
     hand_queue_to_successor,
 )
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.slack.agent_sessions.session_events import AGENT_SESSION_EVENTS
+from kiro_crew.slack.agent_sessions.session_events import dispatch as dispatch_agent_session_event
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
     build_stopping_blocks,
@@ -323,6 +325,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
                         source="slack",
                         error="unauthorized sender",
                     )
+            return
+
+        # ── Agent sessions: native Stop and user renames (agent_sessions) ──
+        if event_type in AGENT_SESSION_EVENTS:
+            dispatch_agent_session_event(orch, req.payload or {}, event)
             return
 
         # ── Messages and mentions ──
@@ -1421,7 +1428,7 @@ async def _route_message(
                 spool_attachments=_spool_attachments,
             )
         )
-        orch._session_tasks[session_key] = t
+        _track_router_task(orch, session_key, t, thread_ts)
 
         def _on_transport_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
             orch._handler_tasks.discard(task)
@@ -1446,7 +1453,7 @@ async def _route_message(
                         _q_t = asyncio.ensure_future(
                             _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
                         )
-                        orch._session_tasks[session_key] = _q_t
+                        _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
                         orch._handler_tasks.add(_q_t)
                         _q_t.add_done_callback(_on_transport_done)
             except Exception:
@@ -1489,7 +1496,7 @@ async def _route_message(
         _cleanup_attachment_temps()
         return
 
-    orch._session_tasks[session_key] = t
+    _track_router_task(orch, session_key, t, thread_ts)
 
     def _on_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
         orch._handler_tasks.discard(task)
@@ -1512,7 +1519,7 @@ async def _route_message(
                     _q_t = asyncio.ensure_future(
                         _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
                     )
-                    orch._session_tasks[session_key] = _q_t
+                    _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
                     orch._handler_tasks.add(_q_t)
                     _q_t.add_done_callback(_on_done)
         except Exception:
@@ -1553,6 +1560,7 @@ from kiro_crew.slack.events_queue import _resolve_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _settle_stop_hold  # noqa: E402
 from kiro_crew.slack.events_queue import _StopHold  # noqa: E402
 from kiro_crew.slack.events_queue import _stops_in_flight  # noqa: E402
+from kiro_crew.slack.events_queue import _track_router_task  # noqa: E402
 from kiro_crew.slack.events_slash import _handle_restart  # noqa: E402
 from kiro_crew.slack.events_slash import _handle_slash  # noqa: E402
 from kiro_crew.slack.events_slash import _safe_log  # noqa: E402
@@ -1589,7 +1597,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_block_text import _until_full  # noqa: F401
     from kiro_crew.slack.events_queue import _bg_tasks  # noqa: F401
     from kiro_crew.slack.events_queue import _on_tracked_done  # noqa: F401
+    from kiro_crew.slack.events_queue import _router_task_threads  # noqa: F401
     from kiro_crew.slack.events_queue import _spawn_tracked  # noqa: F401
+    from kiro_crew.slack.events_queue import router_task_thread  # noqa: F401
     from kiro_crew.slack.events_queue import slack_stop_in_flight  # noqa: F401
     from kiro_crew.slack.events_slash import SLASH_REGISTRY  # noqa: F401
     from kiro_crew.slack.events_slash import SlashHandler  # noqa: F401

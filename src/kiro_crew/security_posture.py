@@ -982,6 +982,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/events.py",
         "slack/events_home_tab.py",
         "slack/events_slash.py",
+        # Inbound: a Slack rename, scrubbed before it is stored; read via the slot sinks.
+        "slack/agent_sessions/session_events.py",
         # Inbound attachment ingestion: redacts text extracted FROM a user's
         # own uploaded file before it enters the prompt. Inbound sanitisation,
         # not agent output on its way to a user.

@@ -10,7 +10,7 @@ import asyncio
 import logging
 import urllib.parse
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from slack_sdk.errors import SlackClientError
@@ -20,8 +20,12 @@ from slack_sdk.http_retry.response import HttpResponse
 from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
+from kiro_crew.slack.agent_sessions.fence import note_message, turn_muted
 from kiro_crew.slack.channel_policy import require_channel
 from kiro_crew.slack.team_ids import use_channel_team_store
+
+if TYPE_CHECKING:
+    from kiro_crew.slack.agent_sessions.status import AgentSessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +243,13 @@ class SlackClientOps(ABC):
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
         """Set assistant thread title via assistant.threads.setTitle."""
 
+    async def set_session_status(self, channel: str, thread_ts: str | None, status: str) -> bool:
+        """Move an agent session to a lifecycle state (``agents.sessions.setStatus``).
+
+        False when agent sessions are not live for this client. No-op default.
+        """
+        return False
+
     async def set_suggested_prompts(
         self, channel: str, thread_ts: str, prompts: list[dict[str, str]]
     ) -> None:
@@ -368,6 +379,11 @@ class _ConnectSetupRetryHandler(AsyncRetryHandler):
 class RealSlackClient(SlackClientOps):
     """Slack Web API client backed by slack_sdk."""
 
+    #: The ``agents.sessions.*`` driver, attached at boot only when
+    #: ``slack.agent_sessions`` is on (``agent_sessions.status.configure``). A class
+    #: default so instances built without ``__init__`` read it as off.
+    agent_sessions: AgentSessionStatus | None = None
+
     def __init__(self, bot_token: str):
         self._web = AsyncWebClient(
             token=bot_token,
@@ -492,6 +508,8 @@ class RealSlackClient(SlackClientOps):
         docs/request-for-change/rfc-redaction-explain-and-reveal.md §5.
         """
         require_channel(channel)
+        if turn_muted(channel, thread_ts):
+            return ""
         kwargs: dict[str, Any] = {"channel": channel, "text": text}
         if thread_ts is not None:
             kwargs["thread_ts"] = thread_ts
@@ -501,6 +519,7 @@ class RealSlackClient(SlackClientOps):
             kwargs["reply_broadcast"] = True
         self._inject_team(channel, kwargs)
         resp = await self._web.chat_postMessage(**kwargs)
+        note_message(channel, resp["ts"])
         return resp["ts"]
 
     async def post_blocks(
@@ -521,6 +540,8 @@ class RealSlackClient(SlackClientOps):
         """
         _refuse_remote_media(blocks)
         require_channel(channel)
+        if turn_muted(channel, thread_ts):
+            return ""
         kwargs: dict[str, Any] = {"channel": channel, "blocks": blocks, "text": text}
         if thread_ts is not None:
             kwargs["thread_ts"] = thread_ts
@@ -530,6 +551,7 @@ class RealSlackClient(SlackClientOps):
             kwargs["reply_broadcast"] = True
         self._inject_team(channel, kwargs)
         resp = await self._web.chat_postMessage(**kwargs)
+        note_message(channel, resp["ts"])
         return resp["ts"]
 
     async def update_message(
@@ -551,6 +573,8 @@ class RealSlackClient(SlackClientOps):
         # An edit writes new content too, so a channel the policy stopped
         # admitting after the post is refused here as well.
         require_channel(channel)
+        if turn_muted(channel, ts=ts):
+            return
         kwargs: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
         if blocks:
             kwargs["blocks"] = blocks
@@ -621,6 +645,8 @@ class RealSlackClient(SlackClientOps):
         title: str,
     ) -> None:
         require_channel(channel)
+        if turn_muted(channel, thread_ts):
+            return
         await self._web.files_upload_v2(
             channel=channel,
             thread_ts=thread_ts,
@@ -648,6 +674,8 @@ class RealSlackClient(SlackClientOps):
         # of three checks is a seam callers can route around by accident.
         _refuse_remote_media(blocks)
         require_channel(channel)
+        if turn_muted(channel, thread_ts):
+            return
         kwargs: dict = {"channel": channel, "user": user_id, "text": text}
         if blocks:
             kwargs["blocks"] = blocks
@@ -722,6 +750,8 @@ class RealSlackClient(SlackClientOps):
         # Outside the try: a refused channel must not demote to a plain post,
         # which the same check refuses anyway.
         require_channel(channel)
+        if turn_muted(channel, thread_ts):
+            return None
         try:
             # Resolve this channel's home workspace before reading the cache.
             # Inbound Slack handlers call ensure_channel_team() once per message,
@@ -776,6 +806,7 @@ class RealSlackClient(SlackClientOps):
             if chunks:
                 body["chunks"] = chunks
             resp = await self._web.api_call("chat.startStream", json=body)
+            note_message(channel, resp.get("ts"))
             return resp.get("ts")
         except Exception as exc:
             # A turn with no originating Slack user -- a subagent run, or a cron
@@ -800,6 +831,8 @@ class RealSlackClient(SlackClientOps):
 
     async def append_stream(self, channel: str, ts: str, text: str) -> bool:
         """Append markdown text to a streaming message via chat.appendStream."""
+        if turn_muted(channel, ts=ts):
+            return False
         try:
             # Each chunk is new content; see update_message.
             require_channel(channel)
@@ -826,6 +859,8 @@ class RealSlackClient(SlackClientOps):
         output: str = "",
     ) -> bool:
         """Append a task_update chunk to a streaming message."""
+        if turn_muted(channel, ts=ts):
+            return False
         try:
             # Each chunk is new content; see update_message.
             require_channel(channel)
@@ -854,6 +889,8 @@ class RealSlackClient(SlackClientOps):
         content already has rich formatting (syntax-highlighted code blocks, etc.)
         that chat.update would downgrade to plain mrkdwn.
         """
+        if turn_muted(channel, ts=ts):
+            return False
         try:
             # Each chunk is new content; see update_message.
             require_channel(channel)
@@ -866,11 +903,27 @@ class RealSlackClient(SlackClientOps):
             return False
 
     async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> bool:
-        """Set assistant thread loading status via assistant.threads.setStatus.
+        """Set the thread's loading status.
 
-        True when Slack accepted it; the SDK raises on an ``ok: false`` answer
-        (e.g. a thread that is not an assistant thread), which reads as False.
+        With agent sessions live this drives ``agents.sessions.setStatus`` (the
+        text picks the lifecycle state; see ``agent_sessions.status``); otherwise,
+        or when that driver hands the call back, ``assistant.threads.setStatus``.
+
+        True when Slack shows it: the agent-session driver handled it, or Slack
+        accepted the old call (the SDK raises on an ``ok: false`` answer, e.g. a
+        thread that is not an assistant thread, which reads as False). A write a
+        native Stop silenced shows nothing, so it reads as False.
         """
+        if turn_muted(channel, thread_ts or None):
+            return False
+        driver = self.agent_sessions
+        if driver is not None:
+            if await driver.set_text(channel, thread_ts, status):
+                return True
+            # A Stop can land while the native call is in flight: the old call
+            # must not post after it.
+            if turn_muted(channel, thread_ts or None):
+                return False
         try:
             if status:  # clearing the indicator adds no content
                 require_channel(channel)
@@ -884,7 +937,25 @@ class RealSlackClient(SlackClientOps):
         return True
 
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
-        """Set assistant thread title via assistant.threads.setTitle."""
+        """Set the thread's title: ``agents.sessions.rename`` when live, else setTitle.
+
+        Callers pass a session key (``slack:<ts>``) as often as a bare ts; the
+        agent-session call needs the bare thread ts and skips a key naming none.
+        """
+        from kiro_crew.slack.agent_sessions.status import thread_ts_of
+
+        bare = thread_ts_of(thread_ts)
+        # Keyed by thread: a Stop silences only its own thread's title, never
+        # another thread's in the same channel. A key naming no thread (a
+        # single-session DM) addresses the channel, as before.
+        if turn_muted(channel, bare):
+            return
+        driver = self.agent_sessions
+        if driver is not None:
+            if bare is None or await driver.rename(channel, bare, title):
+                return
+            if turn_muted(channel, bare):
+                return  # a Stop landed during the native call
         try:
             require_channel(channel)  # thread text is content; see update_message
             await self._web.api_call(
@@ -894,10 +965,21 @@ class RealSlackClient(SlackClientOps):
         except Exception:
             logger.debug("assistant.threads.setTitle failed", exc_info=True)
 
+    async def set_session_status(self, channel: str, thread_ts: str | None, status: str) -> bool:
+        """``agents.sessions.setStatus`` through the live driver; False when off."""
+        if turn_muted(channel, thread_ts):
+            return False
+        driver = self.agent_sessions
+        if driver is None:
+            return False
+        return await driver.set_status(channel, thread_ts, status)
+
     async def set_suggested_prompts(
         self, channel: str, thread_ts: str, prompts: list[dict[str, str]]
     ) -> None:
         """Set suggested prompts via assistant.threads.setSuggestedPrompts."""
+        if turn_muted(channel, thread_ts):
+            return
         try:
             require_channel(channel)  # thread text is content; see update_message
             import json

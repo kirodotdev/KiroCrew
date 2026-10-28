@@ -236,6 +236,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
         logger.debug("Agent spec verification failed", exc_info=True)
 
     self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
+    # Slack agent sessions (status, title, native Stop): the driver is attached
+    # at boot and reads slack.agent_sessions (and the install's capability) live.
+    from kiro_crew.slack.agent_sessions.status import configure as _configure_agent_sessions
+
+    _configure_agent_sessions(self)
     factory = build_provider_factory(self._cfg)
 
     # Only in-memory wiring belongs on the boot path. The closed barrier
