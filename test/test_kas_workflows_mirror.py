@@ -2,8 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from kiro_crew.kas_workflows import wire
-from kiro_crew.kas_workflows.mirror import MAX_TERMINAL_RUNS, RunMirror
+from kiro_crew.kas_workflows.mirror import (
+    MAX_LIST_ITEMS,
+    MAX_LIVE_RUNS,
+    MAX_PATHS_PER_RUN,
+    MAX_PAYLOAD_VALUES,
+    MAX_REASON_CHARS,
+    MAX_TERMINAL_RUNS,
+    RunMirror,
+)
 
 _TREE = [
     {"type": "step", "id": "plan", "agent": "wf-planner"},
@@ -587,3 +599,162 @@ def test_kas_step_counts_ignore_malformed_values() -> None:
         "waitingOnWatch": False,
     }
     assert wire.parse_run_progress({"workflowId": "wf_1"}) is None
+
+
+def test_every_kept_kas_text_is_cut_to_the_reason_cap() -> None:
+    """A failure, park or pause reason and a run's names are stored at most MAX_REASON_CHARS long."""
+    long = "x" * (MAX_REASON_CHARS * 5)
+    mirror = RunMirror(clock=_clock)
+    mirror.apply_notification(
+        wire.NOTIFY_RUN_START,
+        {"workflowId": "wf_1", "workflowName": long, "nodeTree": _TREE},
+    )
+    mirror.apply_notification(
+        wire.NOTIFY_NODE_COMPLETE,
+        {
+            "workflowId": "wf_1",
+            "nodeId": "plan",
+            "nodePath": ["wf_1", "plan"],
+            "status": "failed",
+            "failureReason": long,
+        },
+    )
+    mirror.apply_notification(
+        wire.NOTIFY_NODE_PAUSED,
+        {"workflowId": "wf_1", "nodeId": "code", "nodePath": ["wf_1", "code"], "reason": long},
+    )
+    mirror.apply_notification(wire.NOTIFY_PAUSED, {"workflowId": "wf_1", "pauseReason": long})
+    row = mirror.row("wf_1")
+    assert row is not None
+    assert row["workflowName"] == "x" * MAX_REASON_CHARS
+    assert row["pauseReason"] == "x" * MAX_REASON_CHARS
+    run = mirror._runs["wf_1"]
+    assert run.node_reason == {"plan": "x" * MAX_REASON_CHARS, "code": "x" * MAX_REASON_CHARS}
+    assert {k: v["reason"] for k, v in run.path_state.items()} == run.node_reason
+
+    mirror.apply_load(
+        {
+            "workflowId": "wf_2",
+            "state": {
+                "status": "failed",
+                "runLabel": long,
+                "pauseReason": long,
+                "root": {
+                    "id": "root",
+                    "children": [{"id": "plan", "status": "failed", "failureReason": long}],
+                },
+            },
+        }
+    )
+    loaded = mirror._runs["wf_2"]
+    assert loaded.name == "x" * MAX_REASON_CHARS
+    assert loaded.pause_reason == "x" * MAX_REASON_CHARS
+    assert loaded.path_state["plan"]["reason"] == "x" * MAX_REASON_CHARS
+
+
+def test_per_id_maps_stop_taking_new_node_ids_at_the_cap() -> None:
+    """Past MAX_PATHS_PER_RUN distinct ids a new id is not recorded; a held id still updates."""
+    mirror = RunMirror(clock=_clock)
+    _started(mirror)
+    for i in range(MAX_PATHS_PER_RUN + 50):
+        mirror.apply_notification(
+            wire.NOTIFY_NODE_COMPLETE,
+            {"workflowId": "wf_1", "nodeId": f"n{i}", "status": "failed", "failureReason": "r"},
+        )
+    run = mirror._runs["wf_1"]
+    assert len(run.node_status) == MAX_PATHS_PER_RUN
+    assert len(run.node_reason) == MAX_PATHS_PER_RUN
+    assert f"n{MAX_PATHS_PER_RUN}" not in run.node_status
+    mirror.apply_notification(
+        wire.NOTIFY_NODE_START, {"workflowId": "wf_1", "nodeId": "n0", "sessionId": "s0"}
+    )
+    assert run.node_status["n0"] == wire.STATUS_RUNNING and run.node_session["n0"] == "s0"
+
+    assert mirror.dropped == 50
+
+
+def test_ids_sessions_models_and_list_rows_are_cut_like_any_kas_text() -> None:
+    """Every string a run keeps is capped, ids and list-row fields included."""
+    long = "y" * (MAX_REASON_CHARS * 3)
+    mirror = RunMirror(clock=_clock)
+    mirror.apply_notification(
+        wire.NOTIFY_NODE_START,
+        {"workflowId": "wf_1", "nodeId": long, "sessionId": long, "nodePath": [long, long]},
+    )
+    mirror.apply_load(
+        {
+            "workflowId": "wf_1",
+            "state": {
+                "status": "running",
+                "root": {
+                    "id": "root",
+                    "children": [
+                        {"id": "s", "status": "running", "modelId": long, "effortLevel": long}
+                    ],
+                },
+            },
+        }
+    )
+    run = mirror._runs["wf_1"]
+    kept = [
+        *run.node_status,
+        *run.node_session.values(),
+        *run.node_model.values(),
+        *run.node_effort.values(),
+        *run.path_state,
+    ]
+    assert kept and max(len(s) for s in kept) <= 2 * MAX_REASON_CHARS + 1
+
+    mirror.apply_summaries(
+        wire.parse_run_list(
+            {"runs": [{"workflowId": "wf_2", "status": "running", "name": long, "createdAt": long}]}
+        )
+    )
+    listed = mirror._runs["wf_2"]
+    assert listed.name == "y" * MAX_REASON_CHARS
+    assert listed.created_at == "y" * MAX_REASON_CHARS
+
+
+def test_wide_lists_and_plans_are_capped_as_a_whole() -> None:
+    """An attention list keeps MAX_LIST_ITEMS entries; a plan wide at every level stays bounded."""
+    mirror = RunMirror(clock=_clock)
+    _started(mirror)
+    attention = [{"kind": "question", "nodeId": f"n{i}"} for i in range(MAX_LIST_ITEMS + 10)]
+    mirror.apply_notification(wire.NOTIFY_PAUSED, {"workflowId": "wf_1", "attention": attention})
+    assert len(mirror._runs["wf_1"].attention) == MAX_LIST_ITEMS
+
+    level = [{"type": "step", "id": f"leaf{i}"} for i in range(MAX_LIST_ITEMS)]
+    tree = [{"type": "sequence", "id": f"seq{i}", "children": level} for i in range(MAX_LIST_ITEMS)]
+    mirror.apply_notification(wire.NOTIFY_RUN_START, {"workflowId": "wf_3", "nodeTree": tree})
+    plan = mirror._runs["wf_3"].plan
+    assert 0 < sum(1 + len(node.children) for node in plan) <= MAX_PAYLOAD_VALUES
+    assert mirror.dropped > 0
+
+
+def test_live_runs_past_the_cap_are_not_recorded_and_each_lossy_input_logs_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mirror = RunMirror(clock=_clock)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.kas_workflows.mirror"):
+        for i in range(MAX_LIVE_RUNS + 5):
+            mirror.apply_notification(
+                wire.NOTIFY_NODE_START, {"workflowId": f"live{i}", "nodeId": "a"}
+            )
+        # One input losing several values still logs one line.
+        long = "z" * (MAX_REASON_CHARS + 1)
+        mirror.apply_notification(
+            wire.NOTIFY_NODE_COMPLETE,
+            {
+                "workflowId": "live0",
+                "nodeId": "a",
+                "status": "failed",
+                "failureReason": long,
+                "endedAt": long,
+            },
+        )
+        mirror.apply_notification(wire.NOTIFY_PAUSED, {"workflowId": "live0", "pauseReason": long})
+    assert len(mirror) == MAX_LIVE_RUNS
+    assert f"live{MAX_LIVE_RUNS}" not in mirror
+    assert mirror.dropped == 8
+    lines = [r.getMessage() for r in caplog.records if "lost" in r.getMessage()]
+    assert len(lines) == 7
