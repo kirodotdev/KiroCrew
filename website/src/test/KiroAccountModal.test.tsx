@@ -652,6 +652,41 @@ describe('KiroAccountModal refresh', () => {
     await screen.findByRole('progressbar', { name: 'Kiro credit usage' })
   })
 
+  // #23655: the label swap used to resize the button while `transition-all`
+  // animated it, which left a second, stale button painted over it on mobile
+  // WebKit. Both labels now always occupy the button, so its width never
+  // depends on the state, and only colors transition.
+  it('keeps one button the same size while it flips to refreshing and back (#23655)', async () => {
+    let settle: (v: { usage: Record<string, unknown> }) => void = () => {}
+    refreshMock.mockImplementation(() => new Promise(resolve => { settle = resolve }))
+    renderWithProviders(<QueryFedModal initial={{ ...BASE_USAGE }} />)
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    const labels = [i18nT('components.kiroAccountModal.refresh_balance'), i18nT('components.kiroAccountModal.refreshing_balance')]
+    // Every label the button can show sits in it, and only the shown one is
+    // visible and named.
+    const expectSized = (button: HTMLElement, shown: string) => {
+      expect(button.className).not.toMatch(/\btransition-all\b/)
+      expect(button.className).toMatch(/\btransition-colors\b/)
+      for (const text of labels) {
+        const span = within(button).getByText(text)
+        const hidden = text !== shown
+        expect(span.classList.contains('invisible')).toBe(hidden)
+        expect(span.getAttribute('aria-hidden') === 'true').toBe(hidden)
+      }
+    }
+
+    const idle = within(dialog).getByRole('button', REFRESH)
+    expectSized(idle, labels[0])
+    fireEvent.click(idle)
+    const pending = await within(dialog).findByRole('button', REFRESHING)
+    expect(pending).toBe(idle)
+    expectSized(pending, labels[1])
+
+    settle({ usage: { credits_plan: 1000, credits_used: 41 } })
+    const settled = await within(dialog).findByRole('button', REFRESH)
+    expectSized(settled, labels[0])
+  })
+
   it('renders the meter from the refreshed payload and keeps Refresh beside it', async () => {
     refreshMock.mockResolvedValue({
       usage: { credits_plan: 2000, credits_used: 636, plan: 'KIRO PRO+', resets: '2026-08-01' },

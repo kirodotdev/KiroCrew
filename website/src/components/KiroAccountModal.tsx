@@ -471,9 +471,8 @@ function RefreshButton({
   compact: boolean
 }) {
   // One verb for the one action, wherever the button sits.
-  const label = pending
-    ? i18nT('components.kiroAccountModal.refreshing_balance')
-    : i18nT('components.kiroAccountModal.refresh_balance')
+  const idleLabel = i18nT('components.kiroAccountModal.refresh_balance')
+  const pendingLabel = i18nT('components.kiroAccountModal.refreshing_balance')
   const shape = compact
     ? 'rounded-md border border-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-muted hover:border-border-strong hover:text-text'
     : 'rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-accent-fg hover:brightness-110'
@@ -483,12 +482,22 @@ function RefreshButton({
       onClick={onClick}
       disabled={pending || held}
       aria-busy={pending || undefined}
-      className={`inline-flex items-center gap-1.5 self-start transition-all disabled:cursor-default disabled:opacity-60 focus-ring-accent ${shape}`}
+      className={`inline-flex items-center gap-1.5 self-start transition-colors disabled:cursor-default disabled:opacity-60 focus-ring-accent ${shape}`}
     >
       {pending
         ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
         : <RefreshCw className="lucide-inline" aria-hidden="true" />}
-      {label}
+      {/* Both labels share one grid cell, so the button is as wide as the
+          longer one in every locale and keeps its size when the state flips.
+          Only the shown label is in the accessible name. */}
+      <span className="inline-grid text-left">
+        <span className={`col-start-1 row-start-1 ${pending ? 'invisible' : ''}`} aria-hidden={pending || undefined}>
+          {idleLabel}
+        </span>
+        <span className={`col-start-1 row-start-1 ${pending ? '' : 'invisible'}`} aria-hidden={!pending || undefined}>
+          {pendingLabel}
+        </span>
+      </span>
     </button>
   )
 }
