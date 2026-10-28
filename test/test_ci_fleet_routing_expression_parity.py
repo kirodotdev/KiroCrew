@@ -125,6 +125,15 @@ _PERMANENT_EXCEPTIONS = {
     ("release.yml", "stable-gate"),
     ("release.yml", "github-release"),
     ("release.yml", "record-promotion"),
+    # Fork helpers. Fork work cannot reach the fleet at all: the `workflow_job`
+    # webhook payload carries no fork indicator, so the AWS side cannot admit
+    # it. None of these materializes fork code, and each one's `if` requires
+    # head repo != github.repository, so a personal fork -- which cannot reach
+    # an org runner group either -- never starts them.
+    ("fork-internal-content-scan.yml", "fork-internal-content-scan"),
+    ("fork-pr-description.yml", "describe"),
+    ("fork-workflow-guard.yml", "guard"),
+    ("fork-workflow-guard.yml", "strip-stale-override"),
 }
 
 # A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
@@ -142,6 +151,10 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("release.yml", "stable-gate"): {"group": "kirocrew-runners"},
     ("release.yml", "github-release"): {"group": "kirocrew-runners"},
     ("release.yml", "record-promotion"): {"group": "kirocrew-runners"},
+    ("fork-internal-content-scan.yml", "fork-internal-content-scan"): {"group": "kirocrew-runners"},
+    ("fork-pr-description.yml", "describe"): {"group": "kirocrew-runners"},
+    ("fork-workflow-guard.yml", "guard"): {"group": "kirocrew-runners"},
+    ("fork-workflow-guard.yml", "strip-stale-override"): {"group": "kirocrew-runners"},
 }
 _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 

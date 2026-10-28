@@ -55,7 +55,13 @@ concurrency:
 jobs:
   fork-internal-content-scan:
     name: Fork Internal Content Scan
-    runs-on: ubuntu-latest
+    # Fork work cannot reach the CodeBuild fleet -- the `workflow_job` webhook
+    # payload carries no fork indicator, so the AWS side cannot admit it -- and
+    # the group is the only other capacity source. It is where the fork review
+    # lanes already run: a GitHub-hosted Ubuntu VM with no fleet credentials,
+    # and the steps below materialize no fork code on either runner.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 15
     # Only a SUCCESSFUL Stage 1 run that was itself a FORK pull request.
     if: >-

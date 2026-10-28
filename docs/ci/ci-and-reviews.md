@@ -1046,14 +1046,16 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 
 ### Larger runners for the review lanes and CodeQL
 
-Twenty-one `runs-on` sites draw on the `kirocrew-runners` larger-runner group
+Twenty-five `runs-on` sites draw on the `kirocrew-runners` larger-runner group
 rather than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
 `fork-ux-review`, and all three jobs of `fork-security-scope-review`), the five
 same-repo review lanes (`codex-review`, `claude-review`,
 `first-principles-review`, `design-review`, `ux-review`), `codeql.yml`, both
-`docker-smoke.yml` jobs, and five jobs of `release.yml` (`version`,
-`resolve-promotion`, `stable-gate`, `github-release`, `record-promotion`).
+`docker-smoke.yml` jobs, five jobs of `release.yml` (`version`,
+`resolve-promotion`, `stable-gate`, `github-release`, `record-promotion`), and
+the four fork helpers (`fork-internal-content-scan`, `fork-pr-description`'s
+`describe`, and `fork-workflow-guard`'s `guard` and `strip-stale-override`).
 
 **Why those five release jobs.** They are the release path's coordination jobs,
 and they are here for capacity rather than isolation. A fleet route is gated on
@@ -1064,6 +1066,41 @@ release's queue. The group makes that time independent of who cut the release.
 Widening the actor list is not the alternative: the AWS webhook's actor
 admission is a security boundary, and routing is not. These jobs run on a tag,
 never on `pull_request`, so they add nothing to the group's PR-time occupancy.
+
+**Why the fork helpers.** They carry the fork review lanes' obstruction below:
+fork work cannot reach the CodeBuild fleet, so the shared standard pool is the
+only alternative to this group. Two of them can hold a merge --
+`fork-internal-content-scan` posts the verdict `pr-readiness.yml` reads on a
+fork pull request, and `fork-workflow-guard` posts a fork pull request's own
+check-run.
+
+**Before moving a NEW site here, check two shapes that cannot reach the group
+at all.** It is org-scoped, so a personal fork -- which sits outside the org --
+can never obtain a runner from it, and a job that asks for one queues until the
+24-hour timeout instead of running. The first shape is a lane a personal fork
+can START, by `pull_request`, `workflow_dispatch` or `issues`: that is why
+`client-py.yml`, `crew-image-build.yml`, `fork-pr-label.yml`, `nightly.yml`,
+`gui-user-test.yml`, `issue-summary.yml`, `issue-triage.yml`,
+`build-desktop.yml` and `build-ffmpeg-decoder.yml` stay on `ubuntu-latest`
+however contended the shared pool gets. The second is a reusable workflow
+another repository calls, because the callee's `runs-on` runs in the CALLER's
+context: `internal-content-scan.yml` promises in its header that any org
+repository can call it at "no repo-specific configuration", so pinning its job
+would bind every caller. The four fork helpers pass both tests -- each carries
+an `if` requiring `head.repo.full_name != github.repository`, which is false
+inside a fork -- which is why they are the ones that moved.
+
+**This test governs what may be ADDED; it does not describe what the group
+already holds.** Thirteen of the sites listed above can be started by a
+personal fork: the five same-repo review lanes, `codeql.yml`'s `analyze` and
+both `docker-smoke.yml` jobs all fire on `pull_request` with no head-repository
+check, and `release.yml`'s five jobs start on a `v*` tag push, which a fork
+owner can make in their own fork. None of them was admitted under this test,
+and their fork-side queueing is accepted, on the same ground as the fork
+helpers' own narrower gap (a pull request opened from a third repository INTO a
+personal fork does start them): the stall is confined to that fork, where its
+owner can cancel it, and no upstream gate or merge is affected. Do not read
+their membership as evidence that a fork-startable lane is eligible.
 
 **Why the fork lanes, and why their spend is permanent.** Fork work cannot move
 to the CodeBuild fleet, and the obstruction is structural rather than unfinished
@@ -1103,7 +1140,7 @@ CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
 once rather than waiting to see whether the queue clears -- for any of the
-fourteen sites, not just CodeQL.
+twenty-five sites, not just CodeQL.
 
 **Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
 and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
@@ -1160,12 +1197,13 @@ than waiting out the timeout.
 **Moving one of these lanes again means updating a ratchet.**
 `test/test_ci_fleet_routing_expression_parity.py` keeps `_PERMANENT_EXCEPTIONS`,
 the set of jobs that must stay off the CodeBuild fleet, and pins each one's
-expected `runs-on` so a silent re-route fails review. Three of the lanes moved
-here are in that set -- `first-principles-review`, `ux-review` and
-`design-review` -- so their expected value lives in `_HOSTED_EXCEPTION_RUNNERS`
-rather than the `ubuntu-latest` default. Staying off the fleet is what that set
-guarantees; a larger runner is still GitHub-hosted, so the isolation contract is
-unchanged and only the pinned value moves. Change a runner on one of those jobs
+expected `runs-on` so a silent re-route fails review. Twelve of the lanes moved
+here are in that set -- `first-principles-review`, `ux-review`,
+`design-review`, the five `release.yml` jobs and the four fork helpers -- so
+their expected value lives in
+`_HOSTED_EXCEPTION_RUNNERS` rather than the `ubuntu-latest` default. Staying off
+the fleet is what that set guarantees; a larger runner is still GitHub-hosted,
+so the isolation contract is unchanged and only the pinned value moves. Change a runner on one of those jobs
 without changing the pin and the gate reds with
 `hosted exception changed runner`, which is the ratchet working.
 
