@@ -11608,6 +11608,14 @@
         "session_colors": "セッションの色",
         "save_failed": "セッションの色を保存できませんでした"
       },
+      "sessionMessageCard": {
+        "needs_you": "対応が必要",
+        "open_session": "{{name}} を開く",
+        "show_less": "表示を減らす",
+        "show_more": "もっと見る",
+        "this_session": "このセッション",
+        "to_recipient": "{{name}} に送信"
+      },
       "sessionFlyout": {
         "new": "新規",
         "new_chat": "新しいチャット",
