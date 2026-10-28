@@ -57,6 +57,46 @@ function compile(code: string, filename: string): CompileReport {
   return report
 }
 
+const IMPORTS_TRANSLATOR = /from\s+'[^']*\bi18n\/(t|format)'/
+const SUBSCRIBES = /\b(useLanguageGeneration|useTranslation)\(\)/
+
+/** Resolve an import specifier of `fromRel` to a website-relative source path. */
+function resolveModule(fromRel: string, spec: string): string | null {
+  const base = spec.startsWith('@/')
+    ? path.join(WEBSITE, 'src', spec.slice(2))
+    : path.resolve(path.dirname(path.join(WEBSITE, fromRel)), spec)
+  for (const cand of [base, `${base}.tsx`, `${base}.ts`, path.join(base, 'index.tsx'), path.join(base, 'index.ts')]) {
+    if (/\.tsx?$/.test(cand) && existsSync(cand)) return path.relative(WEBSITE, cand).replace(/\\/g, '/')
+  }
+  return null
+}
+
+const SPECIFIER = /(?:\bfrom|\bimport\()\s*'((?:\.{1,2}|@)\/[^']+)'/g
+const REEXPORT = /\bexport\s+(?:\*|\{[^}]*\}|\*\s+as\s+\w+)\s+from\s+'((?:\.{1,2}|@)\/[^']+)'/g
+
+/**
+ * The `.tsx` modules a listed file can render: its static and lazy imports, plus
+ * whatever those modules re-export, so a barrel or a re-exporting wrapper does
+ * not hide the module that translates.
+ */
+function childModules(rel: string): Set<string> {
+  const out = new Set<string>()
+  const src = readFileSync(path.join(WEBSITE, rel), 'utf8')
+  for (const m of src.matchAll(SPECIFIER)) {
+    // Only `.tsx` modules render; a `.ts` helper the file calls is covered by
+    // the generation-argument rule above.
+    const child = resolveModule(rel, m[1])
+    if (!child || !child.endsWith('.tsx') || out.has(child)) continue
+    out.add(child)
+    const childSrc = readFileSync(path.join(WEBSITE, child), 'utf8')
+    for (const r of childSrc.matchAll(REEXPORT)) {
+      const target = resolveModule(child, r[1])
+      if (target?.endsWith('.tsx')) out.add(target)
+    }
+  }
+  return out
+}
+
 describe('React Compiler allowlist', () => {
   it('lists unique, sorted, existing non-test source files', () => {
     expect([...new Set(REACT_COMPILER_FILES)]).toEqual(REACT_COMPILER_FILES)
@@ -68,21 +108,45 @@ describe('React Compiler allowlist', () => {
     }
   })
 
-  // `i18nT()` and the `i18n/format` helpers read the active language without
-  // being reactive inputs, so the compiler would cache their output across a
-  // language switch. A listed file that uses them must also read the language
-  // generation and pass it into the calls (see ChatPaneNotices' `paneCopy`).
+  // A listed file makes the language an input of what the compiler caches in
+  // one of two ways. Direct strings come from `useTranslation()`'s `t`, whose
+  // identity changes on a language switch (see UserMessage). Strings built by
+  // helpers that call `i18nT()` or the `i18n/format` functions internally go
+  // through one function that takes `useLanguageGeneration()` as an argument
+  // (see ChatPaneNotices' `paneCopy`). `i18nT()` read straight in the body is
+  // cached on unrelated inputs and keeps the previous language.
   it.each(REACT_COMPILER_FILES)('%s makes the language an input when it translates', (f) => {
     const src = readFileSync(path.join(WEBSITE, f), 'utf8')
-    if (!/from '[./]*i18n\/(t|format)'/.test(src)) return
-    expect(src, `${f} calls i18nT/format helpers without useLanguageGeneration()`).toMatch(/\buseLanguageGeneration\(\)/)
+    if (!IMPORTS_TRANSLATOR.test(src)) return
+    // The generation has to be read into a name and passed on: a bare
+    // `useLanguageGeneration()` statement re-renders the component but feeds
+    // the compiler nothing, so the cached strings stay as they were.
+    const decl = src.match(/\bconst (\w+) = useLanguageGeneration\(\)/)
+    expect(decl, `${f} calls i18nT/format helpers without reading useLanguageGeneration() into a name`).not.toBeNull()
+    const uses = src.match(new RegExp(`\\b${decl![1]}\\b`, 'g')) ?? []
+    expect(uses.length, `${f} reads the language generation but never passes it on`).toBeGreaterThan(1)
+  })
+
+  // A render prop's output is built by the parent and can hold components that
+  // translate without subscribing. A compiled file would reuse that output
+  // while the content arguments are unchanged, so every `renderXxx(...)` call
+  // must go through a helper that also takes the translator or the language
+  // generation (see UserMessage's `renderWithLanguage`).
+  it.each(REACT_COMPILER_FILES)('%s rebuilds render-prop output on a language switch', (f) => {
+    const src = readFileSync(path.join(WEBSITE, f), 'utf8')
+    const bare = [...src.matchAll(/(?<![\w.])(render[A-Z]\w*)\(/g)]
+      .map(m => m[1])
+      .filter(name => !new RegExp(`function ${name}\\b`).test(src))
+    expect(bare, `${f} calls render props directly; pass them through a helper that takes t or the language generation`).toEqual([])
   })
 
   // A compiled component caches the elements it renders while their props are
   // unchanged, so a child it imports becomes a memo boundary: on a language
   // switch the child is not re-rendered unless it subscribes itself. Every
-  // relative .tsx module a listed file imports, statically or through a lazy
-  // `import()`, that translates must call useLanguageGeneration().
+  // module a listed file imports, statically or through a lazy `import()`,
+  // relative or through the `@/` alias, and every module such a file
+  // re-exports, that translates must subscribe through `useLanguageGeneration()`
+  // or `useTranslation()`.
   // Child modules that translate but need no subscription, with the reason.
   const LANGUAGE_EXEMPT: Record<string, string> = {
     // The listed files import `Btn` from here, which renders no catalog text;
@@ -96,26 +160,20 @@ describe('React Compiler allowlist', () => {
   }
 
   it.each(REACT_COMPILER_FILES)('%s renders only children that follow a language switch', (f) => {
-    const abs = path.join(WEBSITE, f)
-    const src = readFileSync(abs, 'utf8')
-    const specs = [...src.matchAll(/(?:from|import\()\s*'(\.{1,2}\/[^']+)'/g)].map(m => m[1])
+    const src = readFileSync(path.join(WEBSITE, f), 'utf8')
     const stale: string[] = []
-    for (const spec of new Set(specs)) {
-      const child = path.resolve(path.dirname(abs), spec.endsWith('.tsx') ? spec : `${spec}.tsx`)
-      const rel = path.relative(WEBSITE, child).replace(/\\/g, '/')
-      if (!existsSync(child) || rel in LANGUAGE_EXEMPT) continue
+    for (const rel of childModules(f)) {
+      if (rel in LANGUAGE_EXEMPT) continue
       if (rel in LANGUAGE_PROP) {
         const tag = LANGUAGE_PROP[rel]
         const opens = src.match(new RegExp(`<${tag}\\b[^>]*>`, 'g')) ?? []
         if (opens.some(o => !/\blanguageGeneration=\{/.test(o))) stale.push(`${rel} (pass languageGeneration)`)
         continue
       }
-      const childSrc = readFileSync(child, 'utf8')
-      if (/from '[./]*i18n\/(t|format)'/.test(childSrc) && !/\buseLanguageGeneration\(\)/.test(childSrc)) {
-        stale.push(path.relative(WEBSITE, child))
-      }
+      const childSrc = readFileSync(path.join(WEBSITE, rel), 'utf8')
+      if (IMPORTS_TRANSLATOR.test(childSrc) && !SUBSCRIBES.test(childSrc)) stale.push(rel)
     }
-    expect(stale, `${f} renders translating children without useLanguageGeneration()`).toEqual([])
+    expect(stale, `${f} renders translating children that do not subscribe to language switches`).toEqual([])
   })
 
   it.each(REACT_COMPILER_FILES)('%s compiles with no bailout', (f) => {
@@ -151,6 +209,16 @@ describe('React Compiler bailout detector', () => {
     )
     expect(report.compiled).toEqual([])
     expect(report.problems).toHaveLength(1)
+  })
+})
+
+describe('React Compiler child-module scan', () => {
+  it('resolves relative and @/ imports, lazy imports and re-exports', () => {
+    const kids = childModules('src/pages/chat/page/ChatPaneNotices.tsx')
+    expect(kids).toContain('src/components/ErrorNotice.tsx')
+    expect(kids).toContain('src/pages/chat/page/UnrestoredTabsNotice.tsx')
+    expect(resolveModule('src/pages/chat/UserMessage.tsx', '@/components/InfoTip')).toBe('src/components/InfoTip.tsx')
+    expect(resolveModule('src/pages/chat/UserMessage.tsx', './missing-module')).toBeNull()
   })
 })
 

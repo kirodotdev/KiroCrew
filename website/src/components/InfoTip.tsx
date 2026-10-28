@@ -3,6 +3,7 @@ import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { Info } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useGuideTrustRootAttrs } from '../guide/trustRoot'
 
 /**
@@ -57,6 +58,10 @@ export default function InfoTip({ text, placement = 'auto' }: {
   text: string
   placement?: 'auto' | 'top'
 }) {
+  // Subscribes to language switches: a parent compiled by the React Compiler
+  // caches this element while its props are unchanged, so without its own
+  // subscription it would keep the previous language's text.
+  useLanguageGeneration()
   const trustRoot = useGuideTrustRootAttrs()
   const [pinned, setPinned] = useState(false)
   const [hovered, setHovered] = useState(false)

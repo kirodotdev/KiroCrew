@@ -17,6 +17,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import { sharedCrewKeys } from '../../../hooks/sharedCrew/sharedCrewSocket'
 import { useSessionWork, useSharedCrewCapabilities, useSharedCrewCapacity } from '../../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../../i18n/t'
+import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 import { queuedReason } from './overloadCopy'
 
 /** The newest chat turn of the session that is waiting for capacity, if any. */
@@ -29,6 +30,7 @@ export function queuedChatTurn(items: readonly AcceptedWork[]): AcceptedWork | n
 }
 
 export function QueuedSendLabel({ slotKey }: { slotKey: string }) {
+  useLanguageGeneration() // rendered by the compiled UserMessage, which caches this subtree; subscribe so the label follows a language switch
   // SessionCollabStrip owns capability failures. This label is mounted only on
   // the newest queued-send bubble and owns the work and capacity read failures.
   const { capabilities } = useSharedCrewCapabilities()

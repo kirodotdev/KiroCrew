@@ -13,6 +13,7 @@ import { AppWindow, RotateCw } from 'lucide-react'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import { DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import {
   getMessageActions,
   getMessageActionsLoadError,
@@ -46,6 +47,7 @@ export default function MessageActionMenuItems({ actions, messageRole, markdown,
   /** The message bubble: the popover anchors to it. */
   anchor: () => HTMLElement | null
 }) {
+  useLanguageGeneration() // rendered by the compiled UserMessage, which caches this subtree; subscribe so the items follow a language switch
   const retry = useSyncExternalStore(subscribeMessageActions, getMessageActionsLoadError, () => null)
   const noticeId = useId()
   if (!markdown.trim()) return null

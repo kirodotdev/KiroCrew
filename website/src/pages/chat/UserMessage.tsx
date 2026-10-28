@@ -18,7 +18,7 @@ import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
-import { i18nT } from '../../i18n/t'
+import { useTranslation } from 'react-i18next'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -170,8 +170,30 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
+/**
+ * Calls the parent's `renderContent` with the active translator as an extra
+ * argument. The elements it returns can contain components that translate
+ * without subscribing to language switches (the knowledge, file and folder
+ * chips). This component is compiled by the React Compiler, which would reuse
+ * the cached elements while the content props are unchanged; `t` changes
+ * identity on a switch, so passing it here rebuilds them in the new language.
+ */
+function renderWithLanguage(
+  _t: unknown,
+  render: UserMessageProps['renderContent'],
+  ...args: Parameters<UserMessageProps['renderContent']>
+): React.ReactNode {
+  return render(...args)
+}
+
 const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
-  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // `useTranslation()` subscribes this memo() boundary to language switches, and
+  // its `t` changes identity on a switch, so strings the React Compiler caches
+  // on `t` are rebuilt in the new language.
+  const { t } = useTranslation()
+  // Also the subscription MemoI18nSubscriptionRatchet requires of a memo()
+  // boundary that imports a language-formatting carrier (`./decisionRecord`).
+  useLanguageGeneration()
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
   const [draft, setDraft] = useState(content)
@@ -209,8 +231,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       : state === 'failed' ? <X size={14} className="text-danger" />
         : idle
   const copyOutcomeLabel = (state: CopyOutcome, idle: string) =>
-    state === 'ok' ? i18nT('pages.chat.userMessage.copied')
-      : state === 'failed' ? i18nT('pages.chat.userMessage.copy_failed')
+    state === 'ok' ? t('pages.chat.userMessage.copied')
+      : state === 'failed' ? t('pages.chat.userMessage.copy_failed')
         : idle
   const taRef = useRef<HTMLTextAreaElement>(null)
   // Track the copy-reset timer so it can be cleared on unmount.  Without this,
@@ -465,10 +487,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const reducedMotion = useReducedMotion()
   const [mountedRetracted] = useState(() => !!retractedAction)
   const [collapseDone, setCollapseDone] = useState(false)
-  const lastBubbleBodyRef = useRef(carriedQuote ? stripQuoteBlock(content, carriedQuote) : content)
-  useEffect(() => {
-    if (!retractedAction) lastBubbleBodyRef.current = carriedQuote ? stripQuoteBlock(content, carriedQuote) : content
-  }, [retractedAction, content, carriedQuote])
+  // Kept in state, not a ref read during render, so the React Compiler can
+  // compile this component; the pending body is recorded on each pending render.
+  const pendingBubbleBody = carriedQuote ? stripQuoteBlock(content, carriedQuote) : content
+  const [lastBubbleBody, setLastBubbleBody] = useState(pendingBubbleBody)
+  if (!retractedAction && lastBubbleBody !== pendingBubbleBody) setLastBubbleBody(pendingBubbleBody)
 
   // Read before any early return: a hook.
   const userRoleActions = useMessageActionsFor('user')
@@ -479,10 +502,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     const retractedKind: SteerRetractAction = retractedAction === 'edit' || retractedAction === 'queue' ? retractedAction : 'unsend'
     const retractedIcon = <SteerActionIcon action={retractedKind} />
     const retractedLabel = retractedAction === 'edit'
-      ? i18nT('pages.chat.userMessage.steer_retracted_edit')
+      ? t('pages.chat.userMessage.steer_retracted_edit')
       : retractedAction === 'queue'
-        ? i18nT('pages.chat.userMessage.steer_retracted_queue')
-        : i18nT('pages.chat.userMessage.steer_retracted_unsend')
+        ? t('pages.chat.userMessage.steer_retracted_queue')
+        : t('pages.chat.userMessage.steer_retracted_unsend')
     // Edit and Queue instead put the text somewhere the person can go: the
     // message box, or the queue stack in the composer dock above it. The note
     // is the way there. Unsend put it nowhere, so its note is plain text.
@@ -517,7 +540,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             onAnimationComplete={() => setCollapseDone(true)}
           >
             <div className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
-              {renderContent(lastBubbleBodyRef.current, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+              {renderWithLanguage(t, renderContent, lastBubbleBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
             </div>
           </motion.div>
         )}
@@ -554,7 +577,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           <textarea
             ref={taRef}
             rows={1}
-            aria-label={i18nT('pages.chat.userMessage.edit_message')}
+            aria-label={t('pages.chat.userMessage.edit_message')}
             // focus-cue-ok: the cue is the wrapping .edit-grow frame above, which
             // paints a 2px accent outline for the whole edit session; a second
             // ring on the textarea would double-paint the one control.
@@ -575,12 +598,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             never impose a min-width floor on the auto-sized bubble. */}
         <div className="flex justify-end items-center gap-2 mt-1">
           {/* Send rewinds: say what it costs, beside the button that does it. */}
-          <span className="text-[12px] leading-4 text-muted">{i18nT('pages.chat.userMessage.edit_replaces_below')}</span>
-          <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
-            {i18nT('pages.chat.userMessage.cancel')}
+          <span className="text-[12px] leading-4 text-muted">{t('pages.chat.userMessage.edit_replaces_below')}</span>
+          <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-bg-hover transition-colors" title={t('pages.chat.userMessage.cancel_esc')}>
+            {t('pages.chat.userMessage.cancel')}
           </button>
-          <button onClick={submit} className="flex items-center gap-1 px-3 py-1 text-[13px] leading-5 bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title={i18nT('pages.chat.userMessage.send_enter')}>
-            <Send size={10} /> {i18nT('pages.chat.userMessage.send')}
+          <button onClick={submit} className="flex items-center gap-1 px-3 py-1 text-[13px] leading-5 bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title={t('pages.chat.userMessage.send_enter')}>
+            <Send size={10} /> {t('pages.chat.userMessage.send')}
           </button>
         </div>
       </div>
@@ -641,13 +664,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const appActions = compactRow && !standIn && quotableContent.trim().length > 0 ? userRoleActions : NO_ACTIONS
   const moreHasItems = quoteOffered || canCopyLink || canPin || (canEditResend && !standIn) || appActions.length > 0
   const menuItems: MessageMenuItem[] = onQuoteMessage ? [
-    ...(quoteOffered ? [{ id: 'quote', label: i18nT('pages.chat.userMessage.quote_message'), icon: <Quote size={14} />, onSelect: quoteShown }] : []),
+    ...(quoteOffered ? [{ id: 'quote', label: t('pages.chat.userMessage.quote_message'), icon: <Quote size={14} />, onSelect: quoteShown }] : []),
     // "Copy text", the words the reply's menus use, so the same action reads
     // the same on both rows (UX review).
-    { id: 'copy', label: i18nT('pages.chat.assistantMessage.copy_text'), icon: <Copy size={14} />, onSelect: copyMessage, separatorBefore: quoteOffered },
-    ...(canCopyLink ? [{ id: 'copy-link', label: i18nT('pages.chat.userMessage.copy_link_to_message'), icon: <Link2 size={14} />, onSelect: copyLink }] : []),
-    ...(canPin ? [{ id: 'pin', label: pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message'), icon: pinned ? <PinOff size={14} /> : <Pin size={14} />, onSelect: () => onTogglePin?.() }] : []),
-    ...(canEditResend && !standIn ? [{ id: 'edit', label: i18nT('pages.chat.userMessage.edit_resend'), icon: <Pencil size={14} />, onSelect: startEdit }] : []),
+    { id: 'copy', label: t('pages.chat.assistantMessage.copy_text'), icon: <Copy size={14} />, onSelect: copyMessage, separatorBefore: quoteOffered },
+    ...(canCopyLink ? [{ id: 'copy-link', label: t('pages.chat.userMessage.copy_link_to_message'), icon: <Link2 size={14} />, onSelect: copyLink }] : []),
+    ...(canPin ? [{ id: 'pin', label: pinned ? t('pages.chat.userMessage.unpin_message') : t('pages.chat.userMessage.pin_message'), icon: pinned ? <PinOff size={14} /> : <Pin size={14} />, onSelect: () => onTogglePin?.() }] : []),
+    ...(canEditResend && !standIn ? [{ id: 'edit', label: t('pages.chat.userMessage.edit_resend'), icon: <Pencil size={14} />, onSelect: startEdit }] : []),
   ] : []
 
   const bubble = (
@@ -689,8 +712,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 // bubble's own text colour so it stays readable.
                 className={`inline max-w-full break-all text-left normal-case tracking-normal bg-transparent border-none p-0 font-semibold cursor-pointer underline underline-offset-2 hover:decoration-2 focus-visible:decoration-2 ${tone === 'accent' && !isSteer ? '' : 'text-accent'}`}
                 onClick={() => onSessionOpen(relay.senderKey)}
-                title={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
-                aria-label={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
+                title={t('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
+                aria-label={t('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
                 data-testid="session-seed-sender-link"
               >
                 {senderTitle}
@@ -711,16 +734,16 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             data-testid="user-message-banner-toggle"
             data-message-search-skip
           >
-            {bannerExpanded ? i18nT('pages.chat.userMessage.hide_full_message') : i18nT('pages.chat.userMessage.show_full_message')}
+            {bannerExpanded ? t('pages.chat.userMessage.hide_full_message') : t('pages.chat.userMessage.show_full_message')}
             <ChevronRight size={11} className={`lucide-inline shrink-0 transition-transform ${bannerExpanded ? 'rotate-90' : ''}`} aria-hidden="true" />
           </button>
           {bannerExpanded && (
             <div className="mt-1" data-testid="user-message-banner-full">
-              {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+              {renderWithLanguage(t, renderContent, renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
             </div>
           )}
         </>
-      ) : renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+      ) : renderWithLanguage(t, renderContent, renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
   // The right-click menu wraps the bubble only when Quote is offered (the
@@ -746,7 +769,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {/* Injected into the RUNNING turn — badge + accent bubble + one-shot
               entrance so the steer is visibly distinct from a normal message. */}
           <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
-            <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
+            <Target size={12} className="shrink-0" /> {t('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
@@ -804,7 +827,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                unconfirmed. */
             <div role="status" className="inline-flex items-center gap-1 text-[12px] leading-5 font-medium text-muted mb-1 pr-1" data-testid="send-pending">
               <span className="inline-flex items-center gap-1 animate-pulse">
-                <Clock size={12} className="shrink-0" aria-hidden="true" /> {i18nT('pages.chat.userMessage.delivery_pending')}
+                <Clock size={12} className="shrink-0" aria-hidden="true" /> {t('pages.chat.userMessage.delivery_pending')}
               </span>
             </div>
           )}
@@ -821,10 +844,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 <span className="inline-flex items-center gap-1" data-testid="steer-pending-status">
                   <span className="inline-flex items-center gap-1 animate-pulse" role={steerActionPending ? 'status' : undefined}>
                     {steerActionPending
-                      ? <><SteerActionIcon action={steerActionPending} /> {i18nT(STEER_IN_FLIGHT_KEY[steerActionPending])}</>
-                      : <><Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steering')}</>}
+                      ? <><SteerActionIcon action={steerActionPending} /> {t(STEER_IN_FLIGHT_KEY[steerActionPending])}</>
+                      : <><Target size={12} className="shrink-0" /> {t('pages.chat.userMessage.steering')}</>}
                   </span>
-                  {!steerActionPending && <InfoTip text={i18nT('pages.chat.userMessage.redirecting_the_running_turn_not_yet_confirmed')} />}
+                  {!steerActionPending && <InfoTip text={t('pages.chat.userMessage.redirecting_the_running_turn_not_yet_confirmed')} />}
                 </span>
                 {steerTakeBack && !steerActionPending && (
                   /* Two controls: Queue instead, the redirect a person most often
@@ -834,15 +857,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                      divider makes these actions a separate region from status/help. */
                   <span className="inline-flex items-center gap-0.5 border-l border-border pl-1 ml-0.5" data-testid="steer-take-back">
                     <Btn type="button" onClick={() => onSteerAction?.(steerMid, 'queue')} className="px-1 py-0 border-none bg-transparent text-[12px] font-medium text-muted hover:text-text hover:bg-bg-hover rounded transition-colors" data-testid="steer-queue-instead">
-                      {i18nT('pages.chat.userMessage.steer_queue_instead')}
+                      {t('pages.chat.userMessage.steer_queue_instead')}
                     </Btn>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Btn
                           type="button"
                           className="p-0.5 border-none bg-transparent text-[12px] text-muted hover:text-text rounded hover:bg-bg-hover transition-colors"
-                          title={i18nT('pages.chat.userMessage.steer_take_back_more')}
-                          aria-label={i18nT('pages.chat.userMessage.steer_take_back_more')}
+                          title={t('pages.chat.userMessage.steer_take_back_more')}
+                          aria-label={t('pages.chat.userMessage.steer_take_back_more')}
                           data-testid="steer-take-back-more"
                         >
                           <MoreHorizontal size={14} aria-hidden="true" />
@@ -850,10 +873,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="min-w-[180px]">
                         <DropdownMenuItem data-testid="steer-edit" onSelect={() => onSteerAction?.(steerMid, 'edit')}>
-                          <Pencil size={14} aria-hidden="true" /> {i18nT('pages.chat.userMessage.steer_edit')}
+                          <Pencil size={14} aria-hidden="true" /> {t('pages.chat.userMessage.steer_edit')}
                         </DropdownMenuItem>
                         <DropdownMenuItem data-testid="steer-unsend" onSelect={() => onSteerAction?.(steerMid, 'unsend')}>
-                          <Undo2 size={14} aria-hidden="true" /> {i18nT('pages.chat.userMessage.steer_unsend')}
+                          <Undo2 size={14} aria-hidden="true" /> {t('pages.chat.userMessage.steer_unsend')}
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -865,13 +888,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                   ruling as the copy-failure notice below). */}
               <ErrorNotice
                 message={steerActionPending && steerActionRequestFailed
-                  ? i18nT(STEER_UNCONFIRMED_KEY[steerActionPending])
+                  ? t(STEER_UNCONFIRMED_KEY[steerActionPending])
                   : steerActionRefusal && !steerActionPending
                     ? steerActionRefusal.refusal === 'busy'
-                      ? i18nT('pages.chat.userMessage.steer_take_back_busy')
+                      ? t('pages.chat.userMessage.steer_take_back_busy')
                       : steerActionRefusal.refusal === 'unsupported'
-                        ? i18nT(STEER_UNSUPPORTED_KEY[steerActionRefusal.action])
-                        : i18nT(STEER_FAILED_KEY[steerActionRefusal.action])
+                        ? t(STEER_UNSUPPORTED_KEY[steerActionRefusal.action])
+                        : t(STEER_FAILED_KEY[steerActionRefusal.action])
                     : null}
                 variant="inline"
                 className="mt-1"
@@ -885,7 +908,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                icon as the pending/consumed treatments so all three lifecycle
                states read as one indicator family (UX review on #9037). */
             <div className="inline-flex items-center gap-1 text-[12px] leading-5 text-muted mb-1 pr-1">
-              <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.turn_ended_before_this_applied_runs_as_its_own_message')}
+              <Target size={12} className="shrink-0" /> {t('pages.chat.userMessage.turn_ended_before_this_applied_runs_as_its_own_message')}
             </div>
           )}
           {/* A queued send has no badge of its own here, so on this arm the line
@@ -912,8 +935,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             onClick={onReplyInThread}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
             data-testid="reply-in-thread"
-            title={i18nT('pages.chat.thread.reply_in_thread')}
-            aria-label={i18nT('pages.chat.thread.reply_in_thread')}
+            title={t('pages.chat.thread.reply_in_thread')}
+            aria-label={t('pages.chat.thread.reply_in_thread')}
           >
             <MessageSquare size={14} />
           </button>
@@ -923,8 +946,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             onClick={quoteShown}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
             data-testid="quote-message"
-            title={i18nT('pages.chat.userMessage.quote_message')}
-            aria-label={i18nT('pages.chat.userMessage.quote_message')}
+            title={t('pages.chat.userMessage.quote_message')}
+            aria-label={t('pages.chat.userMessage.quote_message')}
           >
             <Quote size={14} />
           </button>
@@ -932,8 +955,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         <button
           onClick={copyMessage}
           className="text-muted hover:text-text p-0.5 rounded transition-colors"
-          title={i18nT('pages.chat.userMessage.copy')}
-          aria-label={copyOutcomeLabel(copied, i18nT('pages.chat.userMessage.copy'))}
+          title={t('pages.chat.userMessage.copy')}
+          aria-label={copyOutcomeLabel(copied, t('pages.chat.userMessage.copy'))}
         >
           {copyOutcomeIcon(copied, <Copy size={14} />)}
         </button>
@@ -946,8 +969,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             <DropdownMenuTrigger asChild>
               <button
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
-                title={i18nT('pages.chat.userMessage.more_actions')}
-                aria-label={i18nT('pages.chat.userMessage.more_actions')}
+                title={t('pages.chat.userMessage.more_actions')}
+                aria-label={t('pages.chat.userMessage.more_actions')}
                 data-testid="user-more-actions"
               >
                 <MoreHorizontal size={14} />
@@ -961,7 +984,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 <DropdownMenuItem data-testid="quote-message-menu-item" onSelect={quoteShown}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
                   <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
-                    <Quote className="lucide-inline shrink-0" /><span>{i18nT('pages.chat.userMessage.quote_message')}</span>
+                    <Quote className="lucide-inline shrink-0" /><span>{t('pages.chat.userMessage.quote_message')}</span>
                   </span>
                 </DropdownMenuItem>
               )}
@@ -969,7 +992,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 <DropdownMenuItem data-testid="copy-link-menu-item" onSelect={e => { e.preventDefault(); copyLink() }}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
                   <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
-                    {copyOutcomeIcon(linkCopied, <Link2 className="lucide-inline shrink-0" />)}<span>{copyOutcomeLabel(linkCopied, i18nT('pages.chat.userMessage.copy_link_to_message'))}</span>
+                    {copyOutcomeIcon(linkCopied, <Link2 className="lucide-inline shrink-0" />)}<span>{copyOutcomeLabel(linkCopied, t('pages.chat.userMessage.copy_link_to_message'))}</span>
                   </span>
                 </DropdownMenuItem>
               )}
@@ -977,7 +1000,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 <DropdownMenuItem data-testid="pin-menu-item" aria-pressed={!!pinned} onSelect={() => onTogglePin?.()}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
                   <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
-                    {pinned ? <PinOff className="lucide-inline shrink-0" /> : <Pin className="lucide-inline shrink-0" />}<span>{pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message')}</span>
+                    {pinned ? <PinOff className="lucide-inline shrink-0" /> : <Pin className="lucide-inline shrink-0" />}<span>{pinned ? t('pages.chat.userMessage.unpin_message') : t('pages.chat.userMessage.pin_message')}</span>
                   </span>
                 </DropdownMenuItem>
               )}
@@ -985,7 +1008,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                 <DropdownMenuItem data-testid="edit-menu-item" onSelect={startEdit}>
                   {/* Layout and the touch floor live on this span: the primitive owns its own classes (shadcn/no-restyle). */}
                   <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
-                    <Pencil className="lucide-inline shrink-0" /><span>{i18nT('pages.chat.userMessage.edit_resend')}</span>
+                    <Pencil className="lucide-inline shrink-0" /><span>{t('pages.chat.userMessage.edit_resend')}</span>
                   </span>
                 </DropdownMenuItem>
               )}
@@ -997,8 +1020,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           <button
             onClick={copyLink}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title={i18nT('pages.chat.userMessage.copy_link_to_message')}
-            aria-label={copyOutcomeLabel(linkCopied, i18nT('pages.chat.userMessage.copy_link_to_message'))}
+            title={t('pages.chat.userMessage.copy_link_to_message')}
+            aria-label={copyOutcomeLabel(linkCopied, t('pages.chat.userMessage.copy_link_to_message'))}
           >
             {copyOutcomeIcon(linkCopied, <Link2 size={14} />)}
           </button>
@@ -1007,8 +1030,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           <button
             onClick={onTogglePin}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title={pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message')}
-            aria-label={pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message')}
+            title={pinned ? t('pages.chat.userMessage.unpin_message') : t('pages.chat.userMessage.pin_message')}
+            aria-label={pinned ? t('pages.chat.userMessage.unpin_message') : t('pages.chat.userMessage.pin_message')}
             aria-pressed={!!pinned}
           >
             {pinned ? <PinOff size={14} /> : <Pin size={14} />}
@@ -1025,8 +1048,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             // scrolls back below the fold.
             data-message-edit=""
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title={i18nT('pages.chat.userMessage.edit_resend')}
-            aria-label={i18nT('pages.chat.userMessage.edit_resend')}
+            title={t('pages.chat.userMessage.edit_resend')}
+            aria-label={t('pages.chat.userMessage.edit_resend')}
           >
             <Pencil size={14} />
           </button>
@@ -1039,7 +1062,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       {/* No hand-off: the row's own inline editor and the composer draft are
           unsaved text a navigation would discard (same ruling as AssistantMessage). */}
       <ErrorNotice
-        message={copyFailed ? i18nT('pages.settings.remoteCrewPanel.copy_failed') : null}
+        message={copyFailed ? t('pages.settings.remoteCrewPanel.copy_failed') : null}
         onDismiss={() => setCopyFailed(false)}
         className="mt-1 [@media(hover:none)]:[&_button]:min-h-10 [@media(hover:none)]:[&_button]:min-w-10"
       />
@@ -1057,6 +1080,7 @@ const noopSubscribe = () => () => {}
  * relabelled when it does. Without a store the label is generic.
  */
 function useSeedSender(sender: string | undefined, slotKey: string | undefined): string {
+  const { t } = useTranslation()
   const redux = useContext(ReactReduxContext)
   const subscribe = redux ? redux.store.subscribe : noopSubscribe
   const role = useSyncExternalStore<SeedSender | ''>(subscribe, () => {
@@ -1064,7 +1088,7 @@ function useSeedSender(sender: string | undefined, slotKey: string | undefined):
     const rows = ((redux?.store.getState() as { dashboard?: { slots?: SeedRow[] } } | undefined)?.dashboard?.slots) ?? []
     return seedSender(rows, sender, slotKey)
   })
-  if (role === 'conductor') return i18nT('pages.chat.userMessage.seed_from_conductor')
-  if (role === 'worker') return i18nT('pages.chat.userMessage.seed_from_worker')
-  return role ? i18nT('pages.chat.userMessage.seed_from_session') : ''
+  if (role === 'conductor') return t('pages.chat.userMessage.seed_from_conductor')
+  if (role === 'worker') return t('pages.chat.userMessage.seed_from_worker')
+  return role ? t('pages.chat.userMessage.seed_from_session') : ''
 }

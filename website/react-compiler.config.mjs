@@ -9,6 +9,14 @@
  * compiler-backed react-hooks rules for these files only. Add a file once it
  * compiles cleanly and its tests pass under the compiler.
  *
+ * The compiler caches values on the reactive inputs they read, and the active
+ * language is not one unless the file makes it one. A listed file takes direct
+ * strings from `useTranslation()`'s `t`, which changes identity on a language
+ * switch; strings built by helpers that call `i18nT()` internally go through
+ * one function that takes `useLanguageGeneration()` as an argument. Children
+ * it renders that translate must subscribe themselves. The test enforces all
+ * three.
+ *
  * Why a list instead of the whole tree: most of the tree still bails (refs read
  * in render, exhaustive-deps suppressions, try/finally), and a bailed function
  * is silently left uncompiled, so compiling everything would cost a Babel pass
@@ -16,7 +24,7 @@
  */
 
 /** Paths relative to website/, forward slashes, sorted. */
-export const REACT_COMPILER_FILES = ['src/pages/chat/page/ChatPaneNotices.tsx']
+export const REACT_COMPILER_FILES = ['src/pages/chat/UserMessage.tsx', 'src/pages/chat/page/ChatPaneNotices.tsx']
 
 /**
  * babel-plugin-react-compiler options. `target: '18'` imports the memo cache
