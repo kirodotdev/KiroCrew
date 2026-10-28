@@ -1,0 +1,735 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/codeIntelligence",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "~/.kiro/logs/20261028T164935815/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261028T164935815/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261028T164935815/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "~/.kiro/logs/20261028T164935815"
+          },
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Fetching your cloud config",
+        "tool_call_id": "kas-wf-id-1",
+        "tool_kind": "other",
+        "wire_title": "Fetching your cloud config"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "kas-wf-id-1",
+        "tool_final": true,
+        "tool_output": "{\"kind\": \"notEnabled\", \"retracted\": false}",
+        "tool_output_bytes": 42,
+        "tool_output_digest": "e230d4f8faa283a75000f80c5b1ebf9ccbf6c4f939b29c1efc1b963a5db0b3dd",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "kas-wf-session-1"
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "frame": "response",
+    "id": 5
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/run_start",
+    "params": {
+      "inputs": {},
+      "nodeTree": [
+        {
+          "agentName": "wf-coder",
+          "nodeId": "note",
+          "type": "step"
+        },
+        {
+          "agentName": "wf-coder",
+          "nodeId": "ask",
+          "type": "step"
+        }
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "workflowId": "wf_0000000000000001",
+      "workflowName": "kirocrew-capture"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_start",
+    "params": {
+      "agentName": "wf-coder",
+      "nodeId": "note",
+      "nodePath": [
+        "wf_0000000000000001",
+        "note"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "type": "step",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_start",
+    "params": {
+      "agentName": "wf-coder",
+      "nodeId": "note",
+      "nodePath": [
+        "wf_0000000000000001",
+        "note"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "sessionId": "kas-wf-session-2",
+      "type": "step",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "message": "capture note",
+          "sessionId": "parent",
+          "severity": "info"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01CJxk3WvnovRMAae3GYUCGH",
+        "tool_input": "{\n  \"sessionId\": \"parent\",\n  \"message\": \"capture note\",\n  \"severity\": \"info\"\n}",
+        "tool_kind": "other",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/session/notify",
+    "params": {
+      "agentName": "wf-coder",
+      "callerSessionId": "kas-wf-session-2",
+      "message": "capture note",
+      "nodeId": "note",
+      "sessionId": "kas-wf-session-1",
+      "severity": "info",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01CJxk3WvnovRMAae3GYUCGH",
+        "tool_final": true,
+        "tool_output": "{\"sessionId\":\"kas-wf-session-1\",\"severity\":\"info\",\"message\":\"Message sent.\"}",
+        "tool_output_bytes": 76,
+        "tool_output_digest": "cd9e76ab1293ed0a2d03bc5dab0805dc8208cdac55cf6528cd7b08d4cf4ee655",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "message": "capture note",
+          "sessionId": "parent",
+          "severity": "info"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01CJxk3WvnovRMAae3GYUCGH",
+        "tool_input": "{\n  \"sessionId\": \"parent\",\n  \"message\": \"capture note\",\n  \"severity\": \"info\"\n}",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "message": "ok",
+          "sessionId": "parent",
+          "severity": "success"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01WNoNLJRfi72mwQ1eyMBPqm",
+        "tool_input": "{\n  \"sessionId\": \"parent\",\n  \"message\": \"ok\",\n  \"severity\": \"success\"\n}",
+        "tool_kind": "other",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/session/notify",
+    "params": {
+      "agentName": "wf-coder",
+      "callerSessionId": "kas-wf-session-2",
+      "message": "ok",
+      "nodeId": "note",
+      "sessionId": "kas-wf-session-1",
+      "severity": "success",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01WNoNLJRfi72mwQ1eyMBPqm",
+        "tool_final": true,
+        "tool_output": "{\"sessionId\":\"kas-wf-session-1\",\"severity\":\"success\",\"message\":\"Message sent.\"}",
+        "tool_output_bytes": 79,
+        "tool_output_digest": "d4373f4d9c59bd198b85c341fdeef8d5249871fc3c51c374f18ce28df810877f",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "message": "ok",
+          "sessionId": "parent",
+          "severity": "success"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01WNoNLJRfi72mwQ1eyMBPqm",
+        "tool_input": "{\n  \"sessionId\": \"parent\",\n  \"message\": \"ok\",\n  \"severity\": \"success\"\n}",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_complete",
+    "params": {
+      "capturedOutput": "I sent \"capture note\" to the parent as an info message, then marked the step complete with \"ok\". I didn't read, write or run anything else.",
+      "nodeId": "note",
+      "nodePath": [
+        "wf_0000000000000001",
+        "note"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "status": "completed",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_start",
+    "params": {
+      "agentName": "wf-coder",
+      "nodeId": "ask",
+      "nodePath": [
+        "wf_0000000000000001",
+        "ask"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "type": "step",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_start",
+    "params": {
+      "agentName": "wf-coder",
+      "nodeId": "ask",
+      "nodePath": [
+        "wf_0000000000000001",
+        "ask"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "sessionId": "kas-wf-session-3",
+      "type": "step",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "message": "Pick a colour: Red or Blue?",
+          "severity": "warning"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01B4RERqE59ShxR1gukGKjVa",
+        "tool_input": "{\n  \"message\": \"Pick a colour: Red or Blue?\",\n  \"severity\": \"warning\"\n}",
+        "tool_kind": "other",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/session/notify",
+    "params": {
+      "agentName": "wf-coder",
+      "callerSessionId": "kas-wf-session-3",
+      "message": "Pick a colour: Red or Blue?",
+      "nodeId": "ask",
+      "sessionId": "kas-wf-session-1",
+      "severity": "warning",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01B4RERqE59ShxR1gukGKjVa",
+        "tool_final": true,
+        "tool_output": "{\"sessionId\":\"kas-wf-session-1\",\"severity\":\"warning\",\"message\":\"Message sent.\"}",
+        "tool_output_bytes": 79,
+        "tool_output_digest": "8e1331d6c9cd4f2a6493f9a4af9c10ade2ea38226d651638c601b9eeac299108",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "message": "Pick a colour: Red or Blue?",
+          "severity": "warning"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01B4RERqE59ShxR1gukGKjVa",
+        "tool_input": "{\n  \"message\": \"Pick a colour: Red or Blue?\",\n  \"severity\": \"warning\"\n}",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_paused",
+    "params": {
+      "nodeId": "ask",
+      "nodePath": [
+        "wf_0000000000000001",
+        "ask"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "reason": "Step requested user input via send_message.",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/paused",
+    "params": {
+      "parentSessionId": "kas-wf-session-1",
+      "pauseReason": "Step requested user input via send_message.",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/run_complete",
+    "params": {
+      "finalState": {
+        "artifacts": {},
+        "capturedOutputs": {
+          "ask": "I don't have a user_input tool, so I sent the question as a workflow pause instead: \"Pick a colour: Red or Blue?\" Reply with your choice and I'll finish the step by reporting success with that colour.",
+          "note": "I sent \"capture note\" to the parent as an info message, then marked the step complete with \"ok\". I didn't read, write or run anything else."
+        },
+        "createdAt": "2026-10-28T16:49:39.185Z",
+        "inputs": {},
+        "parentSessionId": "kas-wf-session-1",
+        "pauseReason": "Step requested user input via send_message.",
+        "planRevision": 0,
+        "root": {
+          "children": [
+            {
+              "agentName": "wf-coder",
+              "capturedOutput": "I sent \"capture note\" to the parent as an info message, then marked the step complete with \"ok\". I didn't read, write or run anything else.",
+              "completionSignal": "success",
+              "completionSignalSource": "send_message",
+              "endedAt": "2026-10-28T16:49:47.900Z",
+              "nodeId": "note",
+              "sessionId": "kas-wf-session-2",
+              "startedAt": "2026-10-28T16:49:39.276Z",
+              "status": "completed",
+              "type": "step"
+            },
+            {
+              "agentName": "wf-coder",
+              "capturedOutput": "I don't have a user_input tool, so I sent the question as a workflow pause instead: \"Pick a colour: Red or Blue?\" Reply with your choice and I'll finish the step by reporting success with that colour.",
+              "completionSignal": "need_input",
+              "completionSignalSource": "send_message",
+              "nodeId": "ask",
+              "sessionId": "kas-wf-session-3",
+              "startedAt": "2026-10-28T16:49:48.176Z",
+              "status": "paused",
+              "type": "step"
+            }
+          ],
+          "nodeId": "wf_0000000000000001",
+          "startedAt": "2026-10-28T16:49:39.271Z",
+          "status": "paused",
+          "type": "sequence"
+        },
+        "rootConversationId": "kas-wf-session-1",
+        "runLabel": "capture",
+        "status": "paused",
+        "workflowId": "wf_0000000000000001",
+        "workflowName": "kirocrew-capture",
+        "workspacePath": "/work"
+      },
+      "parentSessionId": "kas-wf-session-1",
+      "status": "paused",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/run_start",
+    "params": {
+      "inputs": {},
+      "nodeTree": [
+        {
+          "agentName": "wf-coder",
+          "nodeId": "note",
+          "type": "step"
+        },
+        {
+          "agentName": "wf-coder",
+          "nodeId": "ask",
+          "type": "step"
+        }
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "workflowId": "wf_0000000000000001",
+      "workflowName": "kirocrew-capture"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_start",
+    "params": {
+      "agentName": "wf-coder",
+      "nodeId": "ask",
+      "nodePath": [
+        "wf_0000000000000001",
+        "ask"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "sessionId": "kas-wf-session-3",
+      "type": "step",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "message": "User picked Blue.",
+          "severity": "success"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01KgYersbCWoWgAaBh1oZUau",
+        "tool_input": "{\n  \"message\": \"User picked Blue.\",\n  \"severity\": \"success\"\n}",
+        "tool_kind": "other",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/session/notify",
+    "params": {
+      "agentName": "wf-coder",
+      "callerSessionId": "kas-wf-session-3",
+      "message": "User picked Blue.",
+      "nodeId": "ask",
+      "sessionId": "kas-wf-session-1",
+      "severity": "success",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01KgYersbCWoWgAaBh1oZUau",
+        "tool_final": true,
+        "tool_output": "{\"sessionId\":\"kas-wf-session-1\",\"severity\":\"success\",\"message\":\"Message sent.\"}",
+        "tool_output_bytes": 79,
+        "tool_output_digest": "d4373f4d9c59bd198b85c341fdeef8d5249871fc3c51c374f18ce28df810877f",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "message": "User picked Blue.",
+          "severity": "success"
+        },
+        "title": "Send Message",
+        "tool_call_id": "toolu_bdrk_01KgYersbCWoWgAaBh1oZUau",
+        "tool_input": "{\n  \"message\": \"User picked Blue.\",\n  \"severity\": \"success\"\n}",
+        "wire_title": "Send Message"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/node_complete",
+    "params": {
+      "capturedOutput": "You picked Blue, and I've reported success for this step with that colour.",
+      "nodeId": "ask",
+      "nodePath": [
+        "wf_0000000000000001",
+        "ask"
+      ],
+      "parentSessionId": "kas-wf-session-1",
+      "status": "completed",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/workflow/run_complete",
+    "params": {
+      "finalState": {
+        "artifacts": {},
+        "capturedOutputs": {
+          "ask": "You picked Blue, and I've reported success for this step with that colour.",
+          "note": "I sent \"capture note\" to the parent as an info message, then marked the step complete with \"ok\". I didn't read, write or run anything else."
+        },
+        "createdAt": "2026-10-28T16:49:39.185Z",
+        "inputs": {},
+        "parentSessionId": "kas-wf-session-1",
+        "planRevision": 0,
+        "root": {
+          "children": [
+            {
+              "agentName": "wf-coder",
+              "capturedOutput": "I sent \"capture note\" to the parent as an info message, then marked the step complete with \"ok\". I didn't read, write or run anything else.",
+              "completionSignal": "success",
+              "completionSignalSource": "send_message",
+              "endedAt": "2026-10-28T16:49:47.900Z",
+              "nodeId": "note",
+              "sessionId": "kas-wf-session-2",
+              "startedAt": "2026-10-28T16:49:39.276Z",
+              "status": "completed",
+              "type": "step"
+            },
+            {
+              "agentName": "wf-coder",
+              "capturedOutput": "You picked Blue, and I've reported success for this step with that colour.",
+              "completionSignal": "success",
+              "completionSignalSource": "send_message",
+              "endedAt": "2026-10-28T16:49:59.402Z",
+              "nodeId": "ask",
+              "sessionId": "kas-wf-session-3",
+              "startedAt": "2026-10-28T16:49:55.869Z",
+              "status": "completed",
+              "type": "step"
+            }
+          ],
+          "endedAt": "2026-10-28T16:49:59.516Z",
+          "nodeId": "wf_0000000000000001",
+          "startedAt": "2026-10-28T16:49:55.855Z",
+          "status": "completed",
+          "type": "sequence"
+        },
+        "rootConversationId": "kas-wf-session-1",
+        "runLabel": "capture",
+        "status": "completed",
+        "workflowId": "wf_0000000000000001",
+        "workflowName": "kirocrew-capture",
+        "workspacePath": "/work"
+      },
+      "parentSessionId": "kas-wf-session-1",
+      "status": "completed",
+      "workflowId": "wf_0000000000000001"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7
+  },
+  {
+    "frame": "response",
+    "id": 8
+  },
+  {
+    "frame": "response",
+    "id": 9
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  }
+]
