@@ -29,6 +29,7 @@ _OWNERS = tuple(
         "session",
         "limits",
         "tailnet",
+        "shared_crew",
         "dashboard",
         "dashboard_hosts",
         "slack",

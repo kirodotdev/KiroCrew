@@ -1489,6 +1489,18 @@ from another tab or channel cannot publish its pre-import copy over the restored
 file. It then sets `ui_prefs_restored`, only when the archive carried a vetted
 `ui-prefs.json`.
 
+## Shared Crew (`dashboard.shared_crew`)
+
+`config/sections_shared_crew.py` owns the section. Every integer is clamped to
+`SHARED_CREW_BOUNDS` and a wrong-typed value reads as its default, so an edit can
+narrow or widen a limit but never remove one. The two exposure switches read
+fail-narrow: `tailnet_direct` turns on only for a literal `true`, and
+`local_authorization` turns off only for a literal `false`. `effective_limits`
+resolves `0` (auto) values against a caller-supplied automatic Crew width and caps
+per-person limits at the Crew's. Every switch that changes behaviour is off by
+default. Defaults and meanings: [shared-crew.md](shared-crew.md) section 4, Defaults
+and API.
+
 ## Unknown keys are preserved on round-trip
 
 `save()` re-emits the whole dataclass, so anything the running build does not
