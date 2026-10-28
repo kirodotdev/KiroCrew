@@ -11934,7 +11934,6 @@
         "save_failed": "No se pudo guardar el color de la sesión"
       },
       "sessionMessageCard": {
-        "needs_you": "Necesita tu atención",
         "open_session": "Abrir {{name}}",
         "show_less": "Mostrar menos",
         "show_more": "Mostrar más",
