@@ -409,6 +409,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "reader loses by choosing another harness. A wrong membership forwards a "
         "command the acquired provider cannot serve, which is a defect"
     ),
+    "ACP_BACKENDS_NATIVE_WORKFLOWS": (
+        "whether workflows run on the harness's own engine instead of Crew's. "
+        "Workflows run on every harness either way, and while the native route is "
+        "behind a feature preview, someone choosing a harness cannot yet act on "
+        "the difference. A wrong membership sends workflow calls to an engine "
+        "that does not serve them, which is a defect. It earns a card line when "
+        "the preview ships"
+    ),
     "ACP_BACKENDS_LOCAL_CLEAR": (
         "whether the dashboard answers /clear itself or hands it to the harness. "
         "/clear drops the conversation on every harness either way, so a reader "

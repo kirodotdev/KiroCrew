@@ -61,6 +61,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_NATIVE_WORKFLOWS,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -189,6 +190,13 @@ class SessionCapabilities:
     #: resolved backend on.
     acp_client_spawnable: bool
 
+    #: Whether the harness brings its own workflow engine
+    #: (:data:`ACP_BACKENDS_NATIVE_WORKFLOWS`), so that workflow definitions, runs
+    #: and controls go to it over ``_kiro/workflow/*`` instead of to Crew's
+    #: ``ctx``-script engine. False routes to Crew's engine, which serves every
+    #: harness, so an unknown backend loses nothing.
+    native_workflows: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -214,6 +222,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
+        native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
     )
 
 
@@ -242,6 +251,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     supports_native_todos=False,
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
+    native_workflows=False,
 )
 
 
