@@ -75,7 +75,9 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     const ta = screen.getByRole('textbox')
     fireEvent.focus(ta)
     expect(inline()).toBe(false)
-    expect(screen.getByTestId('list-indent-hint').className).toContain('text-[12px]')
+    const hint = screen.getByTestId('list-indent-hint')
+    expect(hint.className).not.toContain('sr-only')
+    expect(hint.parentElement?.className).toContain('text-[12px]')
   })
 
   it('opens to two rows while a file is staged: the file strip has no place on one line', () => {
