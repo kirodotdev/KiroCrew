@@ -155,12 +155,18 @@ class TestLearnCli:
             cc._learn(_ns(learn_action="remove", query="q"))
         assert "Removed lessons matching: q" in capsys.readouterr().out
 
-    def test_remove_no_match(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_remove_no_match_exits_1_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A miss removed nothing, so `learn remove q && next` must stop.
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []
             h.jsonl.remove.return_value = False
-            cc._learn(_ns(learn_action="remove", query="q"))
-        assert "No lessons match: q" in capsys.readouterr().out
+            with pytest.raises(SystemExit) as exc:
+                cc._learn(_ns(learn_action="remove", query="q"))
+            h.vs.close.assert_called_once()
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "No lessons match: q\n"
 
     def test_remove_forwards_repo_scope_to_vector_store(
         self, capsys: pytest.CaptureFixture[str]

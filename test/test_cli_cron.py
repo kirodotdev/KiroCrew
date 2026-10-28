@@ -753,7 +753,9 @@ class TestCronCli:
             mock_sel.return_value.log_api_access.assert_not_called()
         assert capsys.readouterr().out == "Removed job: abc123\n"
 
-    def test_cron_remove_not_found_audits_not_found(self):
+    def test_cron_remove_not_found_exits_1_on_stderr(self, capsys):
+        # A miss must fail like pause/resume do, or `cron remove x && next`
+        # runs `next` after nothing was removed.
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
             patch("kiro_crew.cli_commands.sel") as mock_sel,
@@ -761,9 +763,14 @@ class TestCronCli:
             mock_svc = mock_svc_cls.return_value
             mock_svc.remove_job.return_value = False
             args = argparse.Namespace(cron_action="remove", job_id="ghost")
-            _cron(args)
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
             mock_svc.remove_job.assert_called_once_with("ghost", actor="cli", source="cli")
             mock_sel.return_value.log_api_access.assert_not_called()
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Job not found: ghost\n"
 
     def test_cron_remove_succeeds_when_audit_raises(self, capsys):
         # The first sel() of a process constructs the log and can raise; the

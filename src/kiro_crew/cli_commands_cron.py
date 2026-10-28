@@ -740,7 +740,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if removed:
             print(f"Removed job: {job_id}")
         else:
-            print(f"Job not found: {job_id}")
+            print(f"Job not found: {job_id}", file=sys.stderr)
+            sys.exit(1)
 
     elif action == "pause":
         if svc.enable_job(args.job_id, enabled=False):
