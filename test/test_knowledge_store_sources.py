@@ -535,6 +535,36 @@ class TestKnowledgeStoreExtended:
         neighbors = store.get_neighbors(e1, depth=1)
         assert {n["id"] for n in neighbors} == {e2}
 
+    def test_get_neighbors_matches_the_graph_walk_and_never_loads_the_graph(self, store):
+        import random
+
+        rng = random.Random(7)
+        ids = [store.add_entity(f"n{i}", "concept") for i in range(60)]
+        for _ in range(140):
+            store.add_entity_relation(rng.choice(ids), rng.choice(ids), "relates")
+        store.add_entity_relation(ids[0], ids[0], "self")
+        store._graph_loaded = False
+        walked = {
+            (eid, depth): sorted(n["id"] for n in store.get_neighbors(eid, depth=depth))
+            for eid in ids[:12]
+            for depth in (1, 2, 3)
+        }
+        assert store._graph_loaded is False
+        graph = store.graph
+        for (eid, depth), got in walked.items():
+            visited, frontier = set(), {eid}
+            for _ in range(depth):
+                nxt = set()
+                for nid in frontier:
+                    for nb in (*graph.successors(nid), *graph.predecessors(nid)):
+                        if nb not in visited and nb != eid:
+                            nxt.add(nb)
+                visited |= frontier
+                frontier = nxt
+            assert got == sorted((visited | frontier) - {eid}), (eid, depth)
+        names = {n["id"]: n["name"] for n in store.get_neighbors(ids[1], depth=1)}
+        assert names and all(names[i] == f"n{ids.index(i)}" for i in names)
+
     def test_find_entity_by_alias(self, store):
         store.add_entity("DynamoDB", "technology", aliases=["ddb", "dynamo"])
         found = store.find_entity("ddb")

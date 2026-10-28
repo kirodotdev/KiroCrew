@@ -4,7 +4,9 @@
 lock so a worker thread can walk it while the loop thread changes it. The methods
 load it on first read, rebuild it from the tables and publish it with one reference
 swap, write entities, relations and mentions, drop entities nothing references, and
-walk a node's neighbourhood.
+walk a node's neighbourhood. The neighbourhood walk the search uses reads the relation
+table through its indexes, so a search never materialises the graph; only the
+dashboard's graph views do.
 
 A function here whose first parameter is ``self`` is a ``KnowledgeStore`` method:
 the class binds it under the same name in ``knowledge/store.py``, so it reads the
@@ -365,32 +367,62 @@ def add_mention(self: KnowledgeStore, item_id, entity_id, context=None):
     self.db.commit()
 
 
+#: Ids per ``IN (...)`` in a neighbourhood read. Each statement binds a chunk
+#: twice, which stays under SQLite's default limit of 999 variables.
+_NEIGHBOR_CHUNK = 400
+
+
+def _adjacent_entities(db, ids) -> set[str]:
+    """Every entity one relation away from any of ``ids``, in either direction."""
+    ids = list(ids)
+    out: set[str] = set()
+    for start in range(0, len(ids), _NEIGHBOR_CHUNK):
+        chunk = ids[start : start + _NEIGHBOR_CHUNK]
+        marks = ",".join("?" * len(chunk))
+        for row in db.execute(
+            f"SELECT target_id FROM entity_relations WHERE source_id IN ({marks}) "  # noqa: S608
+            f"UNION SELECT source_id FROM entity_relations WHERE target_id IN ({marks})",
+            (*chunk, *chunk),
+        ):
+            out.add(row[0])
+    return out
+
+
 def get_neighbors(self: KnowledgeStore, entity_id, depth=1) -> list:
-    # Pin one graph reference for the whole traversal. ``_load_graph``
-    # publishes a rebuilt graph by swapping ``self._graph``, so
-    # re-reading ``self.graph`` at each step could mix an old and a new graph
-    # across the successor/predecessor walk and the per-node attribute reads.
-    # Capturing it once means this read sees a single consistent snapshot.
-    graph = self.graph
-    visited = set()
+    """Entities within ``depth`` relations of ``entity_id``, in either direction.
+
+    Read from ``entity_relations`` through its ``source_id`` and ``target_id``
+    indexes, one statement per hop and chunk, not from the in-memory graph:
+    the search's graph leg calls this, and materialising the whole graph for
+    it held every entity and relation for the life of the gateway and made the
+    first search after start wait for a full scan of both tables. The walk is
+    the same breadth-first walk over the committed rows the graph is built
+    from, so it returns the same entities.
+    """
+    visited: set[str] = set()
     frontier = {entity_id}
     for _ in range(depth):
-        next_frontier = set()
-        for nid in frontier:
-            for neighbor in graph.successors(nid):
-                if neighbor not in visited and neighbor != entity_id:
-                    next_frontier.add(neighbor)
-            for neighbor in graph.predecessors(nid):
-                if neighbor not in visited and neighbor != entity_id:
-                    next_frontier.add(neighbor)
+        next_frontier = {
+            n for n in _adjacent_entities(self.db, frontier) if n not in visited and n != entity_id
+        }
         visited |= frontier
         frontier = next_frontier
     visited |= frontier
     visited.discard(entity_id)
+    attrs: dict[str, tuple] = {}
+    ids = list(visited)
+    for start in range(0, len(ids), _NEIGHBOR_CHUNK):
+        chunk = ids[start : start + _NEIGHBOR_CHUNK]
+        marks = ",".join("?" * len(chunk))
+        for row in self.db.execute(
+            f"SELECT id, name, entity_type FROM entities WHERE id IN ({marks})",  # noqa: S608
+            chunk,
+        ):
+            attrs[row[0]] = (row[1], row[2])
     result = []
     for nid in visited:
-        data = graph.nodes.get(nid, {})
-        result.append({"id": nid, "name": data.get("name"), "entity_type": data.get("entity_type")})
+        name, entity_type = attrs.get(nid, (None, None))
+        result.append({"id": nid, "name": name, "entity_type": entity_type})
     return result
 
 
