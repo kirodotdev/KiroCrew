@@ -950,3 +950,61 @@ def _crewmate_dynamic_capabilities_on():
     crewmate_dynamic_capabilities._override = True
     yield
     crewmate_dynamic_capabilities._override = prior
+
+
+@pytest.fixture(autouse=True)
+def _reset_materialized_agents_snapshot():
+    """Reset the materialized-agents process-wide snapshot before and after each test.
+
+    ``kiro_crew.config.loader_snapshots`` keeps a process-wide in-memory snapshot
+    of installed kiro agent names (``_MATERIALIZED_AGENTS``) and a removal-evidence
+    history (``_MATERIALIZED_SEEN``). Any test that triggers a scan -- via
+    ``dispatch_kiro_agent`` in a synchronous context, ``publish_materialized_agents``,
+    ``publish_mate_agents``, or ``refresh_materialized_agents`` -- modifies this
+    snapshot and its history dict.
+
+    The critical failure mode: if any test leaves a name (e.g. ``"atlas"``) in
+    ``_MATERIALIZED_SEEN`` while the current ``_MATERIALIZED_AGENTS`` frozenset does
+    NOT contain it, ``_removal_evidence`` classifies it as a removed agent. A later
+    test that passes ``cfg.agent.default_agent = "atlas"`` to ``default_template``
+    then silently receives ``DEFAULT_KIRO_TEMPLATE`` (``"kirocrew"``) instead, because
+    ``default_template`` falls back to the managed default for any name that has been
+    "removed" from the snapshot. Because ``_MATERIALIZED_SEEN`` is a dict mutated in
+    place, a ``monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", ...)`` restore does
+    NOT clear it -- only ``_MATERIALIZED_AGENTS`` is restored, not the history.
+
+    Reset on both sides (before the test body and in teardown) so a test that primes
+    the snapshot and a test that queries it both start from a clean slate. Uses
+    ``setattr(loader, ...)`` so the ``_facade_mirror`` propagates each write
+    atomically to both the loader facade and the owning ``loader_snapshots`` module.
+    """
+
+    def clear():
+        loader_mod = sys.modules.get("kiro_crew.config.loader")
+        if loader_mod is None:
+            return
+        # Rebound globals: write through the facade mirror so both the loader
+        # facade and loader_snapshots are updated in one call.
+        for name, value in (
+            ("_MATERIALIZED_AGENTS", frozenset()),
+            ("_MATERIALIZED_AGENTS_READY", False),
+            ("_MATERIALIZED_COMPLETE", False),
+            ("_MATERIALIZED_MATE_ONLY", frozenset()),
+            ("_MATERIALIZED_AGENTS_GENERATION", 0),
+            ("_MATERIALIZED_REFRESH_APPLIED", 0),
+            ("_MATERIALIZED_REFRESH_ISSUED", 0),
+        ):
+            if hasattr(loader_mod, name):
+                setattr(loader_mod, name, value)
+        # Mutable dicts: replace the binding with a new empty dict so the
+        # ``global _X`` reference in production code picks up the empty
+        # mapping on its next use, without patching its referencing modules.
+        for name in ("_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
+            if hasattr(loader_mod, name):
+                setattr(loader_mod, name, {})
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
