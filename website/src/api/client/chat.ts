@@ -70,8 +70,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     // The look-preview frame (utils/lookPreview.ts) shows one demo session in
     // place of the user's own: fixtures answer both reads below.
     // `crew=all` keeps a Crew Mode root's workers in the answer: these reads look a
-    // session up by key (a worker opened from the side panel included); the
-    // person's own lists leave workers out on the client once the lists part lands.
+    // session up by key (a worker opened from the side panel included), and the
+    // person's own list leaves workers out on the client (`crewModeView`).
     chatSlots: () => isLookPreviewFrame() ? Promise.resolve(lookPreviewSlots()) : fetch('/api/chat/slots?crew=all').then(j),
     /** How many tabs this gateway's startup restore listed but could not show.
      *

@@ -13050,7 +13050,9 @@
       "broadcast_open_unknown": "पुष्टि नहीं · खोलो",
       "broadcast_delivery_hint": "चल रहा काम नहीं रुकता: चालू टर्न इसे मौजूदा टूल कॉल के बाद पढ़ता है; खाली सेशन नया टर्न शुरू करता है।",
       "broadcast_retry": "{{n}} विफल फिर से भेजो",
-      "folder_renamed_to": "फ़ोल्डर का नाम बदलकर {{name}} कर दिया गया"
+      "folder_renamed_to": "फ़ोल्डर का नाम बदलकर {{name}} कर दिया गया",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "केवल Crew Mode चैट दिखाओ"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

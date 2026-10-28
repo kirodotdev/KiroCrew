@@ -13267,7 +13267,9 @@
       "broadcast_open_unknown": "Não confirmado · abrir",
       "broadcast_delivery_hint": "Nenhum trabalho em andamento é interrompido: um turno ativo lê a mensagem após a chamada de ferramenta atual; uma sessão ociosa começa um novo turno.",
       "broadcast_retry": "Tentar de novo {{n}} com falha",
-      "folder_renamed_to": "Pasta renomeada para {{name}}"
+      "folder_renamed_to": "Pasta renomeada para {{name}}",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Mostrar só chats do Crew Mode"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

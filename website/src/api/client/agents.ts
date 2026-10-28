@@ -345,6 +345,10 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         markdown_refused_backends?: string[]
         /** The harnesses that load a markdown agent spec. */
         markdown_spec_backends?: string[]
+        /** The conductor Crew Mode runs (`agent.crew_mode_agent`). */
+        crew_mode_agent?: string
+        /** Every conductor template; a normal chat's picker leaves these out. */
+        conductor_agents?: string[]
       }>,
     /** `extra` carries per-request headers (a guided create's `X-Guide-*`);
      *  it rides THIS request only, never the shared transport. */

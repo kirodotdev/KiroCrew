@@ -66,13 +66,7 @@ interface SessionsDrawerOptions {
   toggleAct: () => void
 }
 
-/**
- * The sessions drawer and the side panel's phone overlay: their compositor-driven
- * slides and swipes, the drawer's Back entry, the sidebar and closed-session context
- * actions, the pane geometry, and the collapsed sidebar's hover flyout.
- *
- * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
- */
+
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
   hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,

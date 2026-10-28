@@ -13267,7 +13267,9 @@
       "broadcast_open_unknown": "Non confermato · apri",
       "broadcast_delivery_hint": "Nessun lavoro in corso viene interrotto: un turno attivo lo legge dopo la chiamata allo strumento in corso; una sessione inattiva avvia un nuovo turno.",
       "broadcast_retry": "Riprova {{n}} non riusciti",
-      "folder_renamed_to": "Cartella rinominata in {{name}}"
+      "folder_renamed_to": "Cartella rinominata in {{name}}",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Mostra solo le chat Crew Mode"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

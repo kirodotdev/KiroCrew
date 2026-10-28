@@ -4597,3 +4597,26 @@ its own standing thread. What remains, and why:
 
 The sidebar's create menu no longer carries the entry that used to create a
 crew-mode session: `/members` is reached from its rail item.
+
+## Crew Mode in the dashboard: the person's lists
+
+The server rules are in [Crew Mode](#crew-mode) above: a conductor's **crew
+members** are the rows stamped `crew_root: <root key>`, the root carries
+`crew_mode_root: true`. The dashboard reads every row (`GET /api/chat/slots?crew=all`,
+and the live slot frame carries them all) and leaves crew members out of the
+person's lists on the client.
+
+| Rule | Where |
+|---|---|
+| The one client filter is `crewModeView(rows, rootsOnly?)`: drop every `crew_root` row; `rootsOnly` keeps the roots alone. `selectPersonSlots` is the memoized store read of it. Until the part that adds the Crew panel lands, the `crew_root` drop is inert -- every row passes through, since no list would otherwise reach a crew member -- and `rootsOnly` is live; that part turns the drop on in this one function, and every person-facing list already reads through it | `website/src/lib/crewMode.ts`, `website/src/store/personSlots.ts` |
+| `withoutConductors(choices)` is the one filter a normal chat's agent picker and the Split View pane picker read their rows through. The agent chords (`agentCycleTarget`) skip every conductor whatever this filter does, so a chord never turns Crew Mode on by accident; the picker is the way onto one. The rule it will carry: every conductor template left out, since the composer's Crew Mode switch is the way onto one (crewmates kept whatever their name). Until the part that adds that switch lands the rule is inert -- every row passes through, since the picker is still the one way onto a conductor -- and that part turns it on in this one function. A chat already on a conductor has no picker to mirror, so the chords do nothing there (the server refuses to move a Crew Mode root) | `website/src/lib/crewMode.ts`, `website/src/hooks/useAgents.ts` |
+| The chat page keeps TWO lists (`pages/chat/page/pageEnvironment.ts`): `chatPageSlots`, every chat-surface row with crew members included, which the page's active-slot rules read so a crew member opened from its root's Crew panel stays the active chat in the main pane; and `personChatPageSlots`, the same list through `crewModeView`, which the collapsed-sidebar flyout lists and the unread count counts (`surfaceUnreadKeys`). The sidebar component applies `crewModeView` at its own `slots` door, so no lane, the Broadcast dialog, the bulk model switch or any other reader of that collection sees a crew member; the Sessions page, Recents, the Command Bar, Send-to-session and Split View read `selectPersonSlots`. A crew member opened from its root's Crew panel is the active chat without a sidebar row; on a screen narrower than `CREW_WORKER_ROOMY_PX` the sessions list steps aside while it is open | `website/src/pages/ChatSidebar.tsx`, `website/src/pages/SessionsPage.tsx`, `commandPalette/providers/recentsProvider.ts`, `apps/command-bar/CommandBarOverlay.tsx`, `components/SessionGridView.tsx`, `pages/chat/page/sessionsDrawer.ts` |
+| Recents' **Older** rows read the full History inventory as before (closed channel conversations and subagent transcripts belong there, and `/api/sessions` carries no crew signal yet, so a closed crew member is still an Older row until the history rows carry one); a LIVE crew member never comes back as an Older row, because the dedupe set is every live row | `recentsProvider.ts` |
+| The sidebar filter menu offers a **Crew Mode** row (roots only) once a root is in the list; a stored filter keeps its row while on | `pages/chat-sidebar/filters.tsx`, `SearchDock.tsx` |
+| The catalog (`crew_mode_agent`, `conductor_agents`) is kept in `setCrewModeCatalog`: a catalog that carries neither field names no conductor, so a gateway without Crew Mode keeps every list, picker row and chord it had | `lib/crewMode.ts` |
+
+A `<mcwidget>` whose body is markdown rather than HTML (a conductor's task board,
+say) renders as markdown under its title (`website/src/components/MarkdownWidget.tsx`)
+and keeps the artifact identity every widget has: the title links to the artifact
+page and the star pins it, through the same `useWidgetArtifact` hook the HTML frame
+uses (`website/src/components/WidgetArtifact.tsx`; see [artifacts](artifacts.md)).

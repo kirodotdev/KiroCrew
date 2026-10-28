@@ -409,12 +409,14 @@ describe('WidgetFrame artifact star', () => {
     expect(screen.queryByRole('link')).toBeNull()
   })
 
-  it('a probe failure that is not a 404 leaves the widget unstarred', async () => {
+  it('a probe failure that is not a 404 leaves the widget unstarred and says so', async () => {
     vi.spyOn(api, 'artifact').mockRejectedValue(new Error('zzq-probe-exploded'))
     wrap(derived())
     await act(async () => {})
     expect(screen.queryByRole('link')).toBeNull()
     expect(star()).toBeEnabled()
+    // The read failed, so the title row says so instead of looking like "no artifact".
+    expect(await screen.findByRole('alert')).toHaveTextContent('zzq-probe-exploded')
   })
 
   it('starring an existing artifact pins it without re-creating it', async () => {
@@ -467,8 +469,10 @@ describe('WidgetFrame artifact star', () => {
     wrap(derived())
     await act(async () => {})
     fireEvent.click(star())
-    expect(await screen.findByText(i18nT('components.widgetFrame.save_failed')))
-      .toHaveAttribute('title', 'zzq-create-broke')
+    // The failure is an ErrorNotice: the label and the error's own text, read aloud.
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(i18nT('components.widgetFrame.save_failed'))
+    expect(notice).toHaveTextContent('zzq-create-broke')
     expect(setPinned).not.toHaveBeenCalled()
   })
 
@@ -477,8 +481,10 @@ describe('WidgetFrame artifact star', () => {
     wrap(derived())
     await act(async () => {})
     fireEvent.click(star())
-    expect(await screen.findByText(i18nT('components.widgetFrame.save_failed')))
-      .toHaveAttribute('title', 'zzq-not-an-error')
+    // The failure is an ErrorNotice: the label and the error's own text, read aloud.
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(i18nT('components.widgetFrame.save_failed'))
+    expect(notice).toHaveTextContent('zzq-not-an-error')
   })
 
   it('un-starring unpins the artifact and keeps it in the library', async () => {
@@ -506,8 +512,10 @@ describe('WidgetFrame artifact star', () => {
     setPinned.mockRejectedValue(new ApiError(500, 'zzq-unpin-broke'))
     wrap(derived())
     fireEvent.click(await screen.findByRole('button', { name: unstarName }))
-    expect(await screen.findByText(i18nT('components.widgetFrame.save_failed')))
-      .toHaveAttribute('title', 'zzq-unpin-broke')
+    // The failure is an ErrorNotice: the label and the error's own text, read aloud.
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(i18nT('components.widgetFrame.save_failed'))
+    expect(notice).toHaveTextContent('zzq-unpin-broke')
   })
 
   it('an explicit slug renders as starred before the probe resolves', () => {

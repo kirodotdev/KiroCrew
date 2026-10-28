@@ -18,8 +18,11 @@ import { errMessage } from '../utils/thunkError'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
+import { crewModeView } from '../lib/crewMode'
 type Slot = {
   key: string
+  /** Set on a Crew Mode worker: the root it works for. */
+  crew_root?: string
   title?: string
   running?: boolean
   pending_approval?: boolean
@@ -293,7 +296,10 @@ function PlaceholderPane({
     },
   })
 
-  const available = slots
+  // A Crew Mode worker is its conductor's to show, never offered as a pane here
+  // (edge review R2 F4); a pane already showing one is kept (pruneAgainst reads
+  // the full list).
+  const available = crewModeView(slots)
     .filter((s) => !occupied.includes(s.key))
     .filter(
       (s) =>

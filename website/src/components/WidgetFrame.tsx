@@ -1,13 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight, clampFrameHeight } from '../utils/widgetHeights'
-import { Maximize2, Minimize2, ExternalLink, Download, Star, RotateCw, Eye } from 'lucide-react'
+import { Maximize2, Minimize2, ExternalLink, Download, RotateCw, Eye } from 'lucide-react'
 import { Btn, IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
 import { AGENT_PAGE_SANDBOX, buildSrcdoc, popoutLinkBridgeScript, readThemeVars } from '../lib/widgetSrcdoc'
-import { effectiveWidgetSlug } from '../lib/widgetSlug'
 import { analyzeWidgetComplexity } from '../lib/widgetComplexity'
-import { api, ApiError } from '../api/client'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useWidgetArtifact, WidgetArtifactTitle, WidgetStarButton } from './WidgetArtifact'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
@@ -84,36 +82,6 @@ export function staggeredBuildWait(baseWait: number, slot: number): number {
 let jumpBuildSlot = 0
 let jumpBuildResetAt = 0
 
-
-/** Probe result for a widget's backing artifact.
- *
- * `exists` and `pinned` are deliberately independent: the backend
- * auto-registers every emitted widget as an UNPINNED artifact, so
- * `{exists: true, pinned: false}` is the normal steady state and must render as
- * "not in library" (hollow star) while still linking to the artifact. */
-interface WidgetArtifactState {
-  exists: boolean
-  pinned: boolean
-}
-
-/** Drop the cached session-scoped artifact lists so the in-session Artifacts tab
- * reflects a star/unstar immediately. No-op without a slot (embedded/detached
- * renders), where there is no session list to refresh.
- *
- * `session-artifact-records` is the query that actually feeds widget rows, and
- * React Query prefix-matching does NOT reach it from `['artifacts']` — omitting
- * it leaves the tab (a pinned, usually-open side panel) showing the opposite
- * star from the one in chat for a full staleTime. Keep all three in sync with
- * `SessionArtifactsTab`'s own `invalidate()`. */
-function invalidateSessionArtifacts(
-  queryClient: ReturnType<typeof useQueryClient>,
-  slotKey?: string,
-): void {
-  if (!slotKey) return
-  queryClient.invalidateQueries({ queryKey: ['session-artifacts', slotKey] })
-  queryClient.invalidateQueries({ queryKey: ['session-artifact-records', slotKey] })
-  queryClient.invalidateQueries({ queryKey: ['artifacts'] })
-}
 
 interface WidgetFrameProps {
   html: string
@@ -366,147 +334,9 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
   }, [srcdoc, title])
 
-  // Save the widget body as a persistent artifact. We send the *inner* HTML
-  // (the user-visible widget body, not the wrapped srcdoc with theme blocks),
-  // so the artifact stays portable across themes and renders identically when
-  // opened on /artifacts/<slug>.
-
-  // Determine the effective slug for this impression. Priority:
-  //  1. Explicit `slug` attribute from the agent (used when re-emitting a
-  //     known saved artifact — see artifacts skill).
-  //  2. Derived from `messageTs + html`, so a slug hit proves the stored body
-  //     equals this impression. Identical bodies in one message share a slug.
-  // Returns null only when neither is available (streaming/detached
-  // widgets, or test fixtures); in that case bookmark is disabled.
-  const effectiveSlug = useMemo(
-    () => effectiveWidgetSlug({
-      explicitSlug: slug,
-      messageTs,
-      body: html,
-    }),
-    [slug, messageTs, html],
-  )
-  // Probe this widget's artifact. Cached via React Query with a 5-min
-  // staleTime so repeated impressions / tab refocuses don't each fire a
-  // network request. 404s are cached (not retried) to avoid a 404 storm.
-  //
-  // `exists` and `pinned` are SEPARATE states and must stay that way. Since
-  // the backend auto-registers every emitted widget as an unpinned artifact
-  // (see kiro_crew/widget_artifacts.py), the common case is exists=true,
-  // pinned=false — so collapsing the two (the pre-auto-registration behavior)
-  // would light up every widget's star as if the user had already saved it.
-  //   exists  → the title links to /artifacts/<slug>
-  //   pinned  → the star renders filled ("in library")
-  const queryClient = useQueryClient()
-  const savedProbe = useQuery<WidgetArtifactState>({
-    queryKey: ['artifact-saved', effectiveSlug],
-    queryFn: async () => {
-      try {
-        const a = await api.artifact(effectiveSlug!)
-        if (!a) return { exists: false, pinned: false }
-        return { exists: true, pinned: !!(a as { pinned?: boolean }).pinned }
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 404) return { exists: false, pinned: false }
-        throw e
-      }
-    },
-    enabled: !!effectiveSlug,
-    retry: false,
-    staleTime: 5 * 60 * 1000,
-    // Optimistic fill: an explicit slug attr means the agent re-emitted an
-    // artifact it already knows about, so assume it exists and is starred
-    // (the usual reason an agent carries a slug) until the probe resolves.
-    placeholderData: slug ? { exists: true, pinned: true } : undefined,
-  })
-
-  // Slug of the backing artifact when one exists (drives the title link), and
-  // separately whether it is starred (drives the star). While the probe is
-  // in flight both fall back to the explicit-slug assumption above.
-  const existingSlug = savedProbe.data?.exists ? effectiveSlug : null
-  const savedSlug = savedProbe.data?.pinned ? effectiveSlug : null
-
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  // Track mount status so async save/remove callbacks can skip side-effects
-  // when the component has been unmounted mid-flight (e.g. user navigated
-  // away, or the chat scrolled the widget out of view between the bookmark
-  // click and the API response).
-  const mountedRef = useRef(true)
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-    }
-  }, [])
-
-  const saveAsArtifact = useCallback(async () => {
-    if (saving || savedSlug || !effectiveSlug) return
-    // Star = pin. The artifact itself normally already exists: the backend
-    // auto-registers every emitted widget at message-finalize time. The create
-    // below is the fallback for the cases where it doesn't — a widget from
-    // before this feature shipped, one whose registration failed, or one whose
-    // record was reclaimed by the retention sweep. 409 means it raced into
-    // existence between the probe and here, which is simply "already there".
-    const name = title && title !== 'Widget' ? title : 'Widget'
-    setSaving(true)
-    setSaveError(null)
-    try {
-      if (!existingSlug) {
-        try {
-          await api.createArtifact({
-            name,
-            content: html,
-            kind: 'widget',
-            source: 'chat',
-            slug: effectiveSlug,
-            // Attribute it to the session it was starred from, so the
-            // in-session Artifacts tab (a ?session= query) still finds a
-            // fallback-created artifact.
-            origin_session_key: slotKey || undefined,
-          })
-        } catch (e) {
-          if (!(e instanceof ApiError && e.status === 409)) throw e
-        }
-      }
-      await api.setArtifactPinned(effectiveSlug, true)
-      queryClient.setQueryData(['artifact-saved', effectiveSlug], { exists: true, pinned: true })
-      invalidateSessionArtifacts(queryClient, slotKey)
-    } catch (e) {
-      if (mountedRef.current) {
-        setSaveError(e instanceof Error ? e.message : String(e))
-      }
-    } finally {
-      if (mountedRef.current) setSaving(false)
-    }
-  }, [html, title, saving, savedSlug, existingSlug, effectiveSlug, slotKey, queryClient])
-
-  const removeArtifact = useCallback(async () => {
-    if (saving || !savedSlug) return
-    // Un-star = unpin (metadata-only), NOT delete — preserves the artifact and
-    // its version history. The Artifacts library page handles permanent delete.
-    // The record stays (still listed in the session tab); unpinning only makes
-    // it eligible for the auto-widget retention sweep again.
-    setSaving(true)
-    setSaveError(null)
-    try {
-      await api.setArtifactPinned(savedSlug, false)
-      queryClient.setQueryData(['artifact-saved', effectiveSlug], { exists: true, pinned: false })
-      invalidateSessionArtifacts(queryClient, slotKey)
-    } catch (e) {
-      // 404 → the artifact is gone entirely (e.g. deleted from the library in
-      // another tab); reconcile to not-exists, not merely not-pinned.
-      if (e instanceof ApiError && e.status === 404) {
-        queryClient.setQueryData(['artifact-saved', effectiveSlug], { exists: false, pinned: false })
-        invalidateSessionArtifacts(queryClient, slotKey)
-      } else if (mountedRef.current) {
-        setSaveError(e instanceof Error ? e.message : String(e))
-      }
-    } finally {
-      if (mountedRef.current) setSaving(false)
-    }
-  }, [savedSlug, saving, effectiveSlug, slotKey, queryClient])
-
-  const toggleArtifact = savedSlug ? removeArtifact : saveAsArtifact
+  // The artifact this widget is: its slug, whether it exists and is starred, and
+  // the star action. Shared with the markdown-bodied widget (`WidgetArtifact`).
+  const artifact = useWidgetArtifact({ body: html, title, slug, messageTs, slotKey })
 
   return (
     <div
@@ -528,38 +358,9 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         </>
       ) : (<>
       <div className={`flex items-center justify-between px-3 py-2 ${expanded ? 'border-b border-border bg-bg-elevated' : ''}`}>
-        <span className="text-[13px] font-medium text-text truncate">
-          {/* Linked whenever the artifact EXISTS — not only when starred. Every
-              emitted widget is auto-registered, so the artifact page is
-              reachable from the moment it renders. */}
-          {existingSlug ? (
-            <a
-              href={`/artifacts/${existingSlug}`}
-              className="text-text hover:text-accent hover:underline"
-              title={`Open artifact "${existingSlug}"`}
-            >{title}</a>
-          ) : (
-            title
-          )}
-          {saveError && <span className="ml-2 text-[12px] text-danger" title={saveError}>{i18nT('components.widgetFrame.save_failed')}</span>}
-        </span>
+        <WidgetArtifactTitle title={title} artifact={artifact} />
         <IconButtonGroup reveal={!expanded}>
-          <IconButton
-            variant={savedSlug ? 'active' : 'default'}
-            onClick={toggleArtifact}
-            disabled={saving || !effectiveSlug}
-            className={saving ? 'cursor-wait' : ''}
-            title={
-              !effectiveSlug
-                ? i18nT('components.widgetFrame.cannot_star_widget_has_no_slug_or_message_contex')
-                : savedSlug
-                  ? i18nT('components.widgetFrame.starred_as_click_to_remove', { name: savedSlug })
-                  : i18nT('components.widgetFrame.star_as_artifact')
-            }
-            aria-label={savedSlug ? i18nT('components.widgetFrame.remove_artifact_from_library', { name: savedSlug }) : i18nT('components.widgetFrame.star_as_artifact')}
-          >
-            <Star size={12} fill={savedSlug ? 'currentColor' : 'none'} />
-          </IconButton>
+          <WidgetStarButton artifact={artifact} />
           <IconButton onClick={downloadAsHtml} title={i18nT('components.widgetFrame.download_as_html')} aria-label={i18nT('components.widgetFrame.download_as_html')}>
             <Download size={12} />
           </IconButton>

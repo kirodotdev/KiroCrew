@@ -13484,7 +13484,9 @@
       "broadcast_open_unknown": "Не подтверждено · открыть",
       "broadcast_delivery_hint": "Текущая работа не прерывается: активный ход прочитает сообщение после текущего вызова инструмента, простаивающая сессия начнёт новый ход.",
       "broadcast_retry": "Повторить неудавшиеся ({{n}})",
-      "folder_renamed_to": "Папка переименована в {{name}}"
+      "folder_renamed_to": "Папка переименована в {{name}}",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Показывать только чаты Crew Mode"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

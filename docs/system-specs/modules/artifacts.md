@@ -1047,7 +1047,10 @@ deliberately does NOT delegate to `delete()`: re-checking under the lock and the
 calling a method that re-acquires it reopens the same window between the two
 acquisitions, so the removal is inlined.
 
-**Star semantics in `WidgetFrame`.** `exists` and `pinned` are separate states:
+**Star semantics in `WidgetFrame`** (the slug, probe and star live in the
+`useWidgetArtifact` hook of `website/src/components/WidgetArtifact.tsx`, which the
+HTML frame and the markdown-bodied widget, `MarkdownWidget`, both draw from, so a
+widget without an iframe keeps the same link and star). `exists` and `pinned` are separate states:
 `{exists: true, pinned: false}` is the normal steady state, so the star renders
 hollow (offering to save) while the title still links to `/artifacts/<slug>`.
 Starring pins; if the artifact is absent (a pre-feature widget, a failed

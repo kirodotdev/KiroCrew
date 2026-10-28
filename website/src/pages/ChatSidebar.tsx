@@ -15,6 +15,7 @@ import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { setCrewEnabled } from '../lib/crewEnabled'
+import { crewModeView } from '../lib/crewMode'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -125,11 +126,16 @@ function ChatSidebar({
   // crash, so the names are the guard. The prop itself keeps its public name;
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
-  slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
+  slots: slotsProp, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
   chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // The person's list. A Crew Mode root's crew members are its side panel's to
+  // show (`crewModeView`): they never reach a lane, the Broadcast dialog or any
+  // other reader of this collection. The server keeps them in the slot frame
+  // (`?crew=all`), so the one filter is here, at the sidebar's door.
+  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the

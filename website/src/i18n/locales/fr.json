@@ -13267,7 +13267,9 @@
       "broadcast_open_unknown": "Non confirmé · ouvrir",
       "broadcast_delivery_hint": "Aucun travail en cours n’est interrompu : un tour actif le lit après l’appel d’outil en cours ; une session inactive commence un nouveau tour.",
       "broadcast_retry": "Réessayer {{n}} en échec",
-      "folder_renamed_to": "Dossier renommé en {{name}}"
+      "folder_renamed_to": "Dossier renommé en {{name}}",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Afficher uniquement les discussions Crew Mode"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

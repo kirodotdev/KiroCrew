@@ -1501,3 +1501,26 @@ describe('CommandBarOverlay root ordering under a query', () => {
     expect(renderedHeaders()).toContain('Commands')
   })
 })
+
+describe('Crew Mode workers stay out of the Command Bar (edge review R1 X3)', () => {
+  it('reads its rows through the person rule, which passes a worker on this part', () => {
+    // A worker is its conductor's to show. The Command Bar reads the person's
+    // rows (`selectPersonSlots`); the Crew panel part, which lists a root's
+    // workers, is what makes that rule drop them. Until then they stay listed.
+    storeState.dashboard = {
+      slots: [
+        { key: 'root', title: 'Ship the review', crew_mode_root: true, messages: 3 },
+        { key: 'w-ask', title: 'Approval: list empty workspace', crew_root: 'root', needs_input: true, messages: 2 },
+        { key: 'w-done', title: 'Done: answer cat', crew_root: 'root', messages: 4, last_activity_ts: 9_000 },
+        { key: 'plain', title: 'Fleet notes', pending_approval: true, messages: 2 },
+      ],
+      unreadSlots: ['w-done'],
+    }
+    mount()
+    const text = screen.getAllByRole('option').map(r => r.textContent ?? '').join('\n')
+    expect(text).toContain('Fleet notes')
+    expect(text).toContain('Ship the review')
+    expect(text).toContain('Approval: list empty workspace')
+    expect(text).toContain('Done: answer cat')
+  })
+})

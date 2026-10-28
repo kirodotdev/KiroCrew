@@ -6063,7 +6063,9 @@
       "process_released": "Asleep: wakes on the next message",
       "chat_with_folder": "Chat with {{folder}} folder",
       "chat_with_folder_desc": "The chat that started this folder's other chats",
-      "conductor_tag": "conductor"
+      "conductor_tag": "conductor",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Show only Crew Mode chats"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

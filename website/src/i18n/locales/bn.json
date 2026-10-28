@@ -13050,7 +13050,9 @@
       "broadcast_open_unknown": "নিশ্চিত নয় · খোলো",
       "broadcast_delivery_hint": "চলমান কাজ থামে না: চালু টার্ন বর্তমান টুল কলের পরে এটি পড়ে; অলস সেশন নতুন টার্ন শুরু করে।",
       "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও",
-      "folder_renamed_to": "ফোল্ডারের নাম পরিবর্তন করে {{name}} করা হয়েছে"
+      "folder_renamed_to": "ফোল্ডারের নাম পরিবর্তন করে {{name}} করা হয়েছে",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "শুধু Crew Mode চ্যাট দেখাও"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

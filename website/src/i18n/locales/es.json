@@ -13267,7 +13267,9 @@
       "broadcast_open_unknown": "Sin confirmar · abrir",
       "broadcast_delivery_hint": "No se interrumpe ningún trabajo en curso: un turno activo lo lee tras la llamada de herramienta actual; una sesión inactiva empieza un turno nuevo.",
       "broadcast_retry": "Reintentar {{n}} fallidos",
-      "folder_renamed_to": "Carpeta renombrada a {{name}}"
+      "folder_renamed_to": "Carpeta renombrada a {{name}}",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Mostrar solo chats de Crew Mode"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

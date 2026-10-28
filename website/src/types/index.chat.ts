@@ -242,6 +242,17 @@ export interface ChatSlot extends TurnIdentityFields {
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
   created_by?: string
+  /** True on a Crew Mode root: a root session running a conductor template
+   *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
+  crew_mode_root?: boolean
+  /** On a session a Crew Mode root dispatched (directly or through another
+   *  worker): that root's key. The person's session list leaves such a row out;
+   *  the side panel lists it under its root. Absent on every other row. */
+  crew_root?: string
+  /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
+   *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
+   *  the configured `agent.crew_mode_agent`. */
+  crew_mode_agent?: string
   /** Whether THIS gateway process stamped `created_by` at mint, rather than
    * rehydrating it from the transcript. `created_by` is restored from a metadata
    * line an agent's file tools can edit, so on its own it is a claim; this says
@@ -638,6 +649,8 @@ export interface PendingApproval {
   tool_input: string
   tool_kind: string
   request_id: string
+  /** "1" when the slot approve route would honor a `trust` decision for it. */
+  trust_grantable?: string
 }
 
 export interface SubagentInfo {
@@ -655,3 +668,4 @@ export interface SubagentInfo {
 export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
 }
+

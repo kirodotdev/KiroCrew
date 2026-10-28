@@ -194,3 +194,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @import "./styles/highlights-and-page-zoom.css";
 @import "./styles/liquid-glass.css";
 @import "./styles/content-fit.css";
+
+/* The crew gradient: the one mark of a chat run by a crew (`docs/decisions/
+   2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md`), from the theme's own
+   `--aim` to `--info`, so a theme that moves either token moves Crew Mode with it.
+   Worn here by the session filter's Crew Mode chip; the Crew panel part gathers
+   every Crew Mode surface's rules into their own partial. */
+.crew-grad {
+  background-image: linear-gradient(90deg, var(--aim), var(--info));
+  color: var(--aim-fg);
+}

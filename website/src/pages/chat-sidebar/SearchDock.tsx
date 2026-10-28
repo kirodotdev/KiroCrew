@@ -74,12 +74,14 @@ export const FILTER_LABEL_KEY: Record<SessionFilterKey, string> = {
   running: 'pages.chatSidebar.filter_running',
   pinned: 'pages.chatSidebar.filter_pinned',
   recent: 'pages.chatSidebar.filter_recent',
+  crew: 'pages.chatSidebar.filter_crew',
 }
 export const FILTER_DESCRIPTION_KEY: Record<SessionFilterKey, string> = {
   unread: 'pages.chatSidebar.filter_unread_description',
   running: 'pages.chatSidebar.filter_running_description',
   pinned: 'pages.chatSidebar.filter_pinned_description',
   recent: 'pages.chatSidebar.filter_recent_description',
+  crew: 'pages.chatSidebar.filter_crew_description',
 }
 
 /** Sort options, in menu order. The label lives in `SORT_LABEL_KEY`. */
@@ -247,6 +249,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   const active = activeFilters.has(filterDef.key)
                   const hidden = hiddenFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
+                  // The Crew Mode row is offered once a chat runs on the conductor
+                  // (a row the server stamps `crew_mode_root`), and stays while the
+                  // filter is on. With no such chat, on a gateway without Crew Mode
+                  // included, the menu reads as it does today.
+                  if (filterDef.key === 'crew' && !active && slotCount === 0) return null
                   const isRecent = filterDef.key === 'recent'
                   if (isRecent) {
                     // The window picker is a NESTED FLYOUT on a wide viewport and
@@ -926,9 +933,30 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </div>
         )
       })()}
-      {activeFilters.size > 0 && (
+      {/* The Crew Mode chip in its own row, above the status chips, for the same
+          AUTOSDE reason as the tag, model and hides chips: the status-chip row
+          below holds the base branch's four filter chips and must not grow
+          (max-two-buttons-per-row), so the fifth filter never joins it. */}
+      {activeFilters.has('crew') && (() => {
+        const slotCount = filterCounts['crew'] ?? 0
+        const filterLabel = i18nT(FILTER_LABEL_KEY['crew'])
+        return (
+          <div className="px-3 pb-1">
+            <FilterChip
+              testId="filter-chip-crew"
+              label={`${filterLabel}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+              color="var(--accent)"
+              gradient
+              paused={filtersPaused}
+              clearLabel={i18nT('pages.chatSidebar.clear_named_filter', { filter: filterLabel })}
+              onClear={() => toggleFilter('crew')}
+            />
+          </div>
+        )
+      })()}
+      {SESSION_FILTERS.some(filterDef => filterDef.key !== 'crew' && activeFilters.has(filterDef.key)) && (
         <div className={FILTER_CHIP_ROW_CLS}>
-          {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
+          {SESSION_FILTERS.filter(filterDef => filterDef.key !== 'crew' && activeFilters.has(filterDef.key)).map(filterDef => {
             const slotCount = filterCounts[filterDef.key] ?? 0
             const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
             // The label goes in as-is. It used to be `.toLowerCase()`d to read as

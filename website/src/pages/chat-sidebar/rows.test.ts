@@ -601,7 +601,15 @@ describe('the lanes and the folder tree', () => {
     const rows = buildSidebarRows(inputs([
       local('u', { pinned: true }), local('r'), peer('u', { running: true, pinned: true }), peer('old', { last_turn_ts: iso(2 * DAY) }),
     ], { local: { unread: new Set(['u']), running: new Set(['r']), recent: new Set(['u', 'r']) } }))
-    expect(rows.statusCounts).toEqual({ unread: 1, running: 2, pinned: 1, recent: 3 })
+    expect(rows.statusCounts).toEqual({ unread: 1, running: 2, pinned: 1, recent: 3, crew: 0 })
+  })
+
+  it('narrows to Crew Mode roots alone when the Crew Mode chip is on', () => {
+    const rows = buildSidebarRows(inputs([
+      local('root', { crew_mode_root: true }), local('plain'),
+    ], { filters: { status: { active: new Set<SessionFilterKey>(['crew']) } } }))
+    expect(keys(rows.filteredSlots)).toEqual(['root'])
+    expect(rows.statusCounts.crew).toBe(1)
   })
 })
 

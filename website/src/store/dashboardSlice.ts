@@ -13,6 +13,7 @@ import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName 
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+export { selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
 interface CloseHold {

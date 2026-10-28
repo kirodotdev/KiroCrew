@@ -12833,7 +12833,9 @@
       "broadcast_open_unknown": "확인 안 됨 · 열기",
       "broadcast_delivery_hint": "진행 중인 작업은 중단되지 않아요. 실행 중인 턴은 현재 도구 호출이 끝난 뒤 읽고, 쉬는 세션은 새 턴을 시작해요.",
       "broadcast_retry": "실패한 {{n}}개 다시 보내기",
-      "folder_renamed_to": "폴더 이름이 {{name}}(으)로 변경되었습니다"
+      "folder_renamed_to": "폴더 이름이 {{name}}(으)로 변경되었습니다",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Crew Mode 채팅만 보기"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

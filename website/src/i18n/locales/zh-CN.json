@@ -12833,7 +12833,9 @@
       "broadcast_open_unknown": "未确认 · 打开",
       "broadcast_delivery_hint": "不会打断正在进行的工作：运行中的会话在当前工具调用结束后读到；空闲的会话开始新一轮。",
       "broadcast_retry": "重试 {{n}} 个失败的",
-      "folder_renamed_to": "文件夹已重命名为 {{name}}"
+      "folder_renamed_to": "文件夹已重命名为 {{name}}",
+      "filter_crew": "Crew Mode 对话",
+      "filter_crew_description": "只显示 Crew Mode 对话"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

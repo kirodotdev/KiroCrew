@@ -887,6 +887,22 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('flat-view-toggle')).toBeNull()
   })
 
+  it("counts a Crew Mode worker's tool approval on its collapsed conductor while the worker is still a row", () => {
+    // The list rule is inert on this part, so a worker is a child row in the lane;
+    // its approval is an ask of the person and the collapsed root's badge must say
+    // so, or the badge contradicts the child's own glyph. The conductor's own
+    // Approval-needed summary (the Crew panel part) takes this over once the
+    // worker leaves the lane.
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    openAllBut('k-root')
+    const { getByTestId } = renderSidebar([
+      { key: 'k-root', title: 'Crew root', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, parent: { slot: 'k-root', key: 'k-root' }, crew_root: 'k-root', pending_approval: true },
+      { key: 'k-w2', title: 'W2', messages: 2, running: false, modified: 2000, parent: { slot: 'k-root', key: 'k-root' }, crew_root: 'k-root' },
+    ])
+    expect(getByTestId('conductor-needs-you-k-root').textContent).toBe('1')
+  })
+
   it('pairs each aggregate count with the glyph its children show, not a tint alone', () => {
     localStorage.setItem('mc-sidebar-lane', 'conductor')
     openAllBut('k-conductor')

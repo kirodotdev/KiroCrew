@@ -28,6 +28,11 @@ export interface Slot {
    *  crew log is off), so it never asks a client to come back for an answer that will
    *  not change. */
   lineage_pending?: boolean
+  /** A Crew Mode root (`crew_mode.stamp_rows`): the Crew Mode chip matches it. */
+  crew_mode_root?: boolean
+  /** On a session a Crew Mode root dispatched: the root's key. Such rows are left
+   *  out of the list before it is built (`crewModeView`). */
+  crew_root?: string
   /** Peer OWNERSHIP, present ONLY on a row sourced from a connected remote
    *  instance's live slot list (see `useInstanceSessions`). Absent on every local
    *  slot, so a consumer tests presence to decide whether the local-only
@@ -191,7 +196,7 @@ export interface AgentInfo {
   display_name?: string
 }
 
-export type SessionFilterKey = 'unread' | 'running' | 'pinned' | 'recent'
+export type SessionFilterKey = 'unread' | 'running' | 'pinned' | 'recent' | 'crew'
 
 /**
  * Which session lane the list renders. One persisted preference, three values.

@@ -13,7 +13,7 @@ import { forwardRef, type ReactNode } from 'react'
 const seen = vi.hoisted(() => ({
   crewWindow: null as null | { onClose?: () => void; target: unknown },
   crewGuard: null as null | { onClose?: () => void },
-  flyout: null as null | { onExpand: () => void; onDismiss: () => void },
+  flyout: null as null | { onExpand: () => void; onDismiss: () => void; slots: { key: string }[] },
   headerMenu: null as null | { onReveal?: () => void; onRename?: () => void },
   pinnedPrompt: null as null | { onToggleExpanded: () => void; onJump: () => void },
   toolGroups: [] as Array<{ onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number }>,
@@ -27,7 +27,7 @@ vi.mock('../components/SnipOverlay', () => ({ default: () => null }))
 vi.mock('./chat/page/ChatPaneNotices', () => ({ default: () => null }))
 vi.mock('../components/SessionTabStrip', () => ({ default: () => null }))
 vi.mock('./chat/SessionFlyout', () => ({
-  default: forwardRef((p: { onExpand: () => void; onDismiss: () => void }, _ref) => { seen.flyout = p; return <div data-testid="flyout" /> }),
+  default: forwardRef((p: { onExpand: () => void; onDismiss: () => void; slots: { key: string }[] }, _ref) => { seen.flyout = p; return <div data-testid="flyout" /> }),
   TOGGLE_RECT: { x: 8, y: 9, size: 28 },
 }))
 vi.mock('./ChatSidebar', () => ({ default: () => null }))
@@ -134,6 +134,23 @@ describe('SessionsSidebarChrome', () => {
     act(() => { seen.flyout!.onDismiss() })
     expect(close).toHaveBeenCalled()
     expect(focus).toHaveBeenCalled()
+  })
+
+  it('hands the flyout the person\'s rows, not the page\'s list that keeps a crew member', () => {
+    const root = { key: 'root', title: 'Crew chat', messages: 1, running: false, crew_mode_root: true }
+    const member = { key: 'member', title: 'A crew member', messages: 1, running: false, crew_root: 'root' }
+    render(<SessionsSidebarChrome {...props<SidebarProps>({
+      embedMode: 'chat', isMobile: false,
+      // The page keeps the crew member (its active slot must stay listed)...
+      filteredSlots: [root, member] as never,
+      // ...and the flyout gets the person's rows, which `pageEnvironment` derives with `crewModeView`.
+      personSlots: [root] as never,
+      effectiveSidebarWidth: 280, containerH: 600,
+      flyoutEligible: true, expandSidebar: vi.fn(), flyoutTriggerRef: { current: null },
+      flyoutSurfaceRef: { current: null },
+      flyout: { open: true, openedBy: 'pointer', close: vi.fn(), surfaceProps: {} } as never,
+    })} />)
+    expect(seen.flyout!.slots.map(s => s.key)).toEqual(['root'])
   })
 })
 

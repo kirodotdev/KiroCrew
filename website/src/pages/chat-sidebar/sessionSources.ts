@@ -1,5 +1,6 @@
 /** Where the rendered rows come from: the caller's local tabs, live peer rows from
  *  connected crews, and the federated Older Sessions search. */
+import { crewModeView } from '../../lib/crewMode'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { useAppSelector } from '../../store'
@@ -146,7 +147,9 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
       // of that listing can be older than the binding.
       const local = localSlots as Slot[]
       const seen = new Set(local.map(sessionRowIdentity))
-      const peers = (instanceSessions.rows as unknown as Slot[])
+      // A peer's crew members are its own conductor's to show, as local ones are
+      // (`crewModeView`), so the person's list treats both trees alike.
+      const peers = crewModeView(instanceSessions.rows as unknown as Slot[])
         .filter(row => !seen.has(sessionRowIdentity(row)))
       return peers.length === 0 ? local : [...local, ...peers]
     },

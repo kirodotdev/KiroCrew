@@ -31,6 +31,9 @@ interface SessionsSidebarChromeProps {
   creatingSlot: boolean
   dispatch: AppDispatch
   filteredSlots: ChatSlot[]
+  /** `filteredSlots` without a Crew Mode root's crew members: what the collapsed-sidebar
+   *  flyout lists (the sidebar filters its own prop; the main pane keeps every row). */
+  personSlots: ChatSlot[]
   isMobile: boolean
   keyboardInset: number
   mobileNavRail: MobileNavRailRenderer | null
@@ -107,7 +110,7 @@ interface SessionsSidebarChromeProps {
  * The sessions chrome around the chat pane: the phone drawer and its scrim, the desktop sidebar toggle and its recents flyout, the sidebar or drawer itself (or the embedded sessions list), the phone top bar, and the tag popover.
  */
 export default function SessionsSidebarChrome({
-  embedMode, mode, activeSlot, connected, creatingSlot, dispatch, filteredSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
+  embedMode, mode, activeSlot, connected, creatingSlot, dispatch, filteredSlots, personSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
   activityOpen, selectFromSidebar, history, historyHasMore, navigateToEmbeddedSlot, openEmbeddedCrewWindow, splitMode, defaultAgent, installedAgents, sidebarAgents, sidebarChoices, setActionError, showActionError,
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
@@ -179,7 +182,7 @@ export default function SessionsSidebarChrome({
           <SessionFlyout
             key="session-flyout"
             ref={flyoutSurfaceRef}
-            slots={filteredSlots}
+            slots={personSlots}
             activeSlot={activeSlot}
             unreadSlots={surfaceUnreadSlots}
             // The flyout is a session list, which gains nothing past

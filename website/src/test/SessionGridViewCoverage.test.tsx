@@ -81,6 +81,7 @@ type Slot = {
   messages?: number
   agent?: string
   last_activity_ts?: string
+  crew_root?: string
 }
 
 const leaf = (id: string, slot?: string): GridNode =>
@@ -908,5 +909,21 @@ describe('SessionGridView — picker controls', () => {
     fireEvent.mouseDown(onlyPicker())
 
     await waitFor(() => expect(screen.getByTestId('pane-a').getAttribute('data-focused')).toBe('no'))
+  })
+})
+
+describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
+  it("offers a pane's picker the person rule's rows, which include a Crew Mode worker on this part", async () => {
+    // The picker reads `selectPersonSlots`. The drop of a root's workers lands with
+    // the Crew panel that lists them; until then the worker is still offered.
+    seedApi([
+      { key: 'a', title: 'Alpha' },
+      { key: 'root', title: 'Conductor' },
+      { key: 'w', title: 'Worker', crew_root: 'root', pending_approval: true },
+    ])
+    renderGrid('a')
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(2))
+    expect(rowsOf(onlyPicker()).map(r => r.textContent).join('\n')).toContain('Conductor')
+    expect(within(onlyPicker()).getByText('Worker')).toBeInTheDocument()
   })
 })

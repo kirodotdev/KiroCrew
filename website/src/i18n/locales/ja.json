@@ -12833,7 +12833,9 @@
       "broadcast_open_unknown": "未確認・開く",
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
       "broadcast_retry": "失敗した {{n}} 件を再試行",
-      "folder_renamed_to": "フォルダー名を {{name}} に変更しました"
+      "folder_renamed_to": "フォルダー名を {{name}} に変更しました",
+      "filter_crew": "Crew Mode",
+      "filter_crew_description": "Crew Mode のチャットだけを表示"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

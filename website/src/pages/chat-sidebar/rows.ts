@@ -509,6 +509,7 @@ function makeStatusMatches(
     unread: slot => { const key = localKeyOf(slot); return key !== null && unread.has(key) },
     running: isRunning,
     pinned: slot => localKeyOf(slot) !== null && !!slot.pinned,
+    crew: slot => !!slot.crew_mode_root,
     recent: slot => {
       const key = localKeyOf(slot)
       return key === null
