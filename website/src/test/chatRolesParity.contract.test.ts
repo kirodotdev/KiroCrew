@@ -54,7 +54,6 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   subagent_run_tool: 'launch card refining the tool line; store-connected',
   tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
   conversation_card: 'the change card / guide offer row; needs the card and guide stores, which the store-free registry has none of (it leaves the role undrawn)',
-  session_relay_incoming: "a SHAPE entry: a session_send / session_broadcast delivery (gateway-set meta.relay) drawn as the incoming session-message card; it names the sender from this hub's session roster, so the registry draws the row as plain user prose",
   session_send_tool: "this session's own session_send call drawn as the outgoing session-message card, refining the tool line; the registry draws the generic tool line",
   // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
