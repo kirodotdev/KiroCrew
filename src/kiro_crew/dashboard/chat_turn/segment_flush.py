@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -199,6 +199,9 @@ _SEGMENT_UNCHECKED_TEXT = (
 #: the event loop, so a reply with tens of thousands of removed values must
 #: not stall it; past this the segment fails closed instead.
 _SEGMENT_CHECK_MAX_WORK = 400_000_000
+
+#: The refusal :func:`_whole_text_refusal` gives past that ceiling.
+_TOO_MANY_REMOVED = "too many removed values to check"
 
 
 def _reset_segment_copy(slot: _ChatSlot) -> None:
@@ -433,19 +436,24 @@ def _redact_segment(
                 # segment is withheld.
                 reason = _whole_text_refusal(saved, per_delta, removed)
                 strict_order: list[bool] = []
+                # Past the work budget the retry would fail it again, and its
+                # digest-by-value scan is the cost the budget exists to bound.
                 if (
                     reason
+                    and reason != _TOO_MANY_REMOVED
                     and saved[0]
                     != (
                         strict := _redact_segment_text(
-                            slot, whole, False, _ordered_out=strict_order
+                            slot, whole, tuple(removed), _ordered_out=strict_order
                         )
                     )[0]
                 ):
                     # A delta boundary split an SRI value, so its delta redacted
                     # the bare digest the whole text keeps. One pass with that
-                    # exemption off is main's verdict on the digest; save it if
-                    # it passes the same checks, rather than withhold the reply.
+                    # exemption off for each digest holding a removed value is
+                    # main's verdict on that digest, and keeps every digest no
+                    # delta cut; save it if it passes the same checks, rather
+                    # than withhold the reply.
                     if not _whole_text_refusal(strict, per_delta, removed):
                         saved, reason, order = strict, "", strict_order
         except Exception as exc:  # noqa: BLE001 -- any failure must fail closed
@@ -468,7 +476,7 @@ def _whole_text_refusal(
 ) -> str:
     """Why the whole-text ``saved`` may not be saved over ``per_delta``, or ``""``."""
     if len(removed) * (len(saved[0]) + len(per_delta)) > _SEGMENT_CHECK_MAX_WORK:
-        return "too many removed values to check"
+        return _TOO_MANY_REMOVED
     if _kept_removed_values(saved[0], per_delta, removed):
         return "whole-text pass keeps a value a per-delta pass removed"
     if _saved_text_shows_more(saved[0], per_delta):
@@ -620,7 +628,7 @@ def _records_hold_removed_credential(
 def _redact_segment_text(
     slot: _ChatSlot,
     text: str,
-    keep_sri_digests: bool = True,
+    judged_sri_values: Collection[str] = (),
     *,
     _ordered_out: list[bool] | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
@@ -641,7 +649,7 @@ def _redact_segment_text(
         logger.warning("Exfiltration URL redacted in chat segment: %s", w)
     links_before = redacted.count(EXFILTRATION_REDACTION_TAG_PREFIX)
     redacted, cred_warnings, matches = redact_credentials_with_records(
-        redacted, keep_sri_digests=keep_sri_digests
+        redacted, judged_sri_values=judged_sri_values
     )
     if (
         _ordered_out is not None

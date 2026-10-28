@@ -785,9 +785,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_redact_segment_text",
             "function",
-            # keep_sri_digests: defaulted, so every old caller keeps its shape.
+            # judged_sri_values: defaulted, so every old caller keeps its shape.
             # _ordered_out: keyword-only and defaulted, likewise.
-            "(slot: '_ChatSlot', text: 'str', keep_sri_digests: 'bool' = True,"
+            "(slot: '_ChatSlot', text: 'str', judged_sri_values: 'Collection[str]' = (),"
             " *, _ordered_out: 'list[bool] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
