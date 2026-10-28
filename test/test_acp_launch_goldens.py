@@ -650,6 +650,7 @@ def _launch_tools(
     browser_env: dict[str, str] | None = None,
     spawn_error: BaseException | None = None,
     retrying=None,
+    scoped: bool = True,
 ):
     from kiro_crew.acp.launch import LaunchTools
 
@@ -721,7 +722,7 @@ def _launch_tools(
         wrap_argv_async=_wrap_async,
         wrap_argv=lambda *a, **k: None,
         wrapped_by_crew_sandbox=lambda argv: argv[:1] == ["sandbox"],
-        cgroup_scope_argv=lambda argv: ["scope", *argv],
+        cgroup_scope_argv=(lambda argv: ["scope", *argv]) if scoped else (lambda argv: argv),
         augmented_path=lambda path: f"{path}:/augmented",
         scrub_agent_subprocess_env=_scrub,
         apply_pod_home_remap=_pod_remap,
@@ -1010,6 +1011,30 @@ def test_the_driver_names_the_scope_and_the_launch_reports_it(monkeypatch, tmp_p
     )
     assert rec.factory_argv[:2] == ["named", "scope"]
     assert launched.scope_unit == "kirocrew-x.scope"
+
+
+def test_only_a_session_host_without_a_cgroup_scope_is_an_oom_target(monkeypatch, tmp_path) -> None:
+    """No scope means no memory.max over the tree, so the host OOM killer must
+    prefer it to the gateway; a scoped tree keeps the unbiased profile."""
+    from kiro_crew.sandbox import (
+        RLIMIT_PROFILE_SESSION_HOST,
+        RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
+    )
+
+    _launch_env(monkeypatch)
+    profiles = {}
+    for scoped in (True, False):
+        rec = _Recording()
+        _run_launch(
+            _FakeHost(tmp_path),
+            _request(),
+            _launch_tools(rec, scratch=_Scratch(None), scoped=scoped),
+        )
+        profiles[scoped] = rec.factory_kwargs["profile"]
+    assert profiles == {
+        True: RLIMIT_PROFILE_SESSION_HOST,
+        False: RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
+    }
 
 
 def test_only_a_driver_that_brings_a_retry_retries_the_spawn(monkeypatch, tmp_path) -> None:
