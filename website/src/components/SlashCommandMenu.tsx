@@ -6,8 +6,11 @@ import ErrorNotice from './ErrorNotice'
 import { pickerQueryKey, type PickerWorkflow, type SlashCommand } from '../chat-core/composer/pickerSource'
 import { SLASH_MENU_QUERY, WORKFLOW_PICK_QUERY } from '../chat-core/composer/slashQuery'
 import { i18nT } from '../i18n/t'
+import { compareText } from '../i18n/format'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
+import { useKasWorkflowsEnabled } from '../apps/workflows/kas/useKasWorkflows'
+import { KAS_WORKFLOW_COMMAND_NAMES } from './chat-input/kasSlashCommands'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
 /**
@@ -69,6 +72,12 @@ const COMMAND_DESC_KEY: Record<string, string> = {
   '/tools': 'components.slashCommandMenu.desc_tools',
   '/usage': 'components.slashCommandMenu.desc_usage',
   '/workflow': 'components.slashCommandMenu.desc_workflow',
+  // Gap 15: Kiro Agent workflow commands (shown only while the KAS preview is
+  // on). Hyphenated, so distinct from `/workflow` above.
+  '/workflow-run': 'components.slashCommandMenu.desc_workflow_run',
+  '/workflow-resume': 'components.slashCommandMenu.desc_workflow_resume',
+  '/workflow-status': 'components.slashCommandMenu.desc_workflow_status',
+  '/workflow-cancel': 'components.slashCommandMenu.desc_workflow_cancel',
 }
 
 /**
@@ -164,10 +173,18 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     queryFn: ({ signal }) => load!(signal),
     enabled: typeof load === 'function',
   })
+  // Gap 15: gates the Kiro Agent workflow commands below. Cheap shared probe
+  // (`KAS_ENGINE_KEY`, 60s stale); off by default, so a non-KAS chat adds none.
+  const { enabled: kasOn } = useKasWorkflowsEnabled()
   const allCommands = useMemo(() => {
     const names = new Set(apiCommands.map(c => c.name))
-    return [...apiCommands, ...FRONTEND_COMMANDS.filter(c => !names.has(c.name))].sort((a, b) => a.name.localeCompare(b.name))
-  }, [apiCommands])
+    // Gap 15: the Kiro Agent workflow commands are offered only while the KAS
+    // preview is on, and never when the backend already reports them (dedup by
+    // name, so a future server-sent copy wins its own description).
+    const kasCommands = kasOn ? KAS_WORKFLOW_COMMAND_NAMES.map(name => ({ name })) : []
+    const extras = [...FRONTEND_COMMANDS, ...kasCommands].filter(c => !names.has(c.name))
+    return [...apiCommands, ...extras].sort((a, b) => compareText(a.name, b.name))
+  }, [apiCommands, kasOn])
   const commands = useMemo(
     () => (hidden?.length ? allCommands.filter(c => !hidden.includes(c.name)) : allCommands),
     [allCommands, hidden],

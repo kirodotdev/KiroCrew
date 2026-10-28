@@ -1311,6 +1311,12 @@
       "hint": "Lets a chat hand tasks to a crew and track them on a Board."
     },
     {
+      "id": "developer.use-kiro-workflows-when-kiro-agent-server-is-configured",
+      "label": "Use Kiro Workflows when Kiro Agent Server is configured",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.use-kiro-workflows-when-kiro-agent-server-is-configured"
+    },
+    {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",
