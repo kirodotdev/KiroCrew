@@ -49,6 +49,7 @@ import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
+import { useComposerKeyboardLift } from '../hooks/useComposerKeyboardLift'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -469,6 +470,12 @@ function ChatInput({
     voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle,
   })
   const wrapperRef = useRef<HTMLDivElement>(null)
+  // The composer root, measured so an on-screen keyboard that still covers it
+  // (iPadOS, where Safari's layout-viewport pan does not lift it enough) can be
+  // offset above the keyboard. A strict no-op on desktop and on iPhone, where
+  // the pan already clears it — see useComposerKeyboardLift.
+  const inputAreaRef = useRef<HTMLDivElement>(null)
+  const keyboardLift = useComposerKeyboardLift(inputAreaRef)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fileInputId = useId()
   const listIndentHintId = useId()
@@ -963,8 +970,8 @@ function ChatInput({
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
-    <div className={`input-area px-4 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
-      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
+    <div ref={inputAreaRef} className={`input-area px-4 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
+      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}), ...(keyboardLift > 0 ? { transform: `translateY(-${keyboardLift}px)` } : {}) }}>
 
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}
