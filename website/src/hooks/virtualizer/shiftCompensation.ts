@@ -15,7 +15,7 @@
 
 import { useCallback, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import { captureAnchorCandsFrom, captureTopAnchorFrom, rowTopFrom } from './anchorGeometry'
-import { heightAnchorStillUsable, shiftCompensationAllowed } from './FollowController'
+import { heightAnchorClampedToCeiling, heightAnchorStillUsable, shiftCompensationAllowed } from './FollowController'
 import { planHeightRetirement, type HeightIndex } from './HeightIndex'
 import type { WindowRange } from './WindowCalculator'
 import type { FollowState, Pinning } from './followPolicy'
@@ -832,6 +832,14 @@ export function useShiftCompensation<T>(ctx: {
   /** The owner whose announcements the height-sync consumer is paying -- an
    *  identity change there is the width-scope swap, not a reprice. */
   const heightOwnerSeenRef = useRef<HeightIndex>(offsetIndex)
+  /** scrollTop in the render of the commit that consumes a pending height-sync
+   *  capture: before this commit's DOM changes, so before any engine clamp it
+   *  forces. Read only while a capture is pending, so an idle render pays no
+   *  layout read. React commits a render in the task that rendered it, so this
+   *  is the last scrollTop input could have moved before the consumer runs. */
+  const preCommitScrollTopRef = useRef<number | null>(null)
+  preCommitScrollTopRef.current =
+    heightAnchorPendingRef.current && scrollerRef.current ? scrollerRef.current.scrollTop : null
 
   const compensateAboveFold = useCallback((el: HTMLDivElement, aboveFoldReprice: number): boolean => {
     // Hold a RELEASED reader against a reprice above them, in this fire. The
@@ -1093,11 +1101,8 @@ export function useShiftCompensation<T>(ctx: {
       // ceiling coincidence the clamp and nothing else.
       const pending = heightAnchorPendingRef.current
       const el = scrollerRef.current
-      if (pending && el) {
-        const ceiling = el.scrollHeight - el.clientHeight
-        if (pending.scrollTop > ceiling && heightAnchorStillUsable(ceiling, el.scrollTop)) {
-          heightAnchorPendingRef.current = { ...pending, scrollTop: el.scrollTop }
-        }
+      if (pending && el && heightAnchorClampedToCeiling(pending.scrollTop, el)) {
+        heightAnchorPendingRef.current = { ...pending, scrollTop: el.scrollTop }
       }
       return
     }
@@ -1131,7 +1136,21 @@ export function useShiftCompensation<T>(ctx: {
     // further hard input, so an input-timestamp gate would miss it), or
     // Chromium's native anchoring (which has already absorbed the shift, so
     // the correction is a no-op worth skipping anyway).
-    if (!heightAnchorStillUsable(pending.scrollTop, el.scrollTop)) return
+    //
+    // One move of the viewport is NOT the reader's: the engine clamp a shrinking
+    // commit forces when the capture now sits past the maximum (see
+    // heightAnchorClampedToCeiling). The candidates' tops still carry the whole
+    // move, so the correction below stays exact from the clamped position.
+    // A reader who scrolled to the very bottom after the capture lands on the
+    // same ceiling, so the clamp is honoured only when scrollTop had not moved
+    // by this commit's render, before its DOM changed: past that point only
+    // this commit's own layout can move it.
+    const preCommit = preCommitScrollTopRef.current
+    const engineClamped =
+      preCommit !== null &&
+      heightAnchorStillUsable(pending.scrollTop, preCommit) &&
+      heightAnchorClampedToCeiling(pending.scrollTop, el)
+    if (!heightAnchorStillUsable(pending.scrollTop, el.scrollTop) && !engineClamped) return
     // Released reader: the correction IS the candidates, so an empty list is
     // nothing to consume (the followed path above uses a candidate-free
     // sentinel and has already returned by here).
