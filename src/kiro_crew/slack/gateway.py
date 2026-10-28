@@ -263,6 +263,7 @@ from kiro_crew.hooks import (
     _is_host_read_only_builtin,
     hooks_config_from_config_dict,
 )
+from kiro_crew.kas_workflows.chat import needs_a_person as kas_needs_a_person
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (

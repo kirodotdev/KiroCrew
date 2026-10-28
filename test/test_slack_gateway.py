@@ -375,6 +375,7 @@ class TestInteractiveApproval:
         event.title = "bash: ls"
         event.tool_input = ""
         event.tool_purpose = ""
+        event.answers_only = False  # a bare MagicMock would read as a KAS question
         result = await callback(event, "")
         assert result is True
 
@@ -405,6 +406,7 @@ class TestInteractiveApproval:
         event.title = "cmd"
         event.tool_input = ""
         event.tool_purpose = ""
+        event.answers_only = False  # a bare MagicMock would read as a KAS question
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=True):
             result = await callback(event, "")
         assert result is True
@@ -471,6 +473,7 @@ class TestInteractiveApproval:
         event.title = "git diff"
         event.tool_input = ""
         event.tool_purpose = ""
+        event.answers_only = False  # a bare MagicMock would read as a KAS question
 
         with patch("kiro_crew.sel.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
