@@ -619,7 +619,12 @@ async def _start_kiro_runtime_impl(
         )
         if session_environments_enabled()
         and (
-            bool(section.coder_url or section.profiles)
+            bool(
+                section.coder_url
+                or section.profiles
+                or getattr(section, "sprites_profiles", None)
+                or getattr(section, "boxd_profiles", None)
+            )
             or await asyncio.to_thread(_choices_file_may_exist, session_key)
         )
         else None
