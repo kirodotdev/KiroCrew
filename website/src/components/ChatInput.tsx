@@ -161,7 +161,10 @@ const NO_VOICE: Partial<ComposerVoiceInputProps> = {}
  * natural height) and springs between the two shapes when `animate` is set;
  * the inner box keeps its natural height (`shrink-0`), so while the sizer is
  * still shorter it clips the TOP of the text column and the buttons at the
- * bottom never move. Disabled -- every host that does not opt in -- it renders
+ * bottom never move. The clip is `overflow: clip`, never `hidden`: a `hidden`
+ * box keeps a scroll position, and WebKit scrolls it to bring a caret in that
+ * clipped top band into view, so the text jumps while the box opens.
+ * Disabled -- every host that does not opt in -- it renders
  * its children bare, so the ordinary composer's tree is exactly what it was.
  */
 function ComposerSizer({ enabled, height, animate, className, children }: {
@@ -1272,7 +1275,7 @@ function ChatInput({
         enabled={inlineToolbarWhileFits}
         height={sizerPinned ? box.height : null}
         animate={!!(sizerPinned && box.animate && !reduceMotion)}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} overflow-hidden flex flex-col justify-end transition-[border-radius] duration-200`}
+        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} overflow-clip flex flex-col justify-end transition-[border-radius] duration-200`}
       >
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div
