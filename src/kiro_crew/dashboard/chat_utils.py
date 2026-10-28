@@ -768,6 +768,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
         _INCOGNITO_PREFIX,
+        _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
@@ -775,11 +776,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _installed_theme_persona,
         _maybe_consolidate,
         _maybe_inject_persona,
+        _owe_listing_refresh,
+        _pay_listing_refresh,
+        _published_keys_of,
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
         dashboard_slot_key,
         effective_session_key,
+        listing_slot_snapshot,
         reject_if_slot_under_construction,
         replacement_shares_transcript,
         restore_replacement_if_handover_did_not_land,

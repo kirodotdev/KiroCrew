@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
@@ -327,6 +328,7 @@ def _stub_state(st, monkeypatch, save=None):
         conversation_log=None,
         get_or_create_slot=_get_or_create,
         push_slots_update=lambda: None,
+        push_listing_refresh=MagicMock(),
         # The materialiser wraps creation + begin_slot_construction in this to
         # defer the creation broadcast; the stub's push is already a no-op, so a
         # nullcontext models it faithfully enough for the paths these tests
