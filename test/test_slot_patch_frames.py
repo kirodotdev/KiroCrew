@@ -231,6 +231,36 @@ class TestSlotRemoved:
             }
         ]
 
+    def test_a_closed_crew_mode_roots_workers_stay_out_of_the_lists(
+        self, state: DashboardState
+    ) -> None:
+        """Decision 5: closing a Crew Mode root's tab keeps its workers out of the
+        person's lists (the root is a known root, persisted in its metadata), so
+        the removal patch never restates them as ordinary rows."""
+        from kiro_crew import crew_mode
+
+        root = _slot(state, "root")
+        root.agent = "kirocrew-conductor"
+        worker = _slot(state, "worker")
+        worker._created_by = "root"
+        [row] = [r for r in state.serialize_slots() if r["key"] == "worker"]
+        assert row["crew_root"] == "root"
+        assert "root" in crew_mode.known_roots()
+        capable = _WS(patch_capable=True)
+        legacy = _WS(patch_capable=False)
+        state.register_ws(capable)  # type: ignore[arg-type]
+        state.register_ws(legacy)  # type: ignore[arg-type]
+
+        del state._slots["root"]
+        state.push_slot_removed("root")
+
+        [frame] = [f for f in capable.frames() if f["type"] == "slot_patch"]
+        assert frame["data"]["removed"] == ["root"]
+        assert all("crew_root" not in r for r in frame["data"]["slots"])
+        [after] = [r for r in state.serialize_slots() if r["key"] == "worker"]
+        assert after["crew_root"] == "root"
+        crew_mode._known_roots.discard("root")
+
     def test_a_reregistered_key_is_not_removed(self, state: DashboardState) -> None:
         _slot(state, "chat-a")
         capable = _WS(patch_capable=True)

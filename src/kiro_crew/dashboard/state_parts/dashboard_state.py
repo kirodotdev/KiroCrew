@@ -114,8 +114,8 @@ class DashboardState:
     _chat_pins_lock: LoopBoundLock
     _folders_lock: LoopBoundLock
     _folders_generation: int
-    #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending).
-    _lineage_sent: dict[str, tuple[Any, bool]]
+    #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending, crew stamps).
+    _lineage_sent: dict[str, tuple[Any, bool, tuple[str, bool]]]
 
     # Class-level defaults, NOT just __init__ assignments. push_slots_update and
     # _persist_open_slots read these on every call, and a partially-constructed

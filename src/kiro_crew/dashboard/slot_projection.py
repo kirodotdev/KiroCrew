@@ -420,6 +420,9 @@ class SlotProjection:
             "title": redact(slot.display_title),
             "agent": slot.agent,
             "agent_kind": getattr(slot, "agent_kind", ""),
+            # The agent Crew Mode turned on with, "" when it never did
+            # (``crew_mode.stamp_rows`` and the dashboard's ``runsCrewMode`` read it).
+            "crew_mode_agent": redact(getattr(slot, "crew_mode_agent", "") or ""),
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             # Whether this session's turns ask Jev which model tier to run on

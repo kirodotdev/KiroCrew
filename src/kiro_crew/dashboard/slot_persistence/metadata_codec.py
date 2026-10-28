@@ -726,6 +726,14 @@ def _read_agent_kind(r: _Read) -> None:
         r.slot.agent_kind = r.meta["agent_kind"]
 
 
+def _read_crew_mode_agent(r: _Read) -> None:
+    # The conductor the chat runs in Crew Mode: it marks the chat as Crew Mode until
+    # the migration moves it onto ``agent.crew_mode_agent`` (``crew_mode.runs_crew_mode``).
+    value = r.meta.get("crew_mode_agent")
+    if isinstance(value, str) and value:
+        r.slot.crew_mode_agent = value
+
+
 def _read_app_agent_owner(r: _Read) -> None:
     # "<app>/<agent>": the app-owned agent binding a palette command stamped.
     owner = r.meta.get("app_agent_owner")
@@ -1110,6 +1118,14 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.agent_kind),
         merge=_always(lambda s: s.agent_kind),
         read=_read_agent_kind,
+    ),
+    Field(
+        "crew_mode_agent",
+        _ALL,
+        attr="crew_mode_agent",
+        line=_truthy(lambda s: s.crew_mode_agent),
+        merge=_always(lambda s: s.crew_mode_agent),
+        read=_read_crew_mode_agent,
     ),
     Field(
         "app_agent_owner",
@@ -1500,6 +1516,7 @@ LINE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "crew_mode_agent",
     "app_agent_owner",
     "project",
     "executor",
@@ -1559,6 +1576,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "crew_mode_agent",
     "app_agent_owner",
     "project",
     "app",
@@ -1698,6 +1716,12 @@ def apply(
     for row in FIELDS:
         if row.read is not None and purpose.purpose in row.purposes:
             row.read(read)
+    # The line's creator, for display on every purpose. Not ``_created_by``, whose
+    # purposes stay as the ``created_by`` row declares: the line is agent-editable,
+    # so this copy only places a Crew Mode worker under its root in the person's
+    # lists (``slot._saved_created_by``) and is never read as ownership.
+    saved_creator = meta.get("created_by")
+    slot._saved_created_by = saved_creator if isinstance(saved_creator, str) else ""
     # The SessionManager's override map is process-local, so a hydrated slot
     # pushes its persisted value back or the session compacts at the global one.
     if slot.autocompact_pct is not None and state.sessions:

@@ -97,9 +97,10 @@ async def fork_session(
     (``chat_fork.fork_slot``), so what the child inherits -- agent, model,
     memory store and mode, project, folder, tags, the ``forked_from`` link --
     is exactly what a person's fork inherits, and for the same memory-boundary
-    reasons no override of agent, model or mode is taken here. The one exception
-    is the sidebar pin: a person's fork of a pinned session is pinned, this
-    child never is, because pinned marks a session as human-owned.
+    reasons no override of agent, model or mode is taken here. The exceptions
+    are the folder (a Crew Mode caller's child is unfiled) and the sidebar pin:
+    a person's fork of a pinned session is pinned, this child never is,
+    because pinned marks a session as human-owned.
 
     *source* defaults to the CALLER'S OWN session, which is the case this verb
     exists for: an agent splitting its own long investigation into several
@@ -333,7 +334,13 @@ async def fork_session(
                 status=429,
             )
 
+    in_crew_tree = False
+
     def _stamp(child: Any) -> None:
+        nonlocal in_crew_tree
+
+        from kiro_crew import crew_mode
+
         child._created_by = caller_key
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
@@ -347,7 +354,17 @@ async def fork_session(
             # The caller chose this name, so it is final: the fork's own
             # background title pass and the refresh both leave it alone.
             child._title_origin = "user"
-        if folder_id:
+        # The caller's tree decides filing, not the transcript source's. Clear
+        # even an inherited folder before the fork's first save and broadcast.
+        in_crew_tree = crew_mode.slot_in_turned_on_tree(
+            state._slots,
+            caller_key,
+            session_create._frame_parents(state),
+            settled=crew_mode.lineage_is_settled(),
+        )
+        if in_crew_tree:
+            child.folder_id = ""
+        elif folder_id:
             child.folder_id = folder_id
 
     result = await fork_slot(
@@ -405,6 +422,8 @@ async def fork_session(
         "source": source_slot.key,
         "messages": result.messages,
         "folder_id": child.folder_id or None,
+        **({"folder_ignored": "crew_mode"} if folder_id and in_crew_tree else {}),
+        **({"crew_mode": True} if in_crew_tree else {}),
     }
 
 

@@ -64,6 +64,7 @@ class _ChatSlot:
         "title",
         "agent",
         "agent_kind",
+        "crew_mode_agent",
         "app_agent_owner",
         "model",
         "jev_route",
@@ -130,6 +131,7 @@ class _ChatSlot:
         "_last_stop_reason",
         "_created_by",
         "_created_by_sid",
+        "_saved_created_by",
         "_lineage_minted",
         "_reports_to_creator",
         "_revived_by",
@@ -372,6 +374,7 @@ class _ChatSlot:
 
     # Initialised by state_parts/slot_session.py.
     agent_kind: str
+    crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str
     jev_route: bool
@@ -411,6 +414,7 @@ class _ChatSlot:
     _last_stop_reason: str
     _created_by: str
     _created_by_sid: str
+    _saved_created_by: str
     _lineage_minted: bool
     _reports_to_creator: bool
     _revived_by: str

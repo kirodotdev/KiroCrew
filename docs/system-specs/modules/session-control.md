@@ -522,6 +522,20 @@ memory boundary stay the caller's. An invalid folder project refuses the create
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
 
+A caller inside a Crew Mode tree — a chat that turned Crew Mode on, or a session
+such a chat dispatched (`crew_mode.slot_in_turned_on_tree`, the rule the slot
+list stamps; see [crew-mode](crew-mode.md) § Crew Mode) — files nothing: the
+chat is the person's one entry for the whole crew. `session_create` with a
+`folder` still resolves it (an unknown or ambiguous reference is refused, no
+path segment is created), gives the child that folder's project directory, and
+leaves the child unfiled; the reply carries `folder_ignored: "crew_mode"` when
+a folder was named and `crew_mode: true` whenever the caller is in such a tree.
+`session_fork` from such a caller clears even the folder the source transcript
+carried before the child's first save and answers the same two fields.
+`chat_folder_file_self` from such a caller is a no-op that says where the
+session stays. The MCP tools' replies say "unfiled (this chat is in Crew Mode)"
+so the agent does not report a filing that did not happen.
+
 `session_create` also takes an optional `agent_kind`, with one value: `template`.
 It is the selection namespace for `agent`, and it exists for the one case a bare
 `agent` cannot express: a shared template that a crew member of the same name
@@ -700,7 +714,9 @@ through the child's mint, message copy, save and the deleted-source rollback. Th
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
 folder, tags, `forked_from` — is by construction what a person's fork copies
-and inherits, except the sidebar pin (last table row). The human route's behaviour is unchanged by the split; the core
+and inherits, except the sidebar pin (last table row) and the folder of a
+Crew Mode caller's child, which is cleared (§ `session_create`'s Crew Mode
+filing rule). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,
 `count_user_session`, `jev_route_allowed`, the SEL caller and operation) and the
 two routes answer them differently:

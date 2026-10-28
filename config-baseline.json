@@ -32,6 +32,7 @@
         "kas_persist_mcp_sign_in": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "default_agent": "",
+        "crew_mode_agent": "kirocrew-conductor",
         "deepseek_env": {},
         "sweep_agents_backups": false,
         "sandbox": "auto",
@@ -423,6 +424,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.crew_mode_agent",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crew Mode conductor",
+      "help": "The conductor template a chat runs when Crew Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "kirocrew-conductor"
     },
     {
       "path": "agent.deepseek_env",

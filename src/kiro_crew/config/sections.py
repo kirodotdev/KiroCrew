@@ -102,6 +102,7 @@ from kiro_crew.config.memory_sections import (  # noqa: F401
 )
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
 from kiro_crew.config.sections_agent import (  # noqa: F401
+    _CREW_MODE_AGENT_DEFAULT,
     _YOLO_DURATION_DEFAULT,
     AgentConfig,
     _read_skip_permissions,

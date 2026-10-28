@@ -12,6 +12,32 @@ session's topics out to sub-sessions. It is retired — see
 (`/members`, served by `dashboard/handlers/members.py` and `members.py` in the
 table below), where each crew is a standing agent with its own thread.
 
+The name now belongs to something else: **Crew Mode** is the composer switch that
+runs a dashboard chat on a conductor template -- `agent.crew_mode_agent`, default
+`kirocrew-conductor`, with the Crew Mode family in `kiro_crew/crew_mode.py` (a UI over
+that agent; its rules are in [Crew Mode](#crew-mode) below, its session-control
+verbs in [session-control](session-control.md)). It shares nothing with the
+retired slot mode: no `"crew"` mode value, no `crew_chat.py`, no queue or topic
+store.
+
+## Crew Mode
+
+Crew Mode is a chat that runs a conductor and the sessions that conductor dispatches.
+The person sees the chat; the crew it dispatched is the chat's to show.
+
+| Rule | Where |
+|---|---|
+| `agent.crew_mode_agent` names THE conductor a chat switches to when Crew Mode is turned on (default `kirocrew-conductor`); read live from the config snapshot, so no restart | `config/sections_agent.py`, `crew_mode.crew_mode_agent` |
+| Every conductor is Crew Mode: `conductor_agents` is the shipped conductor templates plus the configured one and the deprecated names that resolve to it; the catalog lists them as `conductor_agents` and names `crew_mode_agent`, and masks both for a non-owner | `crew_mode.conductor_agents`, `handlers/agent_catalog.py` |
+| A chat that turned Crew Mode on carries the stamp `crew_mode_agent` (the slot field, persisted with the slot's own metadata), so a root on a custom conductor absent from the config stays Crew Mode | `crew_mode.STAMP_FIELD`, `slot_persistence/metadata_codec.py` |
+| A **Crew Mode root** is a root session (nothing dispatched it) running a conductor as a template. Every session it dispatched, directly or through another, is its **crew member**: the slot list stamps `crew_mode_root: true` on the root and `crew_root: <root key>` on each member, following the persisted lineage past closed sessions, so a member whose root's tab closed after this gateway saw the root, or one reopened from History while its root is known, keeps its root. The known roots are in memory: a root still closed when the gateway starts is not remembered until it is reopened (the migration part reads closed roots from saved metadata) | `crew_mode.stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
+| **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
+| A Crew Mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so, `chat_folder_file_self` is a no-op | [session-control](session-control.md) § `session_create`'s folder |
+| A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
+
+The design and its parts are recorded in
+`docs/decisions/2026-10-27-crew-mode-is-a-composer-switch-to-the-conductor-template.md`.
+
 A crew is not a *Remote Crew* — that is another machine running its own Kiro Crew
 gateway, which this one reaches through a tunnel (see [instances.md](instances.md))
 — and not an Issue Radar *crew*, which is that app's own repository work crew
@@ -40,7 +66,8 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/subagent_parts/agent_policy.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` (both read and patched through `kiro_crew.subagent`) |
 | `src/kiro_crew/dashboard/handlers/agents.py` | The agents handlers' import and patch surface: `GET /api/agents`, the model picker reads and the crew model-pin checks, composed with the `agent_admin` owners below |
 | `src/kiro_crew/dashboard/agent_admin/` | Crew CRUD on `/api/agents` (`crew_records.py`, `crew_update.py`, `crew_removal.py`), the roster row serializer (`roster.py`), the Custom agents tab's detail, fork, publish and reset (`agent_detail.py`, `fork_publish.py`, `template_lineage.py`) and the default-agent write (`default_agent.py`) |
-| `src/kiro_crew/dashboard/handlers/agent_catalog.py` | Read-only `/api/agents/catalog` execution choices, with separate member and template namespaces |
+| `src/kiro_crew/dashboard/handlers/agent_catalog.py` | Read-only `/api/agents/catalog` execution choices, with separate member and template namespaces, plus Crew Mode's `crew_mode_agent` and `conductor_agents` |
+| `src/kiro_crew/crew_mode.py` | Crew Mode's facts: the configured conductor (`agent.crew_mode_agent`), the one conductor set (every conductor is Crew Mode, `conductor_agents`), the stamp that marks a chat as Crew Mode, the known roots and the persisted lineage, which slot rows are Crew Mode roots and which are their workers (`stamp_rows`), and the session list's view (`list_view`) |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |

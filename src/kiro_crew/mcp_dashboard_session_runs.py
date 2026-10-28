@@ -18,7 +18,9 @@ from urllib.parse import quote
 
 from kiro_crew.conductor_patrol import reply_line
 from kiro_crew.mcp_dashboard_caller_scope import (
+    CREW_MODE_FOLDER_NOTE,
     _caller_app_scope,
+    _caller_in_crew_tree,
     _refuse_tree_shaping_if_unverifiable,
 )
 from kiro_crew.mcp_dashboard_folder_tree import _chat_folder_paths
@@ -26,6 +28,7 @@ from kiro_crew.mcp_dashboard_references import (
     _ensure_chat_folder_path,
     _get_rows,
     _resolve_chat_folder_id,
+    _resolve_chat_folder_ref,
 )
 from kiro_crew.mcp_tools.dashboard_client import DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
@@ -42,6 +45,7 @@ def _resolve_folder_for_new_session(
     folder_ref: str,
     verb: str,
     preflight: Callable[[str], str | None] | None = None,
+    crew_project: bool = False,
 ) -> tuple[str, str, str, str | None]:
     """``(folder_id, folder_label, made_note, error)`` for filing a NEW session.
 
@@ -82,6 +86,26 @@ def _resolve_folder_for_new_session(
     scope_rows, scope_err = _get_rows(ctx.client, "/api/chat/slots")
     if scope_err:
         return "", "", "", redact(f"Error: {scope_err}")
+    if _caller_in_crew_tree(gate_key, scope_rows):
+        # A chat that turned Crew Mode on keeps its sessions out of the person's
+        # folders: no path segment is created and the reply says so. With
+        # *crew_project* (``session_create`` only, whose server route files nothing
+        # for a Crew Mode caller) an EXISTING folder is still named, which gives the
+        # child that folder's project directory.
+        if not crew_project:
+            return "", "", CREW_MODE_FOLDER_NOTE, None
+        crew_folders, crew_err = _get_rows(ctx.client, "/api/chat/folders")
+        if crew_err:
+            return "", "", "", redact(f"Error: {crew_err}")
+        # The shared resolver, creating nothing: an ambiguous or unknown reference
+        # is refused rather than resolved to an arbitrary folder or to none.
+        crew_id, _created, crew_ref_err = _resolve_chat_folder_ref(
+            folder_ref, crew_folders, create_missing=False
+        )
+        if crew_ref_err:
+            return "", "", CREW_MODE_FOLDER_NOTE, redact(f"Error: {crew_ref_err}")
+        # The id only: the session is not filed there, so no label says it is.
+        return crew_id, "", CREW_MODE_FOLDER_NOTE, None
     if _caller_app_scope(gate_key, scope_rows):
         return (
             "",
@@ -221,6 +245,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         str(args.get("folder") or ""),
         "filing a new session at creation",
         preflight=_preflight_create,
+        crew_project=True,
     )
     if fld_err:
         return fld_err
@@ -234,7 +259,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     except DashboardError as refused:
         return f"Error: {_refused(refused, made_note)}"
-    filed = f" filed in `{folder_label}`" if folder_label else ""
+    crew_mode = bool(resp.get("crew_mode") or resp.get("folder_ignored"))
+    filed = f" filed in `{folder_label}`" if folder_label and not crew_mode else ""
     on_model = f" on model `{resp['model']}`" if resp.get("model") else ""
     if resp.get("reasoning_effort"):
         on_model += f" at reasoning effort `{resp['reasoning_effort']}`"
@@ -250,9 +276,15 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
+    # A Crew Mode chat's worker is in the sidebar but filed in no folder.
+    where = (
+        "the user's sidebar, unfiled (this chat is in Crew Mode)"
+        if crew_mode
+        else "the user's sidebar"
+    )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
-        "It is empty and waiting in the user's sidebar; watch it with "
+        f"It is empty and waiting in {where}; watch it with "
         "session_read_message." + reply_line(resp) + _worker_capabilities_line(resp)
     )
 

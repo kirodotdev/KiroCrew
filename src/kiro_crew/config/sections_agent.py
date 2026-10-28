@@ -69,6 +69,12 @@ def coerce_fallback_model(raw: object) -> str:
     return model_registry.to_provider_id(s, "acp") or field_default(AgentConfig, "fallback_model")
 
 
+#: The Crew Mode conductor template's name. Equal to
+#: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
+#: binds no name the sections facade does not.
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+
+
 @dataclass
 class AgentConfig:
     approval_mode: str = field(
@@ -291,6 +297,15 @@ class AgentConfig:
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
+    )
+    crew_mode_agent: str = field(
+        default=_CREW_MODE_AGENT_DEFAULT,
+        metadata=_meta(
+            "Crew Mode conductor",
+            "The conductor template a chat runs when Crew Mode is turned on. "
+            "Empty falls back to the default. Takes effect live for new chats; "
+            "no gateway restart.",
+        ),
     )
     deepseek_env: dict[str, str] = field(
         default_factory=dict,

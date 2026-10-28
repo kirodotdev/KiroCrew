@@ -106,6 +106,24 @@ _STOCK_WORKER_AGENT = WORKER_AGENT_FILENAME.removesuffix(".json")
 _register_spawn_pending_edge: "Callable[[str, str, asyncio.Future[bool]], None] | None" = None
 
 
+def _frame_parents(state: Any) -> dict[str, Any] | None:
+    """Each live slot's ``parent`` as the slot frame resolves it, or ``None`` on a fault.
+
+    The Crew Mode tree test reads it so an adoption edge and a closed creator's live
+    ancestor count here as they count in the session list. A fault costs only those
+    edges: the test then reads ``_created_by`` alone.
+    """
+    from kiro_crew.dashboard.state import _attach_slot_parents
+
+    try:
+        rows = state._lineage_rows()
+        _attach_slot_parents(rows, getattr(state, "spend_slot_by_session", None))
+    except Exception:
+        logger.debug("slot parents unavailable for the Crew Mode tree test", exc_info=True)
+        return None
+    return {row["key"]: row.get("parent") for row in rows}
+
+
 async def create_session(
     state: "DashboardState",
     *,
@@ -296,6 +314,20 @@ async def create_session(
     # stale folder intent.
     folder_project_raw: str | None = None
     folder_project = ""
+    # A Crew Mode chat and every session it dispatches stay out of the person's
+    # folders: the session is not FILED in the named folder, for every caller of
+    # this verb, by the same rule the slot list stamps (``crew_mode``), and the
+    # answer says so. The folder still gives the child its declared project
+    # directory, so a worker does its work in the folder's repository.
+    from kiro_crew import crew_mode
+
+    in_crew_tree = crew_mode.slot_in_turned_on_tree(
+        state._slots,
+        str(getattr(caller_slot, "key", "") or ""),
+        _frame_parents(state),
+        settled=crew_mode.lineage_is_settled(),
+    )
+    folder_ignored = bool(folder_id) and in_crew_tree
     if folder_id:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
@@ -1140,7 +1172,7 @@ async def create_session(
         # authorization-vs-execution split as the agent binding, one layer down.
         if not slot.project:
             slot.project = project_dir
-        if folder_id:
+        if folder_id and not folder_ignored:
             # Filed inside the same synchronous window that configures the slot, so
             # the session is never observable unfiled -- that atomicity is the point.
             # Existence was confirmed under the store lock above, and folder
@@ -1416,6 +1448,11 @@ async def create_session(
         **({"autocompact_pct": pct_override} if pct_override is not None else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
+        # The folder a Crew Mode caller named was dropped (``crew_mode``).
+        **({"folder_ignored": "crew_mode"} if folder_ignored else {}),
+        # The child belongs to a chat that turned Crew Mode on: filed in no folder,
+        # so a caller can say where it is.
+        **({"crew_mode": True} if in_crew_tree else {}),
     }
 
 

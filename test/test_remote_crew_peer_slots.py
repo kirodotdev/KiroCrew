@@ -133,17 +133,19 @@ def _manager(
     wrap at all — two different exception paths reaching the same handler.
     """
     calls: list[tuple[str, str, str]] = []
+    params: list[object] = []
 
     @contextlib.asynccontextmanager
-    async def _proxy_request(instance_id, method, path, **_kw):
+    async def _proxy_request(instance_id, method, path, **kw):
         calls.append((instance_id, method, path))
+        params.append(kw.get("params"))
         if raises is not None:
             raise raises
         yield _Upstream(
             status, _Content(body, interrupt=interrupt, interrupt_after=interrupt_after)
         )
 
-    return SimpleNamespace(proxy_request=_proxy_request, calls=calls)
+    return SimpleNamespace(proxy_request=_proxy_request, calls=calls, params=params)
 
 
 def _state(mgr, slots: dict[str, _ChatSlot] | None = None):
@@ -216,6 +218,17 @@ class TestRelayArchivesHideNoPeerRow:
         await hi.api_instances_chat_slots(_request(_state(mgr)))
 
         assert mgr.calls == [("nobita", "GET", "api/chat/slots")]
+
+    async def test_the_peer_read_asks_for_every_row_crew_workers_included(self, monkeypatch):
+        """The hub reads with the peer token, which the peer serves as a person's
+        read; its default view leaves Crew Mode workers out, so the hub asks for
+        ``crew=all`` and the merged list keeps them."""
+        _enable_instances(monkeypatch)
+        mgr = _manager(body=b"[]")
+
+        await hi.api_instances_chat_slots(_request(_state(mgr)))
+
+        assert mgr.params == [{"crew": "all"}]
 
 
 @pytest.mark.asyncio

@@ -99,7 +99,10 @@ function withoutHubRecords(m: ChatMessage): ChatMessage {
 export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { target: CrewWindowTarget; onClose?: () => void }) {
   const { instanceId, key } = target
   const queryClient = useQueryClient()
-  const slotPath = 'api/chat/slots/' + encodeURIComponent(key)
+  // `?crew=all` keeps a Crew Mode root's crew members in the peer's answer, the
+  // same way the local slot list asks for them.
+  const slotsPath = 'api/chat/slots'
+  const slotPath = slotsPath + '/' + encodeURIComponent(key)
   const slotKeyQ = useMemo(() => ['crew-window', instanceId, key, 'slot'] as const, [instanceId, key])
   const detailKeyQ = useMemo(() => ['crew-window', instanceId, key, 'detail'] as const, [instanceId, key])
   const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances() })
@@ -123,7 +126,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // detail carries the transcript. Both are the peer's own answers.
   const slotQ = useQuery({
     queryKey: slotKeyQ,
-    queryFn: async () => ((await api.crewPeerGet(instanceId, 'api/chat/slots')) as PeerSlot[]).find(s => s.key === key) ?? null,
+    queryFn: async () => ((await api.crewPeerGet(instanceId, slotsPath + '?crew=all')) as PeerSlot[]).find(s => s.key === key) ?? null,
     enabled: versionOk,
   })
   const detailQ = useQuery({

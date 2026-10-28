@@ -470,6 +470,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         and memory_mode == "persistent"
         and not body.get("ephemeral")
     )
+    # Crew Mode new-chat counters, decided at the mint and emitted only after the
+    # creation block exits without a refusal or a retraction.
+    count_new_chat = False
+    born_crew = False
+    crew_repeat = False
     async with contextlib.AsyncExitStack() as creation_stack:
         request_deferred_flush = creation_stack.enter_context(state.suspend_slots_push())
         if request_app and _requested_key:
@@ -815,6 +820,24 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     )
                 if assigned_store:
                     slot.memory_store = assigned_store
+        if is_new_slot and not getattr(slot, "crew_mode_agent", ""):
+            # A chat born on the Crew Mode conductor (the conductor as the default
+            # template, or a create naming it) is stamped the way the agent switch
+            # stamps one, so it stays in Crew Mode after `agent.crew_mode_agent`
+            # changes. The stamp counts only while the chat is still on that agent.
+            # Stamped after the owner branch records the namespace the pick was
+            # committed in, and before the slot's first save and frame; the counters
+            # are emitted once the create has committed, below.
+            from kiro_crew import crew_mode
+
+            slot.crew_mode_agent = crew_mode.stamp_for_switch(slot.agent, slot.agent_kind)
+            # Only an unnamed create is certainly a new conversation: a named one
+            # can reopen a saved session, the same reason the session counter in
+            # `get_or_create_slot` and the session folder below skip it.
+            if not _requested_key:
+                count_new_chat = True
+                born_crew = bool(slot.crew_mode_agent)
+                crew_repeat = born_crew and bool(crew_mode.known_roots() - {slot.key})
         _sync_dashboard_slots(state)
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
         # same ordering `session_control_parts/session_create.py`'s create span uses ("the whole
@@ -910,6 +933,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         state.push_slots_update()
         if defer_plain_create_broadcast:
             request_deferred_flush(f"create slot {slot.key!r}")
+    # The create is committed here: every refusal and retraction above returns
+    # from inside the block, and an exception leaving it retracts the newborn.
+    if count_new_chat:
+        from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+        crew_mode_metrics.record_new_chat(crew_mode=born_crew)
+        if born_crew:
+            crew_mode_metrics.record_turned_on("create", repeat=crew_repeat)
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     #

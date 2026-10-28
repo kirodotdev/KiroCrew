@@ -705,3 +705,203 @@ def test_the_empty_window_merge_cannot_resurrect_a_deleted_session(tmp_path):
     asyncio.run(save_slot_off_loop(state, child, force=True))
 
     assert not path.exists(), "the merge must not resurrect a deleted session file"
+
+
+def test_a_crew_mode_root_creates_its_worker_outside_the_persons_folders(tmp_path, request):
+    """The server drops a Crew Mode caller's folder, whoever sent it (``crew_mode``)."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent_kind = "template"
+    # The caller's own agent is the configured Crew Mode conductor, so the case does
+    # not depend on a conductor spec being installed in the test home.
+    from types import SimpleNamespace
+
+    from kiro_crew import crew_mode
+
+    caller.agent = "kirocrew"
+    # The chat turned Crew Mode on: its root slot carries the stamp.
+    caller.crew_mode_agent = caller.agent
+    crew_mode.remember(SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="kirocrew")))
+    request.addfinalizer(
+        lambda: crew_mode.remember(SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="")))
+    )
+    folder_project = tmp_path / "goal-project"
+    folder_project.mkdir()
+    _folder(state, "fold00000001", "Goal", project_dir=str(folder_project))
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert not child.folder_id
+    assert created.get("folder_ignored") == "crew_mode"
+    assert created.get("crew_mode") is True
+    # Not filed, but the folder still gives the worker its project directory, so it
+    # does its work in the folder's repository rather than the workspace default.
+    assert child.project == str(folder_project.resolve())
+
+    # A worker of that root is held to the same rule for the sessions IT opens.
+    grandchild = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(child), folder_id="fold00000001")
+    )
+    assert not state.get_slot(grandchild["target"]).folder_id
+    assert grandchild.get("folder_ignored") == "crew_mode"
+
+
+@pytest.mark.parametrize("conductor", [True, False], ids=["crew-mode", "plain"])
+@pytest.mark.parametrize("folder_id", ["", "fold00000002"], ids=["inherited", "named"])
+def test_fork_filing_respects_the_callers_crew_mode_tree(
+    tmp_path, monkeypatch, conductor, folder_id
+):
+    """Crew workers are unfiled at birth; plain forks keep normal folder inheritance."""
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard import chat_fork
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent_kind = "template"
+    caller.agent = "kirocrew"
+    if conductor:
+        caller.crew_mode_agent = caller.agent
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    monkeypatch.setattr(crew_mode, "_configured", "kirocrew" if conductor else "other-conductor")
+    _folder(state, "fold00000001", "Parent", hidden=True)
+    named_folder = _folder(state, "fold00000002", "Requested", hidden=True)
+    caller.folder_id = "fold00000001"
+    caller.append("user", "Split this investigation", "msg msg-u")
+    caller.append("assistant", "Investigation context", "msg msg-a")
+    caller.drain()
+    _save_slot_to_history(state, caller, closed=False)
+    caller._resumed_count = len(caller.messages)
+    caller._disk_window_len = len(caller.messages)
+    caller._dirty = False
+    birth_folders = []
+    real_save = chat_fork.save_slot_off_loop
+
+    async def _save(st, slot, *args, **kwargs):
+        if slot is not caller:
+            birth_folders.append(slot.folder_id)
+        return await real_save(st, slot, *args, **kwargs)
+
+    monkeypatch.setattr(chat_fork, "save_slot_off_loop", _save)
+    forked = asyncio.run(
+        sc.fork_session(state, caller_session_key=_key(caller), folder_id=folder_id)
+    )
+
+    child = state.get_slot(forked["target"])
+    expected_folder = "" if conductor else folder_id or caller.folder_id
+    assert child is not None
+    assert child.folder_id == expected_folder
+    assert birth_folders == [expected_folder], "the first save must already have the final filing"
+    written = state.conversation_log.get_metadata(slot_history_key(child))
+    assert (written.get("folder_id") or "") == expected_folder
+    assert forked["folder_id"] == (expected_folder or None)
+    assert caller.folder_id == "fold00000001"
+    if conductor:
+        assert forked.get("crew_mode") is True
+        assert forked.get("folder_ignored") == ("crew_mode" if folder_id else None)
+        assert named_folder["hidden"] is True
+    else:
+        assert "crew_mode" not in forked
+        assert "folder_ignored" not in forked
+
+
+def test_a_plain_caller_still_files_its_child(tmp_path):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _folder(state, "fold00000001", "Goal")
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+    assert state.get_slot(created["target"]).folder_id == "fold00000001"
+    assert "folder_ignored" not in created
+    assert "crew_mode" not in created
+
+
+def _unstamped_conductor_root(state, monkeypatch):
+    """A root chat on the configured conductor that never turned Crew Mode on."""
+    from kiro_crew import crew_mode
+
+    caller = _slot(state, "chat-1")
+    caller.agent_kind = "template"
+    caller.agent = "kirocrew"
+    caller.crew_mode_agent = ""
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    monkeypatch.setattr(crew_mode, "_configured", "kirocrew")
+    assert crew_mode.slot_is_crew_mode_root(caller)
+    return caller
+
+
+def test_an_unstamped_conductor_root_still_files_its_child(tmp_path, monkeypatch):
+    """Folder effects follow the root's stamp, not the conductor template alone."""
+    from kiro_crew import crew_mode
+
+    state = _make_state(tmp_path)
+    caller = _unstamped_conductor_root(state, monkeypatch)
+    _folder(state, "fold00000001", "Goal")
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child.folder_id == "fold00000001"
+    assert "folder_ignored" not in created
+    assert "crew_mode" not in created
+    # The row stamps still mark the tree: only the folder rule reads the stamp.
+    assert crew_mode.slot_in_crew_tree(state._slots, child.key)
+    assert not crew_mode.slot_in_turned_on_tree(state._slots, child.key)
+
+    grandchild = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(child), folder_id="fold00000001")
+    )
+    assert state.get_slot(grandchild["target"]).folder_id == "fold00000001"
+    assert "folder_ignored" not in grandchild
+
+
+def test_an_unstamped_conductor_roots_fork_inherits_its_folder(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+    state = _make_state(tmp_path)
+    caller = _unstamped_conductor_root(state, monkeypatch)
+    _folder(state, "fold00000001", "Parent")
+    caller.folder_id = "fold00000001"
+    caller.append("user", "Split this investigation", "msg msg-u")
+    caller.append("assistant", "Investigation context", "msg msg-a")
+    caller.drain()
+    _save_slot_to_history(state, caller, closed=False)
+    caller._resumed_count = len(caller.messages)
+    caller._disk_window_len = len(caller.messages)
+    caller._dirty = False
+
+    forked = asyncio.run(sc.fork_session(state, caller_session_key=_key(caller)))
+
+    assert state.get_slot(forked["target"]).folder_id == "fold00000001"
+    assert forked["folder_id"] == "fold00000001"
+    assert "crew_mode" not in forked
+    assert "folder_ignored" not in forked
+
+
+def test_turned_on_tree_reads_the_root_rows_stamp():
+    from kiro_crew import crew_mode
+
+    stamped = {"key": "r1", "crew_mode_root": True, "crew_mode_agent": "kirocrew"}
+    unstamped = {"key": "r2", "crew_mode_root": True, "crew_mode_agent": ""}
+    rows = {
+        "r1": stamped,
+        "r2": unstamped,
+        "w1": {"key": "w1", "crew_root": "r1"},
+        "w2": {"key": "w2", "crew_root": "r2"},
+        "w3": {"key": "w3", "crew_root": "closed-root"},
+        "p": {"key": "p"},
+    }
+    assert crew_mode.row_in_turned_on_tree(rows["r1"], rows)
+    assert crew_mode.row_in_turned_on_tree(rows["w1"], rows)
+    assert not crew_mode.row_in_turned_on_tree(rows["r2"], rows)
+    assert not crew_mode.row_in_turned_on_tree(rows["w2"], rows)
+    assert not crew_mode.row_in_turned_on_tree(rows["w3"], rows)
+    assert not crew_mode.row_in_turned_on_tree(rows["p"], rows)
+    assert not crew_mode.row_in_turned_on_tree(None, rows)

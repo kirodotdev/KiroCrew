@@ -153,8 +153,10 @@ beforeEach(() => {
   slotRow = { key: 'k1', title: 'Build fix', running: false, interrupted: false }
   detail = { running: false, messages: [{ role: 'user', content: 'hi', ts: 't1' }, { role: 'assistant', content: 'hello', ts: 't2' }] }
   mocks.listInstances.mockResolvedValue({ instances: [{ id: 'cd-1', name: 'devbox' }] })
+  // The slot read asks the peer for `?crew=all`, so a Crew Mode root's crew
+  // members are in the list the window picks its row from.
   mocks.crewPeerGet.mockImplementation((_id: string, path: string) =>
-    Promise.resolve(path === 'api/chat/slots' ? [{ key: 'other' }, slotRow] : detail))
+    Promise.resolve(path === 'api/chat/slots?crew=all' ? [{ key: 'other' }, slotRow] : detail))
   mocks.crewPeerPost.mockResolvedValue({ ok: true })
   mocks.instancesCapabilities.mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
   mocks.instancesApprovalState.mockResolvedValue({ yolo: false })
@@ -988,7 +990,7 @@ describe('CrewChatWindow', () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     let fail = true
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => (
-      path === 'api/chat/slots' ? Promise.resolve([slotRow])
+      path === 'api/chat/slots?crew=all' ? Promise.resolve([slotRow])
         : path.endsWith('/selection-capabilities') ? (fail ? Promise.reject(new Error('peer unreachable')) : Promise.resolve({ known: true, effort_supported: true, effort_levels: ['low', 'high'] }))
           : Promise.resolve(detail)))
     renderWindow()
@@ -1020,7 +1022,7 @@ describe('CrewChatWindow', () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     let known = false
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => Promise.resolve(
-      path === 'api/chat/slots' ? [slotRow]
+      path === 'api/chat/slots?crew=all' ? [slotRow]
         : path.endsWith('/selection-capabilities') ? (known ? { known: true, effort_supported: true, effort_levels: ['low', 'high'] } : { known: false })
           : detail))
     renderWindow()
@@ -1054,7 +1056,7 @@ describe('CrewChatWindow', () => {
   it('shows a refused effort pick on the window itself', async () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => Promise.resolve(
-      path === 'api/chat/slots' ? [slotRow]
+      path === 'api/chat/slots?crew=all' ? [slotRow]
         : path.endsWith('/selection-capabilities') ? { known: true, effort_supported: true, effort_levels: ['low', 'high'] }
           : detail))
     mocks.instancesCapabilities.mockResolvedValue({

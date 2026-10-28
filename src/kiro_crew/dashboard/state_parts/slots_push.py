@@ -636,13 +636,21 @@ def push_lineage_patch(self: DashboardState) -> None:
     live = {row["key"] for row in rows}
     for key in [k for k in sent if k not in live]:
         del sent[key]
+    stamps = _crew_stamps(self, rows)
     changed: list[dict[str, Any]] = []
     for row in rows:
-        value = (row.get("parent"), bool(row.get("lineage_pending")))
-        if sent.get(row["key"]) == value:
+        crew = stamps.get(row["key"], _NO_CREW)
+        value = (row.get("parent"), bool(row.get("lineage_pending")), crew)
+        before = sent.get(row["key"])
+        if before == value:
             continue
         sent[row["key"]] = value
-        changed.append({"key": row["key"], "parent": value[0], "lineage_pending": value[1]})
+        patch = {"key": row["key"], "parent": value[0], "lineage_pending": value[1]}
+        # An adoption or a release can move a row into or out of a Crew Mode tree;
+        # its two stamps ride along only when they moved.
+        if crew != (before[2] if before is not None and len(before) > 2 else _NO_CREW):
+            patch["crew_root"], patch["crew_mode_root"] = crew
+        changed.append(patch)
     if not changed:
         return
     if self._has_legacy_slots_audience():
@@ -715,6 +723,31 @@ def push_slot_removed(self: DashboardState, key: str) -> None:
         ]
         self._send_slot_patch({"slots": restated, "removed": [key]})
     self._emit_member_slot_transitions()
+
+
+#: A row outside every Crew Mode tree: no root to name, not a root itself.
+_NO_CREW: tuple[str, bool] = ("", False)
+
+
+def _crew_stamps(self: DashboardState, rows: list[dict[str, Any]]) -> dict[str, tuple[str, bool]]:
+    """Each live row's Crew Mode stamps (``crew_mode.live_stamps``), or none on a fault.
+
+    *rows* are :meth:`_lineage_rows` with their ``parent`` attached, so the stamps
+    read the same edges the full frame reads. A fault costs the stamps only, as it
+    does in the full frame.
+    """
+    from kiro_crew import crew_mode
+
+    keys = {row["key"] for row in rows}
+    try:
+        return crew_mode.live_stamps(
+            {k: s for k, s in list(self._slots.items()) if k in keys},
+            {row["key"]: row.get("parent") for row in rows},
+            settled=crew_mode.lineage_is_settled(),
+        )
+    except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
+        logger.warning("Crew Mode stamps not restated", exc_info=True)
+        return {}
 
 
 def _has_slot_patch_clients(self: DashboardState) -> bool:

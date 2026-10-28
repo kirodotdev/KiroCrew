@@ -123,11 +123,17 @@ async def test_catalog_fetch_refreshes_the_snapshot_before_reading_the_default(
     catalog.refresh.side_effect = lambda **_: order.append(
         "refresh-off-loop" if threading.get_ident() != loop_thread else "refresh-on-loop"
     )
-    catalog.discovery.side_effect = lambda **kwargs: order.append("templates") or [
-        _template("reviewer")
-    ]
-    config = catalog.config
-    monkeypatch.setattr(KiroCrewConfig, "load", lambda: order.append("config") or config)
+
+    def discover(**kwargs):
+        order.append("templates")
+        return [_template("reviewer")]
+
+    def load_config():
+        order.append("config")
+        return catalog.config
+
+    catalog.discovery.side_effect = discover
+    monkeypatch.setattr(KiroCrewConfig, "load", load_config)
     async with TestClient(TestServer(catalog.app)) as client:
         response = await client.get("/api/agents/catalog")
         assert response.status == 200
@@ -555,3 +561,50 @@ async def test_catalog_sends_the_refused_backends(catalog):
         assert response.status == 200
         body = await response.json()
     assert body["markdown_refused_backends"] == agent_catalog._markdown_refused_backends()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True], ids=["non-owner", "owner"])
+@pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "kirocrew-conductor"])
+async def test_catalog_masks_crew_mode_names_only_for_non_owners(catalog, monkeypatch, owner, name):
+    from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+    crew_mode = agent_catalog.crew_mode
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode.DEFAULT_CREW_MODE_AGENT)
+    monkeypatch.setattr(crew_mode, "_unusable", {})
+    catalog.config.agent.crew_mode_agent = name
+    if not owner:
+        catalog.caller.user = "another-user"
+    expected = name if owner or name == "kirocrew-conductor" else _SENSITIVE_MASK
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        body = await response.json()
+    assert body["crew_mode_agent"] == expected
+    assert expected in body["conductor_agents"]
+    assert "kirocrew-conductor" in body["conductor_agents"]
+    if expected != name:
+        assert name not in body["conductor_agents"]
+    assert catalog.config.agent.crew_mode_agent == name
+
+
+@pytest.mark.asyncio
+async def test_catalog_names_the_configured_crew_mode_agent_and_the_conductor_family(
+    catalog, request
+):
+    from types import SimpleNamespace
+
+    from kiro_crew import crew_mode
+
+    # The catalog read remembers the configured agent for config-less readers; put
+    # the default back so the next test in this worker does not inherit it.
+    request.addfinalizer(
+        lambda: crew_mode.remember(SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="")))
+    )
+    catalog.config.agent.crew_mode_agent = "better-conductor"
+    async with TestClient(TestServer(catalog.app)) as client:
+        body = await (await client.get("/api/agents/catalog")).json()
+    assert body["crew_mode_agent"] == "better-conductor"
+    # Every conductor stays out of a normal chat's picker.
+    assert "better-conductor" in body["conductor_agents"]
+    assert "kirocrew-pipeline-conductor" in body["conductor_agents"]

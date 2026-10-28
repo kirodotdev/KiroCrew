@@ -340,6 +340,51 @@ class TestSessionCreateFolder:
         assert folder_write.session_key == "dashboard:gate-key"
 
 
+class TestSessionCreateFolderInCrewMode:
+    """`session_create.folder` from a chat that turned Crew Mode on.
+
+    The folder is never filed into and nothing is created; an EXISTING folder is
+    still named so the worker gets its project directory. The reference resolves
+    through the shared folder resolver, so an ambiguous, unknown or differently
+    cased reference means what it means for every other folder tool.
+    """
+
+    _CREW_ROOT = {
+        "key": "chat-1-100",
+        "title": "Conductor",
+        "crew_mode_root": True,
+        "crew_mode_agent": "kirocrew",
+    }
+
+    def _routes(self, folders: list[dict] | None = None) -> dict[str, Any]:
+        return {
+            **_reads(folders=folders, slots=[dict(self._CREW_ROOT)]),
+            "POST /api/session-control/create": lambda req: {
+                "target": "chat-9-900",
+                "title": "worker",
+                "crew_mode": True,
+                "folder_ignored": "crew_mode",
+            },
+        }
+
+    def test_an_existing_folder_rides_as_the_id_only(self) -> None:
+        out, dash = _call(
+            "session_create", {"title": "worker", "folder": "kirocrew/0811"}, self._routes()
+        )
+        (create,) = _writes(dash)
+        assert create.body["folder_id"] == "bbbbbbbbbbbb"
+        assert "folder ignored" in out
+        assert "filed in" not in out
+
+    def test_an_unknown_reference_is_refused_and_creates_nothing(self) -> None:
+        out, dash = _call(
+            "session_create", {"title": "worker", "folder": "kirocrew/missing"}, self._routes()
+        )
+        assert out.startswith("Error:")
+        assert "folder not found" in out
+        assert _writes(dash) == []
+
+
 class TestAdvertisedSet:
     """Reaching this server means an agent spec referenced it.
 
