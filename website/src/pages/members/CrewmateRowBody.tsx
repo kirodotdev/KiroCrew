@@ -66,8 +66,12 @@ export default function CrewmateRowBody({
   const watchLabel = t('pages.membersPage.loop_on')
   return (
     <>
+      {/* `flex`, not the blockified default: a block holding the inline-flex
+          avatar opens a text line box whose strut descent grows this box
+          below the face, so `items-center` on the row centred the box and
+          left the face sitting a few px above the name + status block. */}
       <span
-        className="relative shrink-0"
+        className="relative flex shrink-0"
         style={faceOnStage ? { visibility: 'hidden' } : undefined}
         data-testid={`${testIdPrefix}-face`}
         data-entrance-empty={faceOnStage ? '' : undefined}
