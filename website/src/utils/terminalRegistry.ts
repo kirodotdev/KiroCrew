@@ -239,6 +239,16 @@ interface Conn {
   cwd?: string | null
   remoteSlot?: string
   chatSlot?: string
+  /** "Open in kiro-cli": the chat whose kiro-cli conversation this PTY runs. */
+  kiroCliSlot?: string
+  /** The gateway refused to open this chat in kiro-cli (a `kiro_cli_*` code):
+   *  parked like a wrong-machine refusal, until the user retries. */
+  kiroCliRefusal?: string
+  /** The next dial asks the gateway to OPEN the chat in kiro-cli. Set for the
+   *  first dial of a tab the user just opened (`armKiroCliOpen`) and for the
+   *  user's own retry; never for a redial, a restored tab or a redocked one, so
+   *  a tab whose process ended never hands the chat over by itself. */
+  kiroCliOpen?: boolean
   ws: WebSocket | null
   disposed: boolean
   retries: number
@@ -418,6 +428,20 @@ export function useTerminalWrongMachine(sessionId: string): boolean {
   )
 }
 
+/** The `kiro_cli_*` code the gateway refused this kiro-cli tab with, if any. */
+export function useTerminalKiroCliRefusal(sessionId: string): string | undefined {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.kiroCliRefusal,
+    () => undefined,
+  )
+}
+
 /** Whether the requested cwd was rejected, published with the connection status. */
 export function useTerminalInvalidCwd(sessionId: string): boolean {
   return useSyncExternalStore(
@@ -447,7 +471,7 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
   if (!c || c.disposed) return
   // Only the user re-arms a deliberate handoff or a rejected cwd. Automatic
   // revives must neither displace another window nor retry an unchanged path.
-  if (c.displaced || c.invalidCwd || c.wrongMachine) {
+  if (c.displaced || c.invalidCwd || c.wrongMachine || c.kiroCliRefusal) {
     if (!manual) return
     // Only explicit recovery from a refused directory can change the target.
     // An empty override asks the server to use its terminal starting directory.
@@ -455,6 +479,8 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
     c.displaced = false
     c.invalidCwd = false
     c.wrongMachine = false
+    if (c.kiroCliRefusal) c.kiroCliOpen = true
+    c.kiroCliRefusal = undefined
     notifyStatus(sessionId)
   }
   if (manual) setManualRetry(sessionId, c)
@@ -497,7 +523,7 @@ if (typeof window !== 'undefined') {
 }
 
 function connect(sessionId: string, c: Conn) {
-  if (c.disposed || c.invalidCwd || c.wrongMachine) return
+  if (c.disposed || c.invalidCwd || c.wrongMachine || c.kiroCliRefusal) return
   if (c.retries >= MAX_RETRIES) {
     // Backoff exhausted: no further dial will happen until a revive event
     // (online / tab foreground) or a manual Reconnect re-arms it. This is the
@@ -512,9 +538,13 @@ function connect(sessionId: string, c: Conn) {
   // does not apply, and the gateway refuses rather than falling back to local.
   // A local shell opened for a chat names that chat, so the gateway can refuse
   // it when the chat runs on a remote environment.
-  const query: Record<string, string> = c.remoteSlot
-    ? { remote_slot: c.remoteSlot }
-    : { ...(c.cwd ? { cwd: c.cwd } : {}), ...(c.chatSlot ? { slot: c.chatSlot } : {}) }
+  // A kiro-cli tab names its chat and nothing else: the gateway builds the
+  // command, the folder and the session from that chat.
+  const query: Record<string, string> = c.kiroCliSlot
+    ? { kiro_cli_slot: c.kiroCliSlot, ...(c.kiroCliOpen ? { kiro_cli_open: '1' } : {}) }
+    : c.remoteSlot
+      ? { remote_slot: c.remoteSlot }
+      : { ...(c.cwd ? { cwd: c.cwd } : {}), ...(c.chatSlot ? { slot: c.chatSlot } : {}) }
   // `+` is how URLSearchParams spells a space; a literal `+` is already `%2B`.
   const encoded = new URLSearchParams(query).toString().replace(/\+/g, '%20')
   const qs = encoded ? `?${encoded}` : ''
@@ -552,6 +582,7 @@ function connect(sessionId: string, c: Conn) {
         }
         if (m && m.type === 'ready' && !c.invalidCwd) {
           c.placementRefusals = 0
+          c.kiroCliOpen = false
           // Record the shell BEFORE registering: registerTerminalWs drains the
           // ready listeners synchronously, and Run-in-terminal's listener reads
           // the shell to decide how to hand over the snippet.
@@ -570,8 +601,10 @@ function connect(sessionId: string, c: Conn) {
           c.placementRefusals = (c.placementRefusals ?? 0) + 1
           c.retries = c.placementRefusals - 1
         }
-        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine')) {
+        const kiroCliRefused = m && m.type === 'error' && typeof m.code === 'string' && m.code.startsWith('kiro_cli_')
+        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine' || kiroCliRefused)) {
           if (m.code === 'terminal_invalid_cwd') c.invalidCwd = true
+          else if (kiroCliRefused) { c.kiroCliRefusal = m.code; c.kiroCliOpen = false }
           else c.wrongMachine = true
           clearTimeout(c.reconnectTimer)
           c.reconnectTimer = undefined
@@ -598,8 +631,9 @@ function connect(sessionId: string, c: Conn) {
       handleShellExit(sessionId, c, { status: null })
       return
     }
-    if (c.displaced || c.invalidCwd || c.wrongMachine) {
-      // A deliberate handoff, rejected cwd or refused machine needs an explicit user retry.
+    if (c.displaced || c.invalidCwd || c.wrongMachine || c.kiroCliRefusal) {
+      // A deliberate handoff, rejected cwd, refused machine or refused kiro-cli
+      // open needs an explicit user retry.
       clearTimeout(c.reconnectTimer)
       c.reconnectTimer = undefined
       setConnStatus(sessionId, c, 'disconnected')
@@ -639,6 +673,17 @@ function handleShellExit(sessionId: string, c: Conn, exit: TerminalExit): void {
   if (conns.get(sessionId) === c) disposeTerminalConnection(sessionId)
 }
 
+/** Terminal ids whose first dial may OPEN a chat in kiro-cli. Armed only when
+ *  the user creates the tab (`addKiroCliTab`), and consumed by that tab's first
+ *  connection: a tab restored after a reload, or redocked from a popout, has
+ *  no entry and only reattaches to a live kiro-cli, never starts a new one. */
+const pendingKiroCliOpens = new Set<string>()
+
+/** Let `sessionId`'s next new connection ask the gateway to open kiro-cli. */
+export function armKiroCliOpen(sessionId: string): void {
+  pendingKiroCliOpens.add(sessionId)
+}
+
 /**
  * Ensure a persistent WebSocket exists for `sessionId`, wired to the given
  * (cached) xterm instance. Idempotent — safe to call on every TerminalView
@@ -650,9 +695,11 @@ export function ensureTerminalConnection(
   remoteSlot?: string,
   /** The chat a LOCAL shell was opened for, so the gateway checks its placement. */
   chatSlot?: string,
+  /** "Open in kiro-cli": the chat whose own kiro-cli conversation this PTY runs. */
+  kiroCliSlot?: string,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, kiroCliSlot, kiroCliOpen: Boolean(kiroCliSlot) && pendingKiroCliOpens.delete(sessionId), ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).
