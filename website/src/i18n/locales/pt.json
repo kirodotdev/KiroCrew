@@ -9706,7 +9706,8 @@
       "answer_restored_command_center_session": "O agente em “{{session}}” parou de esperar por “{{question}}”, então suas respostas não foram enviadas. Elas estão na caixa de composição dessa sessão; envie-as se ainda quiser.",
       "answers_too_long": "Suas respostas são longas demais para enviar. Encurte-as e envie novamente.",
       "dismiss_failed": "Não foi possível descartar esta pergunta. Tente novamente.",
-      "qa_pair": "P. {{question}}\nR. {{answer}}"
+      "qa_pair": "P. {{question}}\nR. {{answer}}",
+      "load_failed": "Não foi possível verificar as perguntas do agente neste chat. Tentando novamente."
     },
     "sketchDialog": {
       "title": "Bloco de esboços",

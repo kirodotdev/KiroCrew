@@ -9706,7 +9706,8 @@
       "answer_restored_command_center_session": "L’agente in «{{session}}» ha smesso di attendere «{{question}}», quindi le tue risposte non sono state inviate. Sono nel campo di scrittura di quella sessione; inviale se vuoi ancora.",
       "answers_too_long": "Le tue risposte sono troppo lunghe per essere inviate. Accorciale e invia di nuovo.",
       "dismiss_failed": "Impossibile ignorare questa domanda. Riprova.",
-      "qa_pair": "D. {{question}}\nR. {{answer}}"
+      "qa_pair": "D. {{question}}\nR. {{answer}}",
+      "load_failed": "Impossibile controllare le domande dell'agente in questa chat. Nuovo tentativo in corso."
     },
     "sketchDialog": {
       "title": "Blocco schizzi",

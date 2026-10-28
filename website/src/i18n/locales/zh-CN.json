@@ -9420,7 +9420,8 @@
       "answer_restored_command_center_session": "“{{session}}”中的智能体已不再等待“{{question}}”，因此你的答案没有发送。答案已放回该会话输入框；如仍需要，请手动发送。",
       "answers_too_long": "你的回答太长，无法发送。请缩短后重新提交。",
       "dismiss_failed": "无法关闭此问题。请重试。",
-      "qa_pair": "问：{{question}}\n答：{{answer}}"
+      "qa_pair": "问：{{question}}\n答：{{answer}}",
+      "load_failed": "无法检查此聊天中的智能体问题。正在重试。"
     },
     "sketchDialog": {
       "title": "草图板",

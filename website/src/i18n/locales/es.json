@@ -9706,7 +9706,8 @@
       "answer_restored_command_center_session": "El agente de “{{session}}” dejó de esperar “{{question}}”, así que tus respuestas no se enviaron. Están en el cuadro de redacción de esa sesión; envíalas si todavía quieres.",
       "answers_too_long": "Tus respuestas son demasiado largas para enviarlas. Acórtalas y envíalas de nuevo.",
       "dismiss_failed": "No se pudo descartar esta pregunta. Inténtalo de nuevo.",
-      "qa_pair": "P. {{question}}\nR. {{answer}}"
+      "qa_pair": "P. {{question}}\nR. {{answer}}",
+      "load_failed": "No se pudieron comprobar las preguntas del agente en este chat. Reintentando."
     },
     "sketchDialog": {
       "title": "Bloc de bocetos",

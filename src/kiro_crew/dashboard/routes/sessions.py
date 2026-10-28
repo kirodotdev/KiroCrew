@@ -15,6 +15,7 @@ from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
 from kiro_crew.dashboard.handlers import chat_elicitation
 from kiro_crew.dashboard.handlers import debug as debug_handlers
 from kiro_crew.dashboard.handlers import session_environments as session_environment_handlers
+from kiro_crew.dashboard.handlers import slot_question
 
 
 def register(app: web.Application) -> None:
@@ -68,6 +69,11 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)
+    # The slot's own ask_question card, for its owner app (ChatEmbed) or the owner.
+    app.router.add_get("/api/chat/slots/{slot}/question", slot_question.api_chat_slot_question)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/answer", slot_question.api_chat_slot_question_answer
+    )
     app.router.add_post(
         "/api/chat/slots/{slot}/elicitation", chat_elicitation.api_chat_slot_elicitation
     )

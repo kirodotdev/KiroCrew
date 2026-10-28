@@ -9563,7 +9563,8 @@
       "answer_restored_command_center_session": "Der Agent in „{{session}}“ wartet nicht mehr auf „{{question}}“, daher wurden deine Antworten nicht gesendet. Du findest sie im Eingabefeld dieser Sitzung; sende sie, wenn du noch möchtest.",
       "answers_too_long": "Deine Antworten sind zu lang zum Senden. Kürze sie und sende sie erneut.",
       "dismiss_failed": "Diese Frage konnte nicht verworfen werden. Bitte erneut versuchen.",
-      "qa_pair": "F. {{question}}\nA. {{answer}}"
+      "qa_pair": "F. {{question}}\nA. {{answer}}",
+      "load_failed": "Fragen des Agenten in diesem Chat konnten nicht geprüft werden. Neuer Versuch läuft."
     },
     "sketchDialog": {
       "title": "Skizzenblock",

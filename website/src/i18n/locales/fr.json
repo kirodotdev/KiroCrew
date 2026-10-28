@@ -9706,7 +9706,8 @@
       "answer_restored_command_center_session": "L’agent de « {{session}} » n’attend plus « {{question}} », tes réponses n’ont donc pas été envoyées. Elles sont dans le champ de saisie de cette session ; envoie-les si tu le souhaites encore.",
       "answers_too_long": "Tes réponses sont trop longues pour être envoyées. Raccourcis-les et renvoie-les.",
       "dismiss_failed": "Impossible d’ignorer cette question. Réessayez.",
-      "qa_pair": "Q. {{question}}\nR. {{answer}}"
+      "qa_pair": "Q. {{question}}\nR. {{answer}}",
+      "load_failed": "Impossible de vérifier les questions de l'agent dans ce chat. Nouvelle tentative."
     },
     "sketchDialog": {
       "title": "Bloc de croquis",

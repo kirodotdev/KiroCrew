@@ -2394,6 +2394,12 @@ this checkpoint. It applies whether or not a handler carries a check of its own.
 - `POST .../resume` is `HANDLER`, because it opens a persisted transcript that
   usually has no live slot (see below).
 
+The question routes (`GET .../question`, `POST .../question/answer`)
+deliberately take the `OWNER` default rather than
+`SESSION_GRANT`: the grant never reaches a question in a person's own session.
+Their handlers still require `sessionApproval` from the owner app, through
+`deny_session_approval_caller`, as `/approve` does.
+
 The middleware publishes the slot object it judged on the request
 (`CHECKPOINT_SLOT_KEY`). A handler that awaits before it looks its slot up
 (regenerate and rewind after the readiness probe, mirror-unlink and slack-unlink

@@ -166,6 +166,10 @@ API-path check for each of these calls:
   re-issued on each push signal; see below).
 - `POST /api/chat` — sending, unless `onSend` is supplied.
 - `POST /api/chat/slots/{slot}/approve` — Approve, Reject and Trust on a tool approval.
+- `GET /api/chat/slots/{slot}/question` — the slot's pending `ask_question` cards,
+  polled every 1.5 s while a turn runs and every 10 s when idle.
+- `POST /api/chat/slots/{slot}/question/answer` — answer or decline a blocking card
+  (`{ask_id, answers}` or `{ask_id, dismissed: true}`).
 
 File attachments upload to `POST /api/upload/file`, which `/api/chat` does not
 cover: it is a separate, optional grant (see [Attachments](#attachments)).
@@ -182,6 +186,23 @@ Without that permission, the Gateway returns 403 `session_approval_not_granted`,
 even for the app's own slots. The API-path grant alone does not authorize an
 approval; the session ownership rules still apply. See **Ownership for app
 callers** under [Approvals](#approvals).
+
+The question card needs the same `permissions.sessionApproval`, and reaches only
+slots the app owns: a question in any other session, a person's own sessions
+included, is `404 slot_not_found`, grant or not. Without the grant the question
+read answers 403 `session_approval_not_granted` and the embed shows no card; the
+agent's question then still shows in the dashboard. The owner-wide
+`/api/ask-question/*` routes refuse every app token, so they are not an
+alternative. While a card is up the follow-up chips are not shown. When an answer
+reaches a wait that has already ended, or a card ends while an answer is typed
+into it, the typed answer is put back in the message box, unsent, with a notice.
+A question read that keeps failing for another reason (offline, a server error)
+shows a notice while the poll retries.
+
+The embed shows the blocking cards of the `ask_question` tool only. A kiro-cli
+native question raised mid-turn (`native: true`, no `ask_id`) needs its answer
+steered into the running turn, which the embed cannot do, so it shows only in the
+dashboard.
 
 What the embed does not do today, one line each:
 
@@ -1493,6 +1514,8 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | PUT/DELETE | `/api/mcp/servers/{name}` | Register or remove an MCP server |
 | GET | `/api/memory/episodic/search` | Search memory |
 | POST | `/api/chat/slots/{slot}/context` | Inject silent context |
+| GET | `/api/chat/slots/{slot}/question` | Read an owned slot's pending question cards (needs `permissions.sessionApproval`) |
+| POST | `/api/chat/slots/{slot}/question/answer` | Answer or decline an owned slot's blocking question (needs `permissions.sessionApproval`) |
 | POST | `/api/member-records/{slug}` | Append one record to a crewmate's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
 
 ### App Management

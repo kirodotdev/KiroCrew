@@ -63,6 +63,7 @@ import { useEmbedAttachments } from './useEmbedAttachments'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
+import EmbedQuestionCard, { useEmbedPendingQuestion } from './EmbedQuestionCard'
 import ChatFooter from '../pages/chat/ChatFooter'
 import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
@@ -692,9 +693,13 @@ function ChatEmbed({
    *  after the answer settles" and "a later user message clears them" behave identically
    *  here too — an agent's follow-up choices should never be silently dropped just
    *  because the surface embedding them is thinner. */
+  /** The slot's pending ask_question card, read through the slot's own question
+   *  route (see EmbedQuestionCard). While one is up the follow-up chips stand
+   *  down, as on every other surface. */
+  const { pending: pendingQuestion, loadFailed: questionLoadFailed } = useEmbedPendingQuestion(api, slotKey, running)
   const { followUpOptions, followUpMulti, followUpSourceKey } = useMemo(
-    () => deriveFollowUpOptions(messages, running),
-    [messages, running]
+    () => deriveFollowUpOptions(messages, running, !!pendingQuestion),
+    [messages, running, pendingQuestion]
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
@@ -1369,6 +1374,21 @@ function ChatEmbed({
       )}
 
       {aboveComposer && <div className="shrink-0">{aboveComposer}</div>}
+
+      <EmbedQuestionCard
+        key={slotKey}
+        api={api}
+        slot={slotKey}
+        pending={pendingQuestion}
+        loadFailed={questionLoadFailed}
+        onRestore={(slot, text, notice) => {
+          // Same rule as a refused send: an embed that is gone (or now shows
+          // another slot) parks the answer for the next embed of that slot.
+          if (mountedRef.current && slotKeyRef.current === slot) { restoreIntoComposer(text); return true }
+          stashEmbedRecovery({ app: appName, slot }, { tail: { role: 'error', content: notice, sendId: mintSendId() }, restoreText: text })
+          return false
+        }}
+      />
 
       {/* fuseBelow off: the embed's input row is a flat strip, not the
           dock's glass the front card slides under, so the stack stands as

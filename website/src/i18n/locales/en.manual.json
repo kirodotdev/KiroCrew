@@ -3847,7 +3847,8 @@
       "answer_restored_command_center_session": "The agent in \"{{session}}\" stopped waiting for \"{{question}}\", so your answers weren't sent. They're in that session's composer; send them if you still want to.",
       "answers_too_long": "Your answers are too long to send. Shorten them and submit again.",
       "dismiss_failed": "Couldn’t dismiss this question. Try again.",
-      "qa_pair": "Q. {{question}}\nA. {{answer}}"
+      "qa_pair": "Q. {{question}}\nA. {{answer}}",
+      "load_failed": "Couldn't check this chat for agent questions. Retrying."
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "Maximum {{n}} sidebar pins - unpin one first"

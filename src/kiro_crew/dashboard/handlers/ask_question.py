@@ -328,6 +328,47 @@ async def api_ask_question(request: web.Request) -> web.Response:
     return web.json_response({"status": "answered", "ask_id": ask_id, "answers": answers})
 
 
+def pending_question_cards(state: DashboardState, slot_key: str | None = None) -> list[dict]:
+    """Every question card still awaiting an answer, or only *slot_key*'s.
+
+    The one listing behind ``GET /api/ask-question/pending`` (every slot, owner
+    only) and ``GET /api/chat/slots/{slot}/question`` (one slot, for its owner
+    app), so both describe a card the same way.
+    """
+    out: list[dict] = [
+        {
+            "ask_id": ask_id,
+            "slot": p.get("slot", ""),
+            "questions": p.get("questions", []),
+            "ts": p.get("ts", 0),
+        }
+        for ask_id, p in state._pending_questions.items()
+        if slot_key is None or p.get("slot", "") == slot_key
+    ]
+    for key, slot in list((getattr(state, "_slots", None) or {}).items()):
+        if slot_key is not None and key != slot_key:
+            continue
+        for card_id, rec in list((getattr(slot, "_question_pending", None) or {}).items()):
+            # Blocking entries are already listed above, from the authoritative
+            # wait registry; a record with no stored questions has nothing to
+            # render, so it is a status-only marker and is skipped rather than
+            # emitted as an empty card.
+            if rec.get("blocking") or not rec.get("questions"):
+                continue
+            out.append(
+                {
+                    "card_id": card_id,
+                    "slot": key,
+                    "questions": rec.get("questions", []),
+                    # Rides with the card so a reload routes the answer the way
+                    # the live frame did (steer for a native mid-turn card).
+                    "native": bool(rec.get("native")),
+                    "ts": rec.get("ts", 0),
+                }
+            )
+    return out
+
+
 async def api_ask_question_pending(request: web.Request) -> web.Response:
     """GET /api/ask-question/pending — question cards still awaiting an answer.
 
@@ -357,34 +398,7 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
     deny = _deny_non_owner(request, "ask_question_pending")
     if deny is not None:
         return deny
-    out: list[dict] = [
-        {
-            "ask_id": ask_id,
-            "slot": p.get("slot", ""),
-            "questions": p.get("questions", []),
-            "ts": p.get("ts", 0),
-        }
-        for ask_id, p in state._pending_questions.items()
-    ]
-    for slot_key, slot in list((getattr(state, "_slots", None) or {}).items()):
-        for card_id, rec in list((getattr(slot, "_question_pending", None) or {}).items()):
-            # Blocking entries are already listed above, from the authoritative
-            # wait registry; a record with no stored questions has nothing to
-            # render, so it is a status-only marker and is skipped rather than
-            # emitted as an empty card.
-            if rec.get("blocking") or not rec.get("questions"):
-                continue
-            out.append(
-                {
-                    "card_id": card_id,
-                    "slot": slot_key,
-                    "questions": rec.get("questions", []),
-                    # Rides with the card so a reload routes the answer the way
-                    # the live frame did (steer for a native mid-turn card).
-                    "native": bool(rec.get("native")),
-                    "ts": rec.get("ts", 0),
-                }
-            )
+    out = pending_question_cards(state)
     return web.json_response(
         {
             "pending": out,
@@ -454,29 +468,15 @@ async def api_ask_question_dismiss(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def api_ask_question_answer(request: web.Request) -> web.Response:
-    """POST /api/ask-question/{ask_id}/answer — resolve a pending question.
+def _parse_answer_body(
+    body: dict,
+) -> "tuple[dict[str, str] | None, str | None] | web.Response":
+    """The ``(answers, reason)`` an answer body asks for, or the 400 refusing it.
 
-    Body: ``{answers: {question: answer}}``, or ``{"dismissed": true}`` to
-    unblock the caller with no answer.
+    Shared by ``POST /api/ask-question/{ask_id}/answer`` and the app-facing
+    ``POST /api/chat/slots/{slot}/question/answer`` so both bound and coerce an
+    answer the same way.
     """
-    state: DashboardState = request.app["state"]
-    deny = _deny_app_token(request, "ask_question_answer")
-    if deny is not None:
-        return deny
-    deny = _deny_non_owner(request, "ask_question_answer")
-    if deny is not None:
-        return deny
-    ask_id = request.match_info["ask_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
-        )
-
     reason: str | None = None
     if body.get("dismissed"):
         answers: dict[str, str] | None = None
@@ -548,6 +548,13 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
                 status=400,
             )
 
+    return answers, reason
+
+
+def _resolve_or_not_found(
+    state: DashboardState, ask_id: str, answers: dict[str, str] | None, reason: str | None
+) -> web.Response:
+    """Resolve *ask_id* and answer ``{"ok": true}``, or the 404 for a gone ask."""
     if not state.resolve_question(ask_id, answers, reason=reason):
         recorded_reason = state.recent_question_resolutions().get(ask_id)
         if recorded_reason:
@@ -567,6 +574,35 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
             status=404,
         )
     return web.json_response({"ok": True})
+
+
+async def api_ask_question_answer(request: web.Request) -> web.Response:
+    """POST /api/ask-question/{ask_id}/answer — resolve a pending question.
+
+    Body: ``{answers: {question: answer}}``, or ``{"dismissed": true}`` to
+    unblock the caller with no answer.
+    """
+    state: DashboardState = request.app["state"]
+    deny = _deny_app_token(request, "ask_question_answer")
+    if deny is not None:
+        return deny
+    deny = _deny_non_owner(request, "ask_question_answer")
+    if deny is not None:
+        return deny
+    ask_id = request.match_info["ask_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    parsed = _parse_answer_body(body)
+    if isinstance(parsed, web.Response):
+        return parsed
+    answers, reason = parsed
+    return _resolve_or_not_found(state, ask_id, answers, reason)
 
 
 # ── Agent asks: the blocking MCP ``ask_question`` ─────────────────────────────

@@ -379,6 +379,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/resume.py::api_chat_slot_resume": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_approval.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_approval.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # An ask answer is at most MAX_TOOL_RESULT_CHARS (8000) of answer text plus an
+    # ask id, checked again by _parse_answer_body, so the shared 64 KB default sits
+    # far above any legitimate body.
+    "handlers/slot_question.py::_read_body": ("<default>", _BOUNDED_BY_DEFAULT),
     # An MCP elicitation answer: two ids, an action and at most PROPERTIES_MAX
     # form values of up to STRING_VALUE_MAX_CHARS each -- a form the card drew
     # must be answerable, so the cap is sized from those bounds.

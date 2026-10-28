@@ -22,7 +22,8 @@ const mockPost = vi.fn()
 let mockHostActive: boolean | undefined
 
 vi.mock('../app-sdk/index', () => ({
-  useAppApi: () => ({ get: mockGet, post: mockPost }),
+  // The question-card poll is answered here so mockGet counts transcript reads only.
+  useAppApi: () => ({ get: (p: string, ...a: unknown[]) => (p.endsWith('/question') ? Promise.resolve({ pending: [] }) : mockGet(p, ...a)), post: mockPost }),
   useAppInfo: () => ({ name: 'test-app', version: '0', permissions: { api: ['/api/chat'], events: [] }, active: mockHostActive }),
 }))
 

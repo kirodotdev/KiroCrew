@@ -9420,7 +9420,8 @@
       "answer_restored_command_center_session": "‘{{session}}’의 에이전트가 ‘{{question}}’에 대한 대기를 멈춰서 답변이 전송되지 않았습니다. 답변은 해당 세션의 입력창에 있으니 원하면 보내세요.",
       "answers_too_long": "답변이 너무 길어서 보낼 수 없습니다. 줄여서 다시 제출하세요.",
       "dismiss_failed": "이 질문을 닫을 수 없습니다. 다시 시도하세요.",
-      "qa_pair": "문. {{question}}\n답. {{answer}}"
+      "qa_pair": "문. {{question}}\n답. {{answer}}",
+      "load_failed": "이 채팅의 에이전트 질문을 확인하지 못했습니다. 다시 시도하는 중입니다."
     },
     "sketchDialog": {
       "title": "스케치 패드",

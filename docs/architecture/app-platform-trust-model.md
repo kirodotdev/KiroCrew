@@ -145,7 +145,9 @@ its handler runs (`dashboard/slot_ownership.py`). This holds because a
 passes only on a slot it owns that still runs on its own session (a task-runner
 result tab's own session is the one minted for it). Approving or
 denying a pending tool request is the one per-slot action the `sessionApproval`
-grant also reaches on a local user session. Any other app, on any other slot,
+grant also reaches on a local user session. The same grant lets an app read and
+answer the `ask_question` card on a slot it owns, and only there
+(`/api/chat/slots/{slot}/question`). Any other app, on any other slot,
 gets the same `404 slot_not_found` a missing slot gets, and a refusal for a slot
 that exists is recorded in the security-event log. The decision is keyed by the
 slot in the path. The `/api/approvals` and `/api/sessions` families and

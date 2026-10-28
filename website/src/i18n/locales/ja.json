@@ -9420,7 +9420,8 @@
       "answer_restored_command_center_session": "「{{session}}」のエージェントは「{{question}}」への回答を待たなくなったため、回答は送信されませんでした。回答はそのセッションの入力欄に入っています。まだ送りたい場合は送信してください。",
       "answers_too_long": "回答が長すぎて送信できません。短くしてからもう一度送信してください。",
       "dismiss_failed": "この質問を閉じられませんでした。もう一度お試しください。",
-      "qa_pair": "問 {{question}}\n答 {{answer}}"
+      "qa_pair": "問 {{question}}\n答 {{answer}}",
+      "load_failed": "このチャットのエージェントからの質問を確認できませんでした。再試行しています。"
     },
     "sketchDialog": {
       "title": "スケッチパッド",
