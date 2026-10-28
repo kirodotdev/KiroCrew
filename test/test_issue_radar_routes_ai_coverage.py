@@ -254,7 +254,8 @@ class TestLoadForAi(unittest.IsolatedAsyncioTestCase):
         # A timeline-only entry is not enough to summarize from.
         with mock.patch.object(store, "read_issue_detail_cache", return_value={"detail": None}), \
                 mock.patch.object(gh, "get_issue_detail", return_value={"number": 7}) as fetch:
-            await routes._load_detail_for_ai(_key(), 7)
+            got = await routes._load_detail_for_ai(_key(), 7)
+        self.assertEqual(got, {"number": 7})
         fetch.assert_called_once()
 
     async def test_labels_are_fetched_and_cached_under_one_lock_on_a_miss(self):

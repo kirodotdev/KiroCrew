@@ -885,13 +885,15 @@ class TestRefreshPathsUseTheAtomicHelper(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_tagging_loader_uses_refresh_issues_cache_when_refreshing(self):
         refreshed = mock.Mock(side_effect=lambda o, r, fetch, **kw: fetch())
-        read = mock.Mock(return_value=self.ISSUES)
+        stale = [{"number": 999, "labels": []}]
+        read = mock.Mock(return_value=stale)
         with (
             mock.patch.object(store, "read_issues_cache", read),
             mock.patch.object(store, "refresh_issues_cache", refreshed),
             mock.patch.object(gh, "list_open_issues", return_value=self.ISSUES),
         ):
-            await routes._load_open_issues_for_reco(_KEY, refresh=True)
+            got = await routes._load_open_issues_for_reco(_KEY, refresh=True)
+        self.assertEqual(got, self.ISSUES)
         refreshed.assert_called_once()
         read.assert_not_called()
 
@@ -1014,6 +1016,8 @@ class TestSameIssueApplyIsSerialized(unittest.TestCase):
         with store.issue_write_lock("o", "r", 7, self.tmp):
             with store.issue_write_lock("o", "r", 8, self.tmp):
                 pass  # would deadlock if the lock were per-repo
+        lock_files = sorted(p.name for p in self.tmp.rglob("*.write.lock"))
+        self.assertEqual(lock_files, ["issue-7.write.lock", "issue-8.write.lock"])
 
 
 class TestNoOpRemovalRepairsTheCache(unittest.TestCase):

@@ -77,12 +77,13 @@ class TestIssuesFirstPage(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 routes,
                 "_handle_issues_first_page",
-                new=AsyncMock(return_value=web.json_response({})),
+                new=AsyncMock(return_value=web.json_response({"branch": "first_page"})),
             ) as branch,
         ):
-            await routes._handle_issues(
+            response = await routes._handle_issues(
                 _get("issues", {"owner": "o", "repo": "r", "first_page": "1"})
             )
+        self.assertEqual(_body(response), {"branch": "first_page"})
         branch.assert_awaited_once()
 
     async def test_the_closed_state_never_takes_the_fast_path(self):
@@ -144,12 +145,13 @@ class TestPullsFirstPage(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 routes,
                 "_handle_pulls_first_page",
-                new=AsyncMock(return_value=web.json_response({})),
+                new=AsyncMock(return_value=web.json_response({"branch": "first_page"})),
             ) as branch,
         ):
-            await routes._handle_pulls(
+            response = await routes._handle_pulls(
                 _get("pulls", {"owner": "o", "repo": "r", "first_page": "1"})
             )
+        self.assertEqual(_body(response), {"branch": "first_page"})
         branch.assert_awaited_once()
 
 
