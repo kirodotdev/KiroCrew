@@ -21,6 +21,7 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_expired_note,
     format_approval_no_budget_card,
     format_approval_timeout_card,
+    person_wait_window_secs,
 )
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
 from kiro_crew.security.readonly_bash import (
@@ -85,6 +86,7 @@ async def _on_permission_prompt(
     _declined_grant_notices = turn._declined_grant_notices
     _refusal_notices = turn._refusal_notices
     _refusal_reasons = turn._refusal_reasons
+    _kas_person_only = turn._kas_person_only
     client = turn.client
     session_key = turn.session_key
     slot = turn.slot
@@ -198,6 +200,11 @@ async def _on_permission_prompt(
         "request_id": str(event.request_id),
         "tool_call_id": event.tool_call_id or "",
     }
+    if _kas_person_only:
+        # Read by the Trust/YOLO mode-switch sweep
+        # (chat_handlers.api_chat_mode), which approves every other
+        # pending card and must leave this one for the person.
+        perm_meta["person_only"] = "1"
     if event.tool_purpose:
         perm_meta["tool_purpose"] = _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE)
     if event.tool_input:
@@ -487,7 +494,15 @@ async def _on_permission_prompt(
         tool=event.tool_name or "",
         reason=event.title or "",
     )
-    _approval_window = min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
+    _approval_window = (
+        # A KAS plan handoff waits for the person, not
+        # for the approval window (gap 4): bounded only by what is
+        # left of this turn's own ceiling. An unattended slot keeps
+        # its deny-fast window: no person is there to wait for.
+        person_wait_window_secs()
+        if _kas_person_only and not slot.unattended
+        else min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
+    )
     _unattended_wait = slot.unattended
     _approval_card: str | None = None
     try:
