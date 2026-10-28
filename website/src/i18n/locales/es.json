@@ -11809,6 +11809,14 @@
         "session_colors": "Colores de sesión",
         "save_failed": "No se pudo guardar el color de la sesión"
       },
+      "sessionMessageCard": {
+        "needs_you": "Necesita tu atención",
+        "open_session": "Abrir {{name}}",
+        "show_less": "Mostrar menos",
+        "show_more": "Mostrar más",
+        "this_session": "Esta sesión",
+        "to_recipient": "Enviado a {{name}}"
+      },
       "sessionFlyout": {
         "new": "Nuevo",
         "new_chat": "Nuevo chat",

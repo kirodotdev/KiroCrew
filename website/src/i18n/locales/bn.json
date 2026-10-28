@@ -11642,6 +11642,14 @@
         "session_colors": "সেশনের রঙসমূহ",
         "save_failed": "সেশনের রঙ সংরক্ষণ করা যায়নি"
       },
+      "sessionMessageCard": {
+        "needs_you": "মনোযোগ দরকার",
+        "open_session": "{{name}} খোলো",
+        "show_less": "কম দেখাও",
+        "show_more": "আরও দেখাও",
+        "this_session": "এই সেশন",
+        "to_recipient": "{{name}}-কে পাঠানো হয়েছে"
+      },
       "sessionFlyout": {
         "new": "নতুন",
         "new_chat": "নতুন চ্যাট",
