@@ -606,8 +606,68 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
             return _foreign_slot_response()
 
-    # Drain stale pending from prior turns whose reader disconnected
-    slot.drain()
+    # A chat handed over to kiro-cli is refused before the request's agent is
+    # adopted below, so a refused request leaves the slot's agent as it was. The
+    # check before the row stays.
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+    from kiro_crew.kiro_cli_handoff import handover_refusal
+
+    try:
+        await recover_left_open(state, slot, effective_session_key(slot))
+    except BaseException:
+        if (not slot_id or freshly_created) and state._slots.get(slot.key) is slot:
+            state._slots.pop(slot.key, None)
+        raise
+    # Recovery yields: another request can start the slot while this one waits.
+    if slot.running is True:
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="openai_compat",
+            resources=f"slot={slot.key}",
+            error="slot busy",
+        )
+        return web.json_response(
+            {
+                "error": {
+                    "message": f"slot {slot.key!r} is busy",
+                    "type": "slot_busy",
+                    "code": "slot_busy",
+                },
+                "code": "slot_busy",
+            },
+            status=409,
+        )
+    if state._slots.get(slot.key) is not slot:
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="openai_compat",
+            resources=f"slot={slot.key}",
+            error="slot closed",
+        )
+        return web.json_response(
+            {
+                "error": {"message": "slot closed", "type": "conflict", "code": "slot_closed"},
+                "code": "slot_closed",
+            },
+            status=409,
+        )
+    handed_over = handover_refusal(effective_session_key(slot))
+    if handed_over is not None:
+        message, code = handed_over
+        if slot_id and freshly_created:
+            state._slots.pop(slot.key, None)
+        return web.json_response(
+            {
+                "error": {"message": message, "type": "invalid_request_error", "code": code},
+                "code": code,
+            },
+            status=409,
+        )
 
     if agent:
         if slot.mode == "member" and agent != slot.agent:
@@ -666,6 +726,23 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     status=409,
                 )
         slot.agent = agent
+    # A chat handed over to kiro-cli (``kiro_crew.kiro_cli_handoff``): this row
+    # would land ahead of the terminal's turns and its turn be refused. Checked
+    # with no await before the row (one stat).
+    handed_over = handover_refusal(effective_session_key(slot))
+    if handed_over is not None:
+        message, code = handed_over
+        if slot_id and freshly_created:
+            state._slots.pop(slot.key, None)
+        return web.json_response(
+            {
+                "error": {"message": message, "type": "invalid_request_error", "code": code},
+                "code": code,
+            },
+            status=409,
+        )
+    # Recovery publishes older turns too; they belong to history, not this completion.
+    slot.drain()
     # A hold a restart restored into this idle slot is owed to this turn.
     flush_restored_hold(slot, logger=logger)
     slot.append("user", prompt, "msg msg-u")

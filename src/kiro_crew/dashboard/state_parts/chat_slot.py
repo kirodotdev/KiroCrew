@@ -1050,11 +1050,17 @@ class _ChatSlot:
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
+
+        A chat handed over to kiro-cli (``kiro_crew.kiro_cli_handoff``) queues
+        too, in the same step: its row is written by the drain, after the
+        terminal's turns are in, and not ahead of them by a turn admission would
+        refuse.
         """
         # An Ultra Mode "Pause all" holds this session: queue, never start.
         from kiro_crew import crew_pause
 
-        if self.running or crew_pause.holds_slot(self):
+        handed_over = _kiro_cli_handover(self)
+        if self.running or crew_pause.holds_slot(self) or handed_over:
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta
@@ -1089,6 +1095,10 @@ class _ChatSlot:
             # single-flight per slot, so a burst of queued prompts is not a burst of
             # transcript rewrites.
             start_queue_persist(state, self)
+            if handed_over == "kiro_cli_import_pending" and not self.running:
+                # No hold, so no release will drain it: the drain is started now,
+                # and brings the left turns in before this entry's row.
+                _drain_after_kiro_cli_import(state, self)
             return False
         # The run arm has no queue entry, so a cross-session sender stamp is
         # applied directly to the user row it appends (``extra_meta`` is queue-only).
@@ -1235,3 +1245,29 @@ _MEMBER_OWNERS = frozenset(
 )
 
 own_methods(_ChatSlot, _MEMBER_OWNERS)
+
+
+def _kiro_cli_handover(slot: _ChatSlot) -> str:
+    """The handover's refusal code for *slot*'s chat (``kiro_cli_open`` or
+    ``kiro_cli_import_pending``), or ``""``. Blocking (one stat)."""
+    # circular import: chat_utils imports the state package.
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.kiro_cli_handoff import handover_refusal
+
+    refused = handover_refusal(effective_session_key(slot))
+    return refused[1] if refused is not None else ""
+
+
+def _drain_after_kiro_cli_import(state: DashboardState, slot: _ChatSlot) -> None:
+    """Start *slot*'s queue drain, which brings an open's left turns in before
+    it writes the next entry's row (``_queue_awaits_kiro_cli_import``)."""
+    # circular import: chat_runner imports the state package.
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+
+    try:
+        task = asyncio.ensure_future(_drain_parked_queues(state, [slot.key]))
+    except RuntimeError:
+        return  # no running loop: the chat's next send drains it
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    task.add_done_callback(_log_task_exception)

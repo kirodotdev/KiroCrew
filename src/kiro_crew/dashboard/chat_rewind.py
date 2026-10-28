@@ -49,6 +49,7 @@ from kiro_crew.dashboard.slot_ownership import (
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.state import _TRANSIENT_ROLES, DashboardState
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.kiro_cli_handoff import handover_refusal
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
 
@@ -177,11 +178,23 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     from kiro_crew import crew_pause as _crew_pause
 
     await _crew_pause.ensure_loaded()
+
+    # Turns an open of this chat in kiro-cli left unimported come in first, so
+    # the rewind discards them with the rest of the branch they belong to.
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import settle_before_rewrite
+
+    await settle_before_rewrite(state, slot)
     async with slot._lock:
         if request_app and state._slots.get(name) is not slot:
             return slot_not_found()
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+        handed_over = handover_refusal(effective_session_key(slot))
+        if handed_over is not None:
+            # Open in kiro-cli, or its turns still to come in: the handover is
+            # the conversation's one writer (``kiro_crew.kiro_cli_handoff``).
+            message, code = handed_over
+            return web.json_response({"error": message, "code": code}, status=409)
         if slot.is_closing:
             # A close that is already running has fenced the slot and waits for
             # the truncating writes registered against it. Admitting a rewind

@@ -768,16 +768,23 @@ class SessionMap:
         was emptied in place is not one to resume. Unlike :meth:`get` it neither
         stats the transcript nor prunes, so it is safe on the event loop; a
         caller about to resume through something other than ``session/load``
-        (the terminal's ``kiro-cli chat --resume-id``) checks the files itself
-        with :func:`session_files_resumable`.
+        (the terminal's ``kiro-cli chat --resume-id``) checks the files itself.
+        Like :meth:`get` it never answers with a sid still marked unlanded
+        (:data:`UNLANDED_SID_FIELD`).
         """
         entry = self._resolve_alias(key)[1]
         if not entry:
             return "", "", ""
         provider = entry.get("provider")
         cwd = entry.get("cwd")
+        sid = bounded_session_id(entry.get("sid")) or ""
+        if sid and entry.get(UNLANDED_SID_FIELD) == sid:
+            # A fresh session no turn has delivered the chat's history to yet:
+            # resuming it would start without that history, so it is none to
+            # resume, as :meth:`get` answers too.
+            sid = ""
         return (
-            bounded_session_id(entry.get("sid")) or "",
+            sid,
             provider if isinstance(provider, str) else "",
             cwd if isinstance(cwd, str) else "",
         )

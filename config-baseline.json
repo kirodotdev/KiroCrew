@@ -9435,6 +9435,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.open_in_kiro_cli",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: open_in_kiro_cli",
+      "help": "Turn on the 'open_in_kiro_cli' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.remote_crew_chat",
       "kind": "core",
       "type": "boolean",

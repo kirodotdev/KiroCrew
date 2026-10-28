@@ -918,7 +918,11 @@ its place in the fair queue then. Messages a drain merges into one turn end with
 turn's outcome (`extra.merged_into`). A parked message's expiry is a check-in: while
 its queue card exists it waits on; once the card is gone it ends `cancelled`
 (`queue_entry_gone`). A card cancelled through the work API, or whose sender was
-removed, does not run.
+removed, does not run. After admission, the send checks that its slot is still
+live and has not been handed to kiro-cli (`admission_entry.refuse_if_slot_closed`
+and `refuse_if_handed_over`). The handover check does not suspend on an allowed
+send; its queue write runs in the same step. Either refusal cancels the admitted
+work before returning 409, without adding a queue entry or user row.
 
 Capacity lives in memory (the scheduler and the live table); the store is the
 durable record. When any admission write fails (promotion, the pre-start

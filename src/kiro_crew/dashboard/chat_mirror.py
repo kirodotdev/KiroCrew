@@ -454,12 +454,26 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         logger.debug("mirror-link: could not read the prior opt-out", exc_info=True)
         previous_opt_out = None
 
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+    from kiro_crew.kiro_cli_handoff import HELD_TURN_REFUSAL, handover_refusal
+
+    await recover_left_open(state, slot, session_key)
+
+    class _HandedOver(Exception):
+        """The chat is handed over to kiro-cli (``kiro_crew.kiro_cli_handoff``)."""
+
     def _claim_binding() -> None:
         # Off the loop, and one critical section: ``batched_save`` holds the map
         # lock across the block and rewrites the whole map file on the way out, so
         # on the loop this write stalls every other task. Await-free by
         # construction, because the lock is per-thread reentrant.
         with state.sessions.batched_save():
+            # A chat handed over to kiro-cli takes no channel whose turns would
+            # run past the dashboard's admission. Read right before the write: an
+            # open whose hold lands after it finds the link when it re-reads it
+            # under its hold.
+            if handover_refusal(session_key) is not None:
+                raise _HandedOver
             # The LINK first, deliberately. ``set_mirror_link`` is the call that can
             # refuse (``ConversationOwnershipConflict``), and it refuses before
             # mutating, so ordering it first means a refused claim leaves nothing
@@ -533,6 +547,10 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
 
     try:
         await asyncio.to_thread(_claim_binding)
+    except _HandedOver:
+        refused = handover_refusal(session_key)
+        message, code = refused or (HELD_TURN_REFUSAL, "kiro_cli_open")
+        return web.json_response({"error": message, "code": code}, status=409)
     except ConversationOwnershipConflict:
         # The precheck above covers the common case; this is the genuine race —
         # someone claimed the conversation while this request was resolving. Report

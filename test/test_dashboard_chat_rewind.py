@@ -44,6 +44,29 @@ class TestRewindSlot:
     """POST /api/chat/slots/{slot}/rewind — edit any past user message in place."""
 
     @pytest.mark.asyncio
+    async def test_rewind_of_a_chat_open_in_kiro_cli_is_refused_and_changes_nothing(self, tmp_path):
+        """The terminal is the conversation's one writer while kiro-cli holds it:
+        a rewind would clear its resume pointer and delete the log it appends."""
+        from kiro_crew import kiro_cli_handoff
+
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        before = [m["content"] for m in slot.messages]
+        assert kiro_cli_handoff.hold("dashboard:src", "t")
+        try:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/src/rewind",
+                    json={"at_message_index": 0, "content": "edited"},
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "kiro_cli_open"
+        finally:
+            kiro_cli_handoff.reset_holds()
+        assert [m["content"] for m in slot.messages] == before
+        state.sessions.discard_conversation.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_rewind_first_user_message_truncates_all(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _populate_slot(state)

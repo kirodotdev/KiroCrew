@@ -19,6 +19,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.kiro_cli_handoff import is_handed_over
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.metrics.sessions import (
     END_REASON_DESTROYED,
@@ -818,8 +819,27 @@ async def discard_conversation(
     owner = self._owner
     requested_key = key
     key = owner._fold_key(key)
+    from kiro_crew.kiro_cli_handoff import has_left_open
+
+    if has_left_open(requested_key) or has_left_open(key):
+        from kiro_crew.dashboard.handlers.kiro_cli_launch import settle_session_left_open
+
+        await settle_session_left_open(requested_key, key)
+    # A conversation handed over to kiro-cli in the terminal (held, or its
+    # turns still to come in) is the handover's to write: discarding it would
+    # clear the resume pointer under the log kiro-cli appends, or reset the
+    # conversation ahead of turns a later recovery then adds after the reset.
+    # Refused like a busy session, nothing changed (``kiro_crew.kiro_cli_handoff``).
+    if is_handed_over(requested_key) or is_handed_over(key):
+        return False
     async with owner._lock:
-        if refuse_if is not None and refuse_if():
+        # Read again under the lock: a hold taken while this call waited for it
+        # must still refuse. The clear below runs in this same hold with no
+        # await, so a discard that passes here has already committed by the
+        # time a handover's own re-read of the resume pointer runs.
+        if (refuse_if is not None and refuse_if()) or (
+            is_handed_over(requested_key) or is_handed_over(key)
+        ):
             return False
         current = owner._sessions.get(key)
         if skip_if_busy and _turn_in_flight(

@@ -894,6 +894,23 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # agent-origin send proves no attendance either.
         slot._human_seen = True
 
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+    from kiro_crew.kiro_cli_handoff import handover_refusal, has_left_open, is_held
+
+    # A chat handed over to kiro-cli is refused before the request's agent is
+    # adopted, so a refused send leaves the slot's agent as it was. A left open's
+    # turns come in first (the session key does not depend on the agent), so a
+    # send after a restart still goes through. The checks before dispatch below
+    # stay: a hold can land during the awaits in between.
+    if not is_held(effective_session_key(slot)) and await asyncio.to_thread(
+        has_left_open, effective_session_key(slot)
+    ):
+        await recover_left_open(state, slot, effective_session_key(slot))
+    handed_over = handover_refusal(effective_session_key(slot))
+    if handed_over is not None:
+        error, code = handed_over
+        return web.json_response({"error": error, "code": code}, status=409)
+
     if slot.agent not in (None, ""):
         # Slot already has an agent — only reject explicit mismatches (non-empty different agent).
         # Empty agent in request means "use existing" (e.g. follow-up messages from frontend).
@@ -1087,6 +1104,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         slot.color_theme = color_theme
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
+
+    # An "Open in kiro-cli" a restart cut short brings its turns in ahead of this
+    # message. Here, before the busy and queue reads, and never between them and
+    # the user row: those reads and the dispatch below stay one step with no
+    # await, so two overlapping sends still queue rather than both dispatching.
+    await recover_left_open(state, slot, effective_session_key(slot))
+    # A held chat (admission would refuse its turn), or one whose recovery above
+    # failed and kept its record (this row would land ahead of kiro-cli's turns),
+    # is refused ahead of every branch that accepts or queues the message, so the
+    # sender keeps the draft. Admission stays the authority for other ways in.
+    if (handed_over := handover_refusal(effective_session_key(slot))) is not None:
+        return web.json_response({"error": handed_over[0], "code": handed_over[1]}, status=409)
 
     from kiro_crew import crew_pause
     from kiro_crew.dashboard import responsive_chat
@@ -1284,6 +1313,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _closed := await _sc_entry.refuse_if_slot_closed(state, slot, _queued_admission)
         ) is not None:
             return _closed
+        if (
+            _handed_over := await _sc_entry.refuse_if_handed_over(slot, _queued_admission)
+        ) is not None:
+            return _handed_over
         qid = queue_for_next_turn(
             state,
             slot,
@@ -1375,6 +1408,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _closed := await _sc_entry.refuse_if_slot_closed(state, slot, _held_admission)
         ) is not None:
             return _closed
+        if (
+            _handed_over := await _sc_entry.refuse_if_handed_over(slot, _held_admission)
+        ) is not None:
+            return _handed_over
 
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
         # and attachment lists ride on the queue entry so the drained row
@@ -1478,14 +1515,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
-    # Same reason, same place: while a terminal runs this conversation in
-    # kiro-cli, the turn would be refused at admission anyway, and refusing here
-    # leaves no unanswered user row behind (which would read as an interrupted
-    # turn). The admission check stays the authority for every other way in.
-    from kiro_crew.dashboard.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
-
-    if is_held(effective_session_key(slot)):
-        return web.json_response({"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409)
 
     # Fair admission (Shared Crew), charged to the initiator and decided before the
     # user row is recorded, so a refusal leaves nothing behind. The reservation
@@ -1643,6 +1672,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         from kiro_crew.shared_crew.contracts import ActionOutcome, ActionType
         from kiro_crew.shared_crew.identity import actor_of
 
+        # The handover, read again in the same yield-free step that records the
+        # row and (below) reserves the turn: the early refusal above can be
+        # overtaken by an "Open in kiro-cli" that completed during one of the
+        # awaits since (the replay lookup, admission, the store pin), whose hold
+        # still stands or whose import failed and left its record; admission
+        # would then refuse the turn after this message was accepted, or the
+        # row would land ahead of kiro-cli's turns. Refused here instead (one
+        # stat); the `finally` below gives back the admission this send took.
+        handed_over = handover_refusal(effective_session_key(slot))
+        if handed_over is not None:
+            message_refused, code = handed_over
+            return web.json_response({"error": message_refused, "code": code}, status=409)
         _actor = actor_of(request)
         stamp_message_author(_user_row_meta, _actor)
         stamp_creator_if_fresh(

@@ -395,6 +395,17 @@ def _anchor_link_error(exc: Exception) -> SlackLinkError:
     )
 
 
+def _refuse_if_handed_over(session_key: str) -> None:
+    """Raise :class:`SlackLinkError` while *session_key* is handed over to
+    kiro-cli (``kiro_crew.kiro_cli_handoff``). Blocking (one stat)."""
+    from kiro_crew.kiro_cli_handoff import handover_refusal
+
+    handed_over = handover_refusal(session_key)
+    if handed_over is not None:
+        message, code = handed_over
+        raise SlackLinkError(409, code, message)
+
+
 async def link_slot_to_slack(
     state: DashboardState,
     slot: Any,  # _ChatSlot (avoids import cycle)
@@ -439,6 +450,12 @@ async def link_slot_to_slack(
     # the holder and every waiter, and the entry vanishes with the last of them.
     lock = _slack_link_lock(state, session_key)
     async with lock:
+        from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+
+        await recover_left_open(state, slot, session_key)
+        # Before any thread is posted: a chat handed over to kiro-cli takes no
+        # channel whose turns would run past the dashboard's admission.
+        _refuse_if_handed_over(session_key)
         if not state.slack_client:
             raise SlackLinkError(503, "slack_not_connected", "Slack not connected")
         owner_id = getattr(state, "owner_id", None)
@@ -626,6 +643,12 @@ async def link_slot_to_slack(
             raise SlackLinkError(
                 409, "channel_agent_mismatch", "the session's agent changed while linking"
             )
+        # Read again in the same step as the write below: an open whose hold
+        # landed during the posts above refuses here, and one whose hold lands
+        # after the write finds the link when it re-reads it under its hold. The
+        # slot's key now too: ``link_slack`` writes under it, read at write time.
+        _refuse_if_handed_over(session_key)
+        _refuse_if_handed_over(effective_session_key(slot))
         try:
             # `link_slack` writes the map inline on leaving its batch, so a failed
             # write can surface here as well as from the flush below; both leave

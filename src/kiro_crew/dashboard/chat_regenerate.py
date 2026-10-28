@@ -34,6 +34,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.kiro_cli_handoff import handover_refusal
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -125,7 +126,22 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
         return web.json_response({"error": "slot is busy", "code": "slot_busy"}, status=409)
     if slot.is_closing:
         return web.json_response({"error": "slot is closing", "code": "slot_closing"}, status=409)
+    # Open in kiro-cli, or its turns still to come in: the handover is the
+    # conversation's one writer, so its history may not be rewritten. The
+    # caller brought the turns in first where it could (settle_before_rewrite).
+    handed_over = handover_refusal(effective_session_key(slot))
+    if handed_over is not None:
+        message, code = handed_over
+        return web.json_response({"error": message, "code": code}, status=409)
     return None
+
+
+async def _settle_kiro_cli_turns(state: DashboardState, slot: "_ChatSlot") -> None:
+    """:func:`~kiro_crew.dashboard.handlers.kiro_cli_launch.settle_before_rewrite`,
+    imported when used (the launch module is heavy)."""
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import settle_before_rewrite
+
+    await settle_before_rewrite(state, slot)
 
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
@@ -165,6 +181,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     from kiro_crew import crew_pause as _crew_pause
 
     await _crew_pause.ensure_loaded()
+
+    await _settle_kiro_cli_turns(state, slot)
+
     async with slot._lock:
         if request_app and state._slots.get(name) is not slot:
             return slot_not_found()
@@ -337,6 +356,8 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         idx = body_int(body.get("index"))
     except (TypeError, ValueError):
         return web.json_response({"error": "invalid index", "code": "index_invalid"}, status=400)
+
+    await _settle_kiro_cli_turns(state, slot)
 
     async with slot._lock:
         if request_app and state._slots.get(name) is not slot:
@@ -555,6 +576,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     from kiro_crew import crew_pause as _crew_pause
 
     await _crew_pause.ensure_loaded()
+
+    await _settle_kiro_cli_turns(state, slot)
+
     async with slot._lock:
         # Reading the body above was an await, and ``linked_session_key`` can
         # be rebound on an already-live slot by a cron or workflow injection, so

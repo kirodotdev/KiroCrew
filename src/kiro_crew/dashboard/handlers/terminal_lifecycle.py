@@ -255,7 +255,7 @@ async def _release_kiro_cli_hold(sess: _TerminalSession) -> None:
     if not key:
         return
     sess.kiro_cli_session_key = ""
-    from kiro_crew.dashboard import kiro_cli_handoff
+    from kiro_crew import kiro_cli_handoff
 
     await kiro_cli_handoff.settle_and_release(key, sess.session_id)
 

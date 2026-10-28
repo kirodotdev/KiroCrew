@@ -446,10 +446,34 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # Under the same lock "Open in kiro-cli" takes for its handover: while a
     # terminal runs this conversation in kiro-cli, starting this chat's own
     # agent process would put a second writer on the same kiro-cli session.
-    from kiro_crew.dashboard.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
+    # An open a restart cut short brings its turns in first.
+    from kiro_crew.dashboard import gateway_notice as gn
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+    from kiro_crew.kiro_cli_handoff import (
+        HELD_TURN_REFUSAL,
+        LEFT_OPEN_PENDING_REFUSAL,
+        has_left_open,
+        is_held,
+    )
 
+    await recover_left_open(state, slot, session_key)
     if is_held(session_key):
-        slot.append("error", HELD_TURN_REFUSAL, "msg msg-err")
+        slot.append(
+            "error",
+            HELD_TURN_REFUSAL,
+            "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_KIRO_CLI_OPEN),
+        )
+        return _Flow.END
+    # The recovery failed and kept the record: running now would answer ahead
+    # of the older turns made in kiro-cli, which the next try brings in.
+    if await asyncio.to_thread(has_left_open, session_key):
+        slot.append(
+            "error",
+            LEFT_OPEN_PENDING_REFUSAL,
+            "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_KIRO_CLI_IMPORT_PENDING),
+        )
         return _Flow.END
     selected_binding = _current_binding(turn)
     turn.selected_binding = selected_binding

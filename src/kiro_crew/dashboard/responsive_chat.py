@@ -512,6 +512,8 @@ async def accept(
         return _sc_entry.chat_replay_response(queued_admission, slot_key=slot.key)
     if (closed := await _sc_entry.refuse_if_slot_closed(state, slot, queued_admission)) is not None:
         return closed
+    if (handed_over := await _sc_entry.refuse_if_handed_over(slot, queued_admission)) is not None:
+        return handed_over
     qid = queue_for_next_turn(
         state,
         slot,

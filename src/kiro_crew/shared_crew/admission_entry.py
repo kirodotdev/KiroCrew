@@ -208,6 +208,12 @@ async def refuse_if_slot_closed(state: Any, slot: Any, admission: _gate.Admissio
 
     if slot_is_live(state, slot):
         return None
+    await _cancel_admitted(admission)
+    return web.json_response({"error": "session closed", "code": "slot_closed"}, status=409)
+
+
+async def _cancel_admitted(admission: _gate.Admission) -> None:
+    """Cancel admitted work that cannot enter its slot."""
     work = admission.work
     if not admission.passthrough and admission.service is not None and work is not None:
         try:
@@ -215,8 +221,26 @@ async def refuse_if_slot_closed(state: Any, slot: Any, admission: _gate.Admissio
                 work.work_id, expected_revision=work.revision, reason=ReasonCode.CANCELLED_BY_USER
             )
         except Exception:  # noqa: BLE001 -- the refusal stands; restart reconcile settles it
-            logger.debug("shared crew: cancelling %s for a closed slot failed", work.work_id)
-    return web.json_response({"error": "session closed", "code": "slot_closed"}, status=409)
+            logger.debug("shared crew: cancelling %s for a refused send failed", work.work_id)
+
+
+async def refuse_if_handed_over(slot: Any, admission: _gate.Admission) -> Any:
+    """409 when kiro-cli took the chat during admission, else None.
+
+    The allowed path never suspends, so the caller can queue or write its row
+    in the same yield-free step. A refused send cancels its admitted work.
+    """
+    from aiohttp import web
+
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+    from kiro_crew.kiro_cli_handoff import handover_refusal
+
+    refused = handover_refusal(effective_session_key(slot))
+    if refused is None:
+        return None
+    await _cancel_admitted(admission)
+    message, code = refused
+    return web.json_response({"error": message, "code": code}, status=409)
 
 
 def stamp_queued_work(slot: Any, queue_id: str, admission: _gate.Admission) -> None:
@@ -645,6 +669,7 @@ __all__ = [
     "chat_replay_response",
     "explicit_idempotency_key",
     "queued_work_ids",
+    "refuse_if_handed_over",
     "refuse_if_slot_closed",
     "stamp_queued_work",
     "admit_app_spawn",

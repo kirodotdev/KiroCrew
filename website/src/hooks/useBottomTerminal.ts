@@ -440,10 +440,12 @@ export function addTab(cwd?: string, chatSlot?: string): string | null {
   return id
 }
 
-/** "Open in kiro-cli": a new tab running chat `slot`'s own kiro-cli conversation.
- *  An open tab for the same chat is focused instead (the gateway lets one
- *  terminal hold a conversation). Returns the tab's id, or null at the cap. */
-export function addKiroCliTab(slot: string): string | null {
+/** "Open in kiro-cli": a new tab running chat `slot`'s own kiro-cli conversation,
+ *  labelled with the chat's `title` when it has one (kiro-cli titles the shell
+ *  with the folder). An open tab for the same chat is focused instead (the
+ *  gateway lets one terminal hold a conversation). Returns the tab's id, or
+ *  null at the cap. */
+export function addKiroCliTab(slot: string, title?: string): string | null {
   const existing = state.tabs.find(t => t.kiroCliSlot === slot)
   if (existing) {
     set({ ...state, open: true, activeId: existing.id })
@@ -454,6 +456,7 @@ export function addKiroCliTab(slot: string): string | null {
   // Before the tab exists, so its first connection finds the intent armed.
   armKiroCliOpen(id)
   set({ ...state, open: true, tabs: [...state.tabs, { id, kiroCliSlot: slot }], activeId: id })
+  if (title?.trim()) renameTab(id, title)
   return id
 }
 
