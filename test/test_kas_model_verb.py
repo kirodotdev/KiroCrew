@@ -103,3 +103,7 @@ class TestSharedBookkeeping:
         handle, runtime = _handle(backend)
         await handle.set_model("some-model-nobody-serves")
         assert runtime.send_request.await_args_list == []
+        # The session stays on its backend default and records no refusal.
+        assert handle._model == ""
+        assert handle._resolved_model_id == ""
+        assert handle.model_pin_refused == ""

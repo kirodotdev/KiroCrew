@@ -1672,6 +1672,7 @@ def test_a_switch_that_leaves_nothing_a_hook_covers_approved_goes_on(agents_dir,
     handle, _batch = _switched_handle(agents_dir, "agent-b")
     live = _live(ACP_BACKEND_KAS, handle.kas_auto_approved)
     live.cancel = AsyncMock()
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "agent-b")) is False
     asyncio.run(spec_hooks.refuse_stale_switch(live, "agent-b"))
     live.cancel.assert_not_awaited()
 
