@@ -154,7 +154,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // (`channels.folder-name-2`) silently re-target a different channel's row
   // whenever a panel is added earlier in file order.
   'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' }, labelSuffix: 'Slack' },
-  // The Slack Code card SlackPanel mounts (the registered switches).
+  // The Slack Code cards SlackPanel mounts (the registered switches, code-channel defaults).
   'SlackCodePanel.tsx': { tab: 'channels', params: { channel: 'slack' }, labelSuffix: 'Slack' },
   'WebexPanel.tsx': { tab: 'channels', params: { channel: 'webex' }, labelSuffix: 'Webex' },
   // Standalone per-channel panels, mounted by ChannelsPanel behind their

@@ -315,8 +315,8 @@ export function memberMemoryState(member: string, store: string, stores: Record<
   return 'unavailable'
 }
 
-export function ModelField({ options, value, onChange, hint }: {
-  options: string[]; value: string; onChange: (v: string) => void; hint?: string
+export function ModelField({ options, value, onChange, hint, disabled }: {
+  options: string[]; value: string; onChange: (v: string) => void; hint?: string; disabled?: boolean
 }) {
   return (
     <Field label={i18nT('pages.kiroCrewAgentsPage.model')} hint={hint}>
@@ -329,6 +329,7 @@ export function ModelField({ options, value, onChange, hint }: {
         optionLabels={withCurrent(options, value).map(m => (m === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : m))}
         value={value}
         onChange={onChange}
+        disabled={disabled}
         aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
         {...uiLocation('agents.model')}
       />

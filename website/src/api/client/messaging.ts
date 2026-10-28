@@ -12,7 +12,7 @@ import type { ClientTransport } from './transport'
  *  mirrors the server's `slack_manifest.FEATURE_SCOPES`; a new switch is
  *  registered by adding its key here (and to `SLACK_CODE_SWITCHES`), and the
  *  config, save and capability fields below follow from it. */
-export type SlackCodeSwitchKey = 'agent_sessions'
+export type SlackCodeSwitchKey = 'agent_sessions' | 'code_channels'
 
 /** Per registered switch, the toggle as saved (`<key>`) and whether the
  *  installed app can run it (`<key>_capability`). */
@@ -39,6 +39,26 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** What a new code-channel session starts with (null = not set here). */
+  code_channel_defaults?: SlackCodeChannelDefaults
+  /** How a new code-channel session resolves right now, from the saved defaults. */
+  code_channel_effective?: SlackCodeChannelEffective
+  /** Saved defaults that no longer resolve: "folder_missing", "agent_missing". */
+  code_channel_warnings?: string[]
+  /** What an unset default folder means: the auto folder (top level), the agent
+   *  it is created with, and its id once it exists. */
+  code_channel_auto_folder?: SlackCodeAutoFolder
+  /** The agents the code-channel default-agent picker offers; null when they
+   *  could not be listed. */
+  code_channel_agents?: string[] | null
+}
+
+export interface SlackCodeAutoFolder {
+  name: string
+  agent: string
+  id: string | null
+  /** Two top-level folders share the name: neither is used and none is created. */
+  ambiguous?: boolean
 }
 
 /** One feature's capability. reason: "" | missing_scope | feature_disabled |
@@ -46,8 +66,35 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
 export interface SlackCapability {
   available: boolean
   reason: string
-  /** The bot scope the feature needs (e.g. assistant:write). */
+  /** The bot scope the feature needs (e.g. code_channels:manage). */
   scope: string
+}
+
+/** `slack.code_channel_defaults`. Every field optional; null falls through. */
+export interface SlackCodeChannelDefaults {
+  folder: string | null
+  agent: string | null
+  model: string | null
+  reasoning_effort: string | null
+}
+
+/** The effective start state of a new code-channel session. */
+export interface SlackCodeChannelEffective {
+  folder: { id: string; path: string; project_dir: string; default_agent: string } | null
+  agent: string | null
+  /** "default" | "folder" | "slack" | "" */
+  agent_source: string
+  model: string | null
+  reasoning_effort: string | null
+  project_dir: string | null
+  /** "folder" | "origin" | "" */
+  project_source: string
+  /** The agent Slack uses when nothing else names one. */
+  slack_agent: string
+  /** The folder's path; the auto folder's name when no folder is set. */
+  folder_path?: string | null
+  /** The auto folder does not exist yet; the first code channel creates it. */
+  folder_auto_create?: boolean
 }
 
 /** One manifest delta: what a switch adds to (or removes from) the Slack app. */
@@ -98,6 +145,8 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** Keys sent replace the stored value (null clears); omitted keys are kept. */
+  code_channel_defaults?: Partial<SlackCodeChannelDefaults>
 }
 
 /** Discord config as returned by GET /api/discord/config (secret masked). */
@@ -478,6 +527,8 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
     getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string; features?: string[] }>,
     getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
+    /** The agents a defaults save accepts with default folder *folder* ('' = the auto folder). */
+    getSlackCodeChannelAgents: (folder: string) => get(`/api/slack/code-channel-agents?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{ agents: string[] | null }>,
     saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,

@@ -14,14 +14,12 @@ superseded-by: []
 
 # RFC: Slack Code — agent sessions and code channels for Kiro Crew
 
-- Status: in-progress. Phase 1 (the switch registry, the manifest built from the
-  switches, the update flow, the capability latch and the scope probe, plus the
-  Agent sessions switch and its runtime, first opened as
-  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) is in the pull
-  request that carries this document. Phase 2 (code channels: their switch, their
-  defaults and their runtime) stacks on it, starting with
-  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410). Every switch
-  defaults off, so no default changes.
+- Status: in-progress. Phase 1 (settings, the Code channels switch, the switch
+  registry, the manifest and the update flow) is in the pull request that carries
+  this document. Phase 2 (agent sessions, with its own switch) ships in
+  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422), and Phase 3 stacks
+  on the same branch (`feat/slack-code-settings`). Every switch defaults off, so no
+  default changes.
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
@@ -48,8 +46,8 @@ Slack Code is Slack's surface for coding agents. It has two parts:
   posts a summary back to the message the work started from.
 
 This RFC brings both to Kiro Crew behind two switches and one block of defaults
-(each setting ships with the phase that reads it: `agent_sessions` in Phase 1,
-`code_channels` and `code_channel_defaults` in Phase 2):
+(each switch ships with the phase that activates it: `code_channels` in Phase 1,
+`agent_sessions` in Phase 2):
 
 ```json
 "slack": {
@@ -105,15 +103,22 @@ before the switch silently lacks `code_channels:manage` and every call fails.
 
 ### 1. Settings (Phase 1)
 
-**Config.** `config/sections_slack.py` adds `SlackConfig.agent_sessions` (bool,
-default `False`). It is an ordinary Slack setting on the Slack settings page,
-not a Developer or Feature Preview flag, and it hot-applies: the agent-sessions
-runtime (§2) reads it per event, behind the capability guard below, so a flip
-needs no restart. Each phase ships only the settings it reads: saving an
-`agent_view` manifest in Slack is one-way, so `slack.agent_sessions` arrives
-with its runtime, and `slack.code_channels` and `slack.code_channel_defaults`
-arrive with the code-channels runtime in Phase 2 (§3). The builder treats
-anything that is not a real `True` as off.
+**Config.** `config/sections_slack.py` adds `SlackConfig.code_channels` (bool,
+default `False`) and `SlackConfig.code_channel_defaults`
+(`CodeChannelDefaultsConfig`). Both are ordinary Slack settings on the Slack
+settings page, not a Developer or Feature Preview flag, and both hot-apply: the
+runtime (Phase 3) reads them per event, behind the capability guard below, so a
+flip needs no restart. Until that runtime lands the switch carries a *Preview*
+tag, its description says what on and off do today (on adds the permissions and
+the feature arrives in a later release; off changes nothing), and the line
+under it says *Slack app prepared* (the app holds the permissions) rather than
+claiming the feature runs; every other install status is the update panel's
+alone, so the page states it once. The Agent sessions switch is not in Phase 1: each phase ships the
+switch it activates, and saving an `agent_view` manifest in Slack is one-way, so
+`slack.agent_sessions` arrives with its runtime in Phase 2. The builder treats
+anything that is not a real `True` as off and normalizes every default string,
+with `None` as the one "not set" spelling and an effort outside `low…max`
+dropped.
 
 **Switch registry.** `slack_manifest.FEATURE_SCOPES` maps each switch name to the
 bot scope it cannot run without; the name is also its `slack.<name>` config key
@@ -132,9 +137,10 @@ the capability record, the settings API's switch fields (`<name>`,
 **Two layers: toggle and capability.** A feature runs only when its toggle is on
 AND the installed app can use it:
 
-* *capability* (`available(feature)`, `availability(feature) -> (ok, reason)`):
-  the bot scopes Slack reports in `auth.test`'s `x-oauth-scopes` header include
-  the feature's registered scope (`assistant:write` for agent sessions), and Slack has not answered a call
+* *capability* (`available(feature)` / `code_channels_available()`,
+  `availability(feature) -> (ok, reason)`): the bot scopes Slack reports in
+  `auth.test`'s `x-oauth-scopes` header include the feature's registered scope
+  (`code_channels:manage`), and Slack has not answered a call
   for the feature with `feature_disabled`, `missing_scope` or
   `not_allowed_token_type`. Those answers latch the feature off for the process
   (`latch_unavailable`): one dashboard notification, one log line, and a silent
@@ -142,115 +148,16 @@ AND the installed app can use it:
   on every Socket Mode `hello` (the first connect and each reconnect), which also
   clears the latches, and again whenever the settings page checks the install;
   a reinstall that grants a missing scope lifts its `missing_scope` latch.
-* *toggle* (`toggle(cfg, feature)`): what
+* *toggle* (`toggle(cfg, feature)` / `code_channels_toggle(cfg)`): what
   the manifest renders. The manifest follows the toggle, never the capability,
   because the manifest is how an install gains the capability.
 
 **One read path.** `kiro_crew/slack/features.py` is what every consumer reads:
-`enabled(cfg, feature)` / `agent_sessions_enabled(cfg)` (toggle AND capability;
-what the runtimes call), the two layers above, and `manifest_features`. Phase 2
-adds the code-channels readers to the same module (§3).
-
-**API.** `GET /api/slack/config` returns each registered switch (`<name>`) and
-what the install can do with it (`<name>_capability`). `PUT` accepts only
-registered switches, each a real boolean. Every refusal and every write is
-SEL-audited as `slack.config.update`, like the rest of the Slack save, and the
-save stays loopback-only.
-
-**Manifest.** `slack_manifest.render(alias, features=…)` is the single choke
-point. Template lines ending in `#@<switch>` render only when that switch is on.
-Phase 1 registers `agent_sessions`; the `code_channels` row is what Phase 2
-registers:
-
-| Switch | Feature block | Bot scopes | Bot events |
-|---|---|---|---|
-| `agent_sessions` | `agent_view` (`agent_description`) | `assistant:write` | `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
-| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites` | `agent_session_stopped` |
-
-`channels:read`, `groups:read`, `groups:history` and `message.groups` are already
-in the base manifest. No `slash_command_url` is set: Socket Mode delivers channel
-commands. `kirocrew manifest`, `GET /api/slack/manifest` and the exfil
-redactor's own-link exemption all render from the saved switches; the exemption
-rebuilds one exact pattern per switch combination (two in Phase 1, four once
-Phase 2 registers its switch), so the carve-out does not widen. Phase 2 extends
-the gate to `#@a|b` for the one line two switches share (`agent_session_stopped`,
-which code channels also need).
-
-**Drift.** `GET /api/slack/manifest/status` calls `auth.test` with the stored bot
-token and reads the granted scopes from its `x-oauth-scopes` header, then names
-the app through `bots.info` (for the App Manifest deep link). Status:
-
-* `up_to_date`: every required bot scope is granted;
-* `needs_update`: some are missing (listed);
-* `feature_disabled`: scopes are granted but Slack refuses the feature. Agent
-  sessions have no read-only probe, so this is the latch the runtime sets with
-  `features.latch_unavailable` when Slack answers `feature_disabled`; Phase 2
-  probes code channels directly with a read-only
-  `agents.conversations.listViews` on a channel id no workspace issues;
-* `unknown`: no scopes header, or a network failure;
-* `token_rejected` / `not_configured`.
-
-Slack does not report an app's event subscriptions to a bot token, so the status
-checks scopes only, and the page says so. Scopes the install holds that the
-switches no longer need are listed as optional cleanup, never as drift.
-
-**UI.** Settings → Slack gains a "Slack Code" section: the Agent sessions switch
-and the "Update your Slack app" panel (status, the lines each switch adds with
-missing scopes marked, copy manifest, open App Manifest, the reinstall steps,
-Check again).
-
-The update panel lists every registered switch, so Phase 2's switch appears
-there with no change to the panel.
-
-### 2. Agent sessions runtime (Phase 1)
-
-Phase 1 registers the `agent_sessions` switch (§1, Switch registry:
-`assistant:write`, the `agent_view` block and the agent-session events) together
-with the runtime that handles it, reusing the preview branch's `7888cb2ec3`. It
-was first opened on its own as
-[#21422](https://github.com/kirodotdev/KiroCrew/pull/21422) and folded in so
-that every switch ships with its reader. It runs behind
-`agent_sessions_enabled(cfg)` (`enabled(cfg, "agent_sessions")`).
-
-* **Irreversibility.** Slack cannot switch an app from `agent_view` back to
-  `assistant_view`. Kiro Crew's manifest has never declared `assistant_view`, but
-  saving the agent-view manifest in Slack is still one-way. The switch only
-  changes the generated manifest, so the warning sits at the update steps, before
-  the manifest is saved in Slack. Turning the Kiro Crew switch off
-  again only stops the gateway using agent sessions; the Slack app stays an agent.
-
-* On a turn's start the thread session is `agents.sessions.setStatus(processing,
-  title=…)`, re-sent every ~50 minutes on a long turn (Slack times `processing`
-  out to `active` after an hour); on a question or tool approval it is
-  `suspended`; on the turn's end `active`.
-* `agent_session_stopped` cancels the in-flight turn through the existing
-  `slack_stop_in_flight` path, then moves the status away from `processing` (Slack
-  does not), stopping the streams named in `streaming_message_ts`.
-* `agent_session_title_changed` updates the session title in the dashboard.
-* Runs only while `agent_sessions_enabled(cfg)` holds. A `feature_disabled`,
-  `missing_scope` or `not_allowed_token_type` answer from `setStatus` is passed to
-  `latch_unavailable("agent_sessions", …)`, and the runtime falls back to today's
-  thread behaviour until the next reconnect re-probes.
-
-### 3. Code channels (Phase 2)
-
-**Settings.** Phase 2 adds `SlackConfig.code_channels` (bool, default `False`)
-and `SlackConfig.code_channel_defaults` (`CodeChannelDefaultsConfig`: folder,
-agent, model, effort; `None` is the one "not set" spelling and an effort
-outside `low…max` is dropped), registers `code_channels` in `FEATURE_SCOPES`, and
-adds to `slack/features.py` `code_channels_enabled(cfg)`,
-`code_channel_defaults(cfg) -> CodeChannelDefaults` (frozen) and the pure
-resolver `resolve_code_channel_session(defaults, folders, slack_agent=,
-origin_project_dir=)`. The settings page gains the Code channels switch and a
-defaults card (folder picker showing the folder's project and agent, agent
-picker, the shared model picker, effort picker, a live "a new code channel runs
-with" preview, the resolution order). `GET /api/slack/config` adds the defaults,
-the effective resolution and the warnings; `PUT` validates them: a folder must
-name exactly one sidebar folder and is stored by id (a rename keeps it); an
-agent must be one the picker offers (below) in the user scope or the folder's
-project scope; a model goes through the same guard the crew editor uses
-(`_validate_role_model`), with `auto` stored as unset; an effort must be on the
-ladder.
+`enabled(cfg, feature)` / `code_channels_enabled(cfg)` (toggle AND capability;
+what the runtimes call), the two layers above,
+`code_channel_defaults(cfg) -> CodeChannelDefaults` (frozen), `manifest_features`,
+and the pure resolver `resolve_code_channel_session(defaults, folders,
+slack_agent=, origin_project_dir=)`.
 
 **Resolution order** for a new code-channel session, implemented once in that
 resolver:
@@ -268,7 +175,7 @@ pure: when no top-level `Code channels` folder exists (exactly one matches,
 case-insensitively, or none counts) it returns `folder_id=None`,
 `folder_path="Code channels"` and `folder_auto_create=True`, and resolves the
 agent as if the folder had `default_agent = kirocrew-conductor`
-(`features.AUTO_FOLDER_AGENT`). The Phase 2 runtime creates that folder the
+(`features.AUTO_FOLDER_AGENT`). The Phase 3 runtime creates that folder the
 first time a channel needs it, through the sidebar's own folder-create path
 (`create_folder_record`, mkdir -p semantics, SEL-audited like the sidebar),
 with that `default_agent`, then files the session into its id. Once it exists
@@ -293,7 +200,90 @@ dashboard manager, `kirocrew-heartbeat` (unattended polling), Kiro Crew's
 generated specs (the side-turn read-only spec, skill-view aliases) and
 crewmates' private copies.
 
-**Runtime.** Behind `code_channels_enabled(cfg)`, reusing `ae2545752c`, `8b243f0b1d` and
+**API.** `GET /api/slack/config` returns the switches, the defaults, the effective
+resolution and the warnings. `PUT` validates: a folder must name exactly one
+sidebar folder and is stored by id (a rename keeps it); an agent must be one the
+picker offers (above) in the user scope or the folder's project scope; a model goes through the same
+guard the crew editor uses (`_validate_role_model`), with `auto` stored as unset;
+an effort must be on the ladder. Every refusal and every write is SEL-audited as
+`slack.config.update`, like the rest of the Slack save, and the save stays
+loopback-only.
+
+**Manifest.** `slack_manifest.render(alias, features=…)` is the single choke
+point. Template lines ending in `#@<switch>` (or `#@a|b`) render only when that
+switch is on. Phase 1 registers `code_channels`; the `agent_sessions` row is
+what Phase 2 registers:
+
+| Switch | Feature block | Bot scopes | Bot events |
+|---|---|---|---|
+| `agent_sessions` (Phase 2, #21422) | `agent_view` (`agent_description`) | `assistant:write` | `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
+| `code_channels` | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites` | `agent_session_stopped` |
+
+`channels:read`, `groups:read`, `groups:history` and `message.groups` are already
+in the base manifest. No `slash_command_url` is set: Socket Mode delivers channel
+commands. `kirocrew manifest`, `GET /api/slack/manifest` and the exfil
+redactor's own-link exemption all render from the saved switches; the exemption
+rebuilds one exact pattern per switch combination (two in Phase 1, four once
+Phase 2 registers its switch), so the carve-out does not widen.
+
+**Drift.** `GET /api/slack/manifest/status` calls `auth.test` with the stored bot
+token and reads the granted scopes from its `x-oauth-scopes` header, then names
+the app through `bots.info` (for the App Manifest deep link). Status:
+
+* `up_to_date`: every required bot scope is granted;
+* `needs_update`: some are missing (listed);
+* `feature_disabled`: scopes are granted but Slack refuses the feature. For code
+  channels this is probed with a read-only `agents.conversations.listViews` on a
+  channel id no workspace issues; for a switch with no read-only probe (agent
+  sessions, Phase 2) it is the latch the runtime sets with
+  `features.latch_unavailable` when Slack answers `feature_disabled`;
+* `unknown`: no scopes header, or a network failure;
+* `token_rejected` / `not_configured`.
+
+Slack does not report an app's event subscriptions to a bot token, so the status
+checks scopes only, and the page says so. Scopes the install holds that the
+switches no longer need are listed as optional cleanup, never as drift.
+
+**UI.** Settings → Slack gains a "Slack Code" section: the Code channels switch;
+a defaults card (folder picker showing the folder's project and
+agent, agent picker, the shared model picker, effort picker, a live "a new code
+channel runs with" preview, the resolution order); and the "Update your Slack
+app" panel (status, the lines each switch adds with missing scopes marked, copy
+manifest, open App Manifest, the reinstall steps, Check again).
+
+The update panel lists every registered switch, so Phase 2's switch appears
+there with no change to the panel.
+
+### 2. Agent sessions runtime (Phase 2, ships in #21422)
+
+[#21422](https://github.com/kirodotdev/KiroCrew/pull/21422) registers the
+`agent_sessions` switch (§1, Switch registry: `assistant:write`, the `agent_view`
+block and the agent-session events) together with the runtime that handles it,
+reusing the preview branch's `7888cb2ec3`. It runs behind
+`agent_sessions_enabled(cfg)` (`enabled(cfg, "agent_sessions")`).
+
+* **Irreversibility.** Slack cannot switch an app from `agent_view` back to
+  `assistant_view`. Kiro Crew's manifest has never declared `assistant_view`, but
+  saving the agent-view manifest in Slack is still one-way, so the switch says so
+  and asks for confirmation before it turns on. Turning the Kiro Crew switch off
+  again only stops the gateway using agent sessions; the Slack app stays an agent.
+
+* On a turn's start the thread session is `agents.sessions.setStatus(processing,
+  title=…)`, re-sent every ~50 minutes on a long turn (Slack times `processing`
+  out to `active` after an hour); on a question or tool approval it is
+  `suspended`; on the turn's end `active`.
+* `agent_session_stopped` cancels the in-flight turn through the existing
+  `slack_stop_in_flight` path, then moves the status away from `processing` (Slack
+  does not), stopping the streams named in `streaming_message_ts`.
+* `agent_session_title_changed` updates the session title in the dashboard.
+* Runs only while `agent_sessions_enabled(cfg)` holds. A `feature_disabled`,
+  `missing_scope` or `not_allowed_token_type` answer from `setStatus` is passed to
+  `latch_unavailable("agent_sessions", …)`, and the runtime falls back to today's
+  thread behaviour until the next reconnect re-probes.
+
+### 3. Code channels runtime (Phase 3)
+
+Behind `code_channels_enabled(cfg)`, reusing `ae2545752c`, `8b243f0b1d` and
 `21fc677d5d`, and the reference implementation's ten design decisions.
 
 * **Routing (a model classifier, in scope for this stack).** A directed human
@@ -320,7 +310,7 @@ crewmates' private copies.
     shows today, so the user sees at once that the request was received.
   * **Latency budget.** The acknowledgement is immediate (sent before the model
     call); the route decision's p95 is at most the timeout. The live p50 and p95
-    are recorded from the Phase 2 live test run.
+    are recorded from the Phase 3 live test run.
   * **Cost.** One extra model call per directed human message, and only in an
     ordinary conversation while `code_channels_enabled(cfg)` is true. A message
     inside a code channel, a bot copy, and every message with the switch off or
@@ -366,8 +356,9 @@ crewmates' private copies.
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| 1 | Config (`agent_sessions`), `slack/features.py`, the switch registry and toggle-aware manifest, the drift probe, the settings API and UI, the agent-sessions runtime, docs | Every switch combination renders a manifest that the exfil scanner exempts; the API refuses an unregistered or non-boolean switch; the drift probe reports each status against recorded payloads; with the switch off the deep-link payload is byte-identical to before; a turn sets `processing` then `active`; Stop cancels it and leaves the session `active`; `feature_disabled` falls back to plain threads |
-| 2 | Code channels: config (`code_channels`, `code_channel_defaults`), their manifest lines, settings and runtime | The API refuses a missing folder, a missing agent, an unavailable model and an off-ladder effort; the classifier routes a coding request to a code channel and stays in place for an ambiguous, unparseable, failed or timed-out (≤12 s) call; the origin thread is acknowledged before the classifier runs; live p50/p95 of the route decision are recorded; one channel opens per request (idempotent on retry), the session files under the default folder on the resolved agent, the diff view and context bar follow each turn, archive posts the summary to the origin |
+| 1 | Config (`code_channels`, `code_channel_defaults`), `slack/features.py`, the switch registry and toggle-aware manifest, the drift probe, the settings API and UI, docs | Every switch combination renders a manifest that the exfil scanner exempts; the API refuses a missing folder, a missing agent, an unavailable model and an off-ladder effort; the drift probe reports each status against recorded payloads; with both switches off the deep-link payload is byte-identical to before |
+| 2 | Agent sessions: its switch, manifest lines and runtime (#21422) | A turn sets `processing` then `active`; Stop cancels it and leaves the session `active`; `feature_disabled` falls back to plain threads |
+| 3 | Code channels runtime | The classifier routes a coding request to a code channel and stays in place for an ambiguous, unparseable, failed or timed-out (≤12 s) call; the origin thread is acknowledged before the classifier runs; live p50/p95 of the route decision are recorded; one channel opens per request (idempotent on retry), the session files under the default folder on the resolved agent, the diff view and context bar follow each turn, archive posts the summary to the origin |
 
 Each phase is shippable alone. Phase 1 changes nothing for a user who leaves the
 switch off.
@@ -386,8 +377,7 @@ is private to the security package.
 ## Security considerations
 
 * **No new credential.** The drift probe uses the bot token Kiro Crew already
-  holds, only for `auth.test`, `bots.info` and, from Phase 2, a read-only
-  `listViews`. The token
+  holds, only for `auth.test`, `bots.info` and a read-only `listViews`. The token
   is never logged or returned; the cache keys on its digest.
 * **Exfil exemption unchanged in strength.** The own-link carve-out still requires
   the payload to equal a rendered manifest exactly; it now accepts each
@@ -395,12 +385,12 @@ is private to the security package.
   refused (tested).
 * **Settings writes stay loopback-only and SEL-audited**, and validation runs
   before any write, so a refused field changes nothing.
-* **Code channels (Phase 2) widen the bot's scopes** (`code_channels:manage`,
+* **Code channels widen the bot's scopes** (`code_channels:manage`,
   `chat:write.customize`, `canvases:write`, `channels:write.invites`,
   `groups:write.invites`), visible on Slack's consent screen and
   listed before the user reinstalls. The scope-ratchet test pins the exact set
   per switch.
-* **Phase 2 authorization** is the origin conversation's, never the new channel's
+* **Phase 3 authorization** is the origin conversation's, never the new channel's
   membership, and every agent tool is pinned to its own channel.
 * **The routing classifier holds no capability.** It runs with no tools, MCP
   servers, hooks or resources, so text in the request or its context window can
@@ -452,8 +442,8 @@ staying in place.
 1. Should code channels require agent sessions? Slack's docs say
    `agents.conversations.create` needs "a recognized agent-session app", which
    suggests `agent_view` is a prerequisite in practice. Phase 1 keeps them
-   independent, as the contract defines them; Phase 2 should confirm against a
+   independent, as the contract defines them; Phase 3 should confirm against a
    pilot workspace and, if needed, make the code-channels switch imply the agent
    view.
 2. `code_channel_action` (context-bar action items) has no published event
-   payload; Phase 2 ships link items only until it does.
+   payload; Phase 3 ships link items only until it does.

@@ -111,7 +111,7 @@ STATUS_UP_TO_DATE = "up_to_date"
 #: At least one required bot scope is missing: update the app and reinstall.
 STATUS_NEEDS_UPDATE = "needs_update"
 #: Scopes are granted, but Slack answered ``feature_disabled``: the workspace
-#: does not have that Slack Code feature turned on.
+#: does not have the Slack Code feature (code channels) turned on.
 STATUS_FEATURE_DISABLED = "feature_disabled"
 #: Slack did not say which scopes the install holds (no ``x-oauth-scopes``
 #: header, a network failure, or an error other than a rejected token).
@@ -125,6 +125,27 @@ STATUS_TOKEN_REJECTED = "token_rejected"
 _TOKEN_ERRORS = frozenset(
     {"invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"}
 )
+
+#: Slack errors that answer nothing about the feature: try again later, or a
+#: token, method or scope refusal that stops the call before the feature gate.
+_INCONCLUSIVE_ERRORS = _TOKEN_ERRORS | frozenset(
+    {
+        "ratelimited",
+        "rate_limited",
+        "internal_error",
+        "fatal_error",
+        "service_unavailable",
+        "request_timeout",
+        "unknown_method",
+        "not_allowed_token_type",
+        "missing_scope",
+    }
+)
+
+#: A channel id no workspace issues (``C`` + zeros). Asking
+#: ``agents.conversations.listViews`` about it tells whether the feature exists at
+#: all without touching any real conversation. A read; it can only fail.
+_NO_SUCH_CHANNEL = "C00000000000"
 
 
 def _slack_error(exc: BaseException) -> str:
@@ -194,13 +215,17 @@ async def probe_manifest_status(
     required_scopes: Iterable[str],
     *,
     known_scopes: Iterable[str] = (),
+    probe_code_channels: bool = False,
 ) -> ManifestStatus:
     """Compare the install behind *client* (a bot-token ``AsyncWebClient``) with
     the manifest's *required_scopes*.
 
     *known_scopes* is every scope any manifest variant can ask for: an extra
     scope is reported only when it is one of those (a scope the user added to the
-    app themselves is theirs, not drift). Never raises.
+    app themselves is theirs, not drift). With *probe_code_channels*, a
+    read-only ``agents.conversations.listViews`` on a channel id no workspace
+    issues tells "workspace not enabled" (``feature_disabled``) apart from
+    "enabled" (any other refusal). Never raises.
     """
     required = frozenset(required_scopes)
     try:
@@ -232,6 +257,18 @@ async def probe_manifest_status(
     missing = tuple(sorted(required - granted))
     extra = tuple(sorted((granted & frozenset(known_scopes)) - required))
     disabled = {f for f, e in features.latched().items() if e == "feature_disabled"}
+    if probe_code_channels and "code_channels:manage" in granted:
+        answer = await _code_channels_answer(client)
+        if answer is True:
+            # Reported on the page only: the runtime latch is the connect probe's
+            # and the runtime's to set, so a settings-page read never raises a
+            # notification or switches a feature off by itself.
+            disabled.add("code_channels")
+        elif answer is False:
+            # A probe that now gets past the gate retires a stale runtime record.
+            disabled.discard("code_channels")
+            features.clear_latch("code_channels")
+        # No answer (a timeout, a rate limit): what is already known stands.
     if missing:
         status = STATUS_NEEDS_UPDATE
     elif disabled:
@@ -260,12 +297,37 @@ async def _app_id(client: Any, bot_id: str) -> str:
         return ""
 
 
-async def refresh_capabilities(client: Any) -> None:
+async def _code_channels_answer(client: Any) -> bool | None:
+    """Slack's answer to the code-channel read: True = ``feature_disabled``,
+    False = past the gate (success or any other definitive refusal), None = no
+    answer (a transport failure, a rate limit or a Slack-side error)."""
+    try:
+        await client.api_call(
+            "agents.conversations.listViews", params={"channel_id": _NO_SUCH_CHANNEL}
+        )
+    except Exception as exc:
+        err = _slack_error(exc)
+        if err == "feature_disabled":
+            return True
+        if not err or err in _INCONCLUSIVE_ERRORS:
+            return None
+        return False
+    return False
+
+
+async def _code_channels_refused(client: Any) -> bool:
+    """True only when Slack answers the code-channel read with ``feature_disabled``."""
+    return await _code_channels_answer(client) is True
+
+
+async def refresh_capabilities(client: Any, *, probe_code_channels: bool = False) -> None:
     """Re-read what the install can use: the connect-time capability probe.
 
     Run on every Slack (re)connect. Clears the process latches, records the
     granted bot scopes from ``auth.test``'s ``x-oauth-scopes`` (unknown when the
-    header is absent or the call fails). Logs one line; never raises.
+    header is absent or the call fails), and with *probe_code_channels* asks a
+    read-only ``agents.conversations.listViews`` whether the workspace has code
+    channels at all. Logs one line; never raises.
     """
     from kiro_crew.slack import features
 
@@ -283,6 +345,13 @@ async def refresh_capabilities(client: Any) -> None:
             return
         granted = parse_granted_scopes(getattr(auth, "headers", None))
         features.record_granted_scopes(granted)
+        if (
+            granted is not None
+            and probe_code_channels
+            and features.REQUIRED_SCOPE[features.CODE_CHANNELS] in granted
+            and await _code_channels_refused(client)
+        ):
+            features.latch_unavailable(features.CODE_CHANNELS, "feature_disabled")
         summary = ", ".join(
             f"{f}={'available' if ok else reason}"
             for f in features.REQUIRED_SCOPE
@@ -297,7 +366,7 @@ def capability_notifier(notify: Callable[..., None] | None) -> Callable[[str, st
     """A ``features.set_capability_notifier`` callback posting one dashboard note."""
     if notify is None:
         return None
-    labels = {"agent_sessions": "Agent sessions"}
+    labels = {"agent_sessions": "Agent sessions", "code_channels": "Code channels"}
     reasons = {
         "feature_disabled": "Slack has not enabled this feature for your workspace",
         "missing_scope": "your Slack app is missing a permission it needs; update the "

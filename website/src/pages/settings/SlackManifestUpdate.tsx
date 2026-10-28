@@ -412,6 +412,11 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
           </div>
         </div>
       )}
+      {!pending && !settling && STEPS_HELP.has(installStatus) && savedOn.length > 0 && !agentSessionsWarning && (
+        <p className="m-0 text-[12px] text-muted" data-testid="slack-manifest-keeps-working">
+          {i18nT('pages.settings.slackPanel.slackCode.update_keeps_working')}
+        </p>
+      )}
       {!pending && !settling && STEPS_HELP.has(installStatus) && savedOn.length > 0 && (
         <ol className="m-0 pl-5 list-decimal text-[12px] text-text flex flex-col gap-1">
           <li>{i18nT('pages.settings.slackPanel.slackCode.step_copy')}</li>

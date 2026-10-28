@@ -205,8 +205,8 @@ class AgentSessionStatus:
     async def set_status(self, channel: str, thread_ts: str | None, status: str) -> bool:
         """Move one session to *status*; False when the old path should run instead.
 
-        *thread_ts* ``None`` addresses a whole-channel session (none is opened
-        yet), where Slack refuses a ``thread_ts``. Never raises.
+        *thread_ts* ``None`` addresses a whole-channel session (a code channel),
+        where Slack refuses a ``thread_ts``. Never raises.
         """
         if not self.active or not channel or status not in SESSION_STATUSES:
             return False
@@ -344,7 +344,7 @@ class AgentSessionStatus:
 
     def _arm_keepalive(self, key: tuple[str, str | None], record: _Record) -> None:
         if record.turn is None:
-            # Not inside a Slack turn (a mirror, say): nothing tells
+            # Not inside a Slack turn (a code-channel status, a mirror): nothing tells
             # the keepalive when the work ends, so Slack's own timeout bounds it.
             return
         if record.keepalive is not None and not record.keepalive.done():
@@ -485,7 +485,8 @@ def driver_of(slack: Any) -> AgentSessionStatus | None:
 async def set_session_status(slack: Any, channel: str, thread_ts: str | None, status: str) -> bool:
     """Move a session to *status* when agent sessions are live; never raises.
 
-    The renderer's helper for the approval pause. False when the
+    The helper the code-channel runtime uses for a whole-channel session
+    (``thread_ts=None``), and the renderer for the approval pause. False when the
     feature is off, disabled for the process, or Slack refused the call.
     """
     driver = driver_of(slack)

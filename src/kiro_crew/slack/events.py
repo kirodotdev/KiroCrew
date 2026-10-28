@@ -186,7 +186,19 @@ def _wire_slack_code_capability_probe(
     async def _on_message(_client: Any, message: dict, _raw: Any = None) -> None:
         if not isinstance(message, dict) or message.get("type") != "hello":
             return
-        task = asyncio.create_task(scope_probe.refresh_capabilities(web_client))
+
+        async def _probe() -> None:
+            # Live config, read off the loop: the toggles hot-apply, so the
+            # workspace-feature probe (and any notification it raises) runs only
+            # while Code channels is on.
+            try:
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                wanted = features.code_channels_toggle(cfg)
+            except Exception:
+                wanted = False
+            await scope_probe.refresh_capabilities(web_client, probe_code_channels=wanted)
+
+        task = asyncio.create_task(_probe())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 

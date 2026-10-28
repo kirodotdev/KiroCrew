@@ -30,8 +30,9 @@ second press on a turn that already ended finds it idle and only re-settles the
 status. A Stop for a thread this bot has no session in calls nothing at all -- not
 even ``setStatus``, which would create a session there.
 
-A Stop with no ``thread_ts`` (a whole-channel session) belongs to no feature
-here and is ignored.
+A whole-channel session (a code channel) carries no ``thread_ts``. Those Stops go
+to the handlers registered with :func:`register_channel_stop_handler`; with none
+claiming the channel, the Stop is resolved like any other.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ import contextlib
 import logging
 import math
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.loop_lock import LoopBoundLock
@@ -92,6 +93,29 @@ _TITLE_LOCKS: dict[tuple[str, str], list[Any]] = {}
 #: Bounded like ``_SEEN_EVENTS``.
 _NEWEST_TITLE_TS: OrderedDict[tuple[str, str], float] = OrderedDict()
 
+#: ``async (orch, event, user_id) -> bool``: handle a whole-channel Stop, True when
+#: the channel was the handler's to stop.
+ChannelStopHandler = Callable[["GatewayOrchestrator", dict, str], Awaitable[bool]]
+_channel_stop_handlers: list[ChannelStopHandler] = []
+
+
+def register_channel_stop_handler(callback: ChannelStopHandler) -> None:
+    """Route Stops on whole-channel sessions (no ``thread_ts``) to *callback*.
+
+    For the code-channel runtime, whose channel IS the session. Called with the
+    orchestrator, the raw event and the presser AFTER the origin and permission
+    checks above have passed; it returns True when the channel was its own (it
+    then owns the stop and the status), False to let the Stop resolve normally.
+    Register at import time. Idempotent per callback.
+    """
+    if callback not in _channel_stop_handlers:
+        _channel_stop_handlers.append(callback)
+
+
+def unregister_channel_stop_handler(callback: ChannelStopHandler) -> None:
+    if callback in _channel_stop_handlers:
+        _channel_stop_handlers.remove(callback)
+
 
 def _audit(caller: str, operation: str, outcome: str, **kw: Any) -> None:
     try:
@@ -116,7 +140,8 @@ def dispatch(orch: GatewayOrchestrator, payload: dict, event: dict) -> None:
         return
     if not _feature_on(orch, event):
         # Off means off: the subscription can outlive the switch (an app installed
-        # while it was on), and these events were ignored before this runtime existed.
+        # while it was on, or code channels subscribing the Stop event), and these
+        # events were ignored before this runtime existed.
         logger.debug("%s ignored: the Slack feature it belongs to is off", event_type)
         return
     caller = str(event.get("user") or "")
@@ -144,12 +169,13 @@ def dispatch(orch: GatewayOrchestrator, payload: dict, event: dict) -> None:
 
 def _feature_on(orch: GatewayOrchestrator, event: dict) -> bool:
     """Thread sessions need ``slack.agent_sessions``; a whole-channel Stop (no
-    ``thread_ts``) belongs to no feature here, so it stays ignored."""
-    from kiro_crew.slack.features import agent_sessions_enabled
+    ``thread_ts``) belongs to code channels and needs ``slack.code_channels``."""
+    from kiro_crew.slack.features import agent_sessions_enabled, code_channels_enabled
 
+    cfg = getattr(orch, "_cfg", None)
     if event.get("type") == EVENT_STOPPED and not event.get("thread_ts"):
-        return False
-    return agent_sessions_enabled(getattr(orch, "_cfg", None))
+        return code_channels_enabled(cfg)
+    return agent_sessions_enabled(cfg)
 
 
 def _first_delivery(channel: str, thread_ts: str, event_ts: str) -> bool:
@@ -240,7 +266,8 @@ async def handle_stopped(orch: GatewayOrchestrator, event: dict) -> str | None:
 
     Outcomes are ``stop_turn``'s (``soft`` / ``hard`` / ``idle`` / ``compacting``)
     plus ``error`` (the session stop raised; the turn's task is cancelled anyway),
-    ``denied``, ``duplicate`` and ``not_ours``. Never raises.
+    ``denied``, ``duplicate``, ``not_ours`` and ``channel`` (a registered
+    whole-channel handler took it). Never raises.
     """
     from kiro_crew.slack import events as _events
 
@@ -262,6 +289,14 @@ async def handle_stopped(orch: GatewayOrchestrator, event: dict) -> str | None:
         return "denied"
     if not channel or orch.sessions is None:
         return None
+    if thread_ts is None:
+        for claim in list(_channel_stop_handlers):
+            try:
+                if await claim(orch, event, user):
+                    _audit(user, "slack.agent_session_stopped", "allowed", resources=channel)
+                    return "channel"
+            except Exception:
+                logger.warning("channel stop handler failed for %s", channel, exc_info=True)
     keys = resolve_session(orch, channel, thread_ts)
     if keys is None or not _is_ours(orch, channel, thread_ts, keys):
         # Nothing of this bot's runs there: no stop, and no setStatus, which would

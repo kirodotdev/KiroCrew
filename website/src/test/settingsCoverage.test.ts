@@ -299,6 +299,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { input: 1 },
     reason: 'the settings search box itself',
   },
+  'SlackCodePanel.tsx': {
+    counts: { SimpleSelect: 3 },
+    reason:
+      'the code-channel default folder, agent and effort pickers: one nested ' +
+      'slack.code_channel_defaults object, reached through the Code channels switch the ' +
+      'extractor indexes (channels.code-channels-slack), which reveals them',
+  },
   'SlackPanel.tsx': {
     counts: { Input: 1 },
     reason: "TagListEditor's internal draft input — part of a composite the extractor indexes whole",

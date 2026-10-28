@@ -86,9 +86,12 @@ class Orch:
         *,
         flat: bool = False,
         live: bool = True,
+        code_channels: bool = False,
     ) -> None:
         self._cfg = KiroCrewConfig(
-            slack=SlackConfig(dm_single_session=flat, agent_sessions=live),
+            slack=SlackConfig(
+                dm_single_session=flat, agent_sessions=live, code_channels=code_channels
+            ),
             messaging=MessagingConfig(use_transport=True),
         )
         self.sessions = sessions
@@ -401,6 +404,35 @@ class TestStop:
         assert sessions.stops == []  # the second press is a first press again
 
     @pytest.mark.asyncio
+    async def test_a_whole_channel_stop_goes_to_the_registered_handler(self) -> None:
+        sessions = FakeSessions()
+        orch = Orch(sessions)
+        seen: list[tuple[str, str]] = []
+
+        async def claim(o: Any, event: dict, user: str) -> bool:
+            seen.append((event["channel"], user))
+            return event["channel"] == "CCODE"
+
+        session_events.register_channel_stop_handler(claim)
+        session_events.register_channel_stop_handler(claim)  # idempotent
+        try:
+            ev = stop_event(channel="CCODE", thread_ts=None)
+            assert await session_events.handle_stopped(orch, ev) == "channel"
+            assert (
+                await session_events.handle_stopped(orch, stop_event(thread_ts=None, event_ts="2"))
+                == "not_ours"
+            )
+            assert (
+                await session_events.handle_stopped(
+                    orch, stop_event(channel="CCODE", thread_ts=None, user="UOTHER", event_ts="3")
+                )
+                == "denied"
+            )
+        finally:
+            session_events.unregister_channel_stop_handler(claim)
+        assert seen == [("CCODE", "U1"), ("C1", "U1")]
+
+    @pytest.mark.asyncio
     async def test_a_stop_before_the_prompt_opens_does_not_hide_the_turn(self) -> None:
         """Nothing to cancel yet (no session, no router task): the turn stays audible."""
         sessions = FakeSessions()
@@ -581,7 +613,7 @@ class TestFeatureGate:
     ) -> None:
         """Off is identical to main, which never acted on these events."""
         sessions = FakeSessions(live={"slack:1700.1"})
-        orch = Orch(sessions, live=False)
+        orch = Orch(sessions, live=False, code_channels=True)
         orch.conv_log = TitleLog()
         _gate(monkeypatch, allowed=True)
         session_events.dispatch(orch, {"team_id": "T1"}, stop_event())
@@ -612,15 +644,17 @@ class TestFeatureGate:
         assert orch._handler_tasks == set() and sessions.stops == []
 
     @pytest.mark.asyncio
-    async def test_a_whole_channel_stop_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A Stop with no ``thread_ts`` belongs to no feature this gateway runs."""
-        from kiro_crew.slack import features
-
+    async def test_a_whole_channel_stop_needs_code_channels(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         _gate(monkeypatch, allowed=True)
-        features.record_granted_scopes({"assistant:write"})
-        on = Orch(FakeSessions())
+        off = Orch(FakeSessions(), code_channels=False)
+        session_events.dispatch(off, {"team_id": "T1"}, stop_event(thread_ts=None))
+        assert off._handler_tasks == set()
+        on = Orch(FakeSessions(), live=False, code_channels=True)
         session_events.dispatch(on, {"team_id": "T1"}, stop_event(thread_ts=None))
-        assert on._handler_tasks == set()
+        assert len(on._handler_tasks) == 1
+        await await_until(asyncio.gather(*on._handler_tasks), what="the dispatched Stop")
 
     def test_the_native_turn_is_fenced_through_its_delivery_tail(self) -> None:
         """``_run_turn`` opens the fence; ``handle_message`` closes it after delivery."""

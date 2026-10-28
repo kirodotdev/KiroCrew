@@ -44,6 +44,15 @@ _BASE_BOT_SCOPES = [
     "reactions:write",
     "users:read",
 ]
+#: Granted only with ``slack.code_channels``: agents.conversations.* plus the
+#: session identity override and the channel canvas.
+_CODE_CHANNEL_SCOPES = [
+    "canvases:write",
+    "channels:write.invites",
+    "chat:write.customize",
+    "code_channels:manage",
+    "groups:write.invites",
+]
 
 _BASE_BOT_EVENTS = [
     "app_home_opened",
@@ -54,6 +63,9 @@ _BASE_BOT_EVENTS = [
     "message.groups",
     "message.im",
 ]
+#: A code channel shows Slack's Stop button only when the app subscribes to it.
+_CODE_CHANNEL_EVENTS = ["agent_session_stopped"]
+
 _AGENT_SESSION_SCOPES = ["assistant:write"]
 
 _AGENT_SESSION_EVENTS = ["agent_session_stopped", "agent_session_title_changed"]
@@ -122,6 +134,8 @@ class TestManifestGrantsNothingMore:
     def test_bot_scopes_are_exactly_the_reviewed_set(self) -> None:
         for combo in _COMBOS:
             want = set(_BASE_BOT_SCOPES)
+            if slack_manifest.CODE_CHANNELS in combo:
+                want |= set(_CODE_CHANNEL_SCOPES)
             if slack_manifest.AGENT_SESSIONS in combo:
                 want |= set(_AGENT_SESSION_SCOPES)
             assert sorted(_bot_scopes(_manifest(combo))) == sorted(want), combo
@@ -129,6 +143,8 @@ class TestManifestGrantsNothingMore:
     def test_bot_events_are_exactly_the_reviewed_set(self) -> None:
         for combo in _COMBOS:
             want = set(_BASE_BOT_EVENTS)
+            if slack_manifest.CODE_CHANNELS in combo:
+                want |= set(_CODE_CHANNEL_EVENTS)
             if slack_manifest.AGENT_SESSIONS in combo:
                 want |= set(_AGENT_SESSION_EVENTS)
             events = _bot_events(_manifest(combo))
@@ -145,6 +161,11 @@ class TestManifestGrantsNothingMore:
             else:
                 assert "agent_view" not in feats, combo
             assert "assistant_view" not in feats, combo
+            if slack_manifest.CODE_CHANNELS in combo:
+                # Socket Mode delivers channel commands: no slash_command_url.
+                assert feats["code_channels"] == {"enabled": True}, combo
+            else:
+                assert "code_channels" not in feats, combo
 
     def test_user_token_scopes_are_exactly_the_reviewed_set(self) -> None:
         # The gateway itself runs on the bot token and calls nothing with a
