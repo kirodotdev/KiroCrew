@@ -554,6 +554,25 @@ async def test_workspaces_endpoint_lists_owned_rows_and_reports_an_unreadable_re
         assert str(tmp_path) not in (await resp.json())["error"]
 
 
+@pytest.mark.parametrize("provider", ["sprites", "boxd"])
+@sync
+async def test_an_unreadable_vm_registry_is_reported_not_listed_as_empty(
+    tmp_path, monkeypatch, provider
+):
+    from kiro_crew.config.session_environments import VM_REGISTRY_FILES
+
+    async with _client(tmp_path, monkeypatch) as client:
+        # Its machines and deletion deadlines still exist; an empty list would hide them.
+        path = tmp_path / VM_REGISTRY_FILES[provider]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json")
+        resp = await client.get("/ws")
+        assert resp.status == 500
+        body = await resp.json()
+        assert body["code"] == "workspaces_unreadable" and "workspaces" not in body
+        assert str(tmp_path) not in body["error"]
+
+
 @sync
 async def test_terminal_remote_slot_never_falls_back_to_a_local_shell(tmp_path, monkeypatch):
     async def not_remote(key):

@@ -188,7 +188,7 @@ async def test_launch_dispatches_by_id_and_refuses_collisions(tmp_path, monkeypa
     prepare = AsyncMock(return_value="prepared")
     monkeypatch.setattr(SpritesSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("session") == "prepared"
-    prepare.assert_awaited_once_with("session", "sprites-id")
+    prepare.assert_awaited_once_with("session", "sprites-id", progress_key="session")
     raw["profiles"][0]["id"] = "sprites-id"
     reread_config()
     with pytest.raises(SessionEnvironmentUnavailable, match="more than one provider"):

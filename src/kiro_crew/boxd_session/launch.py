@@ -88,15 +88,24 @@ class BoxdSessionEnvironments(PersistentVmEnvironments):
                 )
         return record, who
 
-    async def remote_create(self, profile: dict[str, Any], name: str) -> tuple[dict[str, Any], str]:
+    async def remote_credential(self, profile: dict[str, Any]) -> str:
+        return await (await self.cli()).identity()
+
+    async def remote_create(
+        self, profile: dict[str, Any], name: str, *, used: str
+    ) -> dict[str, Any]:
         cli = await self.cli()
-        who = await cli.identity()
-        record = await cli.create(
+        if await cli.identity() != used:
+            # Another account or org since the row recorded this one.
+            raise SessionEnvironmentUnavailable(
+                f"the boxd account or org changed before machine {name} was created; "
+                "nothing was created, start the chat again"
+            )
+        return await cli.create(
             name,
             snapshot=str(profile.get("snapshot") or ""),
             vcpu=int(profile.get("vcpu") or 0),
         )
-        return record, who
 
     async def remote_delete(
         self, profile: Optional[dict[str, Any]], name: str, *, used: str

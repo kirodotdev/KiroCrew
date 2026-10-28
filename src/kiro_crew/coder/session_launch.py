@@ -602,7 +602,9 @@ async def prepare_for_session(
         )
     vm_environments = _vm_environments().get(provider)
     if vm_environments is not None:
-        return await vm_environments(section, home).prepare(owner_key, profile_id)
+        return await vm_environments(section, home).prepare(
+            owner_key, profile_id, progress_key=session_key
+        )
     environments = CoderSessionEnvironments(section, home)
     # Keyed by the owner, so a subagent reuses its root's workspace; the start
     # stage stays on the starting session, which clears it when the start ends.

@@ -20375,6 +20375,7 @@
     "apiTokenRetry": "Escolha Salvar configurações para tentar de novo, ou salve-o você mesmo em Configurações → Segredos como {{name}}.",
     "apiTokenRename": "Para salvá-lo com outro nome, altere o nome em Avançado: nome do segredo, mais abaixo, e escolha Salvar configurações.",
     "apiTokenMoved": "O nome do segredo mudou para {{name}} depois que você digitou o token, talvez em outra janela. Escolha Salvar configurações de novo para salvá-lo como {{name}}.",
+    "apiTokenConflict": "Outro perfil tem um token diferente digitado para {{name}}, e o cofre guarda um token por nome. Dê a um dos perfis um nome de segredo próprio em Avançado, ou digite o mesmo token nos dois, e escolha Salvar configurações de novo.",
     "apiTokenHint": "Ainda não há token salvo como {{name}}. Crie um em sprites.dev/account, cole-o aqui e escolha Salvar configurações; ele é guardado com segurança nesta máquina e nunca mais é mostrado.",
     "apiTokenListError": "Não foi possível verificar se há um token salvo. Tente de novo para verificar.",
     "apiTokenPlaceholder": "Cole um token da API do Sprites",

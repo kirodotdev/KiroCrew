@@ -274,6 +274,21 @@ async def test_a_blank_working_folder_runs_in_the_sprites_login_home(tmp_path):
 
 
 @sync
+async def test_a_sprite_is_created_only_under_the_token_its_row_recorded(tmp_path):
+    # The row names the token's fingerprint before the create; a token saved in
+    # between refuses the create instead of making a sprite in another account.
+    async with fake_api(tmp_path) as (fake, url):
+        envs, _seen = _envs(tmp_path, url, fake)
+        profile = envs.profile("fly-dev")
+        used = await envs.remote_credential(profile)
+        assert used and TOKEN not in used
+        envs._token_reader = lambda _name: "other-org/tok-2/another"
+        with pytest.raises(SessionEnvironmentUnavailable, match="changed before sprite"):
+            await envs.remote_create(profile, "kirocrew-0123456789abcdef", used=used)
+        assert envs.registry.all() == []
+
+
+@sync
 async def test_a_session_gets_a_sprite_and_its_worker_is_dialled_through_the_proxy(tmp_path):
     async with fake_api(tmp_path) as (fake, url):
         envs, seen = _envs(tmp_path, url, fake)
@@ -495,13 +510,38 @@ async def test_a_sprites_choice_is_prepared_by_the_sprites_provider(monkeypatch,
     )
     seen = []
 
-    async def prepare(self, key, profile_id):
-        seen.append((key, profile_id))
+    async def prepare(self, key, profile_id, *, progress_key=None):
+        seen.append((key, profile_id, progress_key))
         return "prepared"
 
     monkeypatch.setattr(sprites_launch.SpritesSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("dashboard:chat-8") == "prepared"
-    assert seen == [("dashboard:chat-8", "fly-dev")]
+    assert seen == [("dashboard:chat-8", "fly-dev", "dashboard:chat-8")]
+    # A subagent reuses its root's sprite, but its start is reported on itself.
+    choices = session_launch.SessionEnvironmentChoices(tmp_path / "coder" / "session-choices.json")
+    assert choices.inherit("subagent:child-8", "dashboard:chat-8") == "fly-dev"
+    assert await session_launch.prepare_for_session("subagent:child-8") == "prepared"
+    assert seen[-1] == ("dashboard:chat-8", "fly-dev", "subagent:child-8")
+
+
+@sync
+async def test_a_new_sprite_reports_provisioning_on_the_starting_session(tmp_path):
+    # Keyed by the owner, reported on the session whose start clears it.
+    from kiro_crew import session_environment as se
+
+    root, child = "dashboard:root-9", "subagent:child-9"
+    se.clear_start_stage(root)
+    se.clear_start_stage(child)
+    try:
+        async with fake_api(tmp_path) as (fake, url):
+            envs, _seen = _envs(tmp_path, url, fake)
+            await envs.prepare(root, "fly-dev", progress_key=child)
+            assert envs.registry.get(root) is not None
+            assert se.start_progress(root) is None
+            assert se.start_progress(child)["stage"] == "provisioning"
+    finally:
+        se.clear_start_stage(root)
+        se.clear_start_stage(child)
 
 
 # ── Config and dashboard wiring ─────────────────────────────────────────

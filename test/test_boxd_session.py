@@ -412,13 +412,13 @@ async def test_a_boxd_choice_is_prepared_by_the_boxd_provider(monkeypatch, tmp_p
     )
     seen = []
 
-    async def prepare(self, key, profile_id):
-        seen.append((key, profile_id))
+    async def prepare(self, key, profile_id, *, progress_key=None):
+        seen.append((key, profile_id, progress_key))
         return "prepared"
 
     monkeypatch.setattr(boxd_launch.BoxdSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("dashboard:chat-8") == "prepared"
-    assert seen == [("dashboard:chat-8", "bx-dev")]
+    assert seen == [("dashboard:chat-8", "bx-dev", "dashboard:chat-8")]
 
 
 def test_names_are_validated_before_any_argv_is_built():

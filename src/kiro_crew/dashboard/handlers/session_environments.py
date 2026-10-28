@@ -331,8 +331,9 @@ def _persistent_workspaces(home: Any) -> list[dict[str, object]]:
     for provider, registry in _persistent_registries(home):
         try:
             rows = registry.all()
-        except SessionEnvironmentUnavailable:
-            continue
+        except SessionEnvironmentUnavailable as exc:
+            # Not an empty inventory: machines and their deadlines may still exist.
+            raise _WorkspacesUnreadable(str(exc)) from exc
         for row in rows:
             out.append(
                 {

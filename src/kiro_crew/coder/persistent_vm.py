@@ -350,9 +350,21 @@ class PersistentVmEnvironments:
         """
         raise NotImplementedError
 
-    async def remote_create(self, profile: dict[str, Any], name: str) -> tuple[dict[str, Any], str]:
-        """Create ``name`` from the profile: the provider's record of it, and the
-        fingerprint of the credential that created it (as :meth:`remote_get`)."""
+    async def remote_credential(self, profile: dict[str, Any]) -> str:
+        """The fingerprint of the credential a create would use now (as
+        :meth:`remote_get`; "" for a provider with none of its own)."""
+        return ""
+
+    async def remote_create(
+        self, profile: dict[str, Any], name: str, *, used: str
+    ) -> dict[str, Any]:
+        """Create ``name`` from the profile and return the provider's record of it.
+
+        ``used`` is the fingerprint :meth:`remote_credential` returned, already
+        saved on the row: the create must go out under that same credential and
+        refuse when another one is current, so a row whose create was cut short
+        always names the account its machine lives in.
+        """
         raise NotImplementedError
 
     async def remote_delete(
@@ -423,7 +435,9 @@ class PersistentVmEnvironments:
         return row, record
 
     # -- prepare ----------------------------------------------------------------------
-    async def prepare(self, session_key: str, profile_id: str) -> "PreparedRemoteSession":
+    async def prepare(
+        self, session_key: str, profile_id: str, *, progress_key: str | None = None
+    ) -> "PreparedRemoteSession":
         from kiro_crew.coder.retention import session_lifecycle
 
         lifecycle = session_lifecycle(session_key)
@@ -431,9 +445,11 @@ class PersistentVmEnvironments:
         # already running so its stamp is never written after this clears it.
         lifecycle.generation += 1
         async with lifecycle.lock:
-            return await self._prepare(session_key, profile_id)
+            return await self._prepare(session_key, profile_id, progress_key or session_key)
 
-    async def _prepare(self, session_key: str, profile_id: str) -> "PreparedRemoteSession":
+    async def _prepare(
+        self, session_key: str, profile_id: str, progress_key: str
+    ) -> "PreparedRemoteSession":
         from kiro_crew.coder.session_launch import PreparedRemoteSession
 
         profile = self.profile(profile_id)
@@ -458,7 +474,7 @@ class PersistentVmEnvironments:
                     await asyncio.to_thread(self.registry.set_deletion, session_key, "")
         created = row is None
         if row is None:
-            row = await self._create(session_key, profile)
+            row = await self._create(session_key, profile, progress_key)
         shell = await self.shell(profile, row)
         try:
             if workdir:
@@ -500,8 +516,14 @@ class PersistentVmEnvironments:
         """The folder a session runs in: the profile's, else the recorded login home."""
         return str(profile.get("workdir") or "") or row.home
 
-    async def _create(self, session_key: str, profile: dict[str, Any]) -> SessionResource:
-        report_start_stage(session_key, "provisioning")
+    async def _create(
+        self, session_key: str, profile: dict[str, Any], progress_key: str
+    ) -> SessionResource:
+        report_start_stage(progress_key, "provisioning")
+        # The account is recorded with the reservation: a create cut short
+        # before its record is bound still names where its machine lives, so a
+        # later miss under another account keeps the row instead of replacing it.
+        used = await self.remote_credential(profile)
         row = SessionResource(
             session_key,
             str(profile["id"]),
@@ -509,11 +531,12 @@ class PersistentVmEnvironments:
             "",
             stamp(now_utc()),
             token_secret=str(profile.get("token_secret") or ""),
+            credential_id=used,
         )
         # Recorded before the create, so an archive (or a failure below) can delete it.
         await asyncio.to_thread(self.registry.put, row)
         try:
-            record, used = await self.remote_create(profile, row.name)
+            record = await self.remote_create(profile, row.name, used=used)
         except BaseException:
             try:
                 await self._delete(row)
