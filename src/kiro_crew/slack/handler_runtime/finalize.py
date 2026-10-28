@@ -10,6 +10,7 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import TYPE_CHECKING
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
         _review_drafts,
         auto_title,
         logger,
+        redact_log_via_context,
     )
 
 
@@ -224,23 +226,29 @@ async def _post_review_draft(
     return True
 
 
-def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -> None:
+async def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -> None:
     """Append this Slack turn to the dashboard slot its thread is linked to."""
     try:
         ds = _dashboard_state
         slot_name = linked_session_key.removeprefix("dashboard:")
         slot = getattr(ds, "_slots", {}).get(slot_name)
         if slot:
+            # Own hop: the credential detector is quadratic on uniform runs, and
+            # this runs from the delivery coroutine.
+            mirrored = await asyncio.to_thread(redact_log_via_context, text)
+            reply = await asyncio.to_thread(redact_log_via_context, accumulated)
             # The person typed this in Slack; mirroring it into the
             # linked slot keeps it a human turn (see
             # history.HUMAN_TURN_META_KEY).
-            slot.append("user", text, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
-            slot.append("assistant", accumulated, "msg msg-a")
+            slot.append("user", mirrored, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
+            slot.append("assistant", reply, "msg msg-a")
             if slot._on_message:
-                slot._on_message(slot.key, {"role": "user", "content": text, "cls": "msg msg-u"})
+                slot._on_message(
+                    slot.key, {"role": "user", "content": mirrored, "cls": "msg msg-u"}
+                )
                 slot._on_message(
                     slot.key,
-                    {"role": "assistant", "content": accumulated, "cls": "msg msg-a"},
+                    {"role": "assistant", "content": reply, "cls": "msg msg-a"},
                 )
             # ``ds`` is set: the caller mirrors only while ``_dashboard_state`` is.
             ds.push_slots_update()  # type: ignore[attr-defined,union-attr]

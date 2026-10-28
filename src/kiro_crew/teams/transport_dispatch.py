@@ -96,6 +96,7 @@ from kiro_crew.messaging.queue_receipt import (
 )
 from kiro_crew.messaging.session_resume import refused_resume_is_restricted
 from kiro_crew.messaging.upload_gate import session_is_restricted
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import person_priority
@@ -1819,7 +1820,8 @@ class TeamsDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "Teams"
+            title = redact_log_via_context(user_text or "").strip().replace("\n", " ")[:40]
+            title = title or "Teams"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(self, inbound: "TeamsInbound", session_key: str, provider: Any) -> None:
