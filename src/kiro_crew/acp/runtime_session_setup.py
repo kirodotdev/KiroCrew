@@ -250,6 +250,30 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
     )
 
 
+async def _refuse_over_ceiling_start(self: AcpRuntime, active_agent: str | None) -> None:
+    """Refuse a ``session/new`` or ``session/load`` on a spec the ceiling would narrow.
+
+    The spawn checked the agent it launched as, but a warm runtime starts sessions
+    long after that: a session that names no agent inherits the spawn agent, and its
+    spec may have gained a grant since. kiro-cli reads the effective agent's spec
+    from disk at each start, so the same over-ceiling refusal runs here, before the
+    request goes out, for the agent this session will actually run.
+    """
+    from kiro_crew import agent as agent_mod
+
+    # The same host rule the spawn check uses (``ACP_BACKENDS_SPEC_FILE_GRANTS``). A
+    # runtime that names no backend is kiro-cli's (``ACP_BACKEND_KIRO`` is ""), a
+    # member, so the check runs: the fail-closed answer.
+    try:
+        await asyncio.to_thread(
+            agent_mod.require_shared_template_within_ceiling,
+            active_agent,
+            getattr(self, "_acp_backend", ""),
+        )
+    except agent_mod.SharedTemplateOverCeiling as exc:
+        raise AcpRuntimeError(str(exc)) from exc
+
+
 async def _kas_custom_agents(
     self: AcpRuntime,
     agent: str,

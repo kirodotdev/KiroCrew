@@ -11,7 +11,7 @@ Instance fields written: ``_native_skill_projection``, ``_skill_projection_gener
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
 ``_skill_projection_unadopted``, ``_switched_models``.
 
-Instance fields read: ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
 ``_wire_mode_id``, ``_work_dir``.
 """
 
@@ -552,6 +552,23 @@ async def _activate_mode_bracketed(
                 require_fresh_derived_spec, mode_agent, self._work_dir
             )
         except DerivedSpecStale as exc:
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(str(exc)) from exc
+        # The host reads *mode_agent*'s spec from disk here and honours its own
+        # grants before Crew's gate, and Crew never rewrites a crew-bound spec it
+        # does not own: the same over-ceiling refusal the spawn runs, for the agent
+        # this line activates rather than the one the process was spawned as.
+        from kiro_crew import agent as agent_mod
+
+        try:
+            await asyncio.to_thread(
+                agent_mod.require_shared_template_within_ceiling,
+                mode_agent,
+                # A runtime that names no backend is kiro-cli's (``ACP_BACKEND_KIRO``
+                # is ""), so the check runs: the fail-closed answer.
+                getattr(self, "_acp_backend", ""),
+            )
+        except agent_mod.SharedTemplateOverCeiling as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
     try:
