@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         _session_stop_generation_for,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import _reset_segment_copy
+    from kiro_crew.dashboard.chat_turn.steer_queue import _mark_held_steers_possibly_delivered
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_stats import _turn_clock
 
@@ -986,6 +987,12 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         or getattr(getattr(_lc, "_handle", None), "_awaiting_permission", False)
     )
     slot._last_turn_children_announced = _children_unfinished_final
+    # A held steer whose write stalled is known only to the client, so it is
+    # read before the ref is dropped and the teardown requeues it marked.
+    try:
+        _mark_held_steers_possibly_delivered(slot, _lc)
+    except Exception:
+        logger.debug("held steer delivery check at release failed", exc_info=True)
     # Steer handle: turn is over, drop the live client ref so a late steer
     # can't target a dead session (the route also re-checks running state).
     slot._acp_client = None

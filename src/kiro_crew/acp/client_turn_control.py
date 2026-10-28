@@ -538,8 +538,15 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
 
     Nothing is sent while a tool call of the turn is open: claude moves a
     running tool to the background on a steer and ends the turn early, and the
-    tool's output then lands in the next, unrelated turn. Returning False holds
-    the text for the caller to run as the next turn instead.
+    tool's output then lands in the next, unrelated turn. Such a steer is held
+    instead -- True, with ``last_steer_monotonic`` stamped so a ``wait`` sleep
+    ends on it as it does on kiro-cli -- and :meth:`_send_held_steers` sends it
+    once no tool call of the turn is open, so the model reads it at its next
+    step rather than after the turn. A steer that arrives behind a held one
+    waits behind it, so they go out in the order they came. A held steer the
+    turn ends before injecting is never reported consumed, so the caller's
+    pending entry for it is queued by the turn's teardown, as for any steer
+    the turn did not take (``steer_needs_loss_recovery``).
     """
     aimed_at = self._steering_turn_req
     if (
@@ -547,7 +554,6 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         or self._turn_done.is_set()
         or self._cancelled
         or self._parked_on_permission
-        or self._active_tool_calls.possibly_open
         or not self._steering_request_ready()
     ):
         return False
@@ -556,10 +562,116 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
     if accepted is None:
         accepted = []
         self._steers_accepted = accepted
-    if len(text) > MAX_STEERING_TEXT_CHARS or len(waiters) + len(accepted) >= (
+    held = self._held_steers()
+    if len(text) > MAX_STEERING_TEXT_CHARS or len(waiters) + len(accepted) + len(held) >= (
         MAX_STEERING_ANSWERS
     ):
         return False
+    if held or self._active_tool_calls.possibly_open:
+        held.append((aimed_at, text))
+        self._last_steer_monotonic = time.monotonic()
+        self._release_held_steers()
+        return True
+    return await self._send_steering_request(aimed_at, text) is True
+
+
+def _held_steers(self: AcpClient) -> list[tuple[int, str]]:
+    """The steers held while a tool call of the turn was open, oldest first, as
+    ``(turn request id, text)``. Created on first use so a client built without
+    ``__init__`` (test doubles) has one."""
+    held = getattr(self, "_steers_held", None)
+    if held is None:
+        held = []
+        self._steers_held = held
+    return held
+
+
+def _held_steer_writes(self: AcpClient) -> set[str]:
+    """The held steers of this turn whose delivery is unresolved: writes in flight,
+    stalled writes, unanswered requests, or ``injected`` after the turn ended.
+    Created on first use so a client built without ``__init__`` (test doubles)
+    has one."""
+    writes = getattr(self, "_held_steers_unanswered", None)
+    if writes is None:
+        writes = set()
+        self._held_steers_unanswered = writes
+    return writes
+
+
+def _release_held_steers(self: AcpClient) -> None:
+    """Start sending the held steers if no tool call of the turn is open.
+
+    The turn's read loop calls this each time a tool call reaches a terminal
+    status. The sends run on a task of their own, one at a time: the loop is
+    the one reader of the adapter's stdout and has to keep reading while a
+    steer waits for its answer.
+    """
+    if not getattr(self, "_steers_held", None) or self._active_tool_calls.possibly_open:
+        return
+    task = self._held_steer_task
+    if task is not None and not task.done():
+        return
+    self._held_steer_task = asyncio.get_running_loop().create_task(self._send_held_steers())
+
+
+async def _send_held_steers(self: AcpClient) -> None:
+    """Send the held steers, oldest first, while no tool call of their turn is open.
+
+    Each goes out as :meth:`_send_steering_request` sends any steer, and leaves
+    the list once the send finishes, so a steer that arrives meanwhile waits
+    behind it. A tool call that opens again stops the sends until its terminal
+    starts them again. Once the turn stops taking steers, or a write has
+    stalled the adapter's stdin, the rest are dropped rather than written
+    behind a frame the adapter is not reading: the turn reports none of them
+    consumed, so the caller queues each. A steer whose write is in flight,
+    stalled, unanswered, or answered ``injected`` after its turn ended stays in
+    :attr:`held_steers_possibly_delivered` until the next turn starts, so the
+    caller queues it as possibly delivered rather than as fresh text.
+    """
+    while held := self._held_steers():
+        steer = held[0]
+        aimed_at, text = steer
+        if (
+            aimed_at != self._steering_turn_req
+            or self._turn_done.is_set()
+            or self._cancelled
+            or getattr(self, "_stdin_stalled", False)
+        ):
+            held.clear()
+            return
+        if self._active_tool_calls.possibly_open or self._parked_on_permission:
+            return
+        # Registered before the write: a turn that ends while the write is
+        # still in flight finds the text here, as for a direct steer's RPC.
+        possibly_delivered = self._held_steer_writes()
+        possibly_delivered.add(text)
+        try:
+            delivered = await self._send_steering_request(aimed_at, text)
+        except Exception as exc:
+            # The frame may sit in the pipe already, so it is not sent again;
+            # the caller queues the text at the turn's end, at least once.
+            logger.debug("held steer not sent: %s", type(exc).__name__)
+            if getattr(exc, "ambiguous_delivery", False) is not True:
+                possibly_delivered.discard(text)
+        else:
+            if delivered is not None:
+                possibly_delivered.discard(text)
+        # Read again: a turn that ended during the send started a new list.
+        current = self._held_steers()
+        if current and current[0] == steer:
+            current.pop(0)
+
+
+async def _send_steering_request(self: AcpClient, aimed_at: int, text: str) -> bool | None:
+    """Write one ``_session/steering`` into turn *aimed_at* and wait for its answer.
+
+    True means ``injected`` while that turn still runs: the steer is accepted
+    into it (:meth:`_release_accepted_steers`). False means not written or an
+    answer other than ``injected`` (including an error). None means written
+    with no answer read, or ``injected`` after the turn ended: delivery is
+    unresolved. An ``ambiguous_delivery`` write error is raised to the caller.
+    """
+    waiters = self._steering_waiters()
     answer: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
     sent: list[int] = []
 
@@ -591,7 +703,9 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         # Every exit stops waiting, so a late answer is skipped as stray.
         if sent:
             waiters.pop(sent[0], None)
-    if not answer.done() or answer.cancelled() or answer.exception() is not None:
+    if not answer.done() or answer.cancelled():
+        return None
+    if answer.exception() is not None:
         return False
     outcome = steering_outcome(answer.result())
     if outcome != STEERING_INJECTED:
@@ -600,7 +714,7 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
     if turn_done.is_set() or self._steering_turn_req != aimed_at:
         # Injected, but its turn is already over: nothing will report it
         # consumed, so the caller queues the text.
-        return False
+        return None
     self._steers_accepted.append((aimed_at, wrap_user_message(text)))
     self._last_steer_monotonic = time.monotonic()
     return True
@@ -642,10 +756,13 @@ def _release_accepted_steers(self: AcpClient, req_id: int, reason: str, refusal:
     has run every steer it accepted. On any other ending nothing is reported
     and the caller's pending entry for each is queued instead. The turn
     stops taking steers here, before its terminal is yielded, so a steer
-    answered after this point is not accepted into a turn that has ended.
+    answered after this point is not accepted into a turn that has ended. A
+    steer still held here was never sent, so it is dropped and queued the same
+    way.
     """
     accepted = getattr(self, "_steers_accepted", None) or []
     self._steers_accepted = []
+    self._steers_held = []
     if self._steering_turn_req == req_id:
         self._steering_turn_req = None
     if self._cancelled or refusal or reason != STOP_REASON_END_TURN:

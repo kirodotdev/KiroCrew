@@ -1415,6 +1415,11 @@ class AcpClient:
     _steering_waiters = _client_turn_control._steering_waiters
     _settle_steering_answer = _client_turn_control._settle_steering_answer
     _steer_via_steering_request = _client_turn_control._steer_via_steering_request
+    _held_steers = _client_turn_control._held_steers
+    _release_held_steers = _client_turn_control._release_held_steers
+    _held_steer_writes = _client_turn_control._held_steer_writes
+    _send_held_steers = _client_turn_control._send_held_steers
+    _send_steering_request = _client_turn_control._send_steering_request
     _await_steering_answer = _client_turn_control._await_steering_answer
     _release_accepted_steers = _client_turn_control._release_accepted_steers
     _steer_via_request = _client_turn_control._steer_via_request
@@ -1449,6 +1454,27 @@ class AcpClient:
     # (turn request id, ``<user_message>``-wrapped text) for each steer accepted
     # into the running turn and not yet released by its terminal.
     _steers_accepted: list[tuple[int, str]]
+    # (turn request id, text) for each steer that arrived while a tool call of
+    # the running turn was open, oldest first, until it is sent.
+    _steers_held: list[tuple[int, str]]
+    # The task sending the held steers, or None: the read loop starts it when
+    # the turn's last open tool call ends.
+    _held_steer_task: asyncio.Task[None] | None = None
+    # The text of each held steer of the running or last turn whose write may
+    # have reached the adapter with no answer read, until the next turn starts.
+    _held_steers_unanswered: set[str]
+
+    @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """Held steer texts whose delivery remains unresolved.
+
+        A write in flight, a stalled write (``ambiguous_delivery``), an
+        unanswered request, or ``injected`` after the turn ended may run
+        without being reported consumed. The dashboard's teardown reads this
+        so it requeues such a steer as possibly delivered. Reset when the next
+        turn starts.
+        """
+        return frozenset(getattr(self, "_held_steers_unanswered", ()))
 
     # Monotonic stamp of the last steer handed to the backend, 0.0 when never
     # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's

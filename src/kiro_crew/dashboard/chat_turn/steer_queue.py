@@ -226,6 +226,27 @@ def _settle_consumed_steers(
         steer_retract.on_settled(slot)
 
 
+def _mark_held_steers_possibly_delivered(slot: "_ChatSlot", client: object) -> None:
+    """Mark each pending steer whose held write *client* reports unanswered.
+
+    A steer the client held while a tool ran is written later, off the steer's
+    own RPC, so a stalled write never reaches ``steer_into_running_turn``'s
+    ambiguous-delivery branch. Read before the turn drops its client, so
+    :func:`_requeue_unconsumed_steers` stamps such an entry as possibly
+    delivered. The client knows the text it was handed, so each raw entry is
+    compared through its wire form; a client without the accessor marks nothing.
+    """
+    unanswered = getattr(client, "held_steers_possibly_delivered", None)
+    if not unanswered or not isinstance(unanswered, (set, frozenset)):
+        return
+    from kiro_crew.dashboard import responsive_chat
+
+    wires = responsive_chat.turn_state(slot).steers
+    for message in slot._pending_steers:
+        if (wires.get(message, message) or "").strip() in unanswered:
+            slot._steer_possibly_delivered.add(message)
+
+
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
     """Degrade unconsumed mid-turn steers into ordinary queue cards.
 
