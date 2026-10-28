@@ -1622,7 +1622,12 @@ The details below describe the Kiro and Claude paths implemented directly here:
     native restrictions; only an absent settings file, or one that is empty or
     holds only JSON whitespace (space, tab, CR, LF), with or without a single
     leading UTF-8 byte-order mark, contributes no restrictions. A document behind
-    that same BOM is parsed normally. Off the event loop a read may pause for a
+    that same BOM is parsed normally. A UTF-16 or UTF-32 mark, or bytes that are
+    not UTF-8, are refused before parsing (kiro-cli cannot read such a file
+    either). Each refusal carries a fixed reason
+    (`acp/session_mcp_settings_read.py`, re-exported by `session_mcp`) that the
+    WARNING and the user-facing message repeat; the reason never quotes the
+    file's content. Off the event loop a read may pause for a
     retry, so `session_mcp.native_settings_sources` brackets each pass with every
     file's identity and keeps a pass only when no file was replaced or rewritten
     while it ran; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
