@@ -256,36 +256,47 @@ def test_drain_reports_promptly_when_no_guarded_write_is_registered(tmp_path) ->
 # teardown arm is the one this change adds; the others are enumerated so a future
 # edit cannot quietly drop one. Driven through a stand-in because the real slot
 # derives ``turn_running`` and ``running`` from its task and stage boundary and
-# exposes them read-only. The guard reads three predicates and nothing else, and
-# the real slot's own teardown arm is covered by the two fence tests below.
+# exposes them read-only. The guard reads three predicates and the slot's session
+# key (a chat open in kiro-cli in the terminal is owned there), and the real
+# slot's own teardown arm is covered by the two fence tests below.
 class _Predicates:
-    """The three predicates ``_destructive_history_busy`` reads, and no more."""
+    """What ``_destructive_history_busy`` reads, and no more."""
 
     def __init__(self, *, turn_running: bool, running: bool, is_closing: bool) -> None:
         self.turn_running = turn_running
         self.running = running
         self.is_closing = is_closing
+        self.key = NAME
+        self.linked_session_key = ""
 
 
 @pytest.mark.parametrize(
-    ("turn_running", "running", "closing", "expected_code"),
+    ("turn_running", "running", "closing", "held", "expected_code"),
     [
-        (False, False, False, None),
-        (True, True, False, "slot_running"),
-        (False, True, False, "slot_busy"),
-        (False, False, True, "slot_closing"),
+        (False, False, False, False, None),
+        (True, True, False, False, "slot_running"),
+        (False, True, False, False, "slot_busy"),
+        (False, False, True, False, "slot_closing"),
+        (False, False, False, True, "kiro_cli_open"),
         # Precedence: a running turn outranks a teardown, so an operator reading
         # the refusal sees the condition that started first.
-        (True, True, True, "slot_running"),
-        (False, True, True, "slot_busy"),
+        (True, True, True, False, "slot_running"),
+        (False, True, True, False, "slot_busy"),
     ],
 )
 def test_destructive_history_refusal_covers_every_owner(
-    turn_running, running, closing, expected_code
+    turn_running, running, closing, held, expected_code
 ) -> None:
-    slot = _Predicates(turn_running=turn_running, running=running, is_closing=closing)
+    from kiro_crew import kiro_cli_handoff
+    from kiro_crew.dashboard.chat_utils import effective_session_key
 
-    refusal = chat_regenerate._destructive_history_busy(slot)
+    slot = _Predicates(turn_running=turn_running, running=running, is_closing=closing)
+    if held:
+        assert kiro_cli_handoff.hold(effective_session_key(slot), "terminal-1")
+    try:
+        refusal = chat_regenerate._destructive_history_busy(slot)
+    finally:
+        kiro_cli_handoff.release(effective_session_key(slot), "terminal-1")
     if expected_code is None:
         assert refusal is None
         return

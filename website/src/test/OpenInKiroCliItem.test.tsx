@@ -11,6 +11,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 const mocks = vi.hoisted(() => ({
   chatSlotKiroCli: vi.fn(),
   terminalEnabled: true,
+  poppedOut: false,
+  bringBack: vi.fn(),
+}))
+vi.mock('../utils/terminalPopout', async (orig) => ({
+  ...(await orig<typeof import('../utils/terminalPopout')>()),
+  isPopoutOpen: () => mocks.poppedOut,
+  bringBack: () => { mocks.bringBack(); mocks.poppedOut = false },
 }))
 vi.mock('../api/client', () => ({
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -52,7 +59,27 @@ describe('OpenInKiroCliItem', () => {
   beforeEach(() => {
     mocks.chatSlotKiroCli.mockReset()
     mocks.terminalEnabled = true
+    mocks.poppedOut = false
+    mocks.bringBack.mockReset()
     __resetBottomTerminal()
+  })
+
+  it('brings a popped-out panel back so this window opens the tab', async () => {
+    mocks.chatSlotKiroCli.mockResolvedValue({ available: true, agent: 'kirocrew', agent_without_spec: '' })
+    mocks.poppedOut = true
+    renderItem()
+    const user = userEvent.setup()
+    await user.click(await screen.findByTestId('open-in-kiro-cli'))
+    expect(mocks.bringBack).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('tabs').textContent).toBe(JSON.stringify([{ kiroCliSlot: 'chat-1' }]))
+  })
+
+  it('leaves a docked panel where it is', async () => {
+    mocks.chatSlotKiroCli.mockResolvedValue({ available: true, agent: 'kirocrew', agent_without_spec: '' })
+    renderItem()
+    const user = userEvent.setup()
+    await user.click(await screen.findByTestId('open-in-kiro-cli'))
+    expect(mocks.bringBack).not.toHaveBeenCalled()
   })
 
   it('opens a docked tab that names only the chat', async () => {

@@ -704,7 +704,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             return refusal_ws
         if session_id in registry:
             # Another opener took this id while the handover awaited.
-            kiro_cli_launch.release()
+            await kiro_cli_launch.arelease()
             return web.Response(status=409, text="Terminal session is already being opened")
 
     # Reserve slot synchronously before any await to prevent race condition.
@@ -713,7 +713,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
     if not existing and len(registry) >= max_sessions:
         if kiro_cli_launch is not None:
-            kiro_cli_launch.release()
+            # Not awaited: nothing suspends in this region. The release runs
+            # as its own task, off the loop for its file work.
+            kiro_cli_launch.release_soon()
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.open",
@@ -847,10 +849,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             try:
                 wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
             except Exception as exc:
-                if kiro_cli_launch is not None:
-                    kiro_cli_launch.release()
                 registry.pop(session_id, None)
                 placeholder = False
+                if kiro_cli_launch is not None:
+                    await kiro_cli_launch.arelease()
                 _sel().log_api_access(
                     caller=caller, operation="terminal.ws.open",
                     outcome="error", source="dashboard",
@@ -949,7 +951,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         env = _remote_pty_env({"TERM": "xterm-256color", "KIROCREW_TERMINAL": "1"})
                     elif kiro_cli_launch is not None:
                         # kiro-cli itself, exec'd with no shell between: the argv is
-                        # the gateway's own (see terminal_kiro_cli), so no shell ever
+                        # the gateway's own (see kiro_cli_launch), so no shell ever
                         # parses it, and the bash ready-marker does not apply.
                         argv = list(kiro_cli_launch.argv)
                     elif _is_bash_shell(shell):
@@ -1079,7 +1081,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             # it). Any other way out of this block started nothing: give it back.
             live = registry.get(session_id)
             if live is None or live.kiro_cli_session_key != kiro_cli_launch.session_key:
-                kiro_cli_launch.release()
+                await kiro_cli_launch.arelease()
 
     if kiro_cli_launch is not None:
         audit_kiro_cli_open(caller, "ok", f"session={session_id},chat={kiro_cli_launch.slot_key}")

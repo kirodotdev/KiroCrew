@@ -19,6 +19,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.kiro_cli_handoff import is_held_any_spelling
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.metrics.sessions import (
     END_REASON_DESTROYED,
@@ -805,7 +806,19 @@ async def discard_conversation(
     owner = self._owner
     requested_key = key
     key = owner._fold_key(key)
+    # A conversation open in kiro-cli in the terminal is that terminal's to
+    # write: discarding it would clear the resume pointer and orphan the log
+    # kiro-cli is appending to. Refused like a busy session, nothing changed
+    # (``kiro_crew.kiro_cli_handoff``).
+    if is_held_any_spelling(requested_key) or is_held_any_spelling(key):
+        return False
     async with owner._lock:
+        # Read again under the lock: a hold taken while this call waited for it
+        # must still refuse. The clear below runs in this same hold with no
+        # await, so a discard that passes here has already committed by the
+        # time a handover's own re-read of the resume pointer runs.
+        if is_held_any_spelling(requested_key) or is_held_any_spelling(key):
+            return False
         current = owner._sessions.get(key)
         if skip_if_busy and _turn_in_flight(
             current, refuse_only_on_active_turn=refuse_only_on_active_turn
