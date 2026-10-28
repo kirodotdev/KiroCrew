@@ -334,7 +334,10 @@ class TestCrewReadUpdateRetire(_CrewRouteCase):
         # bounded collection dropped something, and this payload is what
         # `issue_radar_crew_read` serves, so leaving them in the fold value alone
         # meant nothing a crew reads ever said it.
-        self.assertEqual(page["counts"], {"open": 1, "evicted_items": 0, "evicted_skips": 0})
+        self.assertEqual(
+            page["counts"],
+            {"open": 1, "evicted_items": 0, "evicted_skips": 0, "evicted_answers": 0},
+        )
 
     async def test_read_of_an_unknown_crew_is_404_not_409(self):
         res = await self.call(

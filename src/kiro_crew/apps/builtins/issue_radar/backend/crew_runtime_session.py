@@ -41,11 +41,63 @@ logger = logging.getLogger("kirocrew.app.issue-radar")
 APP_NAME = "issue-radar"
 
 
-#: Crews get a turn on this idle gap when the sweep has nothing to report. The
-#: watcher is the real scheduler (it fires on an actual signal); this is the
-#: fallback clock that lets an idle crew pick up NEW work, so it is deliberately
-#: slow. ``autonudge`` clamps it to [15s, 24h].
-DEFAULT_IDLE_SECS = 300
+#: The idle backstop: a crew with nothing in an acting phase gets a turn on this gap
+#: when the sweep has nothing to report. The watcher is the real scheduler for such a
+#: crew -- it fires on an actual signal, including room plus claimable work
+#: (``pickup-due``) -- so an idle crew costs no turn while nothing it could act on
+#: changes, and this covers only what the watcher cannot see (an issue older than the
+#: open-issues page it reads, say). A day, the longest ``autonudge`` allows ([15s,
+#: 24h]). The loop itself stays armed because its STOP sentinel, watchdog re-arm and
+#: failure stand-down are how a crew is braked. The repo setting ``crew_idle_secs``
+#: overrides it (:func:`crew_idle_secs`).
+DEFAULT_IDLE_SECS = 86400
+
+#: The gap for a crew with an item in an acting phase (``crew_model.ACTING_PHASES``).
+#: Only the crew moves such an item -- no forge signal will -- so a turn that ended
+#: with one (a turn timeout, a restart, one item per turn) must come back soon, not
+#: on the backstop. Capped by ``crew_idle_secs`` too, so an operator who asked for a
+#: faster clock gets it while the crew is working as well.
+ACTIVE_IDLE_SECS = 300
+
+
+async def crew_idle_secs(owner: str, repo: str, root: Path | None = None) -> int:
+    """The repo's idle backstop: the ``crew_idle_secs`` setting, else the default.
+
+    Read fresh on every arm and every watchdog pass, so an operator who changes the
+    setting sees it applied to running crews within one poll, with no restart.
+    """
+    try:
+        settings = await asyncio.to_thread(partial(crew_store.read_settings, owner, repo, root))
+        value = int(settings.get("crew_idle_secs") or DEFAULT_IDLE_SECS)
+    except Exception:
+        logger.debug("issue-radar: reading crew_idle_secs failed", exc_info=True)
+        return DEFAULT_IDLE_SECS
+    low, high = crew_store.CREW_IDLE_SECS_RANGE
+    return max(low, min(high, value))
+
+
+async def crew_loop_gap(
+    owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+) -> int:
+    """The interval the crew's auto-nudge loop should run at right now.
+
+    :data:`ACTIVE_IDLE_SECS` (or the repo setting, if shorter) while any open item is
+    in an acting phase, the idle backstop (:func:`crew_idle_secs`) otherwise. A failed
+    ledger read answers the active gap: a spare turn costs one turn, a missed one up
+    to a day.
+    """
+    backstop = await crew_idle_secs(owner, repo, root)
+    try:
+        items = await asyncio.to_thread(
+            partial(
+                crew_store.list_work_items, owner, repo, str(crew.get("id")), root, open_only=True
+            )
+        )
+        acting = crew_model.has_acting_item(items)
+    except Exception:
+        logger.debug("issue-radar: reading the crew's items for its loop gap failed", exc_info=True)
+        acting = True
+    return min(ACTIVE_IDLE_SECS, backstop) if acting else backstop
 
 
 # ── session launch / attach ─────────────────────────────────────────────────
@@ -329,7 +381,7 @@ async def launch_crew(
     await svc.add(
         slot_key=slot.key,
         message=await compose_turn_prompt_async(slot, owner, repo, crew, root, key),
-        idle_secs=DEFAULT_IDLE_SECS,
+        idle_secs=await crew_loop_gap(owner, repo, crew, root),
         max_cycles=0,
         stop_sentinel_path=str(stop_sentinel_path(owner, repo, str(crew.get("id")), root)),
         admission_check=lambda: state.get_slot(slot.key) is slot,

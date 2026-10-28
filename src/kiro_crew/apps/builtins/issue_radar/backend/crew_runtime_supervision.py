@@ -31,6 +31,7 @@ from .crew_runtime_session import (
     _slot_key,
     _turn_model_items,
     autoapprove_scope,
+    crew_loop_gap,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
@@ -725,6 +726,14 @@ async def watchdog_cycle(
                     slot = await ensure_crew_session(state, owner, repo, crew)
                 if not loop.active:
                     await svc.update(loop.id, active=True)
+                # The clock follows the crew's items and the repo setting: the
+                # short gap while an item is acting, the backstop otherwise
+                # (``crew_loop_gap``). Retimed here, in place, and only when the
+                # interval moved, so a steady crew costs no loop write.
+                idle = await crew_loop_gap(owner, repo, crew, root)
+                current_idle = getattr(loop, "idle_secs", None)
+                if isinstance(current_idle, int) and current_idle != idle:
+                    await svc.update(loop.id, idle_secs=idle)
         # The model the next idle-timer turn runs on: the loop fires on its own
         # clock, and this pass is what keeps the slot's model in step with the
         # ledger between wakes. A triage turn that moved an item into an acting

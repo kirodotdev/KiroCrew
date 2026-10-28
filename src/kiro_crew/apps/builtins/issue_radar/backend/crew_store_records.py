@@ -95,6 +95,30 @@ CREW_LEVEL_EVENT_KIND = RADAR_CREW_LEVEL_EVENT_KIND
 SKIP_SCOPES = RADAR_SKIP_SCOPES
 DEFAULT_SKIP_SCOPE = RADAR_DEFAULT_SKIP_SCOPE
 
+#: The scopes a HUMAN can hand back. A pass with one of these left the issue waiting
+#: on a person; when that person removes the needs-human label (a removal the crew
+#: made does not count) the gateway records the answer and the pass stops standing in
+#: the shared index (:func:`read_skips`). The scope-gate passes (``architecture``,
+#: ``new-feature``, ``needs-design``, ``breaking-change``) are here too: each says
+#: "somebody has to decide whether to do this", and a maintainer removing the label
+#: after deciding on the issue is that decision. Every other scope is a finding about
+#: the issue itself (duplicate, already fixed, not reproducible, ...) and stays skipped.
+ANSWERABLE_SKIP_SCOPES = frozenset(
+    {
+        "needs-decision",
+        "needs-investigation",
+        "architecture",
+        "new-feature",
+        "needs-design",
+        "breaking-change",
+    }
+)
+
+#: The progress-line kind an answer is filed under. An answer is the human's reply to
+#: the question the crew published, and ``reply`` is the closed vocabulary's word for
+#: that; a kind of its own would widen what the record tool accepts.
+ANSWERED_EVENT_KIND = "reply"
+
 #: Work-item fields an update may EMPTY by name. An omitted field means
 #: "unchanged"; the only way to erase one is to name it here (the route's and the
 #: tool's ``clear`` list, or an explicit ``None`` in a store-level patch), which the
@@ -158,7 +182,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     #: (:func:`_validated_label`), not trusted because a settings form produced it.
     "needs_human_label": "crew: needs human",
     "commit_trailer": "Crew: {name} (Kiro Crew Issue Radar)",
+    #: Seconds between the crew's FALLBACK idle turns (its auto-nudge loop) while no
+    #: item is in an acting phase. The watcher wakes a crew on every signal it can see
+    #: without a model -- an unblock, a human answer, a scope label or new issue, a
+    #: mention, room plus claimable work -- so this clock only covers what the
+    #: watcher misses, and every tick is a full model turn; a day by default. A crew
+    #: with an acting item runs at ``ACTIVE_IDLE_SECS`` or this value, whichever is
+    #: shorter. Repo-wide like the TTL; clamped to :data:`CREW_IDLE_SECS_RANGE` on
+    #: read and write.
+    "crew_idle_secs": 86400,
 }
+
+#: The bounds ``crew_idle_secs`` is clamped to: auto-nudge's own interval range.
+CREW_IDLE_SECS_RANGE = (15, 86400)
 
 _DEFAULT_CREW: dict[str, Any] = {
     "labels": [],
@@ -288,6 +324,17 @@ def _validated_ttl_hours(value: Any) -> int | None:
     if number is None or number <= 0:
         return None
     return number
+
+
+def _validated_idle_secs(value: Any) -> int | None:
+    """``crew_idle_secs`` clamped to :data:`CREW_IDLE_SECS_RANGE`, or ``None`` for
+    "keep the default" (not a number). Clamped rather than refused: a too-short value
+    is a cost the operator asked for, bounded at the floor the loop itself enforces."""
+    number = _finite_int(value)
+    if number is None:
+        return None
+    low, high = CREW_IDLE_SECS_RANGE
+    return max(low, min(high, number))
 
 
 def coerce_skip_scope(scope: Any) -> str:
@@ -481,6 +528,9 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
             if ttl is not None:
                 out["claim_ttl_hours"] = ttl
+            idle = _validated_idle_secs(stored.get("crew_idle_secs"))
+            if idle is not None:
+                out["crew_idle_secs"] = idle
             for key in _TEXT_SETTINGS:
                 text = _validated_text_setting(stored.get(key))
                 if text is not None:
@@ -501,6 +551,10 @@ def write_settings(
                 ttl = _validated_ttl_hours(patch["claim_ttl_hours"])
                 if ttl is not None:
                     record["claim_ttl_hours"] = ttl
+            if "crew_idle_secs" in patch:
+                idle = _validated_idle_secs(patch["crew_idle_secs"])
+                if idle is not None:
+                    record["crew_idle_secs"] = idle
             for key in _TEXT_SETTINGS:
                 if key in patch:
                     text = _validated_text_setting(patch[key])

@@ -1970,3 +1970,9 @@ def rerun_workflow_run(
         method="POST",
     )
     return {"run_id": int(run_id), "rerun": True, "failed_only": True}
+
+
+# The crew wake sweep's GitLab notes read lives in a sibling module (file line cap);
+# bound here so ``gitlab_client.list_thread_comments`` stays the import path. Imported
+# last: the sibling reads this module's helpers at call time.
+from .gitlab_client_crew_reads import list_thread_comments  # noqa: E402,F401 # isort: skip

@@ -361,6 +361,7 @@ def _radar_rows(state: Mapping[str, Any]) -> int:
     return (
         rows
         + _rows_in(state.get("skips"))
+        + _rows_in(state.get("answered"))
         + _rows_in(state.get("events"))
         + _rows_in(state.get("last_update"))
     )
@@ -641,6 +642,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _radar_render,
         affects=frozenset({RADAR_ENTRY_TYPE}),
         count_rows=_radar_rows,
+        # Moved for the human answer: the state gained ``answered``, and a pass after
+        # an answer now REPLACES the crew's row instead of being ignored, so a stored
+        # state from before folds a re-skip differently.
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),
     "work": _Fold(
         "work",

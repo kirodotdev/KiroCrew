@@ -191,6 +191,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LIST_PROBE_JQ,
         _MEMBER_ASSOC_RANK,
         _PROBE_KINDS,
+        _REPO_COMMENT_JQ,
         CONTRIB_WINDOW_DAYS,
         MAX_WINDOW_DAYS,
         _list_issues,
@@ -203,6 +204,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         list_open_issues_first_page,
         list_recent_open_issues,
         list_repo_collaborators,
+        list_repo_comments_since,
         list_repo_labels,
         verify_repo_access,
     )

@@ -446,6 +446,16 @@ TYPES: tuple[EntryType, ...] = (
                         note="When the pass was decided, when not this entry's time -- carry only.",
                     ),
                     Field(
+                        "answered_at",
+                        JSON_STRING,
+                        note=(
+                            "The newest human answer on this number across the repository's "
+                            "crews, when it is newer than this crew's own standing pass. Lets "
+                            "the pass supersede that row even when the answer was recorded in "
+                            "another crew's log."
+                        ),
+                    ),
+                    Field(
                         "deferred",
                         JSON_BOOL,
                         note=(
@@ -460,6 +470,32 @@ TYPES: tuple[EntryType, ...] = (
                 note=(
                     "Present when this update records a PASS on the issue. The repository's "
                     "shared skip index is a fold of these across every crew of the repository."
+                ),
+            ),
+            Field(
+                "answered",
+                JSON_OBJECT,
+                fields=(
+                    Field(
+                        "actor",
+                        JSON_STRING,
+                        required=True,
+                        note="The forge user who removed the needs-human label.",
+                    ),
+                    Field(
+                        "at",
+                        JSON_STRING,
+                        required=True,
+                        note="When the label was removed, as the forge reported it, in UTC.",
+                    ),
+                ),
+                note=(
+                    "Present when the gateway's sweep saw a HUMAN hand a needs-human pass "
+                    "back: the needs-human label was removed after the pass, by a person "
+                    "rather than a crew, on an open issue. Written by "
+                    "the gateway only, never by the record tool. Patches no work item; a "
+                    "pass older than it leaves the shared skip index, and a pass newer than "
+                    "it indexes the number again."
                 ),
             ),
             Field(

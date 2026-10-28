@@ -86,7 +86,7 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
         ("background/completed", "c2baf07274afb461f17f4254c09cf3a6"),
         ("ledger/recorded", "ce8a9e0246ca5f62f01fe4d9edaad4b9"),
         ("object/observed", "e7708ecf53c90b1b1e5e5340c59a97e0"),
-        ("radar/recorded", "f5da674a52d214bb4b0e46b717ff3042"),
+        ("radar/recorded", "35f61f7041e80efa66297e2f2fc374b1"),
         ("work/recorded", "df122722fab321f879acd5f36118e547"),
         ("work/charged", "dfafeefd53bcb426be1351ea831bb481"),
         ("panel/published", "3bed4520ab9f3b183255124dfa140c1e"),
@@ -111,7 +111,7 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
 #: SHA-256 of ``render_markdown(kind)`` when the registry was split into owners. The
 #: member kind declares nothing here, so its digest is of the heading alone.
 _GOLDEN_RENDER: dict[str, str] = {
-    KIND_SESSION: "60d9687e4f174983ea261050317fd6411e3faa9db125df6ffcd989eb34bd5f5a",
+    KIND_SESSION: "b6f98f2c97dedf7aaf204e69ce39f701d8b71cfb8dfa220e2ff4b3a079696c3c",
     KIND_CREW: "ed6c1e44dfba1f48ab44f900b866bf63f6403ee793284a7afa81b3fef970ad9b",
     "member": "5cb4ea02ed8121eb6b285806b4723251aed568df0aa54b9ac8505c9ad389fa8d",
 }
