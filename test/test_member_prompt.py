@@ -847,7 +847,7 @@ class TestMemberSectionInjection:
             assert "members" in ctx  # briefing path points inside the members root
 
     def test_behavior_layer_carries_the_working_protocol(self):
-        # The five protocol clauses the design fixed; a rewrite that drops one
+        # The six protocol clauses the design fixed; a rewrite that drops one
         # should fail here by name, not by silent omission.
         for needle in (
             "not a Q&A bot",
@@ -855,6 +855,7 @@ class TestMemberSectionInjection:
             "escalate ONLY at a true wall",
             "ZERO context",
             "quiet cycle is a successful cycle",
+            "Every word you write as text is shown to the user",
             "[CURRENT ASSIGNMENT]",
         ):
             assert needle in _MEMBER_HOW_YOU_WORK, needle
