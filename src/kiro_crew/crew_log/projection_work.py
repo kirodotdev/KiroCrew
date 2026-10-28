@@ -522,7 +522,11 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
     """
     action = _as_str(data.get("action"))
     actor = _as_str(data.get("actor"))
-    if actor == "worker":
+    if actor == "person":
+        # A person's steer moves no field; it is only the event line below.
+        if action != "steer":
+            return
+    elif actor == "worker":
         if action != "report" or data.get("mirror") is True:
             return
         if data.get("board_copy") is True:

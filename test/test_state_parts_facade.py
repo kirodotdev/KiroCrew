@@ -616,6 +616,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_transient_5xx_retries": ("value", "0"),
     "_transient_ladder_started": ("value", "0.0"),
     "_trust": ("value", "False"),
+    "_trust_card_scoped": ("value", "False"),
     "_trust_reads": ("value", "False"),
     "_trust_scope": ("value", "''"),
     "_trusted_pattern_deadlines": ("value", "{}"),

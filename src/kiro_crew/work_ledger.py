@@ -1202,6 +1202,7 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     accept_batch,
     apply_acceptance_update,
     apply_conductor_action,
+    apply_person_steer,
     apply_worker_report,
     ensure_conductor,
     read_binding,

@@ -103,9 +103,10 @@ ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
 #: Every ITEM write appends exactly one event, so there is no way to move an item
 #: field without a line explaining it (the conductor's own ``goal``/``round``
 #: header is the one eventless write, because it belongs to no item). ``report``
-#: is the only kind a worker can produce.
+#: is the only kind a worker can produce; ``steer`` is the only kind a person's
+#: steer from a Crew Mode side panel produces, and it moves no field.
 EVENT_KINDS: frozenset[str] = frozenset(
-    {"create", "bind", "report", "decision", "verdict", "close"}
+    {"create", "bind", "report", "decision", "verdict", "close", "steer"}
 )
 
 #: The conductor's disjoint operations. One action per call, because the field sets

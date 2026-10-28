@@ -71,17 +71,19 @@ async def _register(state: DashboardState, approval_id: str, slot_key: str) -> a
 
 def test_projection_reads_coordinator_record_for_this_slot() -> None:
     slot = _ChatSlot("parent")
-    slot._coordinator_approvals = lambda key: [_record("spawn:a1", key)]
+    slot._coordinator_approvals = lambda key: [{**_record("spawn:a1", key), "instance": "a1b2"}]
 
     payload = slot.to_dict()
 
     assert payload["pending_approval"] is True
+    # ``request_instance`` pins a Crew Mode card decision to this record.
     assert payload["pending_approval_info"] == {
         "origin": "coordinator",
         "tool": "spawn_run(t)",
         "tool_input": "task text",
         "tool_kind": "spawn",
         "request_id": "spawn:a1",
+        "request_instance": "a1b2",
     }
     # A parked slot is not "waiting for input": the user has a decision, not a turn.
     assert payload["waiting_for_input"] is False

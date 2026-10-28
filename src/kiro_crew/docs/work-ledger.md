@@ -28,8 +28,8 @@ Fewer than two qualifying items means one long session is the better shape, and
 a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
-[Agents](agents.md) for the per-session, per-thread and per-cron selectors) and
-give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+[Agents](agents.md) for the per-session, per-thread and per-cron selectors), which
+is what a Crew Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 
@@ -214,6 +214,17 @@ it says so, e.g. `{"tests": "not run: harness unavailable"}`.
 `artifacts`, `pr` and `status` are still refused when they
 are wrong or oversized: a truncated pointer is a broken pointer, while prose cut
 at the cap still reads.
+
+## A person's steer
+
+An item can carry a `steer` event: the time, actor `person`, and the person's own
+text, redacted and cut to 500 characters. It records that the person typed into
+the crew member (the worker session) that holds the item, from a Crew Mode chat.
+`work_ledger_read` shows it in the item's events. A steer moves no field: status,
+acceptance and verdict stay where they were, and acceptance stays the evaluator's.
+A person's steer outranks the conductor's decision. The ledger write
+(`work_ledger_worker.record_person_steer_result`) is here; the way to type into a
+crew member, which calls it, lands with the Crew panel.
 
 ## Why `done` is a claim
 

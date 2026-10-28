@@ -110,6 +110,24 @@ def _count_recorded(action: str, item: Any, header: Any) -> None:
         work_metrics.record_dispatch("session")
 
 
+async def _count_crew_mode_run(state: DashboardState, key: str, item: Any) -> None:
+    """A Crew Mode chat's run finished: count how it ended and the steers it took.
+
+    Only for a board a Crew Mode root owns (``metrics.crew_mode.board_is_crew_mode``);
+    the steer count is the item's own ``steer`` events. Never raises.
+    """
+    from kiro_crew.metrics import crew_mode as crew_mode_metrics
+
+    if not crew_mode_metrics.board_is_crew_mode(state, key):
+        return
+    try:
+        events = await asyncio.to_thread(work_ledger.read_events, key, item.item_id)
+        steers = sum(1 for event in events if getattr(event, "kind", "") == "steer")
+    except Exception:
+        steers = None
+    crew_mode_metrics.record_run_finished(getattr(item, "state", None), steers)
+
+
 async def _record_conductor_write(
     state: DashboardState,
     key: str,
@@ -340,6 +358,8 @@ async def _record_conductor_write(
         # write whose record did not land is undone above, so this point is
         # reached once per write the route reports as successful.
         _count_recorded(action, item, header)
+        if action == "close" and item is not None:
+            await _count_crew_mode_run(state, key, item)
         crew_store = _crew_store(key) if action == "bind" else ""
         worker_slot = getattr(item, "worker_session_key", "") or ""
         if item is not None and crew_store and worker_slot:

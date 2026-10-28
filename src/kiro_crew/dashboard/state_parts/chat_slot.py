@@ -111,6 +111,7 @@ class _ChatSlot:
         "_approval_instances",
         "_approval_stopped",
         "_trust",
+        "_trust_card_scoped",
         "_trust_scope",
         "_trust_reads",
         "_member_approval_seeded",
@@ -476,6 +477,7 @@ class _ChatSlot:
     _approval_instances: dict[str, tuple[asyncio.Future[str], str]]
     _approval_stopped: set[str]
     _trust: bool
+    _trust_card_scoped: bool
     _trust_scope: str
     _trust_reads: bool
     _member_approval_seeded: bool

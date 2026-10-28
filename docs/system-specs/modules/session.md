@@ -527,6 +527,61 @@ edit of the file), and the agent catalog and the agent switch remember the
 config they loaded, so a custom `agent.crew_mode_agent` is in force
 from gateway start.
 
+**Crew members never ask the person.** A crew member's question or blocker is its
+conductor's: a `work_report` `question`/`blocked` lands on its ledger item and wakes
+the conductor, which answers or asks the person in its own chat and relays the
+answer. The two rules below are defined and tested but off
+(`crew_mode.APPROVAL_ROUTING_LIVE` is `False`) until the Crew panel that shows the
+person a crew member's question lands and turns them on, as the Crew Mode decision
+records (each part inert until the UI that uses it arrives); until then every
+conductor and crew member asks as today. A crew member's `ask_question` is refused on both ask routes
+(`409 crew_worker_asks_conductor`, `ask_question._crew_worker_refusal`) with the
+`work_report` instruction as the tool's answer, so no live question card reaches
+the person; with the root's tab closed the refusal stands and says so
+(`conductor_open: false`). Who is a crew member is read from the lineage the slot
+frame reads (`crew_mode.live_stamps` over `session_create._frame_parents`): the
+session tree's edges over the birth stamps, so a session its conductor released
+asks the person again and an adopted one is sent to its new conductor. A
+conductor's own READ of one of ITS crew members, `session_status` or
+`session_read_message`, is approved without a card
+(`tool_approval._crew_root_own_worker_call`): the verified `kirocrew-dashboard`
+identity and a verified `target` that is a live session whose gateway-vouched
+creator is this root (`_vouched_creator_of`: the settled session tree's edge, else a
+birth stamp this process minted, never the saved `created_by` a restore reads from
+editable transcript metadata). `session_send` and `session_stop` keep asking, as
+the goal-conductor skill states: a send runs as the target's user turn under the
+target's grants. Any other call, a subagent's or one on the claude backend (whose
+requests do not say which session sent them) included, keeps asking. A `blocked`
+or `question` report on a Crew Mode board counts
+once in `kirocrew.crew_mode.worker_waits`, and a close counts the run in
+`kirocrew.crew_mode.runs_finished` and `steers_per_run`
+(`metrics.crew_mode.board_is_crew_mode`).
+
+**Trust stays with the one it was given to.** `approval_posture.trust_carries` is
+the one decision on whether a slot's `_trust` passes to what it starts: it does for
+a trust a person set on the slot itself, and not for a card-scoped trust
+(`_trust_card_scoped`, the "Trust this crew member" grant the conductor's approval
+card will make; nothing sets it yet, so every trust carries today). A card-scoped
+trust covers that crew member's own tools only: `session_create` gives its children
+no inherited trust, `tool_approval._persistable_session_policy` answers `""` for it
+(so its `spawn_run` is not auto-approved and each subagent is born asking), and the
+Slack turn approvals do not inherit it either; the override-derived trust reset
+reads the same rule. Trust is in memory only and never persisted. A pending
+approval's slot row carries `trust_grantable` (the slot approve route's own proof
+that Trust may be offered) and, for a coordinator request such as a spawn,
+`request_instance` (names THIS record, since the id can recur), so a card that
+relays the decision can pin it.
+
+**A person's steer is a ledger event.** The work ledger accepts a `steer` event
+(`work_vocab`: actor `person`, kind `steer`, the person's own text redacted and cut
+to 500 characters) on an item: it moves no field, a `steer` newer than a crew
+member's `question` report answers it on the board (`_is_outstanding`), and it
+outranks the conductor's decision. `work_ledger_worker.record_person_steer_result`
+is the one write (probed to fit one crew-log line before the cache commits, then one
+`work/recorded` entry into the crew member's live crew-log unit, else the board's);
+the route that types into a crew member and calls it lands with the Crew panel, so
+nothing writes a `steer` yet.
+
 A root session whose page is `goal-board` or `work-kanban` gets one more
 `[DASHBOARD]` line (`BOARD_IN_PANEL_LINE`): the page is the task board, so the
 reply carries no task board, table or `task-dashboard` artifact. The switch to the

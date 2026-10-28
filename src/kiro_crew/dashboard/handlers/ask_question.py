@@ -41,6 +41,7 @@ import asyncio
 import logging
 import re
 import uuid
+from typing import Any
 
 from aiohttp import web
 
@@ -165,6 +166,77 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
     return _owner_denial_response(request, "forbidden", "owner_only")
 
 
+#: The refusal a Crew Mode worker's ``ask_question`` gets: its conductor answers it.
+CREW_WORKER_ASK_CODE = "crew_worker_asks_conductor"
+CREW_WORKER_ASK_ERROR = (
+    "You are a Crew Mode worker, so you do not ask the person directly: your "
+    "conductor answers your questions. Call work_report with status 'question' "
+    "(reason 'needs_human' when only the person can decide) and say what you need "
+    "in the summary. Your conductor answers, or asks the person in its own chat, "
+    "and its answer reaches you as a user message. Then stop and wait for it."
+)
+
+#: The same instruction when the worker's conductor tab is closed. The worker
+#: still reports to it (owner decision: a worker never puts a question in front of
+#: the person), and learns why no answer comes yet: the question waits on the
+#: ledger, and the worker's own pane tells the person to reopen the conductor.
+CREW_WORKER_ASK_CLOSED_ERROR = (
+    "You are a Crew Mode worker, so you do not ask the person directly. Your "
+    "conductor's tab is closed right now. Call work_report with status 'question' "
+    "(reason 'needs_human' when only the person can decide) and say what you need "
+    "in the summary; your conductor reads it when the person reopens it, and its "
+    "answer reaches you as a user message. Then stop and wait for it."
+)
+
+
+def _crew_worker_refusal(state: Any, slot_key: str, session_key: str) -> web.Response | None:
+    """A 409 for a Crew Mode worker's question card, else ``None``. No I/O.
+
+    A worker never puts a live question card in front of the person: its question
+    goes to its conductor as a ledger ``question`` report (which wakes the
+    conductor), and the conductor alone asks the person. A root and a plain chat
+    still ask. Fails open on a fault: a broken stamp read must not silence a
+    plain chat's question. Inert (``None`` for every session) until
+    ``crew_mode.APPROVAL_ROUTING_LIVE`` is on, which the Crew panel part turns on.
+    """
+    try:
+        from kiro_crew import crew_mode
+        from kiro_crew.dashboard.session_control_parts.session_create import _frame_parents
+
+        if not crew_mode.APPROVAL_ROUTING_LIVE:
+            return None
+        # The lineage the slot frame reads: the session tree's edges (an adoption
+        # moves a worker, a release lets it go) over the birth stamps, so a released
+        # or adopted session is judged the way the sidebar shows it.
+        crew_root, _is_root = crew_mode.live_stamps(
+            state._slots, _frame_parents(state), settled=crew_mode.lineage_is_settled()
+        ).get(slot_key, ("", False))
+    except Exception:
+        logger.debug("ask_question: could not tell whether %s is a worker", slot_key, exc_info=True)
+        return None
+    if not crew_root:
+        return None
+    try:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="dashboard",
+            tool_name="ask_question",
+            outcome="denied",
+            request_id=CREW_WORKER_ASK_CODE,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for a worker's ask_question", exc_info=True)
+    live_root = crew_root in getattr(state, "_slots", {})
+    return web.json_response(
+        {
+            "error": CREW_WORKER_ASK_ERROR if live_root else CREW_WORKER_ASK_CLOSED_ERROR,
+            "code": "crew_worker_asks_conductor",
+            "conductor_open": live_root,
+        },
+        status=409,
+    )
+
+
 async def api_ask_question(request: web.Request) -> web.Response:
     """POST /api/ask-question — show a question card and block for the answer.
 
@@ -183,9 +255,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         # Valid JSON is not necessarily an object: `[]`, `null` and bare scalars
         # all parse, then blow up on `.get()` as a 500 instead of a 400.
@@ -212,12 +282,14 @@ async def api_ask_question(request: web.Request) -> web.Response:
             status=404,
         )
 
+    refused = _crew_worker_refusal(state, slot_key, session_key)
+    if refused is not None:
+        return refused
+
     try:
         questions = validate_ask_user_question(body)
     except ValidationError as exc:
-        return web.json_response(
-            {"error": str(exc), "code": "invalid_questions"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "invalid_questions"}, status=400)
 
     try:
         timeout_secs = body_int(body.get("timeout_secs") or state._QUESTION_TIMEOUT_DEFAULT)
@@ -250,9 +322,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
         # Raised when redaction collapses two questions into the same key, which
         # is only detectable after the redaction pass — so it surfaces here as a
         # 400 rather than from validate_ask_user_question.
-        return web.json_response(
-            {"error": str(exc), "code": "duplicate_question_key"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "duplicate_question_key"}, status=400)
     if answers is None:
         return web.json_response({"status": "timeout", "ask_id": ask_id})
     return web.json_response({"status": "answered", "ask_id": ask_id, "answers": answers})
@@ -401,9 +471,7 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
@@ -417,7 +485,11 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
         # ("queued"), so the agent neither reads the question as declined nor
         # waits for a message that has not arrived yet.
         raw_reason = body.get("reason")
-        reason = raw_reason if isinstance(raw_reason, str) and raw_reason in _ASK_SEND_REASONS else "dismissed"
+        reason = (
+            raw_reason
+            if isinstance(raw_reason, str) and raw_reason in _ASK_SEND_REASONS
+            else "dismissed"
+        )
     else:
         raw = body.get("answers")
         if not isinstance(raw, dict) or not raw:
@@ -555,9 +627,7 @@ def _unattested(request: web.Request, operation: str) -> web.Response:
         request,
         operation,
         message,
-        web.json_response(
-            {"error": message, "code": "session_unattested"}, status=403
-        ),
+        web.json_response({"error": message, "code": "session_unattested"}, status=403),
     )
 
 
@@ -588,9 +658,7 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
             request,
             "agent_ask_open",
             message,
-            web.json_response(
-                {"error": message, "code": "not_dashboard_session"}, status=403
-            ),
+            web.json_response({"error": message, "code": "not_dashboard_session"}, status=403),
             session_key=session_key,
         )
     slot_key = _slot_key_from_session(session_key)
@@ -599,6 +667,9 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
             {"error": "no dashboard tab for this session", "code": "slot_not_found"},
             status=404,
         )
+    refused = _crew_worker_refusal(state, slot_key, session_key)
+    if refused is not None:
+        return refused
     try:
         questions = validate_ask_user_question(body)
     except ValidationError as exc:
@@ -609,7 +680,9 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
     elif isinstance(requested, str) and _ASK_ID_RE.fullmatch(requested):
         ask_id = requested
     else:
-        return web.json_response({"error": "ask_id must be 32 hex chars", "code": "invalid_ask_id"}, status=400)
+        return web.json_response(
+            {"error": "ask_id must be 32 hex chars", "code": "invalid_ask_id"}, status=400
+        )
     existing = state._agent_asks.get(ask_id)
     if existing is not None:
         # The ask is still registered, as when its owner retries an open whose reply was lost.
@@ -620,18 +693,14 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
                 request,
                 "agent_ask_open",
                 message,
-                web.json_response(
-                    {"error": message, "code": "ask_id_conflict"}, status=409
-                ),
+                web.json_response({"error": message, "code": "ask_id_conflict"}, status=409),
                 session_key=session_key,
             )
         return web.json_response({"ask_id": ask_id, "clients": 1})
     try:
         clients = await state.open_agent_ask(ask_id, slot_key, session_key, questions)
     except ValueError as exc:
-        return web.json_response(
-            {"error": str(exc), "code": "duplicate_question_key"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "duplicate_question_key"}, status=400)
     try:
         if clients is None:
             outcome = "capacity"
@@ -679,9 +748,7 @@ async def api_agent_ask_wait(request: web.Request) -> web.Response:
                 request,
                 "agent_ask_wait",
                 message,
-                web.json_response(
-                    {"error": message, "code": "question_not_found"}, status=404
-                ),
+                web.json_response({"error": message, "code": "question_not_found"}, status=404),
                 session_key=session_key,
             )
         return web.json_response(
@@ -706,9 +773,7 @@ async def api_agent_ask_withdraw(request: web.Request) -> web.Response:
                 request,
                 "agent_ask_withdraw",
                 message,
-                web.json_response(
-                    {"error": message, "code": "question_not_found"}, status=404
-                ),
+                web.json_response({"error": message, "code": "question_not_found"}, status=404),
                 session_key=session_key,
             )
         return web.json_response(

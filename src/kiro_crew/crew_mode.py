@@ -89,6 +89,15 @@ WORKER_FIELD: Final[str] = "crew_root"
 #: Equal to the root for its own crew; a sub-conductor's key for that one's crew.
 DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 
+#: Whether a crew member's approvals and questions are routed to its conductor:
+#: the ``ask_question`` refusal toward the conductor and the conductor's no-card
+#: reads of its own crew members (``tool_approval._crew_root_own_worker_call``).
+#: ``False`` until the Crew panel that shows the person a crew member's question
+#: lands, as the Crew Mode decision records (each part inert until the UI that uses
+#: it arrives); that part turns it on. Not a config key: there is nothing for a
+#: person to choose here, only an order in which the parts land.
+APPROVAL_ROUTING_LIVE: bool = False
+
 #: The last ``agent.crew_mode_agent`` an explicit config read saw (:func:`remember`):
 #: the agent catalog and the agent switch pass the config
 #: they loaded. It is the fallback only. Every read without a config asks the live

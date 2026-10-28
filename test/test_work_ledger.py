@@ -52,7 +52,7 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert wl.WORKER_STATUSES == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_six():
+def test_event_kinds_are_exactly_seven():
     assert wl.EVENT_KINDS == {
         "create",
         "bind",
@@ -60,6 +60,7 @@ def test_event_kinds_are_exactly_six():
         "decision",
         "verdict",
         "close",
+        "steer",
     }
 
 
