@@ -6,7 +6,7 @@ fields and a prior reading only for the same account. When a refresh ends with
 no reading, its ``reason`` names a lapsed sign-in only for an auth-class API
 verdict, and a working scrape outranks that verdict. The kiro-cli children the
 refresh spawns (whoami and the scrape) carry the no-window creation flag, and the
-scrape pins the ``v2`` agent engine only on a release verified to accept it. The
+scrape pins the ``v2`` agent engine only while the installed kiro-cli offers it. The
 whoami bracket around the scrape is pinned in test_session_usage_account_proof.py,
 and the scrape's environment scrub and child reaping in test_session_usage.py.
 """
@@ -582,15 +582,60 @@ class TestSpawnSuppressesConsoleWindow:
         assert spawn.await_args.kwargs.get("creationflags") == sessions_mod._SUBPROCESS_NO_WINDOW
 
 
-class TestUsageScrapePinsTheEngine:
-    """The ``/usage`` scrape names its agent engine instead of inheriting one.
+#: ``kiro-cli chat --help`` as 2.35.1 prints the engine selector (V2 still offered).
+_HELP_WITH_V2 = """\
+      --agent-engine <ENGINE>
+          Agent engine to use: "v1", "v2" (default), or "v3"
 
-    A kiro-cli whose global ``chat.agentEngine`` is ``v3`` sends ``/usage`` to the
-    model as a prompt: it spends a model turn and prints no usage table. The
-    scrape pins ``v2``, where ``/usage`` is a local slash command, on every
-    release verified to accept the selector. Below that floor, or when the
-    version cannot be read, the argv stays as it is, since an unknown flag
-    fails the whole command.
+          [possible values: v2, v1, v3]
+
+      --mode <MODE>
+          Mode to use with the V3 agent: "default" or "spec"
+
+          [possible values: default, spec]
+"""
+#: The same selector once V2 is retired: V3 is the default and V2 is gone.
+_HELP_WITHOUT_V2 = """\
+      --agent-engine <ENGINE>
+          Agent engine to use: "v1" or "v3" (default)
+
+          [possible values: v3, v1]
+
+      --mode <MODE>
+          Mode to use with the V3 agent: "default" or "spec"
+
+          [possible values: default, spec, v2]
+"""
+
+
+class TestChatAgentEnginesParse:
+    """The engine list is read from the selector's own ``[possible values]`` line."""
+
+    def test_lists_the_selector_values(self):
+        from kiro_crew.kiro_cli import chat_agent_engines
+
+        assert chat_agent_engines(_HELP_WITH_V2) == ("v2", "v1", "v3")
+
+    def test_a_later_options_values_are_not_the_selectors(self):
+        # `--mode` lists "v2" here on purpose: only the selector's block counts.
+        from kiro_crew.kiro_cli import chat_agent_engines
+
+        assert chat_agent_engines(_HELP_WITHOUT_V2) == ("v3", "v1")
+
+    def test_no_selector_is_empty(self):
+        from kiro_crew.kiro_cli import chat_agent_engines
+
+        assert chat_agent_engines("Usage: kiro-cli chat [OPTIONS]\n  --agent <AGENT>\n") == ()
+
+
+class TestUsageScrapeEngineFollowsTheInstalledKiroCli:
+    """The ``/usage`` scrape picks its engine from what this kiro-cli offers.
+
+    ``/usage`` is a local slash command only on V2; V3 sends it to the model as
+    a prompt. So V2 is pinned while ``chat --help`` lists it, the scrape does not
+    run at all once V2 is retired, and a kiro-cli with no selector (or one that
+    could not be probed) keeps the plain argv, since an unknown flag fails the
+    whole command.
     """
 
     @staticmethod
@@ -604,15 +649,15 @@ class TestUsageScrapePinsTheEngine:
     def _pin(monkeypatch, pinned):
         monkeypatch.setattr(sessions_mod, "pin_kiro_cli", lambda: (pinned, False))
 
-    def _argv(self, monkeypatch, version):
+    def _argv(self, monkeypatch, engines):
         self._no_sandbox(monkeypatch)
         self._pin(monkeypatch, "/bin/kiro")
-        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", lambda binary: version)
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", lambda binary: engines)
         argv, _cleanup = sessions_mod._wrap_argv_usage_scrape("/bin/kiro")
         return argv
 
-    def test_a_verified_release_pins_the_v2_engine(self, monkeypatch):
-        argv = self._argv(monkeypatch, sessions_mod.USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION)
+    def test_v2_offered_pins_v2(self, monkeypatch):
+        argv = self._argv(monkeypatch, ("v2", "v1", "v3"))
         assert argv == [
             "/bin/kiro",
             "chat",
@@ -624,14 +669,14 @@ class TestUsageScrapePinsTheEngine:
             "/usage",
         ]
 
-    def test_a_newer_release_pins_the_v2_engine(self, monkeypatch):
-        argv = self._argv(monkeypatch, (3, 0, 0))
-        assert argv[argv.index("--agent-engine") + 1] == "v2"
-        assert argv[-1] == "/usage"
+    def test_v2_retired_runs_no_scrape(self, monkeypatch):
+        # Goes red if v2 is pinned unconditionally again: a kiro-cli that no
+        # longer offers v2 would get `--agent-engine v2` and fail every scrape.
+        assert self._argv(monkeypatch, ("v3", "v1")) is None
 
-    @pytest.mark.parametrize("version", [None, (2, 27, 9)])
-    def test_an_unverified_or_unknown_release_keeps_the_plain_argv(self, monkeypatch, version):
-        argv = self._argv(monkeypatch, version)
+    @pytest.mark.parametrize("engines", [None, ()])
+    def test_no_selector_or_unknown_keeps_the_plain_argv(self, monkeypatch, engines):
+        argv = self._argv(monkeypatch, engines)
         assert argv == [
             "/bin/kiro",
             "chat",
@@ -641,7 +686,7 @@ class TestUsageScrapePinsTheEngine:
             "/usage",
         ]
 
-    def test_the_version_probe_reads_the_spawned_binary(self, monkeypatch):
+    def test_the_probe_reads_the_spawned_binary(self, monkeypatch):
         seen: list[str] = []
 
         def probe(binary):
@@ -650,24 +695,87 @@ class TestUsageScrapePinsTheEngine:
 
         self._no_sandbox(monkeypatch)
         self._pin(monkeypatch, "/opt/kiro/bin/kiro-cli")
-        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", probe)
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", probe)
         sessions_mod._wrap_argv_usage_scrape("/opt/kiro/bin/kiro-cli")
         assert seen == ["/opt/kiro/bin/kiro-cli"]
 
     @pytest.mark.parametrize("pinned", [None, "/opt/kiro/bin/kiro-cli"])
     def test_a_binary_that_is_not_the_pin_is_never_probed(self, monkeypatch, pinned):
         # A kiro-cli found only on the inherited PATH may sit in an
-        # agent-writable directory; the version probe runs outside the
-        # sandbox, so such a binary keeps the plain argv and is never run.
+        # agent-writable directory; the probe runs outside the sandbox, so such
+        # a binary keeps the plain argv and is never run.
         seen: list[str] = []
 
         def probe(binary):
             seen.append(binary)
-            return (3, 0, 0)
+            return ("v2", "v3")
 
         self._no_sandbox(monkeypatch)
         self._pin(monkeypatch, pinned)
-        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", probe)
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", probe)
         argv, _cleanup = sessions_mod._wrap_argv_usage_scrape("/tmp/venv/bin/kiro-cli")
         assert seen == []
         assert "--agent-engine" not in argv
+
+
+class TestRefreshWithV2Retired:
+    """With no engine that answers ``/usage``, the API reading stands alone."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _floor_monkeypatch):
+        _reset_usage_globals()
+        _floor_monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        _floor_monkeypatch.setattr(
+            sessions_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value="/bin/kiro")
+        )
+        _floor_monkeypatch.setattr(sessions_mod, "pin_kiro_cli", lambda: ("/bin/kiro", False))
+        _floor_monkeypatch.setattr(
+            sessions_mod, "chat_agent_engines_at", lambda binary: ("v3", "v1")
+        )
+        _floor_monkeypatch.setattr(
+            sessions_mod, "_fetch_whoami", AsyncMock(return_value=dict(_IDENTITY_A))
+        )
+        yield
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_the_api_reading_is_published(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api,
+            "fetch_usage_limits",
+            lambda **k: _api_result({"credits_used": 12.0, "credits_plan": 1000.0}),
+        )
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            outcome = await sessions_mod._fetch_usage_bg()
+        assert outcome is None
+        assert sessions_mod._usage_cache.get("credits_plan") == 1000.0
+        assert spawn.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_plan_spawns_nothing_and_parks_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api, "fetch_usage_limits", lambda **k: _api_result(None)
+        )
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            for _ in range(sessions_mod._USAGE_SCRAPE_FAILURE_THRESHOLD + 1):
+                assert await sessions_mod._fetch_usage_bg() is None
+        assert spawn.await_count == 0
+        assert sessions_mod._usage_scrape_failures == 0
+        assert not sessions_mod._scrape_in_backoff()
+        assert sessions_mod._usage_cache.get("available") is False
+
+    @pytest.mark.asyncio
+    async def test_no_plan_keeps_a_same_account_reading_stale(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api, "fetch_usage_limits", lambda **k: _api_result(None)
+        )
+        sessions_mod._usage_cache = dict(_CACHED_A)
+        with patch("asyncio.create_subprocess_exec", AsyncMock()):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache.get("stale") is True
+        assert sessions_mod._usage_cache.get("credits_plan") == _CACHED_A["credits_plan"]

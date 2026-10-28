@@ -558,6 +558,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
         "kiro_cli.py::kas_relay_help",
+        # ``<kiro-cli> chat --help`` engine probe for the ``/usage`` scrape: fixed
+        # argv, 15s-capped, no shell, no agent-influenced arguments, no credential.
+        # It reads which ``--agent-engine`` values this kiro-cli accepts, so the
+        # scrape pins V2 only where V2 exists. Cached per binary path and mtime,
+        # and only ever called on ``pin_kiro_cli``'s own install, never a PATH hit.
+        "kiro_cli.py::chat_agent_engines_at",
         # ``<kiro-cli> whoami`` sign-in probe for the declaration-driven auth row:
         # fixed argv (the binary name is a module constant and the subcommand is a
         # literal), 10s-capped, no shell, no agent-influenced argument. It reads only

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
         _MAX_BONUS_GRANTS,
         _MAX_BONUS_NAME_CHARS,
         _WHOAMI_UNPROVEN,
-        USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION,
+        USAGE_SCRAPE_ENGINE,
         _safe_float,
         _safe_int,
         _usage_scrape_argv,
@@ -204,7 +204,7 @@ if TYPE_CHECKING:
     from kiro_crew.history import transcript_stem  # noqa: F401
     from kiro_crew.history import transcript_stems  # noqa: F401
     from kiro_crew.history import transcript_withholds_derivation  # noqa: F401
-    from kiro_crew.kiro_cli import kiro_cli_version_at  # noqa: F401
+    from kiro_crew.kiro_cli import chat_agent_engines_at  # noqa: F401
     from kiro_crew.kiro_cli import pin_kiro_cli  # noqa: F401
     from kiro_crew.label_guard import PROSE_OPENERS  # noqa: F401
     from kiro_crew.label_guard import is_verdict_reply  # noqa: F401
@@ -405,7 +405,8 @@ _usage_fetching = False
 # the same free GetUsageLimits API the primary path uses and prints the usage
 # table, so no prompt reaches a model and the read costs no credits. That holds
 # only on kiro-cli's V2 engine -- the V3 engine sends `/usage` to the model as a
-# prompt -- so the scrape pins V2 (see :func:`_usage_scrape_argv`). It is the
+# prompt -- so the scrape pins V2 while the installed kiro-cli offers it, and
+# does not run at all once V2 is retired (see :func:`_usage_scrape_argv`). It is the
 # automatic fallback whenever the API path returns no plan. What it does cost is
 # a subprocess (whoami + the scrape, up to a minute and a half) on every refresh
 # interval, so a scrape that keeps producing unparseable output (kiro-cli format
@@ -989,8 +990,14 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
 
     async def _run_scrape(
         binary: str, before_spawn: Callable[[], Awaitable[None]] | None = None
-    ) -> str:
+    ) -> str | None:
         """Wrap, spawn and read the ``/usage`` scrape; marks the scrape attempted.
+
+        ``None`` when this kiro-cli has no engine that answers ``/usage`` locally
+        (V2 retired, see :func:`_usage_scrape_argv`): nothing is spawned, the
+        scrape is NOT marked attempted and feeds no back-off, and
+        ``before_spawn`` does not run. A scrape that cannot exist is not one
+        that failed.
 
         The wrap and the spawn stay in this one function so the spawn's argv
         is visibly the sandboxed, cgroup-scoped one. ``before_spawn`` runs
@@ -1014,13 +1021,16 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         every interval. Same form and reason as `papyrus/backend/latex._run`.
         """
         nonlocal proc, sandbox_cleanup, scrape_attempted
-        scrape_attempted = True
-        argv, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
+        prior_attempted, scrape_attempted = scrape_attempted, True
+        wrapped, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
             _wrap_argv_usage_scrape,
             binary,
         )
-        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
+        if wrapped is None:
+            scrape_attempted = prior_attempted
+            return None
+        argv = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
         if before_spawn is not None:
             await before_spawn()
         proc = await spawn_supervised_oneshot(
@@ -1061,6 +1071,10 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         if _scrape_in_backoff():
             return _REASON_SIGNIN_REQUIRED
         raw = await _run_scrape(binary)
+        if raw is None:
+            # No engine answers `/usage` (V2 retired): nothing corroborates the
+            # missing credential, and `no_credential` alone never decides.
+            return _REASON_ACCOUNT_UNPROVEN
         works = _parse_usage(raw).get("credits_plan") is not None
         _record_scrape_outcome(works)
         return _REASON_ACCOUNT_UNPROVEN if works else _REASON_SIGNIN_REQUIRED
@@ -1257,6 +1271,18 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             before.update((await _adjacent_identity()) or {})
 
         raw = await _run_scrape(kiro_bin, before_spawn=_read_before)
+        if raw is None:
+            # This kiro-cli offers no engine that answers `/usage` locally (V2
+            # retired), so the API was the only source and it gave no plan.
+            # Same outcome as a parked scrape, judged the same way against an
+            # adjacent whoami, but not reported as parked: nothing will lift it.
+            no_scrape_identity = (await _adjacent_identity()) or {}
+            if _whoami_agreement(identity, no_scrape_identity) != _WHOAMI_SAME:
+                api_usage = None
+            _cache_without_scrape(
+                api_usage, no_scrape_identity, reason=_unavailable_reason(api_result)
+            )
+            return None
         after = (await _adjacent_identity()) or {}
         parsed = _parse_usage(raw)
         if parsed.get("credits_plan") is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -320,6 +321,68 @@ def kas_relay_help(binary: str) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return f"{proc.stdout}\n{proc.stderr}"
+
+
+#: Ceiling on the ``chat --help`` spawn, for the same reason as the ``acp --help`` one.
+_CHAT_HELP_PROBE_TIMEOUT_SECS = 15
+#: ``chat --help`` engine answers, keyed by (path, mtime) like the version cache.
+_chat_engines_cache: dict[tuple[str, int], tuple[str, ...] | None] = {}
+_POSSIBLE_VALUES_RE = re.compile(r"\[possible values:\s*([^\]]*)\]")
+
+
+def chat_agent_engines(help_text: str) -> tuple[str, ...]:
+    """The engines ``chat --help`` lists for ``--agent-engine``, in its own order.
+
+    Empty when the help names no ``--agent-engine`` selector at all (a kiro-cli
+    older than the selector). The values are read from the clap
+    ``[possible values: ...]`` line that follows the flag, not from its prose,
+    because the prose names the default engine and that changes between releases.
+    """
+    at = help_text.find("--agent-engine")
+    if at < 0:
+        return ()
+    # The selector's own block ends where the next long option begins.
+    end = help_text.find("\n      --", at + 1)
+    block = help_text[at : end if end > 0 else len(help_text)]
+    match = _POSSIBLE_VALUES_RE.search(block)
+    if match is None:
+        return ()
+    return tuple(v.strip() for v in match.group(1).split(",") if v.strip())
+
+
+def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
+    """The engines this kiro-cli's ``chat --agent-engine`` accepts, or ``None`` if unknown.
+
+    ``()`` means the probe ran and the binary has no engine selector; ``None``
+    means the probe could not run (absent binary, spawn error, timeout, nonzero
+    exit). Cached by path and mtime, so an upgrade in place is re-read.
+
+    Call only on a path derived from :func:`pin_kiro_cli`: the probe runs outside
+    the sandbox. Blocking: one bounded spawn on the first call per binary
+    identity. Local binary, argv list, no shell, no credential involved.
+    """
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return None
+    if key in _chat_engines_cache:
+        return _chat_engines_cache[key]
+    engines: tuple[str, ...] | None = None
+    try:
+        proc = subprocess.run(
+            [binary, "chat", "--help"],
+            capture_output=True,
+            timeout=_CHAT_HELP_PROBE_TIMEOUT_SECS,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        engines = chat_agent_engines(f"{proc.stdout}\n{proc.stderr}")
+    _chat_engines_cache[key] = engines
+    return engines
 
 
 def kiro_cli_state_dbs(
