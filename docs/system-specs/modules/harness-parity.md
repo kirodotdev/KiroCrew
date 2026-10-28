@@ -358,6 +358,17 @@ legacy notification declaration and drain; KAS readiness neither changes its
 timeout policy nor introduces a new Kiro startup failure. The notification
 contract and outbound-wire parity tests pin both sides.
 
+### KAS skill scope
+
+A KAS session loads the skill set its kiro-cli twin loads under Crew. kiro-cli
+gets there through the native skill view and the workspace `cli.json` overlay;
+KAS reads neither and loads the default skill trees for every session, so its
+harness adds `skill` deny rules to the projected agent's `permissions` instead
+([memory-skills-hooks.md](memory-skills-hooks.md), KAS skill scope). The Kiro
+path is unchanged. `test/test_kas_skill_scope.py` compares the skills KAS would
+offer for the built payload with the kiro-cli scope and goes red when the rule
+is not sent.
+
 ## The CI half
 
 The added-line gate that enforces Group B on a diff is

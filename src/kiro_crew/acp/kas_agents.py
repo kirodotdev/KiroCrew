@@ -844,6 +844,7 @@ def to_client_custom_agent(
     crew_panel: bool = False,
     session_key: str = "",
     pre_tool_hook_matchers: tuple[str, ...] = (),
+    skill_scope_rules: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -874,6 +875,10 @@ def to_client_custom_agent(
     page's). A capability one of them covers is not auto-approved, so its calls
     reach that path; see
     :func:`kiro_crew.acp.kas_permissions.withhold_hook_gated_auto_approval`.
+
+    *skill_scope_rules* are the ``skill`` deny rules that hold the session to the
+    skills its kiro-cli twin loads (:func:`kiro_crew.acp.kas_skill_scope.skill_scope_rules`);
+    they join ``permissions`` after every merge. Empty adds nothing.
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
@@ -991,6 +996,13 @@ def to_client_custom_agent(
         ),
         agent_id=agent_id,
     )
+    if skill_scope_rules:
+        # Denies only, so they narrow and need no pass through the ceiling. KAS
+        # loads the default skill trees on top of ``resources``; these rules hold
+        # the session to the scope its kiro-cli twin loads (``kas_skill_scope``).
+        block = dict(permissions) if isinstance(permissions, dict) else {}
+        block["rules"] = [*(block.get("rules") or []), *skill_scope_rules]
+        permissions = block
     if permissions:
         out["permissions"] = permissions
 
@@ -1271,6 +1283,7 @@ def build_kas_custom_agents(
     member_dispatch: bool = False,
     crew_panel: bool = False,
     session_key: str = "",
+    skill_scope_rules: tuple[dict[str, Any], ...] = (),
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
@@ -1308,6 +1321,7 @@ def build_kas_custom_agents(
             crew_panel=crew_panel,
             session_key=session_key,
             pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
+            skill_scope_rules=skill_scope_rules,
         )
     ]
 

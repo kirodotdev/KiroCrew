@@ -266,6 +266,9 @@ AGENTS.md resources preserve enabled inheritance. Aliases are excluded from Crew
 agent roster, translated on `session/set_mode`, and normalized in incoming mode and
 agent-name fields. The original agent name remains the Crew session identity.
 Both the direct client and multiplexed runtime apply the same preparation.
+KAS takes none of this (no view, no `cli.json`): it holds a session to the same
+skill set with `skill` deny rules in the projected agent's `permissions`
+([memory-skills-hooks.md](memory-skills-hooks.md), KAS skill scope).
 Projection defaults to enabled. Set `agent.native_skill_projection: false` in
 `config.json`, or `KIROCREW_NATIVE_SKILL_PROJECTION=0` in the Crew process
 environment, and restart Crew's native sessions to roll back to authored native

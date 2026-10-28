@@ -272,6 +272,37 @@ def resolve_projected_spec(
     return spec, paths_mod.project_agents_dir(work_dir)
 
 
+def _skill_scope_rules(
+    agent: str,
+    spec: dict[str, Any],
+    spec_dir: Path,
+    session_key: str,
+    work_dir: str | Path | None,
+) -> tuple[dict[str, Any], ...]:
+    """The ``skill`` deny rules that give this KAS session its kiro-cli skill set.
+
+    KAS loads ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` for every
+    session on top of the agent's ``resources``; kiro-cli under Crew loads only the
+    scope Crew resolves (``acp/kas_skill_scope.py``). A failure here costs the
+    narrowing, never the session: the extra skills are the user's own, and a
+    session that fails to start over them loses more than it protects.
+    """
+    from kiro_crew.acp import kas_skill_scope
+
+    try:
+        globs = kas_skill_scope.scope_globs(
+            agent, spec, agents_dir=spec_dir, session_key=session_key, work_dir=work_dir
+        )
+        return tuple(kas_skill_scope.skill_scope_rules(globs, work_dir=work_dir))
+    except Exception:  # see the docstring: degrade to the unscoped catalog
+        logger.warning(
+            "KAS skill scope for %r failed; the session loads KAS's default skill trees",
+            agent,
+            exc_info=True,
+        )
+        return ()
+
+
 def mate_worker_projection(
     base: dict[str, Any], prompt_dir: Path, session_key: str
 ) -> dict[str, Any]:
@@ -651,6 +682,9 @@ class KasHarness(MembershipHarness):
                     member_dispatch=member_dispatch,
                     crew_panel=crew_panel,
                     session_key=session_key,
+                    skill_scope_rules=_skill_scope_rules(
+                        agent, spec, prompt_dir, session_key, work_dir
+                    ),
                 ),
                 snapshot,
             )

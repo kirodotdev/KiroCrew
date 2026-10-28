@@ -4385,6 +4385,35 @@ See
 [context management](../../architecture/context-management.md#4-default-agent-vs-other-agents)
 for native view and inherited steering behavior.
 
+**KAS skill scope (`acp/kas_skill_scope.py`).** KAS reads no `cli.json`, so the
+inheritance switch above does nothing there: KAS offers every skill under
+`~/.kiro/skills` and the workspace's `.kiro/skills` on top of the injected
+agent's `resources`. Measured on kiro-cli 2.35.1 with a spec that maps 3 skills,
+42 of them global: 45 on KAS before this rule, 3 through Crew's kiro-cli path
+(`chat.disableInheritingDefaultResources` on), 45 on a bare `kiro-cli acp --agent`
+with inheritance left on. The `customAgents` wire has no inheritance field, but
+KAS removes a skill its policy denies under the `skill` capability from what its
+skill tool offers, and refuses to load it. So `KasHarness.session_extras` resolves
+the scope a kiro-cli session of the same agent gets
+(`session_skill_globs(..., provider_type="acp")`, the call `skill_search` makes,
+so pins, crewmate scopes and inherited trees all count), reads each matched
+skill's name (frontmatter `name`, else its directory), and appends one rule to
+the agent's `permissions`: `{"capability": "skill", "exclude": [<names>],
+"effect": "deny"}`. Measured with that rule: 3 for the 3-skill spec, 35 for a
+35-skill spec, and an excluded skill still loads while a global one is refused.
+No rule is added for an unmapped `kirocrew` / `kirocrew-worker` (whole catalog)
+or for a scope that is exactly the default trees KAS already loads. An empty
+scope (an agent that may not inherit, or a workspace that turned inheritance off)
+denies every skill. KAS compiles `exclude` unsplit, so past
+`kas_permissions._MAX_PATTERNS_PER_RULE` names the rule is written as split
+`match` denies of the default-tree skills outside the scope; that form cannot
+see a skill added to those trees after session start. A scope that fails to
+resolve falls back to the spec's own `skill://` entries; any other failure adds
+no rule and logs a warning, so the session starts with KAS's default trees
+rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
+KAS's filter over the payload the harness builds and compares it to the kiro-cli
+scope.
+
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded wherever a body reaches the model: the **body-delivery loop** in `context_assembly/turn_message.py` (`ContextBuilder.build_message`; `_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt), `resolve_dollar_skills`, an exact `skill_search` read (below), and direct reads of `SKILL.md` (see **Direct reads**). Since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config, so the other three supply the hits unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **Dollar-load transcript snapshot:** the dashboard chat runner records each
