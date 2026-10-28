@@ -1660,7 +1660,8 @@ to this kind would store content no reader can parse.
   embedding frame grants: `allow-scripts` only (`AGENT_PAGE_SANDBOX`), the same
   as a crewmate's Dashboard frame. A link in the page opens through the host:
   `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
-  and `window.open`, into a `kirocrew-dashboard:open` message, and
+  and `window.open`, into a `kirocrew-dashboard:open` message (a root-relative
+  dashboard path on a window-opening link is posted as written), and
   `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
   against its origin, only on a real click in
   that frame, once per click, with no dialog. The shim decides a click after

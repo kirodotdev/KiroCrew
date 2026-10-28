@@ -178,6 +178,19 @@ describe('CrewDynamicDashboard', () => {
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
   })
 
+  it('hands the page\'s plain links to the host through the link-bridge shim', async () => {
+    // The frame grants no popups and no top navigation, so a plain `_blank` or
+    // `_top` anchor is a dead click unless the shim posts it to the host's bridge.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    mount()
+    await screen.findByTestId('crew-dashboard-iframe')
+    const doc = mints.at(-1) ?? ''
+    expect(doc).toContain("var T = 'kirocrew-dashboard:open';")
+    // The plain `_blank` rewrite is for frames that grant popups, so it stays out.
+    expect(doc).not.toContain("t.closest('a[href]')")
+    expect(screen.getByTestId('crew-dashboard-iframe')).toHaveAttribute('sandbox', 'allow-scripts')
+  })
+
   it('mounts the gateway-composed page and never the stored copy', async () => {
     // Not a PREFERENCE between two pages: the stored copy is not a fallback at all.
     // It comes out of a writable `instance.json`, the composed one comes from the

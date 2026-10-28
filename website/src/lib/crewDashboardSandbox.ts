@@ -12,6 +12,8 @@
  *   nothing about a status page needs. The one way out is the host's own
  *   `kirocrew-dashboard:open` bridge (`useFrameLinkBridge`): a web URL or a
  *   dashboard path, from this frame, right after a user gesture, opened by the host.
+ *   The frame's link-bridge shim (`buildSrcdoc({ linkBridge: true })`) posts that
+ *   message for a plain `_blank` or `_top` link, so an ordinary anchor reaches it.
  * - No `allow-top-navigation`, `allow-forms`, or `allow-modals`.
  *
  * Egress is closed by the document CSP (`connect-src 'none'`), which the gateway

@@ -672,8 +672,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const srcdoc = useMemo(
     () =>
       shown && !isError
-        // `rewriteBareLinks: false`: the sandbox withholds `allow-popups`, so a
-        // `target="_blank"` link here would be a blocked popup (a dead click).
+        // `linkBridge`: the sandbox withholds `allow-popups` and
+        // `allow-top-navigation`, so a plain `_blank` or `_top` link here would be
+        // a dead click. The shim hands it to `useFrameLinkBridge` above, the same
+        // way the artifact and widget frames do. Its `rewriteBareLinks: false`
+        // keeps the plain `_blank` rewrite out of a frame that has no popups.
         ? // offlineScripts: the CDN script origins are dropped for THIS document.
           // The page is filled with this crewmate's own task titles, summaries
           // and costs, and since the preview/apply pair it can be written by an
@@ -685,6 +688,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             html: shown.html,
             themeVars,
             mode: theme,
+            linkBridge: true,
             rewriteBareLinks: false,
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.
@@ -971,6 +975,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const probeSrcdoc = useMemo(
     () =>
       probating && candidate && !isError
+        // Built with the same options as the mounted page, link bridge included, so
+        // a candidate proves itself as the document it will be mounted as.
         ? // offlineScripts: the CDN script origins are dropped for THIS document.
           // The page is filled with this crewmate's own task titles, summaries
           // and costs, and since the preview/apply pair it can be written by an
@@ -982,6 +988,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             html: candidate.html,
             themeVars,
             mode: theme,
+            linkBridge: true,
             rewriteBareLinks: false,
             offlineScripts: true,
             // The phone side panel's closing drag starts over this frame.

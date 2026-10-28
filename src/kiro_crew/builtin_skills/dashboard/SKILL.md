@@ -332,8 +332,14 @@ are CSS heuristics, not measured contrast failures. Inspect the named surface
 in both schemes while preserving the intended design.
 
 A page fits from 320px through an expanded view, with wrapping or disclosure
-for dense detail. A banner has space without covering data. Links use
-`target="_blank" rel="noopener noreferrer"`. Data-driven changes stay readable
+for dense detail. A banner has space without covering data. The frame cannot
+open a window or navigate the dashboard itself, so every link leaves through
+the host, which opens it in a new tab after the person's click: an absolute
+`http(s)` URL, or a dashboard path such as `/chat?sid=<key>` or
+`/artifacts/<slug>`. A plain `<a href="..." target="_blank">` reaches the host
+on its own. For a link drawn as a button, post
+`parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')` from
+its click handler, never from a timer. Data-driven changes stay readable
 while ambient layers give the page continuity. When a bound value moves or a
 new item lands, the `living-ui` skill says how that motion should feel. Skip
 the idle tour it describes for explainers: this page stays open all day.

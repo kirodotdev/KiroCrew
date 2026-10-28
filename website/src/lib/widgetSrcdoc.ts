@@ -695,21 +695,24 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
 /** Links leave the frame through the host, never through a popup of its own.
  *
  * Injected by `linkBridge` for the frames that hold agent-written pages (saved
- * artifacts, library thumbnails, a teammate's shared artifact, chat widgets).
- * Those frames are `sandbox="allow-scripts"` with no popup grant, so a page
- * cannot open a window itself; this hands the request to the host instead, as
+ * artifacts, library thumbnails, a teammate's shared artifact, chat widgets, a
+ * crewmate's Dashboard page). Those frames are `sandbox="allow-scripts"` with no
+ * popup or top-navigation grant, so a page cannot open a window or move the
+ * dashboard itself; this hands the request to the host instead, as
  * `{type: 'kirocrew-dashboard:open', url}` -- the message the crew pages already
- * post. The host (`useFrameLinkBridge`) opens it only for a web URL and only right
- * after a real click in this frame, once per click.
+ * post. The host (`useFrameLinkBridge`) opens it only for a web URL or a dashboard
+ * path and only right after a real click in this frame, once per click.
  *
- *   - A middle-click on a web link is handled the same way (it asks for a new
- *     tab whatever the target).
- *   - A click on a link that would open a window (`target="_blank"` or any other
- *     target but `_self`) or that would navigate this frame to another site (a
- *     bare absolute `http(s)` link) is cancelled here and, when its href is an
- *     absolute `http(s)` URL, posted to the host. Fragment and relative links
- *     with no target keep their in-frame behaviour; other schemes on a
- *     window-opening link are cancelled and not posted.
+ *   - A middle-click on a web link or a dashboard path is handled the same way
+ *     (it asks for a new tab whatever the target).
+ *   - A click on a link that would open a window or leave the frame
+ *     (`target="_blank"`, `_top` or any other target but `_self`) or that would
+ *     navigate this frame to another site (a bare absolute `http(s)` link) is
+ *     cancelled here and, when its href is an absolute `http(s)` URL or a
+ *     root-relative dashboard path (`/chat?sid=<key>`), posted to the host, which
+ *     resolves a path against its own origin. Fragment and relative links with no
+ *     target keep their in-frame behaviour; other schemes on a window-opening link
+ *     are cancelled and not posted.
  *   - `window.open` is replaced by the same post and returns null, so a page
  *     that opens from script reaches the host too.
  *   - `data-action` anchors are the composer pre-fill buttons; their own handler
@@ -754,8 +757,16 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     try { u = new URL(s); } catch (_) { return null; }
     return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
   }
+  // A root-relative path (/chat?sid=...) is a page of the dashboard. It is posted
+  // as written and the host resolves it against its own origin. A second '/' or a
+  // backslash after the first makes it protocol-relative, so neither counts.
+  function dashPath(raw){
+    var s = String(raw).trim();
+    return (s.charAt(0) === '/' && s.charAt(1) !== '/' && s.charAt(1) !== '\\\\') ? s : null;
+  }
+  function dest(raw){ return web(raw) || dashPath(raw); }
   function ask(raw){
-    var url = web(raw);
+    var url = dest(raw);
     if (!url) return;
     try { P.postMessage({ type: T, url: url }, '*'); } catch (_) {}
   }
@@ -777,13 +788,15 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
   }
   // What a link event would do here: null to leave it to the frame, else the
   // link, the URL to post (null for a non-web scheme) and whether it is bare.
+  // A bare link is taken only for an absolute web URL: a relative one with no
+  // target stays the frame's own navigation.
   function planOf(e, middle){
     var a = linkOf(e);
     if (!a || (typeof a.closest === 'function' && a.closest('[data-action]'))) return null;
     var target = (a.getAttribute('target') || '').trim().toLowerCase();
-    var url = web(hrefOf(a));
+    var url = dest(hrefOf(a));
     if (!middle && target === '_self') return null;
-    if (!middle && !target && !url) return null;
+    if (!middle && !target && !web(hrefOf(a))) return null;
     if (middle && !url) return null;
     return { a: a, url: url, bare: !middle && !target };
   }

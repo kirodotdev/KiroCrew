@@ -176,7 +176,8 @@ The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
 - `sandbox="allow-scripts"` only: no `allow-popups`, no `allow-same-origin`.
 - CSP: inline `<style>` and `<script>` run; no CDN script, `connect-src 'none'`,
   `img-src data: blob:`.
-- No link can leave the frame. A page asks the host instead:
+- No link can leave the frame on its own. A plain `_blank` or `_top` anchor is
+  handed to the host by the frame's link-bridge shim; a button asks the host itself:
   `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
   (`useFrameLinkBridge`) opens it only from its own frame, only right after a click or
   key press in that frame, in a new tab, for an `http(s)` URL or a dashboard path

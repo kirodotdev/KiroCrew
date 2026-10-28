@@ -248,11 +248,41 @@ describe('link-bridge shim', () => {
     ['data', 'data:text/html,<p>x</p>'],
     ['mailto', 'mailto:someone@example.test'],
     ['file', 'file:///etc/hosts'],
-    ['relative', '/artifacts/slug'],
+    ['document-relative', 'artifacts/slug'],
   ])('leaves a _blank %s link to the sandbox and posts nothing', async (_label, href) => {
     const { posted } = install()
     const host = mount(`<a id="t" target="_blank">x</a>`)
     host.querySelector('#t')!.setAttribute('href', href)
+    click(host, '#t')
+    await settle()
+    expect(posted).toEqual([])
+  })
+
+  it.each([
+    ['_blank', '_blank'],
+    ['_top', '_top'],
+  ])('hands a %s root-relative dashboard path to the host as written', async (_label, target) => {
+    const { posted } = install()
+    const host = mount(`<a id="t" href="/chat?sid=chat-7" target="${target}">x</a>`)
+    click(host, '#t')
+    await settle()
+    expect(posted).toEqual([{ type: OPEN, url: '/chat?sid=chat-7' }])
+  })
+
+  it('hands a _top web link to the host, leaving the blocked navigation to the sandbox', async () => {
+    const { posted } = install()
+    const host = mount('<a id="t" href="https://example.test/top" target="_top">x</a>')
+    // A plain click is not cancelled: the sandbox has no allow-top-navigation.
+    expect(click(host, '#t')).toBe(false)
+    await settle()
+    expect(posted).toEqual([{ type: OPEN, url: 'https://example.test/top' }])
+  })
+
+  it('posts nothing for a path whose second character is a backslash', async () => {
+    const { posted } = install()
+    const host = mount('<a id="t" target="_blank">x</a>')
+    // A browser reads `/\host` as protocol-relative, so it is no dashboard path.
+    host.querySelector('#t')!.setAttribute('href', '/\\evil.test/x')
     click(host, '#t')
     await settle()
     expect(posted).toEqual([])
@@ -349,13 +379,17 @@ describe('link-bridge shim', () => {
     expect(posted).toEqual([{ type: 'kirocrew-dashboard:input' }, { type: 'kirocrew-dashboard:input' }])
   })
 
-  it('turns window.open into a host request for a web URL only', () => {
+  it('turns window.open into a host request for a web URL or dashboard path only', () => {
     const { posted, win } = install()
     expect(win.open?.('https://example.test/a')).toBeNull()
     win.open?.('javascript:alert(1)')
     win.open?.('data:text/html,x')
-    win.open?.('/relative')
-    expect(posted).toEqual([{ type: OPEN, url: 'https://example.test/a' }])
+    win.open?.('/chat?sid=chat-7')
+    win.open?.('relative')
+    expect(posted).toEqual([
+      { type: OPEN, url: 'https://example.test/a' },
+      { type: OPEN, url: '/chat?sid=chat-7' },
+    ])
   })
 
   it('leaves window.open writable and configurable, so a page declaring its own open still runs', () => {
