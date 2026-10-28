@@ -622,6 +622,7 @@ def build_v2_essentials(
     member: str,
     member_is_id: bool,
     project: str | None,
+    template_dir: str | None = None,
     workspace: str | None,
     blocks_reads: bool,
     context_groups: frozenset[str] | None,
@@ -650,6 +651,9 @@ def build_v2_essentials(
     the harness is not known to be kiro-cli, so the opt-out is not read and
     the snapshot keeps inheriting: a caller that omits it can never drop the
     global steering on a harness that has nothing delivering it instead.
+
+    ``template_dir`` is a directory whose ``.kiro/agents`` is searched for the
+    templates when ``project`` is ``None``; no project guide is read from it.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.member_essential_context import (
@@ -710,6 +714,7 @@ def build_v2_essentials(
         include_project=include_project,
         inherits_default_resources=inherits_default_resources,
         core_sources_out=core_sources,
+        template_dir=template_dir,
     )
     if execution_template and execution_template != template:
         sources = dict(documents)
@@ -722,6 +727,7 @@ def build_v2_essentials(
             include_project=include_project,
             inherits_default_resources=inherits_default_resources,
             core_sources_out=core_sources,
+            template_dir=template_dir,
         ):
             if source in sources and sources[source] != body:
                 raise MemberEssentialContextError(

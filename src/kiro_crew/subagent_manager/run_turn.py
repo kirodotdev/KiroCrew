@@ -637,6 +637,12 @@ async def _run_inner_impl(
             # Learned recall is optional for prompt construction. Explicit
             # memory tools still report the unavailable captured store.
             logger.debug("Subagent learned memory is unavailable", exc_info=True)
+    from kiro_crew.session_work_dir import is_subagent_work_dir
+
+    # A continuation of a run spawned without a cwd restores that run's
+    # per-run scratch directory as info.cwd; it is still not a project.
+    _is_scratch = bool(info.cwd) and await asyncio.to_thread(is_subagent_work_dir, info.cwd)
+    _project: str | None = None if _is_scratch else (info.cwd or None)
     if info.crew:
         from kiro_crew.members import record_activity
 
@@ -646,7 +652,7 @@ async def _run_inner_impl(
             execution.selection_name,
             session_key,
             execution.memory_mode,
-            project=info.cwd or "",
+            project=_project or "",
             via="spawn",
             dedupe_session=True,
         )
@@ -665,7 +671,7 @@ async def _run_inner_impl(
         message,
         is_new,
         session_key,
-        project=info.cwd or None,
+        project=_project,
         memory_store=info.memory_store or None,
         execution_context=turn_execution,
         provider_type=self._manager._provider_label_of(client),
@@ -682,6 +688,10 @@ async def _run_inner_impl(
         # [OPTIONS:] and card guidance has nothing to render into.
         interactive=False,
         steering_dirs=info.steering_dirs,
+        # The agent was validated against this directory's .kiro/agents, so
+        # its spec is found there too. A cold-started run with no cwd has a
+        # per-run provider cwd that holds no templates.
+        template_dir=effective_cwd or None,
     )
     # The one place the resolved scope and its cost are both known — without
     # this, "the sub-agent didn't know X" is undebuggable after the fact.

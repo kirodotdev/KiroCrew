@@ -83,6 +83,7 @@ def build_message(
     steering_dirs: tuple[str, ...] = (),
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
+    template_dir: str | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -122,6 +123,11 @@ def build_message(
     or ``""`` for a turn whose text the person did not write, which then
     matches and selects no skill. ``None`` keeps *text*.
 
+    Pass *template_dir* to name the directory whose ``.kiro/agents`` holds the
+    agent's template when the turn has no *project*. It is used only to find
+    the agent spec, never read for project guides and never made the project.
+    ``None`` falls back to the context provider's cwd.
+
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
     the caller. The essentials builder (and :meth:`build_session_context`,
@@ -160,8 +166,16 @@ def build_message(
         if isinstance(candidate_delivery, EssentialDelivery):
             delivery = candidate_delivery
             provider_type = context_provider.context_provider_type
+            # A sub-agent's provider cwd is its per-run scratch directory, not
+            # a checkout, so a run that named no project keeps none. Its agent
+            # template is looked up in the caller's template_dir, else the
+            # provider cwd. Any other session with no project takes the
+            # provider cwd as its project.
             if project is None:
-                project = context_provider.cwd or None
+                provider_cwd = context_provider.cwd or None
+                template_dir = template_dir or provider_cwd
+                if not (session_key or "").startswith("subagent:"):
+                    project = provider_cwd
             if is_new_session or needs_reinjection:
                 provider_native_documents = context_provider.native_context_documents
                 native_launch_sources = tuple(provider_native_documents)
@@ -230,6 +244,7 @@ def build_message(
             member=member,
             member_is_id=bool(execution_context and execution_context.member_id),
             project=project,
+            template_dir=template_dir,
             workspace=workspace,
             blocks_reads=blocks_reads,
             context_groups=context_groups,
@@ -307,7 +322,7 @@ def build_message(
             if slim_resume
             else self._resolve_agent_prompt(
                 agent,
-                project=project,
+                project=project or template_dir,
                 mode=mode,
                 session_key=session_key,
                 is_cc=is_cc,
@@ -499,6 +514,7 @@ def build_message(
                 session_key=session_key,
                 agent=agent,
                 project=project,
+                template_dir=template_dir,
                 mode=mode,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
@@ -753,11 +769,15 @@ def build_message(
         triggered = self.skills.get_triggered_skills(
             trigger_text, project_dir=project, select=select, unusable=unusable
         )
-        pinned = ctx.pinned_skill_globs(session_key, project_dir=project)
+        # The agent's spec is found where its template lives (template_dir for
+        # a sub-agent with no project); its mapping only narrows the triggered
+        # set, which, like scoped_skills, reads from *project* alone.
+        template_root = project or template_dir
+        pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
         mapped = (
             pinned
             if pinned is not None
-            else (ctx.agent_skill_globs(agent, project_dir=project) if agent else [])
+            else (ctx.agent_skill_globs(agent, project_dir=template_root) if agent else [])
         )
         if mapped:
             allowed = {

@@ -41,6 +41,7 @@ def post_compaction_parts(
     session_key: str | None,
     agent: str | None,
     project: str | None,
+    template_dir: str | None = None,
     mode: str,
     is_cc: bool,
     private_owner: bool,
@@ -83,9 +84,11 @@ def post_compaction_parts(
     # compaction that drops it leaves the session with no contract.
     # Trusted content (managed contract or the user's own persona),
     # so no marker scrub — the session-start path applies none either.
+    # The contract's spec is found where session start found it: *template_dir*
+    # stands in for a missing project in this lookup only.
     _agent_prompt = builder._resolve_agent_prompt(
         agent,
-        project=project,
+        project=project or template_dir,
         mode=mode,
         session_key=session_key,
         is_cc=is_cc,

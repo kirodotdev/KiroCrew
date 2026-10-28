@@ -185,7 +185,12 @@ async def test_actual_wire_fresh_and_twenty_unchanged_warm_turns(env):
 )
 async def test_each_surface_and_minimal_conversation_gets_its_own_receipt(env, surface):
     first, second = provider(env.project), provider(env.project)
-    options = dict(session_key=surface, minimal_context=surface.startswith("cron:"))
+    # Named explicitly: a sub-agent key never adopts the provider cwd as its project.
+    options = dict(
+        session_key=surface,
+        minimal_context=surface.startswith("cron:"),
+        project=str(env.project),
+    )
     await send(first, build(env, first, fresh=True, **options))
     await send(first, build(env, first, **options))
     await send(second, build(env, second, fresh=True, **options))
@@ -993,3 +998,125 @@ async def test_provider_receipt_wrap_and_history_invalidation_contract(env, adap
     await send(target, build(env, target, project=str(env.project)))
     await send(target, build(env, target, project=str(env.project)))
     assert [message.count(HEADER) for message in wire.messages] == [1, 0, 0, 1, 0]
+
+
+@pytest.mark.parametrize(
+    ("session_key", "adopts_cwd"),
+    [("dashboard:private", True), ("subagent:child-1", False)],
+)
+def test_provider_cwd_stands_in_for_project_except_for_subagents(env, session_key, adopts_cwd):
+    # A sub-agent's provider is bound to its pool scratch directory, which is
+    # not a checkout: with no project named, the child must get none.
+    (env.project / "AGENTS.md").write_text("CWD_PROJECT_GUIDE", encoding="utf-8")
+    target = provider(env.project)
+    message = build(env, target, fresh=True, session_key=session_key)
+    project_line = f"[PROJECT] Active project directory: {env.project}"
+    assert (project_line in message) is adopts_cwd
+    assert ("CWD_PROJECT_GUIDE" in message) is adopts_cwd
+
+
+def test_subagent_without_project_resolves_template_from_provider_cwd_only(env):
+    # The template exists only under the provider cwd's .kiro/agents. It is
+    # resolved there, while the cwd's project guides, steering and declared
+    # resources stay out of the sub-agent's prompt.
+    assert not (Path(os.environ["KIRO_HOME"]) / "agents" / "writer-template.json").exists()
+    target = provider(env.project)
+    message = build(env, target, fresh=True, session_key="subagent:child-1")
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "[PROJECT] Active project directory" not in message
+    for project_text in (
+        "Project rules: run the review checks.",
+        "Project Soul: write with empathy.",
+        "Always guide: explain assumptions.",
+        "Declared guide: examples must be reproducible.",
+    ):
+        assert project_text not in message
+
+
+def test_subagent_without_project_takes_agent_prompt_from_provider_cwd_template(env):
+    # A custom agent whose spec exists only under the provider cwd's
+    # .kiro/agents gets that spec's prompt as its contract, on a harness that
+    # reads the contract from the prompt rather than from the spec.
+    assert not (Path(os.environ["KIRO_HOME"]) / "agents" / "task-template.json").exists()
+    target = provider(env.project)
+    assert target.context_provider_type == "claude_code"
+    message, _ = env.builder.build_message(
+        "CURRENT_REQUEST_中文",
+        True,
+        "subagent:child-1",
+        agent="task-template",
+        context_provider=target,
+    )
+    assert "[AGENT SYSTEM PROMPT]\nExecution task instructions." in message
+    assert "[PROJECT] Active project directory" not in message
+    assert "Project rules: run the review checks." not in message
+
+
+def test_subagent_without_project_resolves_template_from_explicit_template_dir(env, tmp_path):
+    # A cold-started sub-agent's provider is bound to a per-run directory
+    # with no .kiro/agents; the template lives only where the run validated
+    # the agent. template_dir finds it there, and neither directory becomes
+    # the project or contributes project guides.
+    scratch = tmp_path / "per-run-scratch"
+    scratch.mkdir()
+    (scratch / "AGENTS.md").write_text("SCRATCH_PROJECT_GUIDE", encoding="utf-8")
+    target = provider(scratch)
+    message = build(
+        env, target, fresh=True, session_key="subagent:child-1", template_dir=str(env.project)
+    )
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "[PROJECT] Active project directory" not in message
+    for project_text in (
+        "SCRATCH_PROJECT_GUIDE",
+        "Project rules: run the review checks.",
+        "Project Soul: write with empathy.",
+        "Always guide: explain assumptions.",
+        "Declared guide: examples must be reproducible.",
+    ):
+        assert project_text not in message
+
+
+def _absolute_sources_template(env, resources=()):
+    persona = env.project / "personas" / "writer.md"
+    persona.parent.mkdir(exist_ok=True)
+    persona.write_text("ABSOLUTE_PERSONA_BODY", encoding="utf-8")
+    spec = {"name": "writer-template", "prompt": f"file://{persona}"}
+    if resources:
+        spec["resources"] = list(resources)
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps(spec), encoding="utf-8"
+    )
+    assert not persona.is_relative_to(Path.home())
+
+
+def _subagent_build(env, tmp_path):
+    scratch = tmp_path / "per-run-scratch"
+    scratch.mkdir()
+    return build(
+        env,
+        provider(scratch),
+        fresh=True,
+        session_key="subagent:child-1",
+        template_dir=str(env.project),
+    )
+
+
+def test_subagent_template_dir_contains_an_absolute_persona_outside_home(env, tmp_path):
+    # The template found through template_dir names its persona by absolute
+    # path inside that same tree, which lies outside home: the tree it came
+    # from contains the read, as the project would.
+    _absolute_sources_template(env)
+    message = _subagent_build(env, tmp_path)
+    assert "ABSOLUTE_PERSONA_BODY" in message
+    assert "[PROJECT] Active project directory" not in message
+
+
+def test_subagent_template_dir_admits_no_absolute_declared_resource(env, tmp_path):
+    # Only the persona widens to template_dir. A declared resource there is
+    # held to the no-project root, home, and refused as outside it.
+    resource = env.project / "personas" / "resource.md"
+    resource.parent.mkdir()
+    resource.write_text("ABSOLUTE_RESOURCE_BODY", encoding="utf-8")
+    _absolute_sources_template(env, resources=[f"file://{resource}"])
+    with pytest.raises(MemberEssentialContextError, match="resource.md"):
+        _subagent_build(env, tmp_path)

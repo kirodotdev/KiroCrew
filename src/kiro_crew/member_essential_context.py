@@ -776,6 +776,7 @@ def documents_for_member(
     trigger_text: str = "",
     inherits_default_resources: bool = True,
     core_sources_out: set[str] | None = None,
+    template_dir: str | None = None,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
@@ -795,6 +796,10 @@ def documents_for_member(
     out. Every other returned document (global and project steering, the
     conditional-guide index, ``AGENTS.md`` and the declared ``file://``
     resources) is a guide the caller may drop whole.
+
+    *template_dir*, used only when *project* is ``None``, is searched for the
+    template under its ``.kiro/agents`` (and anchors that template's relative
+    prompt). No guide, steering or resource is read from it.
     """
     from kiro_crew.agent import is_managed_prompt
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -947,7 +952,8 @@ def documents_for_member(
             for path in _matches(project_root, ".kiro/steering/**/*.md", skipped, linked):
                 add(path, project_root, steering=True)
 
-    spec_path = resolve_template_path(template, project)
+    template_root = project or template_dir
+    spec_path = resolve_template_path(template, template_root)
     if spec_path is None:
         if template != "kirocrew":
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
@@ -972,10 +978,22 @@ def documents_for_member(
         if prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():
-                add(path, absolute_root)
+                # An absolute persona is also contained by the template_dir
+                # that stood in for a missing project. Declared resources keep
+                # absolute_root, so nothing else is read from that directory.
+                template_root_path = (
+                    None if project_root is not None else _admitted_project_root(template_dir)
+                )
+                persona_root = (
+                    template_root_path
+                    if template_root_path is not None
+                    and spec_path.is_relative_to(template_root_path)
+                    else absolute_root
+                )
+                add(path, persona_root)
                 _mark_core(str(path))
             else:
-                resolved = resolve_relative_prompt_path(path, spec_path, project)
+                resolved = resolve_relative_prompt_path(path, spec_path, template_root)
                 if resolved is not None:
                     add(*resolved)
                     _mark_core(str(resolved[0]))
