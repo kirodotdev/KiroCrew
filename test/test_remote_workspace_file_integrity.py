@@ -69,7 +69,7 @@ def test_a_regex_that_overflows_is_a_tool_error_not_a_dead_server(tmp_path, patt
 
 def test_a_pattern_nested_past_the_bound_is_refused_before_it_compiles(tmp_path):
     # Compiling it would recurse to the interpreter's limit, where a finalizer
-    # the collector runs meanwhile overflows and is lost (#23382).
+    # the collector runs meanwhile overflows and is lost.
     deep = "(" * (GROUP_DEPTH_BOUND + 1) + "a" + ")" * (GROUP_DEPTH_BOUND + 1)
     with pytest.raises(ToolError, match=f"nested more than {GROUP_DEPTH_BOUND} deep"):
         Workspace(str(tmp_path)).grep(deep, ".")
