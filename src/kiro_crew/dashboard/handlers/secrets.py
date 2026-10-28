@@ -166,7 +166,7 @@ async def _channel_credential_owned(request: web.Request, name: str) -> web.Resp
     return web.json_response(
         {
             "error": "this secret holds a channel credential, which a remote session "
-            "cannot change; change it under Settings → Channels on the machine "
+            "cannot change; change it under Settings → Messaging Channels on the machine "
             "running the gateway",
             "code": "managed_by_channels",
         },

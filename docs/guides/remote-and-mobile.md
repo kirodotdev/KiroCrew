@@ -92,7 +92,7 @@ granted to whatever launched it, so a Linux VPS cannot serve it at all
 ([imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md)).
 **WhatsApp** runs anywhere, but it is not in the base install: it needs the
 optional `neonize` dependency (`pip install ".[whatsapp]"`) and a one-time device
-pairing from **Settings → Channels → WhatsApp**, so reach the remote dashboard
+pairing from **Settings → Messaging Channels → WhatsApp**, so reach the remote dashboard
 first (part 2 below) and scan the rotating code from there
 ([whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md)).
 
