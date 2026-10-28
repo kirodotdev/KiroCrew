@@ -256,10 +256,32 @@ export function useDeleteTerminalSession() {
 export function remeasureAndFit(term: Terminal, fit: FitAddon): void {
   const el = term.element
   if (!el || !el.offsetParent) return // offsetParent === null when display:none / detached
-  const ff = term.options.fontFamily
-  term.options.fontFamily = 'monospace' // transient — forces CharSizeService.measure()
-  term.options.fontFamily = ff          // restore — re-measures with the now-loaded font
+  // The toggle also empties xterm's glyph-width cache, and the DOM renderer
+  // then forces a layout per glyph it draws (~50 on a phone, in the frame the
+  // panel slides in). Only pay it when the cell size can have changed since
+  // this terminal last measured: another font or size, or the font having
+  // finished loading in the meantime.
+  const key = cellKey(term)
+  if (measuredWith.get(term) !== key) {
+    const ff = term.options.fontFamily
+    term.options.fontFamily = 'monospace' // transient — forces CharSizeService.measure()
+    term.options.fontFamily = ff          // restore — re-measures with the now-loaded font
+    measuredWith.set(term, key)
+  }
   fit.fit()
+}
+
+/** What each terminal's cell metrics were last measured against. */
+const measuredWith = new WeakMap<Terminal, string>()
+
+/** Everything a measured cell depends on: the family, the size, and whether
+ *  that font has loaded (`check` is false while it still renders a fallback). */
+function cellKey(term: Terminal): string {
+  const family = term.options.fontFamily ?? 'monospace'
+  const size = term.options.fontSize ?? 13
+  let loaded = true
+  try { loaded = document.fonts?.check?.(`${size}px ${family}`) ?? true } catch { /* invalid spec */ }
+  return `${family}|${size}|${loaded}`
 }
 
 /* ── Terminal view for one session ── */
@@ -275,7 +297,7 @@ function touchSelectHint(status: TouchSelectStatus): string {
   }
 }
 
-function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
@@ -336,17 +358,47 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot)
   }, [sessionId, term, fit, cwd, remoteSlot, chatSlot])
 
+  // A terminal that has never been opened, while its host asks to wait (the
+  // dock is still sliding in): xterm's first open, render and glyph measuring
+  // would freeze the slide. A light stand-in field takes the focus instead, so
+  // iOS still raises the keyboard inside the opening tap, and xterm opens and
+  // takes the focus over once the host lets go. A terminal opened before is
+  // cheap to re-attach and never waits.
+  const holding = !!deferOpen && !term.element
+  const proxyRef = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    if (holding && visible) proxyRef.current?.focus({ preventScroll: true })
+  }, [holding, visible])
+  // Hand-off: whatever reached the stand-in goes to the shell as a paste, so
+  // the shell's bracketed-paste guard holds and a newline in it does not run
+  // a command; the focus moves to xterm's own field (the focus effect below),
+  // field to field, so the keyboard stays up.
+  const proxyText = useRef('')
+  const handingOff = useRef(false)
+  // Only a hold the user could see hands off: a hidden held tab opens later
+  // and takes focus like any tab switched to.
+  useLayoutEffect(() => {
+    if (holding) handingOff.current = visible
+  }, [holding, visible])
+
   // Attach terminal to DOM
   useEffect(() => {
-    if (!containerRef.current) return
+    if (holding || !containerRef.current) return
     const el = term.element
     if (el) {
       containerRef.current.appendChild(el)
     } else {
       term.open(containerRef.current)
+      // open() has just measured the cell with the font as it is now, so the
+      // re-measure toggle the visible effect runs next would only empty the
+      // glyph cache and render every row twice more.
+      measuredWith.set(term, cellKey(term))
     }
     fit.fit()
-  }, [term, fit])
+    const pending = proxyText.current
+    proxyText.current = ''
+    if (pending) term.paste(pending)
+  }, [term, fit, holding])
 
   // Focus + refit when becoming visible. Re-measure here too so a pane that
   // gained the web font while it was hidden (display:none) picks up the correct
@@ -358,16 +410,22 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // it nothing to reveal, so a newly opened terminal stayed under the keyboard.
   // Seat it at the first cell instead; xterm overwrites both on its next sync.
   useEffect(() => {
-    if (!visible) return
+    if (!visible || holding) return
+    // Ending a hold must not take the focus back from a field the user moved
+    // to meanwhile (the chat composer, say).
+    const fromHold = handingOff.current
+    handingOff.current = false
+    const active = document.activeElement
+    const movedAway = fromHold && !!active && active !== document.body && !wrapperRef.current?.contains(active)
     const raf = requestAnimationFrame(doRefit)
     const input = term.textarea
     if (input && !input.style.left) {
       input.style.left = '0px'
       input.style.top = '0px'
     }
-    term.focus()
+    if (!movedAway) term.focus()
     return () => cancelAnimationFrame(raf)
-  }, [visible, term, doRefit])
+  }, [visible, term, doRefit, holding])
 
   // Refit on container resize — always observe, not just when visible
   useEffect(() => {
@@ -547,6 +605,20 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         onTouchCancel={touchSelect.onTouchEnd}
       >
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
+        {holding && (
+          // 16px so iOS does not zoom on focus; on screen and non-zero so
+          // Safari has a field to reveal above the keyboard.
+          <textarea
+            ref={proxyRef}
+            data-testid="terminal-focus-proxy"
+            aria-label={i18nT('app.terminal')}
+            className="absolute left-0 top-0 w-px h-4 p-0 m-0 border-0 opacity-0 resize-none text-[16px]"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={e => { proxyText.current = e.currentTarget.value }}
+          />
+        )}
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
             (it reserves Tab/arrows/Escape while its menu is open, and Enter only once
             a row has been arrowed onto). A later
@@ -723,7 +795,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen }: {
   sessionId: string
   cwd?: string
   /** Open the shell in this chat's REMOTE session workspace instead of locally. */
@@ -732,11 +804,13 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
   chatSlot?: string
   visible?: boolean
   onSendToChat?: (text: string) => void
+  /** Hold a never-opened terminal behind a focus stand-in until this turns false. */
+  deferOpen?: boolean
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
-      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} />
     </div>
   )
 }

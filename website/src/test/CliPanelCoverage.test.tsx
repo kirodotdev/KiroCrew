@@ -78,8 +78,11 @@ const xt = vi.hoisted(() => {
       this.element = el
       this.textarea = ta
     }
+    pastes: string[] = []
+    paste(data: string) { this.pastes.push(data) }
     focus() {
       this.focusCalls += 1
+      this.textarea?.focus()
       if (this.textarea) this.focusedAt.push({ left: this.textarea.style.left, top: this.textarea.style.top })
     }
     dispose() { this.disposed = true }
@@ -257,7 +260,7 @@ let seq = 0
 function nextId() { seq += 1; return `pty-${seq}` }
 
 const live = new Set<string>()
-function mount(props: Partial<{ sessionId: string; cwd: string; visible: boolean; onSendToChat: (t: string) => void }> = {}) {
+function mount(props: Partial<{ sessionId: string; cwd: string; visible: boolean; onSendToChat: (t: string) => void; deferOpen: boolean }> = {}) {
   const sessionId = props.sessionId ?? nextId()
   live.add(sessionId)
   const view = renderWithProviders(
@@ -266,6 +269,7 @@ function mount(props: Partial<{ sessionId: string; cwd: string; visible: boolean
       cwd={props.cwd}
       visible={props.visible ?? true}
       onSendToChat={props.onSendToChat}
+      deferOpen={props.deferOpen}
     />,
   )
   const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
@@ -332,9 +336,10 @@ describe('CliPanel mount', () => {
     // The fifth and sixth arguments are the remote-workspace slot and the chat
     // a local shell belongs to; this bare panel has neither.
     expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app', undefined, undefined)
-    // A visible pane takes focus and is re-measured (monospace toggle + restore).
+    // A visible pane takes focus. open() has just measured the cell, so no
+    // re-measure toggle follows it (that would render every row twice more).
     expect(term.focusCalls).toBe(1)
-    expect(term.fontFamilyWrites.slice(-2)).toEqual(['monospace', term.options.fontFamily])
+    expect(term.fontFamilyWrites).toEqual([])
   })
 
   it('loads the fit and web-links addons and seeds the theme from CSS custom properties', () => {
@@ -409,6 +414,64 @@ describe('CliPanel mount', () => {
     cleanup()
     const second = mount({ sessionId })
     expect(second.term.focusedAt.at(-1)).toEqual({ left: '18px', top: '36px' })
+  })
+
+  it('holds a first-open terminal behind a focused stand-in, then opens xterm and hands focus and typed text over', () => {
+    const sessionId = nextId()
+    const view = mount({ sessionId, deferOpen: true })
+    const { term } = view
+    // The keyboard comes up on the stand-in; xterm is not built yet.
+    const proxy = screen.getByTestId('terminal-focus-proxy') as HTMLTextAreaElement
+    expect(document.activeElement).toBe(proxy)
+    expect(term.openCalls).toBe(0)
+    expect(term.focusCalls).toBe(0)
+    // A paste with a newline must not run a command: it is handed over as a paste.
+    fireEvent.change(proxy, { target: { value: 'ls\nrm' } })
+
+    view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+    expect(term.openCalls).toBe(1)
+    expect(term.focusCalls).toBe(1)
+    expect(document.activeElement).toBe(term.textarea)
+    expect(term.pastes).toEqual(['ls\nrm'])
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+  })
+
+  it('does not take the focus back when the user moved to another field during the hold', () => {
+    const sessionId = nextId()
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    try {
+      const view = mount({ sessionId, deferOpen: true })
+      act(() => composer.focus())
+      view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+      expect(view.term.openCalls).toBe(1)
+      expect(view.term.focusCalls).toBe(0)
+      expect(document.activeElement).toBe(composer)
+    } finally { composer.remove() }
+  })
+
+  it('focuses a tab that was held while hidden when the user switches to it', () => {
+    const sessionId = nextId()
+    const chip = document.createElement('button')
+    document.body.append(chip)
+    try {
+      const view = mount({ sessionId, deferOpen: true, visible: false })
+      view.rerender(<CliPanel sessionId={sessionId} visible={false} deferOpen={false} />)
+      expect(view.term.openCalls).toBe(1)
+      act(() => chip.focus()) // the tab chip the user taps
+      view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+      expect(view.term.focusCalls).toBe(1)
+    } finally { chip.remove() }
+  })
+
+  it('focuses an already-opened terminal straight away even while its host holds new ones', () => {
+    const sessionId = nextId()
+    mount({ sessionId })
+    cleanup()
+    const again = mount({ sessionId, deferOpen: true })
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+    expect(again.term.focusCalls).toBeGreaterThan(0)
+    expect(document.activeElement).toBe(again.term.textarea)
   })
 
   it('hides the pane and skips focus when not visible', () => {
@@ -1110,9 +1173,15 @@ describe('CliPanel web-font refit', () => {
 
   it('refits once the pending web fonts settle and after explicitly loading the terminal font', async () => {
     const load = vi.fn(() => Promise.resolve([]))
-    setFonts({ ready: Promise.resolve(), load })
+    // The terminal font is still loading when xterm opens, and has loaded by
+    // the time `ready` settles: that change is what earns a re-measure.
+    let loaded = false
+    let settle!: () => void
+    const ready = new Promise<void>(r => { settle = r })
+    setFonts({ ready, load, check: () => loaded })
     const { term, fit } = mount()
-    await act(async () => { await Promise.resolve() })
+    loaded = true
+    await act(async () => { settle(); await Promise.resolve() })
     // The pre-loaded family must match the terminal's configured stack — the
     // previous implementation hardcoded 'JetBrains Mono', which silently
     // missed any custom Terminal Font Family (Nerd Fonts, OpenDyslexicMono,
