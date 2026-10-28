@@ -229,6 +229,38 @@ describe('PierreEditorImpl surface selection', () => {
     expect(lastSurface().props.editorOptions).toBeTruthy()
   })
 
+  it('reports whether it dropped the live diff, only for a live-diff request', () => {
+    const contents = Array.from(
+      { length: 401 },
+      (_, i) => `export const generated${i} = ${i}`,
+    ).join('\n')
+    const oversized = { ...FILE, contents, cacheKey: 'a.ts:oversized' }
+    const overBudget = vi.fn()
+    mount({ file: oversized, diffBase: contents.replaceAll(' = ', ' = old'), onLiveDiffDegraded: overBudget })
+    expect(overBudget.mock.calls).toEqual([[true]])
+
+    cleanup()
+    const plain = vi.fn()
+    mount({ onLiveDiffDegraded: plain })
+    expect(plain).not.toHaveBeenCalled()
+
+    cleanup()
+    const inBudget = vi.fn()
+    const { rerender } = mount({ diffBase: 'const a = 0\n', onLiveDiffDegraded: inBudget })
+    expect(inBudget.mock.calls).toEqual([[false]])
+
+    rerender({ diffBase: 'const a = 9\n' })
+    expect(inBudget.mock.calls).toEqual([[false], [false]])
+
+    // The editor echoing its own edit back as `file` keeps the verdict and the
+    // baseline, so it is not a new report.
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+    const edited = { ...FILE, contents: 'const a = 1\n' }
+    act(() => announceChange(edited))
+    rerender({ file: edited, diffBase: 'const a = 9\n' })
+    expect(inBudget).toHaveBeenCalledTimes(2)
+  })
+
   it('renders the live-diff surface with a null baseline for a brand-new file', () => {
     // `diffBase: null` is a distinct request from omitting it: the whole buffer
     // reads as added, so the surface must still be the diff one.

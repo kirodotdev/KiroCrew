@@ -4,7 +4,7 @@ import { PierreEditor, type PierreEditorHandle } from '../pierre'
 
 /** Pierre-based code editor for editable text content. */
 export function CodeEditor({
-  content, lang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged,
+  content, lang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded,
 }: {
   content: string
   lang: string
@@ -24,6 +24,9 @@ export function CodeEditor({
   diffExpandUnchanged?: boolean
   /** Split vs unified layout for the live-diff surface. */
   diffSplit?: boolean
+  /** Live-diff editing only: whether the live diff was dropped for being
+   *  over the inline budget (see `PierreEditorImpl`). */
+  onLiveDiffDegraded?: (degraded: boolean) => void
 }) {
   // Pierre owns the buffer during an edit session. Keep its file identity
   // stable for changes it emitted, but reseed on an external source change.
@@ -83,6 +86,7 @@ export function CodeEditor({
         diffBase={diffBase}
         diffSplit={diffSplit}
         diffExpandUnchanged={diffExpandUnchanged}
+        onLiveDiffDegraded={onLiveDiffDegraded}
       />
     </div>
   )
