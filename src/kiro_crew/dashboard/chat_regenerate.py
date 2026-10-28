@@ -35,6 +35,35 @@ logger = logging.getLogger(__name__)
 
 _MAX_VARIANTS = 20
 
+
+def _cap_keeping_shown(variants: list[dict], shown: str, shown_idx: object) -> list[dict]:
+    """The newest ``_MAX_VARIANTS`` versions, keeping the one on screen.
+
+    The version on screen when Regenerate is pressed is the reply being
+    replaced. A user who switched back to an old version and regenerated it
+    must still find it among the versions afterwards, so the cap drops the
+    oldest OTHER versions. *shown_idx* is the row's ``variant_idx``; when it
+    does not point at the shown text, the newest entry holding it is kept.
+    """
+    if isinstance(shown_idx, int) and 0 <= shown_idx < len(variants):
+        keep = shown_idx if variants[shown_idx].get("content") == shown else None
+    else:
+        keep = None
+    if keep is None:
+        keep = next(
+            (i for i in range(len(variants) - 1, -1, -1) if variants[i].get("content") == shown),
+            None,
+        )
+    excess = len(variants) - _MAX_VARIANTS
+    kept: list[dict] = []
+    for i, entry in enumerate(variants):
+        if excess > 0 and i != keep:
+            excess -= 1
+            continue
+        kept.append(entry)
+    return kept
+
+
 # Longest replacement prompt edit-resend accepts, in characters. Named here
 # rather than inlined so the endpoint's cap is greppable; the value matches the
 # sibling boundaries (``chat_rewind``'s ``content`` and ``chat_fork``'s
@@ -162,7 +191,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         if not any(v.get("content") == current_entry["content"] for v in variants):
             variants.append(current_entry)
         if len(variants) > _MAX_VARIANTS:
-            variants = variants[-_MAX_VARIANTS:]
+            variants = _cap_keeping_shown(
+                variants, current_entry["content"], ai_msg.get("variant_idx")
+            )
 
         del slot.messages[u_idx + 1 :]
         slot.invalidate_source_links()
