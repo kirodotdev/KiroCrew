@@ -652,6 +652,48 @@ class TestTokenMintGeneric:
         assert proc.communicate_calls == 2
         assert proc.wait_calls == 0
 
+    def test_a_cancelled_mint_kills_and_reaps_the_ssh_child(self, monkeypatch):
+        """Cancelling the mint mid-wait kills and reaps ssh, then re-raises."""
+        from kiro_crew.instances import token_mint as tm
+
+        proc = self._HangProc()
+        waiting = asyncio.Event()
+
+        async def _parked_communicate():
+            proc.communicate_calls += 1
+            if proc.communicate_calls == 1:
+                waiting.set()
+                await asyncio.Event().wait()
+            proc.returncode = -9
+            return b"", b""
+
+        proc.communicate = _parked_communicate
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        killed: list[tuple[int, int]] = []
+
+        async def _tree(pid, sig):
+            killed.append((pid, sig))
+            return True
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(platform_compat, "kill_process_tree_async", _tree)
+
+        async def _cancel_mid_mint() -> None:
+            task = asyncio.create_task(tm.mint_remote_token("cd-1", ttl="20h", timeout_secs=30.0))
+            await asyncio.wait_for(waiting.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+
+        asyncio.run(_cancel_mid_mint())
+        assert killed == [(proc.pid, platform_compat.SIGKILL)]
+        assert proc.kill_calls == 1
+        assert proc.communicate_calls == 2
+        assert proc.wait_calls == 0
+
     @pytest.mark.parametrize("budget, names_setting", [(30.0, True), (120.0, False)])
     def test_mint_timeout_names_the_mint_budget_setting(self, monkeypatch, budget, names_setting):
         """An SSH mint timeout names ``instances.mint_timeout_secs`` as the next step.
