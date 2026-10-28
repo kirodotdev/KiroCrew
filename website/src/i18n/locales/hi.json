@@ -5172,8 +5172,6 @@
         "in_progress": "जारी है",
         "included_workflow": "शामिल वर्कफ़्लो",
         "invalid": "अमान्य वर्कफ़्लो",
-        "iteration": "दोहराव {{n}}/{{max}}",
-        "iteration_label": "पुनरावृत्ति {{n}}",
         "kiro_agent": "Kiro Agent",
         "launch": "चलाओ",
         "launch_effort": "मेहनत",
@@ -5197,8 +5195,6 @@
         "marker_update": "वर्कफ़्लो {{name}} से अपडेट",
         "marker_waiting": "वर्कफ़्लो {{name}} तुम्हारा इंतज़ार कर रहा है",
         "max_iterations": "दोहराव: अधिकतम {{max}}",
-        "n_step_workflow_one": "{{count}} चरण वाला वर्कफ़्लो",
-        "n_step_workflow_other": "{{count}} चरणों वाला वर्कफ़्लो",
         "no_messages": "अभी कोई संदेश नहीं।",
         "no_recipes": "इस प्रोजेक्ट में कोई वर्कफ़्लो नहीं मिला।",
         "no_runs": "अभी तक कोई वर्कफ़्लो रन नहीं।",
@@ -5331,10 +5327,10 @@
         "tool_valid": "मान्य",
         "tool_invalid": "अमान्य",
         "tool_open_run": "रन खोलो",
-        "empty_hint": "Customize › Workflows से कोई वर्कफ़्लो शुरू करो, या मुझसे कोई Kiro Agent वर्कफ़्लो चलाने को कहो।",
+        "empty_hint": "Customize › Workflows से कोई वर्कफ़्लो शुरू करो, या मुझसे कोई Kiro Workflow चलाने को कहो।",
         "input_required": "ज़रूरी",
         "inputs_required": "चलाने के लिए हर इनपुट भरो।",
-        "not_launchable": "इस वर्कफ़्लो का कोई लॉन्च स्रोत नहीं है, इसलिए इसे चलाया नहीं जा सकता।",
+        "not_launchable": "इस वर्कफ़्लो को यहाँ से नहीं चलाया जा सकता: इसे शुरू करने के लिए कोई फ़ाइल नहीं है।",
         "refresh_recipes": "वर्कफ़्लो रिफ़्रेश करो",
         "new_recipe": "नया वर्कफ़्लो",
         "new_recipe_name": "वर्कफ़्लो नाम",
@@ -5361,7 +5357,22 @@
         "group_summary_steps_one": "{{count}} चरण",
         "group_summary_steps_other": "{{count}} चरण",
         "load_more_one": "{{count}} और लोड करो",
-        "load_more_other": "{{count}} और लोड करो"
+        "load_more_other": "{{count}} और लोड करो",
+        "watch_marker": "गतिविधि पर नज़र रखता है",
+        "included_workflow_steps": "शामिल वर्कफ़्लो · {{n}} चरण",
+        "iteration_prev": "इस चरण का पिछला रन",
+        "iteration_next": "इस चरण का अगला रन",
+        "iteration_position": "{{max}} में से रन {{n}}",
+        "created_by_session_prefix": "इस सत्र द्वारा बनाया गया",
+        "chip_thought_tools": "विचार ({{thoughts}}) + टूल ({{tools}})",
+        "chip_tools": "टूल ({{n}})",
+        "chip_thought": "विचार ({{n}})",
+        "step_asks": "{{step}} पूछता है",
+        "composer_placeholder_agent": "{{agent}} को उत्तर दो…",
+        "composer_placeholder": "संदेश भेजें…",
+        "composer_running_hint": "जब यह चरण तुम्हारा इनपुट मांगे, तब तुम उत्तर दे सकते हो।",
+        "composer_idle_hint": "यह चरण उत्तर की प्रतीक्षा नहीं कर रहा है।",
+        "reply_open": "उत्तर दो"
       }
     },
     "commandBar": {
@@ -8998,10 +9009,10 @@
       "loading_commands_enter_held": "कमांड लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा",
-      "desc_workflow_run": "कोई Kiro Agent वर्कफ़्लो चलाओ",
-      "desc_workflow_resume": "किसी रुके हुए Kiro Agent वर्कफ़्लो रन को फिर से शुरू करो",
-      "desc_workflow_status": "इस चैट के Kiro Agent वर्कफ़्लो रन दिखाओ",
-      "desc_workflow_cancel": "किसी Kiro Agent वर्कफ़्लो रन को रोको"
+      "desc_workflow_run": "कोई Kiro Workflow चलाओ",
+      "desc_workflow_resume": "किसी रुके हुए Kiro Workflow रन को फिर से शुरू करो",
+      "desc_workflow_status": "इस चैट के Kiro Workflow रन दिखाओ",
+      "desc_workflow_cancel": "किसी Kiro Workflow रन को रोको"
     },
     "slotTagPopover": {
       "assign_tags": "टैग असाइन करें",
@@ -11872,6 +11883,14 @@
         "session_colors": "सत्र रंग",
         "save_failed": "सत्र रंग सहेजा नहीं जा सका"
       },
+      "sessionMessageCard": {
+        "needs_you": "ध्यान चाहिए",
+        "open_session": "{{name}} खोलो",
+        "show_less": "कम दिखाओ",
+        "show_more": "और दिखाओ",
+        "this_session": "यह सत्र",
+        "to_recipient": "{{name}} को भेजा गया"
+      },
       "sessionFlyout": {
         "new": "नया",
         "new_chat": "नई चैट",
@@ -13982,7 +14001,7 @@
         "folder_conductor": "फ़ोल्डर कंडक्टर",
         "folder_conductor_desc": "जिस चैट ने फ़ोल्डर की बाकी चैट शुरू कीं, उसे उस फ़ोल्डर में सबसे ऊपर ले आता है: उसके बाएँ किनारे पर एक रंगीन पट्टी और एजेंट के नाम के पास एक छोटा conductor लेबल। इससे सत्र सूची का क्रम बदलता है, इसलिए जब तक तुम इसे चालू नहीं करते, सूची वैसी ही रहती है। फ़ोल्डर मेनू का चैट आइटम हमेशा रहता है।",
         "kas_workflows": "Kiro Agent Server कॉन्फ़िगर होने पर Kiro Workflows इस्तेमाल करो",
-        "kas_workflows_desc": "Kiro Agent जहाँ चलता है वहाँ उसके अपने वर्कफ़्लो चालू करता है — Workflows टैब, Task Runner, किसी चैट से शुरू किए गए वर्कफ़्लो, और बूट के समय रुकी हुई रन की रिकवरी। यह हर डिवाइस के बजाय इस गेटवे पर सेव होता है; हर चैट इसे अपना अगला सेशन शुरू होने पर अपनाती है।",
+        "kas_workflows_desc": "Kiro Agent जहाँ चलता है वहाँ Kiro Workflows चालू करता है — Workflows टैब, Task Runner, किसी चैट से शुरू किए गए वर्कफ़्लो, और बूट के समय रुकी हुई रन की रिकवरी। यह हर डिवाइस के बजाय इस गेटवे पर सेव होता है; हर चैट इसे अपना अगला सेशन शुरू होने पर अपनाती है।",
         "kas_workflows_off_backend": "जब तक एजेंट बैकएंड Kiro Agent न हो, इसका कोई असर नहीं।",
         "kas_workflows_failed": "यह सेटिंग सेव नहीं हो सकी।",
         "kas_creator_effort": "बनाने वाले चरण की मेहनत",

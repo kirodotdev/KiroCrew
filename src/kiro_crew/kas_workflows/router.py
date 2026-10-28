@@ -2629,8 +2629,8 @@ async def launch_from_turn(slot_key: str, message: str, provider: Any) -> str | 
     binding = session_binding(provider)
     if binding is None:
         return (
-            "This chat is not running on Kiro Agent, so it cannot start a Kiro Agent "
-            "workflow. Switch the agent to Kiro Agent and launch it again."
+            "This chat is not running on Kiro Agent, so it cannot start a Kiro "
+            "Workflow. Switch the agent to Kiro Agent and launch it again."
         )
     runtime, session_id = binding
     try:

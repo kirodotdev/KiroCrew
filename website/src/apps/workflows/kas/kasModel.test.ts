@@ -9,6 +9,7 @@ import {
   dockSummary,
   findNode,
   findNodeByPath,
+  humanizeInputName,
   isRejectOption,
   leafSteps,
   liveStatusLine,
@@ -283,6 +284,23 @@ describe('kasModel — G1 Kiro Agent step counts', () => {
     const sum = dockSummary([a, b])
     expect(sum.stepsDone).toBe(4)
     expect(sum.stepsTotal).toBe(6)
+  })
+})
+
+describe('humanizeInputName (CX r8)', () => {
+  it('splits, sentence-cases, and keeps known acronyms upper', () => {
+    expect(humanizeInputName('pr_url')).toBe('PR URL')
+    expect(humanizeInputName('task')).toBe('Task')
+    expect(humanizeInputName('workItemId')).toBe('Work item ID')
+    expect(humanizeInputName('api_key')).toBe('API key')
+    expect(humanizeInputName('ci')).toBe('CI')
+    expect(humanizeInputName('user-name')).toBe('User name')
+    expect(humanizeInputName('base_branch_name')).toBe('Base branch name')
+  })
+
+  it('returns the raw name when there is nothing to split', () => {
+    expect(humanizeInputName('')).toBe('')
+    expect(humanizeInputName('__')).toBe('__')
   })
 })
 

@@ -884,7 +884,10 @@ describe('CrewChatWindow', () => {
     // tool line opens THIS gateway's run (store + selection), and the KAS event
     // marker is decided not peer-safe too: a peer's window draws both through
     // the store-free default rather than claim a run it does not hold.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'kas_run_workflow_tool', 'kas_turn_marker', 'kas_event_marker', 'kas_workflow_tool_line', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation'])
+    // The session-message cards name the sender (and open it) from THIS hub's
+    // session roster, where a peer's session keys mean nothing: a peer's window
+    // draws those rows through the store-free default too.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'kas_run_workflow_tool', 'kas_turn_marker', 'kas_event_marker', 'kas_workflow_tool_line', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_relay_incoming', 'session_send_tool'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')

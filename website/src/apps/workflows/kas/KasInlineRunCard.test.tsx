@@ -48,24 +48,27 @@ describe('extractKasWorkflowId', () => {
 const step = (id: string, label: string) => ({ ...kasRow().nodes[0], id, label, children: [] })
 
 describe('planMetaLine / runFooterLine', () => {
-  it('names the top-level steps, at most four then …', () => {
-    expect(planMetaLine(kasRow())).toBe('2-step workflow · Plan → Fix loop')
+  it('names the top-level steps, at most four then … (no separate step-count label)', () => {
+    // The leaf-step COUNT lives in runFooterLine now; planMetaLine is the chain alone.
+    expect(planMetaLine(kasRow())).toBe('Plan → Fix loop')
     const five = kasRow({ nodes: ['A', 'B', 'C', 'D', 'E'].map(l => step(l, l)) })
-    expect(planMetaLine(five)).toBe('5-step workflow · A → B → C → D → …')
+    expect(planMetaLine(five)).toBe('A → B → C → D → …')
     expect(planMetaLine(kasRow({ nodes: [] }))).toBeNull()
   })
 
-  it('prepends the start stamp, shows Step n/m and elapsed while live; drops Step n/m when unknown or finished, never 0/0', () => {
+  it('prepends the start stamp, shows {done}/{total} steps (leaf count) and elapsed; drops the steps when done is unknown', () => {
     const now = Date.parse('2026-10-16T10:01:05Z')
     const live = runFooterLine(kasRow(), now)
-    // Gap 24: a start stamp is prepended; the Step/elapsed tail is unchanged.
-    expect(live?.endsWith('Step 1/3 · 1m 4s')).toBe(true)
-    expect(live).not.toBe('Step 1/3 · 1m 4s')
+    // Gap 24: a start stamp is prepended; one consistent leaf count follows.
+    expect(live?.endsWith('1/3 steps · 1m 4s')).toBe(true)
+    expect(live).not.toBe('1/3 steps · 1m 4s')
+    // 0/0 from the engine still resolves to the plan's leaf count (3).
     const noSteps = runFooterLine(kasRow({ completedSteps: 0, totalSteps: 0 }), now)
     expect(noSteps?.endsWith('1m 4s')).toBe(true)
-    expect(noSteps).not.toContain('Step ')
+    expect(noSteps).toContain('0/3 steps')
     const done = kasRow({ status: 'completed', endedAt: '2026-10-16T10:00:31Z', controls: kasControls({ display: 'completed', primary: null, canStop: false }) })
     expect(runFooterLine(done, now)?.endsWith('30s')).toBe(true)
+    // No start, no created, no completed count → nothing to show.
     expect(runFooterLine(kasRow({ startedAt: null, createdAt: null, completedSteps: null }), now)).toBeNull()
   })
 })
@@ -76,11 +79,14 @@ describe('KasRunCardCompact', () => {
     const card = screen.getByTestId('kas-inline-card')
     expect(within(card).getByText('Review and fix')).toBeInTheDocument()
     expect(screen.getByTestId('kas-run-state')).toHaveTextContent('Running')
-    expect(screen.getByTestId('kas-inline-meta')).toHaveTextContent('2-step workflow · Plan → Fix loop')
+    // One meta line: the chain + started + {done}/{total} steps + elapsed.
+    const meta = screen.getByTestId('kas-inline-meta')
+    expect(meta).toHaveTextContent('Plan → Fix loop')
+    expect(meta).toHaveTextContent('1/3 steps')
     const status = screen.getByTestId('kas-inline-status')
     expect(status).toHaveTextContent('Review')
     expect(within(status).getByTestId('kas-agent-tag')).toHaveTextContent('reviewer')
-    expect(screen.getByTestId('kas-inline-footer')).toHaveTextContent(/Step 1\/3 · /)
+    expect(screen.queryByTestId('kas-inline-footer')).toBeNull()
     expect(screen.getByRole('button', { name: /^pause$/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^stop$/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /open chat/i })).toBeNull()

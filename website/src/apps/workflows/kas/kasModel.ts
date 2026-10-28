@@ -16,6 +16,7 @@ import type {
   KasRunDisplay,
   KasRunNode,
   KasRunRow,
+  KasStepEntry,
 } from '../../../api/client'
 import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
@@ -649,6 +650,34 @@ export function includeMemberLabel(label: string, groupId: string | null | undef
   return label.length > prefix.length && label.startsWith(prefix) ? label.slice(prefix.length) : label
 }
 
+/** Acronyms kept all-caps when a launch input's raw name is humanized (gap: CX r8). */
+const INPUT_LABEL_ACRONYMS = new Set(['URL', 'PR', 'ID', 'API', 'CI'])
+
+/**
+ * A readable label for a recipe input whose raw name is a code identifier
+ * (`pr_url` → "PR URL", `workItemId` → "Work item ID"). Splits on `_`/`-` and
+ * camelCase boundaries, sentence-cases the result, and keeps known acronyms
+ * upper. Display only — the launch payload still carries the raw name. KAS's
+ * recipe wire schema (`parse_recipe`) gives inputs only a name and a type, with
+ * no description/title field to prefer, so the name is all there is to show.
+ */
+export function humanizeInputName(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+  if (words.length === 0) return name
+  return words
+    .map((word, i) => {
+      const upper = word.toUpperCase()
+      if (INPUT_LABEL_ACRONYMS.has(upper)) return upper
+      const lower = word.toLowerCase()
+      return i === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower
+    })
+    .join(' ')
+}
+
 /** The id of the nearest included-workflow group above `nodeId`, if any. */
 function includeGroupOf(nodes: readonly KasRunNode[], nodeId: string, group: string | null = null): string | null | undefined {
   for (const node of nodes) {
@@ -838,4 +867,188 @@ export function groupSummary(node: Pick<KasRunNode, 'children' | 'iterations' | 
   if (failed > 0) return i18nT('apps.workflows.kas.group_summary_failed', { count: failed })
   if (steps.every(s => s.status === 'completed')) return i18nT('apps.workflows.kas.group_summary_completed')
   return i18nT('apps.workflows.kas.group_summary_steps', { count: steps.length })
+}
+
+
+// ── Round 7: one step tally, loop body + iteration pager, parent notes, reply folds ──
+
+/**
+ * The run's SINGLE step tally — leaf step executions — so the card's
+ * "{n}-step workflow", the header's "{done}/{total} steps" and the "Step n/m"
+ * line all read the same number (gap: card said "4-step workflow" beside
+ * "Step 1/5"). Kiro Agent's own count when it reports one (it includes loop
+ * passes), else the leaf nodes of the plan.
+ */
+export function runStepTotal(
+  row: Pick<KasRunRow, 'stepsCompleted' | 'stepsTotal' | 'completedSteps' | 'totalSteps' | 'nodes'>,
+): number | null {
+  const { total } = effectiveSteps(row)
+  if (total != null && total > 0) return total
+  const leaves = leafSteps(row.nodes).length
+  return leaves > 0 ? leaves : null
+}
+
+/** How many passes a repeat node has run, for its `↻ N` row; null when unknown.
+ *  Realised iterations when KAS lists them, else its live counter, else the
+ *  current 1-based iteration index. */
+export function loopIterationCount(node: Pick<KasRunNode, 'iterations' | 'loop' | 'iteration'>): number | null {
+  if (node.iterations && node.iterations.length > 0) return node.iterations.length
+  if (node.loop) return node.loop.done
+  if (node.iteration != null) return node.iteration
+  return null
+}
+
+/** The loop body a repeat renders ONCE: the latest realised iteration's nodes
+ *  (real paths / status), else the definition children before any ran. */
+export function loopBodyChildren(node: KasRunNode): readonly KasRunNode[] {
+  if (node.type === 'repeat' && node.iterations && node.iterations.length > 0) {
+    return node.iterations[node.iterations.length - 1].children
+  }
+  return node.children
+}
+
+/** Every realised instance of a loop-body step (by node id), in iteration order,
+ *  for the selected row's `‹ n/m ›` pager. Empty when the step has no instances. */
+export function stepIterationInstances(repeat: KasRunNode, nodeId: string): KasRunNode[] {
+  if (repeat.type !== 'repeat' || !repeat.iterations) return []
+  const out: KasRunNode[] = []
+  for (const iter of repeat.iterations) {
+    const hit = iter.children.find(child => child.id === nodeId)
+    if (hit) out.push(hit)
+  }
+  return out
+}
+
+/** Leaf steps inside an included workflow, for its "included workflow · N steps" row. */
+export function includeStepCount(node: Pick<KasRunNode, 'children'>): number {
+  return leafSteps(node.children).length
+}
+
+/** A step turn's `send_message` is Kiro Agent's step-completion signal AND the
+ *  step's note to the run's parent chat; the step pane draws it as its own card. */
+const PARENT_MESSAGE_RE = /(^|[._/@])send_message$/i
+
+export function isParentMessageTool(entry: KasStepEntry): entry is Extract<KasStepEntry, { kind: 'tool' }> {
+  return entry.kind === 'tool' && PARENT_MESSAGE_RE.test(entry.name)
+}
+
+export interface ParentMessage {
+  text: string
+  /** KAS's completion severity, when the call carried one: success / warning / error. */
+  severity: 'success' | 'warning' | 'error' | null
+}
+
+function asSeverity(value: unknown): ParentMessage['severity'] {
+  return value === 'success' || value === 'warning' || value === 'error' ? value : null
+}
+
+/** The message and severity of a step's `send_message` note, from its tool input
+ *  (KAS serialises the call's args as JSON when no command/path is present). */
+export function parseParentMessage(entry: Extract<KasStepEntry, { kind: 'tool' }>): ParentMessage {
+  const raw = entry.input
+  if (raw && raw.trimStart().startsWith('{')) {
+    try {
+      const obj = JSON.parse(raw) as Record<string, unknown>
+      const text = [obj.message, obj.text, obj.summary, obj.body].find(v => typeof v === 'string' && v) as
+        | string
+        | undefined
+      if (text) return { text, severity: asSeverity(obj.severity ?? obj.level) }
+    } catch {
+      /* not JSON: fall through to the raw input */
+    }
+  }
+  return { text: raw || entry.title || entry.name, severity: null }
+}
+
+/** The first step instance parked for the person's INPUT (its `waitingFor`),
+ *  descending into loop iterations; null when nothing waits on input. The run
+ *  card uses it to name the real question and offer a Reply. */
+export function inputWaitNode(nodes: readonly KasRunNode[]): KasRunNode | null {
+  let seen = 0
+  const walk = (list: readonly KasRunNode[], depth: number): KasRunNode | null => {
+    if (depth > MAX_PLAN_DEPTH) return null
+    for (const node of list) {
+      if (++seen > 5000) return null
+      if (node.type === 'step' && node.waitingFor === 'input') return node
+      const inChildren = walk(node.children, depth + 1)
+      if (inChildren) return inChildren
+      if (node.iterations) {
+        for (const iter of node.iterations) {
+          const inIter = walk(iter.children, depth + 1)
+          if (inIter) return inIter
+        }
+      }
+    }
+    return null
+  }
+  return walk(nodes, 0)
+}
+
+/** The step's latest `send_message` note, newest-last scan — the text a parked
+ *  step showed when it asked for input, so a run card can name the real question. */
+export function lastStepNote(entries: readonly KasStepEntry[]): ParentMessage | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (isParentMessageTool(entry)) return parseParentMessage(entry)
+  }
+  return null
+}
+
+/** A chip summarising the reasoning + tool rows between two replies. */
+export interface StepChip {
+  thoughts: number
+  tools: number
+  entries: KasStepEntry[]
+  running: boolean
+}
+
+/**
+ * One rendered unit of the step transcript, folded PER REPLY (the IDE's run
+ * view, replacing the per-turn fold):
+ *
+ * - `prompt` — a user prompt, never folded.
+ * - `parent` — a `send_message` note to the parent chat, its own card.
+ * - `reply` — a plain assistant reply, preceded by a `chip` of the reasoning
+ *   and tool rows since the previous reply (null when there were none).
+ * - `work` — trailing reasoning / tools after the last reply (or before a
+ *   prompt / parent card), with no reply of their own.
+ */
+export type StepReplyBlock =
+  | { kind: 'prompt'; entry: Extract<KasStepEntry, { kind: 'user' }> }
+  | { kind: 'parent'; entry: Extract<KasStepEntry, { kind: 'tool' }> }
+  | { kind: 'reply'; chip: StepChip | null; reply: Extract<KasStepEntry, { kind: 'assistant' }>; ts: string | null }
+  | { kind: 'work'; chip: StepChip }
+
+function stepChip(entries: KasStepEntry[]): StepChip {
+  return {
+    thoughts: entries.filter(e => e.kind === 'assistant' && e.reasoning).length,
+    tools: entries.filter(e => e.kind === 'tool').length,
+    entries,
+    running: entries.some(e => e.kind === 'tool' && (e.status === 'running' || e.status === 'in_progress')),
+  }
+}
+
+export function foldReplies(entries: readonly KasStepEntry[]): StepReplyBlock[] {
+  const out: StepReplyBlock[] = []
+  let work: KasStepEntry[] = []
+  const flush = () => {
+    if (work.length) out.push({ kind: 'work', chip: stepChip(work) })
+    work = []
+  }
+  for (const entry of entries) {
+    if (entry.kind === 'user') {
+      flush()
+      out.push({ kind: 'prompt', entry })
+    } else if (isParentMessageTool(entry)) {
+      flush()
+      out.push({ kind: 'parent', entry })
+    } else if (entry.kind === 'assistant' && !entry.reasoning) {
+      out.push({ kind: 'reply', chip: work.length ? stepChip(work) : null, reply: entry, ts: entry.ts })
+      work = []
+    } else {
+      work.push(entry)
+    }
+  }
+  flush()
+  return out
 }

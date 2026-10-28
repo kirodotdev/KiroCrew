@@ -5166,8 +5166,6 @@
         "in_progress": "実行中",
         "included_workflow": "組み込まれたワークフロー",
         "invalid": "無効なワークフロー",
-        "iteration": "反復 {{n}}/{{max}}",
-        "iteration_label": "イテレーション {{n}}",
         "kiro_agent": "Kiro Agent",
         "launch": "実行",
         "launch_effort": "推論の強度",
@@ -5191,7 +5189,6 @@
         "marker_update": "ワークフロー {{name}} からの更新",
         "marker_waiting": "ワークフロー {{name}} が応答を待っています",
         "max_iterations": "反復: 最大 {{max}}",
-        "n_step_workflow_other": "{{count}} ステップのワークフロー",
         "no_messages": "まだメッセージはありません。",
         "no_recipes": "このプロジェクトにはワークフローが見つかりません。",
         "no_runs": "ワークフローの実行はまだありません。",
@@ -5324,10 +5321,10 @@
         "tool_valid": "有効",
         "tool_invalid": "無効",
         "tool_open_run": "実行を開く",
-        "empty_hint": "カスタマイズ › Workflows からワークフローを起動するか、Kiro Agent のワークフローの実行を依頼してください。",
+        "empty_hint": "カスタマイズ › Workflows からワークフローを起動するか、Kiro Workflow の実行を依頼してください。",
         "input_required": "必須",
         "inputs_required": "実行するにはすべての入力を埋めてください。",
-        "not_launchable": "このワークフローには起動元がないため、実行できません。",
+        "not_launchable": "このワークフローはここからは実行できません。起動元となるファイルがありません。",
         "refresh_recipes": "ワークフローを更新",
         "new_recipe": "新しいワークフロー",
         "new_recipe_name": "ワークフロー名",
@@ -5350,7 +5347,22 @@
         "group_summary_input_other": "{{count}} 件のステップに入力が必要です",
         "group_summary_failed_other": "{{count}} 件のステップが失敗しました",
         "group_summary_steps_other": "{{count}} 件のステップ",
-        "load_more_other": "さらに {{count}} 件を読み込む"
+        "load_more_other": "さらに {{count}} 件を読み込む",
+        "watch_marker": "アクティビティを監視",
+        "included_workflow_steps": "含まれるワークフロー · {{n}} ステップ",
+        "iteration_prev": "このステップの前回の実行",
+        "iteration_next": "このステップの次の実行",
+        "iteration_position": "{{max}} 回中 {{n}} 回目",
+        "created_by_session_prefix": "作成元セッション",
+        "chip_thought_tools": "思考 ({{thoughts}}) + ツール ({{tools}})",
+        "chip_tools": "ツール ({{n}})",
+        "chip_thought": "思考 ({{n}})",
+        "step_asks": "{{step}} からの質問",
+        "composer_placeholder_agent": "{{agent}} に返信…",
+        "composer_placeholder": "メッセージを送信…",
+        "composer_running_hint": "このステップが入力を求めたら返信できます。",
+        "composer_idle_hint": "このステップは返信を待っていません。",
+        "reply_open": "返信"
       }
     },
     "awsControl": {
@@ -8852,10 +8864,10 @@
       "loading_commands_enter_held": "コマンドを読み込み中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
       "no_matching_commands_ctrl_enter_sends": "一致するコマンドがありません — Ctrl+Enter でメッセージを送信します",
       "no_matching_commands_enter_sends": "一致するコマンドがありません — Enter でメッセージを送信します",
-      "desc_workflow_run": "Kiro Agent のワークフローを実行",
-      "desc_workflow_resume": "一時停止した Kiro Agent のワークフロー実行を再開",
-      "desc_workflow_status": "このチャットの Kiro Agent ワークフロー実行を表示",
-      "desc_workflow_cancel": "Kiro Agent のワークフロー実行を停止"
+      "desc_workflow_run": "Kiro Workflow を実行",
+      "desc_workflow_resume": "一時停止した Kiro Workflow 実行を再開",
+      "desc_workflow_status": "このチャットの Kiro Workflow 実行を表示",
+      "desc_workflow_cancel": "Kiro Workflow 実行を停止"
     },
     "slotTagPopover": {
       "assign_tags": "タグを割り当てる",
@@ -11697,6 +11709,14 @@
         "session_colors": "セッションの色",
         "save_failed": "セッションの色を保存できませんでした"
       },
+      "sessionMessageCard": {
+        "needs_you": "対応が必要",
+        "open_session": "{{name}} を開く",
+        "show_less": "表示を減らす",
+        "show_more": "もっと見る",
+        "this_session": "このセッション",
+        "to_recipient": "{{name}} に送信"
+      },
       "sessionFlyout": {
         "new": "新規",
         "new_chat": "新しいチャット",
@@ -13748,7 +13768,7 @@
         "folder_conductor": "フォルダーのコンドクター",
         "folder_conductor_desc": "フォルダーの他のチャットを開始したチャットを、そのフォルダーの先頭に引き上げます。左端にアクセントのバーが入り、エージェント名の横に小さな conductor タグが付きます。セッション一覧の並び順が変わるため、有効にするまで一覧はそのままです。フォルダーメニューのチャット項目は常に表示されます。",
         "kas_workflows": "Kiro Agent Server が設定されているとき Kiro Workflows を使う",
-        "kas_workflows_desc": "Kiro Agent が動作する場所すべてで独自のワークフローを有効にします。Workflows タブ、Task Runner、チャットから開始したワークフロー、起動時の中断した実行の復元が対象です。デバイスごとではなくこのゲートウェイに保存され、各チャットは次のセッション開始時に反映します。",
+        "kas_workflows_desc": "Kiro Agent が動作する場所すべてで Kiro Workflows を有効にします。Workflows タブ、Task Runner、チャットから開始したワークフロー、起動時の中断した実行の復元が対象です。デバイスごとではなくこのゲートウェイに保存され、各チャットは次のセッション開始時に反映します。",
         "kas_workflows_off_backend": "エージェントのバックエンドが Kiro Agent になるまで効果はありません。",
         "kas_workflows_failed": "この設定を保存できませんでした。",
         "kas_creator_effort": "作成ステップの推論の強度",

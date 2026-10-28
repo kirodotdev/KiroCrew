@@ -795,8 +795,7 @@ async def _resolve_permission(
         await _steer_host_deny(
             provider,
             event,
-            "a Kiro Agent workflow plan or question needs a person and this surface "
-            "has no approver",
+            "a Kiro Workflows plan or question needs a person and this surface " "has no approver",
             cause=DENY_CAUSE_SURFACE_POLICY,
         )
         await provider.reject_tool(event.request_id)

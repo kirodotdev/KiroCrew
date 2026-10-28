@@ -19,9 +19,9 @@
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronDown, ChevronRight, Workflow } from 'lucide-react'
+import { ChevronDown, ChevronRight, MessageSquareReply, Workflow } from 'lucide-react'
 
-import type { KasApproval, KasQuestion, KasRunRow } from '../../../api/client'
+import type { KasApproval, KasQuestion, KasRunNode, KasRunRow } from '../../../api/client'
 import type { ChatMessage } from '../../../types'
 import { Badge, Btn } from '../../../components/ui'
 import { useAppDispatch } from '../../../store'
@@ -32,10 +32,12 @@ import { fmtDateTime } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import {
   approvalsFor,
+  effectiveSteps,
   findNode,
+  inputWaitNode,
   isTerminalRun,
+  lastStepNote,
   liveStatusLine,
-  liveStepProgress,
   pauseLine,
   planSummary,
   planUpdateIsWarning,
@@ -43,6 +45,7 @@ import {
   questionsFor,
   runBadge,
   runElapsedMs,
+  runStepTotal,
   runTitle,
   servedByMcp,
   showNeedsYouPill,
@@ -53,7 +56,7 @@ import { KasLoopExhaustedControls, KasPauseReasonLine, KasRunRecoveryButtons } f
 import { KasQuestionCard } from './KasQuestionCard'
 import { KasStepsTree } from './KasStepsTree'
 import { setKasSelection } from './kasSelection'
-import { useKasChatRuns, useKasRunActions, useKasState, useKasWorkflowsEnabled, useKasWorkflowsSetting } from './useKasWorkflows'
+import { useKasChatRuns, useKasRunActions, useKasState, useKasStepTranscript, useKasWorkflowsEnabled, useKasWorkflowsSetting } from './useKasWorkflows'
 
 const KAS_WORKFLOW_ID_RE = /^wf_[0-9a-f]{8,64}$/
 
@@ -79,21 +82,25 @@ export function isKasRunWorkflowTool(message: ChatMessage): boolean {
   return extractKasWorkflowId(message) !== null
 }
 
-/** The `{n}-step workflow · A → B → C` meta line, or null with no plan. */
+/** The `A → B → C` step chain, or null with no plan. The leaf-step COUNT lives
+ *  in {@link runFooterLine} ("{done}/{total} steps") now, so the card no longer
+ *  carries a separate "{n}-step workflow" label that disagreed with it. */
 export function planMetaLine(row: Pick<KasRunRow, 'nodes'>): string | null {
   const plan = planSummary(row)
   if (!plan) return null
-  const chain = plan.labels.join(' → ') + (plan.more ? ' → …' : '')
-  return `${i18nT('apps.workflows.kas.n_step_workflow', { count: plan.count })} · ${chain}`
+  return plan.labels.join(' → ') + (plan.more ? ' → …' : '')
 }
 
-/** The `{started} · Step n/m · {elapsed}` footer (each part omitted when unknown). */
+/** The `{started} · {done}/{total} steps · {elapsed}` line (each part omitted
+ *  when unknown). `{done}/{total}` is the run's single leaf-step tally, the SAME
+ *  number the run detail's header shows. */
 export function runFooterLine(row: KasRunRow, now: number): string | null {
   const parts: string[] = []
   // The IDE shows when the run started; Crew only ever showed elapsed (gap 24).
   if (row.startedAt) parts.push(i18nT('apps.workflows.kas.started_at', { when: fmtDateTime(row.startedAt) }))
-  const progress = liveStepProgress(row)
-  if (progress) parts.push(i18nT('apps.workflows.kas.step_progress', { done: progress.done, total: progress.total }))
+  const total = runStepTotal(row)
+  const done = effectiveSteps(row).done
+  if (done != null && total != null) parts.push(i18nT('apps.workflows.kas.dock_steps', { done, total }))
   const elapsed = runElapsedMs(row, now)
   if (elapsed != null) parts.push(fmtElapsed(elapsed, { wholeSeconds: true }))
   return parts.length > 0 ? parts.join(' · ') : null
@@ -119,14 +126,17 @@ export function KasRunCardCompact({
   const now = useNow(!isTerminalRun(row))
   const title = runTitle(row)
   const badge = runBadge(row)
-  const meta = planMetaLine(row)
   const live = liveStatusLine(row)
-  const footer = runFooterLine(row, now)
+  // One line: `A → B → C · Started … · {done}/{total} steps · {elapsed}`.
+  const metaLine = [planMetaLine(row), runFooterLine(row, now)].filter(Boolean).join(' · ')
   const asks = questionsFor(questions, row.workflowId)
   // The structured pause line is drawn under the card (it may carry KAS's own
   // detail), so the header's live line does not repeat it.
   const parked = live?.kind === 'reason' && pauseLine(row) ? null : live
   const planUpdate = planUpdateLine(row)
+  // A step parked on the person's input: the card names the real question (from
+  // the step's own note) and offers a Reply, in place of the generic pause line.
+  const waitNode = readOnly ? null : inputWaitNode(row.nodes)
   // Gap 14: the step tree rides inside the card — open while the run is live,
   // collapsed once it ends; the reader's own toggle (non-null) wins over that.
   const [treeOpen, setTreeOpen] = useState<boolean | null>(null)
@@ -159,18 +169,21 @@ export function KasRunCardCompact({
         >
           <span className="flex items-center gap-2 min-w-0">
             <span className="font-semibold text-[13px] text-text-strong truncate min-w-0">{title}</span>
-            <Badge variant={badge.variant} className="text-[11px] px-1.5 py-0" data-testid="kas-run-state">
-              {badge.label}
-            </Badge>
+            {/* A run that needs a person reads only "Needs you"; the base
+                "Paused" badge would otherwise sit redundantly beside it (gap F). */}
             {showNeedsYouPill(row) ? (
               <Badge variant="warn" className="text-[11px] px-1.5 py-0" data-testid="kas-needs-you">
                 {i18nT('apps.workflows.kas.state_needs_you')}
               </Badge>
-            ) : null}
+            ) : (
+              <Badge variant={badge.variant} className="text-[11px] px-1.5 py-0" data-testid="kas-run-state">
+                {badge.label}
+              </Badge>
+            )}
           </span>
-          {meta ? (
-            <span className="text-[12px] text-muted truncate" data-testid="kas-inline-meta">
-              {meta}
+          {metaLine ? (
+            <span className="text-[12px] text-muted" data-testid="kas-inline-meta">
+              {metaLine}
             </span>
           ) : null}
           {parked ? (
@@ -181,11 +194,6 @@ export function KasRunCardCompact({
               <KasRunStatusIcon display={row.controls.display} attention={parked.kind === 'blocking'} size={12} />
               <span className="truncate min-w-0">{parked.text}</span>
               {parked.kind === 'active' && parked.agent ? <AgentTag agent={parked.agent} /> : null}
-            </span>
-          ) : null}
-          {footer ? (
-            <span className="text-[11px] text-muted tabular-nums" data-testid="kas-inline-footer">
-              {footer}
             </span>
           ) : null}
         </button>
@@ -208,7 +216,11 @@ export function KasRunCardCompact({
           </button>
         </div>
       ) : null}
-      {pauseLine(row) && live?.kind !== 'blocking' ? (
+      {waitNode ? (
+        <div className="px-3 pb-2" data-testid="kas-inline-pause">
+          <InputWaitLine row={row} node={waitNode} onReply={() => openStep(waitNode.id, waitNode.path)} />
+        </div>
+      ) : pauseLine(row) && live?.kind !== 'blocking' ? (
         <div className="px-3 pb-2" data-testid="kas-inline-pause">
           <KasPauseReasonLine row={row} />
         </div>
@@ -261,6 +273,40 @@ export function KasRunCardCompact({
         </div>
       ) : null}
     </article>
+  )
+}
+
+/**
+ * The real question a step asked when it parked for input — its latest
+ * `send_message` note, read from the step's own transcript — with a Reply that
+ * opens the step's composer. Until the note loads (or when none is found) it
+ * falls back to KAS's own pause line, so the card is never blank.
+ */
+function InputWaitLine({ row, node, onReply }: { row: KasRunRow; node: KasRunNode; onReply: () => void }) {
+  const query = useKasStepTranscript(row.workflowId, node.id, false, node.path ?? null)
+  const note = query.data ? lastStepNote(query.data.entries) : null
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="kas-inline-question">
+      {/* The step's real question, in a warn-bordered quote labelled "<step> asks". */}
+      <div className="rounded-md border border-warn/50 bg-warn-subtle px-2.5 py-1.5 flex flex-col gap-0.5">
+        <p className="m-0 text-[11px] font-medium text-warn">{i18nT('apps.workflows.kas.step_asks', { step: node.label })}</p>
+        {note ? (
+          <p className="m-0 text-[12px] text-text break-words line-clamp-3">{note.text}</p>
+        ) : (
+          <KasPauseReasonLine row={row} />
+        )}
+      </div>
+      {/* The one filled button on the card: opens this step in the run view. */}
+      <button
+        type="button"
+        className="self-start inline-flex items-center gap-1 rounded bg-accent text-accent-fg text-[11.5px] px-2 py-0.5 border-none cursor-pointer hover:bg-accent-hover"
+        onClick={onReply}
+        data-testid="kas-inline-reply"
+      >
+        <MessageSquareReply size={12} aria-hidden="true" />
+        {i18nT('apps.workflows.kas.reply_open')}
+      </button>
+    </div>
   )
 }
 

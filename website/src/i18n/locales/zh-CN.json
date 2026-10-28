@@ -5078,8 +5078,6 @@
         "in_progress": "进行中",
         "included_workflow": "包含的工作流",
         "invalid": "无效的工作流",
-        "iteration": "第 {{n}}/{{max}} 轮",
-        "iteration_label": "第 {{n}} 次迭代",
         "kiro_agent": "Kiro Agent",
         "launch": "运行",
         "launch_effort": "推理强度",
@@ -5103,7 +5101,6 @@
         "marker_update": "工作流 {{name}} 的更新",
         "marker_waiting": "工作流 {{name}} 正在等待你",
         "max_iterations": "轮次：最多 {{max}}",
-        "n_step_workflow_other": "{{count}} 步工作流",
         "no_messages": "暂无消息。",
         "no_recipes": "这个项目里没有找到工作流。",
         "no_runs": "还没有工作流运行。",
@@ -5236,10 +5233,10 @@
         "tool_valid": "有效",
         "tool_invalid": "无效",
         "tool_open_run": "打开运行",
-        "empty_hint": "从自定义 › Workflows 启动工作流，或让我运行一个 Kiro Agent 工作流。",
+        "empty_hint": "从自定义 › Workflows 启动工作流，或让我运行一个 Kiro Workflow。",
         "input_required": "必填",
         "inputs_required": "填写所有输入项以运行。",
-        "not_launchable": "此工作流没有启动来源，因此无法运行。",
+        "not_launchable": "此工作流无法从这里运行：它没有可用于启动的文件。",
         "refresh_recipes": "刷新工作流",
         "new_recipe": "新建工作流",
         "new_recipe_name": "工作流名称",
@@ -5262,7 +5259,22 @@
         "group_summary_input_other": "{{count}} 个步骤需要输入",
         "group_summary_failed_other": "{{count}} 个步骤失败",
         "group_summary_steps_other": "{{count}} 个步骤",
-        "load_more_other": "再加载 {{count}} 个"
+        "load_more_other": "再加载 {{count}} 个",
+        "watch_marker": "监视活动",
+        "included_workflow_steps": "包含的工作流 · {{n}} 个步骤",
+        "iteration_prev": "此步骤的上一次运行",
+        "iteration_next": "此步骤的下一次运行",
+        "iteration_position": "第 {{n}}/{{max}} 次运行",
+        "created_by_session_prefix": "创建自会话",
+        "chip_thought_tools": "思考 ({{thoughts}}) + 工具 ({{tools}})",
+        "chip_tools": "工具 ({{n}})",
+        "chip_thought": "思考 ({{n}})",
+        "step_asks": "{{step}} 询问",
+        "composer_placeholder_agent": "回复 {{agent}}…",
+        "composer_placeholder": "发送消息…",
+        "composer_running_hint": "当此步骤请求你输入时即可回复。",
+        "composer_idle_hint": "此步骤未在等待回复。",
+        "reply_open": "回复"
       }
     },
     "commandBar": {
@@ -8852,10 +8864,10 @@
       "loading_commands_enter_held": "正在加载命令… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息",
       "no_matching_commands_ctrl_enter_sends": "无匹配的命令 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_commands_enter_sends": "无匹配的命令 —— 按 Enter 直接发送消息",
-      "desc_workflow_run": "运行 Kiro Agent 工作流",
-      "desc_workflow_resume": "恢复已暂停的 Kiro Agent 工作流运行",
-      "desc_workflow_status": "显示此对话的 Kiro Agent 工作流运行",
-      "desc_workflow_cancel": "停止 Kiro Agent 工作流运行"
+      "desc_workflow_run": "运行 Kiro Workflow",
+      "desc_workflow_resume": "恢复已暂停的 Kiro Workflow 运行",
+      "desc_workflow_status": "显示此对话的 Kiro Workflow 运行",
+      "desc_workflow_cancel": "停止 Kiro Workflow 运行"
     },
     "slotTagPopover": {
       "assign_tags": "分配标签",
@@ -11697,6 +11709,14 @@
         "session_colors": "会话颜色",
         "save_failed": "无法保存会话颜色"
       },
+      "sessionMessageCard": {
+        "needs_you": "需要你处理",
+        "open_session": "打开 {{name}}",
+        "show_less": "收起",
+        "show_more": "显示更多",
+        "this_session": "当前会话",
+        "to_recipient": "已发送给 {{name}}"
+      },
       "sessionFlyout": {
         "new": "新建",
         "new_chat": "新建聊天",
@@ -13748,7 +13768,7 @@
         "folder_conductor": "文件夹调度者",
         "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。",
         "kas_workflows": "配置了 Kiro Agent Server 时使用 Kiro Workflows",
-        "kas_workflows_desc": "在 Kiro Agent 运行的所有位置启用其自带工作流：工作流标签页、Task Runner、从对话启动工作流，以及在启动时恢复中断的运行。保存在此网关，而非按设备保存；每个对话在下次会话启动时生效。",
+        "kas_workflows_desc": "在 Kiro Agent 运行的所有位置启用 Kiro Workflows：工作流标签页、Task Runner、从对话启动工作流，以及在启动时恢复中断的运行。保存在此网关，而非按设备保存；每个对话在下次会话启动时生效。",
         "kas_workflows_off_backend": "在智能体后端变为 Kiro Agent 之前不会生效。",
         "kas_workflows_failed": "无法保存此设置。",
         "kas_creator_effort": "创建步骤推理强度",

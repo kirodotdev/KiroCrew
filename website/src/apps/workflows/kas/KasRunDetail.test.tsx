@@ -7,6 +7,7 @@ import { createTestStore, renderWithProviders } from '../../../test/helpers'
 import { kasApproval, kasControls, kasLoopRow, kasRow, kasTranscript } from '../../../test/kasFixtures'
 import { KasRunDetail, KasStepsTree } from './KasRunDetail'
 import { KasStepChat } from './KasStepChat'
+import { foldReplies } from './kasModel'
 
 beforeEach(() => {
   vi.spyOn(api, 'kasRunControl').mockResolvedValue({ workflowId: 'wf-1', row: null })
@@ -47,7 +48,9 @@ describe('KasStepsTree', () => {
     expect(glyph('Bad')).toBe('failed')
     expect(glyph('Halt')).toBe('stopped')
     expect(screen.getAllByTestId('kas-step-meta').map(t => t.textContent)).toEqual(['planner', 'reviewer', 'fixer'])
-    expect(screen.getByTestId('kas-step-group')).toHaveTextContent('Iteration 1/3')
+    // The loop row shows its passes against the budget, not "Iteration n/m".
+    expect(screen.getByTestId('kas-step-group')).toHaveTextContent('1/3')
+    expect(within(screen.getByTestId('kas-step-group')).getByTestId('kas-loop-passes')).toBeInTheDocument()
   })
 
   it('a group collapses and expands', () => {
@@ -72,26 +75,21 @@ describe('KasStepsTree', () => {
     expect(screen.getByText('Fix').closest('button')).toBeNull()
   })
 
-  it('renders a repeat as per-iteration groups, latest expanded, and selects an iteration instance by path', () => {
+  it('renders a loop body once (latest iteration) with a pager that selects another instance', () => {
     const onSelect = vi.fn()
     renderWithProviders(<KasStepsTree nodes={kasLoopRow().nodes} selectedPath="loop/iter-1/review" onSelect={onSelect} />)
-    const groups = screen.getAllByTestId('kas-iteration-group')
-    expect(groups.map(g => g.getAttribute('data-iteration'))).toEqual(['0', '1'])
-    expect(groups[0]).toHaveTextContent('Iteration 1')
-    expect(groups[1]).toHaveTextContent('Iteration 2')
-    // Iteration 1 (index 0) starts collapsed, iteration 2 (latest) expanded.
-    expect(groups[0]).toHaveAttribute('aria-expanded', 'false')
-    expect(groups[1]).toHaveAttribute('aria-expanded', 'true')
-    expect(groups[0].getAttribute('data-status')).toBe('completed')
-    expect(groups[1].getAttribute('data-status')).toBe('running')
-    // Iteration 1's Review is hidden until its group opens.
+    // The loop row shows realised passes against the budget.
+    expect(screen.getByTestId('kas-loop-passes')).toHaveTextContent('2/3')
+    // The body renders ONCE, from the latest iteration: Review + Fix, no per-iteration groups.
+    expect(screen.queryByTestId('kas-iteration-group')).toBeNull()
     expect(screen.getAllByText('Review')).toHaveLength(1)
     const selected = screen.getByText('Review').closest('[data-testid="kas-tree-step"]')!
     expect(selected).toHaveAttribute('aria-current', 'true')
-    fireEvent.click(groups[0])
-    const reviews = screen.getAllByText('Review')
-    expect(reviews).toHaveLength(2)
-    fireEvent.click(reviews[0])
+    // The selected looped step carries an iteration pager at its latest instance.
+    const pager = screen.getByTestId('kas-iteration-pager')
+    expect(pager).toHaveTextContent('2/2')
+    // Paging back switches the instance shown below to iteration 1's.
+    fireEvent.click(within(pager).getByRole('button', { name: /previous run/i }))
     expect(onSelect).toHaveBeenCalledWith('review', 'loop/iter-0/review')
   })
 })
@@ -102,7 +100,7 @@ describe('KasRunDetail', () => {
     const { onBack } = renderDetail()
     const detail = screen.getByTestId('kas-run-detail')
     expect(within(detail).getByRole('heading', { name: 'Review and fix' })).toBeInTheDocument()
-    expect(screen.getByTestId('kas-run-progress')).toHaveTextContent('Step 1/3')
+    expect(screen.getByTestId('kas-run-progress')).toHaveTextContent('1/3 steps')
     expect(screen.getByRole('button', { name: /^pause$/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /open chat/i })).toBeNull()
     expect(screen.getByText('Review').closest('[data-testid="kas-tree-step"]')).toHaveAttribute('aria-current', 'true')
@@ -136,7 +134,8 @@ describe('KasRunDetail', () => {
         controls: kasControls({ display: 'completed', primary: null, canStop: false, canDelete: true }),
       }),
     )
-    expect(screen.queryByTestId('kas-run-progress')).toBeNull()
+    // A finished run still shows its leaf-step tally (the reference's 49/49).
+    expect(screen.getByTestId('kas-run-progress')).toHaveTextContent('3/3 steps')
     expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument()
     await waitFor(() => expect(api.kasStepTranscript).toHaveBeenCalledWith('wf-1', 'plan', 'plan'))
   })
@@ -157,26 +156,45 @@ describe('KasRunDetail', () => {
     expect(await screen.findByTestId('kas-step-breadcrumb')).toHaveTextContent('From Workflow launch › reviewer')
   })
 
-  it('lays the tree beside the step chat in a wide panel, above it in a narrow one', () => {
+  it('lays the steps tree as a full-width table above the step chat', async () => {
     vi.spyOn(api, 'kasStepTranscript').mockResolvedValue(kasTranscript())
-    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-    rect.mockReturnValue({ width: 380 } as DOMRect)
-    const { unmount } = renderDetail()
-    expect(screen.getByTestId('kas-run-detail')).toHaveAttribute('data-layout', 'narrow')
-    unmount()
-    rect.mockReturnValue({ width: 800 } as DOMRect)
     renderDetail()
-    expect(screen.getByTestId('kas-run-detail')).toHaveAttribute('data-layout', 'wide')
+    const tree = await screen.findByTestId('kas-steps-tree')
+    const chat = screen.getByTestId('kas-step-chat')
+    // Tree on top, chat below — one column, no side-by-side layout toggle.
+    expect(tree.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByTestId('kas-run-detail')).not.toHaveAttribute('data-layout')
+  })
+
+  it('names the parent chat on the right and links it', async () => {
+    vi.spyOn(api, 'kasStepTranscript').mockResolvedValue(kasTranscript())
+    const store = createTestStore()
+    const base = store.getState().dashboard
+    const seeded = createTestStore({ dashboard: { ...base, slots: [{ key: 'chat-abc', title: 'Workflow launch' } as never] } })
+    renderDetail(kasRow(), {}, seeded)
+    expect(screen.getByTestId('kas-created-by')).toHaveTextContent('Created by session Workflow launch')
+    expect(screen.getByTestId('kas-created-by-link')).toHaveTextContent('Workflow launch')
   })
 })
 
 describe('KasStepChat', () => {
-  it('renders the prompt, inline narration, tool rows named by their command, replies and the footer', async () => {
+  it('renders the prompt, a per-reply chip that expands to its narration and tool rows, the reply and footer', async () => {
     vi.spyOn(api, 'kasStepTranscript').mockResolvedValue(kasTranscript({ status: 'idle' }))
     renderWithProviders(<KasStepChat workflowId="wf-1" nodeId="review" stepRunning={false} chatTitle={null} agent="reviewer" />)
     expect(await screen.findByTestId('kas-step-user')).toHaveTextContent('Review the diff for bugs.')
     expect(screen.getByTestId('kas-step-breadcrumb')).toHaveTextContent('From this chat › reviewer')
-    // Short thinking reads as narration, not a wall of "Thinking" toggles.
+    // The reply is always visible; its work folds behind a right-aligned chip
+    // (closed by default, "Collapse all steps" on).
+    const reply = screen.getByTestId('kas-step-assistant')
+    expect(reply).toHaveTextContent('Found one issue')
+    expect(reply.querySelector('strong')).toHaveTextContent('one')
+    const chip = screen.getByTestId('kas-step-chip')
+    expect(chip).toHaveTextContent('Thought (1) + Tools (1)')
+    expect(chip).toHaveAttribute('data-open', 'false')
+    expect(screen.queryByTestId('kas-step-tool')).toBeNull()
+    expect(screen.queryByTestId('kas-step-reasoning')).toBeNull()
+    // Open the chip: the short thinking reads as inline narration, the tool row by its command.
+    fireEvent.click(within(chip).getByRole('button'))
     const reasoning = screen.getByTestId('kas-step-reasoning')
     expect(reasoning.tagName).not.toBe('DETAILS')
     expect(reasoning).toHaveTextContent('Let me look at the changed files first.')
@@ -188,16 +206,40 @@ describe('KasStepChat', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(toggle)
     expect(within(tool).getByText(/1 file changed/)).toBeInTheDocument()
-    expect(screen.getByTestId('kas-step-assistant').querySelector('strong')).toHaveTextContent('one')
     expect(screen.getByTestId('kas-step-footer')).toHaveTextContent('0.23 credits · 1m 5s · Done')
   })
 
-  it('folds only a long thinking block', async () => {
+  it('folds the transcript per reply: prompt / chip+reply / trailing work / parent card', () => {
+    const user = { kind: 'user' as const, id: 'u', ts: null, text: 'go' }
+    const think = { kind: 'assistant' as const, id: 'r', ts: null, text: 'hm', reasoning: true }
+    const say = (id: string) => ({ kind: 'assistant' as const, id, ts: '2026-10-16T10:00:00Z', text: id, reasoning: false })
+    const tool = (id: string) => ({
+      kind: 'tool' as const, id, ts: null, toolCallId: id, name: 'x', title: null, toolKind: 'execute', status: 'completed', input: id, output: null,
+    })
+    const parent = {
+      kind: 'tool' as const, id: 'p', ts: null, toolCallId: 'p', name: 'send_message', title: null, toolKind: null, status: 'completed',
+      input: '{"message":"done","severity":"success"}', output: null,
+    }
+    const blocks = foldReplies([user, think, tool('t1'), say('mid'), tool('t2'), parent, say('end')])
+    expect(blocks.map(b => b.kind)).toEqual(['prompt', 'reply', 'work', 'parent', 'reply'])
+    const first = blocks[1]
+    expect(first.kind === 'reply' && first.chip ? [first.chip.thoughts, first.chip.tools] : null).toEqual([1, 1])
+    const trailing = blocks[2]
+    expect(trailing.kind === 'work' ? [trailing.chip.thoughts, trailing.chip.tools] : null).toEqual([0, 1])
+    const last = blocks[4]
+    // Nothing happened between the parent card and the final reply, so no chip.
+    expect(last.kind === 'reply' ? last.chip : 'x').toBeNull()
+  })
+
+  it('a long thinking block folds to DETAILS inside its chip', async () => {
     vi.spyOn(api, 'kasStepTranscript').mockResolvedValue(
       kasTranscript({ status: 'idle', entries: [{ kind: 'assistant', id: 'r', ts: null, text: 'x'.repeat(600), reasoning: true }] }),
     )
     renderWithProviders(<KasStepChat workflowId="wf-1" nodeId="review" stepRunning={false} chatTitle="x" agent={null} />)
-    const reasoning = await screen.findByTestId('kas-step-reasoning')
+    const chip = await screen.findByTestId('kas-step-chip')
+    expect(chip).toHaveTextContent('Thought (1)')
+    fireEvent.click(within(chip).getByRole('button'))
+    const reasoning = screen.getByTestId('kas-step-reasoning')
     expect(reasoning.tagName).toBe('DETAILS')
     expect(reasoning).not.toHaveAttribute('open')
   })
@@ -264,10 +306,13 @@ describe('KasStepChat — reply composer', () => {
     vi.spyOn(api, 'kasStepTranscript').mockResolvedValue(kasTranscript({ status: 'idle' }))
   })
 
-  it('is absent unless the step awaits a reply', async () => {
+  it('is present but disabled, with a one-line reason, until the step awaits a reply', async () => {
     renderWithProviders(<KasStepChat workflowId="wf-1" nodeId="review" path="loop/iter-1/review" stepRunning={false} chatTitle={null} agent="reviewer" />)
-    await screen.findByTestId('kas-step-footer')
-    expect(screen.queryByTestId('kas-step-reply')).toBeNull()
+    const form = await screen.findByTestId('kas-step-reply')
+    expect(form).toHaveAttribute('data-can-reply', 'false')
+    expect(screen.getByLabelText('Reply to this step')).toBeDisabled()
+    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
+    expect(screen.getByTestId('kas-step-reply-hint')).toBeInTheDocument()
   })
 
   it('sends the reply with the step path, clears on success, and refetches', async () => {
@@ -281,6 +326,27 @@ describe('KasStepChat — reply composer', () => {
     fireEvent.click(button)
     await waitFor(() => expect(send).toHaveBeenCalledWith('wf-1', 'review', 'retry the failing test', 'loop/iter-1/review'))
     await waitFor(() => expect(box.value).toBe(''))
+  })
+
+  it('pins the composer to the pane bottom; Mark done and Send sit on the right, Send last', async () => {
+    renderWithProviders(
+      <KasStepChat
+        workflowId="wf-1"
+        nodeId="plan"
+        path={null}
+        stepRunning={false}
+        canReply
+        chatTitle={null}
+        agent="planner"
+        stepActions={<button type="button">Mark done</button>}
+      />,
+    )
+    const form = await screen.findByTestId('kas-step-reply')
+    expect(form.className).toMatch(/\bsticky\b/)
+    expect(form.className).toMatch(/\bbottom-0\b/)
+    const row = screen.getByTestId('kas-step-reply-actions')
+    const buttons = Array.from(row.querySelectorAll('button')).map(b => b.textContent?.trim())
+    expect(buttons).toEqual(['Mark done', 'Send'])
   })
 
   it('Ctrl+Enter sends', async () => {

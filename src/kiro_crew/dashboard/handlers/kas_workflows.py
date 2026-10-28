@@ -116,7 +116,7 @@ def _router_error(exc: Exception) -> web.Response:
     if isinstance(exc, KasWorkflowError):
         return _error(str(_redact_obj(str(exc))), "kas_workflow_error", 409)
     logger.warning("KAS workflow route failed", exc_info=True)
-    return _error("Kiro Agent workflow request failed", "kas_workflow_failed", 500)
+    return _error("Kiro Workflows request failed", "kas_workflow_failed", 500)
 
 
 async def _body(request: web.Request) -> dict[str, Any] | None:

@@ -14,7 +14,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import ProjectPicker from '../../../components/ProjectPicker'
 import { i18nT } from '../../../i18n/t'
 import { useKasLaunch, type KasLaunchResult } from './launchKasWorkflow'
-import { effortLabel } from './kasModel'
+import { effortLabel, humanizeInputName } from './kasModel'
 import { useOpenChat } from './KasRunView'
 
 /**
@@ -134,7 +134,10 @@ export function KasLaunchForm({
         return (
           <label key={input.name} htmlFor={fieldId} className="block text-[12px] text-muted">
             <span className="block mb-1">
-              {input.name} <span className="font-mono text-[11px]">({input.type})</span>
+              <span className="text-text">{humanizeInputName(input.name)}</span>{' '}
+              <span className="font-mono text-[11px] text-muted" data-testid={`kas-input-hint-${input.name}`}>
+                {input.name} · {input.type}
+              </span>
               {missing ? (
                 <span className="ml-1.5 text-[11px] text-warn" data-testid={`kas-input-required-${input.name}`}>
                   {i18nT('apps.workflows.kas.input_required')}

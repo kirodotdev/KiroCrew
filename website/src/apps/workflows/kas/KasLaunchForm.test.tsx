@@ -52,3 +52,16 @@ describe('KasLaunchForm — required inputs (gap 17)', () => {
     expect(screen.getByTestId('kas-not-launchable')).toBeTruthy()
   })
 })
+
+describe('KasLaunchForm — humanized input labels (CX r8)', () => {
+  it('shows a readable label with the raw name and type as a muted hint', async () => {
+    renderWithProviders(
+      <KasLaunchForm recipe={recipe({ inputs: [{ name: 'pr_url', type: 'string' }] })} project="/p" idPrefix="t" />,
+    )
+    await screen.findByTestId('kas-launch-form')
+    // Raw name and type are kept, but as a muted mono hint after the label.
+    expect(screen.getByTestId('kas-input-hint-pr_url')).toHaveTextContent('pr_url · string')
+    // The humanized name ("PR URL") is what labels the field.
+    expect(screen.getByLabelText(/PR URL/)).toBeTruthy()
+  })
+})

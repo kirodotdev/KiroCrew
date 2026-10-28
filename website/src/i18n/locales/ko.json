@@ -5166,8 +5166,6 @@
         "in_progress": "진행 중",
         "included_workflow": "포함된 워크플로",
         "invalid": "잘못된 워크플로",
-        "iteration": "반복 {{n}}/{{max}}",
-        "iteration_label": "반복 {{n}}",
         "kiro_agent": "Kiro Agent",
         "launch": "실행",
         "launch_effort": "추론 강도",
@@ -5191,7 +5189,6 @@
         "marker_update": "워크플로 {{name}} 업데이트",
         "marker_waiting": "워크플로 {{name}}이(가) 응답을 기다리고 있습니다",
         "max_iterations": "반복: 최대 {{max}}",
-        "n_step_workflow_other": "{{count}}단계 워크플로",
         "no_messages": "아직 메시지가 없습니다.",
         "no_recipes": "이 프로젝트에서 워크플로를 찾지 못했습니다.",
         "no_runs": "아직 워크플로 실행이 없습니다.",
@@ -5324,10 +5321,10 @@
         "tool_valid": "유효",
         "tool_invalid": "유효하지 않음",
         "tool_open_run": "실행 열기",
-        "empty_hint": "사용자 지정 › Workflows에서 워크플로를 실행하거나, Kiro Agent 워크플로를 실행하도록 요청하세요.",
+        "empty_hint": "사용자 지정 › Workflows에서 워크플로를 실행하거나, Kiro Workflow를 실행하도록 요청하세요.",
         "input_required": "필수",
         "inputs_required": "실행하려면 모든 입력란을 채우세요.",
-        "not_launchable": "이 워크플로에는 실행 소스가 없어 실행할 수 없습니다.",
+        "not_launchable": "이 워크플로는 여기에서 실행할 수 없습니다. 시작할 파일이 없습니다.",
         "refresh_recipes": "워크플로 새로고침",
         "new_recipe": "새 워크플로",
         "new_recipe_name": "워크플로 이름",
@@ -5350,7 +5347,22 @@
         "group_summary_input_other": "{{count}}개 단계에 입력이 필요합니다",
         "group_summary_failed_other": "{{count}}개 단계가 실패했습니다",
         "group_summary_steps_other": "{{count}}개 단계",
-        "load_more_other": "{{count}}개 더 불러오기"
+        "load_more_other": "{{count}}개 더 불러오기",
+        "watch_marker": "활동 감시",
+        "included_workflow_steps": "포함된 워크플로 · {{n}}단계",
+        "iteration_prev": "이 단계의 이전 실행",
+        "iteration_next": "이 단계의 다음 실행",
+        "iteration_position": "{{max}}회 중 {{n}}번째 실행",
+        "created_by_session_prefix": "생성한 세션",
+        "chip_thought_tools": "사고 ({{thoughts}}) + 도구 ({{tools}})",
+        "chip_tools": "도구 ({{n}})",
+        "chip_thought": "사고 ({{n}})",
+        "step_asks": "{{step}} 질문",
+        "composer_placeholder_agent": "{{agent}}에게 답장…",
+        "composer_placeholder": "메시지 보내기…",
+        "composer_running_hint": "이 단계가 입력을 요청하면 답장할 수 있습니다.",
+        "composer_idle_hint": "이 단계는 답장을 기다리고 있지 않습니다.",
+        "reply_open": "답장"
       }
     },
     "awsControl": {
@@ -8852,10 +8864,10 @@
       "loading_commands_enter_held": "명령을 불러오는 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_commands_ctrl_enter_sends": "일치하는 명령 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_commands_enter_sends": "일치하는 명령 없음 — Enter 키를 누르면 메시지가 전송됩니다",
-      "desc_workflow_run": "Kiro Agent 워크플로 실행",
-      "desc_workflow_resume": "일시 중지된 Kiro Agent 워크플로 실행 재개",
-      "desc_workflow_status": "이 채팅의 Kiro Agent 워크플로 실행 표시",
-      "desc_workflow_cancel": "Kiro Agent 워크플로 실행 중지"
+      "desc_workflow_run": "Kiro Workflow 실행",
+      "desc_workflow_resume": "일시 중지된 Kiro Workflow 실행 재개",
+      "desc_workflow_status": "이 채팅의 Kiro Workflow 실행 표시",
+      "desc_workflow_cancel": "Kiro Workflow 실행 중지"
     },
     "slotTagPopover": {
       "assign_tags": "태그 지정",
@@ -11697,6 +11709,14 @@
         "session_colors": "세션 색상",
         "save_failed": "세션 색상을 저장할 수 없습니다"
       },
+      "sessionMessageCard": {
+        "needs_you": "확인 필요",
+        "open_session": "{{name}} 열기",
+        "show_less": "간단히 보기",
+        "show_more": "더 보기",
+        "this_session": "현재 세션",
+        "to_recipient": "{{name}}에게 보냄"
+      },
       "sessionFlyout": {
         "new": "새로 만들기",
         "new_chat": "새 채팅",
@@ -13748,7 +13768,7 @@
         "folder_conductor": "폴더 지휘자",
         "folder_conductor_desc": "폴더의 다른 채팅을 시작한 채팅을 그 폴더의 맨 위로 올립니다. 왼쪽 가장자리에 강조 막대가 생기고 에이전트 이름 옆에 작은 conductor 태그가 붙습니다. 세션 목록의 순서가 바뀌므로 켜기 전에는 목록이 그대로입니다. 폴더 메뉴의 채팅 항목은 항상 있습니다.",
         "kas_workflows": "Kiro Agent Server가 구성된 경우 Kiro Workflows 사용",
-        "kas_workflows_desc": "Kiro Agent가 실행되는 모든 곳에서 자체 워크플로를 켭니다. Workflows 탭, Task Runner, 채팅에서 시작한 워크플로, 부팅 시 중단된 실행 복구가 대상입니다. 기기별이 아니라 이 게이트웨이에 저장되며, 각 채팅은 다음 세션을 시작할 때 적용합니다.",
+        "kas_workflows_desc": "Kiro Agent가 실행되는 모든 곣에서 Kiro Workflows를 켜니다. Workflows 탭, Task Runner, 채팅에서 시작한 워크플로, 부팅 시 중단된 실행 복구가 대상입니다. 기기별이 아니라 이 게이트웨이에 저장되며, 각 채팅은 다음 세션을 시작할 때 적용합니다.",
         "kas_workflows_off_backend": "에이전트 백엔드가 Kiro Agent가 되기 전까지는 아무 효과가 없습니다.",
         "kas_workflows_failed": "이 설정을 저장하지 못했습니다.",
         "kas_creator_effort": "생성 단계 추론 강도",

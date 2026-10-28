@@ -1,9 +1,11 @@
 /**
- * One workflow step's own chat session, as the Kiro IDE shows it beside the
- * STEPS tree: `From {chat} › {agent}`, the step's prompt (collapsed when
- * long), the assistant's replies, its reasoning (collapsed), its tool calls as
- * compact rows with expandable output, and a `credits · elapsed · state`
- * footer.
+ * One workflow step's own chat session, as the Kiro IDE shows it in the run
+ * view: the step's prompt, the assistant's replies, and — folded PER REPLY —
+ * the reasoning and tool rows that led to each. Every plain reply is preceded
+ * by a right-aligned "Thought (N) + Tools (M)" chip holding that work, carries
+ * a timestamp beneath it, and a `send_message` note to the parent chat draws
+ * its own card. A composer styled like the main chat sits pinned at the bottom,
+ * enabled while the step waits for a reply and otherwise disabled with a reason.
  *
  * Read from `GET /api/workflows/kas/runs/{id}/steps/{node}/transcript`; polled
  * every ~2s while the step runs, read once otherwise.
@@ -32,9 +34,11 @@ import type { KasStepEntry, KasStepTranscript } from '../../../api/client'
 import { apiErrorCode } from '../../../api/apiError'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import ErrorNotice from '../../../components/ErrorNotice'
-import { fmtCredits, fmtElapsed } from '../../../i18n/format'
+import { loadChatConfig } from '../../../pages/chat/ChatSettings'
+import { fmtCredits, fmtElapsed, fmtTimeNumeric } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
-import { spanMs } from './kasModel'
+import { foldReplies, parseParentMessage, spanMs, type StepChip } from './kasModel'
+import { SessionMessageCard } from '../../../pages/chat/SessionMessageCard'
 import { useNow } from './KasRunBits'
 import { useKasReplyToStep, useKasStepTranscript } from './useKasWorkflows'
 
@@ -172,14 +176,102 @@ function ToolRow({ entry }: { entry: Extract<KasStepEntry, { kind: 'tool' }> }) 
   )
 }
 
-function Entry({ entry }: { entry: KasStepEntry }) {
-  if (entry.kind === 'user') return <UserPrompt text={entry.text} />
+/** One reasoning or tool entry, inside an expanded chip. */
+function WorkEntry({ entry }: { entry: KasStepEntry }) {
   if (entry.kind === 'tool') return <ToolRow entry={entry} />
-  if (entry.reasoning) return <Reasoning text={entry.text} />
+  if (entry.kind === 'assistant' && entry.reasoning) return <Reasoning text={entry.text} />
+  // A user prompt never reaches a chip; an unexpected plain reply renders plainly.
+  if (entry.kind === 'assistant') return <div className="text-[13px] text-text min-w-0"><MarkdownRenderer content={entry.text} /></div>
+  return null
+}
+
+/** The chip's label: "Thought (N) + Tools (M)", omitting a zero half. */
+function chipLabel(chip: StepChip): string {
+  if (chip.thoughts > 0 && chip.tools > 0) {
+    return i18nT('apps.workflows.kas.chip_thought_tools', { thoughts: chip.thoughts, tools: chip.tools })
+  }
+  if (chip.tools > 0) return i18nT('apps.workflows.kas.chip_tools', { n: chip.tools })
+  return i18nT('apps.workflows.kas.chip_thought', { n: chip.thoughts })
+}
+
+/** The right-aligned "Thought (N) + Tools (M)" chip of the work since the last
+ *  reply. Starts open only when the chat setting "Collapse all steps" is off; a
+ *  running tool shows a spinner on the chip without expanding anything. */
+function WorkChip({ chip, startOpen }: { chip: StepChip; startOpen: boolean }) {
+  const [open, setOpen] = useState(startOpen)
   return (
-    <div className="text-[13px] text-text min-w-0" data-testid="kas-step-assistant">
-      <MarkdownRenderer content={entry.text} />
+    <div className="flex flex-col gap-1 items-end" data-testid="kas-step-chip" data-open={open ? 'true' : 'false'}>
+      <button
+        type="button"
+        className="self-end inline-flex items-center gap-1 bg-transparent border-none p-0 text-[11.5px] text-muted cursor-pointer hover:text-text"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+      >
+        {chipLabel(chip)}
+        {chip.running ? (
+          <Loader2 size={11} className="text-accent motion-safe:animate-spin" aria-hidden="true" data-testid="kas-step-chip-spinner" />
+        ) : open ? (
+          <ChevronDown size={12} aria-hidden="true" />
+        ) : (
+          <ChevronRight size={12} aria-hidden="true" />
+        )}
+      </button>
+      {open ? (
+        <div className="w-full flex flex-col gap-2 pl-3 border-l border-border">
+          {chip.entries.map(e => (
+            <WorkEntry key={e.id} entry={e} />
+          ))}
+        </div>
+      ) : null}
     </div>
+  )
+}
+
+/** A step's `send_message` note to the run's parent chat, drawn as the OUTGOING
+ *  session-message card (round 10): the SENDER is this step (its label + agent),
+ *  and the body opens with the parent chat as its `@tag`. */
+function ParentMessageCard({
+  entry,
+  nodeId,
+  stepLabel,
+  agent,
+  chatTitle,
+}: {
+  entry: Extract<KasStepEntry, { kind: 'tool' }>
+  nodeId: string
+  stepLabel: string | null
+  agent: string | null
+  chatTitle: string | null
+}) {
+  const { text } = parseParentMessage(entry)
+  const parent = chatTitle || i18nT('apps.workflows.kas.this_chat')
+  return (
+    <div data-testid="kas-step-parent">
+      <SessionMessageCard
+        direction="outgoing"
+        sender={{ key: nodeId, title: stepLabel || agent || nodeId }}
+        recipient={{ key: '', title: parent }}
+        body={text}
+        agent={agent}
+      />
+    </div>
+  )
+}
+
+/** A reply, with its preceding chip and a timestamp beneath it. */
+function Reply({ reply, chip, ts, startOpen }: { reply: Extract<KasStepEntry, { kind: 'assistant' }>; chip: StepChip | null; ts: string | null; startOpen: boolean }) {
+  return (
+    <>
+      {chip ? <WorkChip chip={chip} startOpen={startOpen} /> : null}
+      <div className="text-[13px] text-text min-w-0" data-testid="kas-step-assistant">
+        <MarkdownRenderer content={reply.text} />
+      </div>
+      {ts ? (
+        <p className="m-0 text-[10.5px] text-muted tabular-nums" data-testid="kas-step-ts">
+          {fmtTimeNumeric(ts)}
+        </p>
+      ) : null}
+    </>
   )
 }
 
@@ -205,27 +297,39 @@ function Footer({ transcript, running, waiting }: { transcript: KasStepTranscrip
 }
 
 /**
- * A composer under the transcript for a step parked on the person's next
- * message. Ctrl/Cmd+Enter sends; the Send button is disabled while empty or in
- * flight; a server refusal shows inline; a sent reply clears the box and the
- * transcript refetches (the hook invalidates its query).
+ * The composer under the transcript, styled like the main chat composer and
+ * pinned to the bottom of the scrolling pane. It is enabled only while the step
+ * waits for the person's next message: Kiro Agent has no way to steer a step
+ * that is not parked (a `session/prompt` on a running step would land as an
+ * unrelated chat turn), so otherwise it is disabled with a one-line reason.
+ * Mark done / Mark failed sit beside Send on the right.
  */
-function StepReplyComposer({
+function StepComposer({
   workflowId,
   nodeId,
   path,
+  canReply,
+  stepRunning,
+  agent,
+  model,
+  effort,
   actions,
 }: {
   workflowId: string
   nodeId: string
   path: string | null
-  /** Mark done / Mark failed, beside Send. */
+  canReply: boolean
+  stepRunning: boolean
+  agent: string | null
+  model: string | null
+  effort: string | null
   actions?: ReactNode
 }) {
   const [draft, setDraft] = useState('')
   const reply = useKasReplyToStep(workflowId, nodeId, path)
   const trimmed = draft.trim()
-  const disabled = reply.isPending || trimmed.length === 0
+  const disabled = !canReply || reply.isPending || trimmed.length === 0
+  const modelLine = [model, effort].filter(Boolean).join(' · ')
 
   const send = () => {
     if (disabled) return
@@ -241,42 +345,64 @@ function StepReplyComposer({
 
   return (
     <form
-      className="flex flex-col gap-1.5 pt-2 border-t border-border"
+      className="sticky bottom-0 z-[1] bg-card pt-2"
       data-testid="kas-step-reply"
+      data-can-reply={canReply ? 'true' : 'false'}
       onSubmit={e => {
         e.preventDefault()
         send()
       }}
     >
-      <label htmlFor="kas-step-reply-input" className="text-[11.5px] font-medium text-text">
-        {i18nT('apps.workflows.kas.reply_label')}
-      </label>
-      <textarea
-        id="kas-step-reply-input"
-        className="w-full min-h-[3.5rem] resize-y rounded border border-border bg-bg text-text text-[12.5px] px-2 py-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onKeyDown={onKeyDown}
-        disabled={reply.isPending}
-        aria-label={i18nT('apps.workflows.kas.reply_label')}
-      />
+      <div className="rounded-lg border border-border bg-bg focus-within:border-accent">
+        <label htmlFor="kas-step-reply-input" className="sr-only">
+          {i18nT('apps.workflows.kas.reply_label')}
+        </label>
+        <textarea
+          id="kas-step-reply-input"
+          className="w-full min-h-[2.75rem] resize-y rounded-t-lg bg-transparent text-text text-[12.5px] px-2.5 py-2 border-none focus-visible:outline-none disabled:opacity-60"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={onKeyDown}
+          disabled={!canReply || reply.isPending}
+          // A reader who opened a waiting step via "Reply" lands in the box.
+          autoFocus={canReply}
+          placeholder={agent ? i18nT('apps.workflows.kas.composer_placeholder_agent', { agent }) : i18nT('apps.workflows.kas.composer_placeholder')}
+          aria-label={i18nT('apps.workflows.kas.reply_label')}
+        />
+        <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border" data-testid="kas-step-reply-actions">
+          {agent ? (
+            <span className="shrink-0 rounded px-1.5 py-px text-[10.5px] font-mono bg-bg-hover text-muted border border-border" data-testid="kas-composer-agent">
+              {agent}
+            </span>
+          ) : null}
+          {modelLine ? (
+            <span className="shrink-0 rounded px-1.5 py-px text-[10.5px] text-muted tabular-nums bg-bg-hover border border-border truncate max-w-[12rem]" data-testid="kas-composer-model">
+              {modelLine}
+            </span>
+          ) : null}
+          <span className="ml-auto flex items-center gap-2 shrink-0">
+            {actions}
+            <button
+              type="submit"
+              className="inline-flex items-center gap-1.5 rounded bg-accent text-accent-fg text-[12px] px-2.5 py-1 border-none cursor-pointer hover:bg-accent-hover disabled:opacity-50 disabled:cursor-default"
+              disabled={disabled}
+              aria-busy={reply.isPending || undefined}
+            >
+              <Send size={12} aria-hidden="true" />
+              {i18nT('apps.workflows.kas.reply_send')}
+            </button>
+          </span>
+        </div>
+      </div>
       {error ? (
-        <p className="m-0 text-[11.5px] text-danger" data-testid="kas-step-reply-error" role="alert">
+        <p className="m-0 mt-1 text-[11.5px] text-danger" data-testid="kas-step-reply-error" role="alert">
           {error}
         </p>
+      ) : !canReply ? (
+        <p className="m-0 mt-1 text-[11px] text-muted" data-testid="kas-step-reply-hint">
+          {stepRunning ? i18nT('apps.workflows.kas.composer_running_hint') : i18nT('apps.workflows.kas.composer_idle_hint')}
+        </p>
       ) : null}
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">{actions}</div>
-        <button
-          type="submit"
-          className="inline-flex items-center gap-1.5 rounded bg-accent text-accent-fg text-[12px] px-2.5 py-1 border-none cursor-pointer hover:bg-accent-hover disabled:opacity-50 disabled:cursor-default"
-          disabled={disabled}
-          aria-busy={reply.isPending || undefined}
-        >
-          <Send size={12} aria-hidden="true" />
-          {i18nT('apps.workflows.kas.reply_send')}
-        </button>
-      </div>
     </form>
   )
 }
@@ -289,6 +415,9 @@ export function KasStepChat({
   canReply = false,
   chatTitle,
   agent,
+  stepLabel = null,
+  model = null,
+  effort = null,
   stepActions = null,
 }: {
   workflowId: string
@@ -297,19 +426,27 @@ export function KasStepChat({
   path?: string | null
   /** The step is running per the run's tree: keep polling. */
   stepRunning: boolean
-  /** The step is parked for the person's next message: show the reply composer. */
+  /** The step is parked for the person's next message: enable the composer. */
   canReply?: boolean
   /** The parent chat's title, for the breadcrumb; null when unknown. */
   chatTitle: string | null
   /** The step's agent from the run tree, until the transcript names one. */
   agent: string | null
-  /** Controls on this step (Mark done / Mark failed); drawn beside the reply box. */
+  /** The step's own label from the run tree; the outgoing parent-note card's
+   *  sender title. Falls back to the agent, then the node id. */
+  stepLabel?: string | null
+  /** The step's model / effort from the run tree, for the composer's read-only chip. */
+  model?: string | null
+  effort?: string | null
+  /** Controls on this step (Mark done / Mark failed); drawn beside Send. */
   stepActions?: ReactNode
 }) {
   const query = useKasStepTranscript(workflowId, nodeId, stepRunning, path)
   const transcript = query.data
   const running = stepRunning || transcript?.status === 'running'
   const agentName = transcript?.agent ?? agent
+  // The parent chat's "Collapse all steps" preference: off = chips start open.
+  const [collapseAll] = useState(() => loadChatConfig().collapseAllSteps)
 
   let body
   if (!nodeId) {
@@ -341,22 +478,31 @@ export function KasStepChat({
           <p className="m-0 text-[12px] text-muted">{i18nT('apps.workflows.kas.no_messages')}</p>
         ) : (
           <div className="flex flex-col gap-2">
-            {transcript.entries.map(entry => (
-              <Entry key={entry.id} entry={entry} />
-            ))}
+            {foldReplies(transcript.entries).map((block, i) => {
+              if (block.kind === 'prompt') return <UserPrompt key={block.entry.id} text={block.entry.text} />
+              if (block.kind === 'parent')
+                return (
+                  <ParentMessageCard
+                    key={block.entry.id}
+                    entry={block.entry}
+                    nodeId={nodeId ?? ''}
+                    stepLabel={stepLabel}
+                    agent={agentName}
+                    chatTitle={chatTitle}
+                  />
+                )
+              if (block.kind === 'reply')
+                return <Reply key={block.reply.id} reply={block.reply} chip={block.chip} ts={block.ts} startOpen={!collapseAll} />
+              return <WorkChip key={`work-${block.chip.entries[0]?.id ?? i}`} chip={block.chip} startOpen={!collapseAll} />
+            })}
           </div>
         )}
-        <Footer transcript={transcript} running={running && !canReply} waiting={canReply} />
       </>
     )
   }
 
   return (
-    <section
-      className="flex flex-col gap-2 min-w-0"
-      aria-label={i18nT('apps.workflows.kas.step_chat')}
-      data-testid="kas-step-chat"
-    >
+    <section className="flex flex-col gap-2 min-w-0" aria-label={i18nT('apps.workflows.kas.step_chat')} data-testid="kas-step-chat">
       <p className="m-0 text-[11.5px] text-muted truncate" data-testid="kas-step-breadcrumb">
         {i18nT('apps.workflows.kas.from_chat', { chat: chatTitle || i18nT('apps.workflows.kas.this_chat') })}
         {agentName ? (
@@ -367,10 +513,24 @@ export function KasStepChat({
         ) : null}
       </p>
       {body}
-      {canReply && nodeId ? (
-        <StepReplyComposer workflowId={workflowId} nodeId={nodeId} path={path} actions={stepActions} />
+      {nodeId && transcript ? (
+        <>
+          <StepComposer
+            workflowId={workflowId}
+            nodeId={nodeId}
+            path={path}
+            canReply={canReply}
+            stepRunning={!!running}
+            agent={agentName}
+            model={transcript.model ?? model}
+            effort={effort}
+            actions={stepActions}
+          />
+          {/* The existing credits · elapsed · state line sits UNDER the composer. */}
+          <Footer transcript={transcript} running={running && !canReply} waiting={canReply} />
+        </>
       ) : stepActions ? (
-        <div className="pt-2 border-t border-border">{stepActions}</div>
+        <div className="sticky bottom-0 z-[1] bg-card flex justify-end pt-2 pb-1 border-t border-border">{stepActions}</div>
       ) : null}
     </section>
   )

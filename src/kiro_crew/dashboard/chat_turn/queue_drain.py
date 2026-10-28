@@ -892,7 +892,10 @@ async def _start_next_queued_turn(
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
     # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY):
+    # ``relay`` (the cross-session sender for the incoming card) is a per-sender
+    # address like the two below: a merged row of different senders' queued sends
+    # must not wear one sender's card, so it is dropped unless every entry agrees.
+    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "relay"):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)

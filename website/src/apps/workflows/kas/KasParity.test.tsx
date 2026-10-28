@@ -107,6 +107,8 @@ describe('2. mark done / failed and stop one step', () => {
 
   it('Stop on a running step is confirmed, then cancels that step by path', async () => {
     renderWithProviders(<KasStepsTree nodes={kasIncludeRow().nodes} selectedPath={null} onSelect={() => {}} row={kasIncludeRow()} />)
+    // The included workflow is a collapsed row; expand it to reach its steps.
+    fireEvent.click(screen.getByTestId('kas-include-group'))
     const stops = screen.getAllByRole('button', { name: /^stop test$/i })
     expect(stops).toHaveLength(1)
     fireEvent.click(stops[0])
@@ -188,9 +190,14 @@ describe('5. include groups', () => {
   it('labels the group with the recipe, its path on hover, members without the prefix', () => {
     const row = kasIncludeRow()
     renderWithProviders(<KasStepsTree nodes={row.nodes} selectedPath={null} onSelect={() => {}} row={row} />)
+    // One collapsed row: the group's own name + "included workflow · N steps",
+    // the recipe and its file on hover. It opens to its members (prefix-stripped).
     const group = screen.getByTestId('kas-include-group')
-    expect(group).toHaveTextContent('code-review')
+    expect(group).toHaveTextContent('review')
+    expect(group).toHaveTextContent('included workflow · 2 steps')
     expect(group).toHaveAttribute('title', '.kiro/workflows/code-review.yaml')
+    expect(screen.queryByText('Lint')).toBeNull()
+    fireEvent.click(group)
     expect(screen.getByText('Lint')).toBeInTheDocument()
     expect(screen.getByText('Test')).toBeInTheDocument()
     expect(screen.queryByText('review/Lint')).toBeNull()
@@ -212,9 +219,13 @@ describe('6. plan approval tree', () => {
     const text = screen.getByText(/plan: Plan/)
     expect(tree.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(tree).getByText('Fix loop')).toBeInTheDocument()
-    expect(within(tree).getByText('update-docs')).toBeInTheDocument()
-    expect(within(tree).getByText('Write')).toBeInTheDocument()
+    // A plan preview has run no passes, so the loop names its budget.
     expect(within(tree).getByText('Iterations: up to 3')).toBeInTheDocument()
+    // The included workflow is one collapsible row (recipe on hover); open it for its member.
+    const include = within(tree).getByTestId('kas-include-group')
+    expect(include).toHaveTextContent('included workflow')
+    fireEvent.click(include)
+    expect(within(tree).getByText('Write')).toBeInTheDocument()
     expect(planTreeNodes({ nodes: 'nope' })).toEqual([])
   })
 })

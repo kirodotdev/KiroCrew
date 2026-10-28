@@ -1052,9 +1052,9 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "Kiro Workflows on Kiro Agent",
-            "When the agent backend is Kiro Agent (KAS), turn on Kiro Agent's own "
-            "workflows everywhere they run: the Workflows tab and the Task Runner "
-            "offer its recipes and runs, dashboard chats start their Kiro Agent "
+            "When the agent backend is Kiro Agent (KAS), turn on Kiro Workflows "
+            "everywhere they run: the Workflows tab and the Task Runner "
+            "offer their recipes and runs, dashboard chats start their Kiro Agent "
             "sessions with its workflow surface on (run_workflow, inspect_workflow, "
             "update_workflow, the /workflow-* commands and its steering), and this "
             "gateway recovers interrupted runs on boot. A workflow a chat's model "

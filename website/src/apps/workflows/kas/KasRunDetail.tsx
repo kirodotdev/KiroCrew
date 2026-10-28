@@ -1,28 +1,31 @@
 /**
  * A KAS run's detail inside the chat side panel, shaped like the Kiro IDE's
- * run tab: a header (back, name, state, Step n/m, controls), the blocking line
- * and any approvals, then a STEPS tree beside (panel ≥ 640px) or above (narrow
- * panel) the selected step's own chat.
+ * run view: a header (back, name, "Created by session …", done/total steps,
+ * total elapsed, controls), the blocking line and any approvals, then the
+ * STEPS tree as a compact full-width table ABOVE the selected step's own chat.
  */
-import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, ArrowLeft } from 'lucide-react'
 
 import type { KasApproval, KasQuestion, KasRunRow } from '../../../api/client'
-import { Badge, IconButton } from '../../../components/ui'
-import { useAppSelector } from '../../../store'
+import { IconButton } from '../../../components/ui'
+import { useAppDispatch, useAppSelector } from '../../../store'
+import { requestSlotReveal, setActiveSlot } from '../../../store/chatSlice'
+import { fmtElapsed } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import {
   defaultStep,
+  effectiveSteps,
   findNode,
   findNodeByPath,
+  isTerminalRun,
   liveStatusLine,
-  liveStepProgress,
   nodeCan,
   pauseLine,
   planUpdateIsWarning,
   planUpdateLine,
   questionsFor,
-  runBadge,
+  runElapsedMs,
+  runStepTotal,
   runTitle,
   showNeedsYouPill,
   stepAwaitsReply,
@@ -34,29 +37,11 @@ import {
   KasStepDecisionButtons,
 } from './KasParityControls'
 import { KasQuestionCard } from './KasQuestionCard'
-import { KasRunIconControls, KasRunStatusIcon } from './KasRunBits'
+import { KasRunIconControls, KasRunStatusIcon, useNow } from './KasRunBits'
 import { KasApprovalCard } from './KasRunView'
 import { KasStepChat } from './KasStepChat'
 import { KasStepsTree } from './KasStepsTree'
 import { useKasRunActions } from './useKasWorkflows'
-
-/** Panel width from which the tree and the step chat sit side by side. */
-export const SIDE_BY_SIDE_MIN_PX = 640
-
-/** True while `ref`'s element is at least `minPx` wide. */
-function useWideEnough(ref: React.RefObject<HTMLElement | null>, minPx: number): boolean {
-  const [wide, setWide] = useState(false)
-  useEffect(() => {
-    const el = ref.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const measure = () => setWide(el.getBoundingClientRect().width >= minPx)
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [ref, minPx])
-  return wide
-}
 
 /** Re-exported for the panel list, which imports it from here. */
 export { KasStepsTree }
@@ -85,18 +70,20 @@ export function KasRunDetail({
   onSelectStep: (nodeId: string, path: string) => void
   onBack: () => void
 }) {
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const wide = useWideEnough(rootRef, SIDE_BY_SIDE_MIN_PX)
+  const dispatch = useAppDispatch()
   const { answer } = useKasRunActions()
+  const parentSlot = row.slotKey || slotKey
   const chatTitle = useAppSelector(s => {
-    const slot = s.dashboard.slots.find(x => x.key === (row.slotKey || slotKey))
+    const slot = s.dashboard.slots.find(x => x.key === parentSlot)
     return slot?.title && slot.title !== slot.key ? slot.title : null
   })
+  const now = useNow(!isTerminalRun(row))
 
   const title = runTitle(row)
-  const badge = runBadge(row)
-  const progress = liveStepProgress(row)
   const live = liveStatusLine(row)
+  const total = runStepTotal(row)
+  const done = effectiveSteps(row).done ?? 0
+  const elapsedMs = runElapsedMs(row, now)
   // The selected instance, keyed by runtime path: the reader's own choice (by
   // path, else by node id resolved to its path), else the default step.
   const chosenPath =
@@ -107,30 +94,57 @@ export function KasRunDetail({
   const stepId = step?.id ?? null
   const awaitsReply = stepAwaitsReply(row, step)
 
+  const openParentChat = () => {
+    if (!parentSlot) return
+    dispatch(setActiveSlot(parentSlot))
+    dispatch(requestSlotReveal(parentSlot))
+  }
+
   return (
-    <div ref={rootRef} className="flex flex-col gap-2 min-w-0" data-testid="kas-run-detail" data-workflow-id={row.workflowId} data-layout={wide ? 'wide' : 'narrow'}>
+    <div className="flex flex-col gap-2 min-w-0" data-testid="kas-run-detail" data-workflow-id={row.workflowId}>
       <header className="flex items-center gap-1.5 min-w-0">
         <IconButton aria-label={i18nT('apps.workflows.kas.back_to_runs')} onClick={onBack} data-testid="kas-detail-back">
           <ArrowLeft size={14} aria-hidden="true" />
         </IconButton>
         <KasRunStatusIcon display={row.controls.display} attention={row.controls.needsAttention || !!row.blocking} />
-        <h3 className="m-0 text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</h3>
-        <Badge variant={badge.variant} className="text-[11px] px-1.5 py-0 shrink-0" data-testid="kas-run-state">
-          {badge.label}
-        </Badge>
+        <h3 className="m-0 text-[13px] font-mono font-semibold text-text-strong truncate min-w-0 shrink">{title}</h3>
         {showNeedsYouPill(row) ? (
-          <Badge variant="warn" className="text-[11px] px-1.5 py-0 shrink-0" data-testid="kas-needs-you">
+          <span className="text-[11px] px-1.5 py-0 rounded bg-warn-subtle text-warn shrink-0" data-testid="kas-needs-you">
             {i18nT('apps.workflows.kas.state_needs_you')}
-          </Badge>
-        ) : null}
-        {progress ? (
-          <span className="text-[11.5px] text-muted tabular-nums shrink-0" data-testid="kas-run-progress">
-            {i18nT('apps.workflows.kas.step_progress', { done: progress.done, total: progress.total })}
           </span>
         ) : null}
-        <span className="ml-auto inline-flex items-center">
-          <KasRunRecoveryButtons row={row} compact />
-          <KasRunIconControls row={row} withDelete />
+        <span className="ml-auto flex items-center gap-2 shrink-0">
+          {chatTitle ? (
+            <span className="text-[11.5px] text-muted truncate max-w-[14rem] hidden sm:inline" data-testid="kas-created-by">
+              {i18nT('apps.workflows.kas.created_by_session_prefix')}{' '}
+              {parentSlot ? (
+                <button
+                  type="button"
+                  className="bg-transparent border-none p-0 text-accent cursor-pointer hover:underline font-medium"
+                  onClick={openParentChat}
+                  data-testid="kas-created-by-link"
+                >
+                  {chatTitle}
+                </button>
+              ) : (
+                <span className="text-text font-medium">{chatTitle}</span>
+              )}
+            </span>
+          ) : null}
+          {total != null ? (
+            <span className="text-[11.5px] text-muted tabular-nums" data-testid="kas-run-progress">
+              {i18nT('apps.workflows.kas.dock_steps', { done, total })}
+            </span>
+          ) : null}
+          {elapsedMs != null ? (
+            <span className="text-[11.5px] text-muted tabular-nums" data-testid="kas-run-elapsed">
+              {fmtElapsed(elapsedMs, { wholeSeconds: true })}
+            </span>
+          ) : null}
+          <span className="inline-flex items-center">
+            <KasRunRecoveryButtons row={row} compact />
+            <KasRunIconControls row={row} withDelete />
+          </span>
         </span>
       </header>
 
@@ -169,26 +183,27 @@ export function KasRunDetail({
         />
       ))}
 
-      <div className={wide ? 'grid grid-cols-[minmax(220px,38%)_1fr] gap-3 items-start' : 'flex flex-col gap-3'}>
-        <section className="flex flex-col gap-1 min-w-0" aria-label={i18nT('apps.workflows.kas.steps')}>
-          <h4 className="m-0 text-[10.5px] font-semibold uppercase tracking-wide text-muted">{i18nT('apps.workflows.kas.steps')}</h4>
-          <KasStepsTree nodes={row.nodes} selectedPath={stepPath} onSelect={onSelectStep} row={row} />
-        </section>
-        <div className={wide ? 'min-w-0 border-l border-border pl-3' : 'min-w-0 border-t border-border pt-3'}>
-          <KasStepChat
-            key={stepPath ?? ''}
-            workflowId={row.workflowId}
-            nodeId={stepId}
-            path={stepPath}
-            stepRunning={step?.status === 'running'}
-            canReply={awaitsReply}
-            chatTitle={chatTitle}
-            agent={step?.agent ?? null}
-            stepActions={
-              step && (nodeCan(step, 'complete') || nodeCan(step, 'fail')) ? <KasStepDecisionButtons row={row} node={step} /> : null
-            }
-          />
-        </div>
+      {/* Tree table on top, full width; the selected step's chat below it. */}
+      <section className="flex flex-col gap-1 min-w-0" aria-label={i18nT('apps.workflows.kas.steps')}>
+        <KasStepsTree nodes={row.nodes} selectedPath={stepPath} onSelect={onSelectStep} row={row} />
+      </section>
+      <div className="min-w-0 border-t border-border pt-3">
+        <KasStepChat
+          key={stepPath ?? ''}
+          workflowId={row.workflowId}
+          nodeId={stepId}
+          path={stepPath}
+          stepRunning={step?.status === 'running'}
+          canReply={awaitsReply}
+          chatTitle={chatTitle}
+          agent={step?.agent ?? null}
+          stepLabel={step?.label ?? null}
+          model={step?.model ?? null}
+          effort={step?.effort ?? null}
+          stepActions={
+            step && (nodeCan(step, 'complete') || nodeCan(step, 'fail')) ? <KasStepDecisionButtons row={row} node={step} /> : null
+          }
+        />
       </div>
     </div>
   )

@@ -387,6 +387,7 @@ async def steer_into_running_turn(
     delivery_id: str | None = None,
     responsive: bool = False,
     nudge_meta: dict | None = None,
+    relay_meta: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -952,6 +953,12 @@ async def steer_into_running_turn(
     meta: dict[str, Any] = {
         "steer": True,
         "steerState": _state,
+        # The gateway-set cross-session sender, when a ``session_send`` peer was
+        # steered into the running turn: the receiver's consumed-steer row carries
+        # it so the transcript draws the incoming session-message card instead of
+        # the raw provenance prefix. Only on a peer relay (``relay_meta`` set); a
+        # requeued steer that drains later is the one uncovered edge.
+        **({"relay": dict(relay_meta)} if relay_meta else {}),
         # The row names its delivery, as a drained row names the deliveries it
         # stands for (``steer_delivery_ids``): a caller reconciling after this
         # call -- the channel hand-off on a slot that moved under the RPC -- finds

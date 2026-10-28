@@ -5172,8 +5172,6 @@
         "in_progress": "চলছে",
         "included_workflow": "অন্তর্ভুক্ত ওয়ার্কফ্লো",
         "invalid": "অবৈধ ওয়ার্কফ্লো",
-        "iteration": "পুনরাবৃত্তি {{n}}/{{max}}",
-        "iteration_label": "পুনরাবৃত্তি {{n}}",
         "kiro_agent": "Kiro Agent",
         "launch": "চালাও",
         "launch_effort": "খাটনি",
@@ -5197,8 +5195,6 @@
         "marker_update": "ওয়ার্কফ্লো {{name}} থেকে আপডেট",
         "marker_waiting": "ওয়ার্কফ্লো {{name}} তোমার জন্য অপেক্ষা করছে",
         "max_iterations": "পুনরাবৃত্তি: সর্বোচ্চ {{max}}",
-        "n_step_workflow_one": "{{count}} ধাপের ওয়ার্কফ্লো",
-        "n_step_workflow_other": "{{count}} ধাপের ওয়ার্কফ্লো",
         "no_messages": "এখনও কোনো বার্তা নেই।",
         "no_recipes": "এই প্রজেক্টে কোনো ওয়ার্কফ্লো পাওয়া যায়নি।",
         "no_runs": "এখনও কোনো ওয়ার্কফ্লো রান নেই।",
@@ -5331,10 +5327,10 @@
         "tool_valid": "বৈধ",
         "tool_invalid": "অবৈধ",
         "tool_open_run": "রান খোলো",
-        "empty_hint": "Customize › Workflows থেকে একটি ওয়ার্কফ্লো শুরু করো, বা আমাকে একটি Kiro Agent ওয়ার্কফ্লো চালাতে বলো।",
+        "empty_hint": "Customize › Workflows থেকে একটি ওয়ার্কফ্লো শুরু করো, বা আমাকে একটি Kiro Workflow চালাতে বলো।",
         "input_required": "আবশ্যক",
         "inputs_required": "চালাতে প্রতিটি ইনপুট পূরণ করো।",
-        "not_launchable": "এই ওয়ার্কফ্লোর কোনো লঞ্চ উৎস নেই, তাই এটি চালানো যাবে না।",
+        "not_launchable": "এই ওয়ার্কফ্লো এখান থেকে চালানো যাবে না: এটি শুরু করার মতো কোনো ফাইল নেই।",
         "refresh_recipes": "ওয়ার্কফ্লো রিফ্রেশ করো",
         "new_recipe": "নতুন ওয়ার্কফ্লো",
         "new_recipe_name": "ওয়ার্কফ্লোর নাম",
@@ -5361,7 +5357,22 @@
         "group_summary_steps_one": "{{count}}টি ধাপ",
         "group_summary_steps_other": "{{count}}টি ধাপ",
         "load_more_one": "আরও {{count}}টি লোড করো",
-        "load_more_other": "আরও {{count}}টি লোড করো"
+        "load_more_other": "আরও {{count}}টি লোড করো",
+        "watch_marker": "কার্যকলাপের উপর নজর রাখে",
+        "included_workflow_steps": "অন্তর্ভুক্ত ওয়ার্কফ্লো · {{n}}টি ধাপ",
+        "iteration_prev": "এই ধাপের আগের রান",
+        "iteration_next": "এই ধাপের পরের রান",
+        "iteration_position": "{{max}}টির মধ্যে রান {{n}}",
+        "created_by_session_prefix": "এই সেশন দ্বারা তৈরি",
+        "chip_thought_tools": "চিন্তা ({{thoughts}}) + টুল ({{tools}})",
+        "chip_tools": "টুল ({{n}})",
+        "chip_thought": "চিন্তা ({{n}})",
+        "step_asks": "{{step}} জিজ্ঞাসা করছে",
+        "composer_placeholder_agent": "{{agent}}-কে উত্তর দিন…",
+        "composer_placeholder": "একটি বার্তা পাঠান…",
+        "composer_running_hint": "এই ধাপটি তোমার ইনপুট চাইলে তুমি উত্তর দিতে পারবে।",
+        "composer_idle_hint": "এই ধাপটি কোনো উত্তরের জন্য অপেক্ষা করছে না।",
+        "reply_open": "উত্তর দিন"
       }
     },
     "commandBar": {
@@ -8998,10 +9009,10 @@
       "loading_commands_enter_held": "কমান্ড লোড হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "no_matching_commands_ctrl_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Ctrl+Enter বার্তা পাঠাবে",
       "no_matching_commands_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Enter বার্তা পাঠাবে",
-      "desc_workflow_run": "একটি Kiro Agent ওয়ার্কফ্লো চালাও",
-      "desc_workflow_resume": "একটি বিরতি দেওয়া Kiro Agent ওয়ার্কফ্লো রান আবার শুরু করো",
-      "desc_workflow_status": "এই চ্যাটের Kiro Agent ওয়ার্কফ্লো রান দেখাও",
-      "desc_workflow_cancel": "একটি Kiro Agent ওয়ার্কফ্লো রান থামাও"
+      "desc_workflow_run": "একটি Kiro Workflow চালাও",
+      "desc_workflow_resume": "একটি বিরতি দেওয়া Kiro Workflow রান আবার শুরু করো",
+      "desc_workflow_status": "এই চ্যাটের Kiro Workflow রান দেখাও",
+      "desc_workflow_cancel": "একটি Kiro Workflow রান থামাও"
     },
     "slotTagPopover": {
       "assign_tags": "ট্যাগ নির্ধারণ করুন",
@@ -11872,6 +11883,14 @@
         "session_colors": "সেশনের রঙসমূহ",
         "save_failed": "সেশনের রঙ সংরক্ষণ করা যায়নি"
       },
+      "sessionMessageCard": {
+        "needs_you": "মনোযোগ দরকার",
+        "open_session": "{{name}} খোলো",
+        "show_less": "কম দেখাও",
+        "show_more": "আরও দেখাও",
+        "this_session": "এই সেশন",
+        "to_recipient": "{{name}}-কে পাঠানো হয়েছে"
+      },
       "sessionFlyout": {
         "new": "নতুন",
         "new_chat": "নতুন চ্যাট",
@@ -13982,7 +14001,7 @@
         "folder_conductor": "ফোল্ডারের কন্ডাক্টর",
         "folder_conductor_desc": "যে চ্যাট একটি ফোল্ডারের বাকি চ্যাটগুলো শুরু করেছে, সেটিকে ফোল্ডারের একদম উপরে তুলে ধরে: বাঁ ধারে একটি রঙিন দাগ আর এজেন্টের নামের পাশে একটি ছোট conductor লেবেল। এটি সেশন তালিকার সাজানো বদলে দেয়, তাই তুমি চালু না করা পর্যন্ত তালিকাটি আগের মতোই থাকে। ফোল্ডার মেনুর চ্যাট আইটেমটি সব সময়ই থাকে।",
         "kas_workflows": "Kiro Agent Server কনফিগার করা থাকলে Kiro Workflows ব্যবহার করো",
-        "kas_workflows_desc": "Kiro Agent যেখানে চলে সেখানে তার নিজস্ব ওয়ার্কফ্লো চালু করে — Workflows ট্যাব, Task Runner, কোনো চ্যাট থেকে শুরু করা ওয়ার্কফ্লো, এবং বুটের সময় বাধাপ্রাপ্ত রান পুনরুদ্ধার। এটি প্রতিটি ডিভাইসে নয়, এই গেটওয়েতে সেভ হয়; প্রতিটি চ্যাট পরের সেশন শুরু হলে এটি নেয়।",
+        "kas_workflows_desc": "Kiro Agent যেখানে চলে সেখানে Kiro Workflows চালু করে — Workflows ট্যাব, Task Runner, কোনো চ্যাট থেকে শুরু করা ওয়ার্কফ্লো, এবং বুটের সময় বাধাপ্রাপ্ত রান পুনরুদ্ধার। এটি প্রতিটি ডিভাইসে নয়, এই গেটওয়েতে সেভ হয়; প্রতিটি চ্যাট পরের সেশন শুরু হলে এটি নেয়।",
         "kas_workflows_off_backend": "এজেন্ট ব্যাকএন্ড Kiro Agent না হওয়া পর্যন্ত এর কোনো প্রভাব নেই।",
         "kas_workflows_failed": "এই সেটিংটি সেভ করা যায়নি।",
         "kas_creator_effort": "তৈরির ধাপের খাটনি",

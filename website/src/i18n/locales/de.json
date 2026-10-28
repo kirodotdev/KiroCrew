@@ -5261,8 +5261,6 @@
         "in_progress": "Läuft",
         "included_workflow": "Eingebundener Workflow",
         "invalid": "Ungültiger Workflow",
-        "iteration": "Durchgang {{n}}/{{max}}",
-        "iteration_label": "Iteration {{n}}",
         "kiro_agent": "Kiro Agent",
         "launch": "Ausführen",
         "launch_effort": "Aufwand",
@@ -5286,8 +5284,6 @@
         "marker_update": "Update von Workflow {{name}}",
         "marker_waiting": "Workflow {{name}} wartet auf dich",
         "max_iterations": "Durchgänge: bis zu {{max}}",
-        "n_step_workflow_one": "Workflow mit {{count}} Schritt",
-        "n_step_workflow_other": "Workflow mit {{count}} Schritten",
         "no_messages": "Noch keine Nachrichten.",
         "no_recipes": "Für dieses Projekt wurden keine Workflows gefunden.",
         "no_runs": "Noch keine Workflow-Läufe.",
@@ -5420,10 +5416,10 @@
         "tool_valid": "gültig",
         "tool_invalid": "ungültig",
         "tool_open_run": "Lauf öffnen",
-        "empty_hint": "Starte einen Workflow über Anpassen › Workflows oder bitte mich, einen Kiro Agent-Workflow auszuführen.",
+        "empty_hint": "Starte einen Workflow über Anpassen › Workflows oder bitte mich, einen Kiro Workflow auszuführen.",
         "input_required": "erforderlich",
         "inputs_required": "Fülle alle Eingaben aus, um zu starten.",
-        "not_launchable": "Dieser Workflow hat keine Startquelle und kann daher nicht ausgeführt werden.",
+        "not_launchable": "Dieser Workflow kann hier nicht ausgeführt werden: Es gibt keine Datei, von der aus er gestartet werden kann.",
         "refresh_recipes": "Workflows aktualisieren",
         "new_recipe": "Neuer Workflow",
         "new_recipe_name": "Workflow-Name",
@@ -5450,7 +5446,22 @@
         "group_summary_steps_one": "{{count}} Schritt",
         "group_summary_steps_other": "{{count}} Schritte",
         "load_more_one": "{{count}} weiteren laden",
-        "load_more_other": "{{count}} weitere laden"
+        "load_more_other": "{{count}} weitere laden",
+        "watch_marker": "Überwacht auf Aktivität",
+        "included_workflow_steps": "eingebundener Workflow · {{n}} Schritte",
+        "iteration_prev": "Vorheriger Durchlauf dieses Schritts",
+        "iteration_next": "Nächster Durchlauf dieses Schritts",
+        "iteration_position": "Durchlauf {{n}} von {{max}}",
+        "created_by_session_prefix": "Erstellt von Sitzung",
+        "chip_thought_tools": "Denken ({{thoughts}}) + Tools ({{tools}})",
+        "chip_tools": "Tools ({{n}})",
+        "chip_thought": "Denken ({{n}})",
+        "step_asks": "{{step}} fragt",
+        "composer_placeholder_agent": "An {{agent}} antworten…",
+        "composer_placeholder": "Nachricht senden…",
+        "composer_running_hint": "Du kannst antworten, sobald dieser Schritt deine Eingabe anfordert.",
+        "composer_idle_hint": "Dieser Schritt wartet nicht auf eine Antwort.",
+        "reply_open": "Antworten"
       }
     },
     "awsControl": {
@@ -8998,10 +9009,10 @@
       "loading_commands_enter_held": "Befehle werden geladen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
       "no_matching_commands_ctrl_enter_sends": "Keine passenden Befehle — Ctrl+Enter sendet die Nachricht",
       "no_matching_commands_enter_sends": "Keine passenden Befehle — Enter sendet die Nachricht",
-      "desc_workflow_run": "Einen Kiro Agent-Workflow ausführen",
-      "desc_workflow_resume": "Einen pausierten Kiro Agent-Workflow-Lauf fortsetzen",
-      "desc_workflow_status": "Die Kiro Agent-Workflow-Läufe dieses Chats anzeigen",
-      "desc_workflow_cancel": "Einen Kiro Agent-Workflow-Lauf stoppen"
+      "desc_workflow_run": "Einen Kiro Workflow ausführen",
+      "desc_workflow_resume": "Einen pausierten Kiro Workflow-Lauf fortsetzen",
+      "desc_workflow_status": "Die Kiro Workflow-Läufe dieses Chats anzeigen",
+      "desc_workflow_cancel": "Einen Kiro Workflow-Lauf stoppen"
     },
     "slotTagPopover": {
       "assign_tags": "Tags zuweisen",
@@ -11872,6 +11883,14 @@
         "session_colors": "Sitzungsfarben",
         "save_failed": "Die Sitzungsfarbe konnte nicht gespeichert werden"
       },
+      "sessionMessageCard": {
+        "needs_you": "Aktion nötig",
+        "open_session": "{{name}} öffnen",
+        "show_less": "Weniger anzeigen",
+        "show_more": "Mehr anzeigen",
+        "this_session": "Diese Sitzung",
+        "to_recipient": "Gesendet an {{name}}"
+      },
       "sessionFlyout": {
         "new": "Neu",
         "new_chat": "Neuer Chat",
@@ -13982,7 +14001,7 @@
         "folder_conductor": "Ordner-Conductor",
         "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da.",
         "kas_workflows": "Kiro Workflows verwenden, wenn Kiro Agent Server konfiguriert ist",
-        "kas_workflows_desc": "Schaltet die eigenen Workflows von Kiro Agent überall dort ein, wo es läuft: den Workflows-Tab, den Task Runner, aus einem Chat gestartete Workflows und die Wiederherstellung unterbrochener Läufe beim Start. Gilt für dieses Gateway, nicht pro Gerät; jeder Chat übernimmt es beim Start seiner nächsten Sitzung.",
+        "kas_workflows_desc": "Schaltet Kiro Workflows überall dort ein, wo Kiro Agent läuft: den Workflows-Tab, den Task Runner, aus einem Chat gestartete Workflows und die Wiederherstellung unterbrochener Läufe beim Start. Gilt für dieses Gateway, nicht pro Gerät; jeder Chat übernimmt es beim Start seiner nächsten Sitzung.",
         "kas_workflows_off_backend": "Ohne Wirkung, bis das Agent-Backend Kiro Agent ist.",
         "kas_workflows_failed": "Diese Einstellung konnte nicht gespeichert werden.",
         "kas_creator_effort": "Aufwand des Erstellungsschritts",

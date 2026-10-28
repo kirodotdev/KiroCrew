@@ -61,6 +61,28 @@ describe('gap 10 — kas_event marker rows', () => {
     expect(note).toHaveAttribute('data-kind', 'note')
     expect(note).toHaveAttribute('data-severity', 'warning')
   })
+
+  it('round 10: a warning step-note renders the INCOMING card from the step with a Needs you pill', () => {
+    renderWithProviders(<KasEventMarkerRow marker={{ type: 'note', name: 'triage', severity: 'warning', message: 'need input', step: 'Review', agent: 'rev' }} />)
+    const card = screen.getByTestId('session-message-card')
+    expect(card).toHaveAttribute('data-direction', 'incoming')
+    // Avatar + title name the step; the agent and run show as meta.
+    expect(screen.getByTestId('session-card-title').textContent).toBe('Review')
+    expect(screen.getByTestId('session-card-meta').textContent).toBe('rev · triage')
+    expect(screen.getByTestId('session-card-needs-you')).toBeInTheDocument()
+  })
+
+  it('round 10: a plain (info) step-note is the card without the pill; an error note keeps the one-line row', () => {
+    const { unmount } = renderWithProviders(<KasEventMarkerRow marker={{ type: 'note', name: 'triage', severity: 'info', message: 'done scanning', step: 'Scan', agent: 'rev' }} />)
+    expect(screen.getByTestId('session-message-card')).toBeInTheDocument()
+    expect(screen.queryByTestId('session-card-needs-you')).not.toBeInTheDocument()
+    unmount()
+    renderWithProviders(<KasEventMarkerRow marker={{ type: 'note', name: 'triage', severity: 'error', message: 'it broke', step: 'Fix', agent: 'rev' }} />)
+    // Error keeps the red one-line row, not a card, so its failure cue survives.
+    expect(screen.queryByTestId('session-message-card')).not.toBeInTheDocument()
+    const row = screen.getByTestId('kas-event-marker')
+    expect(row).toHaveAttribute('data-severity', 'error')
+  })
 })
 
 // ── gap 26: other workflow tool calls ──
@@ -116,6 +138,13 @@ describe('gaps 1/11/23 — step tree', () => {
     expect(screen.getByTestId('kas-will-replace')).toBeInTheDocument()
     expect(screen.getByTestId('kas-queued-steps')).toBeInTheDocument()
     expect(screen.getByTestId('kas-queued-step')).toHaveTextContent('Queued A')
+  })
+
+  it('labels the watch marker "Watches for activity" with a matching tooltip (CX r8)', () => {
+    renderWithProviders(<KasStepsTree nodes={treeRow().nodes} selectedPath={null} onSelect={() => {}} row={treeRow()} />)
+    const marker = screen.getByTestId('kas-watch-marker')
+    expect(marker).toHaveTextContent('Watches for activity')
+    expect(marker).toHaveAttribute('title', 'Watches for activity')
   })
 
   it('a collapsed group summarises what it holds', () => {

@@ -11,11 +11,12 @@
  * the router's own regexes, so nothing a person types can pass for one unless it
  * carries a 32-hex token too (and even then it only changes how the row looks).
  */
-import { AlertTriangle, Info, Workflow, XCircle } from 'lucide-react'
+import { Workflow, XCircle } from 'lucide-react'
 
 import type { ChatMessage } from '../../../types'
 import { fmtElapsed } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
+import { SessionMessageCard } from '../../../pages/chat/SessionMessageCard'
 
 const LAUNCH_RE = /^Start workflow `([^`\n]*)` in `[^`\n]*` \(launch [0-9a-f]{32}\)\s*$/
 const RECONNECT_RE = /^Reconnect workflow runs \(reconnect [0-9a-f]{32}\)\s*$/
@@ -176,16 +177,35 @@ export function KasEventMarkerRow({ marker }: { marker: KasEventMarker }) {
       </div>
     )
   }
-  const Icon = marker.severity === 'error' ? XCircle : marker.severity === 'warning' ? AlertTriangle : Info
-  const tone = marker.severity === 'error' ? 'text-danger' : marker.severity === 'warning' ? 'text-warn' : 'text-muted'
+  // Round 10: a step's note to the parent chat is the INCOMING session-message
+  // card from the step — avatar + step name, the sender's agent and run as meta,
+  // and a "Needs you" pill when the step is parked on the person (severity
+  // `warning`). An ERROR-severity note keeps the one-line red row so its failure
+  // cue is not lost (the card carries none); the run-end outcome lines above are
+  // untouched.
+  if (marker.severity !== 'error') {
+    const step = marker.step || marker.name
+    return (
+      <div className="my-1" data-testid="kas-event-marker" data-kind="note" data-severity={marker.severity}>
+        <SessionMessageCard
+          direction="incoming"
+          sender={{ key: step, title: step }}
+          body={marker.message}
+          agent={marker.agent}
+          runName={marker.name}
+          needsYou={marker.severity === 'warning'}
+        />
+      </div>
+    )
+  }
   return (
     <div
-      className={`flex items-start gap-2 my-1 text-[12px] ${tone}`}
+      className="flex items-start gap-2 my-1 text-[12px] text-danger"
       data-testid="kas-event-marker"
       data-kind="note"
       data-severity={marker.severity}
     >
-      <Icon size={13} className="shrink-0 mt-px" aria-hidden="true" />
+      <XCircle size={13} className="shrink-0 mt-px" aria-hidden="true" />
       <span className="min-w-0 break-words">{noteText(marker)}</span>
     </div>
   )
