@@ -1175,7 +1175,16 @@ def _perm_verb_mention_narrows(
     """
     s3 = _submodule("s3_direction")
     if pattern in s3._S3_TRANSFER_PATTERNS:
-        return pattern in shipped and s3._s3_download_only(view, raw)
+        if pattern not in shipped:
+            return False
+        # Its own key: the reader's verdict is not the mention walk's, and every
+        # matching segment would otherwise re-read the whole command.
+        key = f"\0s3\0{view}\0{raw}"
+        s3_verdict = cache.get(key)
+        if s3_verdict is None:
+            s3_verdict = s3._s3_download_only(view, raw)
+            cache[key] = s3_verdict
+        return s3_verdict
     if pattern not in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
         return False
     verdict = cache.get(view)

@@ -13,11 +13,18 @@ deny stands, so this can only narrow a row on a command it fully read.
 
 It reads ``aws s3`` and nothing else: ``python -c``, ``curl`` and every other way
 to move a file are out of its reach and stay with the rows and the OS sandbox.
+
+It reads POSIX shell only, so on Windows it reads nothing. A script hook there runs
+under cmd.exe, where a single quote is a plain character and an ``&`` inside one
+starts a second command: ``'./d & aws s3 cp ./f s3://x/k'`` is one POSIX word but
+two cmd.exe commands.
 """
 
 from __future__ import annotations
 
 import shlex
+
+from kiro_crew import platform_compat
 
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
@@ -98,6 +105,8 @@ def _s3_download_only(command: str, raw: str = "") -> bool:
 
     *raw* is the same command before case folding: KELVIN SIGN folds to ASCII ``k``.
     """
+    if platform_compat.IS_WINDOWS:  # no POSIX shell reads it there (module docstring)
+        return False
     if not (command.isascii() and raw.isascii()):
         return False
     words = _plain_words(command.lower())
