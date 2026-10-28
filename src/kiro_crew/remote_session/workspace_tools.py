@@ -692,7 +692,6 @@ def _stats(ws: Workspace) -> Dict[str, Any]:
     paths, and only what the card shows.
     """
     import platform
-    import shutil
 
     cpus = os.cpu_count() or 0
     quota_cpus = _cgroup_cpus()
