@@ -1288,6 +1288,17 @@ class AgentConfig:
             "changes nothing. No effect unless the backend is Kiro Agent.",
         ),
     )
+    kas_creator_effort: str = field(
+        default="",
+        metadata=_meta(
+            "Kiro Agent Workflow Creator Effort",
+            "Reasoning effort for the step Kiro Agent (KAS) runs to write a workflow "
+            "a chat asks for: low, medium, high, xhigh or max. Empty leaves KAS's own "
+            "default. Applies only while Kiro Workflows on Kiro Agent is on, and only "
+            "to dashboard chats. Read when each chat's session starts or reloads, so a "
+            "change reaches a chat's next session.",
+        ),
+    )
     subagent_mem_buffer_pct: int = field(
         default=20,
         metadata=_meta(

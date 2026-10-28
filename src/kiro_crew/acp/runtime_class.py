@@ -39,6 +39,8 @@ from kiro_crew.acp.runtime_process_tree import EMPTY_WALK_RETRY_DELAY, ChildReco
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
 from kiro_crew.acp.runtime_wire import _PendingRequests
 from kiro_crew.acp.types import ACP_BACKEND_KIRO, JsonRpcMessage, backends_retired_by_host_logout
+from kiro_crew.acp.workflow_sink import WorkflowFrameSink
+from kiro_crew.acp.workflow_sink import sink_for as workflow_sink_for
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.validation import MODEL_ID_RE
 
@@ -204,6 +206,8 @@ class AcpRuntime:
     send_error = _rt_wire.send_error
     _one_at_a_time_ahead = _rt_wire._one_at_a_time_ahead
     _send_and_await = _rt_wire._send_and_await
+    set_workflow_sink = _rt_wire.set_workflow_sink
+    extension_request = _rt_wire.extension_request
     # Alive, busy, dead or due to recycle: ``kiro_crew.acp.runtime_liveness``.
     is_alive = _rt_liveness.is_alive
     stdin_reader_may_live = _rt_liveness.stdin_reader_may_live
@@ -759,6 +763,10 @@ class AcpRuntime:
         self._announced_children: dict[str, str] = {}
         # Announcements refused at that cap since the map was last emptied.
         self._announced_overflow: int = 0
+        # The router that owns a harness-native workflow engine's frames
+        # (kiro_crew.acp.workflow_sink). None on a backend without one, which
+        # keeps the demux below byte-identical to a runtime that never had one.
+        self._workflow_sink: WorkflowFrameSink | None = workflow_sink_for(self, acp_backend)
         # How many ids the LAST roster named past NATIVE_CHILD_ROSTER_CAP.
         # Non-zero means an announced child may be unrecognisable here, so a
         # permission request for an unknown session is audited under

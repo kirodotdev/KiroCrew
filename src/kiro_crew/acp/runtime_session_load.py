@@ -14,7 +14,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
-``_wire_mode_id``, ``_work_dir``,
+``_wire_mode_id``, ``_work_dir``, ``_workflow_sink``,
 ``_write_remote_token``.
 """
 
@@ -59,6 +59,11 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.kas_workflows.chat import attach_workflow_settings as attach_kas_workflow_settings
+from kiro_crew.kas_workflows.chat import creator_effort as kas_chat_creator_effort
+from kiro_crew.kas_workflows.chat import is_chat_session_key as kas_is_chat_session
+from kiro_crew.kas_workflows.chat import wants_workflows as kas_chat_wants_workflows
+from kiro_crew.kas_workflows.chat import with_workflow_tools as kas_with_workflow_tools
 from kiro_crew.providers.mirrors.registry import has_mirror
 
 if TYPE_CHECKING:
@@ -364,7 +369,25 @@ async def load_session(
             )
             load_params["mcpServers"] = wire_servers
         withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
-        attach_kas_custom_agents(load_params, kas_agents)
+        # KAS reads the workflow setting per session and keeps it only from
+        # the request it arrives on; the allowlist must name its tools too
+        # (see create_session). Written after the agent batch, which owns
+        # ``_meta.kiro`` and would replace a settings key written before it.
+        kas_wants = await kas_chat_wants_workflows(session_key)
+        if self._workflow_sink is not None and kas_wants:
+            attach_kas_custom_agents(load_params, kas_with_workflow_tools(kas_agents, active_agent))
+            attach_kas_workflow_settings(
+                load_params, creator_effort=await kas_chat_creator_effort()
+            )
+        else:
+            attach_kas_custom_agents(load_params, kas_agents)
+            # Gap 5b: say workflows.enabled:false out loud for a chat whose
+            # switch is off, so a reload drops KAS's persisted workflow surface.
+            # Keyed on ``kas_wants`` (chat AND switch on) so a no-sink switch-ON
+            # chat is untouched. Written AFTER the agent batch, which owns
+            # ``_meta.kiro``.
+            if kas_is_chat_session(session_key) and not kas_wants:
+                attach_kas_workflow_settings(load_params, enabled=False)
         # The same last word session/new gets, asked inside this branch so the
         # kiro resume path still stops at the comparison above.
         load_params, agent = self._harness.session_request(
