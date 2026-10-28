@@ -1089,11 +1089,16 @@ async def _start_next_queued_turn(
     # last writer would be quoted another sender's words. A code channel's
     # Slack sender (``slack_sender``) names the person whose words the row
     # holds, so it follows the same rule.
+    # ``relay`` (the cross-session sender for the incoming card) is a per-sender
+    # address like the ones beside it: a merged row of different senders' queued
+    # sends must not wear one sender's card, so it is dropped unless every entry
+    # agrees.
     for _address_key in (
         CHANNEL_RECIPIENT_META_KEY,
         SEND_ORIGIN_META_KEY,
         "author",
         "slack_sender",
+        "relay",
     ):
         _addresses = [
             (
