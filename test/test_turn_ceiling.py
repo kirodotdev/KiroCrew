@@ -46,7 +46,6 @@ from kiro_crew.messaging.turn_ceiling import (
     surface_of,
 )
 from kiro_crew.session import SessionManager
-from kiro_crew.slack.renderer import _split_trailing_word
 
 # ───────────────────────── behaviour ─────────────────────────
 
@@ -758,16 +757,19 @@ class TestDiscardingTheConversationReleasesTheLatch:
             ceiling.reset(key)
 
 
-class _HoldbackRenderer:
-    """A renderer double that keeps the product's OWN streaming contract.
+def _split_trailing_word(text: str) -> tuple[str, str]:
+    """Split off the run after the last whitespace, for the holdback double below."""
+    cut = max(text.rfind(" "), text.rfind("\n")) + 1
+    return text[:cut], text[cut:]
 
-    An append is final on the wire, so a throttled flush holds the trailing word
-    back rather than risk appending half of one. The rule here IS the Slack
-    renderer's ``_split_trailing_word``, imported rather than restated, so the
-    double cannot drift into a friendlier contract than production has. Only the
-    final flush in ``on_done`` releases a held tail; ``close()`` tears the turn
-    down and flushes nothing, which is exactly what production's ``close()``
-    does.
+
+class _HoldbackRenderer:
+    """A renderer double with the strictest streaming contract a channel may have.
+
+    An append is final on the wire, so a streaming renderer may hold the
+    trailing word back rather than risk appending half of one, and release it
+    only at the final flush in ``on_done``; ``close()`` tears the turn down and
+    flushes nothing. A notice must arrive whole even through such a renderer.
     """
 
     def __init__(self, *, fail_on_done: bool = False) -> None:

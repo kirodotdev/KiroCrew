@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.slack import renderer as _slack_renderer
 from kiro_crew.slack import transport_dispatch
 from kiro_crew.slack.handler import DELIVERY_DEBT_NOTICE, handle_message
 
@@ -349,9 +350,10 @@ def _run_transport(monkeypatch, slack, sessions):
 class _TransportLosesOneDeltaSlack(RecordingSlackClient):
     """The first append lands, every later one is refused, rotation succeeds.
 
-    The refusal window never closes, so the notice's own append is refused too.
-    That makes this the harness for the fallback, not for the on-the-stream
-    disclosure.
+    On this path the first append is the reply's first piece, so a reply longer
+    than one piece loses the rest for good. The refusal window never closes, so
+    the notice's own append is refused too. That makes this the harness for the
+    fallback, not for the on-the-stream disclosure.
     """
 
     def __init__(self) -> None:
@@ -362,23 +364,6 @@ class _TransportLosesOneDeltaSlack(RecordingSlackClient):
         self._rec("append_stream", channel=channel, ts=ts, text=text)
         self._appends += 1
         return self._appends == 1
-
-
-class _TransportRecoversAfterTheLossSlack(RecordingSlackClient):
-    """One delta is refused twice, then Slack accepts again.
-
-    Appends two and three are the lost delta and its retry on the fresh message;
-    everything after lands, so the notice can go on the stream.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._appends = 0
-
-    async def append_stream(self, channel, ts, text) -> bool:
-        self._rec("append_stream", channel=channel, ts=ts, text=text)
-        self._appends += 1
-        return self._appends not in (2, 3)
 
 
 def _transport_texts(slack) -> str:
@@ -399,21 +384,52 @@ def _transport_notice_sinks(slack) -> tuple[bool, bool]:
     return on_stream, as_message
 
 
+#: Text that fills the first ``chat.appendStream`` piece of the reply on its own.
+#: The transport path holds the reply and appends it whole at the end of the
+#: turn, in pieces of at most ``_STREAM_APPEND_MAX`` characters, so a reply
+#: longer than one piece is the only shape where some of the answer can land
+#: while a later piece is refused for good.
+_FIRST_PIECE = "alpha " * (_slack_renderer._STREAM_APPEND_MAX // 6 + 100)
+
+
+def _long_reply_events() -> list:
+    """A reply whose second append piece carries the lost marker."""
+    return [
+        make_event(EVENT_TEXT_CHUNK, text=_FIRST_PIECE),
+        make_event(EVENT_TEXT_CHUNK, text=f"{_LOST} "),
+        make_event(EVENT_TEXT_CHUNK, text="charlie"),
+        make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+    ]
+
+
+def _appended_texts(slack) -> list[str]:
+    """The text of every ``append_stream`` the transport path attempted, in order."""
+    return [
+        str(payload.get("text", ""))
+        for name, payload in slack.transcript
+        if name == "append_stream"
+    ]
+
+
 def test_transport_for_good_loss_is_disclosed_on_the_stream(monkeypatch):
+    """A later reply piece refused for good, after the first piece landed.
+
+    The refused piece is retried on a rotated stream and refused again, so the
+    answer now spans the abandoned message and the replacement with a hole in
+    it. Restating would repeat the first piece, so the reader is told instead,
+    on the message they are watching, which accepts the notice.
+    """
     _assert_notice_shape()
-    slack = _TransportRecoversAfterTheLossSlack()
-    provider = ScriptedProvider(
-        [
-            make_event(EVENT_TEXT_CHUNK, text="alpha "),
-            make_event(EVENT_TEXT_CHUNK, text=f"{_LOST} "),
-            make_event(EVENT_TEXT_CHUNK, text="charlie"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ]
-    )
-    sessions = _TrackTransportSessions(provider)
+    slack = _TransportRefusesTheLostDeltaSlack()
+    sessions = _TrackTransportSessions(ScriptedProvider(_long_reply_events()))
 
     _run_transport(monkeypatch, slack, sessions)
 
+    appended = _appended_texts(slack)
+    assert appended and _LOST not in appended[0], "the first piece should carry no marker"
+    assert (
+        sum(_LOST in text for text in appended) == 2
+    ), "the refused piece should be tried, then retried once on a rotated stream"
     assert _NOTICE_MARK in _transport_texts(slack), "a for-good loss was dropped without a word"
     on_stream, as_message = _transport_notice_sinks(slack)
     assert on_stream, "the notice never reached the stream"
@@ -422,7 +438,7 @@ def test_transport_for_good_loss_is_disclosed_on_the_stream(monkeypatch):
 
 
 def test_transport_refused_notice_reaches_a_separate_message(monkeypatch):
-    """Same refusal on this path: the notice's own append returns False.
+    """Same loss, but the refusal window stays open: the notice's own append fails.
 
     The fallback message is sent directly rather than through the append helper,
     so it discloses the loss without entering the delivery ledger the rescue
@@ -430,15 +446,7 @@ def test_transport_refused_notice_reaches_a_separate_message(monkeypatch):
     """
     _assert_notice_shape()
     slack = _TransportLosesOneDeltaSlack()
-    provider = ScriptedProvider(
-        [
-            make_event(EVENT_TEXT_CHUNK, text="alpha "),
-            make_event(EVENT_TEXT_CHUNK, text=f"{_LOST} "),
-            make_event(EVENT_TEXT_CHUNK, text="charlie"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
-        ]
-    )
-    sessions = _TrackTransportSessions(provider)
+    sessions = _TrackTransportSessions(ScriptedProvider(_long_reply_events()))
 
     _run_transport(monkeypatch, slack, sessions)
 
@@ -553,11 +561,21 @@ def test_native_debt_settled_at_a_wait_is_not_reported_twice():
 
 
 class _TransportRefusesTheLostDeltaSlack(RecordingSlackClient):
-    """Refuses every append carrying the lost delta; everything else lands."""
+    """Refuses every append carrying the lost delta; everything else lands.
+
+    Task cards are recorded with their details, because on this path the text
+    before a tool call is folded into that call's step rather than streamed.
+    """
 
     async def append_stream(self, channel, ts, text) -> bool:
         self._rec("append_stream", channel=channel, ts=ts, text=text)
         return _LOST not in text
+
+    async def append_task(self, channel, ts, task_id, title, status, details="", output="") -> bool:
+        self._rec(
+            "append_task", channel=channel, ts=ts, title=title, status=status, details=details
+        )
+        return True
 
 
 def _transport_notice_count(slack) -> int:
@@ -570,8 +588,16 @@ def _transport_notice_count(slack) -> int:
     )
 
 
-def test_transport_wait_boundary_discloses_before_it_drops_the_stream(monkeypatch):
-    """Same boundary on the transport path, same last chance to say so."""
+def test_transport_reply_held_across_a_final_wait_is_resent_whole(monkeypatch):
+    """Text before a final ``wait`` is the reply, and a refused append of it is not lost.
+
+    The transport path streams nothing before a tool call, so the boundary can
+    carry no debt of its own. The turn ending on the ``wait`` makes that text the
+    reply, appended on a fresh stream at the end. When that append and its retry
+    on a rotated stream are both refused, nothing reached the reader, so the
+    renderer falls back to ``chat.update`` with the full text: the reader gets
+    the whole answer and there is no gap left to disclose.
+    """
     _assert_notice_shape()
     slack = _TransportRefusesTheLostDeltaSlack()
     provider = ScriptedProvider(
@@ -586,28 +612,48 @@ def test_transport_wait_boundary_discloses_before_it_drops_the_stream(monkeypatc
 
     _run_transport(monkeypatch, slack, sessions)
 
-    assert _NOTICE_MARK in _transport_texts(
-        slack
-    ), "a wait boundary dropped the stream and took the loss with it"
-    on_stream, _as_message = _transport_notice_sinks(slack)
-    assert on_stream, "the notice did not reach the message the gap is in"
+    assert (
+        sum(_LOST in text for text in _appended_texts(slack)) == 2
+    ), "the reply should be tried, then retried once on a rotated stream"
+    updates = [
+        str(payload.get("text", ""))
+        for name, payload in slack.transcript
+        if name == "update_message"
+    ]
+    assert any(
+        "alpha" in text and _LOST in text for text in updates
+    ), "a refused reply was dropped instead of re-sent whole"
+    assert _transport_notice_count(slack) == 0, "disclosed a loss the full re-send repaired"
+    assert sessions.calls == {"success": 1, "failure": 0}
 
 
 def test_transport_debt_settled_at_a_wait_is_not_reported_twice(monkeypatch):
-    """Post-wait text opens a fresh stream, and on_done must not repeat the notice."""
+    """Narration before a ``wait`` lands on its step; a later loss is told once.
+
+    The text before the ``wait`` is folded into that step's details, so it is on
+    the thread and owes nothing. The reply after it loses a piece for good, and
+    that loss is disclosed exactly once: the boundary has no debt to settle, and
+    settling at finalize clears it.
+    """
     _assert_notice_shape()
     slack = _TransportRefusesTheLostDeltaSlack()
     provider = ScriptedProvider(
         [
-            make_event(EVENT_TEXT_CHUNK, text="alpha "),
-            make_event(EVENT_TEXT_CHUNK, text=f"{_LOST} "),
+            make_event(EVENT_TEXT_CHUNK, text=f"narration {_LOST} "),
             make_event(EVENT_TOOL_CALL, title="wait", tool_name="wait", tool_call_id="t-wait"),
-            make_event(EVENT_TEXT_CHUNK, text="charlie"),
-            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            *_long_reply_events(),
         ]
     )
     sessions = _TrackTransportSessions(provider)
 
     _run_transport(monkeypatch, slack, sessions)
 
+    step_details = [
+        str(payload.get("details", ""))
+        for name, payload in slack.transcript
+        if name == "append_task"
+    ]
+    assert any(
+        "narration" in d and _LOST in d for d in step_details
+    ), "the text before the wait reached no step"
     assert _transport_notice_count(slack) == 1, "the same loss was disclosed more than once"

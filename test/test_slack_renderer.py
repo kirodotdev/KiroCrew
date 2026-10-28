@@ -207,7 +207,7 @@ class TestOptionsControlIsStamped:
         async def scenario():
             rec = _RecSlack()
             renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
-            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+            await renderer.on_text_chunk("pick one\n[OPTIONS: alpha | beta]")
 
             persisted: list[str] = []
 
@@ -273,15 +273,16 @@ class TestSlackRendererMapping:
         )
         asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
         methods = [m for m, _ in rec.calls]
+        # The reply is held until the turn ends, then goes out in one append.
         assert methods == [
             "set_thread_status",
             "start_stream",
-            "append_stream",
             "append_stream",
             "stop_stream",
             "set_thread_status",
             "post_blocks",
         ]
+        assert [kw["text"] for m, kw in rec.calls if m == "append_stream"] == ["Hello world"]
         # stop_stream carries the clean final text
         stop = [kw for m, kw in rec.calls if m == "stop_stream"][0]
         assert stop["final_text"] == "Hello world"
@@ -776,84 +777,31 @@ class _NoStreamSlack(_RecSlack):
 
 
 class TestStreamMachinery:
-    def test_throttle_coalesces_chunks_within_interval(self):
-        rec = _RecSlack()
-        # 5 clock reads: turn_start, chunk A, B, C, on_done. A flushes
-        # (now-0>=1.0); B and C arrive <1.0s later so they coalesce.
-        # Chunks end with a space so the driver's StreamRedactor commits each
-        # immediately (a trailing credential-class run would otherwise be held
-        # back until flush) — this test targets the renderer throttle, not the
-        # redactor holdback.
-        clock = _FakeClock([1000.0, 1000.0, 1000.2, 1000.4, 1000.4])
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
-        provider = _Provider(
-            [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="A "),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="B "),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="C "),
-                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-            ]
-        )
-        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
-        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
-        assert streamed == ["A ", "B C "], streamed
+    def test_text_is_held_until_the_turn_ends(self):
+        """Nothing reaches the stream while the turn is still producing text.
 
-    def test_throttle_flushes_each_chunk_past_interval(self):
-        rec = _RecSlack()
-        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])  # B is 2s after A
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
-        # Trailing space so StreamRedactor commits each chunk immediately.
-        provider = _Provider(
-            [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="A "),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="B "),
-                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-            ]
-        )
-        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
-        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
-        assert streamed == ["A ", "B "], streamed
-
-    def test_flush_on_edit_interval_does_not_tear_a_word_in_half(self):
-        """A model fragment boundary landing mid-word must not split it.
-
-        The throttled flush sends what is in ``_stream_buffer`` when the
-        edit-interval timer fires, and that timer knows nothing about where a
-        word ends. Two model fragments ("...ch" then "ạy...", the split shape
-        seen on a Vietnamese reply) land far enough apart to each cross the 1s
-        throttle, so each is a flush of its own; without a boundary check Slack
-        renders the word torn across two appended, unfixable segments.
+        An append to Slack's stream is final, and until the turn ends the text
+        may still turn out to be narration before a tool call. So the reply is
+        held whole and goes out once, at ``on_done`` -- which also means a
+        model fragment boundary can never tear a word ("chạ" / "y").
         """
-        rec = _RecSlack()
-        # turn_start, chunk 1 (@1000, flushes), chunk 2 (@1002, past interval,
-        # flushes), on_done (@1003).
-        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
-        provider = _Provider(
-            [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạ"),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="y trên máy.\n"),
-                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-            ]
-        )
-        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
-        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
-        # The first flush holds "chạ" back rather than sending it torn; it is
-        # only released once "y" arrives and completes the word.
-        assert streamed == ["Đang ", "chạy trên máy.\n"], streamed
-        assert "".join(streamed) == "Đang chạy trên máy.\n"
 
-    def test_held_word_is_released_at_on_done_even_with_no_trailing_space(self):
-        """A turn that ends mid-word must still deliver the whole word.
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            await renderer.on_turn_start()
+            await renderer.on_text_chunk("Đang chạ")
+            await renderer.on_text_chunk("y trên máy.\n")
+            assert [m for m, _ in rec.calls if m in ("start_stream", "append_stream")] == []
+            await renderer.on_done()
+            streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+            assert streamed == ["Đang chạy trên máy.\n"], streamed
 
-        The held tail exists only until the true end of the turn -- ``on_done``
-        flushes unconditionally so a turn that happens to stop right after a
-        throttled cut never leaves a fragment permanently stuck in the
-        renderer's buffer.
-        """
+        asyncio.run(scenario())
+
+    def test_held_reply_is_released_at_on_done_even_with_no_trailing_space(self):
         rec = _RecSlack()
-        clock = _FakeClock([1000.0, 1000.0, 1002.0])
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
         provider = _Provider(
             [
                 AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
@@ -864,119 +812,68 @@ class TestStreamMachinery:
         streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
         assert "".join(streamed) == "partial", streamed
 
-    def test_a_script_written_without_spaces_still_streams_progressively(self):
-        """Whitespace is the only boundary here, so a script with none is sent.
+    def test_append_pieces_cut_at_line_breaks(self):
+        from kiro_crew.slack.renderer import _append_pieces
 
-        Chinese, Japanese and Thai supply no whitespace for whole paragraphs. A
-        holdback that waited for one would re-hold the entire buffer on every
-        tick, so the reader would see nothing between newlines and the throttled
-        cadence the stream path exists for would be lost for exactly the
-        multibyte-script users a word-boundary guard is meant to help. Both
-        fragments below cross the throttle, so both must appear on their own.
+        text = "line of text\n" * 50
+        pieces = _append_pieces(text, limit=100)
+        assert "".join(pieces) == text
+        assert all(len(p) <= 100 and p.endswith("\n") for p in pieces), pieces
+
+    def test_append_pieces_fall_back_to_spaces_then_the_limit(self):
+        from kiro_crew.slack.renderer import _append_pieces
+
+        words = "word " * 40
+        pieces = _append_pieces(words, limit=50)
+        assert "".join(pieces) == words
+        assert all(len(p) <= 50 and p.endswith(" ") for p in pieces), pieces
+        assert _append_pieces("x" * 120, limit=50) == ["x" * 50, "x" * 50, "x" * 20]
+        assert _append_pieces("") == []
+
+    def test_an_over_limit_reply_streams_whole_across_appends(self):
+        """Slack caps one markdown_text append at 12,000 characters.
+
+        The reply now arrives at the stream in one go rather than throttled
+        slices, so a long one must be cut into appends Slack accepts, and the
+        cuts must not lose or reorder a character.
         """
         rec = _RecSlack()
-        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1003.0])
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        reply = "".join(f"Paragraph {i}: " + "detail " * 30 + "\n\n" for i in range(80))
+        assert len(reply) > 12_000
         provider = _Provider(
             [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="正在机器上运行"),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="第二段文字。\n"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=reply),
                 AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
             ]
         )
         asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
         streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
-        assert streamed == ["正在机器上运行", "第二段文字。\n"], streamed
+        assert len(streamed) > 1, [len(s) for s in streamed]
+        assert all(len(s) <= 12_000 for s in streamed), [len(s) for s in streamed]
+        assert "".join(streamed) == reply
 
-    def test_an_over_long_run_is_sent_rather_than_held(self):
-        """The hold is bounded, so one unbroken run cannot stall the stream.
+    def test_a_dying_turn_releases_the_reply_it_was_holding(self):
+        """The rescued transcript must hold what the turn last produced.
 
-        A run far longer than any word is not a token mid-flight; it is content
-        this rule cannot read -- a base64 blob, a minified line, a space-free
-        script after one leading space. Holding it would defer real output
-        waiting for a boundary that may never arrive, so it goes out as written.
-        Asserted on the boundary helper rather than through a turn because the
-        ref-hold can defer a long unbroken run for its own, unrelated reason,
-        which would make a stream-level assertion pass without this rule.
-        """
-        from kiro_crew.slack.renderer import _WORD_HOLD_MAX, _split_trailing_word
-
-        short = "y" * _WORD_HOLD_MAX
-        assert _split_trailing_word(f"pin {short}") == ("pin ", short)
-        over = "y" * (_WORD_HOLD_MAX + 1)
-        assert _split_trailing_word(f"pin {over}") == (f"pin {over}", "")
-        # No whitespace at all: nothing to hold against, so send as written.
-        assert _split_trailing_word("正在机器上运行") == ("正在机器上运行", "")
-
-    def test_a_tool_card_cannot_get_between_a_held_word_and_its_start(self):
-        """Prose before a tool must finish before the card, not after it.
-
-        The hold is only ever safe because the NEXT flush stitches it back onto
-        its own word. A tool boundary is the one place that premise fails: the
-        card is appended immediately after the flush, so a complete word the
-        model simply did not follow with a space is released on the FAR side of
-        it and reads as the opening of the post-tool sentence -- "Đang kiểm tra
-        máy " / card / "chủ và ...". Nothing is lost, which is why no test
-        caught it; the order is wrong, and appends are final on Slack's side,
-        so the reader cannot be given the sentence back.
-
-        The trailing word carries a non-ASCII character deliberately: the
-        driver's own StreamRedactor holds a trailing ASCII run back as a
-        possible credential prefix, which would satisfy this assertion without
-        the renderer's hold ever being exercised.
+        A turn that dies never reaches ``on_done``, the only other place the
+        held reply goes out, so ``release_held_text`` sends it -- whole -- and
+        the delivery ledger the dispatcher's rescue reads records it.
         """
         rec = _RecSlack()
-        clock = _FakeClock([1000.0, 1000.0, 1002.0, 1004.0])
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
-        provider = _Provider(
-            [
-                # No trailing space, so the throttled flush has a word to hold.
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang kiểm tra máy chủ"),
-                AcpEvent(kind=EVENT_TOOL_CALL, title="Bash", tool_name="Bash"),
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text=" và ổ đĩa.\n"),
-                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-            ]
-        )
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạy trên máy. ")])
         asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
-        # Split the interleaved call log at the first task card.
-        before, after, seen_card = "", "", False
-        for method, kw in rec.calls:
-            if method == "append_task":
-                seen_card = True
-            elif method == "append_stream":
-                if seen_card:
-                    after += kw["text"]
-                else:
-                    before += kw["text"]
-        assert seen_card, rec.calls
-        assert before == "Đang kiểm tra máy chủ", rec.calls
-        assert after == " và ổ đĩa.\n", rec.calls
+        assert not [m for m, _ in rec.calls if m == "append_stream"], rec.calls
 
-        """The rescued transcript must not end on half a word.
-
-        A dying turn is the one exit where the hold is released without a flush,
-        and the buffer behind it holds the rest of that same word. Releasing the
-        hold alone appends ``"chạ"`` as the last thing the durable transcript
-        establishes and drops the ``"y "`` that completes it -- the very tear the
-        throttled holdback exists to prevent, reintroduced on the failure path.
-        """
-        rec = _RecSlack()
-        clock = _FakeClock([1000.0, 1000.0])
-        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
-        provider = _Provider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="Đang chạ")])
-        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
-        # The flush held "chạ"; the continuation then buffered behind it without
-        # crossing the throttle, so neither has reached Slack.
-        assert renderer._word_hold == "chạ", renderer._word_hold
-        renderer._stream_buffer = "y trên máy."
-
-        asyncio.run(renderer.release_held_word())
+        asyncio.run(renderer.release_held_text())
 
         streamed = "".join(kw["text"] for m, kw in rec.calls if m == "append_stream")
-        assert streamed == "Đang chạy trên máy.", streamed
-        assert renderer.delivered_text == "Đang chạy trên máy.", renderer.delivered_text
-        # Both are consumed: a second call cannot re-send either.
-        assert renderer._word_hold == "" and renderer._stream_buffer == ""
+        assert streamed == "Đang chạy trên máy. ", streamed
+        assert renderer.delivered_text == streamed
+        # Consumed: a second call cannot re-send it.
+        asyncio.run(renderer.release_held_text())
+        assert "".join(kw["text"] for m, kw in rec.calls if m == "append_stream") == streamed
 
     def test_append_failure_triggers_one_rotation(self):
         rec = _FlakyAppendSlack()
@@ -1011,6 +908,27 @@ class TestStreamMachinery:
         assert "update_message" in methods, methods
         assert "append_stream" not in methods, methods
         assert "post_message" in methods, methods  # the _THINKING placeholder
+
+    def test_no_stream_keeps_the_text_before_a_tool_call_in_the_reply(self):
+        """The fallback has no plan block to hold narration, so the text before
+        a tool call stays in the reply instead of vanishing (a top-level DM)."""
+        rec = _NoStreamSlack()
+        renderer = SlackRenderer(rec, "C1", None, reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="The answer is 42. "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Saving it to notes."),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="write", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", tool_output="ok", tool_final=True),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Saved."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        final = [kw["text"] for m, kw in rec.calls if m == "update_message"][-1]
+        assert "The answer is 42." in final and "Saving it to notes." in final, final
+        assert final.rstrip().endswith("Saved."), final
+        assert "append_stream" not in [m for m, _ in rec.calls]
 
 
 class TestToolTimerAndWait:
@@ -1051,9 +969,9 @@ class TestToolTimerAndWait:
         assert methods.count("start_stream") == 2, methods
         assert "stop_stream" in methods
 
-    def test_text_either_side_of_a_tool_card_is_not_glued(self):
-        # Slack lays a message's markdown appends end to end with the task card
-        # in the plan, so the two sentences need a break between them.
+    def test_text_before_a_tool_card_is_its_step_not_the_reply(self):
+        # The dashboard folds the text before a call into the turn's steps and
+        # shows only the text after the last one as the reply; Slack matches.
         rec = _RecSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
         provider = _Provider(
@@ -1065,16 +983,14 @@ class TestToolTimerAndWait:
             ]
         )
         asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
-        seq = [
-            kw.get("text", "<task>") for m, kw in rec.calls if m in ("append_stream", "append_task")
-        ]
-        streamed = "".join(s for s in seq if s != "<task>")
-        assert streamed == "I looked around that time.\n\nNo protocol logs here.", seq
+        streamed = [kw["text"] for m, kw in rec.calls if m == "append_stream"]
+        assert streamed == ["No protocol logs here."], rec.calls
+        details = [kw["details"] for m, kw in rec.calls if m == "append_task" and kw["details"]]
+        assert details == ["I looked around that time.\ngrep"], rec.calls
 
 
 class _StepClock:
-    """Monotonic clock that advances a fixed step on every call, so every text
-    chunk trips the edit-throttle (deterministic intermediate updates)."""
+    """Monotonic clock that advances a fixed step on every call."""
 
     def __init__(self, step: float = 2.0):
         self._t = 0.0
@@ -1111,7 +1027,7 @@ class TestNoStreamOptionsFiltering:
         # The visible text is the filtered content.
         assert any("Pick one" in t for t in updates), updates
 
-    def test_thinking_tags_not_leaked_in_no_stream_updates(self):
+    def test_no_interim_frame_is_drawn_in_no_stream_updates(self):
         rec = _NoStreamSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=_StepClock(step=2.0))
         provider = _Provider(
@@ -1126,13 +1042,11 @@ class TestNoStreamOptionsFiltering:
 
         updates = [kw["text"] for m, kw in rec.calls if m == "update_message"]
         assert updates, "expected chat.update calls in the no-stream fallback"
-        # Intermediate renders carry the cursor (▍). They must never surface
-        # <thinking>…</thinking>, mirroring the streaming path's
-        # _flush_stream_buffer strip. (The final on_done render is produced by
-        # extract_options — identical on both paths — and is out of scope here.)
-        intermediate = [t for t in updates if "▍" in t]
-        assert intermediate, updates
-        assert all("<thinking>" not in t and "secret" not in t for t in intermediate), intermediate
+        # The reply is held until the end of the turn on this path too, so no
+        # interim frame (the ▍ cursor) is drawn that could surface the text
+        # mid-flight -- narration included. The one update is the final render.
+        assert not [t for t in updates if "▍" in t], updates
+        assert len(updates) == 1, updates
 
 
 class TestShowThinking:
@@ -1286,44 +1200,32 @@ class TestDeliveryLedger:
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
         assert renderer.delivered_text == ""
 
-    def test_a_flushed_chunk_is_recorded(self):
+    def test_a_delivered_reply_is_recorded(self):
         async def scenario():
             rec = _RecSlack()
-            # Single clamping clock value: the first chunk sees now - 0.0 >= the
-            # edit interval and flushes.
-            renderer = SlackRenderer(
-                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
-            )
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
             await renderer.on_text_chunk("ledger A reconciles ")
+            await renderer.on_done()
             assert self._acknowledged(rec) == "ledger A reconciles "
             assert renderer.delivered_text == self._acknowledged(rec)
 
         asyncio.run(scenario())
 
-    def test_a_chunk_still_inside_the_throttle_window_is_not_recorded(self):
+    def test_held_text_is_not_recorded(self):
         """The exact defect this ledger exists for: produced is not shown.
 
-        The clock never advances, so the second chunk lands inside the edit
-        interval and the renderer buffers it WITHOUT sending. It is in
-        ``_accumulated`` — the buffer the old rescue read — and must not be in the
-        ledger.
+        The reply is held until the turn ends, so text the renderer has is not
+        text the user saw, and the ledger refuses to claim it.
         """
 
         async def scenario():
             rec = _RecSlack()
-            renderer = SlackRenderer(
-                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
-            )
-            await renderer.on_text_chunk("shown to the user ")
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            await renderer.on_text_chunk("produced ")
             await renderer.on_text_chunk("NEVER left the buffer ")
-
-            # Slack only ever saw the first chunk.
-            assert self._acknowledged(rec) == "shown to the user "
-            # The renderer is still holding the second one...
+            assert self._acknowledged(rec) == ""
             assert "NEVER left the buffer " in renderer._accumulated
-            # ...and the ledger refuses to claim it.
-            assert renderer.delivered_text == "shown to the user "
-            assert "NEVER" not in renderer.delivered_text
+            assert renderer.delivered_text == ""
 
         asyncio.run(scenario())
 
@@ -1332,54 +1234,47 @@ class TestDeliveryLedger:
 
         async def scenario():
             rec = _DeadAppendSlack()
-            renderer = SlackRenderer(
-                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
-            )
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
             await renderer.on_text_chunk("this never landed ")
+            await renderer.release_held_text()
             assert [m for m, _ in rec.calls if m == "append_stream"], rec.calls
             assert renderer.delivered_text == ""
 
         asyncio.run(scenario())
 
     def test_the_no_stream_fallback_records_nothing(self):
-        """``_safe_update`` cannot confirm delivery, so the ledger stays empty.
+        """The chat.update fallback cannot confirm delivery, so the ledger stays empty.
 
-        It returns None, swallows its own exceptions and truncates at Slack's
-        message limit, and the frame it sends is a fence-safe prefix rather than the
-        whole text. Recording it would be a guess; the rescue no-ops instead.
+        A dying turn's held text has no stream to go to there, and a guess at
+        what a placeholder edit showed would be recorded as fact; the rescue
+        no-ops instead.
         """
 
         async def scenario():
             rec = _NoStreamSlack()
-            renderer = SlackRenderer(
-                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
-            )
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
             await renderer.on_text_chunk("cursor fallback text ")
-            assert [m for m, _ in rec.calls if m == "update_message"], rec.calls
+            await renderer.release_held_text()
             assert renderer.delivered_text == ""
 
         asyncio.run(scenario())
 
-    def test_the_ledger_survives_the_tool_boundary_that_clears_accumulated(self):
-        """A ``wait`` boundary ends the message and clears ``_accumulated``.
+    def test_narration_folded_into_a_step_is_not_reply_text(self):
+        """Text before a tool call becomes that call's step, never the reply.
 
-        Appends are final on this path, so text shown before the boundary stays
-        delivered. A ledger rebuilt from ``_accumulated`` would lose it.
+        So it is not on the ledger either: the rescue persists the ledger as
+        the reply the user saw, and narration was not one.
         """
 
         async def scenario():
             rec = _RecSlack()
-            renderer = SlackRenderer(
-                rec, "C1", "t1", reactions_enabled=False, now=_FakeClock([1000.0])
-            )
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
             await renderer.on_text_chunk("before the tool ")
-            before = renderer.delivered_text
-            assert before == "before the tool "
             await renderer.on_tool_call("tc1", "Running: wait", tool_kind="wait")
-            # The message segment was closed and its accumulator reset...
             assert renderer._accumulated == ""
-            # ...but what the user was already shown is still on the ledger.
-            assert renderer.delivered_text.startswith(before)
+            assert renderer.delivered_text == ""
+            details = [kw["details"] for m, kw in rec.calls if m == "append_task"]
+            assert details and "before the tool" in details[0], rec.calls
 
         asyncio.run(scenario())
 
@@ -1801,7 +1696,7 @@ class TestPerCallToolOutcomeCards:
         # naming the outcome — not a blanket "complete".
         assert cards[0]["status"] == "in_progress"
         assert cards[1]["status"] == "error"
-        assert cards[1]["details"] == "failed"
+        assert cards[1]["details"] == "\nfailed"  # below the step's own details
 
     def test_succeeded_tool_result_keeps_complete(self):
         rec = _RecSlack()
@@ -1838,7 +1733,7 @@ class TestPerCallToolOutcomeCards:
             )
             closed = [kw for m, kw in rec.calls if m == "append_task"][1]
             assert closed["status"] == "error"
-            assert closed["details"] == status, status
+            assert closed["details"] == "\n" + status, status
 
     def test_no_result_event_keeps_complete(self):
         # A call whose transport sent no tool_result keeps the ✓ card — the
@@ -1874,7 +1769,7 @@ class TestPerCallToolOutcomeCards:
         assert cards[1]["status"] == "complete"  # a succeeded
         assert cards[2]["status"] == "in_progress"  # b opens
         assert cards[3]["status"] == "error"  # b refused
-        assert cards[3]["details"] == "refused"
+        assert cards[3]["details"] == "\nrefused"
 
     def test_out_of_order_result_updates_an_already_closed_card(self):
         # Parallel tool use: A opens, B opens (closing A's card as the uniform
@@ -1900,6 +1795,6 @@ class TestPerCallToolOutcomeCards:
         assert cards[2]["status"] == "in_progress"  # b opens
         # a's late failure re-emits its card as error (same tool_1 task_id).
         error_cards = [c for c in cards if c["status"] == "error"]
-        assert error_cards and error_cards[0]["details"] == "failed"
+        assert error_cards and error_cards[0]["details"] == "\nfailed"
         # b still closes complete.
         assert cards[-1]["status"] == "complete"

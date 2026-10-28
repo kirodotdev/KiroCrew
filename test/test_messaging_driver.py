@@ -1130,6 +1130,94 @@ class TestTextAcrossAToolCall:
         assert joined == "See the api_key\n\nNext."
 
 
+class _SegmentRenderer(_RecordingRenderer):
+    """Records the held end of pre-call text apart, and what each call was told."""
+
+    async def on_text_continuation(self, text):
+        self.events.append(("continuation", text))
+
+    async def on_tool_call(self, tool_call_id, title, tool_kind="", tool_purpose=""):
+        self.events.append(("tool_call", tool_call_id, self.tool_text_held))
+
+
+def _segments(events: list[AcpEvent]) -> list[tuple]:
+    r = _SegmentRenderer()
+    _run(_ScriptedProvider([*events, AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")]), r)
+    return [e for e in r.events if e[0] != "done"]
+
+
+class TestHeldRunEndsThePreCallText:
+    """The run the redactor held at a tool call is the END of the text before it.
+
+    Slack keeps each tool step's text apart (narration folds into the step, the
+    reply is only the text after the last step), so it has to know that
+    "overlay." released after the call belongs before it. The driver says so:
+    the call carries ``text_held`` and the run comes back as a
+    ``continues_segment`` chunk ahead of the text after the call.
+    """
+
+    def test_the_held_run_comes_back_flagged_ahead_of_the_next_text(self):
+        events = _segments(
+            [_text("Let me find where the CLI writes the local overlay."), _tool("a")]
+            + [_text("It is config.local.json.")]
+        )
+        assert events[:3] == [
+            ("text_chunk", "Let me find where the CLI writes the local "),
+            ("tool_call", "a", True),
+            ("continuation", "overlay."),
+        ]
+        after = "".join(e[1] for e in events[3:] if e[0] == "text_chunk")
+        assert after == "\n\nIt is config.local.json."
+
+    def test_nothing_held_means_nothing_pending(self):
+        events = _segments([_text("Checking now.\n"), _tool("a"), _text("Found it.")])
+        assert ("tool_call", "a", False) in events
+        assert not [e for e in events if e[0] == "continuation"]
+
+    def test_a_second_call_before_any_text_keeps_the_first_run(self):
+        events = _segments([_text("Reading both files."), _tool("a"), _tool("b"), _text("Done.")])
+        assert events == [
+            ("text_chunk", "Reading both "),
+            ("tool_call", "a", True),
+            ("tool_call", "b", True),
+            ("continuation", "files."),
+            ("text_chunk", "\n\nDone."),
+        ]
+
+    def test_a_turn_that_ends_on_the_call_still_closes_the_run(self):
+        events = _segments([_text("Started the deploy."), _tool("a")])
+        assert events[-1] == ("continuation", "deploy.")
+
+    def test_a_redaction_across_the_join_closes_the_run_empty(self):
+        # The run cannot be told apart once a redaction spans it, so the
+        # earlier text ends as it stands and the redacted text goes after.
+        secret = "AKIA" + "1234567890ABCDEF"
+        events = _segments([_text(f"key {secret[:14]}"), _tool("a"), _text(f"{secret[14:]} end")])
+        assert ("continuation", "") in events
+        after = "".join(e[1] for e in events if e[0] == "text_chunk")
+        assert secret[:14] not in after and "[REDACTED: credential]" in after
+
+    def test_text_joining_the_pending_run_hands_it_to_the_next_call(self):
+        # "Done." joins the held "overlay." (no space between), so nothing is
+        # released before call b. The run cannot be split out then, so a's
+        # text ends as it stands and the joined run is b's -- never the reply's.
+        events = _segments(
+            [_text("Writing the overlay."), _tool("a"), _text("Done."), _tool("b")]
+            + [_text("All good.")]
+        )
+        calls = [e for e in events if e[0] == "tool_call"]
+        assert calls == [("tool_call", "a", True), ("tool_call", "b", True)]
+        conts = [e[1] for e in events if e[0] == "continuation"]
+        assert conts == ["", "overlay.Done."], events
+        after = "".join(e[1] for e in events[events.index(("continuation", "overlay.Done.")) :])
+        assert "All good." in after and "Done." not in after.replace("overlay.Done.", "", 1)
+
+    def test_joined_text_is_unchanged_for_renderers_that_join(self):
+        # The default continuation hook joins the run back in place.
+        joined, _ = _turn_across_tool(["I looked around that time."], ["No logs."])
+        assert joined == "I looked around that time.\n\nNo logs."
+
+
 class TestToolGateEnforcement:
     """The PreToolUse security gate (sensitive-path keystone + governance
     ceiling + deny-list) must hard-DENY BEFORE the auto/trust/YOLO ladder, so a

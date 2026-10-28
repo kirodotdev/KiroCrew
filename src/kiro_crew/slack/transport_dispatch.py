@@ -1067,6 +1067,11 @@ async def handle_message_transport(
             # A stream that ended without a terminal sent no DONE to settle on,
             # and the reply is written below.
             await _live.settle()
+        if not driver.completion_observed:
+            # No terminal, so no ``on_done``: the reply the renderer holds goes
+            # out here, or the thread would show nothing of a reply the
+            # transcript records.
+            await renderer.release_held_text()
 
         # ── Post-turn bookkeeping ──
         # The turn ended without raising (we have `accumulated`), so book its
@@ -1346,6 +1351,12 @@ async def handle_message_transport(
         # the reader did not get the answer: book a failure rather than leave an
         # unrecorded verdict hole. A finalized turn keeps its normal accounting.
         # Then re-raise: a cancellation must always propagate.
+        #
+        # The renderer holds the reply until ``on_done``, which a cancelled turn
+        # (``!stop``) never reaches: release what the model wrote first, so the
+        # thread shows it as it did when replies streamed live. Never raises.
+        if renderer is not None:
+            await renderer.release_held_text()
         if client and _acquired and renderer is not None and not renderer.turn_finalized:
             with contextlib.suppress(Exception):
                 await sessions.record_failure(session_key)
@@ -1406,8 +1417,8 @@ async def handle_message_transport(
         #     flock and ON the loop it single-shots and drops the row.
         #   * its own try/except: a disk failure here must not replace the real
         #     exception in the log with a bookkeeping one.
-        # Persist only what Slack CONFIRMED it showed. ``SlackRenderer`` batches on
-        # an edit throttle, so the text the model has produced runs routinely ahead
+        # Persist only what Slack CONFIRMED it showed. ``SlackRenderer`` holds the
+        # reply until the turn ends, so the text the model has produced runs ahead
         # of the text the user has seen; a rescue that persisted the former would
         # record unseen output as established fact, and the retry would build on
         # something that was never on screen. ``delivered_text`` is the renderer's
@@ -1423,13 +1434,11 @@ async def handle_message_transport(
         # throttled, replaced wholesale, or truncated. Slack is the one renderer
         # that keeps a per-append record of what the API acknowledged, so it is
         # the one place a rescue can persist shown text rather than produced text.
-        # A throttled flush can be holding a trailing word back so a timer tick
-        # cannot tear one in half. That hold is released by ``on_done`` or at a
-        # ``wait`` boundary -- neither of which a dying turn reaches -- so it is
-        # released here, before the ledger is read, or the rescued transcript
-        # would end one word short of what the model established.
+        # The renderer holds the reply until ``on_done``, which a dying turn
+        # never reaches, so it is released here, before the ledger is read, or
+        # the rescued transcript would miss what the model last established.
         if renderer is not None:
-            await renderer.release_held_word()
+            await renderer.release_held_text()
         _shown = renderer.delivered_text if renderer is not None else ""
         # ``strip`` decides EMPTINESS only. What gets persisted is ``_shown``
         # verbatim: leading indentation is content in a transcript — a fenced block

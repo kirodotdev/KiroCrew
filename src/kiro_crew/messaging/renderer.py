@@ -117,6 +117,21 @@ class OutputEvent:
     # the sentence to post in place of a bare placeholder when the turn closed
     # with no assistant text, ``""`` when it produced text or was cancelled.
     notice: str = ""
+    # text_chunk: this text ENDS the text that came before the last tool call.
+    # The driver's stream redactor holds a trailing run until it can see what
+    # follows, so the last word before a call ("...writes the local overlay.")
+    # is released only with the first text after it. The driver splits that
+    # held run off into its own chunk with this flag, so a renderer that keeps
+    # each tool step's text apart can put it back where it was written. May be
+    # empty: the held run could not be told apart (a redaction reached across
+    # the join), and the earlier text simply ends where it already ended.
+    continues_segment: bool = False
+    # tool_call: the text before this call is not complete yet -- its last run
+    # is still held and arrives later as a ``continues_segment`` chunk.
+    text_held: bool = False
+    # tool_call: the whole (redacted) command when ``title`` is its raw
+    # fallback cut to one line, ``""`` when ``title`` is a derived action.
+    raw_title: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +148,9 @@ class OutputEvent:
             "context_usage_pct": self.context_usage_pct,
             "stop_reason": self.stop_reason,
             "notice": self.notice,
+            "continues_segment": self.continues_segment,
+            "text_held": self.text_held,
+            "raw_title": self.raw_title,
         }
 
 
@@ -837,6 +855,15 @@ class Renderer(ABC):
     #: reads this instead of matching the title. ``""`` when the transport sent
     #: no identity.
     current_tool_name: str = ""
+    #: Whether the text before the tool call ``on_tool_call`` is rendering is
+    #: still incomplete (``OutputEvent.text_held``), set by :meth:`dispatch`
+    #: before the hook runs. True means its last run arrives later through
+    #: :meth:`on_text_continuation`.
+    tool_text_held: bool = False
+    #: The whole command behind the raw-fallback title of the tool call
+    #: ``on_tool_call`` is rendering (``OutputEvent.raw_title``), set by
+    #: :meth:`dispatch` before the hook runs; ``""`` for a derived title.
+    current_tool_raw_title: str = ""
     #: The driver's empty-turn verdict for the turn being finalized
     #: (``OutputEvent.notice`` on ``DONE``), set by :meth:`dispatch` before
     #: ``on_done`` runs. Non-empty means the turn closed with no assistant text
@@ -959,6 +986,20 @@ class Renderer(ABC):
     async def on_text_chunk(self, text: str) -> None:
         """Render a streamed assistant text chunk."""
 
+    async def on_text_continuation(self, text: str) -> None:
+        """Render the held end of the text that came before the last tool call.
+
+        The default joins it to the stream like any other chunk, which is what
+        every renderer that lays a turn's text end to end wants: the text it
+        sees is byte for byte what it saw before the chunk was split off. A
+        renderer that keeps each tool step's text apart (Slack folds the text
+        before a call into that call's step) overrides this to add the run to
+        the step it belongs to. ``text`` may be empty: the earlier text is
+        complete as it stands.
+        """
+        if text:
+            await self.on_text_chunk(text)
+
     @abstractmethod
     async def on_thinking(self, text: str) -> None:
         """Render a reasoning/thinking update."""
@@ -1038,11 +1079,16 @@ class Renderer(ABC):
     async def dispatch(self, event: OutputEvent) -> None:
         """Route ``event`` to the matching ``on_*`` handler."""
         if event.kind == TEXT_CHUNK:
-            await self.on_text_chunk(event.text)
+            if event.continues_segment:
+                await self.on_text_continuation(event.text)
+            else:
+                await self.on_text_chunk(event.text)
         elif event.kind == THINKING:
             await self.on_thinking(event.text)
         elif event.kind == TOOL_CALL:
             self.current_tool_name = event.tool_name or ""
+            self.tool_text_held = event.text_held
+            self.current_tool_raw_title = event.raw_title
             await self.on_tool_call(
                 event.tool_call_id, event.title, event.tool_kind, event.tool_purpose
             )

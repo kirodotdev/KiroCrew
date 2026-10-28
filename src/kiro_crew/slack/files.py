@@ -40,6 +40,7 @@ is.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import re
@@ -223,14 +224,33 @@ def rejection_notes(rejections: Sequence[Rejection]) -> str:
     return _display_safe("\n".join(lines))
 
 
+def remaining_upload_limits(spent: Sequence[OutboundFile]) -> ExtractLimits:
+    """What is left of one message's :data:`UPLOAD_LIMITS` after *spent* files.
+
+    For a reply whose files are extracted in more than one pass: each pass gets
+    only what the earlier ones left, so together they never admit more files or
+    bytes than one message may carry.
+    """
+    return dataclasses.replace(
+        UPLOAD_LIMITS,
+        max_files=max(0, UPLOAD_LIMITS.max_files - len(spent)),
+        max_total_bytes=max(0, UPLOAD_LIMITS.max_total_bytes - sum(f.size_bytes for f in spent)),
+    )
+
+
 async def extract_outbound_with_audit(
     text: str,
     *,
     within_root: str,
     audit_caller: str,
     scratch_root: str = "",
+    limits: ExtractLimits = UPLOAD_LIMITS,
 ) -> tuple[str, list[OutboundFile], str]:
     """Extract local image refs for upload, writing the mandatory SEL audit.
+
+    *limits* is the budget this extraction may spend: Slack's whole per-message
+    budget by default, or what is left of it when one reply's files are
+    extracted in more than one pass.
 
     Returns ``(body, files, notes)`` where ``body`` is the reply with local
     paths stripped and any refusal ``notes`` already folded in, ``files`` are the
@@ -245,7 +265,7 @@ async def extract_outbound_with_audit(
     """
     try:
         result = await extract_local_refs_off_loop(
-            text, within_root=within_root, limits=UPLOAD_LIMITS, scratch_root=scratch_root
+            text, within_root=within_root, limits=limits, scratch_root=scratch_root
         )
     except Exception:
         logger.warning("slack: outbound file extraction failed", exc_info=True)
