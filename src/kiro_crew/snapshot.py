@@ -638,7 +638,20 @@ def snapshot_main(
         )
         return 1
 
-    out = Path(args.output_dir or _default_snapshot_dir())
+    # `list` and `ls` read as the listing verb (`kirocrew snapshot list`), but the
+    # optional positional takes any word as the output directory, so they silently
+    # wrote a full bundle into `./list/` and pruned it. Refused unless they name a
+    # directory that already exists, which is the only case the user could mean it.
+    output_dir = getattr(args, "output_dir", None)
+    if output_dir in ("list", "ls") and not Path(output_dir).is_dir():
+        print(
+            f"❌ {output_dir!r} is not a snapshot directory, and no snapshot was taken.\n"
+            f"   Did you mean `kirocrew snapshot --list`? To write into a directory\n"
+            f"   named {output_dir!r}, create it first or pass ./{output_dir}/."
+        )
+        return 1
+
+    out = Path(output_dir or _default_snapshot_dir())
 
     if args.list_snapshots:
         if not out.is_dir():
