@@ -294,6 +294,23 @@ class AgentConfig:
             "accepted; redirects that leave the host are refused.",
         ),
     )
+    native_skill_projection: bool = field(
+        default=True,
+        metadata=_meta(
+            "Native skill views for kiro-cli",
+            "When true (the default), the 'kiro' backend launches each agent under a "
+            "Kiro Crew managed view (kirocrew-skill-view-*.json in the kiro agents "
+            "directory) that serves skills through Kiro Crew's skill search, and "
+            "overlays the workspace's .kiro/settings/cli.json while it runs. When "
+            "false, agents launch under their authored names, no view is written, "
+            "the workspace overlay is rolled back, and kiro-cli loads skill metadata "
+            "natively again. Same effect as KIROCREW_NATIVE_SKILL_PROJECTION=0, "
+            "which still disables projection whatever this says.",
+            # Latched at spawn: a running native process keeps the mode it was
+            # launched under until it is replaced.
+            restart=True,
+        ),
+    )
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),

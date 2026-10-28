@@ -190,7 +190,8 @@ and the published alias file, read after start because it is the file kiro-cli l
 The view is judged because the skill projection appends the skill-search tool to a
 spec that carries `skill://` resources. The authored spec is not read on this branch,
 so an edit to it after the view was prepared cannot change the answer. With no
-prepared projection (the `KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias
+prepared projection (the `agent.native_skill_projection: false` /
+`KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias
 that could not be taken) the harness loads the named spec itself, so the authored
 spec, resolved project checkout first (`AcpClient.authored_spec_declares_zero_tools`),
 is read before the spawn and again after start, and both reads must declare

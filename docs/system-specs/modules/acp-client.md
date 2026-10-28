@@ -266,9 +266,12 @@ AGENTS.md resources preserve enabled inheritance. Aliases are excluded from Crew
 agent roster, translated on `session/set_mode`, and normalized in incoming mode and
 agent-name fields. The original agent name remains the Crew session identity.
 Both the direct client and multiplexed runtime apply the same preparation.
-Projection defaults to enabled. Set `KIROCREW_NATIVE_SKILL_PROJECTION=0` in the
-Crew process environment and restart Crew's native sessions to roll back to
-authored native agents. Disabled launches restore the Crew-owned inheritance
+Projection defaults to enabled. Set `agent.native_skill_projection: false` in
+`config.json`, or `KIROCREW_NATIVE_SKILL_PROJECTION=0` in the Crew process
+environment, and restart Crew's native sessions to roll back to authored native
+agents. The environment variable wins over a config value of `true`. A config
+file with bad JSON loads with the key at its default; a config load that raises
+disables projection, as `mcp_gateway.apps_enabled` does (`_projection_enabled`). Disabled launches restore the Crew-owned inheritance
 overlay before spawning and bypass alias translation and projected search
 requirements. A spawn-time ceiling takes the same fallback automatically: when
 the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (128, the
@@ -284,7 +287,7 @@ already-projected live session -- is always honored so the ceiling never aborts 
 running session, which means a session that began below the ceiling keeps
 refreshing its own view. On the ceiling-tripped fallback the existing per-spawn
 prune still runs, so this home's own backlog can drain back below the ceiling
-without a restart; the `KIROCREW_NATIVE_SKILL_PROJECTION=0` disable path does not
+without a restart; the disable path (either switch) does not
 prune. Existing governance, sandbox and signed-session identity checks
 still apply. The switch is latched at spawn; mode changes in a running projected
 process keep projection enabled until restart. Rollback restores native skill

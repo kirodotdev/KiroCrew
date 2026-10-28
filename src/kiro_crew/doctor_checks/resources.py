@@ -954,8 +954,9 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
         print(
             f"{render._INDENT}Another program rewrites the specs in {agents_dir} (a sandbox or"
             f" credential launcher does this on every launch). Kiro Crew tolerates it; if"
-            f" sessions still fail with 'Agent spec ... is not installed', set"
-            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway and report it."
+            f" sessions still fail with 'Agent spec ... is not installed', turn projection"
+            f" off (kirocrew config set agent.native_skill_projection false, or"
+            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway) and report it."
         )
 
 

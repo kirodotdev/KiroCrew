@@ -148,9 +148,11 @@ def _format_runtime_rpc_error(error: object) -> str:
                     f"kiro-cli could not switch to the skill view '{name}' that Kiro "
                     f"Crew generated for {who}. It may be on disk in "
                     f"{kiro_agents_dir()} but not loaded by this kiro-cli process. "
-                    f"Start a new session to retry. If it keeps failing, set "
-                    f"KIROCREW_NATIVE_SKILL_PROJECTION=0 in the gateway's environment "
-                    f"and restart the gateway."
+                    f"Start a new session to retry. If it keeps failing, turn "
+                    f"projection off with kirocrew config set "
+                    f"agent.native_skill_projection false (or "
+                    f"KIROCREW_NATIVE_SKILL_PROJECTION=0 in the gateway's "
+                    f"environment) and restart the gateway."
                 )
             # ``--clean`` is not the repair: it skips merging the existing
             # config, so it drops the operator's own MCP servers and tools.
