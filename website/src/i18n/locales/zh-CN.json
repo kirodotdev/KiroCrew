@@ -19195,6 +19195,7 @@
   "store": {
     "chatSlice": {
       "session_gone_open_failed": "你点击的会话已被删除，无法打开。",
+      "session_gone_open_failed_neutral": "该会话已关闭。可在「较早的会话」中找到它的记录。",
       "session_open_error_named": "无法打开“{{name}}”。",
       "session_open_error": "无法打开该会话。",
       "session_gone_open_failed_named": "“{{name}}”已被删除，无法打开。",
