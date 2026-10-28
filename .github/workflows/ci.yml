@@ -3313,6 +3313,7 @@ jobs:
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface spec(s)."
 
       - name: Unit tests (shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }})
+        id: unit
         working-directory: website
         env:
           # Two vitest gates are DIFF-SCOPED rather than baseline-scoped —
@@ -3362,6 +3363,29 @@ jobs:
             # this job's own log.
             npx vitest run --coverage --reporter=blob --reporter=default \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT"
+          fi
+
+      # A forks worker sometimes dies with no output of its own, and Vitest 4
+      # reports only "Worker exited unexpectedly": no exit code, no signal, no
+      # file (#23640). The kernel log is the one record of which kill it was --
+      # an OOM kill ("Out of memory: Killed process") or a native crash
+      # ("segfault at"). Failure-only and read-only. A runner that hides the
+      # kernel log (a CodeBuild container) says so, and the step stays green so
+      # the shard's own red is the only red.
+      - name: Kernel log on a failed shard
+        if: ${{ failure() && steps.unit.outcome == 'failure' }}
+        run: |
+          free -m || true
+          if klog="$(sudo -n dmesg -T 2>/dev/null || dmesg -T 2>/dev/null)" && [ -n "$klog" ]; then
+            hits="$(printf '%s\n' "$klog" | grep -iE 'out of memory|oom-kill|killed process|segfault|general protection|traps:' | tail -n 40 || true)"
+            if [ -n "$hits" ]; then
+              echo "::warning::The kernel logged a process kill or crash on this runner; see the lines below."
+              printf '%s\n' "$hits"
+            else
+              echo "Kernel log has no OOM-kill or crash line."
+            fi
+          else
+            echo "Kernel log is not readable on this runner."
           fi
 
       - name: Upload shard blob report
