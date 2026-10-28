@@ -111,6 +111,7 @@ from kiro_crew.hooks import (
     hook_gate_kwargs,
     safe_read_file_bytes,
 )
+from kiro_crew.kas_workflows.chat import needs_a_person as kas_needs_a_person
 from kiro_crew.llm_helpers import (
     SESSION_NOT_FOUND_GIVE_UP_TEXT,
     SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,

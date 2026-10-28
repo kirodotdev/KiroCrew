@@ -1228,6 +1228,105 @@ class TestToolHookVerdicts:
         assert not _has_approval_prompt(slack)
 
 
+def _kas_question(request_id: str) -> AcpEvent:
+    """A KAS ``user_input`` question (legacy bridge: one allow_once per answer)."""
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=request_id,
+        title="Which database?",
+        options=[
+            {"optionId": "a1", "kind": "allow_once", "name": "Postgres"},
+            {"optionId": "a2", "kind": "allow_once", "name": "SQLite"},
+        ],
+        kas_builtin_ids=True,
+        answers_only=True,
+    )
+
+
+def _kas_plan(request_id: str) -> AcpEvent:
+    """A KAS workflow plan handoff (``_meta.kiro.toolId: "update_workflow"``)."""
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=request_id,
+        title="Approve the workflow plan",
+        harness_tool_id="update_workflow",
+        kas_builtin_ids=True,
+    )
+
+
+class TestKasRequestsWaitForAPerson:
+    """G3: no Slack rung answers a KAS plan handoff or question for the person.
+
+    Each rung is driven with an ordinary request first (it approves, so the
+    rung is live) and then with the KAS one, which must reach the approval
+    buttons instead -- the person here says no, so only a rung could approve.
+    """
+
+    @pytest.fixture()
+    def asked(self, monkeypatch):
+        asked: list = []
+
+        async def _fake_request_approval(slack, client, channel, reply_ts, event, *a, **kw):
+            asked.append(event.request_id)
+            return h._OUTCOME_REJECTED
+
+        monkeypatch.setattr(h, "_request_approval", _fake_request_approval)
+        return asked
+
+    async def _drive(self, event, *, approval_mode, hook=TOOL_ALLOW, spawn=False):
+        slack = MockSlackClient()
+        builder = _Builder(ToolHookResult(action=hook))
+        builder.hooks.auto_approve_subagent_spawn = spawn
+        provider = FakeProvider([event, AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
+        await handle_message(
+            slack,
+            FakeSessions(provider),
+            "C1",
+            "go",
+            None,
+            "m1",
+            "U1",
+            approval_mode=approval_mode,
+            context_builder=builder,
+        )
+        return provider
+
+    @pytest.mark.parametrize("make", [_kas_question, _kas_plan], ids=["question", "plan"])
+    @pytest.mark.parametrize("rung", ["mode-auto", "trust", "yolo", "hook-auto-approve", "spawn"])
+    @pytest.mark.asyncio
+    async def test_no_rung_answers_it(self, monkeypatch, asked, rung, make):
+        kw: dict = {"approval_mode": h.APPROVAL_INTERACTIVE}
+        if rung == "mode-auto":
+            kw["approval_mode"] = h.APPROVAL_AUTO
+        elif rung == "trust":
+            h.add_trusted_session("m1")
+        elif rung == "yolo":
+            monkeypatch.setattr(h, "is_yolo_mode", lambda: True)
+        elif rung == "hook-auto-approve":
+            kw["hook"] = TOOL_AUTO_APPROVE
+        else:
+            kw["spawn"] = True
+            monkeypatch.setattr(h, "event_is_spawn_run", lambda event: True)
+
+        ordinary = await self._drive(
+            AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="plain", title="Read"), **kw
+        )
+        assert ordinary.approved == ["plain"]
+        assert asked == []
+
+        held = await self._drive(make("kas"), **kw)
+        assert held.approved == []
+        assert asked == ["kas"]
+
+    @pytest.mark.asyncio
+    async def test_a_hook_deny_still_wins(self, asked):
+        provider = await self._drive(
+            _kas_question("kas"), approval_mode=h.APPROVAL_AUTO, hook=TOOL_DENY
+        )
+        assert provider.rejected == ["kas"]
+        assert asked == []
+
+
 # ──────────────────────────────────────────────────────────────────────
 # handle_message — review-mode ephemeral draft
 # ──────────────────────────────────────────────────────────────────────
