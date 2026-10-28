@@ -325,7 +325,10 @@ def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
             # whole write window. It implies 0o600 on POSIX, and the default
             # ``restrict_on_error="raise"`` keeps this site FAIL CLOSED.
             try:
-                atomic_write(path, text, restrict_to_owner=True)
+                # ``newline=""``: kiro-cli's own files end lines in ``\n`` on
+                # every platform, so the pair lands byte-for-byte instead of
+                # gaining a ``\r`` per line on Windows.
+                atomic_write(path, text, restrict_to_owner=True, newline="")
             except OSError:
                 # FAIL CLOSED. This is the model's whole context window; leaving it
                 # readable by other local accounts on a shared machine is worse

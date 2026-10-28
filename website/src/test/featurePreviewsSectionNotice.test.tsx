@@ -67,6 +67,7 @@ describe('Feature previews section, refused toggles', () => {
     [/composable layout/i, 'Composable layout'],
     [/folder conductor/i, 'Folder conductor'],
     [/agent harness per Bot/i, 'Agent harness per Bot'],
+    [/^kiro cli sessions/i, 'Kiro CLI sessions'],
     [/session environments/i, 'Session Environments'],
   ])('names the %s switch when the owner-only write is refused', async (name, label) => {
     vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))

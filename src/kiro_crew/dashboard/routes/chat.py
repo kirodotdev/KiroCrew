@@ -16,7 +16,6 @@ from kiro_crew.dashboard import (
     chat_follow_default,
     chat_threads,
     handlers,
-    kiro_cli_continue,
     session_export,
     session_transfer,
 )
@@ -78,6 +77,19 @@ async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
     return await remote_work_item.api_chat_slot_work_item_patch(request)
 
 
+async def _kiro_cli_session_continue(request: web.Request) -> web.StreamResponse:
+    """``POST /api/kiro-cli/sessions/{sid}/continue``, imported on the first request.
+
+    The Kiro CLI history feature ships off by default behind a Feature Preview,
+    so registering its route must add no gateway-boot work: the handler module
+    (and :mod:`kiro_crew.kiro_cli_sessions` behind it) is imported here, the way
+    ``routes/realtime.py`` defers ``kas_login``. Python caches it after that.
+    """
+    from kiro_crew.dashboard import kiro_cli_continue
+
+    return await kiro_cli_continue.api_kiro_cli_session_continue(request)
+
+
 def register(app: web.Application) -> None:
     """Register the chat routes on *app*."""
     # Chat
@@ -127,9 +139,7 @@ def register(app: web.Application) -> None:
     # copies it into a new slot through the import route's installer.
     app.router.add_get("/api/kiro-cli/sessions", handlers.api_session_kiro_cli_list)
     app.router.add_get("/api/kiro-cli/sessions/{sid}", handlers.api_session_kiro_cli_read)
-    app.router.add_post(
-        "/api/kiro-cli/sessions/{sid}/continue", kiro_cli_continue.api_kiro_cli_session_continue
-    )
+    app.router.add_post("/api/kiro-cli/sessions/{sid}/continue", _kiro_cli_session_continue)
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
     # Download one session as a file. GET because it changes no conversation --
     # a repeat costs the source nothing. It does flush a dirty slot first, like

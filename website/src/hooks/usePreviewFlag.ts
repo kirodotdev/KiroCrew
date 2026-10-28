@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
+  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_KIRO_CLI_HISTORY, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
 
@@ -62,6 +62,14 @@ export function useCrewMode(): boolean {
  */
 export function useExplorePreview(): boolean {
   return usePreviewFlag(PREVIEW_EXPLORE)
+}
+
+/**
+ * The Kiro CLI sessions in History preview, reactively: the Older Sessions
+ * pane's Crew / Kiro CLI tabs mount only while this is on.
+ */
+export function useKiroCliHistoryPreview(): boolean {
+  return usePreviewFlag(PREVIEW_KIRO_CLI_HISTORY)
 }
 
 /**

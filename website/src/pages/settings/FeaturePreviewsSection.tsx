@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_KIRO_CLI_HISTORY, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -122,6 +122,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
     case PREVIEW_CREW_MODE: return i18nT('pages.developer.featurePreviewsTab.crew_mode')
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
+    case PREVIEW_KIRO_CLI_HISTORY: return i18nT('pages.developer.featurePreviewsTab.kiro_cli_history')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
@@ -157,6 +158,7 @@ export function FeaturePreviewsSection() {
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
+  const kiroCliHistory = usePreviewFlag(PREVIEW_KIRO_CLI_HISTORY)
   const writeError = usePreviewFlagWriteError()
   const [gatewayRestarting, setGatewayRestarting] = useState(false)
   const [restartFailed, setRestartFailed] = useState(false)
@@ -325,6 +327,20 @@ export function FeaturePreviewsSection() {
           hint={i18nT('pages.developer.featurePreviewsTab.explore_desc')}
           checked={explore}
           onChange={v => setPreviewFlag(PREVIEW_EXPLORE, v)}
+        />
+      </SettingsCard>
+      {/* Kiro CLI sessions in History (flag key `mc-preview-kiro-cli-history`):
+          the Older Sessions pane's Kiro CLI tab, its preview and Continue in
+          Crew. A plain switch: the tab appears in the sidebar in the same tick,
+          so there is no page to link to. The gateway reads this switch too and
+          refuses the `/api/kiro-cli/sessions` routes while it is off. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.kiro_cli_history')}
+          description={i18nT('pages.developer.featurePreviewsTab.kiro_cli_history_desc_summary')}
+          hint={i18nT('pages.developer.featurePreviewsTab.kiro_cli_history_desc')}
+          checked={kiroCliHistory}
+          onChange={v => setPreviewFlag(PREVIEW_KIRO_CLI_HISTORY, v)}
         />
       </SettingsCard>
       {/* Shared Crew (People, invites, shared sessions). Unlike the flags above, the
