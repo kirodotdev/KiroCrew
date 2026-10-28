@@ -765,7 +765,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_segment_row_meta",
             "function",
-            "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None) -> 'dict | None'",
+            # links_ordered: keyword-only and defaulted, so every old caller keeps its shape.
+            "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None,"
+            " *, links_ordered: 'bool' = False) -> 'dict | None'",
         ),
         ("_SEGMENT_RAW_MAX_CHARS", "value", "int"),
         (
@@ -776,14 +778,17 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_redact_segment",
             "function",
-            "(slot: '_ChatSlot', text: 'str') -> 'tuple[str, list[dict], list[dict]]'",
+            # _ordered_out: keyword-only and defaulted, so every old caller keeps its shape.
+            "(slot: '_ChatSlot', text: 'str', *, _ordered_out: 'list[bool] | None' = None)"
+            " -> 'tuple[str, list[dict], list[dict]]'",
         ),
         (
             "_redact_segment_text",
             "function",
             # keep_sri_digests: defaulted, so every old caller keeps its shape.
-            "(slot: '_ChatSlot', text: 'str', keep_sri_digests: 'bool' = True)"
-            " -> 'tuple[str, list[dict], list[dict]]'",
+            # _ordered_out: keyword-only and defaulted, likewise.
+            "(slot: '_ChatSlot', text: 'str', keep_sri_digests: 'bool' = True,"
+            " *, _ordered_out: 'list[bool] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
         ("_TOOL_GROUP_ROLES", "value", "frozenset"),
