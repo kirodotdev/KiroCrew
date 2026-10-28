@@ -2182,6 +2182,58 @@ falls through to human approval. A non-shell tool is auto-approved when
 `tool_kind in {"read", "fetch"}` or `slack.gateway._is_read_only_tool(tool_name)`
 is True. The title heuristic (`_is_read_only_tool`) is imported function-locally to avoid an import cycle; `is_read_only_bash` is imported at module top.
 
+**Reads mode and Kiro Crew's own read-only MCP tools.** An MCP-served call carries
+no host-trusted read-only marker (`readOnlyHint` is a manifest claim nothing
+forwards to the gate), so the rows above cannot prove one and every MCP call
+reaches the card -- including Kiro Crew's own reads, which the product ships and
+knows. Under the dashboard's **Reads** approval mode (`trust_reads`, "act on
+reads, ask before changes") the `read-only` row accepts exactly one more proof:
+the call's trusted `(server, tool)` pair is in `hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS`
+(`hook_runtime/tool_identity._is_first_party_read_only_mcp_tool`), a closed,
+code-owned set of the core server's read-only tools --
+`@kirocrew-core/memory_recall`, `search_chat_history`, `get_chat_session`,
+`skill_search` and `local_knowledge_search`, each of whose handlers reads the
+user's own Kiro Crew data and calls nothing beyond this gateway. "Read-only" is
+a claim about the user's world, which is what the card guards, not about the
+gateway's disk: on a cold cache these handlers reach the gateway's own
+housekeeping of its derived indexes (`SkillSearchIndex.sync` for the skill
+catalog, `history_index._ensure_open` for the transcript index, the knowledge
+store's migrate step, `_repair_notebook_index` for a v1 notebook), the same
+lazy builds, schema migrations and repairs the dashboard pages that read the
+same data run with no card; none writes a user file, memory content or anything
+outside the gateway's data directory, and none spends model tokens.
+`autonudge_judge.py` keeps no MCP allowlist of its own for exactly those index
+writes, and that decision stands where it was made: the wake judge asks whether
+a turn changed ANYTHING, so an index build counts, while the approval card asks
+whether the agent can change the user's world, so it does not. `list_sessions`
+is kept off it because its `summarize` argument spends model tokens and the set
+is matched on identity, never on arguments; no config, app or edition adds an
+entry. The proof has the shape of the host built-in proof: a
+POSITIVE `mcp_identity_trusted` provenance flag (the pair came from the
+`_meta.kiro` parse this client made of the tool_call frame; a harness that stamps
+no identity sets no flag and proves nothing -- identity is positive, never "not
+some harness"), both halves non-empty, and a byte-for-byte match of the pair, so
+`memory_recall` on any other server, a case variant, and every other
+`kirocrew-core` tool stay unproven and prompt. The title and the payload are not
+read, and the ACP `kind` is not consulted (kiro-cli stamps none on an MCP
+tool_call frame). The surface states its mode as a gate argument -- `judge(...,
+trust_reads=)` / `on_tool_call(..., trust_reads=)`, a surface fact beside
+`classifier_only`, never a `ToolCall` field an event could carry -- and the
+dashboard runner passes `slot._trust_reads`; no other surface passes it, so the
+side chat's `READ_ONLY` classifier, cron, subagent and messaging surfaces judge an
+MCP call exactly as before, and a Normal slot still sees the card. Because the
+proof lives in the `read-only` row it inherits the row's position: every deny
+row, the MCP auto-deny globs and governance run first (a deny on
+`@kirocrew-core/memory_recall` still wins), and an operator `hooks.confirm_tools`
+match, which the row checks before any MCP verdict, still asks. Trust and YOLO
+approve such a call on their own terms and are unchanged. Pinned by
+`test_hooks_trusted_identity.py::TestReadsModeFirstPartyMcpProof` (the closed set,
+the proof's three conditions, the gate's verdict with and without `trust_reads`,
+the confirm list and a deny outranking it) and the Reads-mode cases in
+`test_chat_runner_coverage_approval.py` (a Reads slot approves the core read with
+no card; a Normal slot, the same name on another server, a core write tool and an
+untrusted identity all prompt).
+
 Computer-use observation tools get their own **explicit** pair in that same
 branch (`_cu_read_only_auto_approve`), keyed on the code-owned
 `governance.computer_use_action_classes()` table rather than the

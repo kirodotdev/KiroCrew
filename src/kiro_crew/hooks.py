@@ -196,6 +196,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_declared_builtin_mcp_server,
     _is_deepseek_read_only_builtin,
     _is_first_party_app,
+    _is_first_party_read_only_mcp_tool,
     _is_harness_read_only_builtin,
     _is_host_read_only_builtin,
     _normalize_tool_name,
@@ -650,6 +651,7 @@ class HookManager:
         agent: str = "",
         app: str = "",
         classifier_only: bool = False,
+        trust_reads: bool = False,
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -692,6 +694,16 @@ class HookManager:
         on its own merits instead of being refused outright (a grant that shadows a
         read costs nothing, a grant that shadows a write approves nothing). Default
         ``False``: a caller with an interactive approver keeps the grants.
+
+        ``trust_reads`` says the surface's Reads approval mode is on for this call
+        (the dashboard slot's ``_trust_reads``). It unlocks exactly one more
+        read-only proof in the classifier: an MCP call whose host-trusted
+        ``(server, tool)`` pair is in :data:`_FIRST_PARTY_READ_ONLY_MCP_TOOLS`,
+        Kiro Crew's own read-only tools. Nothing else reads it -- not a deny tier,
+        not governance, not a grant -- so it can only turn a prompt into a
+        ``read_only`` auto-approve for one of those tools, never the reverse, and
+        an operator ``confirm_tools`` match still asks first. Default ``False``:
+        every other mode and surface judges an MCP call as before.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -702,6 +714,7 @@ class HookManager:
             agent=agent,
             app=app,
             classifier_only=classifier_only,
+            trust_reads=trust_reads,
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -734,6 +747,7 @@ class HookManager:
         spawn_target: str = "",
         resolved_agent: str = "",
         classifier_only: bool = False,
+        trust_reads: bool = False,
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -772,6 +786,7 @@ class HookManager:
             agent=agent,
             app=app,
             classifier_only=classifier_only,
+            trust_reads=trust_reads,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:
@@ -845,6 +860,44 @@ _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 # unattended on a surface with no approver.
 _HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(
     {"fs_read", "glob", "grep", "web_fetch", "web_search"}
+)
+
+# Kiro Crew's OWN read-only MCP tools, keyed by the ``(server, tool)`` pair the
+# transport stamped (``_meta.kiro.mcpServerName`` / ``toolName``), so the same
+# tool name on any other server matches nothing. The read-only tier reads this
+# ONLY for a surface that passed ``trust_reads=True`` to ``judge`` (the
+# dashboard's Reads approval mode); under every other mode and on every other
+# surface an MCP call is as unprovable as before. Each entry is one of the core
+# server's tools whose handler (``mcp_tools/``) reads the user's own Kiro Crew
+# data and calls nothing beyond this gateway: ``memory_recall``
+# (``GET /api/memory/recall``), ``search_chat_history`` / ``get_chat_session``
+# (the transcript store), ``skill_search`` (the installed-skill catalog) and
+# ``local_knowledge_search`` (the local knowledge index; its embedder is
+# in-process). "Read-only" here is a claim about the USER'S world, which is
+# what the approval card guards: the only writes on these paths are the
+# gateway's own housekeeping of its derived indexes (a lazy build, a schema
+# migration or a repair of the skill, history, knowledge or notebook index --
+# ``SkillSearchIndex.sync``, ``history_index._ensure_open``, the knowledge
+# store's migrate step, ``_repair_notebook_index``), which the dashboard pages
+# that read the same data run with no card at all; none writes a user file,
+# memory content or anything outside the gateway's data directory, and none
+# spends model tokens. ``autonudge_judge`` keeps NO MCP allowlist for its own
+# reason -- it labels whether a turn changed anything at all, where an index
+# build counts -- and that reason does not transfer here. ``list_sessions`` is
+# deliberately absent: its ``summarize`` argument asks the gateway to spend
+# model tokens, and this set is matched on identity, never on arguments. Closed
+# and first-party: no config, app or edition adds to it.
+# ``test_first_party_read_only_mcp_tools_are_core_reads``
+# (``test/test_hooks_trusted_identity.py``) pins every entry to a tool the core
+# server really serves and to none of its write tools.
+_FIRST_PARTY_READ_ONLY_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
+    {
+        (CORE_MCP_SERVER, "memory_recall"),
+        (CORE_MCP_SERVER, "search_chat_history"),
+        (CORE_MCP_SERVER, "get_chat_session"),
+        (CORE_MCP_SERVER, "skill_search"),
+        (CORE_MCP_SERVER, "local_knowledge_search"),
+    }
 )
 
 
