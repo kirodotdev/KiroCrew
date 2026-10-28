@@ -1462,13 +1462,20 @@ jobs:
     name: Pod Boot Canary (Windows)
     needs: [await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    # Hosted, and it cannot move. The Windows fleet is a CONTAINER
-    # (`ContainerAdministrator`), where `schtasks /Create` exits 1 on its own
-    # `/ST is earlier than current time` warning -- so the runner user cannot
-    # create a scheduled task, which is the single fact this canary exists to
-    # establish. Measured there: all 3 tests fail at the probe with
-    # `WindowsTaskError ... schtasks /Create rc=1`, before any pod boots.
-    runs-on: windows-latest
+    # Off the CodeBuild fleet, and that exclusion is specific to the fleet: the
+    # Windows fleet is a CONTAINER (`ContainerAdministrator`), where
+    # `schtasks /Create` exits 1 on its own `/ST is earlier than current time`
+    # warning -- so the runner user cannot create a scheduled task, which is the
+    # single fact this canary exists to establish. Measured there: all 3 tests
+    # fail at the probe with `WindowsTaskError ... schtasks /Create rc=1`, before
+    # any pod boots. A larger runner is an uncontainerized VM on the same
+    # Windows Server 2025 image family as `windows-latest`, so it creates the
+    # scheduled task the shared pool creates.
+    # `kirocrew-runners-windows` larger-runner group, targeted by GROUP not
+    # label; see "The Windows larger-runner group" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners-windows
     # A cold boot pays for the venv build, interpreter start, config seeding and
     # the health wait. The test's own bound is 180s; this is the job's. The
     # label opt-in measured 76s (boot canary) + 205s (55 scenarios) plus the SPA

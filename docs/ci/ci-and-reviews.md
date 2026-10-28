@@ -1119,7 +1119,8 @@ matching its name, but this definition has already been renamed once (from
 label reference would break simultaneously. The group must stay Linux-only:
 group targeting dispatches to any available runner in the group, so adding a
 Windows definition to `kirocrew-runners` would make every one of these jobs
-eligible to land on Windows. A Windows definition belongs in its own group.
+eligible to land on Windows. A Windows definition belongs in its own group,
+which is where `kirocrew-runners-windows` holds the one below.
 
 **What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets
@@ -1168,6 +1169,60 @@ guarantees; a larger runner is still GitHub-hosted, so the isolation contract is
 unchanged and only the pinned value moves. Change a runner on one of those jobs
 without changing the pin and the gate reds with
 `hosted exception changed runner`, which is the ratchet working.
+
+### The Windows larger-runner group
+
+Three `runs-on` sites take `kirocrew-runners-windows`, a second group holding one
+Windows definition: `ci.yml`'s `pod-boot-windows`, `build.yml`'s
+`build-windows-installer` and `build-ffmpeg-decoder.yml`'s `verify-windows`.
+
+**Why these three and nothing else on Windows.** Every other Windows job either
+already resolves to the CodeBuild fleet through
+`needs.changes.outputs.windows_runner`, or declares no runner of its own. The
+four fleet consumers keep `|| 'windows-latest'` as their fallback deliberately:
+that branch is the high-volume path, not the exception, because every fork pull
+request takes it and so does every same-repo one opened from outside
+`CODEBUILD_ACTOR_IDS`. Pointing it at a capped, billed group would move the
+largest population of Windows runs there, and
+`test/test_ci_fleet_routing_expression_parity.py` pins the expression besides.
+The Windows legs of a mixed matrix (`backend-test-ipv6`, `new-test-stability`,
+`denial-differential`, `security-scope-review`, `fork-security-scope-review`)
+resolve `runs-on` per leg from `matrix.os`, so they need an expression of the
+`e2e-boot-matrix` shape rather than a group. And `build-windows.yml`, `nightly.yml` and `release.yml` reach
+Windows only on a schedule or a release push, where queue position gates no
+merge.
+
+**A fleet exclusion is not a hosted pin.** Both `pod-boot-windows` and
+`build-windows-installer` carry a documented reason for staying off the fleet,
+and both reasons are properties of a CONTAINER: the canary's `schtasks /Create`
+cannot create a scheduled task as `ContainerAdministrator`, and the installer
+test needs an interactive desktop the container has no session for. A larger
+runner is an uncontainerized VM on the same Windows Server 2025 image family as
+`windows-latest`, so neither reason reaches it. Read any "cannot move" as naming
+the destination it was measured against.
+
+**Nothing gets faster here either.** A public-repository `windows-latest` is
+already 4 vCPU and 16 GB, and `kirocrew-windows-4-core` is the same CPU and
+memory with roughly ten times the disk, so only queue position moves. Unlike
+Linux, these runs leave a free pool for a billed one with no fleet alternative to
+fall back to, so what bounds the spend is how often each job executes rather than
+how long it runs. `build-windows-installer` and `verify-windows` sit behind paths
+filters. The canary has no paths filter of its own and `ci.yml` fires on every
+pull request, so the thing that bounds it is `needs: [await-fast-gate,
+lint-gate]` plus `if: needs.lint-gate.result == 'success'`: a run whose lint gate
+skipped skips the canary with it, which is most of them. **That ratio is the
+number to re-measure before adding a fourth Windows site**, from the jobs API
+filtered on this job name, because it is a property of how the gate skips today
+and not a guarantee.
+
+**Capacity and rollback.** The definition is capped at `maximum_runners: 32`,
+set when the runner was created and raised only through GitHub Support. Rollback
+is per site and needs no runner-group change: restore
+`runs-on: windows-latest` on the affected line. `pr-readiness.yml` resolves
+`ci.yml` as one of its monitored workflows, so a canary stuck queueing against a
+group that does not admit this repository keeps `PR Readiness` pending for up to
+the 24-hour queue timeout -- cancel the run and fix the group's repository access
+rather than waiting it out.
 
 ### macOS is not a pull-request gate any more
 

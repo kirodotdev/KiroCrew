@@ -199,8 +199,12 @@ def test_unproved_namespace_gui_and_task_scheduler_jobs_stay_hosted(workflow, na
     job = yaml.safe_load((_REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8"))[
         "jobs"
     ][name]
-    assert "codebuild" not in job["runs-on"]
-    assert "linux_runner" not in job["runs-on"] and "windows_runner" not in job["runs-on"]
+    # Rendered, never indexed: a `runs-on` that names a group is a mapping, and
+    # `in` on a mapping tests its KEYS -- so an unrendered check passes for every
+    # possible group name and stops being a check at all.
+    runs_on = str(job["runs-on"])
+    assert "codebuild" not in runs_on
+    assert "linux_runner" not in runs_on and "windows_runner" not in runs_on
 
 
 def test_private_namespace_lane_is_the_only_e2e_step_left_hosted(jobs):
