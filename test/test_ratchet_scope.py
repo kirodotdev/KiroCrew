@@ -548,9 +548,12 @@ class TestPrMergeCommitScope:
     includes every file the base branch changed after the PR was opened -- on a
     stale PR that is hundreds of test files (observed case: 268 files, 3 passes).
 
-    The correct scope is files changed between ``merge-base(base.sha, HEAD^2)``
-    and ``HEAD^2``.  These tests build the CI merge-commit shape and verify that
-    both ``resolve_base`` and ``changed_paths_at`` scope to that narrower diff.
+    The fix: on that checkout shape, ``changed_paths_at`` uses ``git diff HEAD^1
+    HEAD`` instead of a base-to-working-tree diff.  ``HEAD^1`` is the base-branch
+    tip; ``HEAD`` is the merge commit; the diff is exactly what the PR contributes.
+    ``resolve_base`` is unchanged.  These tests build the CI merge-commit shape
+    and verify that ``changed_paths_at`` scopes to that narrower ``HEAD^1..HEAD``
+    diff while ``resolve_base`` returns the same value it always did.
     """
 
     def _make_ci_pr_merge_commit(self, repo: Path) -> dict[str, str]:
@@ -587,15 +590,38 @@ class TestPrMergeCommitScope:
         _git(repo, "merge", "--no-ff", "-m", "CI merge ref", "feature")
         return {"base_sha": c_sha, "d_sha": d_sha}
 
-    def test_pr_own_head_returns_head2_on_ci_merge_commit(self, repo: Path) -> None:
+    def test_pr_own_head_returns_head2_on_ci_merge_commit(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
         _set_origin_main(repo)
         _git(repo, "checkout", "--detach", "main")
         _git(repo, "merge", "--no-ff", "-m", "CI merge ref", "feature")
 
         assert scope._pr_own_head() == "HEAD^2"
 
-    def test_pr_own_head_returns_head_on_plain_branch(self, repo: Path) -> None:
+    def test_pr_own_head_returns_head_on_plain_branch(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
         _git(repo, "checkout", "feature")
+
+        assert scope._pr_own_head() == "HEAD"
+
+    def test_pr_own_head_returns_head_outside_ci_pr_event(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local merges and push events never take the committed-endpoint path.
+
+        Even when HEAD is a CI-shaped merge commit, a non-pull_request
+        GITHUB_EVENT_NAME (or no env var at all) must return "HEAD" so that
+        local gate runs see uncommitted edits and push-event runs diff to the
+        working tree.
+        """
+        monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+        _set_origin_main(repo)
+        _git(repo, "checkout", "--detach", "main")
+        _git(repo, "merge", "--no-ff", "-m", "local merge", "feature")
 
         assert scope._pr_own_head() == "HEAD"
 
@@ -620,7 +646,9 @@ class TestPrMergeCommitScope:
         expected = _git(repo, "merge-base", base_sha, "HEAD")
         assert resolved == expected
 
-    def test_changed_paths_at_scopes_to_pr_own_diff_on_stale_pr(self, repo: Path) -> None:
+    def test_changed_paths_at_scopes_to_pr_own_diff_on_stale_pr(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A stale PR must not include files the base branch added after it was opened.
 
         changed_paths_at uses git diff HEAD^1 HEAD on a PR merge-commit
@@ -630,6 +658,7 @@ class TestPrMergeCommitScope:
         (stale.txt) and commits already on main at PR-open time (mainline.txt)
         are both excluded.
         """
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
         shas = self._make_ci_pr_merge_commit(repo)
         resolved = scope.resolve_base(shas["base_sha"])
 

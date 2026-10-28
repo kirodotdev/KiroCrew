@@ -125,15 +125,18 @@ def _pr_own_head() -> str:
     commit) therefore spans base.sha through the merge commit -- it includes
     every file the base branch changed AFTER the PR was opened.  On a stale PR
     that means hundreds of test files appear "changed" and the stability gate
-    repeats the near-full suite (observed on #24930: 268 files, 3 passes).
+    repeats the near-full suite (observed on a stale PR: 268 files, 3 passes).
 
-    This helper detects the CI PR shape using the same ancestry probe as
-    :func:`_first_parent_is_base`: when HEAD is a merge commit whose first
-    parent the base branch can reach, ``HEAD^2`` is the PR's own head.  On
-    push events and local non-merge-commit runs it returns ``"HEAD"``, leaving
-    :func:`changed_paths_at` and :func:`resolve_base` with their existing
+    The return value is ``"HEAD^2"`` only when THREE conditions all hold: the
+    process is running in a GitHub Actions ``pull_request`` event
+    (``GITHUB_EVENT_NAME``), HEAD is a merge commit, and the first parent is
+    reachable from the base branch.  All other cases -- local runs, push events,
+    a shallow clone where the ancestry probe cannot complete -- return ``"HEAD"``,
+    leaving :func:`changed_paths_at` and :func:`resolve_base` with their existing
     working-tree-diff semantics.
     """
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return "HEAD"
     code, out = _git("rev-list", "--parents", "-n", "1", "HEAD")
     if code == 0 and len(out.split()) >= 3 and _first_parent_is_base():
         return "HEAD^2"
@@ -367,14 +370,26 @@ def changed_paths_at(frm: str) -> list[str]:
     a removed file has no lines to judge.
 
     On a CI ``pull_request`` checkout :func:`_pr_own_head` returns ``HEAD^2``
-    (the PR's own tip), so the diff runs from *frm* to the PR's own commits,
-    not to the synthetic merge commit.  That keeps main-branch moves that land
-    after the PR was opened out of scope: on a stale PR every test file main
-    touched would otherwise count as a PR change, and a flaky test main owns
-    becomes a blocker on an unrelated PR (observed on a stale PR: 268 files, 3×).
+    (detecting the CI merge-commit shape), so the diff runs ``HEAD^1..HEAD``
+    rather than from *frm* to the working tree.  ``HEAD^1`` is the base-branch
+    tip; ``HEAD`` is the merge commit; the diff is exactly what the PR
+    contributes to the merge, using merged path names that exist in the working
+    tree.  That keeps main-branch moves landing after the PR was opened out of
+    scope: on a stale PR every test file main touched would otherwise count as a
+    PR change (observed: 268 files, 3×).  On that shape *frm* is not used.
+    The guard requires ``GITHUB_EVENT_NAME == "pull_request"``, so local runs
+    and push events always reach the *frm*-to-working-tree path.
+
+    Note: :func:`added_lines_at` still diffs from *frm* to the working tree on
+    every shape.  The two functions therefore describe different bases on a CI
+    merge-commit checkout.  Callers that feed ``changed_paths_at``'s output into
+    ``added_lines_at`` (the ratchet gates) will see lines from *frm* to the merge
+    commit for each returned path, which may include lines main added to a
+    file the PR also touched.
+
     On push events and local non-merge-commit runs the diff target is the
-    working tree, which preserves existing behaviour including uncommitted
-    local edits.
+    working tree and *frm* is used normally, which preserves existing behaviour
+    including uncommitted local edits.
 
     A list, not a set, because git emits the names path-sorted and the
     consuming gates' reports inherit that order — a set would make a
