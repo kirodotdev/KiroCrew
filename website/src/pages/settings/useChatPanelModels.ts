@@ -13,7 +13,7 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtNumber } from '../../i18n/format'
-import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
+import { hiddenIdsFor, hiddenModelMatcher, normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 import { i18nT } from '../../i18n/t'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type {
@@ -150,10 +150,10 @@ export function useChatPanelModelDefaults({
     'dashboard.model_picker_hidden_models',
     normalizeHiddenModels(dashCfg.model_picker_hidden_models),
   )
-  const hiddenModelSet = new Set(hiddenModels)
+  const isHiddenModel = hiddenModelMatcher(hiddenModels)
   const selectedModelIds = new Set(
     availableModels
-      .filter(model => model.name === 'auto' || !hiddenModelSet.has(model.name))
+      .filter(model => model.name === 'auto' || !isHiddenModel(model.name))
       .map(model => model.name),
   )
   const selectedModelCount = selectedModelIds.size
@@ -203,20 +203,27 @@ export function useChatPanelModelDefaults({
   }
   const toggleVisibleModel = (model: string, selected: boolean) => {
     if (model === 'auto') return
+    // Showing a model removes every stored spelling of it, so an id saved under
+    // another harness does not keep it hidden.
+    const stored = hiddenIdsFor(hiddenModels, model)
     const next = selected
-      ? hiddenModels.filter(value => value !== model)
+      ? hiddenModels.filter(value => !stored.includes(value))
       : [...hiddenModels.filter(value => value !== model), model]
-    saveHiddenModels(selected ? { next, remove: [model] } : { next, add: [model] })
+    saveHiddenModels(selected ? { next, remove: [...new Set([model, ...stored])] } : { next, add: [model] })
   }
-  const advertisedModelIds = new Set(availableModels.map(model => model.name))
-  const hiddenUnadvertisedModels = hiddenModels.filter(model => !advertisedModelIds.has(model))
+  const isAdvertisedModel = hiddenModelMatcher(availableModels.map(model => model.name))
+  const hiddenUnadvertisedModels = hiddenModels.filter(model => !isAdvertisedModel(model))
   const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
+  // The server removes ids by exact string, so showing every model must name
+  // each stored spelling of an advertised model, not only the advertised id.
   const selectAllModels = () => saveHiddenModels({
     next: hiddenUnadvertisedModels,
-    remove: advertisedOptionalModelIds,
+    remove: [...new Set([...advertisedOptionalModelIds, ...hiddenModels.filter(isAdvertisedModel)])],
   })
+  // The server only appends, so every stored spelling stays in the saved list;
+  // the optimistic list keeps them too.
   const deselectAllModels = () => saveHiddenModels({
-    next: [...hiddenUnadvertisedModels, ...advertisedOptionalModelIds],
+    next: [...new Set([...hiddenModels, ...advertisedOptionalModelIds])],
     add: advertisedOptionalModelIds,
   })
   // '' in config means "unset" and resolves the same way 'auto' does, so both
