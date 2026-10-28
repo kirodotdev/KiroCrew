@@ -1064,6 +1064,25 @@ def any_configured_profile_governs(ref: str) -> bool:
     )
 
 
+def any_configured_profile_has_say(ref: str) -> bool:
+    """:func:`any_configured_profile_governs` without ``may_skip_gate``'s floor clause.
+
+    For a grant made INSIDE the gate (``governance.may_grant_builtin_at_gate``),
+    whose call has already met the floor: asking ``may_skip_gate`` would answer
+    True for every floor-gated built-in before it reads the profile, so any
+    configured profile, whatever it governs, would withhold every such grant.
+    Same fail-closed rule for an unresolved store.
+    """
+    from kiro_crew.platform.governance import _ceiling_has_no_say
+
+    if not _STORE.resolved():
+        return True
+    return any(
+        not _ceiling_has_no_say(ref, profile)  # type: ignore[arg-type]
+        for profile in _STORE.all_profiles()
+    )
+
+
 def reset_store() -> None:
     """Test helper — drop the cached profiles so the next access reloads."""
     global _PROFILE_GENERATION, _STORE

@@ -15,7 +15,7 @@ Instance fields read: ``_config_options``, ``_runtime``, ``_session_id``,
 ``_tool_call_cache_overflow``, ``_tool_call_diff_path``,
 ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
-``_tool_call_tool_name``, ``mirror_used``, ``spec_denied_tools``.
+``_tool_call_tool_name``, ``kas_crew_answered``, ``mirror_used``, ``spec_denied_tools``.
 """
 
 from __future__ import annotations
@@ -581,6 +581,22 @@ def _remote_workdir(remote_workspace: object) -> str:
     return workdir if isinstance(workdir, str) else ""
 
 
+def _is_native_child_call(handle: AcpSessionHandle, event: AcpEvent) -> bool:
+    """Whether *event* is a native KAS sub-agent's tool call on this session.
+
+    Such a call carries this session's own id; the KAS update handler records its
+    scoped tool-call id when the ``agentSubtaskId`` frame arrives. An event naming
+    no tool call cannot be told apart, so it counts as a child (no grant).
+    """
+    tool_call_id = getattr(event, "tool_call_id", "") or ""
+    if not tool_call_id:
+        return True
+    child_ids = getattr(handle, "_native_child_tool_call_ids", None)
+    if child_ids is None:
+        return False
+    return scoped_tool_cache_key(handle._session_id, tool_call_id) in child_ids
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -631,4 +647,12 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     frame_sid = str((msg.params or {}).get("sessionId") or "")
     if frame_sid and frame_sid != self._session_id:
         event.sub_session_id = frame_sid
+    elif self._runtime.acp_backend == ACP_BACKEND_KAS and not _is_native_child_call(self, event):
+        # What this session's own agent granted and the KAS policy kept at ask,
+        # so the gate can answer the request itself after its checks. A child's
+        # request runs another agent's spec, so it never carries this: neither
+        # one under a foreign sessionId, nor a native KAS sub-agent's tool call,
+        # which shares this session's id and is told apart by the id its
+        # agentSubtaskId frame recorded.
+        event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
     return event

@@ -629,6 +629,11 @@ class AcpSessionHandle:
         # The capabilities the agent batch this session registered auto-approves
         # (see ``kas_agents.projected_auto_approved``); None when no batch was sent.
         self.kas_auto_approved: frozenset[str] | None = None
+        # The built-ins that batch keeps at ``ask`` but the active agent's spec
+        # grants (``kas_permissions.crew_answered_builtins``): Crew's gate answers
+        # their permission requests itself, after the deny floor, the
+        # sensitive-path check and the governance ceiling. Empty with no batch.
+        self.kas_crew_answered: frozenset[str] = frozenset()
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.

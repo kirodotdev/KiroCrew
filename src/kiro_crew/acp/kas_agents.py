@@ -72,10 +72,13 @@ from typing import Any
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_permissions import (
     AUTO_APPROVABLE_CAPABILITIES,
+    CREW_ANSWERED_BUILTINS_KEY,
     allowed_tools_to_permissions,
     auto_approved_capabilities,
+    crew_answered_builtins,
     merge_user_permissions,
     tools_settings_to_permissions,
+    withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
 )
 from kiro_crew.agent_discovery import (
@@ -100,7 +103,7 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_muted,
     mcp_entry_is_registry_governed,
 )
-from kiro_crew.platform.governance import may_skip_gate_now
+from kiro_crew.platform.governance import may_grant_builtin_at_gate_now, may_skip_gate_now
 from kiro_crew.platform.tool_names import (
     expand_kiro_cli_tool_exclusions,
     expand_kiro_cli_tool_names,
@@ -956,6 +959,18 @@ def to_client_custom_agent(
     permissions = allowed_tools_to_permissions(
         _ceiling_permitted(allowed_tools_input, agent_id), agent_id=agent_id
     )
+    # The built-ins the projection keeps at ``ask`` that the spec still granted:
+    # Crew answers their permission requests itself, after its own checks. Kept
+    # on the entry for the session's record and stripped before the wire
+    # (``CREW_ONLY_ENTRY_KEYS``); it is never an allow rule. Not read off
+    # ``_ceiling_permitted``: that asks ``may_skip_gate``, which refuses every
+    # floor-gated built-in because a static grant would skip the gate. These are
+    # answered inside the gate, so they ask the ceiling without that clause.
+    crew_answered = frozenset(
+        name
+        for name in crew_answered_builtins(allowed_tools_input)
+        if may_grant_builtin_at_gate_now(name)
+    )
     permissions = merge_user_permissions(
         permissions,
         spec.get("permissions"),
@@ -993,6 +1008,18 @@ def to_client_custom_agent(
     )
     if permissions:
         out["permissions"] = permissions
+    # Read after every merge AND from the raw inputs: an ``ask`` or ``deny`` the
+    # spec's author wrote for a capability -- including one a merge refused or a
+    # translation could not carry -- keeps its built-ins out of what Crew answers,
+    # so the call prompts exactly as the author asked.
+    crew_answered = withhold_answered_under_authored_rules(
+        crew_answered,
+        permissions,
+        authored_permissions=spec.get("permissions"),
+        tools_settings=spec.get("toolsSettings"),
+    )
+    if crew_answered:
+        out[CREW_ANSWERED_BUILTINS_KEY] = sorted(crew_answered)
 
     description = spec.get("description")
     if isinstance(description, str) and description:
@@ -1240,6 +1267,42 @@ def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]
         return None
     entry = next((a for a in entries if a.get("id") == agent_id), entries[0])
     return auto_approved_capabilities(entry.get("permissions"))
+
+
+def _entry_crew_answered(entry: Any) -> frozenset[str]:
+    """The :data:`CREW_ANSWERED_BUILTINS_KEY` list of one projected entry.
+
+    Anything that is not a list of strings answers empty: a grant Crew answers
+    without a prompt must come from the projection, never from a guess.
+    """
+    raw = entry.get(CREW_ANSWERED_BUILTINS_KEY) if isinstance(entry, dict) else None
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(n for n in raw if isinstance(n, str) and n)
+
+
+def projected_crew_answered(custom_agents: Any, agent_id: str) -> frozenset[str]:
+    """The built-ins Crew answers itself for *agent_id*'s registered entry.
+
+    Matched by the crewmate id exactly. Unlike :func:`projected_auto_approved` there
+    is no fallback to the first entry: a session whose active agent is not in the
+    batch has nothing Crew may answer for it, and empty keeps every call prompting.
+    """
+    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
+    entry = next((a for a in entries if a.get("id") == agent_id), None)
+    return _entry_crew_answered(entry)
+
+
+def switched_crew_answered(custom_agents: Any, mode_id: str) -> frozenset[str]:
+    """What Crew answers itself once a KAS mode switch moves the session to *mode_id*.
+
+    *mode_id* is the engine's wire id, matched like :func:`switched_auto_approved`
+    so a KAS built-in mode of the same name never inherits a crewmate's grants. A
+    mode the batch does not carry answers empty: Crew never projected it.
+    """
+    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
+    entry = next((a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == mode_id), None)
+    return _entry_crew_answered(entry)
 
 
 def switched_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]:

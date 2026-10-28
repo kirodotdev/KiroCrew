@@ -2200,12 +2200,53 @@ enforcement and display correctly scoped:
   never surfacing as a no-op opt-out (UI success while the bound-profile gate
   still denies). This is display-only and does not widen enforcement.
 
+**KAS spec built-in grant** (`spec-builtin-grant`, the third grant row of
+`GATE_TIERS`, after `operator-grants`) — a built-in the KAS session's agent spec
+grants in `allowedTools` is auto-approved by Crew at its permission request instead
+of by a KAS allow rule. The KAS projection never relays an allow for the shell and
+filesystem families (`kas_permissions.WITHHELD_FROM_AUTO_APPROVE`): an auto-approved
+KAS call raises no `session/request_permission`, so no row of this table would run
+on it. It keeps them at `ask` and records the granted ones on the projected entry
+(`kas_permissions.crew_answered_builtins`, filtered by
+`governance.may_grant_builtin_at_gate_now`), the session handle keeps the active
+agent's set (`AcpSessionHandle.kas_crew_answered`, re-read on a KAS mode switch by
+wire id) and stamps it on the session's OWN permission events only
+(`AcpEvent.spec_granted_builtins`; a sub-session's request and a native KAS
+sub-agent's tool call run another agent's spec and carry none). The row approves only when every one of these holds: the surface
+is not `classifier_only`; the call is a KAS built-in by host-trusted identity
+(`kas_builtin_ids`, `identity_trusted`, a stamped tool id, no MCP server); one of
+its names (the stamped id, kiro-cli's short-name fold, the may-admit policy aliases
+of `policy_alias_split`, so a `fs_write` grant never approves `delete_file`, and for
+a shell call both `execute_bash` and `execute_pwsh`, which KAS stamps alike as
+`run_command`) is in
+the stamped set; `governance.may_grant_builtin_at_gate` holds for every one of those
+names under the judgement's own context snapshot (no ceiling or configured profile
+with an opinion on the tool's scopes; fail-closed); and no `confirm_tools` pattern
+names the call. The projection also leaves out of the recorded set every built-in
+whose KAS capability (`code` counts under `fs_read`, `fs_write` and `shell`) carries
+an `ask` or `deny` rule in the merged policy, whatever that rule's `match` scope,
+or an authored restriction in the RAW spec inputs
+(`kas_permissions.withhold_answered_under_authored_rules`,
+`authored_restricted_capabilities`): any non-`allow` rule in the spec's own
+`permissions` block, all three capabilities when that block is anything but a
+readable `{"rules": [...]}` with no `policies` bundle (the shapes the merge refuses
+whole), and any `toolsSettings` entry for one of these built-ins. The raw reading
+exists because a merge or a translation drops what it cannot carry; an authored
+"ask me" reaches Crew as a permission request, and the `allowedTools` grant must not
+answer it. Because it is a grant row, every deny row
+and governance have already run: the deny floor, the sensitive-path and argument
+path checks and the write-protected check still refuse a granted call, and the
+surface's post-approve checks (the name-grant shim, PreToolUse script hooks) still
+run. `may_grant_builtin_at_gate` differs from `may_skip_gate` only by omitting the
+floor clause, which exists because a static grant skips this gate; this grant is
+made inside it.
+
 **Read-only auto-approve** — kiro-cli's `autoAllowReadonly` is not used;
 the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
 the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every
 deny row (deny-by-default shell, sensitive-path, sensitive-bash, exfil, the
 argument paths, write-protected-config, effective deny set, the MCP auto-deny
-globs, the file-search target, governance) and both grant rows. Position guarantees a read-only classification can never
+globs, the file-search target, governance) and every grant row. Position guarantees a read-only classification can never
 re-admit anything the deny/governance gates blocked. For a shell tool it
 auto-approves only when `command` is present and
 `security.readonly_bash.is_read_only_bash(command)` is True (deny-by-default: rejects

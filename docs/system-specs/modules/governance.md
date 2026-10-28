@@ -1304,6 +1304,21 @@ this one predicate, so the grant is withheld on every backend and channel alike:
 own spec, the KAS wire projection, and the `permissions` block written to disk. With no such
 policy nothing changes.
 
+One grant is made INSIDE the gate rather than by a writer: the KAS `spec-builtin-grant`
+row (security.md § KAS spec built-in grant), which approves a built-in the spec granted
+after every deny row and governance have judged the real call. It asks
+`may_grant_builtin_at_gate(ref, ceiling)` instead of `may_skip_gate`: the same ceiling
+question (`_ceiling_has_no_say`), asked of the ceiling and of every configured profile
+(`governance_profiles.any_configured_profile_has_say`), minus the floor clause that
+refuses `fs_read`/`execute_bash`/... to a static writer because a static grant skips the
+floor. The profile half cannot reuse `any_configured_profile_governs`: that asks
+`may_skip_gate`, whose floor clause answers for every floor-gated built-in before it
+reads the profile, so any profile at all would withhold every such grant. The ceiling is
+the one in the gate's own context snapshot, so a ceiling or profile with any opinion on
+the tool's scopes keeps the call at the prompt; an unresolved profile store or an error
+withholds. The KAS projection asks `may_grant_builtin_at_gate_now` once when it records
+the grant; the gate asks again on every call.
+
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
 already-running process keeping its own sandbox — a restart is its only answer, which is also

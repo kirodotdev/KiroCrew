@@ -348,6 +348,19 @@ and the absence of a mechanism is not something a source scan can see. The
 
 How a user's own harness permission settings reach a main or member chat: [claude-code-provider.md](claude-code-provider.md) ("Known gap: the user's global `~/.claude` is inherited") for claude, and [side.md](side.md) for the Side Chat posture on claude and goose.
 
+### KAS: a spec's `allowedTools` built-ins run without a prompt
+
+On kiro-cli a built-in the spec lists in `allowedTools` (`fs_read`, `shell`, `grep`,
+`glob`, `code`, `fs_write`, ...) runs without a prompt. KAS reaches the same user
+outcome by a different path, because a KAS allow rule would run the call with no
+permission request and so skip Crew's gate. The projection keeps those built-ins at
+`ask` (`kas_permissions.WITHHELD_FROM_AUTO_APPROVE`) and records them on the entry
+(`CREW_ANSWERED_BUILTINS_KEY`); every call raises `session/request_permission`, and
+the gate's `spec-builtin-grant` row answers it after the deny floor, the
+sensitive-path check and governance ([security.md](security.md) § KAS spec built-in
+grant). A call one of those checks refuses is refused on both engines. The Kiro
+path is unchanged: nothing on it sets `AcpEvent.spec_granted_builtins`.
+
 ### KAS managed MCP readiness
 
 KAS's harness opts into managed MCP readiness with its session-scoped status and

@@ -1233,7 +1233,24 @@ the shared `governance.may_skip_gate` withholds `use_subagent` from every
 `allowedTools` writer, and so from the `subagent` rule on the wire and on disk,
 while the ceiling or any configured profile restricts `capabilities.spawn`
 (governance.md § `allowedTools`). Any other
-shape stays unclassified. It never sets `is_shell` True, never overrides a
+shape stays unclassified.
+
+**Crew-answered built-ins on KAS.** `kas_agents.to_client_custom_agent` records the
+shell/filesystem built-ins the spec grants (which the KAS policy keeps at `ask`) under
+`kas_permissions.CREW_ANSWERED_BUILTINS_KEY` on the projected entry.
+`_dispatch.attach_kas_custom_agents` drops every key in `CREW_ONLY_ENTRY_KEYS` from
+the wire copy, so the engine never sees it. `KasHarness.record_session_projection`
+stores the active agent's set on `AcpSessionHandle.kas_crew_answered`
+(`kas_agents.projected_crew_answered`, exact id, no first-entry fallback), and a KAS
+mode switch replaces it by wire id (`switched_crew_answered`; a mode the batch does
+not carry answers empty). `session_handle_permissions._build_permission_event` copies
+it onto `AcpEvent.spec_granted_builtins` for a request on the handle's own session
+only; a child-routed request (`sub_session_id` set), a native KAS sub-agent's tool
+call (its scoped id is in `_native_child_tool_call_ids`, recorded from the
+`agentSubtaskId` frame, though it carries the parent's sessionId), a request naming
+no tool call, and every other backend carry the empty set. The legacy per-session `AcpClient` sets nothing, so a KAS call there
+still prompts. The gate's `spec-builtin-grant` row is what reads it (security.md
+§ KAS spec built-in grant). It never sets `is_shell` True, never overrides a
 cache hit, and grants no provenance: `raw_params_trusted` and
 `mcp_identity_trusted` stay `False`, so a child spawn stays
 `child_low_fidelity` and title-keyed auto-approve stays gated for it exactly

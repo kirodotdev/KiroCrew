@@ -89,6 +89,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping this would leave every spec-granted KAS built-in prompting on
+        # this surface: the gate's spec-builtin-grant row reads it.
+        spec_granted_builtins=e.spec_granted_builtins,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
