@@ -177,7 +177,9 @@ def test_commands_are_routed_through_the_proxy_only_when_it_runs(tmp_path, monke
         == f"http.http://127.0.0.1:{port}/.extraHeader"
     )
     assert pairs["!f() { echo quit=1; }; f"] == f"credential.http://127.0.0.1:{port}/.helper"
-    assert len(pairs) == 2 + sum(len(p) for p in workspace_tools.GIT_PROXY_REWRITES.values())
+    # No workspace HTTP proxy for the relay's own URL (empty value: off).
+    assert pairs[""] == f"http.http://127.0.0.1:{port}/.proxy"
+    assert len(pairs) == 3 + sum(len(p) for p in workspace_tools.GIT_PROXY_REWRITES.values())
     assert not any("evil.example" in key for key in pairs.values())
     # Nothing listening any more: a stale file must not break every clone.
     assert workspace_tools.git_proxy_env(str(port_file), PROXY_SECRET) == {}
@@ -683,6 +685,55 @@ async def test_clone_and_push_go_through_the_gateway_with_its_credential(tmp_pat
     finally:
         await _stop(process, serve)
     assert not port_file.exists()  # the proxy cleans up its own port file
+
+
+@_POSIX_GUEST
+@pytest.mark.asyncio
+async def test_a_workspace_http_proxy_never_carries_the_relay_traffic(tmp_path, upstream_repo):
+    """A workspace that sets an HTTP proxy with no loopback exclusion still clones
+    through the relay: the rewritten URL is never sent to that proxy, which could
+    not reach the guest's loopback and must not see the relay's bearer secret."""
+    import socket
+
+    root, _bares = upstream_repo
+    upstream = HttpBackendUpstream(root)
+    process, serve, port_file, _link = await _run_channel(tmp_path, upstream)
+    seen: list[bytes] = []
+    with socket.socket() as trap:
+        # A listening "corporate proxy" that records anything sent to it.
+        trap.bind(("127.0.0.1", 0))
+        trap.listen()
+        trap.settimeout(0.2)
+        trap_url = f"http://127.0.0.1:{trap.getsockname()[1]}"
+        try:
+            env = _client_env(tmp_path, port_file)
+            for name in ("NO_PROXY", "no_proxy"):
+                env.pop(name, None)
+            for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy"):
+                env[name] = trap_url
+            clone = tmp_path / "clone"
+            result = await _in_thread(
+                _git,
+                "clone",
+                "https://github.com/acme/widgets.git",
+                str(clone),
+                cwd=tmp_path,
+                env=env,
+                check=False,
+            )
+            try:
+                conn, _addr = trap.accept()
+                with conn:
+                    conn.settimeout(0.2)
+                    seen.append(conn.recv(4096))
+            except OSError:
+                pass
+            assert result.returncode == 0, result.stderr
+            assert (clone / "README").read_text() == "hello\n"
+            assert not seen, seen
+            assert upstream.calls
+        finally:
+            await _stop(process, serve)
 
 
 @_POSIX_GUEST

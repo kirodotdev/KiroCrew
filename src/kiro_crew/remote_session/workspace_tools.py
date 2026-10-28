@@ -203,6 +203,12 @@ def git_proxy_env(
         if host in lendable
         for prefix in prefixes
     ]
+    # The relay is on this guest's loopback: no HTTP proxy the workspace sets
+    # (``http_proxy``, ``HTTPS_PROXY``, ``all_proxy``, ``http.proxy``) can reach it,
+    # and one must never see its bearer secret. An empty URL-scoped value turns
+    # proxying off for the relay's URL only; every other host keeps the
+    # workspace's own proxy settings.
+    pairs.append((f"http.{proxy}.proxy", ""))
     # URL-scoped; Authorization is also stripped on cross-host LFS redirects.
     pairs.append((f"http.{proxy}.extraHeader", f"Authorization: Bearer {secret}"))
     # No prompt for the proxy's own URL only; other hosts keep the workspace's.

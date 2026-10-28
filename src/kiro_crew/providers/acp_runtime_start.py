@@ -14,7 +14,7 @@ Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``, ``member_context``,
-``memory_mode``, ``start_priority``.
+``memory_mode``, ``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
