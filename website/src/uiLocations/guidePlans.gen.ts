@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:c87f4e83f142ffc3c0fb97f67005b7ba826f4f2d8f9a9d5622e683e337f5b602"
+export const GUIDE_BUILD_DIGEST = "sha256:69676fa761dfeffc29cdeb0343091ee8fb923dd6093e1f2c353bf74525ae360d"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -79,11 +79,13 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.details",
   "members.edit",
   "members.empty.import",
+  "members.goals-tab",
   "members.new",
   "members.new-advanced",
   "members.permissions",
   "members.profile-tab",
   "members.roster-list",
+  "members.schedule-tab",
   "members.settings",
   "members.switcher",
   "members.switcher.import",
@@ -1987,6 +1989,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "members.goals-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_goals_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.goals-tab",
+            "location": "members.goals-tab",
+            "label_key": "pages.membersPage.profile_goals_tab"
+          }
+        ]
+      }
+    ]
+  },
   "members.profile-tab": {
     "version": 2,
     "label_key": "pages.membersPage.profile_tab",
@@ -2014,6 +2048,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:members.profile-tab",
             "location": "members.profile-tab",
             "label_key": "pages.membersPage.profile_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.schedule-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.schedules_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.schedule-tab",
+            "location": "members.schedule-tab",
+            "label_key": "pages.membersPage.schedules_tab"
           }
         ]
       }

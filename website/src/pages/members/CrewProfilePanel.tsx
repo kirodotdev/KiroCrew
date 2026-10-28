@@ -476,9 +476,15 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               ariaLabel={t('pages.membersPage.profile_card')}
               layoutId="crew-profile-tab-indicator"
               labels="active"
-              // The Profile tab is a find_ui location: a guide to the Settings
-              // row (which lives on it) selects this tab first.
-              segments={[{ key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') }]}
+              // find_ui locations: Schedules and Goals are where a mate shows
+              // the user what wakes it and what it is after; the Profile tab
+              // is also the step a guide to the Settings row (which lives on
+              // it) selects first.
+              segments={[
+                { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
+                { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
+                { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
+              ]}
             />
           </div>
 

@@ -48,6 +48,9 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   'members.edit': ['button', 'pages.membersPage.profile_card', 'Profile', '资料卡', ['page.members'], 'content', '/members', [cond('crewmate_selected')]],
   // The profile card's Profile tab (the card opens on Sessions): the step before the Settings row.
   'members.profile-tab': ['tab', 'pages.membersPage.profile_tab', 'Profile', '资料', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }]],
+  // The profile card's Schedules and Goals tabs: the places a mate's welcome tour shows.
+  'members.schedule-tab': ['tab', 'pages.membersPage.schedules_tab', 'Schedules', '定时任务', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }]],
+  'members.goals-tab': ['tab', 'pages.membersPage.profile_goals_tab', 'Goals', '目标', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }]],
   // The profile card's Settings row: the door to the crewmate's own settings page, behind its card's Profile tab.
   'members.settings': ['button', 'pages.membersPage.profile_settings', 'Settings', '设置', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }, { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' }]],
   // The Settings page's Permissions row: a crewmate's tools, one more push in.
