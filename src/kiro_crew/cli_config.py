@@ -330,7 +330,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 # on_corrupt="reset" handles the corrupt case inside the same
                 # lock hold: the mutate callback receives {} and writes the
                 # single key from scratch. No second critical section needed.
+                dropped: list[str] = []
+
                 def _mutate_local_overlay(_existing: dict) -> dict:
+                    # Read under the same lock as the write, so the keys named
+                    # are the ones this write really removed.
+                    dropped[:] = _overlay_keys_dropped(_dict_get(_existing, key), parsed, key)
                     _dict_set_create(_existing, key, parsed)
                     return _existing
 
@@ -352,6 +357,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     resources=f"{key}={json.dumps(parsed)}",
                 )
                 print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
+                if dropped:
+                    _print_dropped_overlay_keys(key, dropped)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -780,6 +787,44 @@ def _refuse_emitted_elsewhere_value(key: str, section: str, name: str, parsed: o
             f"❌ {key}: {parsed!r} is not one of the selectable values: {allowed}", file=sys.stderr
         )
         sys.exit(1)
+
+
+def _overlay_keys_dropped(old: object, new: object, prefix: str) -> list[str]:
+    """Dotted keys under *prefix* that writing *new* over *old* removes.
+
+    Only a section (a dict) can lose keys: a whole-object write keeps what the
+    object names, recursively, and drops the rest; a scalar written over a
+    section drops all of it. Nothing is dropped when *old* is not a section.
+    """
+    if not isinstance(old, dict):
+        return []
+    if not isinstance(new, dict):
+        return [f"{prefix}.{k}" for k in old]
+    out: list[str] = []
+    for k, v in old.items():
+        if k in new:
+            out.extend(_overlay_keys_dropped(v, new[k], f"{prefix}.{k}"))
+        else:
+            out.append(f"{prefix}.{k}")
+    return out
+
+
+def _print_dropped_overlay_keys(key: str, dropped: list[str]) -> None:
+    """Name the overlay keys a whole-object ``config set --local`` removed.
+
+    The replace is kept (it is the only CLI way to remove a pinned key); the
+    hint only makes it visible and names the form that keeps siblings.
+    """
+    print(
+        f"⚠️  {key} was replaced in config.local.json, so it no longer pins: "
+        f"{', '.join(dropped)}",
+        file=sys.stderr,
+    )
+    print(
+        f"   To change one key and keep the rest, set it by its dotted name: "
+        f"kirocrew config set --local {key}.<name> <value>",
+        file=sys.stderr,
+    )
 
 
 def _dict_set_create(d: dict, key: str, value: object) -> None:
