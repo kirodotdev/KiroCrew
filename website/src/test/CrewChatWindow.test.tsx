@@ -31,6 +31,19 @@ vi.mock('../hooks/useVoiceInput', async () => {
     },
   }
 })
+// Seam on the composer's Voice atom: counts the window's `disarmForSend` over
+// the real hook, so a send that stops ending live dictation fails a test.
+const voiceSeam = vi.hoisted(() => ({ disarmForSend: vi.fn() }))
+vi.mock('../chat-core/composer/useComposerVoice', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat-core/composer/useComposerVoice')>()
+  return {
+    ...actual,
+    useComposerVoice: (host: Parameters<typeof actual.useComposerVoice>[0]) => {
+      const cv = actual.useComposerVoice(host)
+      return { ...cv, disarmForSend: () => { voiceSeam.disarmForSend(); cv.disarmForSend() } }
+    },
+  }
+})
 const mocks = vi.hoisted(() => ({
   crewPeerGet: vi.fn(), crewPeerPost: vi.fn(), listInstances: vi.fn(), instancesCapabilities: vi.fn(),
   // The LOCAL slot routes. A crew window must never reach them: on a remote
@@ -353,6 +366,19 @@ describe('CrewChatWindow', () => {
     expect(voiceHooks.onEndpoint).toBeTypeOf('function')
     await act(async () => { voiceHooks.onEndpoint?.() })
     await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'say it out loud', slot: 'k1', steer: true }]))
+  })
+
+  // A send ends live streaming dictation before the box is cleared; without
+  // it the next partial rebuilds the sent text in the empty composer.
+  it('ends live dictation when the window sends', async () => {
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await waitFor(() => expect(box).not.toBeDisabled())
+    voiceSeam.disarmForSend.mockClear()
+    fireEvent.change(box, { target: { value: 'spoken words' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'spoken words', slot: 'k1' }]))
+    expect(voiceSeam.disarmForSend).toHaveBeenCalledTimes(1)
   })
 
   it('queues a mid-turn message on the PEER with the other-action chord', async () => {
