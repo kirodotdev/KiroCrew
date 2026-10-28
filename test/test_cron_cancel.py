@@ -1149,8 +1149,9 @@ class TestCancelledOneShotIsParked:
     @pytest.mark.parametrize(
         ("delete_after_run", "pause"),
         # (enabled, auto_paused, user_paused) on disk after the cancel. A
-        # delete_after_run one-shot is left to main's failed-run auto-pause,
-        # which races the cancel's store write, so it is not a case here.
+        # delete_after_run one-shot cancelled mid-run also meets main's
+        # failed-run auto-pause, which races the cancel's store write, so its
+        # flags are not fixed and it is not a case here.
         [(False, (False, False, True))],
     )
     async def test_cancelled_one_shot_does_not_run_again(
@@ -1192,6 +1193,47 @@ class TestCancelledOneShotIsParked:
         finally:
             await reloaded.stop()
         assert runs == [job.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete_after_run", [False, True])
+    async def test_one_shot_cancelled_before_its_run_starts_does_not_run(
+        self, tmp_path, delete_after_run: bool
+    ) -> None:
+        """A cancel before the payload starts parks the job: no failed-run auto-pause can."""
+        runs: list[str] = []
+
+        async def on_job(job: CronJob) -> None:
+            runs.append(job.id)
+
+        svc = CronService(base_dir=tmp_path, on_job=on_job)
+        await _start_without_timer(svc)
+        job = await svc.add_job_async(
+            "remind-once", "msg", at_ts=time.time() - 1, delete_after_run=delete_after_run
+        )
+        try:
+            with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
+                await svc._on_timer()
+                # No await since the tick, so the run task has not taken its first step.
+                assert svc._claims[job.id].started_monotonic is None
+                assert await svc.cancel(job.id) is True
+                await svc._on_timer()  # the next tick
+                _assert_not_redispatched(svc, job.id)
+        finally:
+            await svc.stop()
+        assert runs == []
+
+        reloaded = CronService(base_dir=tmp_path, on_job=on_job)
+        await _start_without_timer(reloaded)
+        try:
+            parked = reloaded.get_job(job.id)
+            assert parked is not None
+            assert (parked.enabled, parked.auto_paused, parked.user_paused) == (False, False, True)
+            with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
+                await reloaded._on_timer()
+            assert job.id not in reloaded._claims
+        finally:
+            await reloaded.stop()
+        assert runs == []
 
     @staticmethod
     def _busy_lock(svc: CronService, busy_calls: list[int], timeouts: list[float]) -> None:
