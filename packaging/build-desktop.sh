@@ -771,6 +771,13 @@ build_backend_windows() {
   # interactive cmd window keeps their own PYTHONPATH afterwards.
   mkdir -p "$out/bin"
   printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
+  # pip also dropped Scripts\kirocrew.exe, whose embedded shebang is THIS build
+  # machine's absolute python.exe path, so it dies with "Fatal error in
+  # launcher" once the bundle is installed anywhere else. Replace it
+  # with the same relocatable shim: Scripts\ is one level below the bundle
+  # root like bin\, so "%~dp0..\python.exe" resolves the same interpreter.
+  rm -f "$out/Scripts/kirocrew.exe" "$out/Scripts/kirocrew-script.py"
+  printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/Scripts/kirocrew.cmd"
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -P -m kiro_crew --version >/dev/null \

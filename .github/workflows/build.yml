@@ -216,6 +216,14 @@ jobs:
           New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
             -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+          # pip's Scripts\kirocrew.exe embeds this runner's absolute python.exe
+          # path, so it fails with "Fatal error in launcher" once installed
+          # anywhere else. Replace it with the same relocatable shim:
+          # Scripts\ sits one level below the bundle root, like bin\.
+          Remove-Item -Force -ErrorAction SilentlyContinue `
+            -LiteralPath (Join-Path $out "Scripts\kirocrew.exe"), (Join-Path $out "Scripts\kirocrew-script.py")
+          Set-Content -Encoding ascii -LiteralPath (Join-Path $out "Scripts\kirocrew.cmd") `
+            -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.
           & $python -s -P -m kiro_crew --version
