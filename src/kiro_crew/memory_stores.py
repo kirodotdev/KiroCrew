@@ -1506,17 +1506,24 @@ def repair_legacy_member_stores() -> list[str]:
         return []
 
 
-def provision_member_memory(config, member: str) -> str:
-    """Validate configuration before allocating or acquiring a store write lock."""
+def provision_member_memory(config, member: str, *, upgrade: bool = False) -> str:
+    """Validate configuration before allocating or acquiring a store write lock.
+
+    *upgrade* is for a LIVE row that predates durable ids being given one (the crewmate
+    migration): the id is allocated as the upgrade allocates it
+    (``_allocate_member_id(refuse_damaged=False)``), so the row keeps the
+    name-derived slug its DM binding, member directory and thread already use. A
+    create never passes it: a same-name binding there is a deleted predecessor's.
+    """
     from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
     if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
         raise UnknownMemoryStore("Memory configuration is unreadable")
     with memory_store_namespace_lock():
-        return _provision_member_memory(config, member)
+        return _provision_member_memory(config, member, upgrade=upgrade)
 
 
-def _provision_member_memory(config, member: str) -> str:
+def _provision_member_memory(config, member: str, *, upgrade: bool = False) -> str:
     from kiro_crew import platform_compat
     from kiro_crew.config.sections import MemoryStoreConfig
     from kiro_crew.vector_memory import create_member_database
@@ -1532,7 +1539,7 @@ def _provision_member_memory(config, member: str) -> str:
         raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
     if current is not None and (current.owner_member_id or current.owner_member):
         raise UnknownMemoryStore("Existing member store identity is invalid")
-    member_id = _allocate_member_id(config, member)
+    member_id = _allocate_member_id(config, member, refuse_damaged=not upgrade)
     root = memory_stores_root()
     platform_compat.make_owner_only_dir(root)
     while True:

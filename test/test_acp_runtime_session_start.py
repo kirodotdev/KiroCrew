@@ -980,6 +980,9 @@ async def test_session_start_budget_follows_config(monkeypatch):
 
     rt, _, _ = _make_runtime()
     rt._expect_mcp_reports = False
+    # The fake config carries no bindings, which the over-ceiling check reads as a
+    # damaged load and refuses; this test is about the budget alone.
+    rt._refuse_over_ceiling_start = AsyncMock()  # type: ignore[method-assign]
     # Lazy: construction must not have resolved (or read) config.
     assert rt._session_start_timeout is None
     seen: dict[str, object] = {}
@@ -1053,3 +1056,76 @@ async def test_send_and_await_timeout_error_names_the_budget():
     assert "timed out" in msg
     assert "0.01s" in msg
     assert "probe/method" in msg
+
+
+@pytest.mark.asyncio
+async def test_activating_a_disk_spec_over_the_ceiling_ends_the_session_before_set_mode():
+    """A shared runtime spawned as one agent and switched to another reads that
+    agent's spec from disk at ``set_mode``. A crew-bound spec Crew does not own whose
+    grants the ceiling denies is refused there, for the agent being activated."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    asked: list[tuple[str, str]] = []
+
+    def _over(agent: str, backend: str) -> None:
+        asked.append((agent, backend))
+        raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
+
+    with (
+        patch.object(agent_mod, "require_fresh_derived_spec", return_value=None),
+        patch.object(agent_mod, "require_shared_template_within_ceiling", side_effect=_over),
+    ):
+        with pytest.raises(AcpRuntimeError, match="over the ceiling"):
+            await rt._activate_mode_bracketed(
+                "s1", "pkg-reviewer", budget=30.0, payload_snapshot=None, wire_registered=False
+            )
+    assert asked == [("pkg-reviewer", rt._acp_backend)]
+    rt.terminate_session.assert_awaited_once_with("s1")
+    rt._send_and_await.assert_not_called()
+
+
+@pytest.mark.parametrize("start", ["create", "load"])
+@pytest.mark.asyncio
+async def test_a_warm_session_that_inherits_the_spawn_agent_is_checked_before_the_request(start):
+    """A session that names no agent runs the spawn agent, and its spec may have
+    gained a grant since the spawn checked it. The over-ceiling refusal runs for
+    that effective agent before ``session/new`` or ``session/load`` goes out."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    rt, _, _ = _make_runtime()
+    rt._agent = "pkg-reviewer"
+    rt._can_load_session = True
+    rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
+    asked: list[tuple[str, str]] = []
+
+    def _over(agent: str, backend: str) -> None:
+        asked.append((agent, backend))
+        raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
+
+    with patch.object(agent_mod, "require_shared_template_within_ceiling", side_effect=_over):
+        with pytest.raises(AcpRuntimeError, match="over the ceiling"):
+            if start == "create":
+                await rt.create_session(cwd="/w")
+            else:
+                await rt.load_session("/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", cwd="/w")
+    assert asked == [("pkg-reviewer", rt._acp_backend)]
+    rt._send_and_await.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_kas_runtime_is_not_refused_at_session_start():
+    """KAS filters the spec's grants in its own projection, so its start passes."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    # A config read that fails would refuse the start, so reaching it fails the test.
+    with patch.object(KiroCrewConfig, "load", side_effect=OSError("unreadable")):
+        await rt._refuse_over_ceiling_start("pkg-reviewer")

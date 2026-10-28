@@ -182,6 +182,23 @@ ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 # host added later whose servers come from the user level alone joins here.
 ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY = frozenset({ACP_BACKEND_KAS})
 
+# Backends that never take an agent's grants (``allowedTools``, a server's
+# ``autoApprove``) from the spec FILE: Crew projects the spec onto the wire at
+# session start and filters both lists against the live governance ceiling there
+# (``acp.kas_agents._ceiling_permitted``, ``kas_permissions.merge_user_permissions``).
+# kiro-cli is the opposite: it reads the file for ``--agent`` and honours both lists
+# before Crew's PreToolUse gate, so the only way Crew can hold the ceiling on it is to
+# rewrite the file.
+#
+# Members are the hosts that take ``allowedTools`` and ``autoApprove`` from the
+# ``~/.kiro/agents`` spec file itself. Crew never rewrites a crew-bound spec it does
+# not own, so a start on a member is refused while that file's grants exceed the
+# ceiling (``fork_refresh.require_shared_template_within_ceiling``). Every other host
+# gets Crew's projection of the spec, which filters both lists (KAS) or forwards
+# neither (the adapted harnesses), so its starts are never refused for them. A
+# harness that reads the file's grants itself must join.
+ACP_BACKENDS_SPEC_FILE_GRANTS = frozenset({ACP_BACKEND_KIRO})
+
 
 def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
     """The overlay-lookup scope keywords for *backend*'s session.

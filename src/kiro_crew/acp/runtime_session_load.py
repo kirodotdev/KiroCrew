@@ -10,8 +10,9 @@ Instance fields written: ``_session_cwds``, ``_session_inits_in_flight``, ``_ses
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
-``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
+``_remote_session_servers``, ``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -98,6 +99,9 @@ async def load_session(
     if not self._can_load_session:
         raise AcpRuntimeError("Backend does not advertise session/load support")
     agent = await self._source_agent(agent)
+    # The effective agent, checked before anything is acquired, as create_session()
+    # does: a resume that names no agent inherits the spawn agent.
+    await self._refuse_over_ceiling_start(agent or self._agent)
 
     # Re-declare the pooled broker stubs so a resumed session keeps talking
     # to the broker — same injection as create_session() and the AcpClient

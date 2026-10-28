@@ -16,8 +16,9 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
-``_pool_lookup``, ``_process``, ``_remote_session_servers``, ``_remote_workspace_agents``,
-``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
+``_remote_workspace_agents``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -169,6 +170,10 @@ async def create_session(
         self._stderr_lines.clear()
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
+    # The effective agent, checked before anything is acquired: a session that names
+    # no agent inherits the spawn agent, whose spec the spawn check saw only as it
+    # stood then.
+    await self._refuse_over_ceiling_start(agent or self._agent)
 
     # Inject the shared gateway's broker stubs unless the caller supplied an
     # explicit list. A session-injected server outranks the same-named entry

@@ -3909,9 +3909,23 @@ check".
 
 **Existing crewmates move at startup** (`kiro_crew.mate_config_migration`, off
 the loop before the slot restores, never gating readiness). Every crewmate whose
-`kiro_agent` does not name its own file is a candidate. A binding with an empty
-`member_id` is not a crewmate (an old `assistant`, the built-in
-`kirocrew-conductor`): skipped silently. Its roster rows follow the rule for
+`kiro_agent` does not name its own file is a candidate
+(the 2026-10-28 owner decision in docs/decisions, every crewmate on a user-level agent moves to the conductor
+supersedes the 2026-10-27 entry). A binding with an empty `member_id` is not a crewmate
+(an old `assistant`, the built-in `kirocrew-conductor`): skipped silently, except a used
+row a person or a package sync wrote on a user-level spec Kiro Crew does not own. Such a
+row (`source` `kirocrew`, `package` or `aim`; not `default`, the default agent, a legacy
+built-in or an app's row) whose DM thread holds a turn (the evidence the synced-crewmate
+prune keeps a row on) is first given a `member_id` and its own V2 store
+(`_move_with_identity`, `provision_member_memory(upgrade=True)`) once its crewmate file is
+written and proven, published together with its repoint in one compare-and-set (a failure
+before that publish retires the allocation), the id allocated as the upgrade allocates it
+so it keeps the name-derived slug its DM binding and member directory already use; a row
+that stays keeps the memory it had. A conversation from before the move keeps the template
+and store its own record names, so the notice says a new chat starts on its conductor, and
+the agent the crewmate ran on stays one a kiro-cli start is checked on
+(`moved_from_agents`, read from the ledger's `threads.<name>.from`). A row never chatted
+with is left for the prune. Its roster rows follow the rule for
 any row the person did not create: `GET /api/members` ships it with
 `dashboard_created` false and the page lists it once `has_dm_message` holds,
 and `GET /api/agents` (the pickers) lists it only when its DM thread holds a
@@ -3926,9 +3940,12 @@ prompt, servers the base lacks with their approvals and selectors, skills, and
 its restrictions. Before any write, `plan_move` merges the planned file as a
 worker session would (`differences`; `dry_run` is the same as one sentence)
 and sorts what differs (`docs/decisions/2026-10-27-every-used-crewmate-moves-to-the-conductor.md`).
-A **loosening** keeps the crewmate where it is: a grant the worker would gain,
-a switched-off server it would start, a `hooks` entry it would not run, or a
-`permissions` / `toolsSettings` restriction it would not keep. Two are cured
+A **loosening** keeps the crewmate where it is: a grant the worker would gain
+or a switched-off server it would start. A `hooks` entry it would not run or a
+`permissions` / `toolsSettings` restriction it would not keep does not: the crewmate
+moves as it is, no tool is withheld for it, and its one notice names each restriction
+that no longer applies (`dropped_restrictions`, `restrictions_notice`); the governance
+ceiling still governs the merged worker spec. The two loosenings are cured
 first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
@@ -3947,16 +3964,22 @@ read raw, and the default template's file never loosens them
 (`_fallback_keeping_limits`): a server it switched off is written
 `{"disabled": true}`, a tool it excludes or disables goes into
 `excludedTools`, and a grant it never had is taken out. A hook or a
-`permissions` / `toolsSettings` restriction the file cannot carry leaves it
-where it is. Governance applies as before: the source is read
+`permissions` / `toolsSettings` restriction the file cannot carry moves with it
+and is named in its notice. Governance applies as before: the source is read
 governed, and the worker session still passes POLICY ∩ PROFILE. A crewmate
-whose id is also a user-level agent's name, or a spec Kiro Crew generates, is
-skipped: its file would never be read, and giving it another file name breaks
-every reader that knows a crewmate's file by its binding key
-(`mate_capabilities.binding_is_mate`, `member_mate_tools`,
-`mate_worker._claimed_file`, the revocations keyed by file id). A binding with
-no `member_id` stays out of the migration: a `member_id` on a store that is not
-its own V2 store fails every turn (`memory_stores.require_member_memory_store`).
+whose id is also a user-level agent's name is moved only when that agent is its
+own private copy (a fork whose lineage is private to it and that its binding runs,
+`_crew_owned_shadow`): the copy is moved to `~/.kiro/mates/retired/` and its
+lineage dropped just before the repoint (`_retire_shadow`), so pointing the binding
+back and moving the file back is a rollback. Any other user-level agent under its id
+is not Kiro Crew's: the crewmate stays and is told once, and that spec is never
+written. A crewmate named after a spec Kiro Crew generates is skipped. Its file would
+never be read, and giving it another file name breaks every reader that knows a
+crewmate's file by its binding key (`mate_capabilities.binding_is_mate`,
+`member_mate_tools`, `mate_worker._claimed_file`, the revocations keyed by file id). Any other binding
+with no `member_id` stays out of the migration: a `member_id` on a store that is not
+its own V2 store fails every turn (`memory_stores.require_member_memory_store`), which
+is why a minted row gets its store with its id.
 A crewmate left where it was gets one WARNING (`MigrationReport.dry_run_failed`)
 and is tried again next boot. A written file is read back and checked against
 the same loosening rule, and the kit record names its source. The ledger keeps

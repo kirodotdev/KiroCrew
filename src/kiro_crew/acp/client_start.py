@@ -90,9 +90,11 @@ from kiro_crew.agent import (
     DerivedSpecSnapshot,
     DerivedSpecStale,
     ForkGovernanceUnresolved,
+    SharedTemplateOverCeiling,
     ensure_agent_materialized,
     require_fork_governance,
     require_fresh_derived_spec,
+    require_shared_template_within_ceiling,
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -285,6 +287,15 @@ async def _spawn(self: AcpClient) -> None:
         try:
             await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
         except ForkGovernanceUnresolved as exc:
+            raise AcpError(str(exc)) from exc
+        # A harness that may read the spec file's own grants is refused on a
+        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
+        # rewrites such a file.
+        try:
+            await asyncio.to_thread(
+                require_shared_template_within_ceiling, self._agent, self.backend
+            )
+        except SharedTemplateOverCeiling as exc:
             raise AcpError(str(exc)) from exc
         # The same cwd-first resolution makes a checkout that declares a MANAGED
         # agent name the spec that runs, whatever Kiro Crew installed under it.
