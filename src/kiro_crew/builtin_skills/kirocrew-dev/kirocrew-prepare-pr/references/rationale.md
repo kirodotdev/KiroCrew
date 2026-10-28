@@ -531,11 +531,14 @@ gate accepts them as visual evidence. Dragging a file into the description in th
 UI produces an identical URL, so a human reviewer and the lanes see one convention.
 
 **The one scoped exception: a contributor with no write access on the repository.**
-`gh --attach` uploads through an endpoint that answers read permission with a 404
-(cli/cli#14302), so a fork contributor has no CLI path to an attachment at all; the
-web-UI drag is their only one. For them, and only them, committing the media under
+`gh --attach` on the *upstream* PR uploads through an endpoint that answers read
+permission with a 404 (cli/cli#14302), so a fork contributor cannot attach there. They
+still have off-PR upload paths that keep binaries out of the diff: `--attach` on an
+issue in their OWN fork (where they are admin) mints cross-repo `user-attachments`
+URLs, and the web-UI drag mints the same. Committing the media under
 `temp-screenshots/<topic>/` (`git add -f`, past the ignore rule) and referencing the
-repository-relative path from the body is admissible evidence:
+repository-relative path from the body is admissible evidence too, but only as the last
+resort when neither upload path is available:
 `.github/scripts/pr-committed-evidence.sh` reads the blobs out of the object store for
 the fork lanes, and the screenshot-evidence gate accepts a still-linked committed
 path. The exception does not weaken the rule for anyone who CAN attach: every reason
