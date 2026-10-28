@@ -8,9 +8,19 @@ import ErrorNotice, {
   type ErrorNoticeMenuItemComponent,
 } from './ErrorNotice'
 import { addKiroCliTab, MAX_TERMINALS, useBottomTerminal } from '../hooks/useBottomTerminal'
+import { bringBack as bringBackTerminalPopout, isPopoutOpen as isTerminalPopoutOpen } from '../utils/terminalPopout'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { KIRO_CLI_HIDDEN_CODES, kiroCliBlockedLabel } from '../lib/kiroCli'
 import { i18nT } from '../i18n/t'
+
+/** Open the tab in THIS window. The one-shot open intent is armed in this
+ *  window's terminal registry, so a popped-out panel comes back first (as its
+ *  Return button does); in the popout the tab's first dial would not carry it. */
+function openKiroCliHere(slotKey: string): void {
+  // `addKiroCliTab` opens this window's panel (`open` is per window).
+  if (isTerminalPopoutOpen()) bringBackTerminalPopout()
+  addKiroCliTab(slotKey)
+}
 
 interface OpenInKiroCliItemProps {
   /** The chat whose own kiro-cli conversation the terminal opens. */
@@ -92,7 +102,7 @@ export default function OpenInKiroCliItem({ slotKey, running, Item }: OpenInKiro
     <Item
       disabled={Boolean(blocked) && !hasOwnTab}
       title={i18nT('components.sessionActionsMenu.open_in_kiro_cli_tooltip')}
-      onSelect={() => { addKiroCliTab(slotKey) }}
+      onSelect={() => { openKiroCliHere(slotKey) }}
       data-testid="open-in-kiro-cli"
     >
       <SquareTerminal size={13} className="self-start mt-0.5 shrink-0 text-muted" />

@@ -660,6 +660,46 @@ describe('CliPanel disconnected banner', () => {
     expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
   })
 
+  it('says Crew could not write the agent copy, not a bare "unavailable"', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_launch_spec'
+    mount()
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    const reason = i18nT('components.sessionActionsMenu.kiro_cli_blocked_launch_spec')
+    expect(reason).toContain('~/.kiro/agents')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.kiro_cli_refused_message', { reason }))
+    expect(banner).not.toHaveTextContent(
+      i18nT('components.sessionActionsMenu.kiro_cli_blocked_unavailable'),
+    )
+  })
+
+  it('says the chat is still starting, not "turn running", when no turn runs', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_starting'
+    mount()
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    const reason = i18nT('components.sessionActionsMenu.kiro_cli_blocked_starting')
+    expect(reason).not.toBe('components.sessionActionsMenu.kiro_cli_blocked_starting')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.kiro_cli_refused_message', { reason }))
+    expect(banner).not.toHaveTextContent(
+      i18nT('components.sessionActionsMenu.reload_blocked_running'),
+    )
+    expect(banner).not.toHaveTextContent(
+      i18nT('components.sessionActionsMenu.kiro_cli_blocked_unavailable'),
+    )
+  })
+
+  it('says Crew could not update the session file, not a bare "unavailable"', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_session_file'
+    mount()
+    const reason = i18nT('components.sessionActionsMenu.kiro_cli_blocked_session_file')
+    expect(reason).toContain('~/.kiro/sessions/cli')
+    expect(screen.getByTestId('cli-panel-disconnected')).toHaveTextContent(
+      i18nT('components.cliPanel.kiro_cli_refused_message', { reason }),
+    )
+  })
+
   it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {
     registry.connStatus.value = 'disconnected'
     registry.invalidCwd.value = true

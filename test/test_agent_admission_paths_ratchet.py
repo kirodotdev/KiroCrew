@@ -115,6 +115,16 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
         "spawned with no cwd argument, so the child resolves --agent against the "
         "gateway process's own working directory rather than a session checkout"
     ),
+    ("dashboard/handlers/kiro_cli_launch.py", "prepare_kiro_cli_launch"): (
+        "UNGATED: the same owner TUI as KiroCliPlan.argv, naming the per-open launch "
+        "copy of the chat's own agent with its tool pre-approvals removed"
+    ),
+    ("dashboard/handlers/kiro_cli_launch.py", "KiroCliPlan.argv"): (
+        "UNGATED: the owner's interactive kiro-cli TUI in the terminal panel, not a "
+        "Crew agent spawn; the agent is the chat's own bound agent, passed only when "
+        "its user-level spec exists, and the open refuses any project .kiro/agents "
+        "entry, so no checkout can shadow it"
+    ),
     ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"): (
         "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub"
     ),

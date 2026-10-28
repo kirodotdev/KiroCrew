@@ -949,7 +949,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         env = _remote_pty_env({"TERM": "xterm-256color", "KIROCREW_TERMINAL": "1"})
                     elif kiro_cli_launch is not None:
                         # kiro-cli itself, exec'd with no shell between: the argv is
-                        # the gateway's own (see terminal_kiro_cli), so no shell ever
+                        # the gateway's own (see kiro_cli_launch), so no shell ever
                         # parses it, and the bash ready-marker does not apply.
                         argv = list(kiro_cli_launch.argv)
                     elif _is_bash_shell(shell):

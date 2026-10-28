@@ -547,6 +547,28 @@ describe('terminalRegistry', () => {
       expect(redial.url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?kiro_cli_slot=chat-1`)
     })
 
+    it('keeps asking to open when the first dial drops before the gateway answers it', () => {
+      // Terminals full (HTTP 429) or a dropped connection: kiro-cli never ran,
+      // so the redial must still ask, not reattach and read as "ended".
+      vi.useFakeTimers()
+      const id = session('kiro-cli-early-drop')
+      armKiroCliOpen(id)
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), undefined, undefined, undefined, 'chat-1')
+      const first = WS_INSTANCES[WS_INSTANCES.length - 1]
+      expect(first.url).toContain('kiro_cli_open=1')
+      act(() => { first.simulateClose() })
+      act(() => { vi.advanceTimersByTime(60_000) })
+      const redial = WS_INSTANCES[WS_INSTANCES.length - 1]
+      expect(redial).not.toBe(first)
+      expect(redial.url).toContain('kiro_cli_open=1')
+      // Once the gateway started it, a later drop only reattaches.
+      act(() => { redial.simulateOpen(); redial.simulateJson({ type: 'ready' }); redial.simulateClose() })
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(WS_INSTANCES[WS_INSTANCES.length - 1].url).toBe(
+        `ws://localhost:6776/api/ws/terminal/${id}?kiro_cli_slot=chat-1`,
+      )
+    })
+
     it('is idempotent — a second mount reuses the first socket', () => {
       const id = session('idempotent')
       const first = new FakeTerm()

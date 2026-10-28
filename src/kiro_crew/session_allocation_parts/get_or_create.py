@@ -40,6 +40,7 @@ from kiro_crew.aws_project_profiles import (
     bound_profile_env,
     configured_project_profiles,
 )
+from kiro_crew.kiro_cli_handoff import refuse_if_held
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
@@ -332,6 +333,13 @@ async def get_or_create(
                     "progress); refusing to start or resume a turn"
                 )
             reserved_key = self._owner._fold_key(key)
+            # A session open in kiro-cli in the terminal admits no claim or cold
+            # start. Read under this lock, beside the reservation it would take:
+            # a handover refuses while a reservation exists, so one of the two
+            # always sees the other (``kiro_crew.kiro_cli_handoff``).
+            refuse_if_held(key)
+            if reserved_key != key:
+                refuse_if_held(reserved_key)
             # The per-key sibling of the closing check: a key whose run is
             # being ended admits no claim and no cold start until its record
             # is written. The caller is HELD, not refused -- it takes no

@@ -8642,7 +8642,11 @@
       "kiro_cli_blocked_unavailable": "nicht verfügbar",
       "kiro_cli_blocked_terminals_full": "Terminal-Tabs voll",
       "kiro_cli_blocked_project_agent": "Projekt hat eine eigene kiro-cli-Konfiguration",
-      "kiro_cli_blocked_ended": "kiro-cli wurde beendet"
+      "kiro_cli_blocked_ended": "kiro-cli wurde beendet",
+      "kiro_cli_blocked_launch_spec": "Crew konnte die temporäre Agent-Kopie nicht in ~/.kiro/agents schreiben",
+      "kiro_cli_blocked_record": "Crew konnte den Vermerk zu diesem Öffnen nicht im Datenordner speichern",
+      "kiro_cli_blocked_session_file": "Crew konnte die Sitzungsdatei dieses Chats in ~/.kiro/sessions/cli nicht aktualisieren",
+      "kiro_cli_blocked_starting": "Agent startet noch"
     },
     "sessionTurnLimit": {
       "all_sessions": "Alle Sitzungen: Einstellungen öffnen",

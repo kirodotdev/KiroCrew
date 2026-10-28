@@ -8505,7 +8505,11 @@
       "kiro_cli_blocked_unavailable": "사용할 수 없음",
       "kiro_cli_blocked_terminals_full": "터미널 탭 가득 참",
       "kiro_cli_blocked_project_agent": "프로젝트에 자체 kiro-cli 설정이 있음",
-      "kiro_cli_blocked_ended": "kiro-cli가 종료됨"
+      "kiro_cli_blocked_ended": "kiro-cli가 종료됨",
+      "kiro_cli_blocked_launch_spec": "Crew가 ~/.kiro/agents에 에이전트 임시 사본을 쓰지 못함",
+      "kiro_cli_blocked_record": "Crew가 데이터 폴더에 이 열기 기록을 저장하지 못함",
+      "kiro_cli_blocked_session_file": "Crew가 ~/.kiro/sessions/cli에 있는 이 채팅의 세션 파일을 업데이트하지 못함",
+      "kiro_cli_blocked_starting": "에이전트 시작 중"
     },
     "sessionTurnLimit": {
       "all_sessions": "모든 세션: 설정 열기",

@@ -8505,7 +8505,11 @@
       "kiro_cli_blocked_unavailable": "利用できません",
       "kiro_cli_blocked_terminals_full": "ターミナルタブが上限です",
       "kiro_cli_blocked_project_agent": "プロジェクトに独自の kiro-cli 設定があります",
-      "kiro_cli_blocked_ended": "kiro-cli は終了しました"
+      "kiro_cli_blocked_ended": "kiro-cli は終了しました",
+      "kiro_cli_blocked_launch_spec": "Crew が ~/.kiro/agents にエージェントの一時コピーを書き込めませんでした",
+      "kiro_cli_blocked_record": "Crew がデータフォルダーにこのオープンの記録を保存できませんでした",
+      "kiro_cli_blocked_session_file": "Crew が ~/.kiro/sessions/cli にあるこのチャットのセッションファイルを更新できませんでした",
+      "kiro_cli_blocked_starting": "エージェントを起動中"
     },
     "sessionTurnLimit": {
       "all_sessions": "すべてのセッション：設定を開く",

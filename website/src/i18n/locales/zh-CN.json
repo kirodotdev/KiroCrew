@@ -8505,7 +8505,11 @@
       "kiro_cli_blocked_unavailable": "不可用",
       "kiro_cli_blocked_terminals_full": "终端标签页已满",
       "kiro_cli_blocked_project_agent": "项目有自己的 kiro-cli 配置",
-      "kiro_cli_blocked_ended": "kiro-cli 已退出"
+      "kiro_cli_blocked_ended": "kiro-cli 已退出",
+      "kiro_cli_blocked_launch_spec": "Crew 无法将智能体的临时副本写入 ~/.kiro/agents",
+      "kiro_cli_blocked_record": "Crew 无法在其数据文件夹中保存此次打开的记录",
+      "kiro_cli_blocked_session_file": "Crew 无法更新 ~/.kiro/sessions/cli 中此聊天的会话文件",
+      "kiro_cli_blocked_starting": "智能体仍在启动"
     },
     "sessionTurnLimit": {
       "all_sessions": "所有会话：打开设置",

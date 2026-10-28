@@ -27,6 +27,12 @@ const BLOCKED_KEYS = {
   kiro_cli_already_open: 'components.sessionActionsMenu.kiro_cli_blocked_already_open',
   kiro_cli_project_agent: 'components.sessionActionsMenu.kiro_cli_blocked_project_agent',
   kiro_cli_ended: 'components.sessionActionsMenu.kiro_cli_blocked_ended',
+  kiro_cli_launch_spec: 'components.sessionActionsMenu.kiro_cli_blocked_launch_spec',
+  kiro_cli_record: 'components.sessionActionsMenu.kiro_cli_blocked_record',
+  kiro_cli_session_file: 'components.sessionActionsMenu.kiro_cli_blocked_session_file',
+  // The chat's own agent process was still starting with no turn running: not
+  // "turn running", which would send the person looking for a turn.
+  kiro_cli_starting: 'components.sessionActionsMenu.kiro_cli_blocked_starting',
 } as const
 
 /** The short reason for refusal `code`; an unknown code reads as unavailable. */

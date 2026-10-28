@@ -8779,7 +8779,11 @@
       "kiro_cli_blocked_unavailable": "non disponibile",
       "kiro_cli_blocked_terminals_full": "schede del terminale piene",
       "kiro_cli_blocked_project_agent": "il progetto ha una propria configurazione kiro-cli",
-      "kiro_cli_blocked_ended": "kiro-cli è terminato"
+      "kiro_cli_blocked_ended": "kiro-cli è terminato",
+      "kiro_cli_blocked_launch_spec": "Crew non è riuscito a scrivere una copia temporanea dell’agente in ~/.kiro/agents",
+      "kiro_cli_blocked_record": "Crew non è riuscito a salvare la nota di questa apertura nella sua cartella dati",
+      "kiro_cli_blocked_session_file": "Crew non è riuscito ad aggiornare il file di sessione di questa chat in ~/.kiro/sessions/cli",
+      "kiro_cli_blocked_starting": "l’agente si sta ancora avviando"
     },
     "sessionTurnLimit": {
       "all_sessions": "Tutte le sessioni: apri le Impostazioni",

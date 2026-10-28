@@ -8642,7 +8642,11 @@
       "kiro_cli_blocked_unavailable": "উপলব্ধ নয়",
       "kiro_cli_blocked_terminals_full": "টার্মিনাল ট্যাব পূর্ণ",
       "kiro_cli_blocked_project_agent": "প্রজেক্টের নিজস্ব kiro-cli কনফিগ আছে",
-      "kiro_cli_blocked_ended": "kiro-cli বন্ধ হয়ে গেছে"
+      "kiro_cli_blocked_ended": "kiro-cli বন্ধ হয়ে গেছে",
+      "kiro_cli_blocked_launch_spec": "Crew ~/.kiro/agents-এ এজেন্টের অস্থায়ী কপি লিখতে পারেনি",
+      "kiro_cli_blocked_record": "Crew তার ডেটা ফোল্ডারে খোলার রেকর্ড সংরক্ষণ করতে পারেনি",
+      "kiro_cli_blocked_session_file": "Crew ~/.kiro/sessions/cli-এ এই চ্যাটের সেশন ফাইল আপডেট করতে পারেনি",
+      "kiro_cli_blocked_starting": "এজেন্ট এখনও চালু হচ্ছে"
     },
     "sessionTurnLimit": {
       "all_sessions": "সব সেশন: সেটিংস খোলো",

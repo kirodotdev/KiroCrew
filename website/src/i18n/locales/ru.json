@@ -8916,7 +8916,11 @@
       "kiro_cli_blocked_unavailable": "недоступно",
       "kiro_cli_blocked_terminals_full": "вкладки терминала заполнены",
       "kiro_cli_blocked_project_agent": "у проекта своя конфигурация kiro-cli",
-      "kiro_cli_blocked_ended": "kiro-cli завершился"
+      "kiro_cli_blocked_ended": "kiro-cli завершился",
+      "kiro_cli_blocked_launch_spec": "Crew не удалось записать временную копию агента в ~/.kiro/agents",
+      "kiro_cli_blocked_record": "Crew не удалось сохранить запись об открытии в папке данных",
+      "kiro_cli_blocked_session_file": "Crew не удалось обновить файл сеанса этого чата в ~/.kiro/sessions/cli",
+      "kiro_cli_blocked_starting": "агент ещё запускается"
     },
     "sessionTurnLimit": {
       "all_sessions": "Все сессии: открыть настройки",

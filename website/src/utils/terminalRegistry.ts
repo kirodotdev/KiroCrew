@@ -545,6 +545,10 @@ function connect(sessionId: string, c: Conn) {
     : c.remoteSlot
       ? { remote_slot: c.remoteSlot }
       : { ...(c.cwd ? { cwd: c.cwd } : {}), ...(c.chatSlot ? { slot: c.chatSlot } : {}) }
+  // The open intent stays until the gateway answers it: `ready` (kiro-cli
+  // started; a later redial only reattaches) or a `kiro_cli_*` refusal. A dial
+  // that never got that far (terminals full, a dropped connection) asks again
+  // on its redial; a PTY the first dial did start is reattached by the server.
   // `+` is how URLSearchParams spells a space; a literal `+` is already `%2B`.
   const encoded = new URLSearchParams(query).toString().replace(/\+/g, '%20')
   const qs = encoded ? `?${encoded}` : ''
