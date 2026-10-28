@@ -2,7 +2,7 @@
  *  ordered state resolver, the slot-scoped live state it subscribes to, its
  *  menus and its drag and keyboard gestures. The shell builds the row's `view`
  *  (./rows) and its one `actions` object; the row's memo compares both. */
-import { useRef, useEffect, memo, useMemo, useContext } from 'react'
+import { useRef, useEffect, memo, useMemo, useContext, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -47,6 +47,10 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { CrewEyebrow, CrewGhostBadge, CrewWorkerStack } from '../../components/crew/CrewModeMarks'
+import { summarizeCrewWorkers } from '../../lib/crewWorkers'
+import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
+import ErrorNotice from '../../components/ErrorNotice'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -246,6 +250,37 @@ interface SessionRowProps {
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 
+/** A Crew Mode root's live workers on its row: a ghost per worker coloured by
+ *  state, then "N needs you" or "done x/y". It IS the row's status line, not a
+ *  line of its own: the row's running and approval states outrank it (the caller
+ *  passes them first), and with no workers yet it shows *fallback*, the last
+ *  message line, so a crew card is as tall as any other row. */
+function CrewRootSummaryLine({ root, fallback }: { root: string; fallback: ReactNode }) {
+  // The server's groups (the worker list API), so the row, the panel and the
+  // breadcrumb agree; the fallback until the list has answered.
+  // A failed background poll keeps the last summary's ghosts and says the read
+  // failed in the row's own status line (the panel's wording, with the agent
+  // hand-off); the next poll clears it. With no data at all the row says so too.
+  const { lastWorkers, failed } = useCrewWorkerSummary(root)
+  // Only tool approvals reach the person; a worker's question is its conductor's.
+  const { groups, approval, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
+  if (total === 0 && !failed) return <>{fallback}</>
+  return (
+    <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
+      {total > 0 && <CrewWorkerStack groups={groups} />}
+      {failed ? (
+        <ErrorNotice variant="inline" askAgent className="ml-auto min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
+      ) : (
+        <span className={`ml-auto text-[12px] truncate ${approval > 0 ? 'crew-tone-warn font-medium' : 'crew-tone-muted'}`}>
+          {approval > 0
+            ? i18nT('components.crewMode.summary_approval', { n: approval })
+            : i18nT('components.crewMode.summary_done', { done, total })}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
     slot: s, showDivider, scope, navScope, holdContainer, isActive, isOut, isPinned, isUnread, isRunning,
@@ -253,6 +288,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
+  // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
+  // local row: a peer row's stamps describe another gateway's tree.
+  const crewRoot = !!s.crew_mode_root && !s.peer_id
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
@@ -761,7 +800,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 working row's "Loop N/M" verbatim made the two rows read as
                 the same state (UX span 03f52eaca7f7); the tooltip above
                 carries the full sentence. */}
-            <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted"> · {goalLoop
+            <span className="truncate"><span className="font-medium crew-tone-warn">{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted"> · {goalLoop
               ? (goalLoop.maxCycles > 0
                 ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
                 : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
@@ -991,6 +1030,18 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         role="img" aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
         title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
       : null
+    // The row's tail line when no state claims it: the last message, led by the
+    // unread dot. A crew card shows it too until its workers summary has an answer.
+    const lastMessageLine = (s.last_message || unreadDot) ? (
+      <div className={ROW_STATUS_LINE_MUTED_CLS}>
+        {unreadDot}
+        {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
+            a flex item's `min-width: auto` floor keeps it at content width
+            instead of letting `truncate` clip it (i18n render gate,
+            layout/ellipsis-with-flex-parent). */}
+        {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
+      </div>
+    ) : null
     // Custom hex (color_hex) wins over the palette index. It is deliberately
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
@@ -1149,6 +1200,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
           className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          data-crew-root={crewRoot ? 'true' : undefined}
           style={boostStyle as React.CSSProperties}
           draggable={
             // Both drag paths are off for a peer-owned row and for a row that
@@ -1380,10 +1432,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               <DisclosureChevron open={conductor.expanded} size={12} />
             </button>
           ) : (
-            // Keeps a childless row's card aligned with its siblings' rather than
+            // Keeps a childless row aligned with its siblings' rather than
             // shifted left by the missing chevron.
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
+          {crewRoot && <span className="mt-2 mr-2"><CrewGhostBadge size={26} /></span>}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
@@ -1393,7 +1446,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
-              {memberTitle === null && (
+              {/* A Crew Mode root names the mode, not the conductor behind it: the
+                *  conductor is Crew Mode's to choose and may be swapped. */}
+              {crewRoot && <CrewEyebrow />}
+              {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* WHY this card is sitting above its folder's other rows, in a
@@ -1642,17 +1698,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 The tail is `last_message`, which is also where the `unread` dot
                 lands — the one marker with no state branch of its own. A row that
                 is unread with nothing said yet still renders the line, because the
-                dot IS the content then. */}
-            {rowState ?? ((s.last_message || unreadDot) ? (
-              <div className={ROW_STATUS_LINE_MUTED_CLS}>
-                {unreadDot}
-                {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
-                    a flex item's `min-width: auto` floor keeps it at content width
-                    instead of letting `truncate` clip it (i18n render gate,
-                    layout/ellipsis-with-flex-parent). */}
-                {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
-              </div>
-            ) : null)}
+                dot IS the content then. A crew card's workers summary takes the
+                tail's place: still ONE line, below the row's own state. */}
+            {rowState ?? (crewRoot ? <CrewRootSummaryLine root={s.key} fallback={lastMessageLine} /> : lastMessageLine)}
             {s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}

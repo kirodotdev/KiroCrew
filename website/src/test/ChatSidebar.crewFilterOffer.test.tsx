@@ -128,42 +128,43 @@ const WITH_CREW_MEMBER = [
 ]
 
 describe('a Crew Mode root\'s crew members', () => {
-  it('reach the list and the Broadcast dialog through the one person rule, inert on this part', async () => {
-    // Both read `crewModeView` at the sidebar's door. The rule that leaves a
-    // root's crew members out lands with the Crew panel that lists them; until
-    // then it passes every row, so the crew member is still a row and a target.
+  it('stay out of the list and out of the Broadcast dialog', async () => {
     renderSidebar(WITH_CREW_MEMBER)
     await waitFor(() => expect(screen.queryByText('the crew chat')).not.toBeNull())
-    expect(screen.queryByText('the crew member')).not.toBeNull()
+    // The root is listed, the row the root dispatched is not.
+    expect(screen.queryByText('the crew member')).toBeNull()
     expect(screen.queryByText('plain a')).not.toBeNull()
+    // The Broadcast dialog reads the same rows: the crew member is no target.
     // The list menu's trigger (the rows have one of their own each).
     const listMenu = screen.getAllByRole('button', { name: 'More options' }).find(el => el.title === 'More options')
     fireEvent.keyDown(listMenu!, { key: 'Enter' })
     fireEvent.click(await screen.findByTestId('broadcast-menu-item'))
     const panel = await screen.findByTestId('broadcast-panel')
     await waitFor(() => expect(panel.textContent).toContain('the crew chat'))
-    expect(panel.textContent).toContain('the crew member')
+    expect(panel.textContent).not.toContain('the crew member')
   })
 })
 
 describe('the Crew Mode filter offer', () => {
-  it('is absent while no chat runs on the conductor', async () => {
+  it('is absent, hint included, while no chat runs on the conductor', async () => {
     renderSidebar(PLAIN_SLOTS)
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
     await openFilterMenu()
     // The menu is the usual one: its other rows are there.
     expect(screen.getAllByRole('menuitem').some(el => el.textContent?.startsWith('In progress'))).toBe(true)
     expect(crewRow()).toBeUndefined()
+    expect(screen.queryByTestId('filter-crew-hint')).toBeNull()
     expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
   })
 
-  it('appears once a Crew Mode chat is in the list', async () => {
+  it('appears with its hint once a Crew Mode chat is in the list', async () => {
     renderSidebar(WITH_ROOT)
     await waitFor(() => expect(screen.queryByText('the crew chat')).not.toBeNull())
     await openFilterMenu()
     const row = crewRow()
     expect(row).toBeDefined()
     expect(row!.textContent).toContain('(1)')
+    expect(screen.getByTestId('filter-crew-hint')).toBeInTheDocument()
     // Turning it on narrows the list to the Crew Mode chat.
     fireEvent.click(row!)
     await waitFor(() => expect(screen.queryByText('plain a')).toBeNull())

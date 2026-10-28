@@ -75,15 +75,41 @@ export function withoutConductors<T extends { name: string; selection_kind?: str
   return choices
 }
 
-/** The person's own session list. The rule it will carry: a Crew Mode root's
- *  workers are left out, because the root's Crew panel lists them. On this part
- *  the rule is INERT -- every row passes through -- since nothing yet lists a
- *  root's workers, and a row no list shows would be unreachable. The part that
- *  adds the Crew panel turns the rule on here, in this one function; every
- *  person-facing list already reads through it. `rootsOnly` keeps just the
- *  roots, for the session filter's Crew Mode chip, and is live now. */
-export function crewModeView<T extends { crew_root?: string; crew_mode_root?: boolean }>(rows: T[], rootsOnly = false): T[] {
-  return rootsOnly ? rows.filter(r => !!r.crew_mode_root) : rows
+/** The person's own session list: a Crew Mode root's workers are left out while
+ *  that root is in the list, since the root's Crew panel (the side panel's Crew
+ *  tab) lists them; the part before this one wired every person-facing list
+ *  through here with the drop inert, and this part, which adds that panel, turns
+ *  it on. A worker whose root is closed keeps its row: no panel lists it, and its
+ *  own approval or question must still reach the person. `rootsOnly` keeps just
+ *  the roots, for the session filter's Crew Mode chip. */
+export function crewModeView<T extends { key?: string; crew_root?: string; crew_mode_root?: boolean }>(rows: T[], rootsOnly = false): T[] {
+  if (rootsOnly) return rows.filter(r => !!r.crew_mode_root)
+  const listed = new Set<string>()
+  for (const r of rows) if (r.key) listed.add(r.key)
+  return rows.filter(r => !underListedRoot(r, key => listed.has(key)))
+}
+
+/** A worker whose root is a row of the list: the one row `crewModeView` drops. */
+function underListedRoot(row: { crew_root?: string }, listed: (key: string) => boolean): boolean {
+  return !!row.crew_root && listed(row.crew_root)
+}
+
+/** Whether opening `row` in the main pane hides the sessions list on a narrow
+ *  desktop: only a Crew Mode worker the person's list does NOT show (its root is
+ *  in `rows`), since that root's Crew panel is where it is listed and the two side
+ *  by side crowd the chat. The same test `crewModeView` drops on, so a worker
+ *  that is still a row -- its root closed -- never closes the list it was picked
+ *  from. */
+export function openingHidesSessionList(row: { crew_root?: string } | null | undefined, rows: readonly { key: string }[]): boolean {
+  return !!row && underListedRoot(row, key => rows.some(r => r.key === key))
+}
+
+/** The rows the page may open on its own (a first visit, or after the open chat
+ *  closed): never a crew member, which is its conductor's to show and is opened
+ *  from its Crew panel or by the person. A crew member opened on purpose stays
+ *  open; only the page's own pick skips it. */
+export function autoOpenRows<T extends { crew_root?: string }>(rows: T[]): T[] {
+  return rows.filter(s => !s.crew_root)
 }
 
 /** The agent the keyboard cycle lands on from `current`, `step` places along

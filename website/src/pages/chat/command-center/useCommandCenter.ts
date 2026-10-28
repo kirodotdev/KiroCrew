@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { CREW_BOARD_POLL_MS } from '../../../api/crewBoard'
+import { crewModeView } from '../../../lib/crewMode'
 import { fmtList } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { useAppDispatch, useAppSelector } from '../../../store'
@@ -10,7 +11,7 @@ import { answersAsText, questionName } from '../../../utils/questionAnswers'
 import { restoreToComposer } from '../../../utils/composerRestore'
 import { viewSubagentSlots } from '../../../lib/subagentReplayScope'
 import type { SubagentActivity } from '../../../types'
-import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
+import { buildCommandCenter, crewWaitingApprovals, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
 /** The work board as its route serves it: the folded value plus its revision. */
 // `published_revision` is the read's delta base: the revision of the gateway's last
@@ -72,7 +73,13 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const liveWorkflows = useAppSelector(s => s.chat.workflowRuns)
   const connected = useAppSelector(s => s.dashboard.connected)
   const fleet = scope === 'fleet'
-  const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
+  // The fleet page lists the person's sessions: a Crew Mode worker is its
+  // conductor's, and its approval is decided on that conductor's card, so it gets
+  // no session card and no attention card here (edge review R2 F4).
+  const scoped = useMemo(() => fleet ? crewModeView(slots) : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
+  // Read over the full slot set, before the workers are left out: the conductor
+  // of a worker waiting on approval reads as needing a tool decision (R3 Z2).
+  const crewWaiting = useMemo(() => fleet ? crewWaitingApprovals(slots) : undefined, [slots, fleet])
   // These slots' subagent runs are drawn here, finished ones included, so the
   // gateway's durable replay is asked for them (it covers only named slots).
   const scopedKeys = useMemo(() => scoped.map(s => s.key).join('\n'), [scoped])
@@ -214,8 +221,8 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
         session_key: r.sessionKey || runs.get(r.run_id)?.session_key || '', error: r.error })
     }
     return buildCommandCenter({ root: fleet ? null : root, slots: scoped, subagents, approvalMode, workflows: [...runs.values()],
-      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined })
-  }, [root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
+      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined, crewWaiting })
+  }, [crewWaiting, root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
   // A pick in a trailing `[OPTIONS:]` ask is unsent text only while that ask is
   // offered; once the session moves on the card is gone and so is its draft,
   // never restored to the composer (the labels are the agent's, not typed text).

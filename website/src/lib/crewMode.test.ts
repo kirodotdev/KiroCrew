@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  DEFAULT_CREW_MODE_AGENT, crewModeView, isConductorAgent, runsCrewMode,
+  DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeView, openingHidesSessionList, isConductorAgent, runsCrewMode,
   memoryModeAllowsCrewMode, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
 } from './crewMode'
 
@@ -31,16 +31,33 @@ describe('crewMode', () => {
     expect(withoutConductors(rows)).toEqual(rows)
   })
 
-  it('passes every row through on this part, and can show only roots', () => {
-    // The rule (a root's workers left out) is inert until the Crew panel part lists
-    // them; what is live now is the roots-only view the filter chip reads.
+  it('opening a worker the list leaves out hides the sessions list; a root or a plain chat never does', () => {
+    // `openingHidesSessionList` reads `crewModeView`, on with this part: a worker
+    // is no row of the list, so opening it hides the list beside the Crew panel.
+    const rows = [{ key: 'a' }, { key: 'w' }]
+    expect(openingHidesSessionList({ crew_root: 'a' }, rows)).toBe(true)
+    expect(openingHidesSessionList({}, rows)).toBe(false)
+    expect(openingHidesSessionList(undefined, rows)).toBe(false)
+    // Its root closed, the worker is a row of the list, so opening it keeps the list.
+    expect(openingHidesSessionList({ crew_root: 'gone' }, rows)).toBe(false)
+  })
+
+  it('keeps workers out of the person list and can show only roots', () => {
     const rows = [
       { key: 'a', crew_mode_root: true },
       { key: 'b', crew_root: 'a' },
       { key: 'c' },
     ]
-    expect(crewModeView(rows).map(r => r.key)).toEqual(['a', 'b', 'c'])
+    expect(crewModeView(rows).map(r => r.key)).toEqual(['a', 'c'])
     expect(crewModeView(rows, true).map(r => r.key)).toEqual(['a'])
+  })
+
+  it('keeps a worker whose root is closed, since no Crew panel lists it', () => {
+    const rows = [
+      { key: 'w', crew_root: 'closed-root', pending_approval: true },
+      { key: 'c' },
+    ]
+    expect(crewModeView(rows).map(r => r.key)).toEqual(['w', 'c'])
   })
 
   it('needs a Persistent chat, since an Incognito or Temporary one cannot open sessions', () => {
@@ -125,5 +142,13 @@ describe('agentCycleTarget and the Crew Mode stamp', () => {
     expect(agentCycleTarget(agents, 'old-one', 'template', -1, 'old-one')).toBeNull()
     // Without the stamp the same chat is an ordinary one and cycles.
     expect(agentCycleTarget(agents, 'old-one', 'template', 1)).not.toBeNull()
+  })
+})
+
+describe('autoOpenRows -- what the page may open on its own', () => {
+  it('never offers a crew member, so a close or a first visit never lands on one', () => {
+    const rows = [{ key: 'plain' }, { key: 'root', crew_mode_root: true }, { key: 'member', crew_root: 'root' }]
+    expect(autoOpenRows(rows).map(s => s.key)).toEqual(['plain', 'root'])
+    expect(autoOpenRows([{ key: 'member', crew_root: 'root' }])).toEqual([])
   })
 })

@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, fireEvent, render, within } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -71,7 +72,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 // `chatSlots` is a STABLE spy, unlike the proxy's per-access `vi.fn()`: the
 // provisional-lineage test asserts on whether the sidebar came back for a second
 // read, which a fresh mock per property access cannot record.
-const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn() }))
+const mocks = vi.hoisted(() => ({ folders: [] as unknown[], chatSlots: vi.fn(), navigate: vi.fn(), crewWorkersFail: false, crewWorkersNotServed: false }))
 
 // The router is real (MemoryRouter below); only `useNavigate` is a spy, so a row that
 // leaves the chat page can be asked WHERE it went rather than inferred from a route
@@ -87,6 +88,13 @@ vi.mock('../api/client', () => ({
     get: (_t, p: string) => {
       if (p === 'chatFolders') return vi.fn().mockImplementation(() => Promise.resolve(mocks.folders))
       if (p === 'chatSlots') return mocks.chatSlots
+      // The root row's summary reads the server's groups (the worker list API).
+      if (p === 'crewWorkers' && mocks.crewWorkersFail) return vi.fn().mockRejectedValue(new Error('down'))
+      if (p === 'crewWorkers' && mocks.crewWorkersNotServed) return vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+      if (p === 'crewWorkers') return vi.fn().mockResolvedValue({ root: 'k-root', workers: [
+        { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
+        { key: 'k-w2', title: 'W2', agent: '', status: 'needs_approval', group: 'approval', last_activity: '', ledger_item: '', created_by: 'k-root' },
+      ] })
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -166,7 +174,7 @@ function renderSidebar(
    *  rows. What a re-render cannot stand in for is exactly what the adoption tests
    *  need, since the lane tells a move from a creation by comparing two frames. */
   const pushFrame = (rows: TestSlot[]) => utils.rerender(tree(rows))
-  return { ...utils, store, pushFrame }
+  return { ...utils, store, pushFrame, qc }
 }
 
 /** Row keys in the conductor lane, in render order. */
@@ -195,6 +203,8 @@ beforeEach(() => {
   mocks.chatSlots.mockReset()
   mocks.chatSlots.mockResolvedValue([])
   mocks.navigate.mockReset()
+  mocks.crewWorkersFail = false
+  mocks.crewWorkersNotServed = false
 })
 afterEach(() => {
   vi.clearAllMocks()
@@ -202,6 +212,103 @@ afterEach(() => {
 })
 
 describe('chat sidebar — conductor lane', () => {
+  it('draws a Crew Mode root as a plain row with badge, eyebrow, worker ghosts and what needs you', async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-w2', title: 'W2', messages: 0, running: false, pending_approval: true, modified: 2000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container, getByTestId, getAllByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(card).toBeTruthy()
+    // A plain session row: no tinted card frame.
+    expect(card.className).not.toContain('crew-card')
+    expect(within(card).getByTestId('crew-eyebrow')).toHaveTextContent('Crew Mode')
+    expect(within(card).getByTestId('crew-ghost-badge')).toBeTruthy()
+    // The conductor's name is not shown: Crew Mode chooses it.
+    expect(within(card).queryByText('kirocrew-conductor')).toBeNull()
+    // The server's groups, not a guess from the rows: W1's "done" comes from the API.
+    // The live rows draw a first frame ('approval', 'waiting'); wait for the API's.
+    await waitFor(() => {
+      const stack = within(container.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('crew-worker-stack')
+      expect([...stack.children].map(c => c.getAttribute('data-group'))).toEqual(['approval', 'done'])
+    })
+    // One "Approval needed" count for the conductor; never "Needs you" (owner decision B).
+    expect(getByTestId('crew-root-summary')).toHaveTextContent('Approval needed · 1')
+    expect(getByTestId('crew-root-summary')).not.toHaveTextContent('Needs you')
+    // Only the root wears the eyebrow.
+    expect(getAllByTestId('crew-eyebrow')).toHaveLength(1)
+  })
+
+  it("folds the workers summary into the row's one status line, in place of its last message", async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true, last_message: 'Dispatched two workers' },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+    ]
+    const { container } = renderSidebar(slots, [], null, {}, [], slots)
+    await screen.findByTestId('crew-root-summary')
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    // One status line: the summary stands where the last message would, not under it.
+    expect(within(card).queryByText('Dispatched two workers')).toBeNull()
+  })
+
+  it('a gateway that serves no crew list is not a failed read: the row shows the live summary and no notice', async () => {
+    // The crew list route lands in a later part. On a gateway without it the row
+    // is built from the live rows alone and says nothing is wrong; the route is
+    // not asked again.
+    mocks.crewWorkersNotServed = true
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true, last_message: 'Dispatched two workers' },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root', pending_approval: true },
+    ]
+    const { qc } = renderSidebar(slots, [], null, {}, [], slots)
+    await waitFor(() => expect(qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('error'))
+    const summary = screen.getByTestId('crew-root-summary')
+    expect(summary).toHaveTextContent('Approval needed · 1')
+    expect(summary).not.toHaveTextContent('Could not load the crew.')
+    expect(summary.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('a failed workers poll keeps the ghosts and says the read failed on the row', async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true, last_message: 'Dispatched two workers' },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+    ]
+    // A failed poll after a good read: the ghosts stay, the counts give way to the
+    // panel's wording (an ErrorNotice with the agent hand-off), so a stale summary
+    // is never read as a fresh one.
+    const { qc, unmount } = renderSidebar(slots, [], null, {}, [], slots)
+    // The row paints the store's own live row first (W1 idle: "Done 0/1"), then
+    // the list route's answer, whose group wins for the key it names.
+    await waitFor(() => expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Approval needed · 1'))
+    mocks.crewWorkersFail = true
+    await qc.refetchQueries({ queryKey: ['crew-workers', 'k-root'] })
+    await waitFor(() => expect(qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('error'))
+    const summary = screen.getByTestId('crew-root-summary')
+    expect(summary).toHaveTextContent('Could not load the crew.')
+    expect(summary).not.toHaveTextContent('Approval needed')
+    expect(summary.querySelector('[role="alert"]')).not.toBeNull()
+    unmount()
+    // Never any data: the row still says the read failed, in place of its last message.
+    const second = renderSidebar(slots, [], null, {}, [], slots)
+    await waitFor(() => expect(second.qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('error'))
+    // The error lands in the query first and on the row a tick later.
+    await waitFor(() => expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Could not load the crew.'))
+    expect(screen.queryByText('Dispatched two workers')).toBeNull()
+  })
+
+  it("leaves a Crew Mode root's workers out of the person's list and keeps the root", () => {
+    const { queryByText } = renderSidebar([
+      { key: 'k-root', title: 'Crew root', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'Crew worker', messages: 1, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-plain', title: 'Plain chat', messages: 1, running: false, modified: 2000 },
+    ])
+    expect(queryByText('Crew root')).toBeTruthy()
+    expect(queryByText('Plain chat')).toBeTruthy()
+    expect(queryByText('Crew worker')).toBeNull()
+  })
+
   it('is not the default lane: the tree renders and the conductor lane does not', () => {
     const { queryByTestId } = renderSidebar()
     expect(queryByTestId('conductor-view-lane')).toBeNull()
@@ -334,6 +441,15 @@ describe('chat sidebar — conductor lane', () => {
     // k-deep needs input (two levels down) and k-worker-a is running.
     expect(getByTestId('conductor-needs-you-k-conductor').textContent).toBe('1')
     expect(getByTestId('conductor-running-k-conductor').textContent).toBe('1')
+  })
+
+  it('a Crew Mode worker raises no needs-your-answer count on its conductor (S3)', () => {
+    // Its question goes to the conductor; its unread reply is the conductor's to read.
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    openAllBut('k-conductor')
+    const crew = NESTED.map(row => (row.key === 'k-conductor' ? row : { ...row, crew_root: 'k-conductor' }))
+    const { queryByTestId } = renderSidebar(crew, [], null, {}, ['k-worker-b'])
+    expect(queryByTestId('conductor-needs-you-k-conductor')).toBeNull()
   })
 
   it('stops bubbling once expanded, so no session is counted twice on screen', () => {
@@ -887,20 +1003,20 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('flat-view-toggle')).toBeNull()
   })
 
-  it("counts a Crew Mode worker's tool approval on its collapsed conductor while the worker is still a row", () => {
-    // The list rule is inert on this part, so a worker is a child row in the lane;
-    // its approval is an ask of the person and the collapsed root's badge must say
-    // so, or the badge contradicts the child's own glyph. The conductor's own
-    // Approval-needed summary (the Crew panel part) takes this over once the
-    // worker leaves the lane.
+  it("carries a Crew Mode worker's tool approval on its conductor's own summary once the worker leaves the lane", async () => {
+    // With the list rule on, a worker is no row in the lane, so the collapsed
+    // root's needs-you badge cannot count it; the root's crew summary does
+    // ("Approval needed · 1"), from the live rows this gateway stamps, so the ask
+    // is still said on the root. Red if the summary drops live rows.
     localStorage.setItem('mc-sidebar-lane', 'conductor')
     openAllBut('k-root')
-    const { getByTestId } = renderSidebar([
+    const { getByTestId, queryByText } = renderSidebar([
       { key: 'k-root', title: 'Crew root', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, parent: { slot: 'k-root', key: 'k-root' }, crew_root: 'k-root', pending_approval: true },
       { key: 'k-w2', title: 'W2', messages: 2, running: false, modified: 2000, parent: { slot: 'k-root', key: 'k-root' }, crew_root: 'k-root' },
     ])
-    expect(getByTestId('conductor-needs-you-k-root').textContent).toBe('1')
+    expect(queryByText('W1')).toBeNull()
+    await waitFor(() => expect(getByTestId('crew-root-summary')).toHaveTextContent('Approval needed · 1'))
   })
 
   it('pairs each aggregate count with the glyph its children show, not a tint alone', () => {

@@ -217,6 +217,10 @@ export function useActiveSlotState({
     if (prevActiveSlotRef.current && activeSlot !== prevActiveSlotRef.current) closeCrewWindow()
     prevActiveSlotRef.current = activeSlot
   }, [activeSlot])
+  // A Crew Mode worker opened from its root's Workers panel leaves Split View, as
+  // a sidebar pick does: the grid never shows a worker, so it would hide it.
+  const activeIsCrewWorker = useAppSelector(s => !!s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.crew_root)
+  useEffect(() => { if (activeIsCrewWorker) setSplitMode(false) }, [activeIsCrewWorker, activeSlot])
   /** Same contract as `clearSplitOnSelect`, for the `embedMode === 'sessions'`
    *  frame where the sidebar IS the whole page. */
   const navigateToEmbeddedSlot = useCallback((key: string) => navigate(`/embed/chat/${key}`), [navigate])

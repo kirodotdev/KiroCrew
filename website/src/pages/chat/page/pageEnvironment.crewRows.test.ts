@@ -34,10 +34,8 @@ describe('chatPageSlots -- the main pane keeps a crew member', () => {
 })
 
 describe('personChatPageSlots -- the flyout input', () => {
-  it('reads through the person rule, which passes the crew member on this part', () => {
-    // The flyout reads its rows through `crewModeView`; the Crew panel part, which
-    // lists a root's crew members, is what drops them here.
-    expect(personChatPageSlots(chatPageSlots(ROWS)).map(s => s.key)).toEqual(['plain', 'root', 'member'])
+  it('drops the crew member and keeps the root and the person\'s rows', () => {
+    expect(personChatPageSlots(chatPageSlots(ROWS)).map(s => s.key)).toEqual(['plain', 'root'])
   })
 
   it('leaves a list with no crew untouched', () => {
@@ -47,10 +45,9 @@ describe('personChatPageSlots -- the flyout input', () => {
 })
 
 describe('surfaceUnreadKeys -- the unread count', () => {
-  it('counts unread only on the rows the flyout shows: never a row off the chat surface', () => {
+  it('counts unread only on the person\'s rows: a crew member\'s unread never counts', () => {
     const visible = personChatPageSlots(chatPageSlots(ROWS))
-    expect(surfaceUnreadKeys(['member', 'plain', 'slack-1'], visible)).toEqual(['member', 'plain'])
-    expect(surfaceUnreadKeys(['plain'], visible.filter(s => s.key !== 'member'))).toEqual(['plain'])
+    expect(surfaceUnreadKeys(['member', 'plain', 'slack-1'], visible)).toEqual(['plain'])
     expect(surfaceUnreadKeys([], visible)).toEqual([])
   })
 })

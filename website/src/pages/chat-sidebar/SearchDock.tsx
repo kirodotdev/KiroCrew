@@ -468,6 +468,13 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     <span className="flex-1 truncate">{filtersPaused ? i18nT('pages.chatSidebar.resume_all_filters') : i18nT('pages.chatSidebar.pause_all_filters')}</span>
                   </DropdownMenuItem>
                 )}
+                {/* Why a Crew Mode chat's own sessions are not rows here: they are
+                    listed in its side panel. One line, so the absence is explained;
+                    shown with the Crew Mode row, so a list with no such chat says
+                    nothing about one. */}
+                {((filterCounts['crew'] ?? 0) > 0 || activeFilters.has('crew')) && (
+                  <p className="px-2 pt-1 pb-1.5 text-[11px] text-muted max-w-[16rem]" data-testid="filter-crew-hint">{i18nT('pages.chatSidebar.filter_crew_hint')}</p>
+                )}
                 <DropdownMenuSeparator />
                 {/* Names its object: this menu also carries "Folder order" two
                     sections down, and a bare "Sort by" over one list beside an

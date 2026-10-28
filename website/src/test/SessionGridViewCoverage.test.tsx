@@ -913,17 +913,15 @@ describe('SessionGridView — picker controls', () => {
 })
 
 describe('SessionGridView — Crew Mode workers (edge review R2 F4)', () => {
-  it("offers a pane's picker the person rule's rows, which include a Crew Mode worker on this part", async () => {
-    // The picker reads `selectPersonSlots`. The drop of a root's workers lands with
-    // the Crew panel that lists them; until then the worker is still offered.
+  it("never offers a Crew Mode worker in a pane's picker, even one waiting on approval", async () => {
     seedApi([
       { key: 'a', title: 'Alpha' },
       { key: 'root', title: 'Conductor' },
       { key: 'w', title: 'Worker', crew_root: 'root', pending_approval: true },
     ])
     renderGrid('a')
-    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(2))
-    expect(rowsOf(onlyPicker()).map(r => r.textContent).join('\n')).toContain('Conductor')
-    expect(within(onlyPicker()).getByText('Worker')).toBeInTheDocument()
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(1))
+    expect(rowsOf(onlyPicker())[0].textContent).toContain('Conductor')
+    expect(within(onlyPicker()).queryByText('Worker')).toBeNull()
   })
 })

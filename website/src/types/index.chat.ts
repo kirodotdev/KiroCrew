@@ -669,3 +669,97 @@ export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
 }
 
+/** One row of a Crew Mode root's worker list (`GET /api/chat/slots/{root}/crew-workers`). */
+export interface CrewWorker {
+  key: string
+  title: string
+  agent: string
+  /** `working` while a turn runs, `needs_approval` while one waits on a tool
+   *  approval, `asking` while an old question card is open, `idle` otherwise,
+   *  `closed` once the tab is gone. */
+  status: 'working' | 'idle' | 'needs_approval' | 'asking' | 'closed'
+  /** The side panel's group: a tool approval only the person can give, moving,
+   *  waiting on its conductor, not started, finished. */
+  group: 'approval' | 'working' | 'with_conductor' | 'waiting' | 'done'
+  /** ISO time of the worker's last turn or message; "" when it has none yet. */
+  last_activity: string
+  /** The work-ledger item the worker is bound to, or "" when it is not bound. */
+  ledger_item: string
+  /** One line on the task: its latest report or title on the ledger, else its
+   *  last reply; "" when it has neither yet. */
+  summary?: string
+  /** The session that dispatched it: the root itself or another worker. */
+  created_by: string
+  /** Its direct dispatcher by the lineage the server walks (the parent edge,
+   *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
+  dispatched_by?: string
+}
+
+/** One bar on a Crew Mode timeline lane, from recorded transcript rows only. */
+export interface CrewTimelineSegment {
+  kind: 'turn' | 'tool' | 'waiting'
+  start: string
+  end: string
+  /** `recorded`: a row stamps the end. `next_row`: the end is not stamped, so the
+   *  bar stops at the next row the session wrote. `now`: still open. */
+  end_bound: 'recorded' | 'next_row' | 'now'
+  label: string
+}
+
+/** A point on a lane: an error row (`failed`) or a refused tool (`refused`). */
+export interface CrewTimelineMark {
+  kind: 'failed' | 'refused'
+  ts: string
+  label: string
+}
+
+/** One session's lane: the conductor first, then its workers. */
+export interface CrewTimelineLane {
+  key: string
+  title: string
+  agent: string
+  model: string
+  /** `served`: the backend reported it. `chosen`: the session's own pick.
+   *  `default`: the session runs the gateway default (`model` names it, `auto`
+   *  when the backend chooses). */
+  model_source: 'served' | 'chosen' | 'default'
+  role: 'conductor' | 'worker'
+  status: CrewWorker['status']
+  /** The Workers list's group for this session, by the same server rule. */
+  group: CrewWorker['group']
+  running: boolean
+  waiting: boolean
+  segments: CrewTimelineSegment[]
+  marks: CrewTimelineMark[]
+  credits: number
+  first_ts: string
+  last_ts: string
+  /** Older bars left out to bound the reply; 0 when every bar is here. */
+  dropped_segments: number
+  /** A closed worker's lane only: false when its saved transcript cannot be read,
+   *  so it has no bars to draw. */
+  record?: boolean
+}
+
+/** A dispatch: the sender's `session_send` call to the worker's seed row. */
+export interface CrewTimelineHandoff {
+  from: string
+  to: string
+  start: string
+  end: string
+}
+
+/** `GET /api/chat/slots/{root}/crew-timeline`. */
+export interface CrewTimeline {
+  root: string
+  now: string
+  live: boolean
+  started: string
+  ended: string
+  elapsed_ms: number
+  credits: number
+  lanes: CrewTimelineLane[]
+  handoffs: CrewTimelineHandoff[]
+  /** What the transcript does not record, so the view does not draw it. */
+  gaps: string[]
+}

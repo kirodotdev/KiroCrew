@@ -12,7 +12,7 @@ import { useAppSelector } from '../../../store'
 import { membersRosterQuery } from '../../../api/membersQuery'
 import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
-import { APPROVAL_MODE_KEYS, runTitle } from './model'
+import { APPROVAL_MODE_KEYS, isRootSession, runTitle } from './model'
 import { PANEL_HEADING_ATTR } from './panelHeading'
 import { slotRowByKey } from '../../../store/slotIndex'
 
@@ -65,14 +65,14 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
   const hasDraft = data.hasQuestionDraft
   useEffect(() => { draftCb.current?.(hasDraft) }, [hasDraft])
   useEffect(() => () => { draftCb.current?.(false) }, [])
-  // A ROOT session: one no other session dispatched (`created_by`) or adopted
-  // (`parent`). The gateway decides with the same two readings and refuses the read
-  // otherwise, so this only withholds a segment it would refuse. This is the test for
-  // the dashboard PACKAGE; whether a session has a derived CARD to show is a different
-  // question on a different route, and `canCarryCard` in `./model` is the one predicate
-  // for that.
+  // A ROOT session (`isRootSession`): one no other session dispatched (`created_by`)
+  // or adopted (`parent`). The gateway decides with the same two readings and refuses
+  // the read otherwise, so this only withholds a segment it would refuse. This is the
+  // test for the dashboard PACKAGE; whether a session has a derived CARD to show is a
+  // different question on a different route, and `canCarryCard` in `./model` is the
+  // one predicate for that.
   const owner = useAppSelector(s => slot ? slotRowByKey(s.dashboard.slots, slot) : undefined)
-  const root = !!slot && !!owner && !owner.created_by && !owner.parent
+  const root = !!slot && isRootSession(owner)
   // A crewmate's DM slot is a root too, but its agent writes the CREWMATE's page,
   // not a session page, so the Overview shows that page. Decided by the roster's
   // own slot binding; until the roster answers, nothing is mounted rather than a

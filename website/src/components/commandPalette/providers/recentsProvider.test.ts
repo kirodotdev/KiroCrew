@@ -492,11 +492,10 @@ describe('useRecentsProvider — Older dedupe against live slots', () => {
     expect(rows.filter((r) => r.id === 'recents:old:dashboard_chat-2-2')).toHaveLength(0)
   })
 
-  it('dedupes against a live Crew Mode worker from every live row, not the person\'s list', async () => {
-    // `currentKeys` is built from EVERY live row, not the person's list, so a
-    // worker never comes back as an Older row while it is open -- whether or not
-    // the person rule lists it in Current. On this part that rule is inert (the
-    // Crew panel part turns it on), so the worker is a Current row too.
+  it('dedupes against a live Crew Mode worker the person\'s list leaves out', async () => {
+    // `currentKeys` is built from EVERY live row, not the person's list: a worker
+    // is left out of Current (its root's side panel shows it) and must not come
+    // back as an Older row while it is open.
     mocks.state.dashboard.slots = [
       slot({ key: 'chat-1-1', title: 'The crew chat', crew_mode_root: true }),
       slot({ key: 'chat-2-2', title: 'A crew member', crew_root: 'chat-1-1' }),
@@ -506,7 +505,7 @@ describe('useRecentsProvider — Older dedupe against live slots', () => {
     const { result } = renderHook(() => useRecentsProvider())
     const rows = await result.current.search('')
 
-    expect(rows.filter((r) => r.id === 'recents:cur:chat-2-2')).toHaveLength(1)
+    expect(rows.filter((r) => r.id === 'recents:cur:chat-2-2')).toHaveLength(0)
     expect(rows.filter((r) => r.id === 'recents:old:dashboard_chat-2-2')).toHaveLength(0)
     expect(rows.filter((r) => r.id === 'recents:cur:chat-1-1')).toHaveLength(1)
   })
@@ -516,7 +515,7 @@ describe('useRecentsProvider — Older dedupe against live slots', () => {
  * The Older group reads the full History inventory, Crew Mode or not: closed
  * channel conversations and subagent transcripts belong there, and `/api/sessions`
  * has no crew signal, so `user_only` would drop those while keeping a closed crew
- * worker. A live crew worker never doubles as an Older row: the live-row dedupe above.
+ * worker. A live crew worker is kept out by the live-row dedupe above.
  */
 describe('useRecentsProvider — Older is the full History inventory', () => {
   beforeEach(() => {

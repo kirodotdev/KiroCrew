@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { autoOpenRows } from '../../lib/crewMode'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { NavigateFunction, NavigationType } from 'react-router-dom'
@@ -1224,18 +1225,22 @@ export function useChatPageSessionController({
     // and reopening it would freeze and kill it again (#12907). The user picks.
     // Only the first auto-open is skipped: once the user has opened a chat,
     // closing it moves to a sibling as usual.
-    if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
-    if (filteredSlots.length > 0) {
+    // The page's own pick never lands on a crew member (`autoOpenRows`): with only
+    // crew members left, it creates an ordinary chat instead.
+    const eligible = autoOpenRows(filteredSlots)
+    const eligibleKeys = new Set(eligible.map(s => s.key))
+    if (eligible.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
+    if (bound || eligible.length > 0) {
       // The stored key is a refresh memory, read for the first pick only. Every
       // tab and popout rewrites it on each slots frame, so once this window has
       // shown a chat, its own recency stack decides where it lands.
-      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => listed.has(k)).pop() : undefined
+      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => eligibleKeys.has(k)).pop() : undefined
       const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
       const target = bound ? bound
         : hint && listed.has(hint) ? hint
-        : recent ?? (saved && listed.has(saved) ? saved : filteredSlots[0].key)
+        : recent ?? (saved && eligibleKeys.has(saved) ? saved : eligible[0].key)
       dispatch(switchSlot({ key: target, automatic: true }))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one

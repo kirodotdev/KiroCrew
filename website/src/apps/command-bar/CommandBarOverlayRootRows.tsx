@@ -87,8 +87,21 @@ function contributedIcon(name: string): ReactNode {
 }
 
 /** The root's rows, ranked; empty while a scope is entered. */
+/** The Needs You status of a Crew Mode root whose workers wait on a tool
+ *  approval: the approval pill, with how many wait. The root's own approval, when
+ *  it has one, outranks this and reads as any session's. */
+function crewApprovalStatus(waiting: number): ReturnType<typeof sessionStatus> {
+  return {
+    style: 'pill',
+    colorVar: '--warn',
+    label: i18nT('components.commandPalette.providers.recentsProvider.approve'),
+    detail: i18nT('commandCenter.crew_approval_waiting', { count: waiting }),
+  }
+}
+
 export function useCommandBarOverlayRootRows({
   liveSlots,
+  crewWaiting,
   unreadSlots,
   slotStatusDetail,
   simplifiedToolNames,
@@ -107,6 +120,10 @@ export function useCommandBarOverlayRootRows({
   setAttentionExpanded,
 }: {
   liveSlots: RootState['dashboard']['slots']
+  /** `{root: n}`: how many of a Crew Mode root's workers wait on a tool approval.
+   *  The workers are not rows here (the person's list leaves them out), so their
+   *  wait is lifted on the root, with the approval pill, as the fleet page does. */
+  crewWaiting?: Record<string, number>
   unreadSlots: RootState['dashboard']['unreadSlots']
   slotStatusDetail: NonNullable<RootState['chat']['slotStatusDetail']>
   simplifiedToolNames: boolean
@@ -137,7 +154,10 @@ export function useCommandBarOverlayRootRows({
     // sessions view where it belongs.
     const lifted = new Set<string>()
     for (const slot of liveSlots) {
-      const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
+      const waiting = crewWaiting?.[slot.key] ?? 0
+      const st = waiting > 0 && !slot.pending_approval
+        ? crewApprovalStatus(waiting)
+        : sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
       if (st.style !== 'pill' || !st.label || !st.colorVar) continue
       lifted.add(slot.key)
       rows.push({
@@ -382,7 +402,7 @@ export function useCommandBarOverlayRootRows({
     // the tree without remounting it, which does not recompute a memo. Omitting it
     // would freeze these rows in whichever language the surface first resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, commandById, cycleTheme, dispatch, liveSlots, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
+  }, [apps, commandById, cycleTheme, dispatch, liveSlots, crewWaiting, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
 
   // The root ranks from the LIVE query, not the debounced one. Ranking is pure and
   // local, so there is nothing to throttle, and debouncing it would let a fast Enter

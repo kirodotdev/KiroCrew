@@ -45,24 +45,22 @@ function store() {
 }
 
 describe('the person-list rule', () => {
-  it('selectPersonSlots reads through crewModeView, inert on this part: every row, the worker too', () => {
-    // The drop of a root's workers is turned on by the part that lands the Crew
-    // panel, which lists them; until then a worker stays a row the person can reach.
+  it('selectPersonSlots leaves out workers and keeps their root', () => {
     const keys = selectPersonSlots(store().getState()).map(s => s.key)
-    expect(keys).toEqual(['root', 'w1', 'plain'])
+    expect(keys).toEqual(['root', 'plain'])
   })
 
-  it('the Sessions page reads the person rule (inert on this part: the worker is listed)', async () => {
+  it('the Sessions page lists no worker', async () => {
     renderWithProviders(
       <Routes><Route path="/sessions" element={<SessionsPage />} /></Routes>,
       { store: store(), route: '/sessions' },
     )
     expect(await screen.findByText('Coffee names')).toBeInTheDocument()
     expect(screen.getByText('Welcome kit')).toBeInTheDocument()
-    expect(screen.getByText('Welcome note')).toBeInTheDocument()
+    expect(screen.queryByText('Welcome note')).toBeNull()
   })
 
-  it("the command palette's Recents reads the person rule (inert on this part) and never doubles a live worker as an older row", async () => {
+  it("the command palette's Recents lists no worker, now or as an older row", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const s = store()
     const { result } = renderHook(() => useRecentsProvider(), {
@@ -76,6 +74,6 @@ describe('the person-list rule', () => {
       expect(titles).toContain('Coffee names')
     })
     expect(titles).toContain('Welcome kit')
-    expect(titles.filter(t => t === 'Welcome note')).toHaveLength(1)
+    expect(titles).not.toContain('Welcome note')
   })
 })

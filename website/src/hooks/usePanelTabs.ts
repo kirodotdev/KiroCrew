@@ -12,7 +12,7 @@ import {
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
+export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center' | 'workers'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -87,6 +87,7 @@ export const PINNED_VIEWS: ViewKind[] = ['changes', 'artifacts', 'files']
  *  onto the Members page unfed — the default is not "offered", it is "decide". */
 export const VIEW_DATA_SOURCE: Record<ViewKind, 'slot' | 'chat-transcript'> = {
   'command-center': 'slot',
+  workers: 'slot',
   changes: 'chat-transcript',
   issues: 'chat-transcript',
   links: 'chat-transcript',
@@ -207,6 +208,7 @@ export interface PanelTab {
  */
 const VIEW_TITLE_KEY: Record<ViewKind, string> = {
   'command-center': 'commandCenter.title',
+  workers: 'commandCenter.workers',
   changes: 'hooks.usePanelTabs.changes',
   issues: 'hooks.usePanelTabs.issues',
   files: 'hooks.usePanelTabs.files',
@@ -609,6 +611,16 @@ function upsertInBucket(b: Bucket, tab: PanelTab, replaceId?: string): Bucket {
  *  a session row's PR chip switches sessions and opens Changes in one gesture.
  *  `usePanelTabs` is bound to whichever slot was active when it rendered, so
  *  going through `openView` there would open the tab on the chat being LEFT. */
+/** Add view *kind* to *slotKey*'s strip if it is missing, WITHOUT taking focus
+ *  (an empty strip takes it, having nothing else to show). For a view a session
+ *  should always be able to reach -- a Crew Mode chat's Workers -- on a fresh
+ *  browser, a reload or a reopened tab. */
+export function offerPanelView(slotKey: string | null, kind: ViewKind): void {
+  mutateSlot(bucketKey(slotKey), b => (b.tabs.some(t => t.id === kind)
+    ? b
+    : { tabs: [...b.tabs, { id: kind, kind, title: viewTitle(kind) }], activeId: b.activeId ?? kind }))
+}
+
 export function openPanelView(slotKey: string | null, kind: ViewKind): void {
   mutateSlot(bucketKey(slotKey), b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), null, { choice: true })
 }

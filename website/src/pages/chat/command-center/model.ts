@@ -70,6 +70,16 @@ export interface AttentionItem {
   approval?: PendingApproval
   approvalMode?: ApprovalModeKey
   native?: boolean
+  /** A conductor's rollup item (All Dashboards, where its workers are not
+   *  listed): the conductor's key. The item is info with a way to that chat,
+   *  whose Crew panel lists the waiting workers, and draws no Approve or Reject.
+   *  A worker's OWN approval item is untouched here: it keeps its decision
+   *  buttons on every surface until the part that adds the conductor's approval
+   *  card moves it onto that card (`crewApprovalDecidableHere`). */
+  crewCard?: string
+  /** On that rollup item: how many of the conductor's workers wait on a tool
+   *  decision. */
+  crewCount?: number
 }
 /** The command an approval asks about, as the transcript would title it. Empty
  * when the inventory carried no tool input to title. */
@@ -97,6 +107,19 @@ export interface CommandCenterSources {
   questions: PendingQuestion[]
   approvals: PendingApproval[]
   work?: { items: WorkItem[]; omitted?: number }
+  /** Fleet scope: `{conductor: n}` for each Crew Mode root with n workers waiting
+   *  on a tool approval, counted over the FULL slot set before workers are left
+   *  out (edge review R3 Z2). The conductor then reads as needing input. */
+  crewWaiting?: Record<string, number>
+}
+
+/** `{root: n}` for each Crew Mode root with n workers whose tool approval waits. */
+export function crewWaitingApprovals(slots: readonly ChatSlot[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const s of slots) {
+    if (s.crew_root && s.pending_approval) out[s.crew_root] = (out[s.crew_root] ?? 0) + 1
+  }
+  return out
 }
 
 /** Session keys from the workflow/ledger APIs are scope-qualified; slot keys aren't. */
@@ -144,6 +167,16 @@ export function teamRoots(slots: ChatSlot[], key: string): string[] {
  * reached this tab yet, and the route is the authority on what it holds. */
 export function canCarryCard(slot: ChatSlot | undefined | null): boolean {
   return !isPrivateMemoryMode(slot?.memory_mode) && slot?.executor !== 'remote' && !slot?.parent
+}
+
+/** Whether `slot` owns a dashboard PACKAGE, the side panel's Overview: a ROOT
+ *  session, one no other session dispatched (`created_by`) or adopted (the
+ *  session-tree `parent`). The gateway's `is_root_session` (`card_lifecycle.py`)
+ *  reads the same two fields and refuses the read with `not_root_session`
+ *  otherwise, so this only keeps a caller from offering a page it would be
+ *  refused. An unknown slot answers false: there is nothing to offer yet. */
+export function isRootSession(slot: ChatSlot | undefined | null): boolean {
+  return !!slot && !slot.created_by && !slot.parent
 }
 
 export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] {
@@ -225,11 +258,21 @@ export function buildCommandCenter(source: CommandCenterSources) {
       addAttention({ id: `session-input:${s.key}`, slot: s.key, kind: 'open_session' })
     }
   }
+  // A worker's own approval item keeps its decision buttons here (conductor
+  // side panel): nothing else draws them yet. The part that adds the
+  // conductor's approval card turns these into links to that card
+  // (`crewApprovalDecidableHere`). The fleet rollup below is info only: All
+  // Dashboards lists no worker, so the conductor carries their wait.
+  const crewWaiting = source.crewWaiting || {}
+  for (const s of slots) {
+    const count = crewWaiting[s.key] ?? 0
+    if (count > 0) addAttention({ id: `crew-approval:${s.key}`, slot: s.key, kind: 'approval', crewCard: s.key, crewCount: count })
+  }
   // A turn can be idle while delegated work is active, or while a queued
   // message waits to run; those slot flags keep the session running.
   const nodes: RunNode[] = slots.map((s, index) => ({
     id: `session:${s.key}`, kind: 'session', ref: s.key, slot: s.key, title: s.title && s.title !== s.key ? s.title : '', ordinal: index + 1,
-    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running || s.subagents_running || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
+    state: s.needs_input || s.pending_approval || (crewWaiting[s.key] ?? 0) > 0 ? 'needs_input' : s.running || s.subagents_running || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
     detail: s.todo?.current || undefined,
   }))
   const agentIds = new Set<string>()
