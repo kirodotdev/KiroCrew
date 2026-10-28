@@ -84,8 +84,11 @@ wherever a conductor runs, rather than discovering the refusal from a worker tha
 cannot report.
 
 **The acceptance condition is named before dispatch, not after.** It is one of
-four kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
-pull request has merged), `file` (a path exists), or `human_approval` (you accept it — legitimate for a design review,
+five kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
+pull request has merged), `edition_check` (a check an installed edition
+provides through `kirocrew acceptance-check`, for work that lands where the
+evaluator cannot read it itself), `file` (a path exists), or `human_approval`
+(you accept it — legitimate for a design review,
 and never machine-evaluated). There is deliberately no "run this command" kind,
 so "the tests pass" is expressed as `pr_checks` on the pull request that carries
 the work, and CI's verdict is the one that counts.
@@ -232,7 +235,8 @@ condition, and records the answer with `work_ledger_record` as a `verdict`:
   finished lands here, because a draft is the author's own "not ready" and a
   readiness gate on the draft flag never resolves — so a `pr_checks` item is
   opened non-draft, or marked ready before the worker reports. A condition that
-  names a command to run lands here too.
+  names a command to run lands here too, and so does an `edition_check` whose
+  check says a person must decide.
 - `error` — a broken condition or environment, including a bar still set to `TBD`.
 
 So the strongest true thing a worker can say is that it believes the bar is met.

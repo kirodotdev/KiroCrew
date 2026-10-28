@@ -88,12 +88,19 @@ ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
     "file": ("path", "exists"),
     "human_approval": (),
     "cmd": (),
+    "edition_check": ("check", "ref"),
 }
 
 #: ``accept_eval.py``'s own ``pr_merged`` ``repo`` pattern, mirrored so a bar it can
 #: only answer ``error`` to is not called concrete. Applied with ``fullmatch``, as
 #: there. A test pins the two equal.
 ACCEPTANCE_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+
+#: ``accept_eval.py``'s own ``edition_check`` field patterns, mirrored so a bar it
+#: can only answer ``error`` to is not called concrete. Applied with ``fullmatch``,
+#: as there. A test pins both equal to the script's.
+ACCEPTANCE_CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+ACCEPTANCE_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 #: The ``kind`` values that script dispatches on at all. Anything else is an error-only
 #: spec (its closing ``return ("error", f"unknown accept kind ...")``), so it is not

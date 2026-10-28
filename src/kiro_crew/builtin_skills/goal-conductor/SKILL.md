@@ -64,6 +64,12 @@ A candidate qualifies only if **all three** hold:
    another repository's PR, and outside a checkout it cannot be evaluated),
    `pr_merged` (a PR has merged, also via `gh`, with `repo` required: an open
    PR reads `pending`, one closed without merging reads `fail`),
+   `edition_check` (`{"kind": "edition_check", "check": "<name>", "ref":
+   "<id>"}`: a check an installed edition provides, for work that lands
+   somewhere this evaluator cannot read itself, such as an edition's own code
+   review system; the check names are the edition's to document. With no
+   edition providing the check it answers `error`, and a check that says a
+   person must decide answers `refused`),
    `file` (a path existing), or `human_approval` (the user accepts it —
    legitimate for design reviews and go/no-go gates, but never
    machine-evaluated). **There is deliberately no "run this command" kind**, so
@@ -812,7 +818,8 @@ what the composer renders:
   audit-logged and every call prompts. The evaluator accepts **no command, argv
   array, or shell string from a spec** — it builds every argv it runs from a
   fixed template, so `pr_checks` becomes `gh pr checks <n>`, `pr_merged`
-  becomes `gh pr view <n> --repo <owner/name> --json state`, and nothing else
+  becomes `gh pr view <n> --repo <owner/name> --json state`, `edition_check`
+  becomes `kirocrew acceptance-check --json <check> <ref>`, and nothing else
   executes. That is deliberate and load-bearing: this script is invoked as an
   approved wrapper, so a spec that could name a command would turn it into a
   general way to run one, and Kiro Crew's denied-command floor cannot see inside

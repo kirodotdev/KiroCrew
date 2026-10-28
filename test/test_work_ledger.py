@@ -762,6 +762,13 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
         {"kind": "pr_merged", "pr": 7},
         {"kind": "pr_merged", "pr": 7, "repo": "TBD"},
         {"kind": "pr_merged", "pr": 7, "repo": "-owner/name"},
+        {"kind": "edition_check", "check": "TBD", "ref": "ID-1"},
+        {"kind": "edition_check", "ref": "ID-1"},
+        {"kind": "edition_check", "check": "name"},
+        {"kind": "edition_check", "check": "Name", "ref": "ID-1"},
+        {"kind": "edition_check", "check": "name", "ref": "-ID-1"},
+        {"kind": "edition_check", "check": "name", "ref": "ID-1\n"},
+        {"kind": "edition_check", "check": "name", "ref": 7},
     ]
     batch = {"items": [{"id": f"it_{n:08d}", "accept": spec} for n, spec in enumerate(specs)]}
     proc = subprocess.run(
@@ -782,6 +789,14 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
     # ``pr_merged`` shells out too, so its valid form is asserted concrete and
     # evaluated nowhere, as for ``pr_checks`` above.
     assert wl.is_acceptance_concrete({"kind": "pr_merged", "pr": 7, "repo": "owner/name"}) is True
+    # ``edition_check`` shells out too, so its valid form is asserted concrete and
+    # evaluated nowhere, as for ``pr_checks`` above. A placeholder ref matches the
+    # evaluator's ref pattern and would reach ``kirocrew``, so it is held to the
+    # placeholder rule here rather than run.
+    assert (
+        wl.is_acceptance_concrete({"kind": "edition_check", "check": "name", "ref": "TBD"}) is False
+    )
+    assert wl.is_acceptance_concrete({"kind": "edition_check", "check": "name", "ref": "ID-1"})
 
 
 def test_accept_batch_carries_status_and_does_not_filter_on_it():
