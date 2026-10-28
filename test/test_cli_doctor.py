@@ -23,6 +23,7 @@ import pytest
 
 from conftest import make_dir_link
 from kiro_crew import cli_doctor
+from kiro_crew.doctor_checks import resources as doctor_resources
 
 
 class TestManagedServicePolicyDoctor:
@@ -1309,8 +1310,11 @@ class TestRuntimeTmpfs:
     @staticmethod
     def _arrange(monkeypatch, usage_by_root: dict) -> list[str]:
         monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
-        monkeypatch.setattr(cli_doctor, "_runtime_tmpfs_roots", lambda: list(usage_by_root))
         monkeypatch.setattr(cli_doctor, "_tmpfs_usage", lambda root: usage_by_root[root])
+        # Names added after the facade split live on the family module only.
+        monkeypatch.setattr(doctor_resources, "_measured_tmp_roots", lambda: list(usage_by_root))
+        # The real roots are host directories; never scan them from a test.
+        monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (0, False))
         return ["pre-existing"]
 
     def test_healthy_roots_pass(self, monkeypatch, capsys) -> None:
@@ -1375,6 +1379,77 @@ class TestRuntimeTmpfs:
             sandbox, "_mount_source_candidate_roots", lambda: ["/run/user/7", "/dev/shm", "/tmp"]
         )
         assert cli_doctor._runtime_tmpfs_roots() == ["/run/user/7", "/dev/shm", "/tmp"]
+
+    def test_roots_append_pull_diagnostic_roots_missing_from_sandbox(self, monkeypatch) -> None:
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(
+            sandbox,
+            "_mount_source_candidate_roots",
+            lambda: ["/run/user/7", "/dev/shm"],
+        )
+        monkeypatch.setattr(
+            doctor_resources,
+            "_resource_status_tmp_roots",
+            lambda: ["/tmp", "/scratch/run-1"],
+        )
+        assert doctor_resources._measured_tmp_roots() == [
+            "/run/user/7",
+            "/dev/shm",
+            "/tmp",
+            "/scratch/run-1",
+        ]
+
+    def test_roots_do_not_repeat_tmp(self, monkeypatch) -> None:
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_mount_source_candidate_roots", lambda: ["/dev/shm", "/tmp"])
+        monkeypatch.setattr(doctor_resources, "_resource_status_tmp_roots", lambda: ["/tmp"])
+        assert doctor_resources._measured_tmp_roots() == ["/dev/shm", "/tmp"]
+
+    def test_low_root_names_leftover_test_homes(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"/tmp": (86.0, 2.0, 20000, 0)})
+        monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (47, False))
+        cli_doctor._doctor_runtime_tmpfs(issues)
+        out = capsys.readouterr().out
+        assert "/tmp: ⚠" in out and "low on inodes" in out
+        assert "47 top-level dirs here look like leftover test homes" in out
+        assert "ENOSPC" in out
+        assert len(issues) == 2
+
+    def test_capped_test_home_count_says_at_least(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"/tmp": (86.0, 2.0, 20000, 0)})
+        monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (3, True))
+        cli_doctor._doctor_runtime_tmpfs(issues)
+        assert "at least 3 top-level dirs" in capsys.readouterr().out
+
+    def test_healthy_root_does_not_scan_for_test_homes(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"/tmp": (80.0, 90.0, 500000, 0)})
+        scanned: list[str] = []
+        monkeypatch.setattr(
+            doctor_resources,
+            "_kirocrew_test_homes",
+            lambda root: scanned.append(root) or (0, False),
+        )
+        cli_doctor._doctor_runtime_tmpfs(issues)
+        assert scanned == []
+
+    def test_test_homes_counts_dirs_holding_the_cache_marker(self, tmp_path) -> None:
+        for name in ("kc-sq-home9", "p14-home"):
+            (tmp_path / name / ".cache" / "kirocrew").mkdir(parents=True)
+        (tmp_path / "plain-dir" / ".cache").mkdir(parents=True)
+        (tmp_path / "a-file").write_text("x")
+        assert doctor_resources._kirocrew_test_homes(str(tmp_path)) == (2, False)
+
+    def test_test_homes_scan_stops_at_the_cap(self, monkeypatch, tmp_path) -> None:
+        for i in range(5):
+            (tmp_path / f"home{i}" / ".cache" / "kirocrew").mkdir(parents=True)
+        monkeypatch.setattr(doctor_resources, "_TEST_HOME_SCAN_CAP", 3)
+        count, capped = doctor_resources._kirocrew_test_homes(str(tmp_path))
+        assert capped and count == 3
+
+    def test_test_homes_unreadable_root_counts_zero(self, tmp_path) -> None:
+        assert doctor_resources._kirocrew_test_homes(str(tmp_path / "absent")) == (0, False)
 
     def test_usage_reads_statvfs_and_counts_sandbox_entries(self, monkeypatch, tmp_path) -> None:
         # Only the sandbox launcher's own mount-source dirs count; a foreign

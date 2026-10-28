@@ -57,6 +57,7 @@ from kiro_crew import (  # noqa: F401
     diagnostics,
     gateway_lock,
     platform_compat,
+    resource_status,
     sandbox,
     session_pid,
     stdlib_shadow,

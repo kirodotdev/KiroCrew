@@ -789,6 +789,12 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: headroom could not be measured on this host — "
             "proceed with normal caution."
         )
+    # After the memory guidance, which stays about memory alone: a full /tmp
+    # fails a test run with ENOSPC however much RAM is free.
+    temp_lines = host_status.temp_headroom_lines()
+    if temp_lines:
+        out.append("")
+        out.extend(temp_lines)
     return "\n".join(out)
 
 

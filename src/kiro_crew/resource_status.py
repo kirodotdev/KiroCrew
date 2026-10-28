@@ -50,6 +50,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, MutableMapping
@@ -650,6 +651,161 @@ class ResourceStatus:
             lines.append(f"  Agent slice tasks: {tasks}{band}")
         lines.extend(adaptive_summary_lines())
         return lines
+
+
+# ── Temp-directory headroom ───────────────────────────────────────────────────
+# A test run or build that fills the temp directory fails with ENOSPC, and on a
+# tmpfs ``/tmp`` the inodes usually run out first: every fake HOME a test run
+# creates there rebuilds its own bytecode, uv and npm caches, tens of thousands
+# of small files each, while the byte count still looks healthy. Both fractions
+# are checked, plus an absolute inode floor, with the same thresholds as the
+# doctor's Runtime tmpfs row so the two never disagree about one directory.
+TEMP_FREE_PCT_WARN = 10.0
+TEMP_FREE_INODES_FLOOR = 1000
+
+
+@dataclass(frozen=True)
+class TempHeadroom:
+    """Free space and inodes of one temp root, as fractions and a count."""
+
+    root: str
+    free_space_pct: float
+    free_inode_pct: float
+    free_inodes: int
+    # False on a filesystem that keeps no inode count; the two inode fields then
+    # hold "not a constraint" placeholders and are never printed as a reading.
+    counts_inodes: bool = True
+
+    @property
+    def low_space(self) -> bool:
+        return self.free_space_pct < TEMP_FREE_PCT_WARN
+
+    @property
+    def low_inodes(self) -> bool:
+        if not self.counts_inodes:
+            return False
+        return self.free_inode_pct < TEMP_FREE_PCT_WARN or self.free_inodes < TEMP_FREE_INODES_FLOOR
+
+    @property
+    def low(self) -> bool:
+        return self.low_space or self.low_inodes
+
+    def text(self) -> str:
+        inodes = (
+            f"{self.free_inode_pct:.0f}% inodes free ({self.free_inodes} inodes)"
+            if self.counts_inodes
+            else "no inode limit"
+        )
+        reading = f"{self.free_space_pct:.0f}% space free, {inodes}"
+        if not self.low:
+            return reading
+        if self.low_space and self.low_inodes:
+            what = "space and inodes"
+        elif self.low_space:
+            what = "space"
+        else:
+            what = "inodes"
+        return f"LOW on {what}, {reading}"
+
+
+def temp_roots() -> list[str]:
+    """Temp roots this process uses, with duplicate filesystems listed once.
+
+    ``tempfile.gettempdir()`` skips configured directories that are not
+    writable, including a full one. The first existing ``TMPDIR``, ``TEMP`` or
+    ``TMP`` directory is therefore included independently so its exhaustion is
+    still reported. ``/tmp`` remains first on non-Windows systems because test
+    homes and sockets can use it even when the configured root is elsewhere.
+    """
+    roots: list[str] = []
+    seen: set[int] = set()
+    candidates = [] if sys.platform == "win32" else ["/tmp"]
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        configured = os.environ.get(name)
+        if configured and os.path.isdir(configured):
+            candidates.append(configured)
+            break
+    try:
+        candidates.append(tempfile.gettempdir())
+    except OSError:
+        # gettempdir() raises when no candidate directory is writable.
+        pass
+    for root in candidates:
+        try:
+            dev = os.stat(root).st_dev
+        except OSError:
+            continue
+        if dev in seen:
+            continue
+        seen.add(dev)
+        roots.append(root)
+    return roots
+
+
+def temp_headroom(root: str) -> TempHeadroom | None:
+    """Measure *root*, or ``None`` when it cannot be measured.
+
+    A filesystem without inode accounting (``f_files == 0``: btrfs, some FUSE
+    mounts) cannot run out of inodes, so it reads as fully free on that axis
+    and never trips the absolute floor.
+    """
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        return None
+    try:
+        st = statvfs(root)
+    except OSError:
+        return None
+    free_space_pct = 100.0 * st.f_bavail / st.f_blocks if st.f_blocks else 100.0
+    if st.f_files:
+        return TempHeadroom(
+            root, free_space_pct, 100.0 * st.f_favail / st.f_files, int(st.f_favail)
+        )
+    # The doctor row compares these placeholders directly, so they must read as
+    # unconstrained on both axes as well as being flagged as unmeasured.
+    return TempHeadroom(root, free_space_pct, 100.0, TEMP_FREE_INODES_FLOOR, counts_inodes=False)
+
+
+def temp_headroom_lines() -> list[str]:
+    """The pull tool's temp-space block, plus a guidance line when one is low.
+
+    Empty when no root can be measured, so a host without ``statvfs`` prints
+    nothing rather than an "unknown" line on every call.
+    """
+    readings = [r for r in (temp_headroom(root) for root in temp_roots()) if r is not None]
+    if not readings:
+        return []
+    lines = ["Temp space (advisory):"]
+    lines.extend(f"  {r.root}: {r.text()}" for r in readings)
+    low = [r.root for r in readings if r.low]
+    if low:
+        lines.append(
+            f"\nGuidance: temp space is low on {', '.join(low)}. Writes there fail with "
+            "ENOSPC once it fills. Do not start test runs or builds that put a HOME or "
+            f"caches there; {_temp_alternative(low)}"
+        )
+    return lines
+
+
+def _temp_alternative(low_roots: list[str]) -> str:
+    """Where to send the work instead, never a place on a device already low.
+
+    ``$KIROCREW_SCRATCH`` is usually the same directory as ``$TMPDIR``, so it is
+    named only when it sits on a device none of *low_roots* shares AND its own
+    reading is not low.
+    """
+    scratch = os.environ.get("KIROCREW_SCRATCH", "")
+    if scratch:
+        try:
+            scratch_dev = os.stat(scratch).st_dev
+            low_devs = {os.stat(root).st_dev for root in low_roots}
+        except OSError:
+            scratch_dev, low_devs = None, set()
+        if scratch_dev is not None and scratch_dev not in low_devs:
+            reading = temp_headroom(scratch)
+            if reading is not None and not reading.low:
+                return "use $KIROCREW_SCRATCH instead."
+    return "free space there or use a filesystem that is not low."
 
 
 def adaptive_state() -> dict | None:

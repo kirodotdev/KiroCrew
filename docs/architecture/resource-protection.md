@@ -410,6 +410,25 @@ gateway version does not serve. An absent ceiling and an unreadable one stay dis
 a read that fails — a slice released between the directory check and the read — reports `-1`
 and prints "ceiling unreadable", so a teardown is never published as an absent limit.
 
+Temp-directory headroom is the third figure the pull tool reports, and like the task figure
+it is reported, never gated. `resource_status.temp_headroom_lines()` measures `/tmp`, the
+first existing `TMPDIR`/`TEMP`/`TMP` directory, and the calling process's
+`tempfile.gettempdir()`. An agent's `$TMPDIR` is its own scratch dir, so `/tmp` is listed
+explicitly, and the configured directory is read from the environment because
+`gettempdir()` skips one that is full. The tool keeps a second root only when it sits on a different device,
+and flags a root below 10% free space, below 10% free inodes, or under 1,000 free inodes.
+These are the doctor's Runtime tmpfs thresholds. A low root adds a guidance line that sends
+test homes and caches to `$KIROCREW_SCRATCH`, but only when that directory sits on a device
+none of the low roots share and is not low itself, since it is usually the same directory
+as `$TMPDIR`. Inodes are the usual limit on a tmpfs `/tmp`,
+because every fake HOME a test run creates there rebuilds its own bytecode, uv and npm
+caches. `posture` stays memory-only: a full `/tmp` fails writes with `ENOSPC`, which an
+admission gate holding back spawns would not fix. The doctor's Runtime tmpfs row adds `/tmp`
+and the same configured temp directory to the sandbox's mount-source roots when the chooser
+did not list them.
+When a root is low, it counts the top-level directories there that hold `.cache/kirocrew`,
+which marks a leftover test home. The scan is bounded to 4,096 entries and deletes nothing.
+
 ### Availability and fallback
 
 The scope requires Linux with cgroup v2 delegation (the `pids` and `memory` controllers
