@@ -426,6 +426,7 @@ export function createTranscriptRenderers(
             direction="incoming"
             sender={{ key: relay.senderKey, title }}
             body={stripRelayPrefix(m.content)}
+            time={formatTs(m.ts)}
             onOpenSession={o.onSessionOpen}
           />,
           true,
@@ -476,6 +477,7 @@ export function createTranscriptRenderers(
             sender={{ key: selfKey || 'self', title: selfTitle }}
             recipient={{ key: call.target, title: recipientTitle }}
             body={call.message}
+            time={formatTs(m.ts)}
             onOpenSession={o.onSessionOpen}
           />,
           true,

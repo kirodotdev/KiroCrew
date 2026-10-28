@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { ChatMessage } from '../../types'
-import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import { formatTs, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './transcriptRenderers'
 import { isSessionSendTool, parseSessionSend, readRelay, stripRelayPrefix } from './sessionRelay'
 
@@ -72,6 +72,13 @@ describe('Surface 3 — incoming (received cross-session message)', () => {
     expect(idFor(msg('user', { content: 'hi there' }))).not.toBe('session_relay_incoming')
   })
 
+  it('passes the row time through to the card meta line', () => {
+    const timed = { ...received, ts: '2026-10-28T16:12:00Z' }
+    const entry = resolveRenderer(timed, registry())!
+    render(<>{entry.render(timed, ctx())}</>)
+    expect(screen.getByTestId('session-card-meta').textContent).toBe(formatTs(timed.ts))
+  })
+
   it('renders the incoming card with the sender title from the roster and the prefix stripped', () => {
     const entry = resolveRenderer(received, registry())!
     render(<>{entry.render(received, ctx())}</>)
@@ -95,14 +102,24 @@ describe('Surface 3 — outgoing (this session sent a message)', () => {
     expect(idFor(sent)).toBe('session_send_tool')
   })
 
-  it('renders the outgoing card with the target as the @tag', () => {
+  it('renders the outgoing card saying, in text, that this session sent it to the target', () => {
     const entry = resolveRenderer(sent, registry())!
     render(<>{entry.render(sent, ctx())}</>)
     const card = screen.getByTestId('session-message-card')
     expect(card).toHaveAttribute('data-direction', 'outgoing')
+    expect(screen.getByTestId('session-card-direction').textContent).toBe('Sent to @Planner')
     expect(screen.getByTestId('session-card-recipient').textContent).toBe('@Planner')
     expect(screen.getByTestId('session-card-body').textContent).toContain('plan is ready')
-    // The sender title is this session's own (from the roster).
-    expect(screen.getByTestId('session-card-title').textContent).toBe('Health card')
+    // The sender is named "This session", never by its own title, which in its
+    // own chat reads as some other sender; the title stays on hover.
+    expect(screen.getByTestId('session-card-title').textContent).toBe('This session')
+    expect(screen.getByTestId('session-card-title')).toHaveAttribute('title', 'Health card')
+  })
+
+  it('passes the row time through to the card meta line', () => {
+    const timed = { ...sent, ts: '2026-10-28T16:12:00Z' }
+    const entry = resolveRenderer(timed, registry())!
+    render(<>{entry.render(timed, ctx())}</>)
+    expect(screen.getByTestId('session-card-meta').textContent).toBe(formatTs(timed.ts))
   })
 })

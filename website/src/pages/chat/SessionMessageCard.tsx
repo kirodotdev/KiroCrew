@@ -13,17 +13,17 @@
  * and the body clamped to two lines. An incoming step message whose step waits
  * on the person carries a "Needs you" pill.
  *
- * OUTGOING (this session sent it): the SENDER (this session) in an OUTLINED
- * avatar with a ↖ badge, its own title, and a body that opens with the
- * recipient as an accent `@tag`, then the text. Same clamp.
+ * OUTGOING (this session sent it): an OUTLINED avatar with this session's
+ * initials, the words "This session" where an incoming card names its sender,
+ * and a visible "Sent to @{recipient}" beside them, the `@tag` opening the
+ * recipient. Then the body, same clamp.
  *
- * Direction is never colour-only: the outgoing avatar carries the arrow badge
- * and an sr-only "to {name}", the incoming one is filled. The avatar is
- * decorative (aria-hidden) — the sender's name is always in the text beside it,
- * and the title link carries a real accessible name.
+ * Direction is said in TEXT, never by the avatar alone: an outgoing card reads
+ * "This session · Sent to @Planner", an incoming one names the other session.
+ * The avatar is decorative (aria-hidden): the name beside it carries the
+ * meaning, and the title link carries a real accessible name.
  */
 import { useState } from 'react'
-import { ArrowUpLeft } from 'lucide-react'
 
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { senderAvatarColor, senderInitials } from '../../utils/sessionColors'
@@ -41,7 +41,8 @@ export interface SessionMessageCardProps {
   /** The party whose avatar and title head the card: the SENDER either way —
    *  the other session for incoming, this session for outgoing. */
   sender: SessionParty
-  /** Outgoing only: the recipient drawn as the body's leading `@tag`. */
+  /** Outgoing only: the recipient, drawn as the `@tag` in the visible
+   *  "Sent to @{recipient}" beside the header. */
   recipient?: SessionParty | null
   /** The message text (Markdown), clamped to two lines until expanded. */
   body: string
@@ -58,26 +59,22 @@ export interface SessionMessageCardProps {
   needsYou?: boolean
 }
 
-/** The deterministic coloured avatar. Filled for incoming, outlined with a ↖
- *  badge for outgoing. Decorative — `aria-hidden`, name is in the text. */
+/** The deterministic coloured avatar. Filled for incoming, outlined for
+ *  outgoing. Decorative (`aria-hidden`): the direction is said in the text
+ *  beside it, never by the avatar alone. */
 function Avatar({ sessionKey, title, outgoing }: { sessionKey: string; title: string; outgoing: boolean }) {
   const { bg, fg } = senderAvatarColor(sessionKey)
   const initials = senderInitials(title)
   if (outgoing) {
     return (
-      <span className="relative shrink-0" aria-hidden="true" data-testid="session-card-avatar" data-outgoing="true">
-        <span
-          className="flex items-center justify-center w-6 h-6 rounded-full border-[1.5px] bg-transparent text-[10px] font-semibold tabular-nums"
-          style={{ borderColor: bg, color: bg }}
-        >
-          {initials}
-        </span>
-        <span
-          className="absolute -top-1 -left-1 flex items-center justify-center w-3.5 h-3.5 rounded-full border border-border bg-card"
-          style={{ color: bg }}
-        >
-          <ArrowUpLeft size={9} strokeWidth={2.5} />
-        </span>
+      <span
+        className="flex items-center justify-center shrink-0 w-6 h-6 rounded-full border-[1.5px] bg-transparent text-[10px] font-semibold tabular-nums"
+        style={{ borderColor: bg, color: bg }}
+        aria-hidden="true"
+        data-testid="session-card-avatar"
+        data-outgoing="true"
+      >
+        {initials}
       </span>
     )
   }
@@ -110,19 +107,45 @@ function TitleLink({ party, onOpenSession, incoming }: { party: SessionParty; on
       </button>
     )
   }
-  // Non-interactive: the sender's own title on an outgoing card, or a host with
-  // nowhere to navigate.
+  // Non-interactive. An outgoing card names its sender "This session" rather
+  // than by title: in this session's own chat its title reads as some other
+  // sender's name. The title stays on hover.
   return (
-    <span className={`min-w-0 truncate text-[12px] font-medium ${incoming ? 'text-text-strong' : 'text-text-strong'}`} data-testid="session-card-title">
-      {party.title}
+    <span
+      className="min-w-0 truncate text-[12px] font-medium text-text-strong"
+      title={incoming ? undefined : party.title}
+      data-testid="session-card-title"
+    >
+      {incoming ? party.title : i18nT('pages.chat.sessionMessageCard.this_session')}
     </span>
   )
 }
 
-/** The recipient `@tag` that opens an outgoing card's body. */
+/** Placeholder passed as the name in the translated "Sent to {{name}}" and
+ *  split back out, so the `@tag` lands wherever the language puts the name. A
+ *  machine token, never shown. */
+const RECIPIENT_SLOT = 'session_card_recipient_slot'
+
+/** The outgoing card's visible direction: "Sent to @{recipient}", in the
+ *  locale's own word order, with the `@tag` in the name's place. */
+function SentTo({ recipient, onOpenSession }: { recipient: SessionParty; onOpenSession?: (key: string) => void }) {
+  const phrase = i18nT('pages.chat.sessionMessageCard.to_recipient', { name: RECIPIENT_SLOT })
+  const at = phrase.indexOf(RECIPIENT_SLOT)
+  const before = at >= 0 ? phrase.slice(0, at) : `${phrase} `
+  const after = at >= 0 ? phrase.slice(at + RECIPIENT_SLOT.length) : ''
+  return (
+    <span className="min-w-0 text-[11.5px] text-muted" data-testid="session-card-direction">
+      {before}
+      <RecipientTag recipient={recipient} onOpenSession={onOpenSession} />
+      {after}
+    </span>
+  )
+}
+
+/** The recipient `@tag` in an outgoing card's "Sent to …". */
 function RecipientTag({ recipient, onOpenSession }: { recipient: SessionParty; onOpenSession?: (key: string) => void }) {
   const label = `@${recipient.title}`
-  const cls = 'inline-flex items-center align-middle mr-1 rounded px-1.5 py-px text-[11px] font-medium bg-accent/15 text-accent'
+  const cls = 'inline-flex items-center align-middle rounded px-1.5 py-px text-[11px] font-medium bg-accent/15 text-accent'
   if (onOpenSession && recipient.key) {
     return (
       <button
@@ -181,14 +204,15 @@ export function SessionMessageCard({
               {i18nT('pages.chat.sessionMessageCard.needs_you')}
             </span>
           ) : null}
+          {/* The direction, in words everyone reads: "This session · Sent to
+              @Planner". */}
+          {outgoing && recipient ? (
+            <>
+              <span className="text-[11.5px] text-muted" aria-hidden="true">·</span>
+              <SentTo recipient={recipient} onOpenSession={onOpenSession} />
+            </>
+          ) : null}
         </div>
-        {/* Direction is conveyed by the avatar (filled vs outlined + arrow); this
-            names it for assistive tech on the outgoing card. */}
-        {outgoing && recipient ? (
-          <span className="sr-only" data-testid="session-card-direction-sr">
-            {i18nT('pages.chat.sessionMessageCard.to_recipient', { name: recipient.title })}
-          </span>
-        ) : null}
       </div>
 
       {metaParts.length > 0 ? (
@@ -197,16 +221,10 @@ export function SessionMessageCard({
         </p>
       ) : null}
 
-      {/* The @tag opens the outgoing body and the markdown paragraphs are
-          inlined so the chip sits with the first line and the clamp still bounds
-          two visual lines. */}
       <div
-        // Outgoing: the renderer's own root <div> and the first paragraph both go
-        // inline, else the block root drops the text onto the line below the tag.
-        className={`text-[12.5px] text-text break-words [&_p]:m-0 ${outgoing ? '[&>div]:inline [&_p]:inline' : ''} ${long && !open ? 'line-clamp-2' : ''}`}
+        className={`text-[12.5px] text-text break-words [&_p]:m-0 ${long && !open ? 'line-clamp-2' : ''}`}
         data-testid="session-card-body"
       >
-        {outgoing && recipient ? <RecipientTag recipient={recipient} onOpenSession={onOpenSession} /> : null}
         <MarkdownRenderer content={body} />
       </div>
 
