@@ -910,6 +910,16 @@ async def handle_message_transport(
             return ""
 
         # ── Drive the turn (renderer already started above) ──
+        # Drain this channel conversation's dashboard-tab subagent notices: load
+        # the restored tab's window, take+clear, and prepend to the prompt. This
+        # transport path runs its own single TurnDriver (no replay); the owner is
+        # resolved synchronously right after the stream returns, before the
+        # cancellable reset awaits. ``gateway`` carries the live dashboard state;
+        # deferred import avoids the channel->dashboard cycle.
+        from kiro_crew.dashboard.chat_turn.queue_drain import take_tab_notices
+
+        _st_notices = await take_tab_notices(getattr(gateway, "dashboard_state", None), session_key)
+        full_message = _st_notices.prefix(full_message)
         driver = TurnDriver(
             client,
             renderer,
@@ -1004,7 +1014,17 @@ async def handle_message_transport(
             )
 
         renderer.stamp_options = _persist_and_stamp
-        accumulated = await driver.run(full_message)
+        try:
+            accumulated = await driver.run(full_message)
+        except BaseException:
+            _st_notices.restore()
+            raise
+
+        # Resolve the tab notices NOW, right after the stream returns and before
+        # the failure-accounting and reset awaits below — a Stop cancel during
+        # those awaits lands outside the except arm and would otherwise drop them.
+        _turn_landed = driver_turn_landed(driver)
+        _st_notices.resolve(landed=_turn_landed)
 
         # ── Post-turn bookkeeping ──
         # The turn ended without raising (we have `accumulated`), so book its
@@ -1049,8 +1069,8 @@ async def handle_message_transport(
             runtime_death.clear_shared_deaths(session_key)
         # The prompt (with any re-injected context) reached the model and the
         # turn completed, so the finally must NOT restore the one-shot flag --
-        # unless the user cancelled it, which discards that prompt.
-        _turn_landed = driver_turn_landed(driver)
+        # unless the user cancelled it, which discards that prompt. ``_turn_landed``
+        # was computed above, right after the stream returned.
         if _unfinished:
             Stats().inc_message_failed()
         else:

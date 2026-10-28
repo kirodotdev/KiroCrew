@@ -351,6 +351,15 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     # completed -- never reaches the delivery region, so the ``finally`` must not
     # defer the release to a ``turn.release_permit`` that will never run.
     _body_completed = False
+    # Tab-notice drain owner: taken after the gate (below), settled only once the
+    # turn lands, handed off to the nested replay before a replay, and restored by
+    # the ``finally`` on any other non-landing exit. Initialised to a resolved
+    # no-op so every exit path can reference it.
+    from kiro_crew.dashboard.chat_turn.queue_drain import (
+        TakenTabNotices as _TakenTabNotices,  # circular: dashboard.chat -> slack.handler
+    )
+
+    _tab_notices_owner = _TakenTabNotices(None, session_key, [])
 
     # Set assistant thread status while we wait for the LLM to respond.
     # Defer start_stream until the first text chunk arrives so the user
@@ -779,6 +788,19 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         turn.answer = answer
         turn.task = task
 
+        # Load the linked dashboard tab's window (the drain's one awaiting step)
+        # BEFORE the lease-dispatch gate below — the sync take runs AFTER the gate,
+        # so nothing awaits between the gate's _closing read and the stream's turn
+        # registration. Deferred import: dashboard imports slack.handler (cycle).
+        from kiro_crew.dashboard.chat_turn.queue_drain import (
+            load_linked_tab_window as _load_tab_window,  # circular: dashboard.chat -> slack.handler
+        )
+        from kiro_crew.dashboard.chat_turn.queue_drain import (
+            take_linked_tab_subagent_notices as _take_tab_notices,
+        )
+
+        await _load_tab_window(get_dashboard_state(), session_key)
+
         # Lease-dispatch race gate: the session lease was taken by
         # get_or_create above, but the turn only opens on the first stream
         # iteration below. If a gateway restart moved the SessionManager into the
@@ -819,6 +841,27 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             logger.info("Aborting Slack dispatch for %s — gateway shutting down", session_key)
             await slack.set_thread_status(channel, reply_ts, "")
             return False
+
+        # A notice (a restart orphan, or a completion whose injection failed)
+        # queued on this channel conversation's dashboard tab is drained only by a
+        # dashboard turn in that tab. A turn started in the thread runs here, on
+        # the channel path, and would never read it — so the agent never sees the
+        # result and an owed orphan notice is re-announced on a later restart.
+        # The window was loaded BEFORE the gate above (its one awaiting step); NOW
+        # take synchronously, past the cancel/stop/ceiling bail gates so a turn
+        # that bails never consumes the queue, with no await between the ceiling
+        # gate and the stream below (the atomicity the gate's own comment
+        # requires). The owner is settled only once the turn lands (below), handed
+        # off before a replay, or restored by the finally — taking only after the
+        # turn is committed is what keeps a refused turn from losing the result.
+        # A no-op for a session with no linked tab. Exactly-once: the first turn to
+        # reach the queue, tab or thread, takes and clears it.
+        _tab_notices_owner = _TakenTabNotices(
+            get_dashboard_state(),
+            session_key,
+            _take_tab_notices(get_dashboard_state(), session_key),
+        )
+        full_message = _tab_notices_owner.prefix(full_message)
 
         async for event in client.stream(full_message):
             if event.kind == EVENT_TEXT_CHUNK:
@@ -909,6 +952,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             _turn_landed = stop_reason_landed(
                 (_stop_reason or "") if _completion_observed else None
             )
+            # Settle the tab notices once the turn landed (its prompt reached the
+            # model). If it did not land, the replay hand-off (below) or the
+            # finally restores them. Idempotent.
+            if _turn_landed:
+                _tab_notices_owner.settle()
 
         if _stop_reason == STOP_REASON_COMPACTION_FAILED:
             # The completion was synthetic — the backend abandoned the turn
@@ -968,6 +1016,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     _attempt + 1,
                     _COMPACTION_FAILED_RETRIES,
                 )
+                # Hand the tab notices to the nested replay: restore them to the
+                # queue (debt owed) BEFORE the replay re-takes them, and mark this
+                # owner resolved so the finally does not restore them again.
+                _tab_notices_owner.hand_off()
                 await _replay_abandoned(
                     _COMPACTION_RETRY_NOTICE,
                     _CompactionReplay(
@@ -1134,6 +1186,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             )
             _had_error = False
             task.complete()
+            _tab_notices_owner.hand_off()
             await _replay_abandoned(
                 SESSION_NOT_FOUND_RETRY_NOTICE,
                 _CompactionReplay(
@@ -1176,6 +1229,13 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
     finally:
+        # Backstop: a turn that took tab notices but never resolved them (an error
+        # arm, a cancel) restores them here. Idempotent — a no-op once the owner
+        # settled, restored, or was handed off to a replay on the normal path.
+        try:
+            _tab_notices_owner.restore()
+        except Exception:
+            logger.debug("Could not restore tab notices on Slack turn exit", exc_info=True)
         # A turn that consumed the post-compaction flag but never landed (an
         # error arm, a cancel) discarded the prompt carrying the re-injected
         # context, and a backend that compacted the session during the turn

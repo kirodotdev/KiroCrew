@@ -493,6 +493,7 @@ class WhatsAppDispatcher:
             ChannelTurn(
                 start_priority=person_priority(inbound.person_origin),
                 channel_type="whatsapp",
+                dashboard_state=getattr(self, "dashboard_state", None),
                 session_key=session_key,
                 conversation_id=f"whatsapp:{scope}",
                 # Durable inbound spool: DMs ONLY. The replay is a

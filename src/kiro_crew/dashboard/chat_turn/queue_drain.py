@@ -38,6 +38,7 @@ from kiro_crew.dashboard.session_directive_apply import (
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
 from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.messaging.link import is_channel_session_key
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -222,6 +223,230 @@ def settle_drained_subagent_notices(state: Any, slot: Any, notices: list[str]) -
     if isinstance(bg, set):
         bg.add(writer)
         writer.add_done_callback(bg.discard)
+
+
+def _resolve_linked_tab_slot(state: Any, session_key: str) -> Any:
+    """The dashboard-tab slot showing channel conversation *session_key*, or ``None``.
+
+    ``None`` unless *session_key* is a channel conversation (``slack:`` /
+    ``discord:`` / ``teams:`` / …) with an open tab: a dashboard-born conversation
+    drains in its own tab turn, and a channel conversation with no linked tab has
+    nothing queued here.
+    """
+    if not is_channel_session_key(session_key):
+        return None
+    dstate = state() if callable(state) else state
+    if dstate is None:
+        return None
+    try:
+        from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
+    except Exception:  # pragma: no cover - import guard
+        return None
+    slot_name = dashboard_slot_key(session_key)
+    if not slot_name:
+        return None
+    get_slot = getattr(dstate, "get_slot", None)
+    if get_slot is None:
+        return None
+    return get_slot(slot_name)
+
+
+async def load_linked_tab_window(state: Any, session_key: str) -> None:
+    """Load the linked tab's window so its notice queue is readable — the ASYNC half.
+
+    A parent tab restored as a sidebar row loads its window before its queue can
+    be read, off the loop (same as the gateway's own orphan-notice and
+    injection-failed paths in ``subagent_wiring``). This is the one awaiting step
+    of the drain, run BEFORE the turn's shutdown/ceiling gate so the gate stays
+    atomic with the stream the driver opens. A no-op when there is no linked tab
+    or its window is already loaded.
+    """
+    slot = _resolve_linked_tab_slot(state, session_key)
+    if slot is None or getattr(slot, "window_pending", False) is not True:
+        return
+    try:
+        from kiro_crew.dashboard.state_parts.slot_transcript import load_window_off_loop
+
+        await load_window_off_loop(slot)
+    except Exception:  # pragma: no cover - best effort window load
+        logger.debug("Could not load linked tab window before notice drain", exc_info=True)
+
+
+def take_linked_tab_subagent_notices(state: Any, session_key: str) -> list[str]:
+    """Take and CLEAR the linked tab's queued notices — does NOT settle. SYNCHRONOUS.
+
+    The gateway queues a subagent notice (a restart orphan, or a completion whose
+    injection failed) on the dashboard tab that shows the parent conversation, in
+    ``slot._pending_subagent_failures`` keyed by :func:`dashboard_slot_key`. A
+    dashboard turn in that tab drains it (``prompt_assembly``); a turn started in
+    the channel's own thread runs on the channel path and never read it, so the
+    agent never saw the notice and an owed orphan stayed owed and was re-announced
+    on a later restart.
+
+    This reads and clears the notices and returns them for the caller to prepend to
+    the prompt. It MUST run only once the turn is committed — after the
+    shutdown/ceiling gate has passed — and it does NOT await, so the caller can run
+    it in the gate→stream span without reopening the shutdown race. Call
+    :func:`load_linked_tab_window` before the gate so the queue is readable here.
+
+    Settlement is deliberately NOT done here: the delivery debt (the tombstone that
+    excludes the run from the next start's reconciliation) stays owed until the
+    turn is actually consumed by the provider. The caller settles with
+    :func:`settle_taken_tab_notices` once the turn landed, or restores with
+    :func:`restore_taken_tab_notices` if the turn failed or was abandoned before
+    consumption — so a crash in between leaves the debt owed and the next start
+    re-announces once (duplicate-not-lost, the safe side) rather than losing it.
+
+    Exactly-once on the happy path: the first turn to reach the queue — tab or
+    thread — takes and clears it.
+    """
+    slot = _resolve_linked_tab_slot(state, session_key)
+    if slot is None:
+        return []
+    pending = getattr(slot, "_pending_subagent_failures", None)
+    if not pending:
+        return []
+    notices = pending[:]
+    pending.clear()
+    return notices
+
+
+def settle_taken_tab_notices(state: Any, session_key: str, notices: list[str]) -> None:
+    """Settle the delivery debt of notices taken by :func:`take_linked_tab_subagent_notices`.
+
+    Called once the turn has been consumed by the provider (its prompt — carrying
+    these notices — reached the agent), so the run's ``delivered`` tombstone is
+    written only when the result was actually seen. Settling early, before
+    consumption, would lose the result if the turn then failed. A no-op for an
+    empty list or a conversation with no linked tab.
+    """
+    if not notices:
+        return
+    slot = _resolve_linked_tab_slot(state, session_key)
+    if slot is None:
+        return
+    settle_drained_subagent_notices(state() if callable(state) else state, slot, notices)
+
+
+def restore_taken_tab_notices(state: Any, session_key: str, notices: list[str]) -> None:
+    """Put taken notices BACK at the front of the tab queue with their debt still owed.
+
+    Called when a turn fails or is abandoned before the provider consumed its
+    prompt, so the notices were never delivered. They go to the FRONT of
+    ``slot._pending_subagent_failures`` so the next turn drains them first, and
+    because :func:`take_linked_tab_subagent_notices` never settled, the delivery
+    debt is still owed — nothing to restore there. A no-op for an empty list or a
+    conversation with no linked tab (the run then stays owed for the next start's
+    reconciliation, which is the same safe outcome).
+    """
+    if not notices:
+        return
+    slot = _resolve_linked_tab_slot(state, session_key)
+    if slot is None:
+        return
+    pending = getattr(slot, "_pending_subagent_failures", None)
+    if pending is None:
+        return
+    # Front, so a later turn drains them before notices queued in the meantime,
+    # preserving arrival order; de-dup defensively in case a concurrent producer
+    # re-queued the same text.
+    existing = list(pending)
+    pending.clear()
+    pending.extend(notices)
+    pending.extend(n for n in existing if n not in notices)
+
+
+class TakenTabNotices:
+    """The take/settle/restore lifecycle of one turn's drained tab notices, as an
+    owner object a channel seam settles or restores EXACTLY ONCE.
+
+    A channel turn takes its linked tab's queued subagent notices once (clearing
+    the queue), carries them into its prompt, and must then resolve them when the
+    outcome is known: :meth:`settle` once the provider consumed the prompt, or
+    :meth:`restore` (back to the front of the queue, debt still owed) if the turn
+    is refused, fails, or is abandoned first. Both are idempotent and mutually
+    exclusive — the FIRST of settle/restore/hand_off wins and every later call is
+    a no-op — so a seam can resolve synchronously at the point the outcome is
+    known AND keep a ``finally`` net without double-acting. That is the whole
+    point: each seam calls the owner before any further await, nested replay or
+    cancellable bookkeeping, and the ``finally`` restore is the backstop that only
+    fires if nothing resolved it.
+
+    ``bool(owner)`` is True while it still holds unresolved notices, so a seam can
+    guard cheaply. An owner with no notices (no linked tab, empty queue) is
+    created already-resolved.
+    """
+
+    __slots__ = ("_state", "_session_key", "_notices", "_resolved")
+
+    def __init__(self, state: Any, session_key: str, notices: list[str]):
+        self._state = state
+        self._session_key = session_key
+        self._notices = list(notices)
+        self._resolved = not notices
+
+    def __bool__(self) -> bool:
+        return bool(self._notices) and not self._resolved
+
+    @property
+    def notices(self) -> list[str]:
+        """The taken notices, to prepend to the prompt (empty once resolved)."""
+        return list(self._notices)
+
+    def prefix(self, message: str) -> str:
+        """``message`` with the taken notices prepended (unchanged if none)."""
+        if not self._notices:
+            return message
+        return "\n\n".join(self._notices) + "\n\n" + message
+
+    def settle(self) -> None:
+        """Write the delivery debt — call once the turn landed. Idempotent."""
+        if self._resolved:
+            return
+        self._resolved = True
+        settle_taken_tab_notices(self._state, self._session_key, self._notices)
+
+    def restore(self) -> None:
+        """Put the notices back (front, debt owed) — call if the turn did not land.
+        Idempotent."""
+        if self._resolved:
+            return
+        self._resolved = True
+        restore_taken_tab_notices(self._state, self._session_key, self._notices)
+
+    def hand_off(self) -> None:
+        """Relinquish ownership WITHOUT settling, after putting the notices back on
+        the queue for a nested replay to re-take. Idempotent.
+
+        Used by the Slack native replay: the notices are restored to the queue so
+        the nested ``handle_message`` re-takes them, and this owner marks itself
+        resolved so its ``finally`` backstop does not restore them a second time.
+        """
+        if self._resolved:
+            return
+        self._resolved = True
+        restore_taken_tab_notices(self._state, self._session_key, self._notices)
+
+    def resolve(self, *, landed: bool) -> None:
+        """settle() when *landed*, else restore(). Idempotent."""
+        if landed:
+            self.settle()
+        else:
+            self.restore()
+
+
+async def take_tab_notices(state: Any, session_key: str) -> TakenTabNotices:
+    """Load the linked tab's window, take its queued notices, and return the owner.
+
+    The single entry point a channel seam calls once per turn, before its gate:
+    it runs the one awaiting step (:func:`load_linked_tab_window`) and the
+    synchronous take, and hands back a :class:`TakenTabNotices` the seam then
+    settles or restores exactly once when the turn's outcome is known. A no-op
+    owner (already resolved, empty) for a conversation with no linked tab.
+    """
+    await load_linked_tab_window(state, session_key)
+    notices = take_linked_tab_subagent_notices(state, session_key)
+    return TakenTabNotices(state, session_key, notices)
 
 
 #: Where a requeue stamps the actor of the turn it is retrying. Re-exported from

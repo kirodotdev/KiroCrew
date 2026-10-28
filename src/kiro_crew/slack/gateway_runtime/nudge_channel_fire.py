@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         run_in_embed_pool,
         save_conversation_turn_off_loop,
         session_store_for_turn,
+        stop_reason_landed,
         stream_and_collect,
         turn_ceiling,
     )
@@ -291,6 +292,14 @@ async def _fire_slack_inner_nudge(
             approval = self._interactive_approval("autonudge", nudge_key=key)
             sessions = self.sessions
             assert sessions is not None
+            # This wake is the conversation's next agent activity, so a queued
+            # result reaches it here rather than waiting for a user turn. Take the
+            # notices (owner), prepend to the wake's prompt, and resolve once the
+            # outcome is known. Deferred import avoids the channel->dashboard cycle.
+            from kiro_crew.dashboard.chat_turn.queue_drain import take_tab_notices
+
+            _nudge_notices = await take_tab_notices(self.dashboard_state, key)
+            full_msg = _nudge_notices.prefix(full_msg)
             driver = TurnDriver(
                 client,
                 SilentRenderer(channel_type="slack"),
@@ -321,9 +330,23 @@ async def _fire_slack_inner_nudge(
                 closing_gate=lambda: sessions.begin_turn(key),
                 undelivered_watch_key=key,
             )
-            response = await asyncio.wait_for(
-                driver.run(full_msg),
-                timeout=_NUDGE_TURN_TIMEOUT,
+            try:
+                response = await asyncio.wait_for(
+                    driver.run(full_msg),
+                    timeout=_NUDGE_TURN_TIMEOUT,
+                )
+            except BaseException:
+                _nudge_notices.restore()
+                raise
+            # Landed iff the driver observed a completion that landed; reuse the
+            # composed ``stop_reason_landed`` (runs on gateway globals, so no
+            # pipeline import here) rather than widening the interface.
+            _nudge_notices.resolve(
+                landed=stop_reason_landed(
+                    (getattr(driver, "last_stop_reason", "") or "")
+                    if getattr(driver, "completion_observed", False)
+                    else None
+                )
             )
             if _driver_completion_hook is None or not _driver_completion_hook.accepted:
                 return MonitorDispatchResult.UNAVAILABLE

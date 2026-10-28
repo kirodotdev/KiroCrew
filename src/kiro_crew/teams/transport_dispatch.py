@@ -801,6 +801,7 @@ class TeamsDispatcher:
                 ChannelTurn(
                     start_priority=person_priority(inbound.person_origin),
                     channel_type="teams",
+                    dashboard_state=getattr(self, "dashboard_state", None),
                     session_key=session_key,
                     inbound_route=inbound_route,
                     inbound_restricted=session_restricted,

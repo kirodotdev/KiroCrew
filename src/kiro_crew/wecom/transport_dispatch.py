@@ -344,6 +344,7 @@ class WeComDispatcher:
                 ChannelTurn(
                     start_priority=person_priority(inbound.person_origin),
                     channel_type="wecom",
+                    dashboard_state=getattr(self, "dashboard_state", None),
                     session_key=session_key,
                     inbound_route=inbound_route,
                     # Session-directive consumer: monitor_start / autonudge_stop /

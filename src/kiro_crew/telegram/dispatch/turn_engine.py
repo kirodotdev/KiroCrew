@@ -345,6 +345,17 @@ async def _run_turn(
                 return "auto_approve"
             return ""
 
+        # Deferred import: a channel module importing ``dashboard`` at load time
+        # would cycle (dashboard imports every channel package at boot).
+        from kiro_crew.dashboard.chat_turn.queue_drain import take_tab_notices
+
+        # Drain this channel conversation's dashboard-tab subagent notices: load
+        # the restored tab's window (async, before the gate), take+clear, and
+        # prepend to the prompt. Telegram runs its own single turn (no replay), so
+        # the owner is settled once the turn lands and restored otherwise, resolved
+        # synchronously the moment the outcome is known (duplicate-not-lost).
+        _tg_notices = await take_tab_notices(self.dashboard_state, session_key)
+        full_message = _tg_notices.prefix(full_message)
         driver = facade.TurnDriver(
             provider,
             out_renderer,
@@ -380,7 +391,19 @@ async def _run_turn(
             ),
             undelivered_watch_key=session_key,
         )
-        accumulated = await driver.run(full_message)
+        try:
+            accumulated = await driver.run(full_message)
+        except BaseException:
+            # The turn never landed — restore the notices (debt still owed) so a
+            # failed/cancelled turn re-announces once rather than losing them.
+            _tg_notices.restore()
+            raise
+
+        # Resolve the tab notices NOW, before the failure-accounting and reset
+        # awaits below — a Stop cancel during those awaits would otherwise drop
+        # them. Landed => settle; not landed => restore to the front, debt owed.
+        _turn_landed = driver_turn_landed(driver)
+        _tg_notices.resolve(landed=_turn_landed)
 
         # ── Post-turn bookkeeping (each guarded so a failure here can't
         # fall through to the except and re-record the successful turn). ──
@@ -418,10 +441,6 @@ async def _run_turn(
             # count, so the streak stays a consecutive run rather than a lifetime
             # total whose bound is permanently tripped.
             runtime_death.clear_shared_deaths(session_key)
-        # The prompt (with any re-injected context) reached the model and
-        # the turn completed, so the finally must NOT restore the flag --
-        # unless the user cancelled it, which discards that prompt.
-        _turn_landed = driver_turn_landed(driver)
         if _unfinished:
             facade.Stats().inc_message_failed()
         else:

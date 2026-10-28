@@ -226,6 +226,12 @@ class ChannelTurn:
     """The cold start's place in the start queues: FOREGROUND only for a message a
     person sent (``person_origin`` on the inbound; rule ``kiro_crew.start_priority``)."""
 
+    dashboard_state: Optional[Any] = None
+    """The live dashboard state, when the dispatcher has one. Forwarded into the
+    pipeline's ``slot_state`` so a ``drive_turn`` caller's channel turn can drain
+    its dashboard tab's queued sub-agent notices. ``None`` for a gateway with no
+    dashboard; the drain is then a no-op."""
+
 
 class Drift(Enum):
     """Where ONE dispatcher still differs from the shared pipeline's default.

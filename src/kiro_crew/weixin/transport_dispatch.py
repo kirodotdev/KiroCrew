@@ -391,6 +391,7 @@ class WeixinDispatcher:
             ChannelTurn(
                 start_priority=person_priority(inbound.person_origin),
                 channel_type="weixin",
+                dashboard_state=getattr(self, "dashboard_state", None),
                 session_key=session_key,
                 # Durable inbound spool: the peer id IS the reply
                 # target on this DM-only channel, and the reply's context_token

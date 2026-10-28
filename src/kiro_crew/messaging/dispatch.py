@@ -746,6 +746,12 @@ class ChannelTurns:
         prompt = text
         accumulated = ""
         verdict = Verdict.FAILED
+        # Tab-notice drain owner, taken once per turn (below) and settled only
+        # once the turn lands; initialised to a resolved no-op here so the
+        # ``finally`` backstop can always reference it on any exit path.
+        from kiro_crew.dashboard.chat_turn.queue_drain import TakenTabNotices
+
+        _tab_notices_owner = TakenTabNotices(None, session_key, [])
         try:
             # ── Hook auto-reply: answer and stop, without acquiring a session ──
             # A ``HOOK_REPLY`` from the context builder's user-defined hooks
@@ -839,6 +845,28 @@ class ChannelTurns:
             # title, dashboard surfacing -- over an existing conversation.
             turn_is_new: bool | None = None
             replaying = False
+            # Drain this channel conversation's dashboard-tab subagent notices ONCE
+            # for the whole turn and carry them across every compaction-replay
+            # attempt (each attempt rebuilds ``full_message``, so the prefix is
+            # re-applied below), the way the dashboard keeps drained failures in
+            # ``turn.message`` for its own replay. ``take_tab_notices`` loads the
+            # restored tab's window (async, before any gate) and takes+clears the
+            # queue; the returned owner is settled only once the turn lands and
+            # restored otherwise (below + the finally backstop). Deferred import:
+            # ``messaging`` must not import a channel package at load and
+            # ``dashboard`` imports every channel package at boot (cycle); the
+            # dashboard state is read the channel-neutral way the directive
+            # consumer and crew-log opener read it.
+            from kiro_crew.dashboard.chat_turn.queue_drain import take_tab_notices
+
+            _tab_notices_owner = await take_tab_notices(
+                (
+                    self._slot_state()
+                    if self._slot_state is not None
+                    else getattr(self._dispatcher, "dashboard_state", None)
+                ),
+                session_key,
+            )
             while True:
                 if not claimed:
                     if deny_all_tools:
@@ -996,6 +1024,10 @@ class ChannelTurns:
                     context_provider=provider,
                     user_display_name=asker.display_name,
                 )
+                # Carry the tab notices into THIS attempt's prompt (taken once
+                # above); a compaction replay rebuilds ``full_message``, so the
+                # prefix is re-applied here each time.
+                full_message = _tab_notices_owner.prefix(full_message)
                 tool_gate = build_tool_gate(ctx_builder, session_key=session_key, agent=agent)
                 if Drift.GENERIC_DENY_REASON in drift:
                     tool_gate = _without_deny_reason(tool_gate)
@@ -1135,6 +1167,11 @@ class ChannelTurns:
             # recorded a failure, but the context it carried has already landed,
             # and re-arming would inject it a second time on the next turn.
             landed = bracket.landed(driver)
+            # Resolve the tab notices synchronously now the outcome is known, before
+            # any further await: settle once the turn was consumed (landed),
+            # otherwise restore to the front of the queue with the debt still owed
+            # so a failed or abandoned turn re-announces once rather than losing it.
+            _tab_notices_owner.resolve(landed=landed)
             stop_reason = (
                 (getattr(driver, "last_stop_reason", "") or "")
                 if getattr(driver, "completion_observed", False)
@@ -1369,6 +1406,13 @@ class ChannelTurns:
             # close it, so it would outlive this turn with its nonce still armed.
             if self._approvals.discard is not None:
                 self._approvals.discard(session_key)
+            # Backstop: a turn that exited before resolving its tab notices
+            # (an exception, an early return) restores them here. Idempotent —
+            # a no-op once settled, restored or handed off on the normal path.
+            try:
+                _tab_notices_owner.restore()
+            except Exception:
+                logger.debug("Could not restore tab notices on turn exit", exc_info=True)
             # A turn that consumed the post-compaction flag but never landed
             # discarded the prompt carrying the re-injected context, and a backend
             # that compacted the session during the turn dropped it; the bracket
@@ -1442,6 +1486,11 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         ),
         surface=turn.after_persist,
         restricted=_restricted,
+        # Forward the dispatcher's dashboard state so a drive_turn caller (Teams,
+        # Webex, WeCom, Weixin, WhatsApp, iMessage, Feishu) also drains its tab's
+        # queued sub-agent notices — without it ``_slot_state`` is None and the
+        # drain never runs for those channels.
+        slot_state=(lambda: turn.dashboard_state) if turn.dashboard_state is not None else None,
     )
     await turns._run(
         Asker(
