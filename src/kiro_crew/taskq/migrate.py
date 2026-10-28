@@ -35,6 +35,39 @@ from .model import (
 
 logger = logging.getLogger(__name__)
 
+#: DDL for ``accepted_work`` and ``principal_storage`` (``store_work``), applied by
+#: :func:`apply_schema` on every open. Additive:
+#: an older build that does not know the table leaves it untouched, so a rollback
+#: keeps accepted-work records.
+WORK_SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS accepted_work (
+      work_id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      budget_key TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      state TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      accepted_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      record_json TEXT NOT NULL,
+      payload_json TEXT
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS accepted_work_scope ON accepted_work(scope)",
+    "CREATE INDEX IF NOT EXISTS accepted_work_state ON accepted_work(state, accepted_at)",
+    "CREATE INDEX IF NOT EXISTS accepted_work_budget ON accepted_work(budget_key, state)",
+    "CREATE INDEX IF NOT EXISTS accepted_work_session ON accepted_work(session_key, state)",
+    """
+    CREATE TABLE IF NOT EXISTS principal_storage (
+      budget_key TEXT PRIMARY KEY,
+      bytes INTEGER NOT NULL,
+      updated_at REAL NOT NULL
+    )
+    """,
+)
+
+
 #: The one shape any build has written. The first real upgrade bumps this and
 #: adds its ``if current < N`` step to :func:`apply_schema`.
 SCHEMA_VERSION = 1
@@ -99,6 +132,8 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_id, state)",
     # Per-lane dispatch heads (fairness lanes).
     "CREATE INDEX IF NOT EXISTS tasks_lane ON tasks(lane, state, next_run_at, created_at)",
+    # Accepted-work admission rows (``store_work``). Additive, so the version stays.
+    *WORK_SCHEMA,
 )
 
 
