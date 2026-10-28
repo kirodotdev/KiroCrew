@@ -496,6 +496,12 @@ async def steer_into_running_turn(
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
+    if getattr(slot, "_kas_observing", False) is True:
+        # The running turn is a KAS observe turn (kas_workflows.router): it sent
+        # nothing and reads the turn Kiro Agent started on its own, so a steer
+        # would be folded into THAT turn. The message is the chat's next
+        # ordinary turn instead: the caller queues it.
+        return STEER_UNAVAILABLE
     if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
         # codex can drop a steer it already took when a later approval in the turn
         # is denied. That limit is accepted only for the composer, where the

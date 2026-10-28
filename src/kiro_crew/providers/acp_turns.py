@@ -22,6 +22,7 @@ from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.client import AcpClient, AcpError
+from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     EVENT_COMPACTION_STATUS,
@@ -89,6 +90,12 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping it lets Trust or YOLO pick the first answer of a KAS
+        # question the chat's own session asks.
+        answers_only=e.answers_only,
+        # The structured question a ``_kiro/userInput`` request asks; the
+        # chat's question card is drawn from it.
+        user_input=e.user_input,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
@@ -201,6 +208,20 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     async with aclosing(
         self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
     ) as events:
+        async for e in events:
+            yield self._to_llm_event(e)
+
+
+async def stream_observe(self: AcpProvider) -> AsyncIterator[LLMEvent]:
+    """Yield a turn the engine started on this session itself (KAS's wake).
+
+    Sends nothing (:meth:`AcpSessionProvider.stream_observe`). Only a session
+    on a shared runtime can be observed, which is the only kind a KAS
+    workflow run is parented by; any other client is refused.
+    """
+    if not isinstance(self._client, AcpSessionProvider):
+        raise AcpError("This session cannot observe an engine-started turn.")
+    async with aclosing(self._client.stream_observe()) as events:
         async for e in events:
             yield self._to_llm_event(e)
 

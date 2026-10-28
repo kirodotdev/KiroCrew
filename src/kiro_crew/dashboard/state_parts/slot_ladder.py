@@ -308,6 +308,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # A segment cut a permission request owes: paid by ``append`` before the
     # next durable row, dropped when the request lands none. None when idle.
     self._owed_segment_cut = None
+    # True while the in-flight turn is a KAS workflow observe turn (published
+    # and cleared with _acp_client): a steer is refused and the message queues.
+    self._kas_observing = False
     # Native kiro-cli subagents run inside the parent ACP turn. Keep their
     # live and terminal state on the slot so reconnects can hydrate cards.
     self._native_subagent_tracker = {}

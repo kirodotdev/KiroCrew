@@ -624,6 +624,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_workflow_definition_update,
         api_workflow_definitions,
         api_workflow_definitions_create,
+        api_workflow_engine,
         api_workflow_run,
         api_workflow_run_cancel,
         api_workflow_run_get,
@@ -645,11 +646,72 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_patch(
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
     )
+    app.router.add_get("/api/workflows/engine", api_workflow_engine)
     app.router.add_get("/api/workflows/runs", api_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
     app.router.add_post("/api/workflows/runs/{run_id}/cancel", api_workflow_run_cancel)
     app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
+
+    # KAS's own workflow engine, served only while Kiro Agent is the backend.
+    from kiro_crew.dashboard.handlers.kas_workflows import (
+        api_kas_approval_answer,
+        api_kas_question_answer,
+        api_kas_recipe_create,
+        api_kas_recipe_delete,
+        api_kas_recipe_detail,
+        api_kas_recipes,
+        api_kas_run_control,
+        api_kas_run_get,
+        api_kas_run_restart,
+        api_kas_run_retry,
+        api_kas_run_start,
+        api_kas_runs,
+        api_kas_slot_reconnect,
+        api_kas_slot_runs,
+        api_kas_state,
+        api_kas_step_cancel,
+        api_kas_step_complete,
+        api_kas_step_grant,
+        api_kas_step_reply,
+        api_kas_step_transcript,
+    )
+
+    # ``/recipes/detail`` is a distinct path from ``/recipes``; register the
+    # static detail GET before the bare recipes GET for clarity. Create (POST)
+    # and delete (DELETE) share the ``/recipes`` path by method.
+    app.router.add_get("/api/workflows/kas/recipes/detail", api_kas_recipe_detail)
+    app.router.add_get("/api/workflows/kas/recipes", api_kas_recipes)
+    app.router.add_post("/api/workflows/kas/recipes", api_kas_recipe_create)
+    app.router.add_delete("/api/workflows/kas/recipes", api_kas_recipe_delete)
+    app.router.add_get("/api/workflows/kas/state", api_kas_state)
+    app.router.add_get("/api/workflows/kas/runs", api_kas_runs)
+    app.router.add_post("/api/workflows/kas/runs", api_kas_run_start)
+    app.router.add_get("/api/workflows/kas/runs/{workflow_id}", api_kas_run_get)
+    app.router.add_get(
+        "/api/workflows/kas/runs/{workflow_id}/steps/{node_id}/transcript",
+        api_kas_step_transcript,
+    )
+    app.router.add_post(
+        "/api/workflows/kas/runs/{workflow_id}/steps/{node_id}/reply", api_kas_step_reply
+    )
+    app.router.add_post(
+        "/api/workflows/kas/runs/{workflow_id}/steps/{node_id}/grant", api_kas_step_grant
+    )
+    app.router.add_post(
+        "/api/workflows/kas/runs/{workflow_id}/steps/{node_id}/complete", api_kas_step_complete
+    )
+    app.router.add_post(
+        "/api/workflows/kas/runs/{workflow_id}/steps/{node_id}/cancel", api_kas_step_cancel
+    )
+    # Before the {action} catch-all, which would otherwise take these names.
+    app.router.add_post("/api/workflows/kas/runs/{workflow_id}/retry", api_kas_run_retry)
+    app.router.add_post("/api/workflows/kas/runs/{workflow_id}/restart", api_kas_run_restart)
+    app.router.add_post("/api/workflows/kas/runs/{workflow_id}/{action}", api_kas_run_control)
+    app.router.add_post("/api/workflows/kas/approvals/{key}", api_kas_approval_answer)
+    app.router.add_post("/api/workflows/kas/questions/{key}", api_kas_question_answer)
+    app.router.add_post("/api/workflows/kas/slots/{slot}/reconnect", api_kas_slot_reconnect)
+    app.router.add_get("/api/workflows/kas/slots/{slot}/runs", api_kas_slot_runs)
 
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)

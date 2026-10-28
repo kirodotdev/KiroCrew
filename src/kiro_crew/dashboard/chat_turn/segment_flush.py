@@ -1218,6 +1218,26 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         _recovering_compaction = True
         turn._recovering_compaction = _recovering_compaction
     elif (
+        turn._kas_observe
+        and _stop_reason != STOP_REASON_CANCELLED
+        and not turn._produced_visible_output
+        and not turn._terminal_directive_applied
+        and not _refusal_reasons
+    ):
+        # An observe turn sent nothing, so an empty one is not a model that
+        # failed to answer: KAS ran no turn here (its nudge went to a busy
+        # session's next turn, or there was none) or its turn only ran tools.
+        # Neither retry rung applies -- replaying the observe message reads
+        # nothing again, and a continuation would be a REAL prompt nobody
+        # asked for. Say so once when nothing at all happened.
+        if _turn_tool_calls == 0:
+            slot.append(
+                "notice",
+                "ℹ️ Kiro Agent did not reply to the workflow in this chat.",
+                "msg msg-info",
+                meta={"kind": EMPTY_TURN_NOTICE_KIND},
+            )
+    elif (
         _stop_reason != STOP_REASON_CANCELLED
         and not turn._produced_visible_output
         and not turn._terminal_directive_applied

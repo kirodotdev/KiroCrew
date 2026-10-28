@@ -18,6 +18,11 @@ from kiro_crew.dashboard.chat_utils import (
     tighten_live_slot_memory_mode,
 )
 from kiro_crew.dashboard.state import durable_row_count
+from kiro_crew.kas_workflows.router import KasWorkflowRouter
+from kiro_crew.kas_workflows.router import get_router as get_kas_workflow_router
+from kiro_crew.kas_workflows.router import is_observe_turn as is_kas_observe_turn
+from kiro_crew.kas_workflows.router import launch_from_turn as launch_kas_workflow_from_turn
+from kiro_crew.kas_workflows.router import observe_from_turn as observe_kas_workflow_from_turn
 from kiro_crew.llm_helpers import _billing_stats
 from kiro_crew.members import DM_SLOT_MODE, is_dispatchable_member_name, member_lifecycle
 from kiro_crew.platform import redact_log_via_context
@@ -91,7 +96,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.slash_commands import _refuse_blocked_slash
-    from kiro_crew.dashboard.chat_turn.tool_approval import _persistable_session_policy
+    from kiro_crew.dashboard.chat_turn.tool_approval import (
+        _kas_step_mode_reader,
+        _persistable_session_policy,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import (
         _dm_member_binding_changed,
         _message_rewritten_before_build,
@@ -1081,7 +1089,17 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     if _refused_native_todos:
         _deferred_options_expiry = False
         turn._deferred_options_expiry = _deferred_options_expiry
-    if _refused_native_todos and is_new and not resumed:
+    # A KAS workflow launch message (kiro_crew.kas_workflows.router) is the
+    # other post-claim turn that dispatches no prompt: it needs the claimed
+    # session itself, as the new run's parent, so it is answered only here.
+    _kas_launch = not is_slash and KasWorkflowRouter.is_turn_action(message)
+    # An observe turn (the same module) dispatches no prompt either, but it
+    # streams: it reads the turn KAS started on this session by itself. On a
+    # session this claim just created there is no such turn to read, and the
+    # turn is answered without a stream like a launch.
+    turn._kas_observe = not is_slash and is_kas_observe_turn(message)
+    _dispatchless = _refused_native_todos or _kas_launch or (turn._kas_observe and is_new)
+    if _dispatchless and is_new and not resumed:
         # ``get_or_create`` has consumed the session's one-shot FRESH
         # observation, but this refusal dispatches no prompt. The native
         # session holds no history, so re-use the replay lease: the next
@@ -1089,7 +1107,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # plus member rules). A warm refusal has no observation to restore
         # and must not manufacture a duplicate.
         state.sessions.mark_provider_switch_replay(session_key)
-    elif _refused_native_todos and is_new and resumed:
+    elif _dispatchless and is_new and resumed:
         # A speculative resume also arms is_new. Its native transcript
         # survives (``resumed`` must stay True so the next turn does not
         # replay history the session already holds -- the invariant that a
@@ -1228,6 +1246,34 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     if _refused_native_todos:
         _refuse_blocked_slash(turn)
         return _Flow.END
+    # Tells the router which chat this KAS session is and how to read the
+    # chat's approval mode, so a run's steps follow it (a launch's steps too).
+    try:
+        get_kas_workflow_router().note_chat_session(
+            slot.key,
+            client,
+            _kas_step_mode_reader(state, slot),
+            workspace=str(getattr(slot, "workspace", "") or ""),
+        )
+    except Exception:  # noqa: BLE001 -- never costs the turn
+        logger.debug("KAS workflow chat not noted", exc_info=True)
+    if _kas_launch:
+        _launch_reply = await launch_kas_workflow_from_turn(slot.key, message, client)
+        slot.append("assistant", _launch_reply or "", "msg msg-a")
+        state.push_slots_update()
+        return _Flow.END
+    if turn._kas_observe:
+        _observe_refusal = observe_kas_workflow_from_turn(slot.key, message, client, is_new=is_new)
+        if _observe_refusal is not None:
+            slot.append("assistant", _observe_refusal, "msg msg-a")
+            state.push_slots_update()
+            return _Flow.END
+    # An ordinary turn on a chat whose workflow run lost its Kiro Agent process
+    # (a restart) re-attaches the run in the background; a no-op otherwise.
+    try:
+        get_kas_workflow_router().schedule_reattach(slot.key, client)
+    except Exception:  # noqa: BLE001 -- never costs the turn
+        logger.debug("KAS workflow reattach not scheduled", exc_info=True)
     if _deferred_options_expiry:
         _deferred_options_expiry = False
         turn._deferred_options_expiry = _deferred_options_expiry
@@ -1236,6 +1282,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # (the dashboard steer handler) can reach the running session's client
     # to inject a mid-turn steer. Cleared in _turn_release_handles (chat_turn/turn_entry.py).
     slot._acp_client = getattr(client, "client", None)
+    # An observe turn sent no prompt: its session's live turn is the one KAS
+    # started itself, so a steer would land inside Kiro Agent's own turn.
+    # The steer path reads this and queues the message as the next turn.
+    slot._kas_observing = turn._kas_observe
     # Billing stats as they stand BEFORE this turn's prompt is sent. The
     # runtime installs a fresh per-turn stats object only inside the dispatch
     # in _run_chat; a turn that dies before that (expired credential, broken pipe)

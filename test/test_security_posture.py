@@ -1182,6 +1182,10 @@ class TestRedactionSinkRegistry:
             # THEN redact_credentials, cached by content hash, so a sink calling it is
             # fully covered; test_the_display_redactor_runs_both_scanners pins that.
             "_redact_for_display(",
+            # _redact_obj (dashboard/handlers/workflows.py) runs redact_exfiltration_urls
+            # THEN redact_credentials on every string, dict keys included; the
+            # Kiro Workflows routes import it rather than defining their own pair.
+            "_redact_obj(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

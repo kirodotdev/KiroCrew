@@ -447,6 +447,9 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     intent = (body.get("intent") or "").strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
+    redirect = _kas_chat_redirect(request)
+    if redirect is not None:
+        return redirect
     author = request.headers.get("X-Session-Key", "")
     refusal = await _private_memory_refusal(request, "workflow.author")
     if refusal is not None:
@@ -505,6 +508,9 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     source = body.get("source", "")
     if not isinstance(source, str) or not source.strip():
         return web.json_response({"error": "source is required"}, status=400)
+    redirect = _kas_chat_redirect(request)
+    if redirect is not None:
+        return redirect
     budget_total = body.get("budget_total")
     if not isinstance(budget_total, int):
         budget_total = None
@@ -527,6 +533,24 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         return _error("could not start workflow", "workflow_run_failed", 500)
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
+
+
+def _kas_chat_redirect(request: web.Request) -> web.Response | None:
+    """Refuse a NEW Crew script from a chat whose model holds KAS's run_workflow.
+
+    Two engines offered to one model is the confusion ``agent.kas_workflows``
+    exists to end: in such a chat a new workflow is a KAS run. Only authoring is
+    refused -- a saved Crew workflow (``/definitions/{ref}/run``) still runs. The
+    header only ever narrows what its caller may do, so a forged one refuses
+    nobody but the forger.
+    """
+    from kiro_crew.kas_workflows.chat import AUTHOR_REDIRECT, has_kas_workflows
+
+    if not has_kas_workflows(request.headers.get("X-Session-Key", "")):
+        return None
+    return web.json_response(
+        {"error": AUTHOR_REDIRECT, "code": "kas_workflows_in_chat"}, status=409
+    )
 
 
 async def api_workflow_run_intent(request: web.Request) -> web.Response:
@@ -562,6 +586,9 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     intent = (body.get("intent") or "").strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
+    redirect = _kas_chat_redirect(request)
+    if redirect is not None:
+        return redirect
     budget_total = body.get("budget_total")
     if not isinstance(budget_total, int):
         budget_total = None
@@ -584,6 +611,43 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
         return _error("could not start workflow", "workflow_run_intent_failed", 500)
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
+
+
+async def api_workflow_engine(request: web.Request) -> web.Response:
+    """GET /api/workflows/engine — which engine owns workflows on this gateway.
+
+    ``crew`` is Crew's own engine; ``kas`` means the selected harness brings its
+    own AND the operator opted in (``agent.kas_workflows``), so the dashboard may
+    offer its recipe library and runs. The answer folds the single opt-in in, so
+    ``kas`` reports only when the surfaces should actually render; the raw
+    ``backend``, the ``kas_workflows`` switch value and ``kas_backend`` (whether
+    the backend COULD serve KAS workflows) ride along so the settings UI can
+    explain whether the switch has any effect on this backend.
+    """
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.kas_workflows.engine import (
+        ENGINE_CREW,
+        ENGINE_KAS,
+        backend_brings_kas_workflows,
+        kas_workflows_enabled,
+    )
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    backend = config.agent.acp_backend
+    enabled = kas_workflows_enabled(config)
+    return web.json_response(
+        {
+            "engine": ENGINE_KAS if enabled else ENGINE_CREW,
+            "backend": backend,
+            # Whether the backend could serve KAS workflows at all (capability,
+            # independent of the opt-in): lets the UI say the switch has no
+            # effect until the backend is Kiro Agent.
+            "kas_backend": backend_brings_kas_workflows(backend),
+            # The single opt-in's stored value (``agent.kas_workflows``): the
+            # settings toggle reflects this even off a Kiro Agent backend.
+            "kas_workflows": bool(getattr(config.agent, "kas_workflows", False)),
+        }
+    )
 
 
 async def api_workflow_runs(request: web.Request) -> web.Response:
