@@ -437,6 +437,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # claude-agent-acp 0.94.0: a `/compact` prompt run as the SDK's own command
     # inside session/prompt.
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
+    "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
