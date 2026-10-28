@@ -349,6 +349,11 @@
       "new_messages_few": "{{count}} новых сообщения",
       "new_messages_many": "{{count}} новых сообщений",
       "new_messages_other": "{{count}} новых сообщения"
+    },
+    "chatPanel": {
+      "session_unavailable": "Этой сессии больше нет.",
+      "session_unavailable_detail": "Эта рабочая сессия закрыта. Открой её снова в приложении, чтобы продолжить.",
+      "starting_session": "Запуск сеанса…"
     }
   },
   "apps": {
@@ -6398,7 +6403,8 @@
       "no_active_session_for_this_artifact": "Для этого артефакта нет активного сеанса.",
       "open_in_chat_page": "Открыть на странице чата",
       "start_chat": "Начать чат",
-      "starting_session": "Запуск сеанса…"
+      "starting_session": "Запуск сеанса…",
+      "session_unavailable": "Этой сессии больше нет."
     },
     "artifactFolderDeleteDialog": {
       "artifact_few": "{{count}} артефакта",

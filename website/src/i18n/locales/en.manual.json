@@ -246,6 +246,11 @@
       "copy_failed": "Copy failed",
       "show_less": "Show less",
       "show_more": "Show more"
+    },
+    "chatPanel": {
+      "session_unavailable": "This session is no longer available.",
+      "session_unavailable_detail": "This workspace session was closed. Reopen it from the app to continue.",
+      "starting_session": "Starting session…"
     }
   },
   "apps": {
@@ -1969,7 +1974,8 @@
       "no_active_session_for_this_artifact": "No active session for this artifact.",
       "open_in_chat_page": "Open in chat page",
       "start_chat": "Start chat",
-      "starting_session": "Starting session…"
+      "starting_session": "Starting session…",
+      "session_unavailable": "This session is no longer available."
     },
     "artifactPanel": {
       "couldn_t_send_your_comments_are_still_pending": "Couldn't send — your comments are still pending.",

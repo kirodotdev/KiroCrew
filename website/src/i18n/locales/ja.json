@@ -304,6 +304,11 @@
     },
     "newMessagesDivider": {
       "new_messages_other": "新着メッセージ {{count}} 件"
+    },
+    "chatPanel": {
+      "session_unavailable": "このセッションは利用できなくなりました。",
+      "session_unavailable_detail": "このワークスペースセッションは閉じられました。続けるにはアプリから開き直してください。",
+      "starting_session": "セッション開始中…"
     }
   },
   "apps": {
@@ -6083,7 +6088,8 @@
       "no_active_session_for_this_artifact": "このアーティファクトのアクティブなセッションはありません。",
       "open_in_chat_page": "チャットページで開く",
       "start_chat": "チャット開始",
-      "starting_session": "セッション開始中…"
+      "starting_session": "セッション開始中…",
+      "session_unavailable": "このセッションは利用できなくなりました。"
     },
     "artifactFolderDeleteDialog": {
       "artifact_other": "{{count}} アーティファクト",

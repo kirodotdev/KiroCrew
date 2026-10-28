@@ -1,9 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { Plus, ExternalLink, X, Sparkles } from 'lucide-react'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import ChatPage from '../pages/ChatPage'
+import ErrorNotice from './ErrorNotice'
+import { Btn } from './ui'
+import { errMessage, isMissingSlotError } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 
@@ -53,16 +56,56 @@ export function ArtifactChatPanel({
 }) {
   const isMobile = useIsMobile()
   const dispatch = useAppDispatch()
-  const prevSlotRef = useRef<string | null>(null)
+  // The embedded ChatPage renders the dashboard's ACTIVE slot. This panel has
+  // no sidebar (embedMode="chat"), so the user cannot legitimately change the
+  // active slot from inside it: once our switch has settled, the active slot
+  // moving off our session means the session went away (deleted elsewhere, the
+  // store falling back to a sibling). We re-gate on it and never show that
+  // other chat.
+  const activeSlot = useAppSelector(state => state.chat.activeSlot)
+  // The bound session once switchSlot() has made it active. The chat is shown
+  // only from then on.
+  const [readyKey, setReadyKey] = useState<string | null>(null)
+  // How the session became unusable: '' none, 'gone' a 404 / vanished session
+  // (a retry cannot recover it — offer a new chat instead), 'error' a transient
+  // failure (gateway down, 5xx) worth a "Try again".
+  const [failureKind, setFailureKind] = useState<'' | 'gone' | 'error'>('')
+  // Message shown for a transient failure.
+  const [failure, setFailure] = useState('')
+  // Bumped by "Try again" to run the switch again.
+  const [attempt, setAttempt] = useState(0)
 
-  // Activate the bound session. Re-dispatches on rebind (New chat replaces the
-  // slot) but not on unrelated re-renders.
+  // Activate the bound session and show the chat only once the switch has
+  // succeeded. Re-dispatches on rebind (New chat replaces the slot), on
+  // "Try again", but not on unrelated re-renders. A deleted session (404)
+  // leaves the active slot on whatever chat the dashboard had open, so the
+  // panel must never render — or send into — that other chat.
   useEffect(() => {
-    if (slotKey && slotKey !== prevSlotRef.current) {
-      prevSlotRef.current = slotKey
-      dispatch(switchSlot(slotKey))
-    }
-  }, [slotKey, dispatch])
+    setFailure('')
+    setFailureKind('')
+    setReadyKey(null)
+    if (!slotKey) return
+    let current = true
+    dispatch(switchSlot(slotKey)).unwrap()
+      .then(() => { if (current) setReadyKey(slotKey) })
+      .catch((err: unknown) => {
+        if (!current) return
+        // A deleted session: an explicit "unavailable" state with a way to
+        // start a new chat, never the chat the store fell back to.
+        if (isMissingSlotError(err)) setFailureKind('gone')
+        // Anything else (gateway down, 5xx) is a transient failure, shown with
+        // "Try again"; it is never retried on its own, so an outage does not loop.
+        else { setFailureKind('error'); setFailure(errMessage(err) || i18nT('store.chatSlice.session_open_error')) }
+      })
+    return () => { current = false }
+  }, [slotKey, attempt, dispatch])
+
+  // The switch settled on our session but the active slot has since moved off
+  // it: with no sidebar here, that only happens when the session went away and
+  // the store fell back to another one. Treat it as a gone session.
+  const vanished = readyKey === slotKey && activeSlot !== slotKey
+  // The chat is shown only while the bound session is the active slot.
+  const showChat = readyKey === slotKey && activeSlot === slotKey
 
   // 480px cannot fit a phone viewport, and this row has no horizontal scroll,
   // so the overhang was clipped rather than reachable. While narrow the panel
@@ -113,7 +156,56 @@ export function ArtifactChatPanel({
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {slotKey ? (
-          <ChatPage embedded embedMode="chat" noUrlSync />
+          failureKind === 'gone' || vanished ? (
+            // The session is gone for good: a 404, or it vanished while open.
+            // Rendered through the shared ErrorNotice (errors-use-error-notice)
+            // so a rejected-request failure uses the one error surface, not a
+            // bare <span>. "Try again" would just 404 again, so the forward
+            // action is a new chat — the panel's own New-chat handler, in the
+            // footer.
+            // No hand-off: a vanished session cannot be recovered by the agent
+            // (the chat the hand-off would open is the one that is gone), and
+            // this panel holds no unsaved draft — the composer lives inside the
+            // ChatPage that never mounted. The way forward is Start chat.
+            <ErrorNotice
+              className="m-2 animate-rise"
+              message={i18nT('components.artifactChatPanel.session_unavailable')}
+              noHandoffReason="A vanished session cannot be reopened by the agent; the forward action is a new chat."
+              actionPlacement="below"
+              footer={
+                <button
+                  type="button"
+                  onClick={onNewChat}
+                  className="px-2.5 py-1 rounded-md text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all"
+                >
+                  {i18nT('components.artifactChatPanel.start_chat')}
+                </button>
+              }
+            />
+          ) : failureKind === 'error' ? (
+            // A transient failure (gateway down, 5xx): "Try again" can recover.
+            // A failed session load holds nothing unsaved in this panel (the
+            // composer lives inside the ChatPage that never mounted), so the
+            // agent hand-off is safe to offer.
+            <ErrorNotice
+              className="m-2 animate-rise"
+              message={failure}
+              askAgent
+              actionPlacement="below"
+              footer={
+                <Btn type="button" onClick={() => setAttempt(n => n + 1)}>
+                  {i18nT('components.webPreviewPanel.try_again')}
+                </Btn>
+              }
+            />
+          ) : showChat ? (
+            <ChatPage embedded embedMode="chat" noUrlSync followupOpensFullPage />
+          ) : (
+            // Switch in flight: a status line, not a blank body.
+            <div className="flex-1 flex items-center justify-center text-muted text-[13px]" role="status">
+              <span className="animate-pulse">{i18nT('components.artifactChatPanel.starting_session')}</span>
+            </div>
+          )
         ) : creating ? (
           <div className="flex-1 flex items-center justify-center text-muted text-[13px]" role="status">
             <span className="animate-pulse">{i18nT('components.artifactChatPanel.starting_session')}</span>

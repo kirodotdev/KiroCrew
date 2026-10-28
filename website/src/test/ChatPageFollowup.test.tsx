@@ -94,6 +94,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
+import { useLocation } from 'react-router-dom'
 
 const ITEM = {
   title: 'Add rate limits',
@@ -135,6 +136,57 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
         <Provider store={store}>
           <ThemeProvider>
             <MemoryRouter><ChatPage /></MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+  })
+  await waitFor(() => expect(screen.getByText('Add rate limits')).toBeTruthy())
+}
+
+// Reports the router's current path, so a test can prove an embedded follow-up
+// navigated to the full chat page instead of switching the slot in place.
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="zzq-path">{loc.pathname}</div>
+}
+
+// Mount ChatPage as a FIXED-SLOT host panel does: embedded + embedMode="chat"
+// AND the opt-in followupOpensFullPage prop. Starts at /artifacts/x so a
+// navigate('/chat') is observable as a path change.
+async function renderEmbeddedPage(store: ReturnType<typeof makeStore>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  await act(async () => {
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={['/artifacts/x']}>
+              <LocationProbe />
+              <ChatPage embedded embedMode="chat" noUrlSync followupOpensFullPage />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+  })
+  await waitFor(() => expect(screen.getByText('Add rate limits')).toBeTruthy())
+}
+
+// Mount ChatPage embedded WITHOUT the opt-in prop — the shape an iframe
+// /embed/chat route or Papyrus's CoAuthorPanel renders. A follow-up here must
+// still switch the slot in place and must NOT navigate the whole frame to /chat.
+async function renderEmbeddedNoPropPage(store: ReturnType<typeof makeStore>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  await act(async () => {
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={['/artifacts/x']}>
+              <LocationProbe />
+              <ChatPage embedded embedMode="chat" noUrlSync />
+            </MemoryRouter>
           </ThemeProvider>
         </Provider>
       </QueryClientProvider>,
@@ -317,5 +369,58 @@ describe('ChatPage follow-up worktree orchestration', () => {
     })
     await waitFor(() => expect(composer().value).toContain('Please rotate the key.'))
     expect(composer().value).toBe('half-written thought\n\nPlease rotate the key.')
+  })
+})
+
+describe('ChatPage follow-up spawn routes to the full page only when opted in', () => {
+  // GPT path (d): a fixed-slot host panel (ArtifactChatPanel / the app-SDK
+  // ChatPanel in chat-only mode) embeds a ChatPage that shows only the panel's
+  // bound slot and reads the dashboard's active slot moving off it as the
+  // session vanishing. A follow-up "Start in new chat" legitimately switches
+  // the active slot — so under such a panel it would trip that guard into a
+  // false "session unavailable". Those hosts set the opt-in
+  // `followupOpensFullPage` prop, which hands the new session to the full chat
+  // page (navigate there) instead of switching in place.
+  //
+  // The prop is opt-in and NOT `embedded`: every embedded ChatPage sets
+  // `embedded` (the iframe /embed/chat + /embed/sessions routes, Papyrus's
+  // CoAuthorPanel), and inside an iframe a navigate('/chat') would load the
+  // whole dashboard in the frame. The negative test below pins that.
+  //
+  // Red without the opt-in branch in useOpenFollowupSession: the switchSlot
+  // path runs, activeSlot becomes chat-2 (tripping the guard) and the router
+  // never leaves /artifacts/x.
+  it('with followupOpensFullPage: navigates to /chat and does not switch the active slot under the panel', async () => {
+    ;(api.projectGit as ReturnType<typeof vi.fn>).mockResolvedValue({ repo: false })
+    const store = makeStore()
+    await renderEmbeddedPage(store)
+    expect(screen.getByTestId('zzq-path').textContent).toBe('/artifacts/x')
+    fireEvent.click(await screen.findByRole('button', { name: /start in new chat/i }))
+    // The new session is created and the prompt staged, then the user is taken
+    // to the full chat page — not switched under the panel.
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('zzq-path').textContent).toBe('/chat'))
+    // The active slot was NOT moved off the panel's own slot: that drift is
+    // exactly what the panel guard would read as its session vanishing.
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    // The prompt rides the prefill channel so the full page restores it on
+    // arrival; the follow-up card is cleared on the successful hand-off.
+    expect(sessionStorage.getItem('kirocrew_prefill')).toContain(ITEM.prompt)
+    expect(store.getState().chat.followups['chat-1']).toBeUndefined()
+  })
+
+  it('embedded WITHOUT the prop (iframe embed / CoAuthorPanel) still switches the slot in place and does not navigate', async () => {
+    // The default: a plain embedded ChatPage must keep the in-place switch, so
+    // an iframe embed does not load the whole dashboard inside its frame.
+    ;(api.projectGit as ReturnType<typeof vi.fn>).mockResolvedValue({ repo: false })
+    const store = makeStore()
+    await renderEmbeddedNoPropPage(store)
+    expect(screen.getByTestId('zzq-path').textContent).toBe('/artifacts/x')
+    fireEvent.click(await screen.findByRole('button', { name: /start in new chat/i }))
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
+    // The follow-up switched to the new session in place (no full-page hand-off):
+    // activeSlot moved to chat-2 and the router never left /artifacts/x.
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    expect(screen.getByTestId('zzq-path').textContent).toBe('/artifacts/x')
   })
 })

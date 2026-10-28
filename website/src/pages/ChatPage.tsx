@@ -128,7 +128,7 @@ const activateHandoffSlot = (dispatch: AppDispatch, key: string) => dispatch(swi
 // can never disagree about what counts as a boundary.
 
 
-export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
+export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync, followupOpensFullPage }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean; followupOpensFullPage?: boolean } = {}) {
   const {
     dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
     mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
@@ -704,7 +704,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     openFollowupSession,
   } = useOpenFollowupSession({
-    mode, dispatch,
+    mode, dispatch, followupOpensFullPage, navigate,
   })
   const {
     followupStartInWorktree, followupStartInNewChat,

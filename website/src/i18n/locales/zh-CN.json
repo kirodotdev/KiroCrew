@@ -304,6 +304,11 @@
     },
     "newMessagesDivider": {
       "new_messages_other": "{{count}} 条新消息"
+    },
+    "chatPanel": {
+      "session_unavailable": "此会话已不可用。",
+      "session_unavailable_detail": "此工作区会话已关闭。请从应用中重新打开以继续。",
+      "starting_session": "正在启动会话…"
     }
   },
   "apps": {
@@ -6083,7 +6088,8 @@
       "no_active_session_for_this_artifact": "此产物没有活动会话。",
       "open_in_chat_page": "在对话页面中打开",
       "start_chat": "开始对话",
-      "starting_session": "正在启动会话…"
+      "starting_session": "正在启动会话…",
+      "session_unavailable": "此会话已不可用。"
     },
     "artifactFolderDeleteDialog": {
       "artifact_other": "{{count}} 个产物",

@@ -334,6 +334,11 @@
       "new_messages_one": "{{count}} nuovo messaggio",
       "new_messages_other": "{{count}} nuovi messaggi",
       "new_messages_many": "{{count}} nuovi messaggi"
+    },
+    "chatPanel": {
+      "session_unavailable": "Questa sessione non è più disponibile.",
+      "session_unavailable_detail": "Questa sessione di lavoro è stata chiusa. Riaprila dall’app per continuare.",
+      "starting_session": "Avvio della sessione…"
     }
   },
   "apps": {
@@ -6293,7 +6298,8 @@
       "no_active_session_for_this_artifact": "Nessuna sessione attiva per questo artefatto.",
       "open_in_chat_page": "Apri nella pagina della chat",
       "start_chat": "Avvia la chat",
-      "starting_session": "Avvio della sessione…"
+      "starting_session": "Avvio della sessione…",
+      "session_unavailable": "Questa sessione non è più disponibile."
     },
     "artifactFolderDeleteDialog": {
       "artifact_many": "{{count}} artefatti",
