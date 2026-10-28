@@ -497,6 +497,32 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await waitFor(() => expect(screen.getByTestId('crewmate-switcher')).toHaveFocus())
   })
 
+  it('the "Show the full roster" pin survives leaving the page and coming back (issue #19464)', async () => {
+    const rows = [
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research' }),
+    ]
+    const classes = () => screen.getByTestId('member-roster').className.split(/\s+/)
+    const first = await renderPage(rows, 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('member-identity-pill')
+    expect(classes()).not.toContain('md:flex')
+    fireEvent.click(screen.getByTestId('crewmate-switcher'))
+    fireEvent.click(await screen.findByTestId('crewmate-switcher-roster'))
+    await waitFor(() => expect(classes()).toContain('md:flex'))
+    // Navigating away unmounts the page; coming back mounts it fresh.
+    first.unmount()
+    const second = await renderPage(rows, 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('member-identity-pill')
+    expect(classes()).toContain('md:flex')
+    // Lifting the pin is remembered the same way.
+    fireEvent.click(screen.getByTestId('member-roster-hide'))
+    await waitFor(() => expect(classes()).not.toContain('md:flex'))
+    second.unmount()
+    await renderPage(rows, 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('member-identity-pill')
+    expect(classes()).not.toContain('md:flex')
+  })
+
   it('a team view keeps the roster column beside it on desktop, pinned or not — it is the only way back', async () => {
     // TeamView's Back is md:hidden and the team header carries no switcher, so
     // a desktop /members?team=<id> with the roster folded had no exit at all.
