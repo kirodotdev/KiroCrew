@@ -76,7 +76,7 @@ const THUNKS: Record<string, string> = {
 }
 
 const FUNCTIONS = [
-  'abortActiveOlderFetch', 'batchedTextAboveFloor', 'beginSideQueueEdit', 'capturePendingAskId', 'clampToolOutput',
+  'abortActiveOlderFetch', 'announceSlotGone', 'batchedTextAboveFloor', 'beginSideQueueEdit', 'capturePendingAskId', 'clampToolOutput',
   'countMatchedFetchLimit', 'finishSideQueueEdit', 'floorForGen', 'forgetSideSteerSubmittedText', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
   'captureForkOrigin', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
   'noteSideQueueDroppedByClose', 'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryPastes', 'queueEntryQuote', 'raiseChunkSeq', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'resumeStillOpening', 'setSideQueueEditDraft',
