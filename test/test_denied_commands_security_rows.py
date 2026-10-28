@@ -538,6 +538,12 @@ class TestRecursiveForceRmFloor:
             "2>&1 RM -rf ~",
             "> /dev/null RM -fr /",
             "X=1 Y=2 >log RM -rf /",
+            # A ``>`` that ends a QUOTED target is a character of the target, not an
+            # operator; the rm floor reads dequoted words, so it must not take it
+            # as one and swallow the program word as the next redirection's target.
+            '>"log>" RM -r -f ~',
+            ">'log>' RM -r -f ~",
+            '2>"x>" RM -rf /',
             "&>/dev/null RM -fr /",
             # A reserved word or ``!`` / ``time`` leaves the next word the program.
             "if :; then RM -fr ~; fi",

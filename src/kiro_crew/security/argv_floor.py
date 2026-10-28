@@ -95,7 +95,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.security.argv_floor_git import (  # noqa: F401
         _AMBIGUOUS_REFS,
         _AMBIGUOUS_REFSPEC_RE,
-        _GIT_ARG_FLAGS,
         _GIT_PUBLISH_DENY_LABEL,
         _GIT_PUBLISH_GLUE_RE,
         _GIT_PUBLISH_RE,
@@ -112,11 +111,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _git_publish_floor_tags,
         _git_push_args,
         _is_git_publish,
-        _is_git_push_via_normalizer,
         _is_push_to_protected_branch,
         _normalize_ref,
         _process_substitution_word_is_opaque,
         _push_segment_targets_protected,
+        _tag_runtime_publishes,
     )
     from kiro_crew.security.argv_floor_hosts import (  # noqa: F401
         _DNS_CANDIDATE_RE,
@@ -272,6 +271,17 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decoded_b64_literal_sources,
         _has_self_importing_inline_program,
     )
+    from kiro_crew.security.publish_program_word import (  # noqa: F401
+        _commands_without_runtime_publish,
+        _floor_segments,
+        _runs_runtime_program_publish,
+        _runtime_publishes,
+        _without_judged_program_words,
+    )
+    from kiro_crew.security.publish_subcommand import (  # noqa: F401
+        _GIT_ARG_FLAGS,
+        _is_git_push_via_normalizer,
+    )
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
         _PROCESS_SUBSTITUTION_OPENERS,
@@ -304,7 +314,6 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _shell_join_continuations,
         _shell_payload_walk,
         _shell_quote_walk,
-        _split_push_command_segments,
         _split_shell_words,
         _strip_redirect,
         _substitution_bodies,

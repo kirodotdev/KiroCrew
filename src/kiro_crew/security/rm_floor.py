@@ -160,7 +160,7 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 # ``then`` / ``do`` / ``!`` / ``time`` … leave the next word the program
                 words = words[2:] if words[0] == "time" and words[1:2] == ["-p"] else words[1:]
                 continue
-            is_redirection, consumes_next = _shell._push_token_redirection(words[0])
+            is_redirection, consumes_next = _shell._push_token_redirection(words[0], chained=False)
             if is_redirection:
                 # a leading redirection runs before the command; drop its word, and
                 # its separate target word too when the operator did not glue one on
