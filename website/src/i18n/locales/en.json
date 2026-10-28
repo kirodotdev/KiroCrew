@@ -6137,11 +6137,16 @@
       "kiro": "Kiro",
       "truncated": "Shortened for the preview. The whole message carries over when you continue.",
       "skipped": "Some lines of this session couldn't be read and aren't shown.",
-      "continue_hint": "Continue in Crew opens a new chat with this session's full context. The session in your terminal stays as it is.",
+      "continue_hint": "Continue in Crew opens a new chat with a copy of this conversation. The session in your terminal stays as it is.",
+          "state_kept": "The new chat also keeps kiro-cli's own saved session state.",
+          "state_needs_tool_search_off": "The new chat picks up from the messages shown here. To also keep kiro-cli's own saved session state, turn off MCP Tool Search.",
+          "state_needs_harness": "The new chat picks up from the messages shown here. To also keep kiro-cli's own saved session state, set Settings → Agent Harness to Kiro CLI and turn off MCP Tool Search.",
+          "state_unavailable": "The new chat picks up from the messages shown here. kiro-cli's own saved session state can't carry over on this machine, because its kiro-cli runs {{productName}}'s chats on Kiro Agent.",
       "continue": "Continue in Crew",
       "continuing": "Copying…",
       "continue_failed": "Couldn't continue this session",
       "opened_without_project": "The new chat is ready, but it opens without a project folder: {{reason}}",
+      "opened_without_folder": "Opened without its folder",
       "open_chat": "Open the chat",
       "close": "Close"
     }

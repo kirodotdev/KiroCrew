@@ -10271,11 +10271,16 @@
       "kiro": "Kiro",
       "truncated": "미리 보기용으로 줄였습니다. 계속하면 전체 메시지가 그대로 이어집니다.",
       "skipped": "이 세션의 일부 줄을 읽을 수 없어 표시하지 않았습니다.",
-      "continue_hint": "Crew에서 계속하면 이 세션의 전체 컨텍스트로 새 채팅이 열립니다. 터미널의 세션은 그대로 유지됩니다.",
+      "continue_hint": "Crew에서 계속하기는 이 대화의 사본으로 새 채팅을 엽니다. 터미널의 세션은 그대로 남습니다.",
+          "state_kept": "새 채팅은 kiro-cli가 저장한 세션 상태도 이어받습니다.",
+          "state_needs_tool_search_off": "새 채팅은 여기 보이는 메시지에서 이어집니다. kiro-cli가 저장한 세션 상태도 이어받으려면 MCP 도구 검색을 끄세요.",
+          "state_needs_harness": "새 채팅은 여기 보이는 메시지에서 이어집니다. kiro-cli가 저장한 세션 상태도 이어받으려면 설정 → 에이전트 하네스에서 Kiro CLI를 고르고 MCP 도구 검색을 끄세요.",
+          "state_unavailable": "새 채팅은 여기 보이는 메시지에서 이어집니다. 이 컴퓨터의 kiro-cli는 {{productName}} 채팅을 Kiro Agent로 실행하므로, kiro-cli가 저장한 세션 상태는 이어받을 수 없습니다.",
       "continue": "Crew에서 계속",
       "continuing": "복사하는 중…",
       "continue_failed": "이 세션을 계속할 수 없습니다",
       "opened_without_project": "새 채팅이 준비되었지만 프로젝트 폴더 없이 열립니다: {{reason}}",
+      "opened_without_folder": "폴더 없이 열림",
       "open_chat": "채팅 열기",
       "close": "닫기"
     }

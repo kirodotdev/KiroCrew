@@ -10563,11 +10563,16 @@
       "kiro": "Kiro",
       "truncated": "Encurtada para a prévia. A mensagem completa é mantida quando você continua.",
       "skipped": "Algumas linhas desta sessão não puderam ser lidas e não são mostradas.",
-      "continue_hint": "Continuar no Crew abre um novo chat com todo o contexto desta sessão. A sessão no seu terminal continua como está.",
+      "continue_hint": "Continuar no Crew abre uma nova conversa com uma cópia desta. A sessão no seu terminal fica como está.",
+          "state_kept": "A nova conversa também mantém o estado de sessão salvo pelo kiro-cli.",
+          "state_needs_tool_search_off": "A nova conversa continua a partir das mensagens mostradas aqui. Para manter também o estado de sessão salvo pelo kiro-cli, desative a Busca de ferramentas MCP.",
+          "state_needs_harness": "A nova conversa continua a partir das mensagens mostradas aqui. Para manter também o estado de sessão salvo pelo kiro-cli, escolha Kiro CLI em Configurações → Harness do agente e desative a Busca de ferramentas MCP.",
+          "state_unavailable": "A nova conversa continua a partir das mensagens mostradas aqui. Nesta máquina ela não pode trazer o estado de sessão salvo pelo kiro-cli, porque aqui o kiro-cli executa as conversas do {{productName}} no Kiro Agent.",
       "continue": "Continuar no Crew",
       "continuing": "Copiando…",
       "continue_failed": "Não foi possível continuar esta sessão",
       "opened_without_project": "O novo chat está pronto, mas abre sem pasta de projeto: {{reason}}",
+      "opened_without_folder": "Aberta sem a pasta",
       "open_chat": "Abrir o chat",
       "close": "Fechar"
     }

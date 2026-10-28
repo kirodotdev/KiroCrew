@@ -2,10 +2,10 @@
  *  in a terminal, searchable, each opening a read-only preview that can
  *  continue it as a Crew chat. */
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query'
 import { Terminal, X } from 'lucide-react'
 import { api } from '../../api/client'
-import type { KiroCliSessionRow } from '../../api/client/sessions'
+import type { KiroCliSessionList, KiroCliSessionRow } from '../../api/client/sessions'
 import { SearchInput } from '../../components/ui'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -16,7 +16,7 @@ import { dateSegment } from './chrome'
 import { readStoredHistorySource, storeHistorySource, type HistorySource } from './persistence'
 import { i18nT } from '../../i18n/t'
 
-/** Rows per page, and the step "Load more" adds. */
+/** Rows per page: what each "Load more" fetches, from where the loaded rows end. */
 const PAGE = 50
 /** How long typing settles before the gateway is asked again. */
 const SEARCH_DEBOUNCE_MS = 250
@@ -25,15 +25,26 @@ const SEARCH_DEBOUNCE_MS = 250
 // (which clears Crew's history and so is only offered on the Crew tab). One
 // module-level value rather than sidebar state: the footer and the pane body are
 // drawn by a render function that cannot hold state of its own.
-// The stored value IS the state (a string, so the snapshot compares by value),
-// read on every snapshot so a reload, another tab or a cleared storage is
-// followed rather than shadowed by a copy held here.
+// Held here, seeded from storage on first read; writing it back is best-effort,
+// so a browser that refuses storage still switches tabs (it just forgets the
+// choice on reload).
 const sourceListeners = new Set<() => void>()
-const getSource = readStoredHistorySource
+let currentSource: HistorySource | null = null
+
+function getSource(): HistorySource {
+  if (currentSource === null) currentSource = readStoredHistorySource()
+  return currentSource
+}
 
 function setSource(next: HistorySource): void {
+  currentSource = next
   storeHistorySource(next)
   for (const listener of sourceListeners) listener()
+}
+
+/** Drop the held choice so the next read comes from storage again (a reload, in tests). */
+export function resetHistorySource(): void {
+  currentSource = null
 }
 
 function subscribeSource(listener: () => void): () => void {
@@ -57,7 +68,7 @@ export function CrewHistoryOnly({ children }: { children: ReactNode }) {
  * selected tab's body is drawn, so the Kiro CLI list is fetched only when it is
  * looked at.
  */
-export function HistorySourceTabs({ crew, height, connected }: { crew: () => ReactNode; height: number; connected: boolean }) {
+export function HistorySourceTabs({ crew, height, connected, onSelectSlot }: { crew: () => ReactNode; height: number; connected: boolean; onSelectSlot?: (key: string) => void }) {
   const source = useHistorySource()
   return (
     <Tabs value={source} onValueChange={v => setSource(v === 'kiro-cli' ? 'kiro-cli' : 'crew')} layoutId="history-source-tabs">
@@ -68,7 +79,7 @@ export function HistorySourceTabs({ crew, height, connected }: { crew: () => Rea
         </TabsList>
       </div>
       <TabsContent value="crew">{source === 'crew' && crew()}</TabsContent>
-      <TabsContent value="kiro-cli"><KiroCliHistory height={height} connected={connected} /></TabsContent>
+      <TabsContent value="kiro-cli"><KiroCliHistory height={height} connected={connected} onSelectSlot={onSelectSlot} /></TabsContent>
     </Tabs>
   )
 }
@@ -85,22 +96,34 @@ export function folderLabel(cwd: string): string {
  * the filtering (which sessions are a person's, and the search), so this keeps
  * no copy of the rule.
  */
-function KiroCliHistory({ height, connected }: { height: number; connected: boolean }) {
+function KiroCliHistory({ height, connected, onSelectSlot }: { height: number; connected: boolean; onSelectSlot?: (key: string) => void }) {
   const [query, setQuery] = useState('')
   const [search, setSearch] = useState('')
-  const [limit, setLimit] = useState(PAGE)
   const [previewId, setPreviewId] = useState<string | null>(null)
   useEffect(() => {
-    const t = window.setTimeout(() => { setSearch(query.trim()); setLimit(PAGE) }, SEARCH_DEBOUNCE_MS)
+    const t = window.setTimeout(() => setSearch(query.trim()), SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(t)
   }, [query])
-  const list = useQuery({
-    queryKey: ['kiro-cli-sessions', search, limit],
-    queryFn: () => api.kiroCliSessions(search, limit, 0),
+  // One page per request, each starting after the last row loaded: the gateway
+  // caps a page's size, so growing one request's limit would stop reaching new
+  // rows at that cap. The page resumes from that row, not from a count of rows:
+  // a session a terminal touches meanwhile moves to the top and shifts the rest
+  // down, which would serve a row already shown again.
+  const list = useInfiniteQuery({
+    queryKey: ['kiro-cli-sessions', search],
+    queryFn: ({ pageParam }) => api.kiroCliSessions(search, PAGE, pageParam),
+    initialPageParam: null as KiroCliSessionRow | null,
+    getNextPageParam: (last: KiroCliSessionList) =>
+      last.has_more && last.sessions.length > 0 ? last.sessions[last.sessions.length - 1] : undefined,
     placeholderData: keepPreviousData,
+    // A terminal keeps writing sessions with no event reaching Crew, so the
+    // list is read again each time it is opened instead of riding the app's
+    // push-driven `staleTime: Infinity`.
+    staleTime: 0,
+    refetchOnMount: 'always',
     enabled: connected,
   })
-  const rows = list.data?.sessions ?? []
+  const rows = (list.data?.pages ?? []).flatMap(p => p.sessions)
 
   const row = (s: KiroCliSessionRow) => (
     <button
@@ -166,17 +189,17 @@ function KiroCliHistory({ height, connected }: { height: number; connected: bool
             </div>
           )
         })}
-        {list.data?.has_more && (
+        {list.hasNextPage && (
           <button
             type="button"
             className="w-full flex justify-center py-2 text-accent text-[13px] font-medium cursor-pointer bg-transparent border-none hover:bg-accent-subtle rounded-md disabled:opacity-50"
-            onClick={() => setLimit(l => l + PAGE)}
-            disabled={list.isFetching}
+            onClick={() => void list.fetchNextPage()}
+            disabled={list.isFetchingNextPage}
             data-testid="kiro-cli-load-more"
           >{i18nT('pages.chatSidebar.load_more')}</button>
         )}
       </div>
-      <KiroCliSessionPreview sessionId={previewId} onClose={() => setPreviewId(null)} />
+      <KiroCliSessionPreview sessionId={previewId} onClose={() => setPreviewId(null)} onOpened={onSelectSlot} />
     </>
   )
 }

@@ -10,9 +10,11 @@ and the files are never written.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -95,7 +97,7 @@ def _meta(**over) -> kcs.CliSessionMeta:
     return kcs.CliSessionMeta(**base)
 
 
-def _listable(meta, owned=frozenset(), roots=("/home/u/.kiro/crew", "/home/u/workplace/ws")):
+def _listable(meta, owned=frozenset(), roots=("/home/u/.kiro/crew", "/home/u/crewroot/ws")):
     return kcs.is_terminal_session(meta, owned_sids=owned, crew_roots=roots, realpath=str)
 
 
@@ -141,9 +143,9 @@ def test_a_session_under_a_crew_generated_agent_is_not_listed():
     [
         "/home/u/.kiro/crew",
         "/home/u/.kiro/crew/workspace",
-        "/home/u/workplace/ws/_bg",
-        "/home/u/workplace/ws/_consolidate",
-        "/home/u/workplace/ws/cron_e068994f",
+        "/home/u/crewroot/ws/_bg",
+        "/home/u/crewroot/ws/_consolidate",
+        "/home/u/crewroot/ws/cron_e068994f",
         # Another gateway's home on the same machine, named only by its segment.
         "/home/u/src/checkout/.kirocrew-dev/workspace",
         "/home/u/.kirocrew/workspace",
@@ -157,7 +159,7 @@ def test_a_session_in_a_crew_directory_is_not_listed(cwd):
 
 
 def test_a_sibling_of_a_crew_root_with_a_shared_prefix_is_listed():
-    assert _listable(_meta(cwd="/home/u/workplace/ws-other/project"))
+    assert _listable(_meta(cwd="/home/u/crewroot/ws-other/project"))
 
 
 def test_the_rule_compares_the_resolved_folder_too():
@@ -263,11 +265,49 @@ def test_the_list_pages_and_filters(store):
         _write(
             store, sid, envelope=_envelope(sid, title=f"task {i}", updated_at=f"2026-10-0{i + 1}")
         )
-    out = kcs.list_terminal_sessions(frozenset(), offset=1, limit=2)
-    assert [r["title"] for r in out["sessions"]] == ["task 3", "task 2"]
+    first = kcs.list_terminal_sessions(frozenset(), limit=2)
+    assert [r["title"] for r in first["sessions"]] == ["task 4", "task 3"]
+    assert (first["total"], first["has_more"]) == (5, True)
+    last = first["sessions"][-1]
+    out = kcs.list_terminal_sessions(frozenset(), after=(last["updated_at"], last["id"]), limit=2)
+    assert [r["title"] for r in out["sessions"]] == ["task 2", "task 1"]
     assert (out["total"], out["has_more"]) == (5, True)
     assert kcs.list_terminal_sessions(frozenset(), query="TASK 4")["total"] == 1
     assert kcs.list_terminal_sessions(frozenset(), query="/work/")["total"] == 5
+
+
+def test_a_session_touched_between_pages_is_not_listed_twice(store):
+    for i in range(4):
+        sid = f"{i:08d}-2222-4333-8444-555555555555"
+        _write(
+            store, sid, envelope=_envelope(sid, title=f"task {i}", updated_at=f"2026-10-0{i + 1}")
+        )
+    first = kcs.list_terminal_sessions(frozenset(), limit=2)
+    assert [r["title"] for r in first["sessions"]] == ["task 3", "task 2"]
+    # A terminal starts a session before the next page is asked for: every row
+    # moves down one place, which an offset of 2 would answer with task 2 again.
+    new = "00000009-2222-4333-8444-555555555555"
+    _write(store, new, envelope=_envelope(new, title="new", updated_at="2026-10-09"))
+    last = first["sessions"][-1]
+    out = kcs.list_terminal_sessions(frozenset(), after=(last["updated_at"], last["id"]), limit=2)
+    assert [r["title"] for r in out["sessions"]] == ["task 1", "task 0"]
+    assert out["has_more"] is False
+
+
+def test_rows_updated_at_the_same_moment_page_by_id(store):
+    for i in range(3):
+        sid = f"{i:08d}-2222-4333-8444-555555555555"
+        _write(store, sid, envelope=_envelope(sid, title=f"task {i}", updated_at="2026-10-01"))
+    seen = []
+    after = None
+    while True:
+        page = kcs.list_terminal_sessions(frozenset(), after=after, limit=1)
+        seen += [r["title"] for r in page["sessions"]]
+        if not page["has_more"]:
+            break
+        last = page["sessions"][-1]
+        after = (last["updated_at"], last["id"])
+    assert seen == ["task 2", "task 1", "task 0"]
 
 
 # ── session ids never name a path ─────────────────────────────────────────
@@ -317,6 +357,33 @@ def test_the_preview_pages_back_from_the_newest(store):
     assert [m["content"] for m in older["messages"]] == ["q1", "q2", "q3"]
     first = kcs.read_preview(SID, before=older["start"], limit=3)
     assert [m["content"] for m in first["messages"]] == ["q0"] and first["start"] == 0
+
+
+def test_a_preview_page_holds_only_its_own_messages(store):
+    # 200 turns of 100,000 characters: about 20 MB of conversation. A page of
+    # one keeps one message, scrubbed and cut, never the conversation.
+    _write(
+        store,
+        events=[
+            _event("AssistantMessage", ("text", f"{i:03d}" + "x" * 100_000)) for i in range(200)
+        ],
+    )
+    scrubbed: list[str] = []
+
+    def scrub(text: str) -> str:
+        scrubbed.append(text[:3])
+        return text
+
+    tracemalloc.start()
+    try:
+        page = kcs.read_preview(SID, limit=1, sanitize_assistant=scrub)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert page["total"] == 200 and page["start"] == 199
+    assert [m["content"][:3] for m in page["messages"]] == ["199"]
+    assert scrubbed == ["199"]
+    assert peak < 4 * 1024 * 1024, peak
 
 
 def test_a_huge_message_is_cut_after_it_is_sanitized(store):
@@ -397,18 +464,19 @@ def test_a_line_separator_inside_a_string_is_not_a_record_break(store):
 
 def test_a_pair_that_changes_during_the_read_is_read_again(store, monkeypatch):
     _write(store)
-    real = Path.read_bytes
+    real = kcs.open_regular_nofollow
     calls = {"n": 0}
 
-    def growing(self):
-        data = real(self)
-        if self.suffix == ".jsonl" and calls["n"] == 0:
+    @contextlib.contextmanager
+    def growing(path, **kw):
+        with real(path, **kw) as f:
+            yield f
+        if path.suffix == ".jsonl" and calls["n"] == 0:
             calls["n"] += 1
-            with open(self, "a") as f:
-                f.write(_event("Prompt", ("text", "typed meanwhile")) + "\n")
-        return data
+            with open(path, "a") as out:
+                out.write(_event("Prompt", ("text", "typed meanwhile")) + "\n")
 
-    monkeypatch.setattr(Path, "read_bytes", growing)
+    monkeypatch.setattr(kcs, "open_regular_nofollow", growing)
     monkeypatch.setattr(kcs, "_SNAPSHOT_RETRY_SECS", 0)
     snap = kcs.snapshot_session(SID)
     assert snap.messages[-1]["content"] == "typed meanwhile"
@@ -416,19 +484,228 @@ def test_a_pair_that_changes_during_the_read_is_read_again(store, monkeypatch):
 
 def test_a_pair_that_never_settles_is_refused_as_busy(store, monkeypatch):
     _write(store)
-    real = Path.read_bytes
+    real = kcs.open_regular_nofollow
 
-    def always_growing(self):
-        data = real(self)
-        if self.suffix == ".jsonl":
-            with open(self, "a") as f:
-                f.write(_event("Prompt", ("text", "more")) + "\n")
-        return data
+    @contextlib.contextmanager
+    def always_growing(path, **kw):
+        with real(path, **kw) as f:
+            yield f
+        if path.suffix == ".jsonl":
+            with open(path, "a") as out:
+                out.write(_event("Prompt", ("text", "more")) + "\n")
 
-    monkeypatch.setattr(Path, "read_bytes", always_growing)
+    monkeypatch.setattr(kcs, "open_regular_nofollow", always_growing)
     monkeypatch.setattr(kcs, "_SNAPSHOT_RETRY_SECS", 0)
     with pytest.raises(kcs.SnapshotRefused) as refused:
         kcs.snapshot_session(SID)
+    assert refused.value.code == "kiro_cli_session_busy"
+
+
+def test_a_log_that_grows_after_its_size_is_measured_is_never_read_whole(store, monkeypatch):
+    _write(store)
+    real = kcs.open_regular_nofollow
+    # Built before tracing starts, so the peak below measures the reads only.
+    growth = b"x" * (8 * 1024 * 1024)
+
+    def growing_then_open(path, **kw):
+        if path.suffix == ".jsonl":
+            # Between the size check and the read: 8 MB appended (or the file
+            # swapped for a bigger one), every time it is looked at.
+            with open(path, "ab") as f:
+                f.write(growth)
+        return real(path, **kw)
+
+    monkeypatch.setattr(kcs, "open_regular_nofollow", growing_then_open)
+    monkeypatch.setattr(kcs, "_SNAPSHOT_RETRY_SECS", 0)
+    tracemalloc.start()
+    try:
+        with pytest.raises(kcs.SnapshotRefused) as refused:
+            kcs.snapshot_session(SID, max_bytes=64 * 1024 * 1024)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert refused.value.code == "kiro_cli_session_busy"
+    # Each attempt read only to the size it measured: the 8 MB that arrived
+    # after the measurement was never held.
+    assert peak < 1024 * 1024, peak
+
+
+@pytest.mark.parametrize("stamp", [float("inf"), 1e20, 253_402_300_800, -5, 10**309])
+def test_a_timestamp_that_cannot_be_rendered_is_treated_as_absent(store, stamp):
+    _write(
+        store,
+        events=[
+            _event("Prompt", ("text", "why is it flaky?"), ts=stamp),
+            _event("AssistantMessage", ("text", "A race."), ts=1793022032),
+        ],
+    )
+    page = kcs.read_preview(SID)
+    assert [m["ts"] for m in page["messages"]] == ["", "2026-10-26T13:40:32Z"]
+    snap = kcs.snapshot_session(SID)
+    assert [m["content"] for m in snap.messages] == ["why is it flaky?", "A race."]
+
+
+def test_an_envelope_that_grew_past_the_parse_cap_is_not_read_past_it(store, monkeypatch):
+    # The identity keys sit past the head, so the read falls back to a whole
+    # parse; the lstat it was gated on saw a small file, which then grew.
+    doc = {"padding": "p" * 30_000, **json.loads(_envelope())}
+    (store / f"{SID}.json").write_text(json.dumps(doc))
+    path = store / f"{SID}.json"
+    small = os.stat_result((0o100644, 0, 0, 1, 0, 0, 100, 0, 0, 0))
+    monkeypatch.setattr(kcs, "_regular_file", lambda p: small if p == path else None)
+    monkeypatch.setattr(kcs, "_FULL_PARSE_MAX_BYTES", 20_000)
+    assert kcs.read_envelope_meta(path) is None
+    monkeypatch.setattr(kcs, "_FULL_PARSE_MAX_BYTES", 200_000)
+    assert kcs.read_envelope_meta(path).session_id == SID
+
+
+def test_an_envelope_naming_a_folder_with_a_nul_is_not_a_session(store):
+    _write(store, envelope=_envelope(cwd="/work/a\x00b"))
+    assert kcs.read_envelope_meta(store / f"{SID}.json") is None
+    good = "22222222-2222-4333-8444-555555555555"
+    _write(store, good, envelope=_envelope(good))
+    assert [r["id"] for r in kcs.list_terminal_sessions(frozenset())["sessions"]] == [good]
+
+
+def test_the_listing_rule_refuses_a_folder_no_path_call_accepts():
+    def refusing(_path):
+        raise ValueError("embedded null byte")
+
+    meta = _meta(cwd="/work/repo")
+    assert (
+        kcs.is_terminal_session(meta, owned_sids=frozenset(), crew_roots=(), realpath=refusing)
+        is False
+    )
+
+
+def test_the_working_directory_is_kept_verbatim(store):
+    _write(store, envelope=_envelope(cwd="/work/widget "))
+    assert kcs.read_envelope_meta(store / f"{SID}.json").cwd == "/work/widget "
+
+
+def test_every_retained_field_is_bounded_once_at_ingress(store, caplog):
+    doc = json.loads(_envelope(title="tt " * 2000, agent="a" * 5000))
+    doc.update(created_at="c" * 500, updated_at="u" * 500, parent_session_id="p" * 500)
+    (store / f"{SID}.json").write_text(json.dumps(doc))
+    with caplog.at_level("INFO", logger="kiro_crew.kiro_cli_sessions"):
+        meta = kcs.read_envelope_meta(store / f"{SID}.json")
+    # Each is cut within its bound, whole words only, the cut marked.
+    assert 0 < len(meta.title) <= kcs._MAX_TITLE_CHARS and meta.title.endswith("\u2026")
+    assert meta.title.startswith("tt tt")
+    assert meta.agent_name == "\u2026"  # one word past the bound: nothing of it kept
+    assert len(meta.created_at) <= kcs._MAX_STAMP_CHARS
+    assert len(meta.updated_at) <= kcs._MAX_STAMP_CHARS
+    assert len(meta.parent_session_id) <= kcs._MAX_PARENT_ID_CHARS
+    assert meta.cwd == "/work/repo" and meta.session_id == SID
+    # One line for the envelope, naming every cut field, never their values.
+    lines = [r.getMessage() for r in caplog.records if "kiro-cli envelope" in r.getMessage()]
+    assert lines == [
+        f"kiro-cli envelope {SID}.json: cut agent_name, created_at, parent_session_id, title, updated_at"
+    ]
+
+
+@pytest.mark.parametrize("cwd", ["/w/" + "d" * kcs._MAX_CWD_CHARS, "/work/a\x00b"])
+def test_a_working_directory_that_cannot_be_a_folder_is_refused_not_cut(store, caplog, cwd):
+    _write(store, envelope=_envelope(cwd=cwd))
+    with caplog.at_level("INFO", logger="kiro_crew.kiro_cli_sessions"):
+        assert kcs.read_envelope_meta(store / f"{SID}.json") is None
+    lines = [r.getMessage() for r in caplog.records if "kiro-cli envelope" in r.getMessage()]
+    assert lines == [
+        f"kiro-cli envelope {SID}.json: refused (working directory cannot be a folder)"
+    ]
+
+
+def test_the_envelope_cache_stops_growing_at_its_cap(store, monkeypatch):
+    monkeypatch.setattr(kcs, "_META_CACHE", {})
+    monkeypatch.setattr(kcs, "_META_CACHE_MAX", 3)
+    for i in range(5):
+        sid = f"{i:08d}-2222-4333-8444-555555555555"
+        _write(store, sid, envelope=_envelope(sid, title=f"task {i}"))
+    # Every envelope is still listed; only the first three are remembered.
+    assert len(kcs.scan_sessions()) == 5
+    assert len(kcs._META_CACHE) == 3
+    assert len(kcs.scan_sessions()) == 5 and len(kcs._META_CACHE) == 3
+
+
+def test_a_title_cut_at_its_bound_never_keeps_part_of_a_credential(store):
+    # A pasted secret access key straddling the 300-character bound: the
+    # redactor matches it only whole, so a cut through it would leave a
+    # fragment no redactor recognises.
+    key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    prefix = "deploy " * 40  # 280 characters
+    _write(store, envelope=_envelope(title=prefix + key + " and more"))
+    title = kcs.read_envelope_meta(store / f"{SID}.json").title
+    assert len(title) <= kcs._MAX_TITLE_CHARS and title.endswith("\u2026")
+    assert not any(key[i : i + 8] in title for i in range(len(key) - 7))
+
+
+def test_a_planted_continued_record_is_refused_not_waited_on(tmp_path, monkeypatch):
+    record = tmp_path / "kiro-cli-continued.json"
+    monkeypatch.setattr(kcs, "_continued_path", lambda: record)
+    kind = _plant_non_regular(record)
+    try:
+        # A FIFO's open would wait for a writer forever; the shared opener
+        # refuses it, and the record reads as empty.
+        assert kcs.continued_sids() == frozenset()
+    finally:
+        _release(record, kind)
+
+
+def _plant_non_regular(path: Path) -> str:
+    """Put a file that is not regular at *path*: a FIFO where the platform has
+    them (its open would wait for a writer forever), else a directory. Both are
+    what the sessions dir's writer, the agent's shell, could plant."""
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(path)
+        return "fifo"
+    path.mkdir()
+    return "directory"
+
+
+def _release(path: Path, kind: str) -> None:
+    """Free a reader a regression left blocked on the FIFO at *path*."""
+    if kind == "fifo":
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            pass
+
+
+def test_a_link_planted_as_the_event_log_is_never_followed(store, tmp_path):
+    (store / f"{SID}.json").write_text(_envelope())
+    target = tmp_path / "elsewhere.jsonl"
+    target.write_text(_event("Prompt", ("text", "not this session")) + "\n")
+    try:
+        (store / f"{SID}.jsonl").symlink_to(target)
+    except OSError:
+        return  # this host cannot make links, so none can be planted either
+    assert kcs.read_preview(SID)["messages"] == []
+    with pytest.raises(kcs.SnapshotRefused) as refused:
+        kcs.snapshot_session(SID)
+    assert refused.value.code == "kiro_cli_session_no_transcript"
+
+
+def test_a_planted_event_log_is_never_read(store):
+    (store / f"{SID}.json").write_text(_envelope())
+    planted = store / f"{SID}.jsonl"
+    kind = _plant_non_regular(planted)
+    try:
+        preview = kcs.read_preview(SID)
+        assert preview is not None and preview["messages"] == []
+        assert preview["has_transcript"] is False
+        with pytest.raises(kcs.SnapshotRefused) as refused:
+            kcs.snapshot_session(SID)
+        assert refused.value.code == "kiro_cli_session_no_transcript"
+    finally:
+        _release(planted, kind)
+
+
+def test_a_pair_grown_past_the_reserved_size_is_refused_as_busy(store):
+    _write(store)
+    size = sum((store / f"{SID}{sfx}").stat().st_size for sfx in (".json", ".jsonl"))
+    assert kcs.snapshot_session(SID, max_bytes=size).messages
+    with pytest.raises(kcs.SnapshotRefused) as refused:
+        kcs.snapshot_session(SID, max_bytes=size - 1)
     assert refused.value.code == "kiro_cli_session_busy"
 
 

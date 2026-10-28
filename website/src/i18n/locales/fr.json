@@ -10563,11 +10563,16 @@
       "kiro": "Kiro",
       "truncated": "Raccourci pour l’aperçu. Le message complet est repris quand tu continues.",
       "skipped": "Certaines lignes de cette session n’ont pas pu être lues et ne sont pas affichées.",
-      "continue_hint": "« Continuer dans Crew » ouvre une nouvelle conversation avec tout le contexte de cette session. La session de ton terminal reste telle quelle.",
+      "continue_hint": "Continuer dans Crew ouvre une nouvelle conversation avec une copie de celle-ci. La session de ton terminal reste telle quelle.",
+          "state_kept": "La nouvelle conversation garde aussi l’état de session enregistré par kiro-cli.",
+          "state_needs_tool_search_off": "La nouvelle conversation reprend à partir des messages affichés ici. Pour garder aussi l’état de session enregistré par kiro-cli, désactive la Recherche d’outils MCP.",
+          "state_needs_harness": "La nouvelle conversation reprend à partir des messages affichés ici. Pour garder aussi l’état de session enregistré par kiro-cli, règle Paramètres → Harness de l’agent sur Kiro CLI et désactive la Recherche d’outils MCP.",
+          "state_unavailable": "La nouvelle conversation reprend à partir des messages affichés ici. Elle ne peut pas reprendre l’état de session enregistré par kiro-cli sur cette machine, car kiro-cli y exécute les conversations de {{productName}} avec Kiro Agent.",
       "continue": "Continuer dans Crew",
       "continuing": "Copie en cours…",
       "continue_failed": "Impossible de continuer cette session",
       "opened_without_project": "La nouvelle conversation est prête, mais elle s’ouvre sans dossier de projet : {{reason}}",
+      "opened_without_folder": "Ouverte sans son dossier",
       "open_chat": "Ouvrir la conversation",
       "close": "Fermer"
     }

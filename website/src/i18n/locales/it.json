@@ -10563,11 +10563,16 @@
       "kiro": "Kiro",
       "truncated": "Accorciato per l’anteprima. Il messaggio completo viene mantenuto quando continui.",
       "skipped": "Alcune righe di questa sessione non sono leggibili e non vengono mostrate.",
-      "continue_hint": "Continua in Crew apre una nuova chat con tutto il contesto di questa sessione. La sessione nel tuo terminale resta com’è.",
+      "continue_hint": "Continua in Crew apre una nuova chat con una copia di questa conversazione. La sessione nel tuo terminale resta com’è.",
+          "state_kept": "La nuova chat mantiene anche lo stato della sessione salvato da kiro-cli.",
+          "state_needs_tool_search_off": "La nuova chat riprende dai messaggi mostrati qui. Per mantenere anche lo stato della sessione salvato da kiro-cli, disattiva la Ricerca degli strumenti MCP.",
+          "state_needs_harness": "La nuova chat riprende dai messaggi mostrati qui. Per mantenere anche lo stato della sessione salvato da kiro-cli, scegli Kiro CLI in Impostazioni → Harness dell’agente e disattiva la Ricerca degli strumenti MCP.",
+          "state_unavailable": "La nuova chat riprende dai messaggi mostrati qui. Su questa macchina non può portare con sé lo stato della sessione salvato da kiro-cli, perché qui kiro-cli esegue le chat di {{productName}} con Kiro Agent.",
       "continue": "Continua in Crew",
       "continuing": "Copia in corso…",
       "continue_failed": "Impossibile continuare questa sessione",
       "opened_without_project": "La nuova chat è pronta, ma si apre senza cartella di progetto: {{reason}}",
+      "opened_without_folder": "Aperta senza la sua cartella",
       "open_chat": "Apri la chat",
       "close": "Chiudi"
     }

@@ -10417,11 +10417,16 @@
       "kiro": "Kiro",
       "truncated": "Für die Vorschau gekürzt. Beim Fortsetzen wird die ganze Nachricht übernommen.",
       "skipped": "Einige Zeilen dieser Sitzung konnten nicht gelesen werden und werden nicht angezeigt.",
-      "continue_hint": "„In Crew fortsetzen“ öffnet einen neuen Chat mit dem vollständigen Kontext dieser Sitzung. Die Sitzung in deinem Terminal bleibt, wie sie ist.",
+      "continue_hint": "„In Crew fortsetzen“ öffnet einen neuen Chat mit einer Kopie dieses Gesprächs. Die Sitzung in deinem Terminal bleibt, wie sie ist.",
+          "state_kept": "Der neue Chat behält auch den von kiro-cli gespeicherten Sitzungszustand.",
+          "state_needs_tool_search_off": "Der neue Chat macht mit den hier gezeigten Nachrichten weiter. Um auch den von kiro-cli gespeicherten Sitzungszustand zu behalten, schalte die MCP-Werkzeugsuche aus.",
+          "state_needs_harness": "Der neue Chat macht mit den hier gezeigten Nachrichten weiter. Um auch den von kiro-cli gespeicherten Sitzungszustand zu behalten, stelle unter Einstellungen → Agent-Harness „Kiro CLI“ ein und schalte die MCP-Werkzeugsuche aus.",
+          "state_unavailable": "Der neue Chat macht mit den hier gezeigten Nachrichten weiter. Den von kiro-cli gespeicherten Sitzungszustand kann er auf diesem Rechner nicht übernehmen, weil kiro-cli hier die Chats von {{productName}} mit Kiro Agent ausführt.",
       "continue": "In Crew fortsetzen",
       "continuing": "Wird kopiert…",
       "continue_failed": "Diese Sitzung konnte nicht fortgesetzt werden",
       "opened_without_project": "Der neue Chat ist bereit, öffnet aber ohne Projektordner: {{reason}}",
+      "opened_without_folder": "Ohne Ordner geöffnet",
       "open_chat": "Chat öffnen",
       "close": "Schließen"
     }

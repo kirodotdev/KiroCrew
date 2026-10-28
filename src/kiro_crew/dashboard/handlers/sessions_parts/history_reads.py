@@ -629,8 +629,9 @@ def _int_query(request: web.Request, name: str, default: int, low: int, high: in
 async def api_session_kiro_cli_list(request: web.Request) -> web.Response:
     """GET /api/kiro-cli/sessions — the kiro-cli sessions the owner started in a terminal.
 
-    Query params: ``limit`` (default 50, max 200), ``offset``, ``q`` (a
-    case-insensitive match on title or folder). Returns ``{sessions, total,
+    Query params: ``limit`` (default 50, max 200), ``q`` (a case-insensitive
+    match on title or folder), and ``after_updated`` + ``after_id``, the last
+    row already shown, for the next page. Returns ``{sessions, total,
     has_more}``, each row ``{id, title, cwd, created_at, updated_at}``; which
     sessions qualify is :func:`kiro_crew.kiro_cli_sessions.is_terminal_session`.
 
@@ -645,14 +646,22 @@ async def api_session_kiro_cli_list(request: web.Request) -> web.Response:
         return refusal
     state: DashboardState = request.app["state"]
     limit = _int_query(request, "limit", 50, 1, 200)
-    offset = _int_query(request, "offset", 0, 0, 1_000_000)
+    after_id = request.query.get("after_id", "")
+    after_updated = request.query.get("after_updated", "")[:64]
+    # Compared, never opened: still only a session id is accepted.
+    after = (after_updated, after_id) if kiro_cli_sessions.valid_session_id(after_id) else None
     query = sanitize_string(request.query.get("q", "")).strip()[:256]
 
     def _list() -> dict:
         owned = _crew_owned_kiro_cli_sids(state)
-        return kiro_cli_sessions.list_terminal_sessions(
-            owned, query=query, offset=offset, limit=limit
+        page = kiro_cli_sessions.list_terminal_sessions(
+            owned, query=query, after=after, limit=limit
         )
+        # kiro-cli titles a session from its first prompt, so a pasted credential
+        # can be the title; titles are redacted like every other history title.
+        for row in page["sessions"]:
+            row["title"] = redact(row["title"])
+        return page
 
     return web.json_response(await asyncio.to_thread(_list))
 
@@ -668,8 +677,13 @@ async def api_session_kiro_cli_read(request: web.Request) -> web.Response:
     show, answers 404 like a missing one. Assistant text is redacted before it is
     served, the same as every other history read; the person's own turns are
     shown as they typed them.
+
+    ``context_skipped`` is set when Continue would copy the transcript only, with
+    the same fixed reason code Continue answers, so the preview can say before the
+    click what the new chat will keep and which setting, if any, would change it.
     """
     from kiro_crew import kiro_cli_sessions
+    from kiro_crew.dashboard.kiro_cli_continue import transcript_only_reason
 
     refusal = await require_owner_dashboard_request(request, "kiro_cli_session_read")
     if refusal is not None:
@@ -698,9 +712,15 @@ async def api_session_kiro_cli_read(request: web.Request) -> web.Response:
             return None
         # Redacted BEFORE the preview's length cap: a credential split by the
         # cut would leave a partial token the patterns cannot match.
-        return kiro_cli_sessions.read_preview(
+        page = kiro_cli_sessions.read_preview(
             sid, before=before, limit=limit, sanitize_assistant=redact
         )
+        if page is not None:
+            page["title"] = redact(page["title"])
+            reason = transcript_only_reason()
+            if reason:
+                page["context_skipped"] = reason
+        return page
 
     page = await asyncio.to_thread(_read)
     if page is None:

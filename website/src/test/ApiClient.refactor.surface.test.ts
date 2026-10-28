@@ -140,7 +140,7 @@ const API_KEY_ORDER = [
   'ackNotification', 'unackNotification', 'ackAllNotifications', 'notificationChannels',
   'updateNotificationChannelSettings', 'vapidPublicKey', 'subscribePush', 'unsubscribePush', 'sessions', 'sessionsSearch', 'sessionsNamed', 'instancesSearchSessions',
   'instancesCapabilities', 'instancesApprovalState', 'instancesVersions', 'instanceChatSlots', 'crewPeerGet', 'crewPeerPost', 'sessionDetail', 'sessionMeta', 'deleteSession',
-  'clearSessions', 'autocomplete', 'spawnList', 'spawn',
+  'clearSessions', 'kiroCliSessions', 'kiroCliSession', 'continueKiroCliSession', 'autocomplete', 'spawnList', 'spawn',
   'spawnStatus', 'spawnDelete', 'spawnStopAll', 'spawnRetry',
   'approvals', 'resolveApproval', 'pendingQuestions', 'answerQuestion',
   'dismissQuestionCard', 'logLevel', 'setLogLevel', 'taskRunnerStatus',

@@ -193,6 +193,16 @@ what §4 says not to do. Matching on name keeps the person's rename meaningful:
 renaming `from laptop` detaches it, and the next arrival from that peer creates a
 fresh folder, visibly.
 
+**Amendment, 2026-10-29: a copy made on this machine is not an arrival.**
+"Continue in Crew" (`POST /api/kiro-cli/sessions/{sid}/continue`, PR #25369)
+copies a kiro-cli session from this host's own store through the same installer.
+At Kyle's direction from the end-to-end run of that PR, it files the chat in a
+top-level `from kiro-cli` folder rather than `Imported` / `from kiro-cli`
+(`arrival_folder_id(top_level=True)`, passed only by that route). The rejection
+above still holds for arrivals: tunnel pushes and export files keep the
+`Imported` parent. The objection it records is about one row per peer, and a
+local copy adds one fixed row, which the person can delete like any other.
+
 ## 7. Acceptance
 
 - Both arrival routes file; a second arrival from one sender lands beside the

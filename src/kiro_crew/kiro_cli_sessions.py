@@ -22,20 +22,24 @@ child of :func:`kiro_cli_sessions_dir`, so no request text ever names a path.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import math
 import os
 import re
 import stat
+import sys
 import threading
 import time
-from collections.abc import Callable, Iterable, Set
+from collections.abc import Callable, Iterable, Iterator, Set
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir, legacy_home
+from kiro_crew.jsonl_util import bounded_raw_records, open_regular_nofollow
 
 logger = logging.getLogger("kiro_crew.kiro_cli_sessions")
 
@@ -72,6 +76,12 @@ _HEAD_BYTES = 16 * 1024
 _FULL_PARSE_MAX_BYTES = 32 * 1024 * 1024
 _STATE_KEY_RE = re.compile(rb'\s*,\s*"session_state"\s*:')
 _TAIL_BYTES = 4 * 1024
+
+#: The first instant :func:`time.gmtime` cannot render as a four-digit year
+#: (10000-01-01). A message timestamp at or past it, or one that is not finite,
+#: is treated as absent: kiro-cli never writes one, and a planted one must not
+#: fail the preview or the copy.
+_MAX_TIMESTAMP = 253_402_300_800
 _AGENT_RE = re.compile(rb'"agent_name"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 #: Preview bounds: messages per page, and characters per message.
@@ -163,6 +173,13 @@ def _regular_file(path: Path) -> os.stat_result | None:
     return info if stat.S_ISREG(info.st_mode) else None
 
 
+#: The read ceiling for a file whose reads are each bounded by the caller
+#: (the envelope's head, tail and capped fallback; the preview's per-record
+#: frames): the open still refuses a FIFO or a link, and the caller's own
+#: sizes bound the memory.
+_UNCAPPED = sys.maxsize - 1  # the opener reads one past this, which must fit an index
+
+
 # --------------------------------------------------------------------------- #
 # Envelope reads
 # --------------------------------------------------------------------------- #
@@ -181,10 +198,13 @@ def _meta_from_envelope(doc: Any) -> CliSessionMeta | None:
         value = doc.get(key)
         return value.strip() if isinstance(value, str) else ""
 
+    cwd = doc.get("cwd")
     return CliSessionMeta(
         session_id=sid,
         title=text("title"),
-        cwd=text("cwd"),
+        # Verbatim: a path is never trimmed. "/projects/widget " is its own
+        # folder, and trimming it would make a sibling the chat's project.
+        cwd=cwd if isinstance(cwd, str) else "",
         created_at=text("created_at"),
         updated_at=text("updated_at"),
         agent_name=agent if isinstance(agent, str) else "",
@@ -192,7 +212,88 @@ def _meta_from_envelope(doc: Any) -> CliSessionMeta | None:
     )
 
 
+#: Ingress bounds for every string a :class:`CliSessionMeta` retains. kiro-cli's
+#: sessions dir is writable by the agent's shell, and these values are held in
+#: :data:`_META_CACHE` and served in every list response, so each is capped once,
+#: here, before anything keeps it. Display text is cut; the working directory is
+#: never cut (a cut path names another folder), so a longer one is refused.
+_MAX_TITLE_CHARS = 300
+_MAX_AGENT_CHARS = 128
+#: ISO-8601 stamps and kiro-cli ids are far shorter; anything longer is cut.
+_MAX_STAMP_CHARS = 64
+_MAX_PARENT_ID_CHARS = 64
+#: PATH_MAX on Linux; no folder a person ran in is longer.
+_MAX_CWD_CHARS = 4096
+
+
+def _cut_whole_words(text: str, limit: int) -> str:
+    """*text* cut to at most *limit* characters without keeping part of a word.
+
+    The redactors that run on these values when they are served recognise a
+    credential only whole (a bare 40-character key is matched as a 40-run), so a
+    cut through the middle of one would leave a fragment none of them matches.
+    A word the limit falls inside is therefore dropped entirely, and an ellipsis
+    marks the cut; a value with no break before the limit becomes the ellipsis.
+    """
+    if len(text) <= limit:
+        return text
+    kept = text[: limit - 1]
+    if not text[limit - 1].isspace():
+        # The cut lands inside a word: back off to the last break before it.
+        breaks = [i for i, ch in enumerate(kept) if ch.isspace()]
+        kept = kept[: breaks[-1]] if breaks else ""
+    return kept.rstrip() + "\u2026"
+
+
+def _bounded(meta: CliSessionMeta | None, source: str) -> CliSessionMeta | None:
+    """*meta* with every retained string within its ingress bound, or ``None``
+    when its working directory cannot be a folder (an embedded NUL, which path
+    calls reject with ``ValueError``, or longer than :data:`_MAX_CWD_CHARS`).
+
+    The one pass every envelope goes through before it is cached, listed or
+    copied. The session id is already a validated UUID. Cuts and the refusal are
+    logged once for *source*, with the field names only, never their values.
+    """
+    if meta is None:
+        return None
+    refused = "\x00" in meta.cwd or len(meta.cwd) > _MAX_CWD_CHARS
+    limits = {
+        "title": _MAX_TITLE_CHARS,
+        "agent_name": _MAX_AGENT_CHARS,
+        "created_at": _MAX_STAMP_CHARS,
+        "updated_at": _MAX_STAMP_CHARS,
+        "parent_session_id": _MAX_PARENT_ID_CHARS,
+    }
+    cut = (
+        {}
+        if refused
+        else {
+            name: _cut_whole_words(getattr(meta, name), limit)
+            for name, limit in limits.items()
+            if len(getattr(meta, name)) > limit
+        }
+    )
+    if not refused and not cut:
+        return meta
+    logger.info(
+        "kiro-cli envelope %s: %s",
+        source,
+        (
+            "refused (working directory cannot be a folder)"
+            if refused
+            else "cut " + ", ".join(sorted(cut))
+        ),
+    )
+    return None if refused else replace(meta, **cut)
+
+
 def read_envelope_meta(path: Path) -> CliSessionMeta | None:
+    """The identity fields of the envelope at *path*, bounded at ingress
+    (:func:`_bounded`), or ``None`` when unreadable or not a session."""
+    return _bounded(_read_envelope_meta_raw(path), path.name)
+
+
+def _read_envelope_meta_raw(path: Path) -> CliSessionMeta | None:
     """The identity fields of the envelope at *path*, or ``None`` when unreadable.
 
     Reads only the head when it holds every identity field (``session_state``
@@ -205,7 +306,10 @@ def read_envelope_meta(path: Path) -> CliSessionMeta | None:
     if info is None:
         return None
     try:
-        with open(path, "rb") as f:
+        # Through the shared no-follow opener: kiro-cli's sessions dir is
+        # writable by the agent's shell, so the name may be a planted FIFO or
+        # link, which the open refuses on every platform.
+        with open_regular_nofollow(path, max_bytes=_UNCAPPED) as f:
             head = f.read(_HEAD_BYTES)
             match = _STATE_KEY_RE.search(head)
             if match is not None:
@@ -220,7 +324,11 @@ def read_envelope_meta(path: Path) -> CliSessionMeta | None:
             if info.st_size > _FULL_PARSE_MAX_BYTES:
                 return None
             f.seek(0)
-            raw = f.read()
+            # Capped like the size check above: a file that grew since its
+            # lstat is never read past the cap.
+            raw = f.read(_FULL_PARSE_MAX_BYTES + 1)
+        if len(raw) > _FULL_PARSE_MAX_BYTES:
+            return None
         return _meta_from_envelope(json.loads(raw))
     except (OSError, ValueError):
         return None
@@ -254,6 +362,10 @@ def _with_tail_agent(f: Any, size: int, meta: CliSessionMeta) -> CliSessionMeta 
 #: changed. Bounded by the directory's own size; entries for vanished files are
 #: dropped on every scan.
 _META_CACHE: dict[str, tuple[tuple[int, int], CliSessionMeta | None]] = {}
+#: The most envelopes :data:`_META_CACHE` holds. Each entry is bounded by
+#: :func:`_bounded`; past this many a scan still reads every envelope, it just
+#: stops remembering new ones, so a flood of planted files costs time, not memory.
+_META_CACHE_MAX = 20_000
 
 
 def scan_sessions(base: Path | None = None) -> list[CliSessionMeta]:
@@ -282,14 +394,17 @@ def scan_sessions(base: Path | None = None) -> list[CliSessionMeta]:
             meta = cached[1]
         else:
             meta = read_envelope_meta(Path(entry.path))
-            _META_CACHE[name] = (key, meta)
+            if name in _META_CACHE or len(_META_CACHE) < _META_CACHE_MAX:
+                _META_CACHE[name] = (key, meta)
         # The file's own name is the id the routes accept; an envelope naming a
         # different id is not this file's session.
         if meta is not None and meta.session_id == name[:-5]:
             found.append(meta)
     for stale in set(_META_CACHE) - seen:
         _META_CACHE.pop(stale, None)
-    found.sort(key=lambda m: m.updated_at, reverse=True)
+    # Newest first, the id breaking a tie, so the order is total and a page
+    # can resume after any row (:func:`list_terminal_sessions`).
+    found.sort(key=_order_key, reverse=True)
     return found
 
 
@@ -314,10 +429,19 @@ def _continued_path() -> Path:
     return data_home() / CONTINUED_FILE
 
 
+#: The record's ceiling: :data:`_CONTINUED_MAX` sids of 36 characters with
+#: their JSON punctuation fit well inside it.
+_CONTINUED_MAX_BYTES = 1024 * 1024
+
+
 def _read_continued() -> list[str]:
-    """The recorded sids, oldest first; empty when the record is missing or malformed."""
+    """The recorded sids, oldest first; empty when the record is missing,
+    malformed, or not a regular file. Read through the shared no-follow opener:
+    the data home is writable by the agent's shell, so a FIFO or link planted
+    at the record's name is refused instead of blocking the list for good."""
     try:
-        raw = json.loads(_continued_path().read_text(encoding="utf-8"))
+        with open_regular_nofollow(_continued_path(), max_bytes=_CONTINUED_MAX_BYTES) as f:
+            raw = json.loads(f.read().decode("utf-8"))
     except (OSError, ValueError):
         return []
     sids = raw.get("sids") if isinstance(raw, dict) else None
@@ -409,18 +533,34 @@ def is_terminal_session(
         return False
     if any(a == ".kiro" and b == "crew" for a, b in zip(parts, parts[1:])):
         return False
-    resolved = realpath(meta.cwd)
+    try:
+        resolved = realpath(meta.cwd)
+    except (OSError, ValueError):
+        # A path no filesystem call accepts is not a folder anyone ran in.
+        return False
     return not any(_under(resolved, root) or _under(meta.cwd, root) for root in crew_roots)
+
+
+def _order_key(meta: CliSessionMeta) -> tuple[str, str]:
+    """Where *meta* sorts in the list: by when it was last updated, then by id."""
+    return meta.updated_at, meta.session_id
 
 
 def list_terminal_sessions(
     owned_sids: Set[str],
     *,
     query: str = "",
-    offset: int = 0,
+    after: tuple[str, str] | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """One page of :func:`is_terminal_session` rows, newest first, with the total."""
+    """One page of :func:`is_terminal_session` rows, newest first, with the total.
+
+    *after* is the ``(updated_at, id)`` of the last row already shown: the page
+    holds the rows that sort after it. A cursor rather than an offset, because a
+    terminal keeps writing while someone pages: a session that moves to the top
+    in between would shift every row down one place, and an offset would then
+    serve the last row shown a second time.
+    """
     roots = crew_working_roots()
     resolved: dict[str, str] = {}
 
@@ -438,11 +578,14 @@ def list_terminal_sessions(
     needle = query.strip().lower()
     if needle:
         rows = [m for m in rows if needle in m.title.lower() or needle in m.cwd.lower()]
-    page = rows[offset : offset + limit]
+    total = len(rows)
+    if after is not None:
+        rows = [m for m in rows if _order_key(m) < after]
+    page = rows[:limit]
     return {
         "sessions": [m.to_row() for m in page],
-        "total": len(rows),
-        "has_more": offset + len(page) < len(rows),
+        "total": total,
+        "has_more": len(rows) > len(page),
     }
 
 
@@ -482,8 +625,19 @@ def _visible_message(record: Any) -> dict[str, str] | None:
     ts = ""
     meta = data.get("meta")
     stamp = meta.get("timestamp") if isinstance(meta, dict) else None
-    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and stamp > 0:
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
+    if (
+        isinstance(stamp, (int, float))
+        and not isinstance(stamp, bool)
+        # The range first: it holds for an int of any size and is False for
+        # NaN and both infinities, so an integer past float range never reaches
+        # the float conversion math.isfinite makes (OverflowError).
+        and 0 < stamp < _MAX_TIMESTAMP
+        and math.isfinite(stamp)
+    ):
+        try:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
+        except (OverflowError, ValueError, OSError):
+            ts = ""
     return {"role": role, "content": text, "ts": ts}
 
 
@@ -500,9 +654,16 @@ def read_preview(
     page ends at, defaulting to the end, and the answer's ``start`` is what the
     next older page passes as ``before``. *sanitize_assistant* runs over each
     assistant message on the page before it is cut to :data:`PREVIEW_MAX_CHARS`,
-    so a scrub never meets a value the cut has split. The event log is read a record at a time; a record
-    that is not valid UTF-8 JSON (a torn tail, a corrupt line) is skipped and
-    counted in ``skipped`` rather than failing the read.
+    so a scrub never meets a value the cut has split. The event log is read a
+    record at a time; a record that is not valid UTF-8 JSON (a torn tail, a
+    corrupt line) is skipped and counted in ``skipped`` rather than failing the
+    read.
+
+    Memory is bounded by the page, not the conversation: a first pass counts
+    the visible messages and keeps none of their text, and a second keeps only
+    the page's messages, each scrubbed and cut as it is read. A log that changes
+    between the passes is a terminal still appending, which only adds messages
+    after the page, so the page's indexes still hold.
     """
     paths = session_paths(sid)
     if paths is None:
@@ -511,51 +672,87 @@ def read_preview(
     meta = read_envelope_meta(json_path)
     if meta is None or meta.session_id != sid:
         return None
-    messages: list[dict[str, Any]] = []
-    skipped = 0
-    if _regular_file(jsonl_path) is not None:
+    has_transcript = _regular_file(jsonl_path) is not None
+    total = skipped = 0
+    if has_transcript:
         try:
-            with open(jsonl_path, "rb") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line.decode("utf-8"))
-                    except ValueError:
-                        skipped += 1
-                        continue
-                    msg = _visible_message(record)
-                    if msg is not None:
-                        messages.append(msg)
+            for msg in _visible_records(jsonl_path):
+                if msg is None:
+                    skipped += 1
+                else:
+                    total += 1
         except OSError:
             return None
-    total = len(messages)
     end = total if before is None else max(0, min(before, total))
     limit = max(1, min(limit, PREVIEW_MAX_LIMIT))
     start = max(0, end - limit)
-    page = []
-    for m in messages[start:end]:
-        content = m["content"]
-        if sanitize_assistant is not None and m["role"] == "assistant":
-            content = sanitize_assistant(content)
-        truncated = len(content) > PREVIEW_MAX_CHARS
-        page.append({**m, "content": content[:PREVIEW_MAX_CHARS], "truncated": truncated})
+    page: list[dict[str, Any]] = []
+    if end > start:
+        try:
+            index = 0
+            for msg in _visible_records(jsonl_path):
+                if msg is None:
+                    continue
+                if index >= end:
+                    break
+                if index >= start:
+                    page.append(_page_entry(msg, sanitize_assistant))
+                index += 1
+        except OSError:
+            return None
     return {
         **meta.to_row(),
         "messages": page,
         "start": start,
         "total": total,
         "skipped": skipped,
-        "has_transcript": _regular_file(jsonl_path) is not None,
+        "has_transcript": has_transcript,
     }
+
+
+def _visible_records(jsonl_path: Path) -> Iterator[dict[str, str] | None]:
+    """Each record of the event log at *jsonl_path* as its visible message,
+    nothing for a record that shows none, and ``None`` for one that is not
+    UTF-8 JSON. **Blocking IO.** Raises ``OSError``.
+
+    Bounded: the terminal's log is not Crew's to trust, and a record past the
+    cap is skipped rather than held whole.
+    """
+    with open_regular_nofollow(jsonl_path, max_bytes=_UNCAPPED) as f:
+        for line in bounded_raw_records(f, jsonl_path, label="kiro-cli preview"):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line.decode("utf-8"))
+            except ValueError:
+                yield None
+                continue
+            msg = _visible_message(record)
+            if msg is not None:
+                yield msg
+
+
+def _page_entry(
+    msg: dict[str, str], sanitize_assistant: Callable[[str], str] | None
+) -> dict[str, Any]:
+    """*msg* as a preview row: scrubbed when it is the assistant's, then cut."""
+    content = msg["content"]
+    if sanitize_assistant is not None and msg["role"] == "assistant":
+        content = sanitize_assistant(content)
+    truncated = len(content) > PREVIEW_MAX_CHARS
+    return {**msg, "content": content[:PREVIEW_MAX_CHARS], "truncated": truncated}
 
 
 def _stat_key(info: os.stat_result) -> tuple[int, int, int]:
     return info.st_ino, info.st_mtime_ns, info.st_size
 
 
-def snapshot_session(sid: str) -> CliSessionSnapshot:
+def snapshot_session(sid: str, max_bytes: int | None = None) -> CliSessionSnapshot:
     """Copy *sid*'s pair as it stood at one instant. Raises :class:`SnapshotRefused`.
+
+    *max_bytes* is the pair size the caller reserved memory for: a pair that has
+    grown past it since is a terminal still writing, refused as busy rather than
+    read into memory nobody reserved.
 
     A terminal may still be writing the session. The pair is read and both files
     are stat'ed before and after; a read during which either changed is thrown
@@ -580,10 +777,26 @@ def snapshot_session(sid: str) -> CliSessionSnapshot:
                 "kiro_cli_session_no_transcript",
                 "this kiro-cli session has no conversation file to continue from",
             )
+        if max_bytes is not None and before[0].st_size + before[1].st_size > max_bytes:
+            raise SnapshotRefused(
+                "kiro_cli_session_busy",
+                "this kiro-cli session is still being written; try again once the terminal is idle",
+            )
+        # Each file is read only up to the size just measured, which the check
+        # above held within *max_bytes*: the shared opener refuses a planted
+        # FIFO or link and charges every read against that size, so one that
+        # grew or was swapped since (EFBIG) is read again or refused as busy,
+        # never taken whole.
         try:
-            envelope_raw = json_path.read_bytes()
-            events_raw = jsonl_path.read_bytes()
+            with open_regular_nofollow(json_path, max_bytes=before[0].st_size) as f:
+                envelope_raw = f.read()
+            with open_regular_nofollow(jsonl_path, max_bytes=before[1].st_size) as f:
+                events_raw = f.read()
         except OSError as exc:
+            if exc.errno == errno.EFBIG:
+                if attempt + 1 < _SNAPSHOT_ATTEMPTS:
+                    time.sleep(_SNAPSHOT_RETRY_SECS)
+                continue
             raise SnapshotRefused(
                 "kiro_cli_session_unreadable", "this kiro-cli session could not be read"
             ) from exc
@@ -603,6 +816,21 @@ def snapshot_session(sid: str) -> CliSessionSnapshot:
     return _parse_snapshot(sid, envelope_raw, events_raw)
 
 
+def _lines(text: str) -> Iterator[str]:
+    """*text*'s lines, one at a time, so the log is never held twice as a list.
+
+    Broken on "\\n" only: ``splitlines`` also breaks on U+2028 and friends, which
+    kiro-cli's writer leaves unescaped inside a JSON string.
+    """
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        if end < 0:
+            end = len(text)
+        yield text[start:end]
+        start = end + 1
+
+
 def _parse_snapshot(sid: str, envelope_raw: bytes, events_raw: bytes) -> CliSessionSnapshot:
     unreadable = SnapshotRefused(
         "kiro_cli_session_unreadable", "this kiro-cli session's files are not valid"
@@ -611,7 +839,7 @@ def _parse_snapshot(sid: str, envelope_raw: bytes, events_raw: bytes) -> CliSess
         envelope = json.loads(envelope_raw.decode("utf-8"))
     except ValueError as exc:
         raise unreadable from exc
-    meta = _meta_from_envelope(envelope)
+    meta = _bounded(_meta_from_envelope(envelope), f"{sid}.json")
     if (
         meta is None
         or meta.session_id != sid
@@ -630,9 +858,7 @@ def _parse_snapshot(sid: str, envelope_raw: bytes, events_raw: bytes) -> CliSess
     except UnicodeDecodeError as exc:
         raise unreadable from exc
     messages: list[dict[str, str]] = []
-    # Split on "\n" only: ``splitlines`` also breaks on U+2028 and friends, which
-    # kiro-cli's writer leaves unescaped inside a JSON string.
-    for line in events.split("\n"):
+    for line in _lines(events):
         if not line.strip():
             continue
         try:

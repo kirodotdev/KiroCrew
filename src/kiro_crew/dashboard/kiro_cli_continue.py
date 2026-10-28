@@ -15,8 +15,9 @@ so:
   been continued before, because nothing about the original changed.
 
 The new chat's project is the session's working directory when that directory
-still exists and passes the same checks the project picker applies (not a
-sensitive path, not overlapping the Crew data home); otherwise the chat opens
+passes the checks a folder's project directory must (``chat_folders_paths``:
+absolute, existing, not a sensitive path, not overlapping the Crew data home);
+otherwise the chat opens
 without one and the answer says why, rather than failing the copy.
 """
 
@@ -26,10 +27,20 @@ import asyncio
 import json
 import logging
 import os
+import sys
+from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import kiro_cli_sessions
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO, kiro_cli_offers_kas
+from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
+from kiro_crew.config import KiroCrewConfig
+from kiro_crew.dashboard.chat_folders_paths import (
+    _folder_project_overlap_denied,
+    _validate_project_dir,
+)
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.session_transfer import (
@@ -41,15 +52,17 @@ from kiro_crew.dashboard.session_transfer import (
     _validate_bundle,
     install_validated_bundle,
 )
+from kiro_crew.dashboard.session_transfer_intake import _measure_stream
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState
-from kiro_crew.sandbox import voice_runtime_workspace_conflict
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.jsonl_util import open_regular_nofollow
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.kiro_cli_continue")
 
 #: The ``origin`` the bundle carries: the installer titles the chat
-#: "<title> (from kiro-cli)" and files it under Imported / from kiro-cli.
+#: "<title> (from kiro-cli)" and files it in a top-level "from kiro-cli" folder.
+#: Not under Imported: the session was copied from this machine's own store, it
+#: did not arrive from somewhere else.
 ORIGIN = "kiro-cli"
 
 #: HTTP status for each refusal :func:`kiro_cli_sessions.snapshot_session` raises.
@@ -91,34 +104,150 @@ def _eligible_meta(state: DashboardState, sid: str) -> kiro_cli_sessions.CliSess
     return meta
 
 
-def _pair_bytes(sid: str) -> int:
-    """The pair's size on disk, for the memory admission. **Blocking.**"""
+#: Bytes read at a time while counting the event log's records.
+_COUNT_CHUNK_BYTES = 1024 * 1024
+
+
+def _measure_pair(sid: str) -> tuple[int, int, int, int]:
+    """What copying *sid*'s pair costs in memory, as ``(size, records, values,
+    factor)`` for :func:`_memory_admission`. **Blocking IO, thread-safe.**
+
+    Each file is measured the way an arriving bundle is
+    (:func:`_measure_stream`: its size, the JSON values it can hold and the
+    width its text decodes to), a chunk at a time, never read whole. A bundle's
+    parse holds one decoded document; the snapshot holds more at once: the raw
+    bytes (1x), the decoded event log (at most the parse factor) and the record
+    being parsed beside them (the parse factor again, for one record as large as
+    the whole log). So the factor admitted is ``2 * factor + 1``. Records stand
+    in for messages: each visible message is one record, so the per-message
+    allowance is never short. A file that is not a regular one (a FIFO, a link
+    to ``/dev/zero``) is never read: every file is opened through
+    :func:`kiro_crew.jsonl_util.open_regular_nofollow`, and one it refuses is
+    skipped here and refused by the snapshot.
+    """
+    size = records = values = 0
+    factor = 1
     paths = kiro_cli_sessions.session_paths(sid)
-    total = 0
     for path in paths or ():
         try:
-            total += path.lstat().st_size
+            with open_regular_nofollow(path, max_bytes=sys.maxsize) as f:
+                file_size, _markers, file_values, file_factor = _measure_stream(
+                    f, os.fstat(f.fileno()).st_size
+                )
         except OSError:
             continue
-    return total
+        size += file_size
+        values += file_values
+        factor = max(factor, file_factor)
+    if paths is not None:
+        records = _count_records(paths[1])
+    return size, records, values, 2 * factor + 1
 
 
-def project_for_cwd(cwd: str) -> tuple[str, str]:
-    """``(project, "")`` when *cwd* can be the chat's project, else ``("", reason)``.
+def _count_records(path: Path) -> int:
+    """Newlines in the event log at *path*, a chunk at a time. **Blocking IO.**
 
-    **Blocking**: realpath and the voice-runtime overlap check touch the disk.
-    The same checks ``POST /api/chat/slots/{slot}/project`` applies to a folder
-    the person picks: an absolute existing directory, not a sensitive path, and
-    not one that contains or sits inside the Crew data home.
+    Opened through :func:`kiro_crew.jsonl_util.open_regular_nofollow`, so a FIFO or a link
+    to ``/dev/zero`` planted under the sid answers 0 instead of hanging, and
+    read no further than the size it had when opened, so a writer appending
+    meanwhile cannot keep the count running."""
+    count = 0
+    try:
+        with open_regular_nofollow(path, max_bytes=sys.maxsize) as f:
+            left = os.fstat(f.fileno()).st_size
+            while left > 0 and (chunk := f.read(min(_COUNT_CHUNK_BYTES, left))):
+                left -= len(chunk)
+                count += chunk.count(b"\n")
+    except OSError:
+        return 0
+    return count + 1
+
+
+#: The reason codes Continue gives for a transcript-only copy. Fixed and
+#: allowlisted: the configured values are never echoed back, so a hand-edited
+#: ``agent.acp_backend`` reaches no response, error or log line.
+#:
+#: The chat runs on a backend other than kiro-cli.
+CONTEXT_NEEDS_KIRO_CLI = "kiro_cli_backend_required"
+#: The chat runs on kiro-cli, but with Tool Search on its first turn starts a
+#: fresh session and replays the transcript instead of loading the copy.
+CONTEXT_TOOL_SEARCH_REPLAYS = "tool_search_replays_transcript"
+#: This host's kiro-cli serves its v3 engine, so a Kiro CLI choice runs as KAS
+#: (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions) and no setting
+#: gives a chat the v2 harness that alone can load the copy.
+CONTEXT_UNAVAILABLE_HERE = "kiro_cli_state_unavailable"
+
+#: The shape of the key every Continue chat runs under: a direct dashboard chat
+#: with no channel identity. Only its namespace is read, to ask the provider's
+#: own resume rule the question it will answer on the chat's first turn.
+_CONTINUE_CHAT_KEY = "dashboard:"
+
+
+def transcript_only_reason() -> str:
+    """Why a new chat could not load the copied kiro-cli session, or ``""`` when
+    it can. **Blocking** (reads the config).
+
+    Two conditions both have to hold for the chat's first turn to
+    ``session/load`` the copy:
+
+    * it runs on the kiro-cli backend. A new chat runs on ``agent.acp_backend``,
+      already resolved to a runtime id when the config loads. Any other backend
+      (KAS, the default, among them) labels its turns with its own provider, so
+      the session-map join the installer makes would be dropped as a provider
+      switch on the first turn;
+    * the provider would not replace that load with a fresh session plus a
+      transcript replay. It does so for every direct dashboard chat on
+      kiro-cli while ``agent.tool_search`` is on (the default), because a loaded
+      session comes back without Tool Search's activated tool schemas. The
+      question goes to that rule itself,
+      :func:`~kiro_crew.agent_sdk.tool_search.resume_takes_tool_search_replay`,
+      so this answer cannot drift from the one the first turn acts on.
+
+    Either way the chat would quietly replay the transcript while Continue
+    reported full context. Unreadable config answers
+    :data:`CONTEXT_NEEDS_KIRO_CLI`: transcript-only is the outcome that is never
+    wrong.
+
+    The reason says what, if anything, would change it. On KAS while this host's
+    kiro-cli serves its v3 engine, a stored Kiro CLI choice itself loads as KAS
+    (``config.loader_builders._read_backend_choice``), so no setting reaches the
+    v2 harness: :data:`CONTEXT_UNAVAILABLE_HERE`, whose text names no setting.
     """
-    if not cwd or not os.path.isabs(cwd):
-        return "", "the session has no working folder"
-    resolved = os.path.realpath(cwd)
-    if not os.path.isdir(resolved):
-        return "", "the session's folder no longer exists"
-    if is_sensitive_path(resolved):
-        return "", "the session's folder is a protected location"
-    conflict = voice_runtime_workspace_conflict(resolved)
+    try:
+        agent_cfg = KiroCrewConfig.load().agent
+        backend = agent_cfg.acp_backend or ACP_BACKEND_KIRO
+        tool_search = agent_cfg.tool_search
+    except Exception:
+        logger.warning("kiro-cli continue: config unreadable; copying transcript-only")
+        return CONTEXT_NEEDS_KIRO_CLI
+    if backend == ACP_BACKEND_KIRO:
+        if resume_takes_tool_search_replay(
+            tool_search=tool_search,
+            backend=backend,
+            channel_id=None,
+            session_key=_CONTINUE_CHAT_KEY,
+        ):
+            return CONTEXT_TOOL_SEARCH_REPLAYS
+        return ""
+    if backend == ACP_BACKEND_KAS and kiro_cli_offers_kas():
+        return CONTEXT_UNAVAILABLE_HERE
+    return CONTEXT_NEEDS_KIRO_CLI
+
+
+def _project_for_cwd(cwd: str) -> tuple[str, str]:
+    """``(project, "")`` for a usable *cwd*, else ``("", reason)``. **Blocking.**
+
+    The folder-project validator pair (``_validate_project_dir`` then
+    ``_folder_project_overlap_denied``), which also audits a refused sensitive
+    path, so this route accepts exactly the folders a folder's project may name.
+    A session with no folder has nothing to refuse and opens without a project.
+    """
+    resolved, error = _validate_project_dir(cwd)
+    if error is not None:
+        return "", error
+    if not resolved:
+        return "", ""
+    conflict = _folder_project_overlap_denied(resolved)
     if conflict is not None:
         return "", conflict
     return resolved, ""
@@ -131,7 +260,11 @@ async def api_kiro_cli_session_continue(request: web.Request) -> web.Response:
     session id the History list would show; anything else answers 404. Answers
     the installer's own body (``key``, ``title``, ``resume_mode`` ...) plus
     ``project`` and, when the session's folder could not be used,
-    ``project_skipped`` with the reason.
+    ``project_skipped`` with the reason. When the new chat could not load the
+    copied session (see :func:`transcript_only_reason`) the copy is
+    transcript-only: ``resume_mode`` is ``transcript`` and ``context_skipped``
+    names why, as :data:`CONTEXT_NEEDS_KIRO_CLI`,
+    :data:`CONTEXT_TOOL_SEARCH_REPLAYS` or :data:`CONTEXT_UNAVAILABLE_HERE`.
     """
     refusal = await require_owner_dashboard_request(request, "kiro_cli_session_continue")
     if refusal is not None:
@@ -146,33 +279,43 @@ async def api_kiro_cli_session_continue(request: web.Request) -> web.Response:
     if meta is None:
         return _error("kiro-cli session not found", "kiro_cli_session_not_found", 404)
 
-    doc_bytes = await asyncio.to_thread(_pair_bytes, sid)
+    doc_bytes, records, values, factor = await asyncio.to_thread(_measure_pair, sid)
+    skipped_context = CONTEXT_NEEDS_KIRO_CLI
     try:
         # The pair is read whole (the installer takes the event log as text),
-        # so a large one waits for memory exactly as a large arriving bundle does.
-        async with _memory_admission(doc_bytes):
+        # so a large one waits for memory exactly as a large arriving bundle does,
+        # measured the same way, and the snapshot reads no more than was measured.
+        async with _memory_admission(doc_bytes, records, values, factor):
             try:
-                snapshot = await asyncio.to_thread(kiro_cli_sessions.snapshot_session, sid)
+                snapshot = await asyncio.to_thread(
+                    kiro_cli_sessions.snapshot_session, sid, doc_bytes
+                )
             except kiro_cli_sessions.SnapshotRefused as refused:
                 return _error(str(refused), refused.code, _SNAPSHOT_STATUS.get(refused.code, 422))
             state_doc = snapshot.envelope.get("session_state") or {}
             agent = state_doc.get("agent_name") if isinstance(state_doc, dict) else ""
-            bundle, err = await asyncio.to_thread(
-                _validate_bundle,
-                {
-                    "bundle_version": BUNDLE_VERSION,
-                    "origin": ORIGIN,
-                    "title": snapshot.meta.title,
-                    "agent": agent if isinstance(agent, str) else "",
-                    "messages": snapshot.messages,
-                    "layer_b": {"envelope": snapshot.envelope, "events": snapshot.events},
-                },
-            )
+            skipped_context = await asyncio.to_thread(transcript_only_reason)
+            doc: dict[str, Any] = {
+                "bundle_version": BUNDLE_VERSION,
+                "origin": ORIGIN,
+                "title": snapshot.meta.title,
+                "agent": agent if isinstance(agent, str) else "",
+                "messages": snapshot.messages,
+            }
+            if not skipped_context:
+                doc["layer_b"] = {"envelope": snapshot.envelope, "events": snapshot.events}
+            else:
+                # The session HAD native context this chat cannot load: say so,
+                # so the installer marks the copy transcript-only.
+                doc["layer_b_skipped"] = True
+            bundle, err = await asyncio.to_thread(_validate_bundle, doc)
             del snapshot
             if err is not None:
                 return err
-            project, skipped = await asyncio.to_thread(project_for_cwd, meta.cwd)
-            response = await install_validated_bundle(request, bundle, project=project)
+            project, skipped = await asyncio.to_thread(_project_for_cwd, meta.cwd)
+            response = await install_validated_bundle(
+                request, bundle, project=project, top_level_folder=True
+            )
     except _NeverFits:
         return _error(
             "this session is too large to copy on this machine; resume it in the terminal",
@@ -190,7 +333,10 @@ async def api_kiro_cli_session_continue(request: web.Request) -> web.Response:
         operation="kiro_cli.session_continue",
         outcome="allowed" if response.status == 200 else "error",
         source="dashboard",
-        resources=f"sid={sid},status={response.status},project={'yes' if project else 'no'}",
+        resources=(
+            f"sid={sid},status={response.status},project={'yes' if project else 'no'},"
+            f"context={skipped_context or 'native'}"
+        ),
     )
     if response.status != 200 or not isinstance(response, web.Response) or response.body is None:
         return response
@@ -209,4 +355,7 @@ async def api_kiro_cli_session_continue(request: web.Request) -> web.Response:
     body["project"] = project
     if skipped:
         body["project_skipped"] = skipped
+    if skipped_context:
+        body["resume_mode"] = "transcript"
+        body["context_skipped"] = skipped_context
     return web.json_response(body)

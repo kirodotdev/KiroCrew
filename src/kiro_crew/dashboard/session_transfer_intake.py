@@ -22,7 +22,7 @@ import tempfile
 import zlib
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from aiohttp import web
 
@@ -446,7 +446,14 @@ def _measure_document(path: Path) -> tuple[int, int, int, int]:
     dropped first so every remaining quote delimits a string, string contents
     are cut out, and a string still open at the end of a chunk carries over.
     """
-    size = path.stat().st_size
+    with open(path, "rb") as f:
+        return _measure_stream(f, os.fstat(f.fileno()).st_size)
+
+
+def _measure_stream(f: IO[bytes], size: int) -> tuple[int, int, int, int]:
+    """:func:`_measure_document` over an already-open binary *f* of *size* bytes.
+    **Blocking IO.** For a caller that must vet the file it opened (its type,
+    that it is not a link) before reading it, which a path cannot guarantee."""
     messages = 0
     values = 0
     text_width = 1
@@ -455,46 +462,47 @@ def _measure_document(path: Path) -> tuple[int, int, int, int]:
     tail = b""
     in_string = False
     pending = b""  # trailing backslashes held so an escape pair is never split
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(_CHUNK_BYTES)
-            if not chunk:
-                break
-            window = tail + chunk
-            messages += window.count(_MESSAGE_MARKER)
-            if text_width < 4:
-                if _NON_BMP_LEAD.search(chunk):
-                    text_width = 4
-                elif text_width < 2 and _WIDE_LEAD.search(chunk):
-                    text_width = 2
-            if string_width < 4:
-                if _SURROGATE_ESCAPE.search(window):
-                    string_width = 4
-                elif string_width < 2 and _WIDE_ESCAPE.search(window):
-                    string_width = 2
-            tail = window[-keep:]
+    left = size  # never past the size measured: a writer appending meanwhile is not followed
+    while left > 0:
+        chunk = f.read(min(_CHUNK_BYTES, left))
+        if not chunk:
+            break
+        left -= len(chunk)
+        window = tail + chunk
+        messages += window.count(_MESSAGE_MARKER)
+        if text_width < 4:
+            if _NON_BMP_LEAD.search(chunk):
+                text_width = 4
+            elif text_width < 2 and _WIDE_LEAD.search(chunk):
+                text_width = 2
+        if string_width < 4:
+            if _SURROGATE_ESCAPE.search(window):
+                string_width = 4
+            elif string_width < 2 and _WIDE_ESCAPE.search(window):
+                string_width = 2
+        tail = window[-keep:]
 
-            stream = pending + chunk
-            body = stream.rstrip(b"\\")
-            # A trailing run pairs up into complete ``\\`` escapes from its
-            # start, so only an odd last backslash waits for the next chunk and
-            # the carry stays one byte however long the run.
-            pending = b"\\" * ((len(stream) - len(body)) % 2)
-            # Escapes occur only inside strings, so removing them anywhere is
-            # safe; ``\\`` goes first so ``\\"`` leaves its closing quote.
-            body = body.replace(b"\\\\", b"").replace(b'\\"', b"")
-            if in_string:
-                end = body.find(b'"')
-                if end < 0:
-                    continue
-                body = body[end + 1 :]
-                in_string = False
-            body = _JSON_STRING.sub(b"", body)
-            opened = body.find(b'"')
-            if opened >= 0:
-                body = body[:opened]
-                in_string = True
-            values += sum(body.count(mark) for mark in _STRUCTURAL_MARKS)
+        stream = pending + chunk
+        body = stream.rstrip(b"\\")
+        # A trailing run pairs up into complete ``\\`` escapes from its
+        # start, so only an odd last backslash waits for the next chunk and
+        # the carry stays one byte however long the run.
+        pending = b"\\" * ((len(stream) - len(body)) % 2)
+        # Escapes occur only inside strings, so removing them anywhere is
+        # safe; ``\\`` goes first so ``\\"`` leaves its closing quote.
+        body = body.replace(b"\\\\", b"").replace(b'\\"', b"")
+        if in_string:
+            end = body.find(b'"')
+            if end < 0:
+                continue
+            body = body[end + 1 :]
+            in_string = False
+        body = _JSON_STRING.sub(b"", body)
+        opened = body.find(b'"')
+        if opened >= 0:
+            body = body[:opened]
+            in_string = True
+        values += sum(body.count(mark) for mark in _STRUCTURAL_MARKS)
     string_width = max(string_width, text_width)
     return size, messages, values, _parse_factor(text_width, string_width)
 

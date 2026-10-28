@@ -1013,9 +1013,13 @@ Every route takes a session id that must match kiro-cli's UUID shape and is
 resolved to a direct child of the sessions directory; nothing else from the
 request names a path. The three routes are owner-only: an app token, an internal
 caller and a non-owner dashboard session are refused, and a session the list
-would not show answers 404 like a missing one. The preview pages back from the
-newest visible message (user and assistant text only), redacts assistant text
-before its per-message cap, and skips a record that is not UTF-8 JSON.
+would not show answers 404 like a missing one. The list sorts newest first by
+`(updated_at, id)` and pages by cursor: **Load more** asks for the rows after the
+last one shown (`after_updated` + `after_id`), because a terminal can touch a
+session between pages, and an offset would then serve a row already shown. The
+preview pages back from the newest visible message (user and assistant text
+only), keeping only the page's messages in memory, redacts assistant text before
+its per-message cap, and skips a record that is not UTF-8 JSON.
 
 **Continue in Crew copies, never moves.** `snapshot_session` reads the pair and
 stats both files before and after, retrying while either changed and refusing
@@ -1025,6 +1029,12 @@ copied, because `session/load` would fail on it. The snapshot becomes a version-
 transfer bundle (origin `kiro-cli`) and is installed by
 `session_transfer.install_validated_bundle`, the same path an arriving bundle
 takes: a new slot, Layer B written under a fresh sid, the arrival folder. The
+one difference is the folder: Continue passes `top_level_folder=True`, so
+`arrival_folders.arrival_folder_id(top_level=True)` files the chat in a
+top-level `from kiro-cli` folder, found or created at the root, instead of
+`Imported` / `from kiro-cli`. The session was copied from this machine's own
+store rather than arriving from another place; export-file and tunnel arrivals
+still file under `Imported`. The
 terminal's files are never written, so `kiro-cli chat --resume-id <sid>` still
 resumes the original, and continuing the same session twice makes two
 independent chats. kiro-cli titles a copy from its first prompt (the person's
@@ -1032,9 +1042,44 @@ terminal prompt) and records the folder it is loaded in, so a copy whose join a
 reset or failed start dropped would read as a terminal session; each copy's sid
 is therefore kept in `<data home>/kiro-cli-continued.json` (newest 5,000) and
 counted as Crew's by the listing rule. The chat's project is the session's `cwd` when it still
-exists and passes the project picker's checks (not sensitive, not overlapping
-the data home); otherwise the chat opens without one and the answer carries
+passes the folder project validators in `chat_folders_paths.py`
+(`_validate_project_dir`, then `_folder_project_overlap_denied`); otherwise the chat opens without one and the answer carries
 `project_skipped`.
+
+The chat's first turn loads the copied session only on the kiro-cli backend,
+and only with `agent.tool_search` off. The backend is the RESOLVED one: while
+this host's kiro-cli offers its v3 engine, a stored Kiro CLI choice loads as KAS
+(`config.loader_builders._read_backend_choice`,
+`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`), so on such a host
+no setting reaches the load. Every other backend (KAS, the default,
+among them) labels its turns with its own provider, so a native join would be
+dropped as a provider switch on the first turn. On kiro-cli with Tool Search on
+(its default), `resume_takes_tool_search_replay` in `agent_sdk/tool_search.py`
+makes the provider replace every direct dashboard chat's `session/load` with a
+fresh session plus a transcript replay, because a loaded session comes back
+without Tool Search's activated tool schemas. So Continue reads the resolved
+`agent.acp_backend` and `agent.tool_search` before installing and asks that
+same rule about a dashboard key (`transcript_only_reason`). When the load
+would happen, the bundle carries Layer B and the answer says
+`resume_mode: session_load`. Otherwise, or when the config cannot be read, the
+bundle sets `layer_b_skipped` instead, so the copy is transcript-only (its
+title says so), and the answer says `resume_mode: transcript` with
+`context_skipped: kiro_cli_backend_required` (another backend, or no readable
+config), `context_skipped: tool_search_replays_transcript`, or
+`context_skipped: kiro_cli_state_unavailable` (KAS on a host whose kiro-cli
+offers v3, where no setting helps). Those are fixed codes; the configured
+values never reach the answer or the log. The preview page
+(`GET /api/kiro-cli/sessions/{sid}`) carries the same `context_skipped`, so the
+dialog says before the click what the chat will keep. A
+transcript-only copy is the expected result on the default setup, not a
+failure, so the preview opens the chat exactly as it opens a full one; only
+`project_skipped`, a chat the person opened meanwhile, or a refusal keeps the
+dialog open. Under the transcript a fixed, muted line (never an `ErrorNotice`)
+says what the chat keeps: full state, or the one change that would give it
+(MCP Tool Search off; or Settings → Agent Harness = Kiro CLI with MCP Tool Search
+off), or, for `kiro_cli_state_unavailable`, that this machine cannot carry it,
+naming no setting. After Continue the landed answer's code replaces the
+preview's.
 
 ### Chats in the whole-install export (`portability.py`)
 

@@ -29,7 +29,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
   const { clearClosedSessionsWithConfirm, collapsedHistoryGroups, connected, defaultAgent,
     deleteHistorySessionWithConfirm, dispatch, folderSortMode, folders, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchResults,
-    openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
+    onSelectSlot, openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
     tintAgents } = shell
   // Older sessions have no place in the manual order (it orders the open ones),
   // so under Manual this pane keeps its own newest-first order and date groups.
@@ -128,7 +128,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <HistorySourceTabs height={historyHeight} connected={connected} crew={() => (<>
+            <HistorySourceTabs height={historyHeight} connected={connected} onSelectSlot={onSelectSlot} crew={() => (<>
             <div className="px-2 pb-1">
               <div className="relative">
                 <SearchInput className="w-full" placeholder={i18nT('pages.chatSidebar.search_older_sessions')} value={historyFilter} onChange={e => setHistoryFilter(e.target.value)} />

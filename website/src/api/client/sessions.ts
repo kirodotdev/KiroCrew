@@ -132,8 +132,10 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
    * COPIES it into a new chat; the terminal session is left as it was.
    */
   const kiroCli = {
-    kiroCliSessions: (q = '', limit = 50, offset = 0) =>
-      fetch('/api/kiro-cli/sessions?limit=' + limit + '&offset=' + offset + (q ? '&q=' + encodeURIComponent(q) : ''))
+    /** A page of the list; *after* is the last row already shown, for the page that follows it. */
+    kiroCliSessions: (q = '', limit = 50, after: KiroCliSessionRow | null = null) =>
+      fetch('/api/kiro-cli/sessions?limit=' + limit + (q ? '&q=' + encodeURIComponent(q) : '')
+        + (after?.id ? '&after_updated=' + encodeURIComponent(after.updated_at) + '&after_id=' + encodeURIComponent(after.id) : ''))
         .then(j) as Promise<KiroCliSessionList>,
     /** A page of the conversation, newest last; pass the answer's `start` as `before` for the older page. */
     kiroCliSession: (id: string, before?: number, limit = 100) =>
@@ -179,7 +181,20 @@ export interface KiroCliSessionPage extends KiroCliSessionRow {
   /** Records in the log that could not be read and were left out. */
   skipped: number
   has_transcript: boolean
+  /** Set when Continue would copy the transcript only, with the code Continue
+   *  itself answers, so the preview can say so before the click. */
+  context_skipped?: KiroCliContextSkipped
 }
+
+/** Why a continued chat carries the transcript only. Fixed codes, never a
+ *  configured value: another harness than Kiro CLI; Kiro CLI with MCP Tool
+ *  Search on, which starts every resumed dashboard chat afresh from its
+ *  transcript; or a machine whose kiro-cli runs Crew's chats on Kiro Agent,
+ *  where no setting gives full state. */
+export type KiroCliContextSkipped =
+  | 'kiro_cli_backend_required'
+  | 'tool_search_replays_transcript'
+  | 'kiro_cli_state_unavailable'
 
 export interface KiroCliContinueResult {
   ok: boolean
@@ -192,4 +207,6 @@ export interface KiroCliContinueResult {
   project: string
   /** Why the session's folder was not used, when it was not. */
   project_skipped?: string
+  /** Set when the copy is transcript-only; see {@link KiroCliContextSkipped}. */
+  context_skipped?: KiroCliContextSkipped
 }
