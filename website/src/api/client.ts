@@ -1676,6 +1676,7 @@ export const api = {
   ...sessions.history,
   ...instances.peerReads,
   ...sessions.historyDetail,
+  ...sessions.kiroCli,
   ...chat.composerAutocomplete,
   ...subagents.spawned,
   ...approvals.requests,

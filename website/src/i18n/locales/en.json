@@ -6357,6 +6357,24 @@
       "next_match": "Next match",
       "close_search": "Close search"
     },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI session",
+      "no_folder": "No folder recorded",
+      "loading": "Loading the conversation…",
+      "show_earlier": "Show earlier messages",
+      "no_messages": "This session has no messages to show.",
+      "you": "You",
+      "kiro": "Kiro",
+      "truncated": "Shortened for the preview. The whole message carries over when you continue.",
+      "skipped": "Some lines of this session couldn't be read and aren't shown.",
+      "continue_hint": "Continue in Crew opens a new chat with this session's full context. The session in your terminal stays as it is.",
+      "continue": "Continue in Crew",
+      "continuing": "Copying…",
+      "continue_failed": "Couldn't continue this session",
+      "opened_without_project": "The new chat is ready, but it opens without a project folder: {{reason}}",
+      "open_chat": "Open the chat",
+      "close": "Close"
+    },
     "runYourselfCard": {
       "copy_failed": "Couldn't copy, so select the command and copy it by hand.",
       "no_terminal": "Running commands isn't available here, so copy it into the Terminal app on your computer.",
@@ -7833,7 +7851,14 @@
       "show_sessions_count_one": "Show {{n}} session",
       "show_sessions_count_other": "Show {{n}} sessions",
       "hide_sessions_count_one": "Hide {{n}} session",
-      "hide_sessions_count_other": "Hide {{n}} sessions"
+      "hide_sessions_count_other": "Hide {{n}} sessions",
+      "history_source": "History source",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Search Kiro CLI sessions",
+      "kiro_cli_loading": "Loading sessions…",
+      "kiro_cli_empty": "No kiro-cli sessions from your terminal yet.",
+      "kiro_cli_no_folder": "No folder"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",

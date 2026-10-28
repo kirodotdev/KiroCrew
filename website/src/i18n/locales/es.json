@@ -11029,6 +11029,24 @@
       "next_match": "Coincidencia siguiente",
       "close_search": "Cerrar búsqueda"
     },
+    "kiroCliSessionPreview": {
+      "title": "Sesión de Kiro CLI",
+      "no_folder": "No se registró ninguna carpeta",
+      "loading": "Cargando la conversación…",
+      "show_earlier": "Mostrar mensajes anteriores",
+      "no_messages": "Esta sesión no tiene mensajes que mostrar.",
+      "you": "Tú",
+      "kiro": "Kiro",
+      "truncated": "Acortado para la vista previa. El mensaje completo se conserva cuando continúas.",
+      "skipped": "Algunas líneas de esta sesión no se pudieron leer y no se muestran.",
+      "continue_hint": "Continuar en Crew abre un chat nuevo con todo el contexto de esta sesión. La sesión de tu terminal se queda como está.",
+      "continue": "Continuar en Crew",
+      "continuing": "Copiando…",
+      "continue_failed": "No se pudo continuar esta sesión",
+      "opened_without_project": "El chat nuevo está listo, pero se abre sin carpeta de proyecto: {{reason}}",
+      "open_chat": "Abrir el chat",
+      "close": "Cerrar"
+    },
     "runYourselfCard": {
       "copy_failed": "No se pudo copiar, así que selecciona el comando y cópialo a mano.",
       "no_terminal": "Aquí no se pueden ejecutar comandos, así que cópialo en la aplicación Terminal de tu ordenador.",
@@ -14502,7 +14520,14 @@
       "show_sessions_count_other": "Mostrar {{n}} sesiones",
       "hide_sessions_count_one": "Ocultar {{n}} sesión",
       "hide_sessions_count_many": "Ocultar {{n}} sesiones",
-      "hide_sessions_count_other": "Ocultar {{n}} sesiones"
+      "hide_sessions_count_other": "Ocultar {{n}} sesiones",
+      "history_source": "Origen del historial",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Buscar sesiones de Kiro CLI",
+      "kiro_cli_loading": "Cargando sesiones…",
+      "kiro_cli_empty": "Aún no hay sesiones de kiro-cli de tu terminal.",
+      "kiro_cli_no_folder": "Sin carpeta"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

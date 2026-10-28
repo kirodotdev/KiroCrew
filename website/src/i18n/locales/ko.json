@@ -10563,6 +10563,24 @@
       "next_match": "다음 일치",
       "close_search": "검색 닫기"
     },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI 세션",
+      "no_folder": "기록된 폴더 없음",
+      "loading": "대화를 불러오는 중…",
+      "show_earlier": "이전 메시지 보기",
+      "no_messages": "이 세션에는 표시할 메시지가 없습니다.",
+      "you": "나",
+      "kiro": "Kiro",
+      "truncated": "미리 보기용으로 줄였습니다. 계속하면 전체 메시지가 그대로 이어집니다.",
+      "skipped": "이 세션의 일부 줄을 읽을 수 없어 표시하지 않았습니다.",
+      "continue_hint": "Crew에서 계속하면 이 세션의 전체 컨텍스트로 새 채팅이 열립니다. 터미널의 세션은 그대로 유지됩니다.",
+      "continue": "Crew에서 계속",
+      "continuing": "복사하는 중…",
+      "continue_failed": "이 세션을 계속할 수 없습니다",
+      "opened_without_project": "새 채팅이 준비되었지만 프로젝트 폴더 없이 열립니다: {{reason}}",
+      "open_chat": "채팅 열기",
+      "close": "닫기"
+    },
     "runYourselfCard": {
       "copy_failed": "복사하지 못했으니 명령을 선택해 직접 복사하세요.",
       "no_terminal": "여기서는 명령을 실행할 수 없으니 컴퓨터의 터미널 앱에 복사해 붙여 넣으세요.",
@@ -13808,7 +13826,14 @@
       "skip_running_sessions_other": "실행 중인 세션 {{n}}개 건너뛰기",
       "cleanup_move_count_other": "세션 {{n}}개가 이전 세션으로 이동됩니다.",
       "show_sessions_count_other": "세션 {{n}}개 표시",
-      "hide_sessions_count_other": "세션 {{n}}개 숨기기"
+      "hide_sessions_count_other": "세션 {{n}}개 숨기기",
+      "history_source": "기록 출처",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI 세션 검색",
+      "kiro_cli_loading": "세션을 불러오는 중…",
+      "kiro_cli_empty": "아직 터미널에서 실행한 kiro-cli 세션이 없습니다.",
+      "kiro_cli_no_folder": "폴더 없음"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

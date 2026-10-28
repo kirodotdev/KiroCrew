@@ -10796,6 +10796,24 @@
       "next_match": "পরবর্তী মিল",
       "close_search": "অনুসন্ধান বন্ধ করো"
     },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI সেশন",
+      "no_folder": "কোনো ফোল্ডার রেকর্ড করা নেই",
+      "loading": "কথোপকথন লোড হচ্ছে…",
+      "show_earlier": "আগের মেসেজ দেখাও",
+      "no_messages": "এই সেশনে দেখানোর মতো কোনো মেসেজ নেই।",
+      "you": "তুমি",
+      "kiro": "Kiro",
+      "truncated": "প্রিভিউয়ের জন্য ছোট করা হয়েছে। চালিয়ে গেলে পুরো মেসেজটাই সঙ্গে যাবে।",
+      "skipped": "এই সেশনের কিছু লাইন পড়া যায়নি, তাই দেখানো হচ্ছে না।",
+      "continue_hint": "Crew-এ চালিয়ে যাও বেছে নিলে এই সেশনের পুরো প্রসঙ্গ নিয়ে একটা নতুন চ্যাট খুলবে। তোমার টার্মিনালের সেশন যেমন আছে তেমনই থাকবে।",
+      "continue": "Crew-এ চালিয়ে যাও",
+      "continuing": "কপি হচ্ছে…",
+      "continue_failed": "এই সেশন চালিয়ে যাওয়া গেল না",
+      "opened_without_project": "নতুন চ্যাট তৈরি, কিন্তু এটা প্রকল্প ফোল্ডার ছাড়াই খুলবে: {{reason}}",
+      "open_chat": "চ্যাট খোলো",
+      "close": "বন্ধ করো"
+    },
     "runYourselfCard": {
       "copy_failed": "কপি করা গেল না, তাই কমান্ডটি বেছে নাও এবং নিজে কপি করো।",
       "no_terminal": "এখানে কমান্ড চালানো যায় না, তাই এটি তোমার কম্পিউটারের টার্মিনাল অ্যাপে কপি করো।",
@@ -14155,7 +14173,14 @@
       "show_sessions_count_one": "{{n}}টি সেশন দেখাও",
       "show_sessions_count_other": "{{n}}টি সেশন দেখাও",
       "hide_sessions_count_one": "{{n}}টি সেশন লুকাও",
-      "hide_sessions_count_other": "{{n}}টি সেশন লুকাও"
+      "hide_sessions_count_other": "{{n}}টি সেশন লুকাও",
+      "history_source": "ইতিহাসের উৎস",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI সেশন খোঁজো",
+      "kiro_cli_loading": "সেশন লোড হচ্ছে…",
+      "kiro_cli_empty": "তোমার টার্মিনাল থেকে এখনো কোনো kiro-cli সেশন নেই।",
+      "kiro_cli_no_folder": "কোনো ফোল্ডার নেই"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

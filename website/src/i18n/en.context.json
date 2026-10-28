@@ -1167,6 +1167,10 @@
     "components.weekGrid.job_title": "Hover text of a scheduled job dot on the cron week grid: job name, then its HH:MM time and time zone.",
     "components.weekGrid.job_title_paused": "Hover text of a PAUSED scheduled job dot on the cron week grid: job name, a paused marker, then its HH:MM time and time zone.",
     "pages.worldsPage.scene_button": "Screen-reader name of a scene picker button on the Agent Worlds page. {{label}} is the scene name and {{desc}} its one-line description.",
-    "components.weekGrid.job_name_paused": "Legend entry for a PAUSED job under the cron week grid: the job name with a paused marker."
+    "components.weekGrid.job_name_paused": "Legend entry for a PAUSED job under the cron week grid: the job name with a paused marker.",
+    "components.kiroCliSessionPreview.you": "Speaker label above the person's own turns in the read-only preview of a kiro-cli terminal session; names the human who typed the message, not a pronoun in a sentence.",
+    "components.kiroCliSessionPreview.kiro": "Speaker label above the assistant's turns in the same preview; the product name Kiro, kept as is.",
+    "pages.chatSidebar.history_tab_crew": "Tab in the sidebar's Older Sessions pane that lists the product's own saved chats; Crew is the product name, kept as is.",
+    "pages.chatSidebar.history_tab_kiro_cli": "Tab beside it listing the sessions the person ran with the kiro-cli command-line tool in a terminal; the tool's name, kept as is."
   }
 }

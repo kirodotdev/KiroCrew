@@ -11029,6 +11029,24 @@
       "next_match": "Próxima correspondência",
       "close_search": "Fechar pesquisa"
     },
+    "kiroCliSessionPreview": {
+      "title": "Sessão do Kiro CLI",
+      "no_folder": "Nenhuma pasta registrada",
+      "loading": "Carregando a conversa…",
+      "show_earlier": "Mostrar mensagens anteriores",
+      "no_messages": "Esta sessão não tem mensagens para mostrar.",
+      "you": "Você",
+      "kiro": "Kiro",
+      "truncated": "Encurtada para a prévia. A mensagem completa é mantida quando você continua.",
+      "skipped": "Algumas linhas desta sessão não puderam ser lidas e não são mostradas.",
+      "continue_hint": "Continuar no Crew abre um novo chat com todo o contexto desta sessão. A sessão no seu terminal continua como está.",
+      "continue": "Continuar no Crew",
+      "continuing": "Copiando…",
+      "continue_failed": "Não foi possível continuar esta sessão",
+      "opened_without_project": "O novo chat está pronto, mas abre sem pasta de projeto: {{reason}}",
+      "open_chat": "Abrir o chat",
+      "close": "Fechar"
+    },
     "runYourselfCard": {
       "copy_failed": "Não foi possível copiar, então selecione o comando e copie manualmente.",
       "no_terminal": "Não dá para executar comandos aqui, então copie para o aplicativo Terminal do seu computador.",
@@ -14502,7 +14520,14 @@
       "show_sessions_count_other": "Mostrar {{n}} sessões",
       "hide_sessions_count_one": "Ocultar {{n}} sessão",
       "hide_sessions_count_many": "Ocultar {{n}} sessões",
-      "hide_sessions_count_other": "Ocultar {{n}} sessões"
+      "hide_sessions_count_other": "Ocultar {{n}} sessões",
+      "history_source": "Origem do histórico",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Pesquisar sessões do Kiro CLI",
+      "kiro_cli_loading": "Carregando sessões…",
+      "kiro_cli_empty": "Ainda não há sessões do kiro-cli do seu terminal.",
+      "kiro_cli_no_folder": "Sem pasta"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

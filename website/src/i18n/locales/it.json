@@ -11029,6 +11029,24 @@
       "next_match": "Corrispondenza successiva",
       "close_search": "Chiudi ricerca"
     },
+    "kiroCliSessionPreview": {
+      "title": "Sessione di Kiro CLI",
+      "no_folder": "Nessuna cartella registrata",
+      "loading": "Caricamento della conversazione…",
+      "show_earlier": "Mostra messaggi precedenti",
+      "no_messages": "Questa sessione non ha messaggi da mostrare.",
+      "you": "Tu",
+      "kiro": "Kiro",
+      "truncated": "Accorciato per l’anteprima. Il messaggio completo viene mantenuto quando continui.",
+      "skipped": "Alcune righe di questa sessione non sono leggibili e non vengono mostrate.",
+      "continue_hint": "Continua in Crew apre una nuova chat con tutto il contesto di questa sessione. La sessione nel tuo terminale resta com’è.",
+      "continue": "Continua in Crew",
+      "continuing": "Copia in corso…",
+      "continue_failed": "Impossibile continuare questa sessione",
+      "opened_without_project": "La nuova chat è pronta, ma si apre senza cartella di progetto: {{reason}}",
+      "open_chat": "Apri la chat",
+      "close": "Chiudi"
+    },
     "runYourselfCard": {
       "copy_failed": "Copia non riuscita, quindi seleziona il comando e copialo a mano.",
       "no_terminal": "Qui non si possono eseguire comandi, quindi copialo nell'app Terminale del tuo computer.",
@@ -14502,7 +14520,14 @@
       "show_sessions_count_other": "Mostra {{n}} sessioni",
       "hide_sessions_count_one": "Nascondi {{n}} sessione",
       "hide_sessions_count_many": "Nascondi {{n}} sessioni",
-      "hide_sessions_count_other": "Nascondi {{n}} sessioni"
+      "hide_sessions_count_other": "Nascondi {{n}} sessioni",
+      "history_source": "Origine della cronologia",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Cerca sessioni di Kiro CLI",
+      "kiro_cli_loading": "Caricamento delle sessioni…",
+      "kiro_cli_empty": "Ancora nessuna sessione kiro-cli dal tuo terminale.",
+      "kiro_cli_no_folder": "Nessuna cartella"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

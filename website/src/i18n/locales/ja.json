@@ -10563,6 +10563,24 @@
       "next_match": "次の一致",
       "close_search": "検索を閉じる"
     },
+    "kiroCliSessionPreview": {
+      "title": "Kiro CLI のセッション",
+      "no_folder": "フォルダーの記録がありません",
+      "loading": "会話を読み込んでいます…",
+      "show_earlier": "以前のメッセージを表示",
+      "no_messages": "このセッションに表示できるメッセージはありません。",
+      "you": "あなた",
+      "kiro": "Kiro",
+      "truncated": "プレビュー用に短縮しています。続行するとメッセージ全体が引き継がれます。",
+      "skipped": "このセッションの一部の行を読み取れなかったため、表示していません。",
+      "continue_hint": "「Crew で続行」を選ぶと、このセッションの全コンテキストを引き継いだ新しいチャットが開きます。ターミナルのセッションはそのまま残ります。",
+      "continue": "Crew で続行",
+      "continuing": "コピーしています…",
+      "continue_failed": "このセッションを続行できませんでした",
+      "opened_without_project": "新しいチャットの準備ができましたが、プロジェクトフォルダーなしで開きます: {{reason}}",
+      "open_chat": "チャットを開く",
+      "close": "閉じる"
+    },
     "runYourselfCard": {
       "copy_failed": "コピーできなかったので、コマンドを選択して手動でコピーしてください。",
       "no_terminal": "ここではコマンドを実行できないため、お使いのコンピューターのターミナルアプリにコピーしてください。",
@@ -13808,7 +13826,14 @@
       "skip_running_sessions_other": "実行中のセッション {{n}} 件をスキップ",
       "cleanup_move_count_other": "{{n}} 件のセッションが以前のセッションに移動されます。",
       "show_sessions_count_other": "{{n}} 件のセッションを表示",
-      "hide_sessions_count_other": "{{n}} 件のセッションを非表示"
+      "hide_sessions_count_other": "{{n}} 件のセッションを非表示",
+      "history_source": "履歴の種類",
+      "history_tab_crew": "Crew",
+      "history_tab_kiro_cli": "Kiro CLI",
+      "kiro_cli_search": "Kiro CLI のセッションを検索",
+      "kiro_cli_loading": "セッションを読み込んでいます…",
+      "kiro_cli_empty": "ターミナルで実行した kiro-cli のセッションはまだありません。",
+      "kiro_cli_no_folder": "フォルダーなし"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
