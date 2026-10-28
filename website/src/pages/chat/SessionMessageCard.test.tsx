@@ -44,15 +44,13 @@ describe('sender avatar helpers', () => {
 describe('SessionMessageCard incoming', () => {
   const sender = { key: 'chat-300-1791983459', title: 'Slack Code' }
 
-  it('draws a filled avatar, the sender title as a link, meta, and opens the sender', () => {
+  it('draws a filled avatar, the sender title as a link, the time, and opens the sender', () => {
     const onOpen = vi.fn()
     render(
       <SessionMessageCard
         direction="incoming"
         sender={sender}
         body="the base moved, rebase before you push"
-        agent="kirocrew-worker"
-        runName="slack stack"
         time="4:12 PM"
         onOpenSession={onOpen}
       />,
@@ -65,7 +63,7 @@ describe('SessionMessageCard incoming', () => {
     expect(link.textContent).toBe('Slack Code')
     fireEvent.click(link)
     expect(onOpen).toHaveBeenCalledWith('chat-300-1791983459')
-    expect(screen.getByTestId('session-card-meta').textContent).toBe('kirocrew-worker · slack stack · 4:12 PM')
+    expect(screen.getByTestId('session-card-meta').textContent).toBe('4:12 PM')
     // Incoming carries no recipient tag.
     expect(screen.queryByTestId('session-card-recipient')).not.toBeInTheDocument()
   })
@@ -88,9 +86,9 @@ describe('SessionMessageCard incoming', () => {
     expect(screen.queryByTestId('session-card-toggle')).not.toBeInTheDocument()
   })
 
-  it('a step waiting on the person carries the Needs you pill', () => {
-    render(<SessionMessageCard direction="incoming" sender={sender} body="plan ready" needsYou />)
-    expect(screen.getByTestId('session-card-needs-you').textContent).toBe('Needs you')
+  it('draws no meta line without a time', () => {
+    render(<SessionMessageCard direction="incoming" sender={sender} body="plan ready" />)
+    expect(screen.queryByTestId('session-card-meta')).not.toBeInTheDocument()
   })
 
   it('without onOpenSession the title is plain text, not a link', () => {
@@ -104,7 +102,7 @@ describe('SessionMessageCard outgoing', () => {
   const sender = { key: 'chat-wf-step', title: 'wf-planner' }
   const recipient = { key: 'chat-200', title: 'Parent chat' }
 
-  it('draws an outlined avatar with the arrow, the recipient @tag, and sr-only direction', () => {
+  it('says the direction in visible text: "This session · Sent to @recipient"', () => {
     const onOpen = vi.fn()
     render(
       <SessionMessageCard
@@ -117,28 +115,38 @@ describe('SessionMessageCard outgoing', () => {
     )
     expect(screen.getByTestId('session-message-card').getAttribute('data-direction')).toBe('outgoing')
     expect(screen.getByTestId('session-card-avatar').getAttribute('data-outgoing')).toBe('true')
+    // The sender is named "This session", not by a title that reads as another
+    // sender; the title stays on hover. Never a link to itself.
+    const title = screen.getByTestId('session-card-title')
+    expect(title.textContent).toBe('This session')
+    expect(title).toHaveAttribute('title', 'wf-planner')
+    expect(screen.queryByTestId('session-card-title-link')).not.toBeInTheDocument()
+    // The direction is visible text, not an sr-only span or an icon.
+    const direction = screen.getByTestId('session-card-direction')
+    expect(direction.textContent).toBe('Sent to @Parent chat')
+    expect(direction.closest('.sr-only')).toBeNull()
     const tag = screen.getByTestId('session-card-recipient')
-    expect(tag.textContent).toBe('@Parent chat')
+    expect(direction).toContainElement(tag)
     fireEvent.click(tag)
     expect(onOpen).toHaveBeenCalledWith('chat-200')
-    expect(screen.getByTestId('session-card-direction-sr').textContent).toBe('Sent to Parent chat')
-    // Outgoing shows the sender's own title, not a link to itself.
-    expect(screen.queryByTestId('session-card-title-link')).not.toBeInTheDocument()
-    expect(screen.getByTestId('session-card-title').textContent).toBe('wf-planner')
   })
 
-  it('keeps the @tag on the first line: the rendered markdown root and its paragraph go inline', () => {
+  it('draws no direction icon: the avatar holds only the initials', () => {
+    render(<SessionMessageCard direction="outgoing" sender={sender} recipient={recipient} body="hi" />)
+    const avatar = screen.getByTestId('session-card-avatar')
+    expect(avatar.querySelector('svg')).toBeNull()
+    expect(avatar.textContent).toBe('WF')
+  })
+
+  it('keeps the body to the message alone: the @tag sits in the header, not the body', () => {
     render(<SessionMessageCard direction="outgoing" sender={sender} recipient={recipient} body="plan is ready for review" />)
     const body = screen.getByTestId('session-card-body')
-    // The tag leads the body, before the markdown root.
-    expect(body.firstElementChild).toBe(screen.getByTestId('session-card-recipient'))
-    // Tailwind arbitrary variants: both the renderer's own root <div> and its <p> must be inline.
-    expect(body.className).toMatch(/\[&>div\]:inline/)
-    expect(body.className).toMatch(/\[&_p\]:inline/)
+    expect(body).not.toContainElement(screen.getByTestId('session-card-recipient'))
+    expect(body.textContent).toBe('plan is ready for review')
   })
 
-  it('leaves an incoming body as normal blocks', () => {
+  it('an incoming card carries no direction line', () => {
     render(<SessionMessageCard direction="incoming" sender={sender} body="hello" />)
-    expect(screen.getByTestId('session-card-body').className).not.toMatch(/:inline/)
+    expect(screen.queryByTestId('session-card-direction')).not.toBeInTheDocument()
   })
 })

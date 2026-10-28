@@ -653,11 +653,14 @@ async def steer_into_running_turn(
         slot._turn_user_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
-    if attachments or quote or app_label or app_actor:
+    if attachments or quote or app_label or app_actor or relay_meta:
         # Retained for the REQUEUE with the attachment lists: a steer the turn
         # ended before consuming is drained as a queued row, and that row is
         # rebuilt from this map -- without the quote here it would render its
-        # blockquote as text instead of the card, without appLabel the drained
+        # blockquote as text instead of the card, without a peer's
+        # cross-session sender (``relay``) it would draw as a raw
+        # ``[sent by session …]`` bubble instead of the session-message card,
+        # without appLabel the drained
         # row would lose the app attribution the delivered row carries, and
         # without turnActor the drain would read the requeued turn's actor as
         # ``user`` (``_actor_for_queue_items`` has no kind and no stamp to read),
@@ -667,6 +670,7 @@ async def steer_into_running_turn(
         slot._steer_attachment_meta[message] = {
             **attachments,
             **quote,
+            **({"relay": dict(relay_meta)} if relay_meta else {}),
             **({"appLabel": app_label} if app_label else {}),
             **({TURN_ACTOR_META_KEY: "app"} if app_actor else {}),
             # An app native-card answer is the app user's own words -- a chosen
@@ -1003,8 +1007,10 @@ async def steer_into_running_turn(
         # The gateway-set cross-session sender, when a ``session_send`` peer was
         # steered into the running turn: the receiver's consumed-steer row carries
         # it so the transcript draws the incoming session-message card instead of
-        # the raw provenance prefix. Only on a peer relay (``relay_meta`` set); a
-        # requeued steer that drains later is the one uncovered edge.
+        # the raw provenance prefix. Only on a peer relay (``relay_meta`` set). A
+        # steer the turn never takes is requeued with it from
+        # ``_steer_attachment_meta``, so the row that drain writes carries it too;
+        # the live ``steer_push`` below carries it for open tabs.
         **({"relay": dict(relay_meta)} if relay_meta else {}),
         # The row names its delivery, as a drained row names the deliveries it
         # stands for (``steer_delivery_ids``): a caller reconciling after this
@@ -1121,6 +1127,10 @@ async def steer_into_running_turn(
         # Another open tab draws the steer row from this frame: without the
         # quote it would render the blockquote as text until a reload.
         push_payload.setdefault("meta", {}).update(quote)
+    if relay_meta:
+        # A peer's steer: an open tab draws the row from this frame, so without
+        # the sender it would show the raw provenance prefix until a reload.
+        push_payload.setdefault("meta", {})["relay"] = dict(relay_meta)
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 
