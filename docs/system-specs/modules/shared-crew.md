@@ -192,6 +192,22 @@ scheduler cannot back one.
 
 ### Accepted work, revalidation and recovery
 
+`shared_crew.work_store` keeps each `AcceptedWork` as one `accepted_work` row in
+`tasks.db` (`taskq.store_work`, created by `taskq.migrate`; additive, so the schema
+version stays and an older build leaves the table in place). The row is committed
+before the caller hears `admitted` or `queued`. Idempotency is the unique `scope`
+column; a replay returns the stored record and a replayed handle never runs twice.
+A replay whose request digest differs is `idempotency_conflict`. Every state change
+is a compare-and-set on `revision` that also passes the transition table, so a stale
+writer gets `stale_revision` and an illegal transition never reaches disk. A replay
+payload over `MAX_PAYLOAD_BYTES` is not stored, and a terminal write clears the
+payload. Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
+
+`shared_crew.admission_http` holds the request-side helpers: the `Idempotency-Key`
+header names one logical send, and a request without it gets a fresh server key. The
+trusted actor is read through `identity.actor_of`. The store and the helpers have no
+caller in this build.
+
 ### Containment
 
 ### Defaults and API
