@@ -1326,6 +1326,7 @@ class KiroCrewConfig:
         tool_search = self.agent.tool_search
         tool_search_min_pct = self.agent.tool_search_min_pct
         tool_search_min_tokens = self.agent.tool_search_min_tokens
+        session_recap = self.agent.session_recap
 
         # MCP gateway: resolve overlay + socket once, iff some server is stubbed
         # through the gateway. Routing is what puts a stub in the path, and the
@@ -1517,6 +1518,7 @@ class KiroCrewConfig:
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
+                session_recap=session_recap,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_socket=_gw_socket,
                 permission_mode=resolve_cc_permission_mode(permission_mode, _backend),

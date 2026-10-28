@@ -483,9 +483,11 @@ async def test_mark_dead_clears_routed_requests():
     rt, _, _ = _make_runtime()
     rt._routed_requests[42] = "sA"
     rt._pending_requests[7] = asyncio.get_event_loop().create_future()
+    rt._kas_load_recaps = {"sA": "parked"}
     rt._mark_dead("test")
     assert rt._routed_requests == {}
     assert rt._pending_requests == {}
+    assert rt._kas_load_recaps == {}
 
 
 def test_build_permission_event_sets_raw_tool_params():

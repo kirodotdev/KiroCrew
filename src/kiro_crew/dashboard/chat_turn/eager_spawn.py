@@ -13,10 +13,17 @@ from kiro_crew import resource_status
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.config.loader import normalize_agent_model
+from kiro_crew.dashboard.state import load_window_off_loop
+from kiro_crew.dashboard.system_notices import (
+    SESSION_RECAP_KIND,
+    is_speech_row,
+    is_system_notice,
+)
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.session import SessionEndingError
 from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -24,6 +31,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         SessionClosingError,
         SpeculativeResumeRefused,
+        _append_recap_notice,
         _arm_generation,
         _armed_prefetches,
         _ChatSlot,
@@ -921,7 +929,7 @@ async def _spawn_admitted_prefetch(
         # will for the first real turn.
         _requested_model = slot.model or agent_model or ""
         try:
-            _, is_new, resumed = await sessions.get_or_create(
+            provider, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
                 # Canonical crew identity — the resolver's alias, which
@@ -1012,6 +1020,7 @@ async def _spawn_admitted_prefetch(
     )
     if allow_resume and resumed:
         _schedule_prefetch_ttl(state, slot, session_key)
+        await _surface_resume_recap(state, slot, provider)
     # Fresh and resumed sessions alike count against the live-
     # population cap: without this, sequential slot signals (create,
     # agent/project set) stack one unclaimed agent process per slot
@@ -1029,6 +1038,52 @@ async def _spawn_admitted_prefetch(
     # claimable fallback session ever exists — a real turn queued
     # during the load would otherwise claim it and strand its
     # exchanges behind the preserved old sid.
+
+
+async def _surface_resume_recap(state: "DashboardState", slot: "_ChatSlot", provider: Any) -> None:
+    """Show the recap KAS replayed during a resume prefetch, before any new prompt.
+
+    This prefetch is the recap's only surface. A turn already owning the slot
+    leaves the recap parked for the runtime to drop later. Otherwise the recap
+    is always taken. A pending transcript window loads off the event loop before
+    the duplicate check. A turn can start or the slot can be replaced during
+    that await, so both are rechecked before the row is appended. A recap notice
+    already following the last real message keeps that one row, even when status
+    rows follow it. A turn in between ends the walk, so the next reopen shows
+    the new recap.
+    """
+    if slot.running:
+        return
+    recap = provider.take_session_recap()
+    if not (isinstance(recap, str) and recap):
+        return
+    await load_window_off_loop(slot)
+    if state.get_slot(slot.key) is not slot or slot.running:
+        return
+    if _recap_since_last_turn(slot.messages):
+        return
+    _append_recap_notice(state, slot, recap)
+
+
+def _recap_since_last_turn(rows: list[dict[str, Any]]) -> bool:
+    """True when a recap notice sits after the transcript's last real message.
+
+    Walks back from the newest row and stops at the first speech row
+    (``is_speech_row``: a user or assistant row with visible text) that is not
+    a warm task brief row, which main's history reads skip as well. Rows it
+    passes over -- system notices, a brief and its hidden claim, an error row --
+    mean no turn ran, so KAS would replay the same recap. It never reads the
+    recap text.
+    """
+    for row in reversed(rows):
+        role, meta = row.get("role"), row.get("meta")
+        if is_system_notice(role, meta):
+            if isinstance(meta, dict) and meta.get("kind") == SESSION_RECAP_KIND:
+                return True
+            continue
+        if is_speech_row(role, row.get("content"), meta) and not is_warm_task_brief_message(row):
+            return False
+    return False
 
 
 def _schedule_prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:

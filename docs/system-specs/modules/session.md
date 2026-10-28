@@ -2029,7 +2029,7 @@ document validates. Otherwise it does three things, in order:
   `_FACTORY_CONFIG_PATHS` lists the paths a rebuilt provider factory or a
   re-derived warm pool is the only way to honour: `agent.model`,
   `agent.reasoning_effort`, `agent.acp_backend`, `agent.role_efforts`,
-  `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
+  `agent.tool_search{,_min_pct,_min_tokens}`, `agent.session_recap`, `agent.sandbox`,
   `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, `agent.default_agent`, `session.pool_size` /
   `pool_agent` / `pool_ttl_secs`, `workspaces` and `default_workspace` (the last

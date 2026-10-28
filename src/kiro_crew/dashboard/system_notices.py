@@ -1,7 +1,8 @@
 """Assistant-role system notices the gateway injects into a slot's feed.
 
 Status reports -- the auto-compaction notices, the session-reload
-confirmation and the session-switch boundary rows -- not real turns. Every scan that walks for "the last real
+confirmation, the session-switch boundary rows and the session recap -- not real
+turns. Every scan that walks for "the last real
 message" (the conversation floor, the sidebar preview, backfill replay) must
 skip them, and the frontend keeps a twin of this set
 (``website/src/lib/systemNotice.ts``): a kind skipped on one side but not the
@@ -23,9 +24,10 @@ SESSION_RELOAD_KIND = "session_reload"
 #: The boundary row a mid-conversation agent, model, reasoning-effort or
 #: workspace switch leaves when it resets the slot's agent session.
 SESSION_SWITCH_KIND = "session_switch"
+SESSION_RECAP_KIND = "recap"
 
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
-    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND}
+    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND, SESSION_RECAP_KIND}
 )
 
 #: What a switch notice names, per switch. The agent switch has no entry: it

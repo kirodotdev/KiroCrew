@@ -7,8 +7,8 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_pending_requests``,
-``_routed_requests``.
+Instance fields written: ``_answer_tasks``, ``_kas_load_recaps``, ``_last_activity``,
+``_pending_requests``, ``_routed_requests``.
 
 Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
@@ -26,27 +26,36 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_secret_storage
+from kiro_crew.acp import kas_secret_storage, kas_wire
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.harness import NotificationAliases
 from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
-from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
+from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT
+from kiro_crew.acp.session_handle import (
+    AcpFrameTooLarge,
+    AcpModeNotFound,
+    AcpRuntimeError,
+    _normalize_kas_recap_text,
+)
 from kiro_crew.acp.transport_framing import (
     _STDOUT_BUFFER_LIMIT,
     OversizeLineUnrecoverable,
     _drain_oversize_line,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     METHOD_AGENT_SWITCHED,
     METHOD_KAS_OPEN_EXTERNAL_URL,
     METHOD_REQUEST_PERMISSION,
+    METHOD_SESSION_UPDATE,
     JsonRpcMessage,
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.metrics.events import CHILD_PERMISSION_ROUTED, emit_counter
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -585,6 +594,25 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     or self._start_collectors
                 ):
                     self._stage_init_frame(msg)
+                elif (
+                    self._session_inits_in_flight
+                    and self._acp_backend == ACP_BACKEND_KAS
+                    and isinstance(session_id, str)
+                    and len(session_id) <= MAX_ACP_SESSION_ID_LEN
+                    and msg.is_method(METHOD_SESSION_UPDATE)
+                    and kas_wire.is_recap_update(msg.params)
+                ):
+                    _params = msg.params if isinstance(msg.params, dict) else {}
+                    _update = _params.get("update")
+                    _recap_text = _normalize_kas_recap_text(_update)
+                    if _recap_text:
+                        # Reinsert a repeated id so it becomes the newest entry.
+                        self._kas_load_recaps.pop(session_id, None)
+                        self._kas_load_recaps[session_id] = _recap_text
+                        if len(self._kas_load_recaps) > _INIT_NOTIFICATION_BUFFER_LIMIT:
+                            _evicted_session_id = next(iter(self._kas_load_recaps))
+                            self._kas_load_recaps.pop(_evicted_session_id)
+                            self._note_dropped_frame(_evicted_session_id, METHOD_SESSION_UPDATE)
                 else:
                     # Counted, not logged per frame: this is the measured
                     # flood (transcript replay during session/load, plus any

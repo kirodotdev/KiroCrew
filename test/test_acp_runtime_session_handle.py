@@ -871,8 +871,11 @@ async def test_unregister_session_cleans_routed_requests():
     rt._routed_requests[10] = "sA"
     rt._routed_requests[11] = "sA"
     rt._routed_requests[12] = "sB"  # different session
+    rt._kas_load_recaps = {"sA": "departing", "sB": "retained"}
     rt.unregister_session("sA")
     assert "sA" not in rt._session_queues
+    assert "sA" not in rt._kas_load_recaps
+    assert rt._kas_load_recaps["sB"] == "retained"
     assert 10 not in rt._routed_requests
     assert 11 not in rt._routed_requests
     assert 12 in rt._routed_requests  # sB untouched

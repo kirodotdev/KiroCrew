@@ -68,6 +68,9 @@ class _CommandRuntime:
     def mark_turn_active(self, session_id: str, active: bool) -> None:
         self.marks.append((session_id, active))
 
+    def take_kas_load_recap(self, session_id: str) -> str | None:
+        return None
+
     async def send_request(self, method: str, params: dict) -> int:
         self.requests.append((method, params))
         for frame in self._updates:

@@ -132,6 +132,8 @@ class AcpSessionHandle:
     _cancel_hook_tasks = _sh_kas._cancel_hook_tasks
     _send_hook_error = _sh_kas._send_hook_error
     _handle_kas_update = _sh_kas._handle_kas_update
+    take_session_recap = _sh_kas.take_session_recap
+    _is_kas_recap_frame = _sh_kas._is_kas_recap_frame
     _handle_kas_session_info = _sh_kas._handle_kas_session_info
     _apply_kas_context_pct = _sh_kas._apply_kas_context_pct
     _apply_kas_turn_completion = _sh_kas._apply_kas_turn_completion

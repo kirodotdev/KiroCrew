@@ -689,6 +689,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         tool_search=bool(section.get("tool_search")),
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
+        session_recap=bool(section.get("session_recap")),
         session_sharing=bool(section.get("session_sharing")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),

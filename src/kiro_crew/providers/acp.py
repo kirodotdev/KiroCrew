@@ -158,6 +158,7 @@ class AcpProvider(LLMProvider):
         tool_search: bool | None = None,
         tool_search_min_pct: object = None,
         tool_search_min_tokens: object = None,
+        session_recap: bool = False,
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
@@ -287,6 +288,9 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
+        # ``agent.session_recap``: handed to every runtime this provider spawns.
+        # Only a host that reads the initialize settings channel (KAS) acts on it.
+        self._session_recap = bool(session_recap)
         if self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY:
             # Read back the levels the overlay already holds, so after a gateway
             # restart the map names what kiro-cli will run. Caller-provided
@@ -535,6 +539,16 @@ class AcpProvider(LLMProvider):
         """The agent this session's registered batch was built for, or ``""``."""
         value = getattr(self._client, "kas_projected_agent", "")
         return value if isinstance(value, str) else ""
+
+    def take_session_recap(self) -> str | None:
+        """The recap KAS replayed during this session's load, popped once.
+
+        Answered by the session provider that replaces the placeholder client
+        once the runtime is up; the placeholder has none.
+        """
+        take = getattr(self._client, "take_session_recap", None)
+        recap = take() if callable(take) else None
+        return recap if isinstance(recap, str) and recap else None
 
     @property
     def is_codex_backend(self) -> bool:

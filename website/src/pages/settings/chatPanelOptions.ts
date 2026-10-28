@@ -159,6 +159,7 @@ export type KirocrewConfigShape = {
     completion_keep_chars?: number
     fallback_model?: string
     refusal_fallback_model?: string
+    session_recap?: boolean
   }
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean; title_refresh_every_turns?: number }
 }

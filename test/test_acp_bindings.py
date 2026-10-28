@@ -43,7 +43,8 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_acp_bindings")
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "22e43ccb505a", "acp"),
+    # Takes ``session_recap``: the KAS recap opt-in (``agent.session_recap``).
+    "__init__": ("function", False, "042b97db7cac", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -158,6 +159,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_effort": ("function", False, "a6632a57e602", "acp_model_effort"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),
     "supports_steer": ("property", False, "a6632a57e602", "acp"),
+    "take_session_recap": ("function", False, "f21e39ec5ffb", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
     "touch_activity": ("function", False, "b60c5fea256e", "acp"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "acp"),

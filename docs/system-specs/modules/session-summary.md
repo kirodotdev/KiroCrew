@@ -2,6 +2,14 @@
 
 ## Overview
 
+Sibling surface: the **session recap notice** (`kind="recap"` transcript
+rows, `acp-client.md`) also serves re-entry, with different economics — a
+KAS-generated one-liner rendered inline, opt-in through `agent.session_recap`
+(off by default; KAS spends one more model call per turn), versus this
+panel's opt-in, generated, intent-level description. The two coexist by
+design; if they ever disagree, this panel is the richer, user-requested
+surface and the notice is the ambient hint.
+
 The session summary is an intent-level description of a chat session, generated
 after a turn completes and rendered in the chat right panel. Its purpose is
 narrow: make **re-entering** a session cheap. A person who kicked off work, got

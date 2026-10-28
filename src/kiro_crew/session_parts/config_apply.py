@@ -55,6 +55,7 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.tool_search",
     "agent.tool_search_min_pct",
     "agent.tool_search_min_tokens",
+    "agent.session_recap",
     "agent.sandbox",
     "agent.sandbox_allow_no_isolation",
     "agent.sandbox_allow_unsandboxed_exec",

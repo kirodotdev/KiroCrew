@@ -143,6 +143,7 @@ class AcpRuntime:
     load_session = _rt_load.load_session
     _wait_managed_mcp = _rt_load._wait_managed_mcp
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
+    take_kas_load_recap = _rt_registry.take_kas_load_recap
     unregister_session = _rt_registry.unregister_session
     mark_turn_active = _rt_registry.mark_turn_active
     terminate_session = _rt_registry.terminate_session
@@ -267,6 +268,7 @@ class AcpRuntime:
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
         launch_agent: str = "",
+        session_recap: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -297,6 +299,10 @@ class AcpRuntime:
         # setting it inherits (see create_session).
         self._tool_search = tool_search
         self._tool_search_wire: dict[str, Any] = {}
+        # The operator's session-recap opt-in (``agent.session_recap``), sent on
+        # the same settings channel. Process-wide: every session this process
+        # serves gets KAS's per-turn recap once the handshake carries it.
+        self._session_recap = session_recap
         # Resolved on FIRST USE, never here: ``ACP_BACKENDS_KNOWN`` admits
         # backends the shared-process runtime has no harness for, and provider
         # safety constructs a runtime for every one of them to prove the reader
@@ -487,6 +493,11 @@ class AcpRuntime:
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
+        # KAS session/load recaps arrive before a session queue exists. Keep
+        # normalized text outside the init-frame buffer so load_session keeps
+        # its unconditional queue-transfer path. The reader is the only
+        # inserter; turn and lifecycle paths only pop or clear entries.
+        self._kas_load_recaps: dict[str, str] = {}
         self._next_id = 1
         self._initialized = False
         # Whether kiro-cli advertised session/load support in its initialize

@@ -1,14 +1,14 @@
 """The sessions this runtime holds and how each one leaves.
 
-Init frames staged before a session id is known, the start-stall MCP diagnostics, turn-active
-marks, and terminate, evict and unregister.
+Init frames staged before a session id is known, the KAS load recap parked for a handle to
+take, the start-stall MCP diagnostics, turn-active marks, and terminate, evict and unregister.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_pending_init_notifications``, ``_routed_requests``,
-``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
+Instance fields written: ``_kas_load_recaps``, ``_pending_init_notifications``,
+``_routed_requests``, ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
 
 Instance fields read: ``_dead``, ``_process``, ``_record_keeping_sessions``, ``_start_collectors``.
@@ -118,9 +118,15 @@ def _queued_behind_note(ahead: list[tuple[str, float]]) -> str:
 _TERMINATE_TIMEOUT = 5.0
 
 
+def take_kas_load_recap(self: AcpRuntime, session_id: str) -> str | None:
+    """Pop the normalized recap parked during KAS session/load."""
+    return self._kas_load_recaps.pop(session_id, None)
+
+
 def unregister_session(self: AcpRuntime, session_id: str) -> None:
     """Unregister a session queue (called by AcpSessionHandle.destroy)."""
     self._session_queues.pop(session_id, None)
+    self._kas_load_recaps.pop(session_id, None)
     self._session_cwds.pop(session_id, None)
     self._switched_model_record().pop(session_id, None)
     # Clean up any pending routed requests for this session

@@ -766,6 +766,15 @@
       "route": "/settings/chat/composer?highlight=chat.send-shortcut"
     },
     {
+      "id": "chat.session-recap",
+      "label": "Session recap",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Aagent.session_recap",
+      "description": "Adds one line when you reopen a chat. Uses tokens on every turn. Kiro Agent backend only.",
+      "hint": "Shows where the chat left off. Session summaries write a fuller summary in the side panel.",
+      "configKey": "agent.session_recap"
+    },
+    {
       "id": "chat.session-summaries",
       "label": "Session summaries",
       "tab": "chat",

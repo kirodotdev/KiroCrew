@@ -1,7 +1,8 @@
 """What KAS speaks beyond ACP on a session.
 
 Its hooks requests (list, session start, execute), the checkpoint rewind of an
-unanswered prompt, and its own session-update discriminants (mode, session info).
+unanswered prompt, its own session-update discriminants (mode, session info), and
+the session recap it replays during ``session/load``.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -27,6 +28,7 @@ from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
 from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKENDS_HOOKS_LIST,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
@@ -41,6 +43,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.security import redact
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -64,6 +67,30 @@ _KAS_HOOKS_METHODS = frozenset(
         kas_wire.METHOD_HOOKS_EXECUTE,
     }
 )
+
+# Maximum backend-supplied recap text the redactor accepts. Wrong-typed or
+# longer values are dropped whole so a pre-redaction cut cannot split a
+# credential into an unrecognizable fragment.
+_RECAP_REDACT_INPUT_MAX_CHARS = 4096
+# Maximum backend-supplied recap text retained in a frame, event, or transcript.
+_RECAP_MAX_CHARS = 1200
+
+
+def _normalize_kas_recap_text(update: object) -> str:
+    """Return redacted, bounded text from a KAS recap update."""
+    if not isinstance(update, dict):
+        return ""
+    kiro = kas_wire.kiro_meta(update)
+    if kiro is None or kiro.get(kas_wire.FIELD_KIND) != kas_wire.KIND_RECAP:
+        return ""
+    text = kiro.get(kas_wire.FIELD_TEXT)
+    if not isinstance(text, str) or len(text) > _RECAP_REDACT_INPUT_MAX_CHARS:
+        return ""
+    # The composed pass, not ``redact_text``: run URL-first, the two passes lose
+    # a credential label that sits inside a removed URL, and the value after it
+    # stays. The recap is kept as a transcript row, where no later pass can
+    # find that value again.
+    return redact(text)[:_RECAP_MAX_CHARS].strip()
 
 
 async def discard_unanswered_prompt(self: AcpSessionHandle) -> bool:
@@ -286,6 +313,28 @@ def _handle_kas_update(
     return None
 
 
+def take_session_recap(self: AcpSessionHandle) -> str | None:
+    """Pop the recap KAS replayed while this session loaded, or ``None``.
+
+    The runtime's reader parks it during ``session/load``. The dashboard's
+    resume prefetch is its only reader and shows it before the user types.
+    A recap no prefetch takes is never shown: it stays parked until the
+    runtime drops it (``unregister_session``, slot eviction, or death).
+    """
+    if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        return self._runtime.take_kas_load_recap(self._session_id)
+    return None
+
+
+def _is_kas_recap_frame(self: AcpSessionHandle, msg: JsonRpcMessage | None) -> bool:
+    """True for a session/update notification carrying a KAS recap union."""
+    if msg is None:
+        return False
+    if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        return kas_wire.is_recap_update(msg.params)
+    return False
+
+
 def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEvent]:
     """Map a KAS ``session_info_update`` (``_meta.kiro`` union) to events.
 
@@ -371,6 +420,9 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             EVENT_STEER_CONSUMED if kind == kas_wire.KIND_STEERING_INJECTED else EVENT_STEER_QUEUED
         )
         return [AcpEvent(kind=steer_kind, text=text)]
+    # ``recap`` lands here too and is dropped: only the recap KAS replays
+    # during session/load is shown, and the runtime parks that one before
+    # any turn exists.
     return []
 
 

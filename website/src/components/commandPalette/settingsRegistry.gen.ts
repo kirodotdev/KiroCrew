@@ -1366,6 +1366,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.session-recap",
+    "label": "Session recap",
+    "labelKey": "pages.settings.chatPanel.session_recap",
+    "description": "Adds one line when you reopen a chat. Uses tokens on every turn. Kiro Agent backend only.",
+    "hint": "Shows where the chat left off. Session summaries write a fuller summary in the side panel.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "agent.session_recap"
+  },
+  {
     "id": "chat.session-summaries",
     "label": "Session summaries",
     "labelKey": "pages.settings.chatPanel.session_summaries",
