@@ -5422,7 +5422,6 @@
         "save_failed": "Couldn't save the session color"
       },
       "sessionMessageCard": {
-        "needs_you": "Needs you",
         "open_session": "Open {{name}}",
         "show_less": "Show less",
         "show_more": "Show more",

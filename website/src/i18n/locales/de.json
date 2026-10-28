@@ -11643,7 +11643,6 @@
         "save_failed": "Die Sitzungsfarbe konnte nicht gespeichert werden"
       },
       "sessionMessageCard": {
-        "needs_you": "Aktion nötig",
         "open_session": "{{name}} öffnen",
         "show_less": "Weniger anzeigen",
         "show_more": "Mehr anzeigen",
