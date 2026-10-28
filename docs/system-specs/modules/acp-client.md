@@ -2235,6 +2235,27 @@ stdout while no request waits. Design record:
   cancel-grace check off, since `_cancelled` belongs to the turn that ended,
   and it stops once `_buffer` is full (its `maxlen`, 100), leaving the rest in
   the pipe.
+- **Only the latest snapshot is held.** A frame that only reports state waits
+  for the next turn, so when the reader reads a frame that supersedes one it
+  holds, it drops the held one; the newer frame keeps its arrival position and
+  no other frame moves. A frame supersedes a held one when both are `session/update`
+  frames of a kind in `_SNAPSHOT_UPDATE_FIELDS` with the same keys, and they
+  differ only in that kind's snapshot fields: `used` and `size` for
+  `usage_update`, `availableCommands` for `available_commands_update`. The
+  session, `_meta` and a `usage_update`'s `cost` must match, because cost is a
+  running total billed as the change between readings, so a new reading is
+  kept. `config_option_update` is not in the table: `_sync_effort_levels` adds
+  the effort levels of every config frame to the process-wide validation set,
+  and the session-config tripwire of a backend in `ACP_BACKEND_FORBIDDEN_MODES`
+  checks each frame. A kind a reader starts to treat as incremental leaves the
+  table. A restarted reader takes its earlier frames from `_buffer` through the
+  same rule, and no other path puts a state frame back into `_buffer`, so
+  snapshot frames alone never fill it, across restarts too. A kept end marker
+  still precedes the turn's first activity frame, so it ends nothing (below).
+  Every other frame (`session_info_update`, `config_option_update`,
+  `current_mode_update`, a `usage_update` with a new cost or `_meta`, an
+  unknown kind, other notifications, responses) still counts toward the
+  bound.
 - **Hand-off.** A request from the agent, or a `session/update` of kind
   `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`
   or `plan`, ends the reader: it records that frame as the turn's start and

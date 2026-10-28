@@ -65,6 +65,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
+    UPDATE_AVAILABLE_COMMANDS,
     UPDATE_CONFIG_OPTION,
     UPDATE_CURRENT_MODE,
     UPDATE_PLAN,
@@ -132,6 +133,13 @@ _AGENT_ACTIVITY_UPDATE_KINDS = frozenset(
         UPDATE_PLAN,
     }
 )
+# session/update kinds whose listed fields are full snapshots: every reader of two
+# frames that differ only in those fields ends where the later frame alone leaves it.
+# A kind a reader starts to treat as incremental must leave this table.
+_SNAPSHOT_UPDATE_FIELDS: dict[str, frozenset[str]] = {
+    UPDATE_USAGE: frozenset({"used", "size"}),
+    UPDATE_AVAILABLE_COMMANDS: frozenset({"availableCommands"}),
+}
 
 
 def _session_update_kind(msg: JsonRpcMessage) -> tuple[str, dict]:
@@ -170,6 +178,24 @@ def _ends_agent_started_turn(msg: JsonRpcMessage) -> bool:
     meta = update.get("_meta")
     origin = meta.get("_claude/origin") if isinstance(meta, dict) else None
     return isinstance(origin, dict) and origin.get("kind") in _CLAUDE_AUTONOMOUS_ORIGIN_KINDS
+
+
+def _supersedes(newer: JsonRpcMessage, older: JsonRpcMessage) -> bool:
+    """True when *newer* differs from *older* only in its kind's snapshot fields.
+
+    Both are ``session/update`` frames of one ``_SNAPSHOT_UPDATE_FIELDS`` kind with
+    the same keys. Everything else must match: the session, ``_meta``, and a
+    ``usage_update``'s cost, which is billed as the change between readings, so
+    each reading counts.
+    """
+    kind, update = _session_update_kind(newer)
+    fields = _SNAPSHOT_UPDATE_FIELDS.get(kind)
+    older_kind, older_update = _session_update_kind(older)
+    if fields is None or older_kind != kind or update.keys() != older_update.keys():
+        return False
+    return {**newer.params, "update": None} == {**older.params, "update": None} and all(
+        update[key] == older_update[key] for key in update.keys() - fields
+    )
 
 
 def _next_req_id(self: AcpClient) -> int:
@@ -598,7 +624,8 @@ def _maybe_start_idle_reader(self: AcpClient) -> None:
 
 async def _idle_read_loop(self: AcpClient) -> None:
     # The frames go back to the front of _buffer in arrival order however this
-    # ends, a cancel included, so the next reader sees what it would have read.
+    # ends, a cancel included, so the next reader sees what it would have read,
+    # less the snapshot frames a later one superseded.
     # Held locally until then because _read_message pops _buffer first.
     # Not after _cancel_idle_reader dropped this reader: the process those
     # frames came from is gone, and _buffer may already serve its successor.
@@ -618,6 +645,7 @@ async def _idle_read_loop(self: AcpClient) -> None:
                 if not self._is_process_alive():
                     return
                 continue
+            held = [frame for frame in held if not _supersedes(msg, frame)]
             held.append(msg)
             if _starts_agent_turn(msg):
                 start = msg
