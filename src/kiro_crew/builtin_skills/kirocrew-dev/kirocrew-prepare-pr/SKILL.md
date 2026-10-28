@@ -255,7 +255,7 @@ their module docstring instead.
 | `pre_push_gate.py` | 2 / 3 | **optional, advisory**: runs the cheap CI gates on the diff, prints every failure, records a proof for the tree; nothing refuses a push (`references/pre-push-gate.md`) | **0 proof written · 50 a gate failed · 51 a gate could not run, no skip, or a dirty tree · 52 `--verify` found no proof · 2 env** |
 | `pr_status.py [pr#]` | 3 | readiness, rollup, threads, current-head runs and reviewer stamps; `--reviewers` pins the fleet; `--json` appends a machine line | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `regen_shared.py [base]` | 1 | rebuild shared generated files after the rebase (`references/split-and-regen.md`) | **0 · 20 rewrote · 2 env** |
-| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 2 env** |
+| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 31 STALE but the re-sync cap is spent, hand over · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failing log tails, unresolved threads, reviewer findings with stable `span=` ids, whole-design items first | 0 · 2 env |
 | `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR thread: goal, dispositions per judged head, spans, self-added code, mechanisms, recurrence | **0 · 30 retrospective due · 2 env** |
 | `local_review.py --base origin/<base>` | 2 | writes one review brief per profile reviewer, extracted from CI's own workflow | 0 · 40 parity failure · 2 env |
@@ -519,8 +519,19 @@ comes after a record, never instead of one:
    hand the PR over. **30** → re-sync through **Phase 1**, run only the related
    tests for the files the line names, push with the SHA-pinned lease, and post ONE
    comment: `Rebased: main moved in <files> since this head went green (<old-base> -> <new-base>); CI re-running.`
-   Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above. After
-   three consecutive green-age re-syncs on one PR, hand it to the user.
+   Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above.
+   **31** → the re-sync cap is spent: do NOT rebase, report which files the base
+   keeps moving in, and hand the PR to the user. The script decides that from the
+   count of the `Rebased: main moved in` comments posted by the PR's author or by
+   a member of the project, so after three
+   green-age re-syncs on one PR it stops being your judgement call. Each re-sync
+   discards a green the PR had already earned, which is the cost the cap exists to
+   bound. **The count is a total for the PR's lifetime and nothing resets it**, so
+   31 is permanent once reached: a later loop on the same PR gets 31 on its first
+   real overlap. That is deliberate — a PR that has needed three re-syncs wants a
+   person deciding, not a fresh budget — and the way back is a human's, by
+   splitting the PR, narrowing what it touches, or opening a new one. Do not clear
+   it by deleting the comments; they are the record the count is read from.
 
    Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`
