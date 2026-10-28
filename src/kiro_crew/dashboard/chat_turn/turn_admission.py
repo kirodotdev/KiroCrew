@@ -33,6 +33,8 @@ if TYPE_CHECKING:
         SessionBusyError,
         _AppAgentNotLoaded,
         _MemoryUnavailable,
+        _record_spawn_config_quietly,
+        _take_spawn_fingerprint,
         capabilities_of,
         crew_log_emit,
         effective_session_key,
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
         publish_turn_identity,
         record_activity,
         record_agent_selection,
+        records_provider,
         refresh_materialized_agents,
         reproject_claimed_session,
         resolve_agent_bindings,
@@ -51,6 +54,7 @@ if TYPE_CHECKING:
         sel,
         slot_switch_session_lock,
         subprocess_executor,
+        take_turn_receipts,
         telemetry_channel_of,
         warm_project_agent_names,
     )
@@ -782,6 +786,25 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # does not take that lock, and driven from the gateway rather than from
     # inside the session's own process group it cannot self-kill its caller.
     await _consume_pending_reset(state, slot)
+    # The config a process spawned for this turn would read, taken BEFORE the
+    # provider is acquired and recorded against it below (only when no record
+    # describes it yet), so an edit landing while this turn spawns is a
+    # difference the stale-config badge shows rather than a record of it.
+    # Skipped when a record already describes the live provider: that is
+    # the one this turn runs on unless it is replaced below, and then the
+    # replacement is fingerprinted once it is acquired.
+    _spawn = (
+        None
+        if records_provider(slot, state.sessions.get_provider(session_key))
+        else await _take_spawn_fingerprint(loaded_cfg, slot, session_key, kiro_agent)
+    )
+    if _spawn is None:
+        # A recorded provider re-reads config at this turn's start where it
+        # re-injects a pending MCP change or hot-reloads the spec's refs: what it
+        # will run on is taken now, for the badge's baseline afterwards.
+        await take_turn_receipts(
+            loaded_cfg, slot, session_key, state.sessions.get_provider(session_key)
+        )
     # Same "before get_or_create or we reuse a stale session for one turn"
     # reasoning as the reset above, for a staleness the session map cannot
     # see: the child is alive and healthy, but the account it authenticated
@@ -1013,6 +1036,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         )
     _acquired = True
     turn._acquired = _acquired
+    # Keyed on the registry's provider, the object a later status check
+    # looks up, rather than on the handle returned here.
+    _turn_provider = state.sessions.get_provider(session_key) or client
+    if _spawn is None and not records_provider(slot, _turn_provider):
+        _spawn = await _take_spawn_fingerprint(loaded_cfg, slot, session_key, kiro_agent)
+    _record_spawn_config_quietly(slot, _turn_provider, _spawn)
     # The acquired provider is the final authority on the backend, as it is
     # for the slash gates below: the pre-claim check above read the config's
     # selection, which can move before the claim. An app-owned turn on a

@@ -108,6 +108,16 @@ class AcpSessionProvider(LLMProvider):
         """Whether this LIVE session takes a re-sent MCP projection (H6 opt-in)."""
         return _sp_mcp_reinject.mcp_config_wire_reinject(self)
 
+    @property
+    def mcp_reinjection_pending(self) -> bool:
+        """Whether a re-injection mark awaits this session's next turn (``LLMProvider`` contract)."""
+        return self._mcp_reinject_pending
+
+    @property
+    def mcp_projection_generation(self) -> int:
+        """How many re-injections have succeeded on this session (``LLMProvider`` contract)."""
+        return self._mcp_reinjections
+
     def __init__(
         self,
         handle: AcpSessionHandle,
@@ -153,6 +163,7 @@ class AcpSessionProvider(LLMProvider):
         # Set by a dashboard MCP write on a re-injecting host; applied at the
         # next turn boundary (``apply_pending_mcp_reinjection``).
         self._mcp_reinject_pending: bool = False
+        self._mcp_reinjections: int = 0
 
     # ── LLMProvider interface ──
 

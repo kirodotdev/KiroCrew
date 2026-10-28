@@ -8476,6 +8476,13 @@
       "reload_blocked_subagents": "उप-एजेंट कार्यरत",
       "reload_session": "सत्र फिर से लोड करें",
       "reload_session_tooltip": "MCP/कॉन्फ़िगरेशन परिवर्तनों को लागू करने के लिए एजेंट प्रक्रिया को फिर से शुरू करता है। बातचीत बनी रहती है।",
+      "reload_press_needed": "कॉन्फ़िगरेशन बदला · लागू करने के लिए रीलोड करो",
+      "reload_stale_inputs": "कॉन्फ़िगरेशन बदला ({{inputs}})",
+      "reload_clause_press_needed": "· लागू करने के लिए रीलोड करो",
+      "reload_clause_after_subagents": "— उप-एजेंट पूरे होने पर रीलोड करो",
+      "reload_clause_after_turn": "— टर्न खत्म होने पर रीलोड करो",
+      "reload_stale_after_subagents": "कॉन्फ़िगरेशन बदला — उप-एजेंट पूरे होने पर रीलोड करो",
+      "reload_stale_after_turn": "कॉन्फ़िगरेशन बदला — टर्न खत्म होने पर रीलोड करो",
       "rename": "नाम बदलें",
       "reveal_in_sidebar": "साइडबार में दिखाएँ",
       "tags": "टैग…",
@@ -8503,6 +8510,12 @@
       "custom_color": "कस्टम रंग",
       "hex_color_code": "हेक्स रंग कोड",
       "no_color": "कोई रंग नहीं"
+    },
+    "staleConfigBadge": {
+      "reload_action": "कॉन्फ़िगरेशन बदला · रीलोड",
+      "reload_action_short": "कॉन्फ़िगरेशन · रीलोड",
+      "tooltip": "यह सत्र शुरू होने के बाद {{inputs}} बदला। लागू करने के लिए सत्र को फिर से लोड करो।",
+      "tooltip_generic": "इस सत्र के शुरू होने के बाद इसका कॉन्फ़िगरेशन बदला। लागू करने के लिए सत्र को फिर से लोड करो।"
     },
     "sessionGridView": {
       "close_cell": "सेल बंद करें",

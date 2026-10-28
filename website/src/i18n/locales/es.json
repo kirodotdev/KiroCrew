@@ -8612,6 +8612,13 @@
       "reload_blocked_subagents": "subagentes trabajando",
       "reload_session": "Recargar sesión",
       "reload_session_tooltip": "Reinicia el proceso del agente para aplicar cambios de MCP/configuración. La conversación se conserva.",
+      "reload_press_needed": "configuración cambiada · recarga para aplicarla",
+      "reload_stale_inputs": "configuración cambiada ({{inputs}})",
+      "reload_clause_press_needed": "· recarga para aplicarla",
+      "reload_clause_after_subagents": "— recarga cuando terminen los subagentes",
+      "reload_clause_after_turn": "— recarga cuando termine el turno",
+      "reload_stale_after_subagents": "configuración cambiada — recarga cuando terminen los subagentes",
+      "reload_stale_after_turn": "configuración cambiada — recarga cuando termine el turno",
       "rename": "Cambiar el nombre",
       "reveal_in_sidebar": "Mostrar en la barra lateral",
       "tags": "Etiquetas…",
@@ -8639,6 +8646,12 @@
       "custom_color": "Color personalizado",
       "hex_color_code": "Código de color hexadecimal",
       "no_color": "Sin color"
+    },
+    "staleConfigBadge": {
+      "reload_action": "Configuración cambiada · Recargar",
+      "reload_action_short": "Configuración · Recargar",
+      "tooltip": "{{inputs}} cambió después de que empezara esta sesión. Recarga la sesión para aplicar el cambio.",
+      "tooltip_generic": "La configuración de esta sesión cambió desde que empezó. Recarga la sesión para aplicar el cambio."
     },
     "sessionGridView": {
       "close_cell": "Cerrar la celda",

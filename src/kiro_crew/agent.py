@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import errno
 import functools
 import importlib
 import json
@@ -55,7 +56,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, Literal, MutableMapping
 
-from kiro_crew import agent_state, platform_compat
+from kiro_crew import agent_state, hooks, platform_compat
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew._facade_compose import rebind as _facade_rebind
 from kiro_crew.agent_discovery import (
@@ -160,13 +161,20 @@ from kiro_crew.agent_parts.spec_grants import (
     _WORKER_WORK_GRANTS,
 )
 from kiro_crew.agent_parts.spec_lookup import (
+    _REFUSED_SPEC_ENTRY_ERRNOS,
+    PINNED_SPEC_DIR_MAX_ENTRIES,
+    PINNED_SPEC_DIR_MAX_TOTAL_BYTES,
     _conflicting_spec_for,
+    _named_spec_documents,
+    _pinned_spec_documents,
     _project_shadow_of,
     _read_spec_capped,
+    _resolve_agent_spec,
     _spec_path_is_safe,
     _spec_path_shape_refusal,
     agent_spec_path,
     markdown_spec_for_agent,
+    pinned_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
     _CONDUCTOR_SYSTEM_PROMPT,
@@ -204,6 +212,7 @@ from kiro_crew.agent_parts.spec_rebuild import (
     _watch_clock,
     _write_heartbeat_spec,
     ensure_agent_materialized,
+    managed_spec_missing,
     prime_ceiling_projection,
     rebuild_agent_config,
     rebuild_agent_config_reporting,
@@ -229,6 +238,8 @@ from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     is_markdown_spec,
     iter_agent_spec_files,
+    live_agent_spec_names,
+    parse_agent_spec_bytes,
 )
 from kiro_crew.atomic_write import read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
@@ -258,7 +269,7 @@ from kiro_crew.platform import (
 )
 from kiro_crew.platform.governance import agentcore_posture
 from kiro_crew.platform.governance_profiles import governance_permits
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
     sel,
@@ -483,6 +494,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _write_worker_spec,
         default_spec_fingerprint,
         default_spec_identity,
+        derived_surface_fingerprint,
         rederive_worker_agent,
         require_fresh_derived_spec,
         require_unchanged_derived_spec,
@@ -532,6 +544,14 @@ class SharedAgentHomeRefused(OSError):
     Raised only when :func:`_declined_foreign_spec_write` is true, which needs a
     data home that does not own the shared agents directory. A correctly homed
     instance never reaches it, so this adds no failure mode to one.
+    """
+
+
+class SpecDirectoryOverflowError(OSError):
+    """A pinned agents directory is past a resolve bound.
+
+    It holds more than :data:`PINNED_SPEC_DIR_MAX_ENTRIES` entries, or its specs
+    sum to more than :data:`PINNED_SPEC_DIR_MAX_TOTAL_BYTES`.
     """
 
 
@@ -1050,6 +1070,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_is_confirmed_managed_dashboard_author",
         "_refuse_foreign_worker_spec",
         "default_spec_fingerprint",
+        "derived_surface_fingerprint",
         "_spec_fingerprint",
         "default_spec_identity",
         "_file_identity",

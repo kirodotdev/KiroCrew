@@ -684,6 +684,12 @@ class DashboardState:
         self._browser_install_job: Any = None
         self._browser_install_scope: Any = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
+        # The stale-config badge's sweep (config_staleness.start_config_stale_sweep)
+        # and the coalescing flags of its write-triggered refresh-all.
+        self._config_stale_sweep: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._config_stale_backend_sub: Any = None
+        self._config_stale_refresh_running: bool = False
+        self._config_stale_refresh_again: bool = False
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.
         self._channel_slot_reconciler: asyncio.Task | None = None  # type: ignore[type-arg]

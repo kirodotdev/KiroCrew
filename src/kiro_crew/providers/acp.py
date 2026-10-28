@@ -770,6 +770,17 @@ class AcpProvider(LLMProvider):
         if callable(mark):
             mark()
 
+    @property
+    def mcp_reinjection_pending(self) -> bool:
+        """Whether the inner session provider holds a re-injection mark; False before startup."""
+        return getattr(self._client, "mcp_reinjection_pending", False) is True
+
+    @property
+    def mcp_projection_generation(self) -> int:
+        """The inner session provider's count of in-place re-injections; 0 before startup."""
+        generation = getattr(self._client, "mcp_projection_generation", 0)
+        return generation if isinstance(generation, int) else 0
+
     def available_models(self) -> list[dict[str, str]]:
         """Models the backend advertised at session init (may be empty).
 

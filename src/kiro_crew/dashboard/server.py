@@ -72,6 +72,14 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     effective_session_key,
     wire_session_subagent_probe,
 )
+from kiro_crew.dashboard.config_staleness import (  # noqa: F401
+    config_write_refresh_middleware,
+    pool_spawn_config,
+    respawn_spawn_config,
+    start_config_stale_sweep,
+    stop_config_stale_detection,
+    subscribe_backend_changes,
+)
 from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     claim_dump_notification,
     dump_age_seconds,
@@ -233,7 +241,10 @@ from kiro_crew.dashboard.server_runtime.browser_lifecycle import (  # noqa: F401
     _register_browser_view_cleanup,
 )
 from kiro_crew.dashboard.server_runtime.config_watch import (  # noqa: F401
+    _arm_config_stale_sweep,
+    _config_write_refresh,
     _kick_config_watch,
+    _pool_spawn_config,
     _register_config_watch,
 )
 from kiro_crew.dashboard.server_runtime.crewmate_prune import (  # noqa: F401
@@ -854,6 +865,12 @@ async def start_dashboard(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Fingerprint each warm-pool process's config before it starts, so a chat
+    # that claims it compares against what that process read (stale-config badge).
+    state.sessions.spawn_config_reader = _pool_spawn_config
+    # Badge idle chats too: refresh every live chat right after the gateway's
+    # own config writes, and sweep for edits made outside it.
+    _arm_config_stale_sweep(app, state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -1105,6 +1122,7 @@ async def start_dashboard(
             tailnet_host=_tailnet_host,
             configured_host=configured_host,
             dashboard_url=dashboard_url,
+            config_write_refresh=_config_write_refresh(state),
         )
 
         # Register only after the final allowed-origin set is selected.  The startup

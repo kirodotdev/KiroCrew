@@ -114,6 +114,7 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
+from kiro_crew.dashboard import stale_config
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop  # noqa: F401
@@ -177,6 +178,7 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
     _end_turn_tail,
     _note_failed_before_the_try,
+    _schedule_config_stale_refresh,
     _turn_record_outcome,
     _TurnExit,
 )
@@ -288,6 +290,16 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     mirror_is_paused,
     run_to_completion,
 )
+from kiro_crew.dashboard.config_staleness import (  # noqa: F401
+    detach_turn_receipt,
+    managed_spec_missing,
+    record_spawn_config,
+    records_provider,
+    refresh_config_stale,
+    spawn_config_fingerprint,
+    take_turn_receipts,
+    turn_spawn_inputs,
+)
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
     _find_prompt,
@@ -314,6 +326,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive,
     apply_session_directive_outcome,
 )
+from kiro_crew.dashboard.stale_config import ConfigFingerprint, SpawnInputs
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
@@ -577,6 +590,48 @@ def _member_capable_backend_names() -> str:
     """
     names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
     return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
+
+
+async def _take_spawn_fingerprint(
+    cfg: Any, slot: _ChatSlot, session_key: str, kiro_agent: str | None
+) -> tuple[SpawnInputs, ConfigFingerprint] | None:
+    """The spawn inputs and fingerprint a turn records, or ``None`` on any failure.
+
+    A missing managed spec is left for the spawn to heal (``None``):
+    regenerating it here rebuilds every managed spec and re-reads the config
+    dozens of times, ahead of the turn it would delay, and a later turn,
+    finding no record, fingerprints the healed spec. Badge bookkeeping only: it
+    must never break the turn or spawn that takes it. With the Windows scan
+    off (:data:`stale_config.WINDOWS_SCAN_DISABLED`) the managed spec is not
+    probed: nothing on disk is touched for a reading that is unknown anyway.
+    """
+
+    def _take(inputs: SpawnInputs) -> ConfigFingerprint | None:
+        if not stale_config.WINDOWS_SCAN_DISABLED and managed_spec_missing(inputs.agent):
+            return None
+        return spawn_config_fingerprint(cfg, session_key, inputs)
+
+    try:
+        inputs = turn_spawn_inputs(slot, kiro_agent)
+        fingerprint = await asyncio.to_thread(_take, inputs)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Config fingerprint failed for slot %s", slot.key, exc_info=True)
+        return None
+    if fingerprint is None:
+        return None
+    return inputs, fingerprint
+
+
+def _record_spawn_config_quietly(
+    slot: _ChatSlot, provider: Any, spawn: tuple[SpawnInputs, ConfigFingerprint] | None
+) -> None:
+    """:func:`record_spawn_config`, with any failure logged and dropped."""
+    if spawn is None or provider is None:
+        return
+    try:
+        record_spawn_config(slot, provider, *spawn)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Spawn config not recorded for slot %s", slot.key, exc_info=True)
 
 
 # One retry task per slot key, deduped — a decline observed by the retry task
@@ -1168,6 +1223,8 @@ async def _run_chat(
         slot._git_repo_touch_terminal.clear()
         slot._git_repo_touch_overflow = False
         await _turn_record_outcome(turn)
+        # The turn's end: recompute the stale-config badge off this path.
+        _schedule_config_stale_refresh(state, slot)
         await _turn_close_crew_log(turn)
         await _turn_release_handles(turn)
         _held_flush_cancel = await _turn_flush_file_changes(turn)

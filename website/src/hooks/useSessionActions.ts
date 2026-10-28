@@ -115,10 +115,29 @@ export interface SessionActions {
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
   move: (slotKey: string, folderId: string | null) => void
-  /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
-  reload: (slotKey: string) => void
+  /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved).
+   *  ``callbacks`` hear how this one request ended, for a caller that shows its own state. */
+  reload: (slotKey: string, callbacks?: ReloadCallbacks) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
   close: (slotKey: string) => void
+}
+
+/** How one reload request ended (``SessionActions.reload``). */
+export interface ReloadCallbacks {
+  onSuccess?: () => void
+  /** Supplied, the caller shows the failure itself (an ``ErrorNotice``), and no
+   *  alert is raised; :func:`reloadFailureKey` names the copy to show. */
+  onError?: (err: unknown) => void
+}
+
+/** The catalog key for a failed reload: the sub-agents case gets its own copy,
+ *  since "try again when the session is idle" is a dead end for a slot that
+ *  LOOKS idle but has sub-agents still working. */
+export function reloadFailureKey(err: unknown): string {
+  const body = err instanceof ApiError ? err.body : ''
+  return body.includes('slot_subagents_running')
+    ? 'hooks.useSessionActions.reload_failed_subagents'
+    : 'hooks.useSessionActions.reload_failed'
 }
 
 export function useSessionActions(mode?: string, opts?: {
@@ -423,17 +442,24 @@ export function useSessionActions(mode?: string, opts?: {
   // over the websocket (and lighting the row's unread indicator for a
   // non-active slot). Failure must NOT be silent -- the user would proceed
   // believing their stale MCP config was refreshed, the exact confusion the
-  // feature exists to fix. alert() is the always-available surface (the
-  // dashboard has no global toast); the copy branches on the backend's
-  // machine-readable code, because "try again when the session is idle" is a
-  // dead end for a slot that LOOKS idle but has sub-agents still working.
+  // feature exists to fix. A caller that renders its own ErrorNotice passes
+  // ``ReloadCallbacks.onError``; for the rest (the session menu) alert() is the
+  // always-available surface, the dashboard having no global toast. The copy
+  // branches on the backend's machine-readable code (``reloadFailureKey``).
+  // The callbacks ride in the variables and run from the MUTATION-level
+  // handlers, not the per-``mutate`` ones: TanStack skips the latter once the
+  // observer that called ``mutate`` has unmounted, and the header button
+  // unmounts mid-request when the user switches chats or the title's Undo offer
+  // replaces it. A 409 or 5xx must still reach the host's notice (or the alert).
   const reloadMutation = useMutation({
-    mutationFn: (slot: string) => api.chatSlotReload(slot),
-    onError: (err) => {
-      const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
-        ? 'hooks.useSessionActions.reload_failed_subagents'
-        : 'hooks.useSessionActions.reload_failed'))
+    mutationFn: ({ slot }: { slot: string; callbacks?: ReloadCallbacks }) => api.chatSlotReload(slot),
+    onSuccess: (_data, { callbacks }) => callbacks?.onSuccess?.(),
+    onError: (err, { callbacks }) => {
+      if (callbacks?.onError) {
+        callbacks.onError(err)
+        return
+      }
+      alert(i18nT(reloadFailureKey(err)))
     },
   })
 
@@ -490,7 +516,9 @@ export function useSessionActions(mode?: string, opts?: {
     moveSlotToFolder(slotKey, folderId)
   }, [moveSlotToFolder])
 
-  const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
+  const reload = useCallback((slotKey: string, callbacks?: ReloadCallbacks) => {
+    reloadMutate({ slot: slotKey, callbacks })
+  }, [reloadMutate])
 
   // The sidebar row ✕ and every session menu close land here. A busy session
   // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one

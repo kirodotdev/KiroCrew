@@ -3254,11 +3254,24 @@
       "reload_blocked_subagents": "sub-agents working",
       "reload_session": "Reload session",
       "reload_session_tooltip": "Restarts the agent process to pick up MCP/config changes. The conversation is kept.",
+      "reload_press_needed": "config changed · reload to apply",
+      "reload_stale_inputs": "config changed ({{inputs}})",
+      "reload_clause_press_needed": "· reload to apply",
+      "reload_clause_after_subagents": "— reload when sub-agents finish",
+      "reload_clause_after_turn": "— reload when the turn ends",
+      "reload_stale_after_subagents": "config changed — reload when sub-agents finish",
+      "reload_stale_after_turn": "config changed — reload when the turn ends",
       "unpin": "Unpin",
       "mute": "Mute this session",
       "unmute": "Unmute this session",
       "mute_failed": "Couldn't mute this session",
       "unmute_failed": "Couldn't unmute this session"
+    },
+    "staleConfigBadge": {
+      "reload_action": "Config changed · Reload",
+      "reload_action_short": "Config · Reload",
+      "tooltip": "{{inputs}} changed since this session started. Reload the session to apply.",
+      "tooltip_generic": "This session's config changed since it started. Reload the session to apply."
     },
     "sessionGridView": {
       "fork_child_session": "Fork {{name}} (child session)",

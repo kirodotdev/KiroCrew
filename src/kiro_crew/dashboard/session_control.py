@@ -277,6 +277,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _summary_text,
         created_session_status,
         process_state,
+        read_config_status,
         read_messages,
         read_summary,
     )
@@ -409,6 +410,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.chat_utils import drained_to_thread  # noqa: F401
     from kiro_crew.dashboard.chat_utils import effective_session_key  # noqa: F401
     from kiro_crew.dashboard.chat_utils import slot_history_key  # noqa: F401
+    from kiro_crew.dashboard.config_staleness import refresh_config_stale  # noqa: F401
     from kiro_crew.dashboard.create_rate_limit import GENERATE_TITLE  # noqa: F401
     from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE  # noqa: F401
     from kiro_crew.dashboard.create_rate_limit import WINDOW_SECS  # noqa: F401

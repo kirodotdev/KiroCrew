@@ -28,6 +28,8 @@ if TYPE_CHECKING:
         _armed_prefetches,
         _ChatSlot,
         _eager_spawn_sem,
+        _record_spawn_config_quietly,
+        _take_spawn_fingerprint,
         effective_session_key,
         logger,
         record_agent_selection,
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import _app_allocation_kwargs
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
+    from kiro_crew.dashboard.stale_config import ConfigFingerprint, SpawnInputs
 
 # Debounce before a speculative spawn. Absorbs rapid consecutive signals
 # (slot create immediately followed by a project set, or a user re-picking
@@ -800,6 +803,15 @@ async def _eager_spawn(
                 or _slot_binding(slot) != _bound
             ):
                 return
+            # The config this process is about to read, fingerprinted BEFORE the
+            # handshake so an edit that lands while it runs -- or at any point
+            # before the first message -- is a difference the first turn's
+            # turn sees as stale, rather than a fingerprint that turn records as the
+            # config the process started under. Taken before the admission
+            # below, which reserves a registry entry: every await between the
+            # reservation and the try/finally that releases it would be a
+            # window in which a cancellation leaks that reservation for good.
+            _spawn = await _take_spawn_fingerprint(cfg, slot, session_key, kiro_agent)
             if shutdown_event.is_set():
                 # The gateway began stopping during the awaits above. Its
                 # session teardown cannot see a process that is not registered
@@ -847,6 +859,7 @@ async def _eager_spawn(
                     allow_resume=allow_resume,
                     _bound=_bound,
                     start_priority=start_priority,
+                    spawn_config=_spawn,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -882,11 +895,16 @@ async def _spawn_admitted_prefetch(
     allow_resume: bool,
     _bound: tuple,
     start_priority: StartPriority,
+    spawn_config: tuple[SpawnInputs, ConfigFingerprint] | None = None,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
     Split out so the caller can bracket it in one ``try/finally`` that releases
     the admission reservation; a ``return`` from any guard below lands there.
+
+    ``spawn_config`` is the fingerprint taken before the handshake; it is
+    recorded against the provider this call registers, so the stale-config
+    badge compares against the config the process actually started under.
     """
     try:
         # The store this slot was writing, read before the allocation below maps
@@ -1010,6 +1028,8 @@ async def _spawn_admitted_prefetch(
         is_new,
         resumed,
     )
+    if spawn_config is not None:
+        _record_spawn_config_quietly(slot, sessions.get_provider(session_key), spawn_config)
     if allow_resume and resumed:
         _schedule_prefetch_ttl(state, slot, session_key)
     # Fresh and resumed sessions alike count against the live-

@@ -25,7 +25,7 @@ state on the instance, and a patch of the method on the class or on an instance
 reaches every caller. The runtime side -- the record-keeping teardown scope and
 the eviction -- is ``acp/runtime_session_registry.py``.
 
-Instance fields written: ``_handle``, ``_mcp_reinject_pending``.
+Instance fields written: ``_handle``, ``_mcp_reinject_pending``, ``_mcp_reinjections``.
 
 Instance fields read: ``_channel_id``, ``_handle``, ``_runtime``, ``_session_key``.
 """
@@ -173,6 +173,9 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
     # child permission request the dashboard can present.
     new_handle.child_fidelity_aware = old.child_fidelity_aware
     self._handle = new_handle
+    # Counted with the swap: from here the session runs on the spec and MCP set
+    # the load read, which ``mcp_projection_generation``'s readers re-record against.
+    self._mcp_reinjections += 1
     # The load relaunched this session's stubs with a fresh token nothing has
     # named yet; claim it against the session this provider serves.
     try:

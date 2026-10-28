@@ -23,7 +23,17 @@ from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import session_managers
 
 #: Spelled out rather than read from the production set, so a change to it fails here.
-WIDENED = ("send", "read", "summary", "stop", "close", "adopt", "release", "handoff")
+WIDENED = (
+    "send",
+    "read",
+    "summary",
+    "config_status",
+    "stop",
+    "close",
+    "adopt",
+    "release",
+    "handoff",
+)
 #: Verbs that stay with the creator after a handoff.
 CREATOR_ONLY = ("fork", "rename", "set_model")
 

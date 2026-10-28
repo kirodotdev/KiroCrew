@@ -343,11 +343,12 @@ def _created_by_other(slot: Any, caller_key: str) -> bool:
     return getattr(slot, "_created_by", "") != caller_key
 
 
-#: The verbs a handoff moves to the new manager: the ones that RUN a session. The
-#: verbs that mint a session or act for its creator's memory (create, fork, rename,
-#: set_model, ...) stay on ``_created_by``, which a handoff never rewrites.
+#: The verbs a handoff moves to the new manager: the ones that RUN a session, and
+#: ``config_status``, a read authorized as ``summary`` is. The verbs that mint a
+#: session or act for its creator's memory (create, fork, rename, set_model, ...)
+#: stay on ``_created_by``, which a handoff never rewrites.
 HANDOFF_WIDENED_OPERATIONS: frozenset[str] = frozenset(
-    {"send", "read", "summary", "stop", "close", "adopt", "release", "handoff"}
+    {"send", "read", "summary", "config_status", "stop", "close", "adopt", "release", "handoff"}
 )
 
 #: How far up the manager line :func:`_outside_reach` walks with the chain switch on.

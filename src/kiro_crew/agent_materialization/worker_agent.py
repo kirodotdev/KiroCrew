@@ -31,7 +31,8 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_FILENAME
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
-from kiro_crew.agent_spec_format import parse_markdown_spec, volatile_env_keys
+from kiro_crew.agent_spec_format import parse_markdown_spec
+from kiro_crew.agent_spec_format import without_volatile_mcp_env as _without_volatile_mcp_env
 from kiro_crew.platform import safe_context_call
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
@@ -1037,6 +1038,21 @@ def default_spec_fingerprint() -> str | None:
     return _spec_fingerprint(_installed_default_spec())
 
 
+def derived_surface_fingerprint(agent: str, *, without: frozenset[str] = frozenset()) -> str | None:
+    """The default spec's fingerprint for derived *agent*'s surface; ``None`` for any other agent.
+
+    What :func:`require_fresh_derived_spec` compares at spawn to decide whether the
+    derived spec must be re-derived, so a reader that records it at spawn and
+    compares it later sees the same edits to ``kirocrew.json`` a Reload would apply.
+    *without* drops surface keys the reader applies through another path (the
+    stale-config badge leaves ``model`` out: a default-model change reaches a
+    worker live or not at all, and never calls for a Reload).
+    """
+    if agent not in _DERIVED_AGENTS:
+        return None
+    return _surface_fingerprint(_installed_default_spec(), agent, without=without)
+
+
 def _default_surface_fingerprint(agent: str) -> str | None:
     """:func:`default_spec_fingerprint` for any derived *agent*'s surface."""
     return _surface_fingerprint(_installed_default_spec(), agent)
@@ -1053,62 +1069,17 @@ def _spec_fingerprint(spec: dict[str, Any] | None) -> str | None:
     return _surface_fingerprint(spec, _WORKER_AGENT)
 
 
-def _surface_fingerprint(spec: dict[str, Any] | None, agent: str) -> str | None:
+def _surface_fingerprint(
+    spec: dict[str, Any] | None, agent: str, *, without: frozenset[str] = frozenset()
+) -> str | None:
     """:func:`_spec_fingerprint` over the surface *agent*'s derived spec copies."""
     if spec is None:
         return None
     mirrored = _without_volatile_mcp_env(_mirrored_surface(spec, agent))
+    for key in without:
+        mirrored.pop(key, None)
     payload = json.dumps(mirrored, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _without_volatile_mcp_env(mirrored: dict[str, Any]) -> dict[str, Any]:
-    """*mirrored* with per-launch MCP env nonce VALUES replaced, so they cannot move the hash.
-
-    A launcher may re-stamp a nonce into an ``mcpServers`` entry's ``env`` on every
-    session launch (``AIM_CREDS_AGENT_INJECTION`` is written into every agent spec the
-    launcher manages). A nonce is not a grant: the ACP skill views already leave those keys out
-    of their identity digests through :func:`kiro_crew.agent_spec_format.volatile_env_keys`,
-    and this hash follows the same list. Hashing them made every concurrent session
-    launch read as a trust change, so ``require_unchanged_derived_spec`` ended any
-    worker whose load straddled one.
-
-    Only the VALUE is normalized; the key stays in the hash. A default that drops the
-    key altogether is a changed spec -- otherwise the mirror would keep an env entry
-    absent from the default -- so it must still fingerprint differently. Every other
-    env value still counts: a rotated credential is a different grant.
-
-    Two checks read this fingerprint: the post-load bracket
-    (``require_unchanged_derived_spec``) and the mirror-freshness check
-    (``_derived_spec_matches_default``), which compares it against the fingerprint
-    ``set_mirrored_from`` recorded at derive time. So a change to a volatile value alone
-    also skips the mirror re-derive. That is safe: the launcher writes every agent spec it
-    manages, the worker's own included, each with its own per-launch value, so the mirror
-    never needs the default's copy.
-    """
-    servers = mirrored.get("mcpServers")
-    if not isinstance(servers, dict):
-        return mirrored
-    volatile = volatile_env_keys()
-    stripped: dict[str, Any] = {}
-    for name, entry in servers.items():
-        env = entry.get("env") if isinstance(entry, dict) else None
-        if not isinstance(env, dict) or not any(str(key) in volatile for key in env):
-            stripped[name] = entry
-            continue
-        stripped[name] = {
-            **entry,
-            "env": {
-                key: (_VOLATILE_VALUE_SENTINEL if str(key) in volatile else value)
-                for key, value in env.items()
-            },
-        }
-    return {**mirrored, "mcpServers": stripped}
-
-
-#: What a volatile env value hashes as. A fixed marker rather than omission, so the
-#: key's presence is still part of the fingerprint while its per-launch value is not.
-_VOLATILE_VALUE_SENTINEL = "<volatile>"
 
 
 def default_spec_identity() -> str | None:

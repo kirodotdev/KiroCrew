@@ -37,7 +37,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 import yaml  # type: ignore[import-untyped]
 
@@ -281,6 +281,42 @@ def iter_agent_spec_files_strict(directory: Path) -> list[Path]:
     return sorted(path for path in live if not is_native_skill_alias_name(path.name))
 
 
+def live_agent_spec_names(
+    names: Iterable[str], *, entry_exists: Callable[[str], bool]
+) -> list[str]:
+    """:func:`iter_agent_spec_files` over a listing the caller already holds.
+
+    For a caller that lists a directory through a pinned handle and must never
+    reopen it by name: *names* are its entry names and *entry_exists* answers
+    whether a name is present in that same directory (the case-insensitive twin
+    probe of :func:`_has_json_twin`). The same rules otherwise: both forms, a
+    ``<stem>.md`` beside its ``<stem>.json`` twin dropped, skill-view aliases
+    left out, sorted by name. A suffix matches as ``Path.glob`` matches it: by
+    exact case on POSIX, ignoring case on Windows (``os.path.normcase``).
+    """
+
+    def _form(name: str) -> str | None:
+        folded = os.path.normcase(name)
+        for suffix in AGENT_SPEC_SUFFIXES:
+            if folded.endswith(suffix):
+                return suffix
+        return None
+
+    listed = [(name, _form(name)) for name in names]
+    json_stems = {n[: -len(JSON_SUFFIX)] for n, form in listed if form == JSON_SUFFIX}
+    live: list[str] = []
+    for name, form in listed:
+        if form is None:
+            continue
+        if form == MARKDOWN_SUFFIX:
+            stem = name[: -len(MARKDOWN_SUFFIX)]
+            if stem in json_stems or entry_exists(f"{stem}{JSON_SUFFIX}"):
+                continue
+        if not is_native_skill_alias_name(name):
+            live.append(name)
+    return sorted(live)
+
+
 def shadowed_markdown_specs(directory: Path) -> list[Path]:
     """The ``<stem>.md`` files a ``<stem>.json`` twin hides, sorted; ``[]`` on a walk error."""
     try:
@@ -469,3 +505,52 @@ def volatile_env_keys() -> frozenset[str]:
     """The MCP env keys whose values identity digests and fingerprints ignore (see above)."""
     extra = os.environ.get(_VOLATILE_ENV_VAR, "")
     return _VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}
+
+
+def without_volatile_mcp_env(mirrored: dict[str, Any]) -> dict[str, Any]:
+    """*mirrored* with per-launch MCP env nonce VALUES replaced, so they cannot move the hash.
+
+    A launcher may re-stamp a nonce into an ``mcpServers`` entry's ``env`` on every
+    session launch (``AIM_CREDS_AGENT_INJECTION`` is written into every agent spec the
+    launcher manages). A nonce is not a grant: the ACP skill views already leave those keys out
+    of their identity digests through :func:`kiro_crew.agent_spec_format.volatile_env_keys`,
+    and this hash follows the same list. Hashing them made every concurrent session
+    launch read as a trust change, so ``require_unchanged_derived_spec`` ended any
+    worker whose load straddled one.
+
+    Only the VALUE is normalized; the key stays in the hash. A default that drops the
+    key altogether is a changed spec -- otherwise the mirror would keep an env entry
+    absent from the default -- so it must still fingerprint differently. Every other
+    env value still counts: a rotated credential is a different grant.
+
+    Two checks read this fingerprint: the post-load bracket
+    (``require_unchanged_derived_spec``) and the mirror-freshness check
+    (``_derived_spec_matches_default``), which compares it against the fingerprint
+    ``set_mirrored_from`` recorded at derive time. So a change to a volatile value alone
+    also skips the mirror re-derive. That is safe: the launcher writes every agent spec it
+    manages, the worker's own included, each with its own per-launch value, so the mirror
+    never needs the default's copy.
+    """
+    servers = mirrored.get("mcpServers")
+    if not isinstance(servers, dict):
+        return mirrored
+    volatile = volatile_env_keys()
+    stripped: dict[str, Any] = {}
+    for name, entry in servers.items():
+        env = entry.get("env") if isinstance(entry, dict) else None
+        if not isinstance(env, dict) or not any(str(key) in volatile for key in env):
+            stripped[name] = entry
+            continue
+        stripped[name] = {
+            **entry,
+            "env": {
+                key: (VOLATILE_VALUE_SENTINEL if str(key) in volatile else value)
+                for key, value in env.items()
+            },
+        }
+    return {**mirrored, "mcpServers": stripped}
+
+
+#: What a volatile env value hashes as. A fixed marker rather than omission, so the
+#: key's presence is still part of the fingerprint while its per-launch value is not.
+VOLATILE_VALUE_SENTINEL = "<volatile>"

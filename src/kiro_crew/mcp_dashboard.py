@@ -805,6 +805,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_adopt,
     _run_session_broadcast,
     _run_session_close,
+    _run_session_config_status,
     _run_session_continue,
     _run_session_create,
     _run_session_end_wait,
@@ -984,6 +985,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         FOLDER_SORT_MODES,
     )
     from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES  # noqa: F401
+    from kiro_crew.dashboard import stale_config  # noqa: F401
     from kiro_crew.dashboard.folder_ownership import (  # noqa: F401
         _folder_owner_app,
         _subtree_holds_foreign_folder,

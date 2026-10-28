@@ -431,6 +431,7 @@ class TestAdvertisedSet:
             "session_status",
             "session_read_message",
             "session_summary",
+            "session_config_status",
             "session_adopt",
             "session_handoff",
             "session_release",

@@ -8476,6 +8476,13 @@
       "reload_blocked_subagents": "Unteragenten arbeiten",
       "reload_session": "Sitzung neu laden",
       "reload_session_tooltip": "Startet den Agentenprozess neu, um MCP-/Konfigurationsänderungen zu übernehmen. Die Unterhaltung bleibt erhalten.",
+      "reload_press_needed": "Konfiguration geändert · zum Übernehmen neu laden",
+      "reload_stale_inputs": "Konfiguration geändert ({{inputs}})",
+      "reload_clause_press_needed": "· zum Übernehmen neu laden",
+      "reload_clause_after_subagents": "— neu laden, wenn die Unteragenten fertig sind",
+      "reload_clause_after_turn": "— neu laden, wenn der Zug endet",
+      "reload_stale_after_subagents": "Konfiguration geändert — neu laden, wenn die Unteragenten fertig sind",
+      "reload_stale_after_turn": "Konfiguration geändert — neu laden, wenn der Zug endet",
       "rename": "Umbenennen",
       "reveal_in_sidebar": "In der Seitenleiste anzeigen",
       "tags": "Tags…",
@@ -8503,6 +8510,12 @@
       "custom_color": "Benutzerdefinierte Farbe",
       "hex_color_code": "Hex-Farbcode",
       "no_color": "Keine Farbe"
+    },
+    "staleConfigBadge": {
+      "reload_action": "Konfiguration geändert · Neu laden",
+      "reload_action_short": "Konfiguration · Neu laden",
+      "tooltip": "{{inputs}} wurde nach dem Start dieser Sitzung geändert. Lade die Sitzung neu, um die Änderung zu übernehmen.",
+      "tooltip_generic": "Die Konfiguration dieser Sitzung wurde seit ihrem Start geändert. Lade die Sitzung neu, um die Änderung zu übernehmen."
     },
     "sessionGridView": {
       "close_cell": "Zelle schließen",

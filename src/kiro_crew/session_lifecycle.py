@@ -239,6 +239,7 @@ class SessionLifecycleOwner(Protocol):
     _draining_subagent_runtimes: list[_BackgroundRuntime]
 
     _session_map: _SessionMapPort
+    respawn_config_reader: Callable[[str], Awaitable[Any]] | None
 
     def _fold_key(self, key: str) -> str: ...
 
@@ -693,6 +694,8 @@ class SessionLifecycleService:
     _send_abort_for_session = _turn_stop._send_abort_for_session
     _eager_respawn = _turn_stop._eager_respawn
     _respawn_as = _turn_stop._respawn_as
+    _respawn_config = _turn_stop._respawn_config
+    _carry_respawn_config = staticmethod(_turn_stop._carry_respawn_config)
     # ── Every session at once (fleet) ──
     refresh_defaults = _fleet.refresh_defaults
     reload_provider_factory = _fleet.reload_provider_factory

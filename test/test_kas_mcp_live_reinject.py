@@ -127,6 +127,9 @@ class TestTheApply:
         assert provider._handle is runtime.new_handle
         assert provider._mcp_reinject_pending is False
         provider.reclaim.assert_called_once_with()  # type: ignore[attr-defined]
+        # Counted with the swap, for the stale-config record keyed to this provider.
+        assert provider.mcp_projection_generation == 1
+        assert provider.mcp_reinjection_pending is False
 
     @pytest.mark.asyncio
     async def test_the_load_runs_inside_the_record_keeping_scope(self) -> None:
@@ -201,6 +204,8 @@ class TestTheApply:
         with pytest.raises(asyncio.CancelledError):
             await provider.apply_pending_mcp_reinjection()
         assert provider._mcp_reinject_pending is True
+        assert provider.mcp_reinjection_pending is True
+        assert provider.mcp_projection_generation == 0
 
     @pytest.mark.asyncio
     async def test_the_new_handle_inherits_what_the_wire_cannot_restore(self) -> None:

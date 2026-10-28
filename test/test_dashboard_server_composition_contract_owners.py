@@ -568,6 +568,7 @@ def _dashboard_chain(**overrides: Any) -> web.Application:
         "tailnet_host": "",
         "configured_host": "127.0.0.1",
         "dashboard_url": "",
+        "config_write_refresh": _through,
     }
     server._install_dashboard_middlewares(app, **(kwargs | overrides))
     return app
@@ -659,6 +660,7 @@ async def test_the_headless_audit_records_every_api_method(
         port=25300,
         local_only=True,
         tailnet_trust=None,
+        config_write_refresh=_through,
     )
     log = _sel_double(monkeypatch, f"{_FACADE}.sel")
     audit = _layer(app, "sel_audit_middleware")

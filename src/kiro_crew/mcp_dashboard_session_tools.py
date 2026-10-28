@@ -17,6 +17,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_adopt,
     _run_session_broadcast,
     _run_session_close,
+    _run_session_config_status,
     _run_session_continue,
     _run_session_create,
     _run_session_end_wait,
@@ -941,5 +942,33 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_summary,
             identity="strict",
             routes=("GET /api/session-control/summary",),
+        ),
+        Tool(
+            name="session_config_status",
+            description=(
+                "Report whether a session's agent process runs on OUTDATED config: an "
+                "MCP server, agent spec or mcp.json edited after the process started, "
+                "which it does not see until the session is reloaded. Returns 'stale' "
+                "(true, false, or null when a config file cannot be read or the check "
+                "could not run) and which "
+                "files changed, the same answer the dashboard's stale-config badge "
+                "shows. An MCP edit a hot-reloading kiro-cli has already applied is not "
+                "stale. READ-only: it never reloads anything; applying a change is the "
+                "Reload session action in that tab. Authorized as session_summary is, "
+                "except that your own chat is a valid target."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_config_status,
+            identity="strict",
+            routes=("GET /api/session-control/config-status",),
         ),
     )

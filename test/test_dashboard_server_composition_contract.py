@@ -516,7 +516,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     strays = [f"{o}:{n}" for o, n in placed if getattr(server, n) is not vars(_owner(o)).get(n)]
     assert strays == []
     names = [name for _, name in placed]
-    assert len(names) == len(set(names)) == 90 + 23
+    assert len(names) == len(set(names)) == 90 + 26
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:

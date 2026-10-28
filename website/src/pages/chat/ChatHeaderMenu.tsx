@@ -103,7 +103,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
           </button>
         )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[180px]">
+      {/* Capped to the viewport: the Reload row's stale-config note can be wider
+        *  than a 320px phone in a long locale, and the uncapped menu would run
+        *  off-screen instead of letting that note wrap. */}
+      <DropdownMenuContent align="start" className="min-w-[180px] max-w-[calc(100vw-1rem)]">
         {newSessionHere && (
           <>
             <DropdownMenuItem data-testid="mobile-new-session-here" disabled={newSessionHere.disabled} onSelect={newSessionHere.onSelect}>

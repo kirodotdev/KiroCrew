@@ -128,6 +128,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "mark_mcp_config_changed": ("function", False, "b60c5fea256e", "acp"),
     "mcp_config_hot_reload": ("property", False, "a6632a57e602", "acp"),
     "mcp_config_wire_reinject": ("property", False, "a6632a57e602", "acp"),
+    "mcp_projection_generation": ("property", False, "fa6cfecd5574", "acp"),
+    "mcp_reinjection_pending": ("property", False, "a6632a57e602", "acp"),
     "mcp_session_report": ("function", False, "89ea891969f7", "acp"),
     "member_capabilities_supported": ("property", False, "a6632a57e602", "acp"),
     "member_dispatch_mounted": ("property", False, "16180c63d5e6", "acp"),

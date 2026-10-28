@@ -7,7 +7,7 @@ bookkeeping, deferred resets, eager spawn and the MCP report.
 
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
-Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``,
+Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_config_stat_sig``, ``_created_by``,
 ``_created_by_sid``, ``_crew_log_opened_sid``, ``_crew_log_pending_channel``,
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
@@ -20,12 +20,13 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_reasoning_effort``,
 ``_recovery_chat_triggered``, ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``,
 ``_session_requested_model``,
-``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
+``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_spawn_config``, ``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
-``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
+``channel_origin``, ``config_stale``, ``config_stale_inputs``, ``created_at``, ``crew_mode_agent``, ``executor``,
+``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``, ``project``, ``recovery_retrigger_count``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
@@ -365,6 +366,19 @@ def init_session_fields(self: _ChatSlot) -> None:
     # moves the now-idle session live or arms the deferred reset. Runtime only:
     # a restart cold-starts on the committed slot.model anyway.
     self._deferred_model_switch_key = ""
+    # The spawn-time config fingerprint of the provider this slot's turns
+    # ran on (stale_config.SpawnConfigRecord), recorded once per provider.
+    # Runtime only -- a restart starts a fresh process anyway.
+    self._spawn_config = None
+    # The live session runs on config that changed after it started
+    # (config_staleness.refresh_config_stale), and the display-safe labels
+    # of what changed. Projected for the dashboard's stale-config badge.
+    self.config_stale = False
+    self.config_stale_inputs = ""
+    # The stat signature of this chat's config inputs at its last stale
+    # check (stale_config.input_signature); the sweep re-fingerprints the
+    # chat only when it changed.
+    self._config_stat_sig = None
     # Debounced speculative session-creation task (session.eager_spawn).
     # At most one per slot: scheduling a new one cancels the previous, so
     # rapid signals (create + project set) collapse into a single spawn.
