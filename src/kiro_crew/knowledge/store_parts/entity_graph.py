@@ -297,14 +297,32 @@ def find_entity(self: KnowledgeStore, name):
         return dict(row)
     # Only rows that can carry an alias. '' and '[]' (the column default)
     # parse to no aliases, so filtering them in SQL returns the same row
-    # while sparing a json.loads per entity: on a 59k-entity library that
-    # scan was ~half of every knowledge search, and it holds the GIL.
-    for row in self.db.execute(
-        "SELECT * FROM entities WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')"
-    ):
-        aliases = json.loads(row["aliases"]) if row["aliases"] else []
+    # while sparing a json.loads per entity. The predicate is the partial
+    # index idx_entities_with_aliases word for word, so the read walks only
+    # the alias-bearing rows instead of all 59k entities (~25 ms per missed
+    # query term), and reads (rowid, aliases) from the index alone. The
+    # index returns them in alias order; sorting by rowid restores the table
+    # scan's order, so the first match, and the first malformed row to
+    # raise, are the ones the scan met first.
+    candidates = sorted(
+        self.db.execute(
+            "SELECT rowid, aliases FROM entities "
+            "WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')"
+        ).fetchall(),
+        key=lambda row: row[0],
+    )
+    for rowid, raw in candidates:
+        aliases = json.loads(raw) if raw else []
         if any(a.lower() == name.lower() for a in aliases):
-            return dict(row)
+            # A rowid is not stable: the table has no AUTOINCREMENT, so a row
+            # deleted between the two reads can be reused by an unrelated
+            # entity. Re-reading by rowid AND the aliases just matched returns
+            # only the row that carries them; a replaced row is skipped.
+            row = self.db.execute(
+                "SELECT * FROM entities WHERE rowid = ? AND aliases = ?", (rowid, raw)
+            ).fetchone()
+            if row:
+                return dict(row)
     return None
 
 

@@ -928,6 +928,15 @@ def _build_matrix(store: Any, sql: str, params: list, q_len: int):
     import numpy as np
 
     q_bytes = q_len * 4
+    packed = _read_packed(store, sql, params, q_bytes)
+    if packed is not None:
+        gen, packed_ids, packed_joined = packed
+        if not packed_ids:
+            return gen, None
+        retained = len(packed_ids) * (q_bytes + 8) + sum(map(sys.getsizeof, packed_ids))
+        if retained > _MATRIX_CACHE_MAX_BYTES:
+            return gen, _UNCACHEABLE
+        return gen, _finish_matrix(packed_ids, packed_joined, q_len, retained)
     gen, rows = _read_snapshot(store, sql, params)
     if not rows:
         return gen, None
@@ -977,6 +986,72 @@ def _build_matrix(store: Any, sql: str, params: list, q_len: int):
     if retained > _MATRIX_CACHE_MAX_BYTES:
         return gen, _UNCACHEABLE
     return gen, _finish_matrix(ids, b"".join(parts), q_len, retained)
+
+
+def _read_packed(store: Any, sql: str, params: list, q_bytes: int):
+    """``(generation, ids, joined vectors)`` in ONE statement, or ``None``.
+
+    Fetching the candidates row by row re-takes the GIL once per row, ~22k
+    times on a 22k-item library, and while other threads are busy each one
+    waits: the first search after start spent seconds there under agent-turn
+    load, against ~0.15 s idle. Here SQLite joins the vectors itself
+    (``group_concat`` keeps a BLOB's bytes as they are) and lists the ids
+    beside them in the same pass, so both follow one row order; Python takes
+    one row. The same snapshot reads the generation, as in
+    :func:`_read_snapshot`.
+
+    ``None`` sends the build to the row path, which admits exactly what this
+    does not: a non-BLOB value (a legacy JSON vector), a blob of another
+    width, a packed blob that parses as a JSON list, a SQLite without the
+    JSON functions, or a result past SQLite's length limit.
+    """
+    import numpy as np
+
+    if q_bytes < _BINARY_BLOB_MIN_BYTES:
+        return None
+    conn = store.db
+    own_txn = not conn.in_transaction
+    if own_txn:
+        conn.execute("BEGIN")
+    try:
+        gen = _vector_generation(store)
+        cur = conn.cursor()
+        cur.row_factory = None
+        try:
+            # group_concat reads a BLOB as text in the database's encoding,
+            # which keeps its bytes only when that encoding is UTF-8.
+            if cur.execute("PRAGMA encoding").fetchone()[0] != "UTF-8":
+                return None
+            # The count of rows that are not packed at this width is read in
+            # the same pass, so a library holding any falls back without a
+            # second read deciding it.
+            count, ids_json, joined, misfits = cur.execute(
+                "SELECT count(*), json_group_array(id), "  # noqa: S608
+                "CAST(group_concat(embedding, '') AS BLOB), "
+                "total(typeof(embedding) <> 'blob' OR length(embedding) <> ?) "
+                f"FROM ({sql})",
+                (q_bytes, *params),
+            ).fetchone()
+        except (sqlite3.OperationalError, sqlite3.DataError):
+            # DataError is SQLITE_TOOBIG: the joined vectors or ids passed
+            # SQLite's length limit, which the row path never builds.
+            return None
+    finally:
+        if own_txn:
+            conn.execute("COMMIT")
+    if count == 0:
+        return gen, [], b""
+    if misfits or not isinstance(joined, bytes):
+        return None
+    ids = json.loads(ids_json)
+    if len(ids) != count:
+        return None
+    lead = np.frombuffer(joined, dtype=np.uint8)[::q_bytes]
+    json_leads = np.frombuffer(bytes(sorted(_JSON_LEAD_BYTES)), dtype=np.uint8)
+    for i in np.nonzero(np.isin(lead, json_leads))[0].tolist():
+        if _parses_as_json_list(joined[i * q_bytes : (i + 1) * q_bytes]):
+            return None
+    return gen, ids, joined
 
 
 def _join_packed(rows: list, q_bytes: int) -> tuple[list[str], bytes] | None:

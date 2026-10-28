@@ -266,6 +266,12 @@ _SEARCH_INDEXES = (
     # find_entity's case-insensitive fallback; without it every query term
     # that misses the exact name scans the whole table.
     "CREATE INDEX IF NOT EXISTS idx_entities_name_lower ON entities(LOWER(name))",
+    # find_entity's alias fallback, run for every query term no name matches.
+    # Partial on the fallback's own predicate, so it holds only the entities
+    # that carry aliases (none on most libraries) and the fallback stops
+    # scanning every entity.
+    "CREATE INDEX IF NOT EXISTS idx_entities_with_aliases ON entities(aliases) "
+    "WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')",
     # The graph leg counts mentions by entity_id; the primary key leads with
     # item_id, so without this every search scans every mention.
     "CREATE INDEX IF NOT EXISTS idx_mentions_entity_item ON mentions(entity_id, item_id)",
