@@ -1,19 +1,24 @@
 """Client-sent relay identity headers never reach a handler or an app backend.
 
 A relay identity header (``x-kiro-relay-user`` and every other name under
-:data:`RELAY_HEADER_PREFIX`) names the person a relay forwarded a request for. Its
-only legitimate writer is an in-process relay client, which builds its own request
-inner to this layer; nothing that arrives over a socket may carry one. Both
-middleware chains (the dashboard's and the headless API server's) run
-:func:`relay_header_strip_middleware` ahead of every barrier and auth layer. Every
-listener serves one of those two apps through its runner: the main TCP and Unix
-listeners, the second loopback family, and the loopback port that
-``tailscale serve`` and the tunnel forward to. The app-backend proxy drops
-the same names with :func:`is_relay_header`.
+:data:`RELAY_HEADER_PREFIX`) names the person a relay forwarded a request for. This
+module holds the one definition of that prefix; the relay-path header rule in
+:mod:`kiro_crew.dashboard.kiro_relay` reads it too. The only legitimate writer is
+the Crew's own relay client, which hands each relayed request to the gateway's
+loopback listener stamped with a per-process handover credential; the relay-path
+rule verifies that stamp and is the only layer that honors one. Both middleware
+chains (the dashboard's and the headless API server's) run
+:func:`relay_header_strip_middleware` just inside that rule, ahead of every barrier
+and auth layer. Every listener serves one of those two apps through its runner: the
+main TCP and Unix listeners, the second loopback family, and the loopback port that
+``tailscale serve`` and the tunnel forward to. The app-backend proxy drops the same
+names with :func:`is_relay_header`.
 
-:func:`strip_client_relay_headers` is the one place the drop happens, so it is also
-the one seam an in-process relay client skips: it attaches its identity header to a
-request it hands to the app after this layer, never to one a listener received.
+A verified handover the relay-path rule serves carries no relay header, so
+:func:`strip_client_relay_headers` returns it unchanged and cannot remove the
+identity the rule set; a clone here would reset ``request.remote`` to the socket's
+peer. Every other request reaches this layer as it arrived, so this is the one place
+a client-sent relay header is dropped.
 """
 
 from __future__ import annotations
