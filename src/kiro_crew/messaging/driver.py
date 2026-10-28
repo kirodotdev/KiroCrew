@@ -54,6 +54,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_tool_gate_pool
+from kiro_crew.kas_workflows.chat import needs_a_person as kas_needs_a_person
 from kiro_crew.messaging.empty_turn_copy import (
     EMPTY_TURN_NOTICE,
     EMPTY_TURN_NOTICE_AFTER_WORK,
@@ -989,6 +990,14 @@ class TurnDriver:
                     )
                     await self.provider.reject_tool(event.request_id)
                     continue
+                # A KAS workflow plan handoff, or a KAS ``user_input`` question
+                # (one ``allow_once`` per answer, so any approval picks the
+                # first answer), is the person's call in every mode: it passes
+                # no auto-approve rung (hook, spawn hook, session Trust / YOLO,
+                # the auto/trust/trust-reads ladder) and reaches the decider's
+                # buttons, or is refused where the channel has none. A hook
+                # DENY still wins, as on the dashboard.
+                _person_only = kas_needs_a_person(event)
                 # PreToolUse security gate — sensitive-path keystone +
                 # governance ceiling + deny-list. Runs FIRST, before the
                 # auto/trust/YOLO ladder, so a hard DENY can never be
@@ -1040,7 +1049,7 @@ class TurnDriver:
                         )
                         await self.provider.reject_tool(event.request_id)
                         continue
-                    if _gate == "auto_approve":
+                    if _gate == "auto_approve" and not _person_only:
                         # The gate's hook granted this by NAME (the
                         # `auto_approve_tools` globs, or the read-only
                         # allowlist). Honour it only while each program name in
@@ -1108,7 +1117,9 @@ class TurnDriver:
                 #  - hook: auto_approve_subagent_spawn -> spawn_run
                 #  - per-session Trust / global YOLO (injected predicate)
                 _auto_reason = ""
-                if self.auto_approve_tool is not None and self.auto_approve_tool(event):
+                if _person_only:
+                    pass
+                elif self.auto_approve_tool is not None and self.auto_approve_tool(event):
                     _auto_reason = "hook_auto_approve"
                 elif self.auto_approve_session is not None and self.auto_approve_session():
                     _auto_reason = "session_trust"
@@ -1132,7 +1143,9 @@ class TurnDriver:
                 # Only render approve/deny buttons when there's a decider to
                 # await the click. Without one, _approve() denies by default,
                 # so posting buttons would leave the user with dead controls.
-                if self.approval_mode == APPROVAL_INTERACTIVE and self.decider is not None:
+                if self.decider is not None and (
+                    self.approval_mode == APPROVAL_INTERACTIVE or _person_only
+                ):
                     # The prompt names the tool from the PERMISSION event's own
                     # title, and its purpose from the tool_call that shares the
                     # id. A renderer that instead remembers the last titled
@@ -1157,7 +1170,7 @@ class TurnDriver:
                             tool_input=_redact(getattr(event, "tool_input", "") or ""),
                         )
                     )
-                approved = await self._approve(event)
+                approved = await self._approve(event, person_only=_person_only)
                 if approved:
                     approval_sent = await self.provider.approve_tool(event.request_id)
                     permission_outcome = (
@@ -1512,8 +1525,15 @@ class TurnDriver:
         except Exception:
             logger.debug("host-deny steer notice failed; rejecting anyway", exc_info=True)
 
-    async def _approve(self, event: Any) -> bool:
-        """Apply the approval ladder to a permission-request event."""
+    async def _approve(self, event: Any, *, person_only: bool = False) -> bool:
+        """Apply the approval ladder to a permission-request event.
+
+        *person_only* (a KAS plan handoff or question) skips every mode rung:
+        only the decider, a person's click, may answer it; without one it is
+        refused.
+        """
+        if person_only:
+            return bool(await self.decider(event)) if self.decider is not None else False
         if self.approval_mode in (APPROVAL_AUTO, APPROVAL_TRUST):
             return True
         if self.approval_mode == APPROVAL_TRUST_READS:
