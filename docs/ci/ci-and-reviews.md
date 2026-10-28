@@ -66,11 +66,12 @@ pull_request
   |-- build.yml         "Build"        wheel + desktop/installer artifacts build
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene
   |-- issue-gate.yml    "Issue Gate"   PR names a sized issue, blocking once enabled (paused)
-  |-- dependency-review.yml            license allowlist
-  |-- pr-scope.yml      "PR Scope"     PR breadth across areas, advisory
-  |-- pr-size.yml       "PR Size"      file count and hours open; owner approval at 80 files (shadow)
-  |-- cross-platform.yml
-  |                     "Cross-Platform Portability"  added-line POSIX-only scan, blocking
+  |-- pr-policy.yml     "PR Policy"    four read-only policies as steps of one job, one check row:
+  |                                      PR Size: file count and hours open; owner approval at 80 files (shadow)
+  |                                      PR Scope: breadth across areas, advisory
+  |                                      Cross-Platform Portability: added-line POSIX-only scan, blocking
+  |                                      Screenshot Evidence: image in the body for a UI diff, blocking
+  |-- dependency-review.yml            license allowlist (its own job: it needs a write token)
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
   |-- claude-review.yml "Opus 5.5 Review"     line-level, code-only, blocking
@@ -2141,7 +2142,47 @@ revert; an issue-side revalidation lane (a reverse index from issue to the open
 PRs declaring it, plus a write path to re-dispatch their gate runs) would exist for
 this path alone and is not built.
 
-## `pr-size.yml`: very wide or long-open pull requests (SHADOW)
+## `pr-policy.yml`: four read-only policies, one runner
+
+`PR Size`, `PR Scope`, `Cross-Platform Portability` and `Screenshot Evidence` are
+steps of one job, `PR Policy`. Each is a check doing under a minute of work, so as a
+one-job workflow of its own the runner start is the cost, four times per push at
+about 1,450 pushes a day, and two of them again on every `edited`, `labeled` and
+`unlabeled` event. The fold is one runner start per event; the scripts, thresholds
+and waiver labels (`posix-only-approved`, `no-screenshots`) are unchanged, and each
+policy's own section below still describes it.
+
+Four rules make the sharing safe:
+
+- **Read-only is the admission rule.** Permissions are per job, so every step shares
+  one token, and that token is `pull-requests: read`. A policy that needs a write
+  scope keeps its own workflow: `Dependency License Gate` (`dependency-review.yml`)
+  stays separate because `actions/dependency-review-action` posts its failure summary
+  as a PR comment, and folding it in would hand the write scope to the four policies
+  that only read.
+- **Every policy runs on every event the workflow subscribes to.** The check is one
+  row, and a run replaces that row for its head SHA. A step that skipped on `edited`
+  would let a body edit turn green a head whose push had a red policy. So no step
+  carries an event filter. The cost is that PR Size and PR Scope also run on label
+  and body events (one `GET pulls/<n>` and a `git diff`).
+- **A red policy does not stop the others.** Every step is `continue-on-error`; the
+  last step reads each outcome, writes one `::error title=<policy>` annotation per
+  red one and fails the job. The Checks tab names the policy without opening the log,
+  and the step summary lists every outcome so a green run shows what it judged.
+- **PR Size's script is the default branch's.** The job checks out the pull request's
+  merge commit at depth 2 for the three diff policies, and the default branch's
+  `.github/scripts` under `base/` for `pr_size.py`, so a pull request cannot edit the
+  check that judges it.
+
+None of the four is a `PR Readiness` lane: readiness resolves lanes by workflow file
+and none of these files was ever listed. That cuts the other way too: enforcing PR
+Size by enrolling `pr-policy.yml` in readiness would enroll all four policies at
+once. The lanes that are readiness lanes, `Issue Gate` and `Sensitive Change Review`,
+stay in their own files for that reason, and `internal-content-scan-gate.yml`,
+`macos-on-demand.yml` and `security-scope-review.yml` are reusable-workflow calls or
+multi-job lanes that cannot be steps.
+
+## `PR Size` (a `pr-policy.yml` step): very wide or long-open pull requests (SHADOW)
 
 A pull request that touches very many files, or stays open a week, is the one that
 loops on rebases. Over 1,980 studied pull requests, `files >= 80 or open >= 168 h`
@@ -2160,13 +2201,15 @@ The numbers are named constants in `.github/scripts/pr_size.py`
 (`FILES_HINT`, `FILES_STOP`, `HOURS_AGING`), repeated in `diff_signals.py` and kept
 equal by `test/test_prepare_pr_diff_signals_size.py`.
 
-**Shadow.** `PR_SIZE_ENFORCED` in `pr_size.py` is `False`. The `PR Size` job never
+**Shadow.** `PR_SIZE_ENFORCED` in `pr_size.py` is `False`. The `PR Size` step never
 fails: at the stop level it prints a warning that says "this would be red" and
 names the approval command. The rollout is shadow first, then red after about 14
 days of reading that list. To enforce, set the constant to `True`, delete the
-bootstrap guard in `pr-size.yml` (a test requires that), and add `PR Size` to the
-lane list in `pr-readiness.yml` so a red reds the one required status. An
-unreadable pull request is a warning in shadow and a red check when enforced.
+bootstrap guard in the step (a test requires that), and decide how the red reaches
+the one required status: enrolling `pr-policy.yml` in `pr-readiness.yml`'s lane list
+enrolls every policy in that job, so either accept that or give PR Size a check-run
+of its own first. An unreadable pull request is a warning in shadow and a red check
+when enforced.
 
 **The owner override.** A comment whose first line is
 `/pr-size approve: <reason, 12 to 500 characters>` on the pull request.
@@ -2176,7 +2219,7 @@ commenter's collaborator permission with the same three tries and fail-closed ru
 author of the pull request may approve only as an `admin`. A pull request under 80
 files has nothing to approve. The handler posts a bot comment whose first line is a
 hidden marker, `<!-- pr-size-override actor=<login> files=<n> head=<sha> source=<id>
-at=<time> -->`, with the quoted reason, then re-runs the `PR Size` run for that head.
+at=<time> -->`, with the quoted reason, then re-runs the `PR Policy` run for that head.
 The check reads a marker only from a comment by `github-actions[bot]`, so a marker
 typed by hand does nothing. The comment body reaches the script through the
 environment only, never inside a `run:` expression.
@@ -2187,11 +2230,11 @@ approved run prints a warning naming who approved and at how many files, and the
 bot comment is the permanent record. A run of approvals means the limit needs
 retuning.
 
-**What it does not do.** It does not touch `PR Scope` (`pr-scope.yml`), which stays
-advisory and judges whether changes are related; this one counts files. It adds no
-labels or comments of its own. The measure is one `GET pulls/<n>` per run, and one
-comment listing only at the stop level. The job checks out the default branch, never
-the pull request's code.
+**What it does not do.** It does not touch `PR Scope` (the step beside it), which
+stays advisory and judges whether changes are related; this one counts files. It adds
+no labels or comments of its own. The measure is one `GET pulls/<n>` per run, and one
+comment listing only at the stop level. The script it runs is the default branch's,
+never the pull request's copy.
 
 ## `code-review.yml`: the deterministic pre-gate
 
@@ -2271,7 +2314,9 @@ dependency whose license is off the curated allowlist in
 `.github/dependency-review-config.yml`. A maintainer can bypass it for the commit
 they reviewed with the `license-override` label, honored **only** on the `labeled`
 event, so a later push arrives as `synchronize` and re-runs the gate; a new,
-unvetted dependency cannot ride in on a stale override.
+unvetted dependency cannot ride in on a stale override. It is not a `pr-policy.yml`
+step: it needs `pull-requests: write` for its failure comment, and that job is
+read-only.
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
@@ -3003,12 +3048,12 @@ attached after a push is read on a re-run of the workflow or on the next push --
 those URLs (a committed image is still accepted), reads each one and grounds visual
 findings in them, and it is instructed to treat screenshot content as untrusted (a
 screenshot, title, commit message or filename attempting to grant leniency is
-ignored, and screenshot polish never waives a lens). `screenshot-evidence.yml`, the
-gate that requires evidence on a UI diff, accepts the same URLs.
+ignored, and screenshot polish never waives a lens). `Screenshot Evidence`, the
+`pr-policy.yml` step that requires evidence on a UI diff, accepts the same URLs.
 
 ### Waiving the screenshot requirement
 
-A watched file can change without any visual delta, so `screenshot-evidence.yml`
+A watched file can change without any visual delta, so `Screenshot Evidence`
 carries two waiver paths — and both emit a warning rather than passing silently,
 so the waiver stays visible in the run:
 

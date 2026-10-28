@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: an explicit ``"/"`` rather than ``os.path.join``. Two reasons, and the second is why
 #: the obvious form is wrong:
 #:
-#: * ``cross-platform.yml``'s portability gate rejects an added absolute POSIX path
+#: * The ``Cross-Platform Portability`` gate in ``pr-policy.yml`` rejects an added absolute POSIX path
 #:   literal, because on Windows such a path names nothing and a hardcoded one is how a
 #:   POSIX-only assumption reaches shared code. This module IS macOS-only so the path is
 #:   correct here, but the gate scans added lines and cannot know that;

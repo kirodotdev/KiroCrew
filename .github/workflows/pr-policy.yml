@@ -1,0 +1,595 @@
+name: PR Policy
+
+# Four cheap read-only pull-request policies, one runner.
+#
+# PR Size, PR Scope, Cross-Platform Portability and Screenshot Evidence are
+# steps of ONE job. Every one does well under a minute of work, so as separate
+# one-job workflows the runner start is the cost: four per push (about 1,450
+# pushes a day), and two of them again on every `edited`, `labeled` and
+# `unlabeled` event. As steps they cost one runner start per event, with the
+# same scripts, the same thresholds, the same waiver labels.
+#
+# READ-ONLY IS THE ADMISSION RULE. Permissions are per job, so every step here
+# shares one token, and that token is `pull-requests: read`. A policy that needs
+# a write scope keeps its own workflow: `dependency-review.yml` stays separate
+# because `actions/dependency-review-action` posts its failure summary as a PR
+# comment, and folding it here would hand the write scope to the four policies
+# that only read. Keep it that way: a step that needs to write does not belong
+# in this job.
+#
+# None of the four is a `PR Readiness` lane. Readiness resolves its lanes by
+# workflow file (`issue-gate.yml|Issue Gate` and the rest, in pr-readiness.yml)
+# and none of these files was ever listed, so the fold changes nothing readiness
+# reads. The lanes that ARE readiness lanes (Issue Gate, Sensitive Change Review)
+# stay in their own files for exactly that reason.
+#
+# EVERY POLICY RUNS ON EVERY EVENT THIS WORKFLOW SUBSCRIBES TO. The check on the
+# pull request is one row, `PR Policy`, and a run REPLACES that row for its head
+# SHA. A step skipped on, say, `edited` would let an `edited` run turn a head
+# green whose `synchronize` run had a red policy -- a blocking verdict masked by
+# an unrelated event. So no step carries an event filter, and each run is a
+# complete verdict for the head it ran on. Each step has `continue-on-error:
+# true` so a red policy does not stop the others from reporting; the last step
+# reads every outcome, writes one `::error` annotation per red policy and fails
+# the job.
+#
+# Why these four and not the rest of the single-job fan-out:
+# `internal-content-scan-gate.yml` and `macos-on-demand.yml` call reusable
+# workflows, which cannot be a step; `security-scope-review.yml` is a four-job
+# model lane; `dependency-review.yml` needs a write token (above);
+# `issue-gate.yml` and `sensitive-change-review.yml` are readiness lanes (above).
+#
+# -- PR Size (SHADOW) ---------------------------------------------------------
+# A pull request that touches very many files, or has stayed open a week, is the
+# kind that loops on rebases: 3.3% of the studied pull requests hold 26.9% of the
+# rebase loops (docs/request-for-change/rfc-review-loop-and-escaped-bug-reduction.md,
+# D6). The step measures the file count and the hours open, prints a notice at
+# the thresholds, and, once enforced, is red at the limit until an owner approves.
+# `PR_SIZE_ENFORCED` in `.github/scripts/pr_size.py` is False, so today it never
+# fails: at the limit it prints a warning that says "this would be red". Enforcing
+# is a one-line change to that constant, plus a decision on how the red reaches the
+# one required status: enrolling `pr-policy.yml` in `pr-readiness.yml`'s lane list
+# enrolls every policy in this job, so either accept that or give PR Size a
+# check-run of its own first (docs/ci/ci-and-reviews.md). The owner override
+# is a comment, `/pr-size approve: <reason>`, handled by `pr-size-override.yml`,
+# which records a bot comment with a hidden marker that this step reads back and
+# re-runs this workflow's run for that head. The script runs from the DEFAULT
+# branch checkout (`base/`), never the pull request's copy, so a pull request
+# cannot edit the check that judges it. Cost: one `GET pulls/<n>` and, only at the
+# limit, one comment listing.
+#
+# -- PR Scope (ADVISORY) ------------------------------------------------------
+# A signal that a PR may not be self-contained: it bundles changes to several
+# unrelated areas that would review better as separate PRs. The step NEVER exits
+# nonzero, by design: "are these changes related?" is a judgment call, a hard
+# threshold would block legitimate work (a cross-cutting refactor, a rename that
+# touches every transport) while being trivially gamed by splitting one logical
+# change across two PRs. The semantic half of the question is owned by the GPT
+# reviewer, which compares the diff against the PR's stated purpose; this step
+# covers only what a model cannot see cheaply: raw breadth.
+#
+# -- Cross-Platform Portability (BLOCKING) ------------------------------------
+# Catches POSIX-only assumptions in Python that ships to macOS, Linux AND Windows:
+# a hardcoded `bash`, a `/tmp` literal, an os-specific signal that only fails on a
+# real user's Windows box, on code paths tests do not reach. Deterministic,
+# ADDED-LINES ONLY, no model; every rule is a pattern the repo has been burned by.
+# Scope: `src/kiro_crew/**/*.py`, excluding the vendored tree (not ours to fix),
+# tests (they may legitimately assert POSIX behaviour behind a skip marker; ~120
+# test modules ship INSIDE the package under `src/kiro_crew/apps/builtins/*/tests/`,
+# so the exclusion is a pathspec, not assumed from `test/`), and `platform_compat.py`
+# itself, whose whole job is to name the os-specific primitives everything else
+# routes through. Its siblings `platform_owner_compat.py` and `platform_lock_compat.py`
+# ARE scanned, so a line matching a rule there needs the `posix-only-approved` label.
+#
+# -- Screenshot Evidence (BLOCKING) -------------------------------------------
+# Requires visual evidence in the PR body when the diff touches a USER-VISIBLE
+# frontend surface: a reviewer cannot judge a layout, theme or component change
+# from a diff. Deterministic: no model, no network beyond the PR read. Scope is
+# deliberately NARROWER than "website/** changed": test files, locale catalogues
+# and type-only declarations change constantly without any visual delta, and
+# gating on those trains contributors to paste a meaningless screenshot. Two
+# waiver paths for a genuinely non-visual change to a watched file: the
+# `no-screenshots` label (maintainers), and the `<!-- no-visual-delta -->` body
+# marker plus a `**Why no screenshot:** <reason>` line (self-service for fork
+# contributors, who cannot add labels). Both warn instead of passing silently.
+# `edited` is in the trigger list so adding the screenshots to the body can turn
+# the check green WITHOUT a no-op code push.
+
+on:
+  pull_request:
+    # The union of the four policies' trigger lists. `edited` and the label
+    # events belong to Screenshot Evidence (the body and the waiver label fix
+    # it) and the portability scan (its waiver label); PR Size and PR Scope run
+    # on them too, by the every-policy-every-event rule above.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+# Read-only, and the whole job is held to it (see the admission rule above).
+# The policies read the PR and the diff and write only annotations and the step
+# summary. No id-token, no contents:write -- this job runs no untrusted code
+# (the diff steps only `git diff` the PR, the size script is the default
+# branch's) and needs no cloud credentials.
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-policy:
+    name: PR Policy
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Two depth-2 checkouts, one `GET pulls/<n>` and a few seconds of grep each.
+    timeout-minutes: 5
+    steps:
+      # The pull request's merge commit, for the three diff-reading policies.
+      # depth-2: the merge commit (HEAD) and its first parent (the base tip,
+      # HEAD^1). `git diff HEAD^1 HEAD` is then the exact set of changes this PR
+      # merges into main -- identical to the three-dot BASE...HEAD range on a
+      # full clone, with no extra fetch step.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # The DEFAULT branch's scripts, for PR Size: the script that judges the
+      # pull request must not be the pull request's own copy.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Measure files and hours open
+        id: pr-size
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # BOOTSTRAP GUARD (shadow only). The pull request that adds this
+          # workflow runs it before the script exists on the default branch.
+          # Enforcing PR_SIZE_ENFORCED removes this guard (a test pins that),
+          # because a missing script must then be a red check, not a pass.
+          if [ ! -f base/.github/scripts/pr_size.py ]; then
+            echo "::notice::PR Size is not on the default branch yet; nothing measured."
+            exit 0
+          fi
+          python3 base/.github/scripts/pr_size.py check
+
+      - name: Measure diff breadth
+        id: pr-scope
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # A PR must exceed BOTH thresholds to be flagged. Breadth alone is
+          # fine (a one-line rename across 6 transports is self-contained); size
+          # alone is fine (a big change to one module is self-contained). It is
+          # the COMBINATION -- large and scattered -- that reviews badly.
+          MAX_AREAS: "4"
+          MAX_LINES: "400"
+        run: |
+          set -uo pipefail
+
+          # Vendored code and review screenshots are excluded: they inflate both
+          # metrics without adding anything a reviewer must reason about.
+          #
+          # A diff this step could not COMPUTE is not an empty diff.
+          # `2>/dev/null || true` collapsed a failed `git diff` (a base or head
+          # object absent after a force-push race, a pruned base branch) onto
+          # the same empty string as "no files changed", so the step printed
+          # "No reviewable files changed." having measured nothing. This check
+          # is advisory by contract -- it never fails the build -- so an
+          # uncomputable diff refuses to report a verdict instead: a loud
+          # warning, no scope claim, and still exit 0.
+          if ! files="$(git diff --name-only HEAD^1 HEAD -- . \
+            ':(exclude)src/kiro_crew/_vendor/**' \
+            ':(exclude)temp-screenshots/**')"; then
+            echo "::warning::Could not compute the diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
+            echo "PR scope was NOT measured: the diff could not be computed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Same read, same failure mode, for the line count: keep the exit
+          # status out of the awk pipeline so a failed `git diff` cannot be
+          # summed into a legitimate-looking 0.
+          if ! numstat="$(git diff --numstat HEAD^1 HEAD -- . \
+            ':(exclude)src/kiro_crew/_vendor/**' \
+            ':(exclude)temp-screenshots/**')"; then
+            echo "::warning::Could not compute the line-count diff between the base and head commits, so this advisory check measured nothing. This is a read failure, not a self-contained scope -- re-run this job for a real measurement."
+            echo "PR scope was NOT measured: the diff could not be computed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          lines="$(printf '%s\n' "$numstat" | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+
+          if [ -z "$files" ]; then
+            echo "No reviewable files changed."
+            exit 0
+          fi
+
+          # An "area" is the unit a reviewer holds in their head. For the backend
+          # and the SPA that is the module/feature directory (2 levels deep), not
+          # the repo-wide bucket -- otherwise every backend PR looks like one area.
+          areas="$(printf '%s\n' "$files" | awk -F/ '
+            /^src\/kiro_crew\// { print (NF>=3 ? $1"/"$2"/"$3 : $1"/"$2); next }
+            /^website\/src\//   { print (NF>=3 ? $1"/"$2"/"$3 : $1"/"$2); next }
+            { print $1 }
+          ' | sort -u)"
+          area_count="$(printf '%s\n' "$areas" | grep -c . || true)"
+
+          echo "reviewable changed lines: $lines"
+          echo "distinct areas: $area_count"
+          printf '%s\n' "$areas" | sed 's/^/  - /'
+
+          {
+            echo "### PR scope"
+            echo
+            echo "| metric | value | threshold |"
+            echo "|---|---|---|"
+            echo "| reviewable changed lines | $lines | $MAX_LINES |"
+            echo "| distinct areas | $area_count | $MAX_AREAS |"
+            echo
+            echo "**Areas touched**"
+            printf '%s\n' "$areas" | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$area_count" -gt "$MAX_AREAS" ] && [ "${lines:-0}" -gt "$MAX_LINES" ]; then
+            echo "::warning::This PR changes $lines lines across $area_count areas. If these changes are independent, splitting them into separate PRs gets each one reviewed properly and keeps them individually revertable."
+            {
+              echo
+              echo "> **Consider splitting.** $lines lines across $area_count areas is wide"
+              echo "> enough that a reviewer cannot hold the whole change at once, and a"
+              echo "> revert takes unrelated work with it."
+              echo ">"
+              echo "> This is advisory only -- it never fails the build. A genuinely"
+              echo "> cross-cutting change (a rename, a shared-helper migration) is"
+              echo "> expected to be wide, and that is fine; say so in the description."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Scope looks self-contained."
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Scope looks self-contained." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Scan added lines for non-portable patterns
+        id: cross-platform
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Escape hatch for a deliberate, reviewed POSIX-only path (e.g. the
+          # pod runner, which is Linux-only by design and says so).
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'posix-only-approved') }}
+        run: |
+          set -uo pipefail
+
+          # ADDED lines only ('^+', excluding the '+++' file header). A
+          # pre-existing violation elsewhere in a touched file is not this PR's
+          # problem and must not block it.
+          added="$(git diff --unified=0 HEAD^1 HEAD -- \
+            'src/kiro_crew/**/*.py' \
+            ':(exclude)src/kiro_crew/_vendor/**' \
+            ':(exclude)src/kiro_crew/platform_compat.py' \
+            ':(exclude)src/kiro_crew/platform_compat_*.py' \
+            ':(exclude)src/kiro_crew/**/tests/**' \
+            2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
+
+          if [ -z "$added" ]; then
+            echo "No added Python lines under src/kiro_crew/ to scan."
+            exit 0
+          fi
+
+          # Drop lines that are PROSE, not code: whole-line comments, and any
+          # line quoting a pattern in reST double-backticks (a docstring that
+          # merely NAMES `shell=True` to explain why it is avoided must not be
+          # flagged -- validated against commit 1d78b24e3, which did exactly
+          # that). Without this filter the gate fires on its own documentation.
+          added="$(printf '%s\n' "$added" | grep -vE '^\+[[:space:]]*#' | grep -vF '``' || true)"
+
+          if [ -z "$added" ]; then
+            echo "Added Python lines are comments/prose only -- nothing to scan."
+            exit 0
+          fi
+
+          findings=0
+          report() {
+            findings=$((findings + 1))
+            echo "::error::$1"
+            echo "- **$1**" >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' "$2" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          echo "### Cross-platform portability findings" >> "$GITHUB_STEP_SUMMARY"
+
+          # 1. Hardcoded shell. Windows has no /bin/bash and no `sh`; a spawned
+          #    shell is also how shell-injection surfaces get introduced.
+          hits="$(printf '%s' "$added" | grep -nE '(subprocess\.(run|Popen|call|check_output)\([^)]*\[?["'"'"']((/bin/)?(ba)?sh)["'"'"']|shell[[:space:]]*=[[:space:]]*True|os\.system\()' || true)"
+          [ -n "$hits" ] && report "Hardcoded shell or shell=True -- not available on Windows. Use a plain argv list, or platform_compat's helpers." "$hits"
+
+          # 2. POSIX path literals. Windows has no /tmp, /etc, /usr, /var.
+          hits="$(printf '%s' "$added" | grep -nE '["'"'"']/(tmp|etc|usr|var|opt)/' || true)"
+          [ -n "$hits" ] && report "Absolute POSIX path literal -- no such path on Windows. Use tempfile.gettempdir() / pathlib / platformdirs." "$hits"
+
+          # 3. POSIX-only signals and process primitives.
+          hits="$(printf '%s' "$added" | grep -nE '\b(os\.(fork|kill|getuid|geteuid|setsid|getpgid|killpg)|signal\.(SIGKILL|SIGHUP|SIGUSR[12]|SIGCHLD))\b' || true)"
+          [ -n "$hits" ] && report "POSIX-only process/signal primitive -- absent or different on Windows. Gate on sys.platform or route through platform_compat." "$hits"
+
+          # 4. Hardcoded path separator in a joined path. Backslash-vs-slash is
+          #    the classic silent Windows break.
+          hits="$(printf '%s' "$added" | grep -nE '\.(split|join|rsplit)\(["'"'"']/["'"'"']\)|\+[[:space:]]*["'"'"']/["'"'"'][[:space:]]*\+' || true)"
+          [ -n "$hits" ] && report "Manual '/' path assembly -- use pathlib or os.path.join so Windows separators work." "$hits"
+
+          # NOTE -- deliberately NO "missing encoding=" rule. It cannot be done
+          # reliably with a line regex: a nested call
+          # (`write_text(json.dumps(x), encoding="utf-8")`) truncates any
+          # `[^)]*` lookahead at the inner paren, and a multi-line call puts
+          # `encoding=` on a line the unified=0 diff hands over separately.
+          # Both produce FALSE failures on correct code -- verified against
+          # commit 1d78b24e3. The Windows pytest shards remain the real guard
+          # for cp1252 decode breakage.
+
+          if [ "$findings" -eq 0 ]; then
+            echo "No non-portable patterns in added lines." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo
+            echo "Each finding is on a line THIS PR adds. Fix the line, or -- if this"
+            echo "code path is intentionally POSIX-only and documented as such -- add the"
+            echo "\`posix-only-approved\` label and re-run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$EXEMPT" = "true" ]; then
+            echo "::warning::'posix-only-approved' label present -- $findings portability finding(s) reported but not blocking."
+            exit 0
+          fi
+          exit 1
+
+      # Visual surfaces only. Mirrors the `frontend` bucket in ci.yml but
+      # subtracts the paths that change without a visual delta.
+      - name: Detect user-visible frontend changes
+        id: visual
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          # A diff this step could not COMPUTE is not a diff that touched
+          # nothing visual. `2>/dev/null || true` collapsed a failed `git diff`
+          # (a base or head object absent after a force-push race, a pruned
+          # base branch) onto the same empty string as "no visual surface
+          # changed", and the gate then skipped its own evidence step -- a
+          # required check reporting green having examined nothing. That
+          # polarity is worse than a false red, so an uncomputable diff fails
+          # loudly and is re-runnable instead.
+          if ! changed="$(git diff --name-only HEAD^1 HEAD -- \
+            'website/src/components/**' \
+            'website/src/pages/**' \
+            'website/src/apps/**' \
+            'website/src/**/*.css' \
+            'website/index.html' \
+            ':(exclude)website/src/**/*.test.ts' \
+            ':(exclude)website/src/**/*.test.tsx' \
+            ':(exclude)website/src/test/**' \
+            ':(exclude)website/src/**/*.d.ts')"; then
+            echo "::error::Could not compute the diff between the base and head commits, so this check cannot tell whether a user-visible surface changed. This is a diff failure, not an absence of visual changes -- re-run this job."
+            exit 1
+          fi
+          if [ -n "$changed" ]; then
+            echo "visual=true" >> "$GITHUB_OUTPUT"
+            echo "Visual surfaces touched:"
+            printf '%s\n' "$changed"
+          else
+            echo "visual=false" >> "$GITHUB_OUTPUT"
+            echo "No user-visible frontend surface touched."
+          fi
+
+      # The body is UNTRUSTED author input. It is only ever regex-matched here --
+      # never executed, never echoed into a shell as code.
+      - name: Require visual evidence in the PR body
+        id: screenshot-evidence
+        continue-on-error: true
+        if: steps.visual.outputs.visual == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # Escape hatch for a genuinely non-visual change to a visual file
+          # (a pure rename, a comment, an a11y attribute with no rendered delta).
+          # Labelled PRs pass with a warning rather than silently.
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'no-screenshots') }}
+        run: |
+          set -uo pipefail
+          if [ "$EXEMPT" = "true" ]; then
+            echo "::warning::'no-screenshots' label present -- visual-evidence requirement waived for this PR."
+            exit 0
+          fi
+
+          # A body this step could not READ is not a body without evidence.
+          # `2>/dev/null || true` discarded both the error text and the exit
+          # status, so a transient API failure left `body` empty and every
+          # check below missed -- and the step then blamed the description,
+          # telling an author to attach evidence their PR already carried.
+          # The common case is transient, so absorb it here rather than
+          # spending the author's re-run on it: up to three attempts with a
+          # short backoff. A read that never succeeds fails closed (this gate
+          # is required, so an unreadable body must never pass silently) while
+          # naming the read as the cause. A description that is genuinely empty
+          # reads successfully on the first attempt and falls through to the
+          # no-evidence branch, which is correct.
+          body=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if body="$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""')"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR description failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's description from the API after 3 attempts, so the check cannot judge whether it carries evidence. This is a read failure, not missing evidence -- re-run this job."
+            {
+              echo "### Could not read the PR description"
+              echo
+              echo "The API read for this PR's description failed on every attempt, so the"
+              echo "check could not tell whether visual evidence is present. On this"
+              echo "evidence alone there is nothing wrong with the description -- re-run"
+              echo "this job. The failing \`gh api\` output is above this summary in the"
+              echo "step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Accept any form that actually renders as an image/video for a
+          # reviewer: markdown image, HTML img/video, a GitHub user-attachment
+          # URL (what `gh pr edit --attach` and the web editor produce), or a
+          # temp-screenshots path from a PR that links a committed image. Real
+          # evidence satisfies the gate outright, so it is checked before any
+          # waiver: a body carrying both a screenshot and the marker passes on
+          # the screenshot. Every body check reads from a here-string, never a
+          # `printf | grep` pipe: grep -q exits on the first match, the writer
+          # can die of SIGPIPE (141), and pipefail then makes that the
+          # pipeline's status, so a body that DID match would be misread as
+          # carrying no evidence.
+          if grep -qiE '!\[[^]]*\]\([^)]+\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/' <<< "$body"; then
+            echo "Visual evidence found in the PR description."
+            exit 0
+          fi
+
+          # Fork-friendly escape hatch: fork contributors cannot add labels, so
+          # the PR body itself may declare a non-visual change with a marker
+          # comment. The marker is honored only together with a justification
+          # line, so the waiver is a reviewable claim rather than a silent
+          # bypass, and it fires a warning annotation so the run log shows that
+          # evidence was waived. The marker itself is matched with grep -F so
+          # body text is never read as a pattern; in both matches below the
+          # untrusted body only ever reaches grep as stdin data, never as a
+          # pattern or part of a command.
+          if grep -qF -- '<!-- no-visual-delta -->' <<< "$body"; then
+            # The justification needs visible content after the colon: literal
+            # asterisks are skipped so a bare bold "**Why no screenshot:**"
+            # does not count, while a reason opening with emphasis does.
+            if grep -qiE 'why no screenshots?:(\*\*)?[[:space:]]*\**[^*[:space:]]' <<< "$body"; then
+              echo "::warning::'<!-- no-visual-delta -->' marker present in the PR body -- visual-evidence requirement waived. The author's justification is in the PR description."
+              exit 0
+            fi
+            echo "::error::The PR body carries the '<!-- no-visual-delta -->' marker without a justification line."
+            {
+              echo "### Marker present, justification missing"
+              echo
+              echo "The \`<!-- no-visual-delta -->\` marker waives the screenshot requirement"
+              echo "only when the description also explains **why** nothing rendered changes."
+              echo "Add a line in this exact shape to the PR description (the \`edited\`"
+              echo "trigger re-runs this check on save, no push needed):"
+              echo
+              echo '    **Why no screenshot:** <one sentence naming why there is no visual delta>'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "::error::This PR changes a user-visible frontend surface but its description carries no screenshot or recording."
+          {
+            echo "### Screenshot evidence required"
+            echo
+            echo "This PR touches a user-visible surface under \`website/src/\`, so the PR"
+            echo "description must show the change. A diff cannot demonstrate a layout,"
+            echo "theme, or component result."
+            echo
+            echo "**What to attach**"
+            echo "- Static layout / styling / a component at rest -> screenshots"
+            echo "- Animation, transition, hover or focus state -> a recording (video or GIF)"
+            echo "- A multi-step flow (wizard, modal, drag) -> a recording of the whole sequence"
+            echo
+            echo "**How to attach it** (see the \`web-verify\` and \`frontend-design-workflow\` skills)"
+            echo "1. Capture the surface yourself from a running dev server or pod. Keep the"
+            echo "   files out of the repository: evidence is uploaded as a GitHub attachment,"
+            echo "   not committed."
+            echo "2. Write ordinary local paths into the description where each image belongs,"
+            echo "   \`![alt](./evidence/after.png)\`; a video alone in its paragraph,"
+            echo "   \`![](./evidence/demo.mp4)\`, renders as a player."
+            echo "3. Upload the same files with the description (gh >= 2.99):"
+            echo "   \`gh pr edit $PR --body-file <body.md> --attach ./evidence/after.png --attach ./evidence/demo.mp4\`"
+            echo "   (\`--attach\` works the same way on the \`create\` subcommand when opening the PR)."
+            echo "   Attach BEFORE the push you want reviewed: the UX review reads the description"
+            echo "   when a push lands (editing it starts no review). Attached after the push?"
+            echo "   Re-run the UX Review workflow, or push again."
+            echo "   Each path is rewritten in place to a permanent"
+            echo "   https://github.com/user-attachments/assets/... URL that survives"
+            echo "   force-pushes, branch deletion and merge. Dragging the file into the"
+            echo "   description in the web UI produces the same URL."
+            echo "   Limits: 10 MB per image/GIF, 100 MB per video."
+            echo
+            echo "**No write access on this repository?** \`--attach\` is refused for you:"
+            echo "the upload endpoint answers read permission with a 404 (cli/cli#14302)."
+            echo "Two paths still work. Drag the file into the description in the web UI"
+            echo "(read access is enough), or commit it and reference the repository-relative"
+            echo "path from the description:"
+            echo "   \`git add -f temp-screenshots/<topic>/after.png\`"
+            echo "(forced because that directory is gitignored for everyone else's capture"
+            echo "runs). The UX and design review lanes read committed media the same way"
+            echo "they read an attachment, with ONE limit for a committed file: 10 MB, video"
+            echo "included -- a bigger file is skipped, not reviewed. A recording over 10 MB"
+            echo "goes into the description via the web UI, where the 100 MB video limit applies."
+            echo "Know the cost: a committed file merges into main's"
+            echo "history for good; the maintainer removes it from the tip afterwards, the"
+            echo "blob stays."
+            echo
+            echo "**If the change genuinely has no visual delta** (pure rename, comment-only,"
+            echo "or a non-rendering attribute), add the \`no-screenshots\` label and re-run."
+            echo "Fork contributors cannot add labels: instead edit the PR description to add"
+            echo "the \`<!-- no-visual-delta -->\` marker together with a justification line"
+            echo "\`**Why no screenshot:** <reason>\` -- the check re-runs on the edit."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      # The verdict. Every policy above ran with `continue-on-error: true`, so
+      # the job is still green here whatever they found; this step is the one
+      # place the job can go red. One `::error` annotation per red policy, so
+      # the Checks tab names the policy without opening the log, and a summary
+      # table with every outcome, so a green run shows what it judged. The
+      # outcomes arrive through the environment, never inside the script.
+      - name: Fail the job for every red policy
+        env:
+          OUTCOMES: |
+            PR Size=${{ steps.pr-size.outcome }}
+            PR Scope=${{ steps.pr-scope.outcome }}
+            Cross-Platform Portability=${{ steps.cross-platform.outcome }}
+            Screenshot Evidence (detect)=${{ steps.visual.outcome }}
+            Screenshot Evidence=${{ steps.screenshot-evidence.outcome }}
+        run: |
+          set -uo pipefail
+          red=0
+          {
+            echo "### PR Policy"
+            echo
+            echo "| policy | outcome |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS='=' read -r policy outcome; do
+            [ -n "$policy" ] || continue
+            case "$outcome" in
+              success) shown="pass" ;;
+              skipped) shown="skipped (not applicable on this event or diff)" ;;
+              failure)
+                shown="**FAIL**"
+                red=$((red + 1))
+                echo "::error title=$policy::$policy failed. Its step above has the finding and the remedy."
+                ;;
+              *) shown="$outcome" ;;
+            esac
+            echo "| $policy | $shown |" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$OUTCOMES"
+          if [ "$red" -gt 0 ]; then
+            echo "Red policies: $red. Each one has an error annotation above."
+            exit 1
+          fi
+          echo "Every policy passed or did not apply."

@@ -621,7 +621,7 @@ finished body. Both stop the loop (why: `references/rationale.md`):
 
 | check | what it measures | on breach |
 |---|---|---|
-| Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff |
+| Accounting | every changed area (the `PR Scope` unit, in `pr-policy.yml`: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff |
 | Length | prose words in `What changed` (fences, tables, images excluded) against the 500 of section 3's paragraph rule; table rows against a picture's eight | **exit 21** — stop, compress the prose |
 
 The template check runs CI's `.github/scripts/pr-description-check.sh` from

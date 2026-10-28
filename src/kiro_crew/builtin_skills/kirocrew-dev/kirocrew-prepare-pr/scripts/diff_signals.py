@@ -9,7 +9,7 @@ With ``--check-body`` it also reads the PR body the skill writes --
 ``<git-dir>/prepare-pr-body.md``, with ``<git-dir>`` from
 ``git rev-parse --absolute-git-dir`` -- and runs four checks on it:
 
-* **Accounting (hard).** Every changed *area* -- the unit ``pr-scope.yml`` counts,
+* **Accounting (hard).** Every changed *area* -- the unit the ``PR Scope`` step of ``pr-policy.yml`` counts,
   a module directory for ``src/kiro_crew/`` and ``website/src/``, the top-level
   component elsewhere -- must be named somewhere in the body, by the area itself,
   by a changed file's path (or a ``dir/file`` tail of it), or by a changed file's
@@ -175,7 +175,7 @@ def err(msg):
 
 
 def area_of(path):
-    """The reviewer-sized unit a path belongs to; mirrors the awk in pr-scope.yml.
+    """The reviewer-sized unit a path belongs to; mirrors the PR Scope awk in pr-policy.yml.
 
     ``src/kiro_crew/a/b/c.py`` -> ``src/kiro_crew/a``; ``website/src/a/b.ts`` ->
     ``website/src/a``; anything else -> its first path component (a top-level file

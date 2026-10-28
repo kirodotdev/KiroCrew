@@ -71,10 +71,10 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
     pull_request_only = frozenset(
         {
             "code-review.yml",
-            "cross-platform.yml",
             "dependency-review.yml",
-            "pr-scope.yml",
-            "screenshot-evidence.yml",
+            # The four read-only PR policies as one job: PR-keyed,
+            # pull_request-only, publishes nothing.
+            "pr-policy.yml",
         }
     )
     exempt = frozenset(

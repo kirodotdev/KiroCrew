@@ -483,26 +483,48 @@ def _triggers(workflow: dict[str, Any]) -> Any:
     return workflow.get(True, workflow.get("on"))
 
 
-def test_the_check_is_named_pr_size_and_reads_only() -> None:
-    wf = _workflow("pr-size.yml")
+# PR Size is a step of the PR Policy job (pr-policy.yml), alongside PR Scope,
+# Cross-Platform Portability and Screenshot Evidence.
+POLICY_WORKFLOW = "pr-policy.yml"
+SIZE_STEP = "Measure files and hours open"
+
+
+def _size_step() -> dict[str, Any]:
+    return next(s for s in _steps(POLICY_WORKFLOW) if s.get("name") == SIZE_STEP)
+
+
+def test_the_check_is_a_step_of_pr_policy_that_runs_on_every_event() -> None:
+    wf = _workflow(POLICY_WORKFLOW)
     (job,) = wf["jobs"].values()
-    assert job["name"] == "PR Size"
-    assert job["runs-on"] == "ubuntu-latest"
-    assert wf["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert job["name"] == "PR Policy"
+    step = _size_step()
+    assert step["id"] == "pr-size"
+    # The job's one check row is replaced by every run, so a step that skipped
+    # on `labeled` or `edited` would let that run hide a red from the push's
+    # run. PR Size therefore carries no event filter and runs on all six.
+    assert "if" not in step
+    assert step["continue-on-error"] is True
     assert set(_triggers(wf)) == {"pull_request"}
-    assert "labeled" not in _triggers(wf)["pull_request"]["types"]
+    assert "labeled" in _triggers(wf)["pull_request"]["types"]
+    # Read-only, as the standalone check was: the job admits only policies that
+    # read, so sharing its token widens nothing.
+    assert wf["permissions"] == {"contents": "read", "pull-requests": "read"}
 
 
 def test_the_check_runs_the_script_from_the_default_branch_not_the_pr() -> None:
-    checkout = _steps("pr-size.yml")[0]
+    checkout = next(
+        s
+        for s in _steps(POLICY_WORKFLOW)
+        if str(s.get("uses", "")).startswith("actions/checkout@")
+        and s.get("with", {}).get("path") == "base"
+    )
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     assert checkout["with"]["persist-credentials"] is False
-    run = _steps("pr-size.yml")[1]["run"]
-    assert "python3 base/.github/scripts/pr_size.py check" in run
+    assert "python3 base/.github/scripts/pr_size.py check" in _size_step()["run"]
 
 
 def test_no_untrusted_expression_sits_inside_a_run_block() -> None:
-    for name in ("pr-size.yml", "pr-size-override.yml"):
+    for name in (POLICY_WORKFLOW, "pr-size-override.yml"):
         for step in _steps(name):
             assert "${{" not in step.get("run", ""), f"{name}: {step.get('name')}"
 
@@ -534,15 +556,15 @@ def test_the_handler_reads_the_permission_and_fails_closed_like_the_ai_review_ov
     assert 'gh api "repos/$REPO/collaborators/$ACTOR/permission"' in reference
 
 
-def test_the_handler_reruns_the_pr_size_workflow_and_never_fails_after_recording() -> None:
+def test_the_handler_reruns_the_pr_policy_workflow_and_never_fails_after_recording() -> None:
     rerun = next(s for s in _steps("pr-size-override.yml") if s.get("name") == "Re-run PR Size")
     assert rerun["if"] == "steps.record.outputs.head != ''"
-    assert "workflows/pr-size.yml/runs" in rerun["run"]
+    assert f"workflows/{POLICY_WORKFLOW}/runs" in rerun["run"]
     assert "exit 1" not in rerun["run"]
 
 
 def test_the_bootstrap_guard_is_a_shadow_only_allowance() -> None:
-    run = _steps("pr-size.yml")[1]["run"]
+    run = _size_step()["run"]
     guard = "if [ ! -f base/.github/scripts/pr_size.py ]; then"
     if ps.PR_SIZE_ENFORCED:
         assert guard not in run, "enforcing means a missing script is a red check, not a pass"
@@ -551,5 +573,9 @@ def test_the_bootstrap_guard_is_a_shadow_only_allowance() -> None:
 
 
 def test_pr_scope_stays_advisory() -> None:
-    """D6 adds a separate check; the one that judges 'are these changes related' is untouched."""
-    assert "exit 1" not in (WORKFLOWS / "pr-scope.yml").read_text(encoding="utf-8")
+    """D6 adds a separate check; the one that judges 'are these changes related' is untouched.
+
+    Scoped to PR Scope's own step: the job it now shares with the blocking
+    policies does exit 1, in their steps and in the verdict step."""
+    scope = next(s for s in _steps(POLICY_WORKFLOW) if s.get("name") == "Measure diff breadth")
+    assert "exit 1" not in scope["run"]
