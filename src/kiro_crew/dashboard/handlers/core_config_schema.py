@@ -50,6 +50,7 @@ from kiro_crew.config.sections import (
     FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    KAS_CREATOR_EFFORT_LEVELS,
     SESSION_SORT_MODES,
     SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
@@ -208,6 +209,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.sandbox": {"type": "enum", "values": ["auto", "strict", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.tool_search": {"type": "bool"},
+    # KAS's own workflows, the single gateway opt-in (kiro_crew.kas_workflows).
+    "agent.kas_workflows": {"type": "bool"},
+    "agent.kas_creator_effort": {"type": "enum", "values": ["", *KAS_CREATOR_EFFORT_LEVELS]},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",
