@@ -28,6 +28,7 @@ export const CARD_KINDS = [
   'crewmate.check_ins',
   'crewmate.dashboard_page',
   'template.update',
+  'template.mcp_server',
   'mcp.install',
   'mcp.add_custom',
   'mcp.toggle',

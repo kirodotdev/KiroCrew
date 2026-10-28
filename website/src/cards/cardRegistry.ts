@@ -84,6 +84,10 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
     icon: LayoutTemplate, label: () => i18nT('components.changeCards.kind_template_update'),
     primary: () => i18nT('components.changeCards.primary_template_update'), Body: NoBody,
   },
+  'template.mcp_server': {
+    icon: PackagePlus, label: () => i18nT('components.changeCards.kind_template_mcp_server'),
+    primary: () => i18nT('components.changeCards.primary_template_mcp_server'), Body: NoBody,
+  },
   'mcp.install': {
     icon: PackagePlus, label: () => i18nT('components.changeCards.kind_mcp_install'),
     primary: () => i18nT('components.changeCards.primary_mcp_install'), Body: NoBody,

@@ -393,8 +393,25 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
+    # ``request_server`` (kirocrew-core): any template session asks for an MCP
+    # server; MCP-only under the same strict "/api/cards/agent" prefix.
+    for _method, _path, _name in (
+        ("POST", "/api/cards/agent/request-server", "api_cards_agent_request_server"),
+    ):
+        app.router.add_route(_method, _path, _deferred("template_server_request", _name))
+    # Its ``template.mcp_server`` card's step and Undo: owner-only cookie auth
+    # (deliberately off the strict prefix), card-hooked.
+    app.router.add_post(
+        "/api/agents/detail/{name}/mcp-additions",
+        _deferred("template_server_request", "api_template_mcp_addition_add"),
+    )
+    app.router.add_delete(
+        "/api/agents/detail/{name}/mcp-additions/{server}",
+        _deferred("template_server_request", "api_template_mcp_addition_remove"),
+    )
     app.router.add_get(
-        "/api/chat/slots/{slot}/dashboard", _deferred("member_dashboard", "api_session_dashboard")
+        "/api/chat/slots/{slot}/dashboard",
+        _deferred("member_dashboard", "api_session_dashboard"),
     )
     # A Crew Mode root's workers for its side panel, under the same owner-only,
     # no-app gate as the root's dashboard read above.

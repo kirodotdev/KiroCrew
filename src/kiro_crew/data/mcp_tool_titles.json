@@ -35,6 +35,7 @@
     "reset_conversation": "Reset conversation",
     "chat_tag": "Tag session",
     "suggest_followup": "Suggest follow-ups",
+    "request_server": "Request MCP server",
     "send_message": "Send message",
     "send_notification": "Send notification",
     "delete_message": "Delete message",

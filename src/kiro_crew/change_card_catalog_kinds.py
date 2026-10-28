@@ -41,6 +41,9 @@ KIND_CREWMATE_CHECK_INS = "crewmate.check_ins"
 #: A crewmate's one offer to write its own Dashboard page (``change_card_dashboard_page``).
 KIND_CREWMATE_DASHBOARD_PAGE = "crewmate.dashboard_page"
 KIND_TEMPLATE_UPDATE = "template.update"
+#: One MCP server added to an agent template's additions record
+#: (:mod:`kiro_crew.template_mcp_additions`), raised only by ``request_server``.
+KIND_TEMPLATE_MCP_SERVER = "template.mcp_server"
 KIND_MCP_INSTALL = "mcp.install"
 KIND_MCP_ADD_CUSTOM = "mcp.add_custom"
 KIND_MCP_TOGGLE = "mcp.toggle"
@@ -68,6 +71,14 @@ APP_ONLY_KINDS = frozenset({KIND_CREWMATE_IMPORT})
 #: Kinds only a crewmate raises about itself (``member_self.SELF_PROPOSALS``), never
 #: through ``propose_change``: :func:`list_kinds` leaves them out.
 SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
+#: Kinds whose parameters the GATEWAY resolves (a server entry it built from its own
+#: loaded servers or the official registry plan), so an agent never names them
+#: through ``propose_change``: a caller-supplied entry would be a launch line the
+#: agent wrote. Raised only by ``POST /api/cards/agent/request-server``;
+#: :func:`list_kinds` leaves them out.
+GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER})
+#: Where a ``template.mcp_server`` entry came from (``mate_capability_catalog``'s sources).
+TEMPLATE_SERVER_SOURCES = ("gateway", "registry")
 #: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
 #: field bumps the version, so a newer file is refused rather than guessed at.
 CREWMATE_FORMAT_VERSIONS = (1,)
@@ -589,6 +600,21 @@ KINDS: dict[str, KindDef] = {
             ("enabled",),
         ),
         KindDef(
+            KIND_TEMPLATE_MCP_SERVER,
+            "Add one MCP server to an agent template, for every session on it. Raised "
+            "only by request_server; the gateway resolves the server entry.",
+            _obj(
+                {
+                    "template": _STR,
+                    "server": _STR,
+                    "entry": {"type": "object"},
+                    "origin": {"type": "object"},
+                },
+                ["template", "server", "entry", "origin"],
+            ),
+            (),
+        ),
+        KindDef(
             KIND_CONNECTION_CONNECT,
             "Connect an account (OAuth) from the Connections registry by slug.",
             _obj({"slug": _STR}, ["slug"]),
@@ -715,7 +741,9 @@ def list_kinds() -> list[dict[str, Any]]:
             "editable": list(k.editable),
         }
         for k in KINDS.values()
-        if k.id not in APP_ONLY_KINDS and k.id not in SELF_ONLY_KINDS
+        if k.id not in APP_ONLY_KINDS
+        and k.id not in SELF_ONLY_KINDS
+        and k.id not in GATEWAY_RESOLVED_KINDS
     ]
 
 
@@ -1462,6 +1490,44 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         # Normalized to the plain replacement, so the preview, the apply step, the
         # person's edit and Undo read one shape whichever spelling the agent used.
         return {"template": template, "fields": f}
+    if kind == KIND_TEMPLATE_MCP_SERVER:
+        from kiro_crew import template_mcp_additions as _additions
+
+        _only(p, {"template", "server", "entry", "origin"})
+        out_srv: dict[str, Any] = {
+            "template": _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE),
+            # One path segment of plain characters: the Undo names it in its path.
+            "server": _clean_str(p, "server", pattern=_TEMPLATE_NAME_RE),
+        }
+        entry = p.get("entry")
+        if not isinstance(entry, dict):
+            raise _fail("invalid_param", "'entry' must be an object")
+        try:
+            # The record's own rule, so a card never carries an entry the record
+            # would refuse, and never a trust key (autoApprove, allowedTools).
+            out_srv["entry"] = _additions.validate_entry(entry)
+        except _additions.AdditionError as exc:
+            raise _fail("invalid_param", f"'entry' refused: {exc}") from None
+        origin = p.get("origin")
+        if not isinstance(origin, dict):
+            raise _fail("invalid_param", "'origin' must be an object")
+        _only(origin, {"source", "registry_id"}, "origin")
+        source = origin.get("source")
+        if source not in TEMPLATE_SERVER_SOURCES:
+            raise _fail("invalid_param", "'origin.source' must be gateway or registry")
+        if source == "registry":
+            out_srv["origin"] = {
+                "source": source,
+                "registry_id": _clean_str(origin, "registry_id", max_len=200),
+            }
+        else:
+            if "registry_id" in origin:
+                raise _fail(
+                    "invalid_param",
+                    "'origin.registry_id' is only for a registry server",
+                )
+            out_srv["origin"] = {"source": source}
+        return out_srv
     if kind == KIND_MCP_INSTALL:
         _only(p, {"provider", "id"})
         return {

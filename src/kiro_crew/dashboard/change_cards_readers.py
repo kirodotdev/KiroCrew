@@ -407,6 +407,15 @@ def after_shows_the_write(
         # there is no Undo.
         written = ev[1].get("revision") if len(ev) > 1 else None
         return bool(written) and after.get("revision") == written
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        # Undo removes the record this card wrote: the same card id and entry.
+        written = ev[0].get("card_id") if ev else None
+        return (
+            bool(written)
+            and after.get("present") is True
+            and after.get("card_id") == written
+            and same(after.get("entry"), p.get("entry"))
+        )
     if kind == catalog.KIND_MCP_TOGGLE:
         return after.get("enabled") is bool(p.get("enabled"))
     if kind == catalog.KIND_TRUST_APP:
@@ -715,6 +724,8 @@ def _sync_read_state(
             return {"exists": False, "ambiguous": len(candidates) > 1}
         spec = candidates[0][1] if isinstance(candidates[0][1], dict) else {}
         return {"exists": True, "fields": {k: _jsonable(spec.get(k)) for k in p["fields"]}}
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        return _template_server_state(p)
     if kind == catalog.KIND_MCP_INSTALL:
         from kiro_crew.dashboard.handlers.mcp_discover import _derive_install_name
 
@@ -761,6 +772,26 @@ def _sync_read_state(
             return {"exists": False}
         return {"exists": True, "enabled": bool(hit.get("enabled")), "pattern": hit.get("pattern")}
     raise catalog.CardCatalogError("unknown_kind", kind)
+
+
+def _template_server_state(p: dict[str, Any]) -> dict[str, Any]:
+    """A ``template.mcp_server`` snapshot: is the server recorded, under which card.
+
+    ``template_has`` is the template's own spec declaring that name already, so
+    the card is refused rather than added behind a server of the same name.
+    """
+    from kiro_crew import template_mcp_additions as additions
+    from kiro_crew.dashboard.handlers.template_server_request import template_declares
+
+    added = additions.read_additions(p["template"]).get(p["server"])
+    out: dict[str, Any] = {
+        "present": added is not None,
+        "template_has": template_declares(p["template"], p["server"]),
+    }
+    if added is not None:
+        out["card_id"] = added.card_id
+        out["entry"] = _jsonable(dict(added.entry))
+    return out
 
 
 def _capability_service(app: Any) -> Any:
@@ -1224,6 +1255,20 @@ async def read_context(
             crew for crew, c in cfg.agents.items() if getattr(c, "kiro_agent", "") == p["template"]
         )
         return {"members": members}
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        from kiro_crew.dashboard.handlers.template_server_request import (
+            addition_reach_view,
+            existing_grants,
+            live_apply,
+            server_tools,
+        )
+
+        return {
+            "reach": await asyncio.to_thread(addition_reach_view, state, p["template"]),
+            "live": live_apply(state),
+            "tools": await asyncio.to_thread(server_tools, p["server"]),
+            "grants": await asyncio.to_thread(existing_grants, p["template"], p["server"]),
+        }
     if kind == catalog.KIND_MCP_INSTALL:
         return {"detail": await _mcp_detail(p)}
     if kind == catalog.KIND_FOLDER_STEERING:
