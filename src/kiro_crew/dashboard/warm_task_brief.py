@@ -89,6 +89,16 @@ _MAX_WIDGET_CHARS = 6000
 # The status vocabulary the card colours. Anything else falls back by whether
 # something waits on the owner.
 _STATUSES = ("on_track", "needs_you", "blocked", "done")
+# Live pull-request reads before the model call: the newest open items that
+# name one, read in parallel. Each read has its own fetch budget; the whole
+# set is abandoned past the outer timeout so a slow forge never holds a brief.
+_MAX_LIVE_PRS = 6
+_LIVE_PR_BUDGET_SECS = 4.0
+_LIVE_PR_TIMEOUT_SECS = 5.0
+_LIVE_PR_AUDIT_CALLER = "core:warm-task-brief"
+# A live field is a GitHub enum; anything outside its alphabet is dropped.
+_NOT_ENUM_RE = re.compile(r"[^A-Z_]")
+_MAX_ENUM_CHARS = 32
 # The opener and the failure line are fixed text, never model output. Both are
 # picked by the script the user's original request is written in; Latin-script
 # and unknown text get English.
@@ -218,12 +228,19 @@ date, deadline, elapsed time or ETA the snapshot does not state. If a fact is
 missing, say you are not sure rather than guessing.
 
 Write in the language the user writes in within the transcript.
-{style}
+{style}{live}
 
 UNTRUSTED TASK SNAPSHOT
 {snapshot}
 END UNTRUSTED TASK SNAPSHOT
 """
+
+# Added to the prompt only when the snapshot carries live pull-request state.
+_LIVE_RULE = """
+"live_pull_requests" is GitHub's own state for the work items' pull requests,
+read at "observed_at", just before this brief. It is live fact: where a work
+item's status, summary or decision says otherwise, the live state wins and the
+ledger is out of date."""
 
 
 def _language_of(text: str) -> str:
@@ -274,6 +291,9 @@ class TaskSnapshot:
     # ``(accepted, total)`` over the current goal's work items, counted by the
     # gateway; ``None`` when there is no count it can stand behind.
     progress: tuple[int, int] | None = None
+    # ``(item_id, repo, pr)`` to read live before the model call; not part of
+    # ``fingerprint``, so live forge state never makes a claimed brief stale.
+    pr_refs: tuple[tuple[str, str, int], ...] = ()
 
     def away_anchor(self, seen_at: float | None = None) -> float | None:
         """When the owner was last known present: the latest of *seen_at*
@@ -504,6 +524,100 @@ def _work_item_payload(item: Any) -> dict[str, Any]:
         "closed_at": item.closed_at,
         "decided_at": item.decided_at,
     }
+
+
+def _positive_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _pr_refs(items: list[Any]) -> tuple[tuple[str, str, int], ...]:
+    """``(item_id, repo, pr)`` for the newest open items that name a pull request.
+
+    The repo comes only from the item's acceptance: an item without one is
+    skipped, never guessed. The acceptance's own number wins over the worker's
+    claimed ``pr``.
+    """
+    refs: list[tuple[str, str, int]] = []
+    for item in items:
+        if work_item_is_terminal(getattr(item, "state", None)):
+            continue
+        acceptance = getattr(item, "acceptance", None)
+        acceptance = acceptance if isinstance(acceptance, dict) else {}
+        repo = acceptance.get("repo")
+        pr = _positive_int(acceptance.get("pr")) or _positive_int(getattr(item, "pr", None))
+        if isinstance(repo, str) and repo and pr is not None:
+            refs.append((str(getattr(item, "item_id", "")), repo, pr))
+    return tuple(refs[-_MAX_LIVE_PRS:])
+
+
+def _fetch_pr(repo: str, pr: int) -> Any:
+    """One pull request's observation through the shared gh fetcher. Blocking."""
+    from kiro_crew.probes import gh_pr
+
+    return gh_pr.fetch(
+        json.dumps({"repo": repo, "pr": pr}),
+        budget_secs=_LIVE_PR_BUDGET_SECS,
+        audit_caller=_LIVE_PR_AUDIT_CALLER,
+    )
+
+
+def _live_entry(item_id: str, repo: str, pr: int, observation: Any) -> dict[str, Any] | None:
+    """The prompt's view of one observation: enums, counts and a time; no prose."""
+    if not observation.reached:
+        return None
+
+    def enum(value: object) -> str:
+        return _NOT_ENUM_RE.sub("", str(value or "").upper())[:_MAX_ENUM_CHARS]
+
+    entry: dict[str, Any] = {
+        "item_id": _redact(item_id),
+        "repo": _redact(repo),
+        "pr": pr,
+        "state": enum(observation.state),
+        "mergeable": enum(observation.mergeability),
+        "merge_state": enum(observation.merge_state),
+        "review_decision": enum(observation.review_decision),
+        "observed_at": datetime.fromtimestamp(observation.observed_at, timezone.utc).isoformat(
+            timespec="seconds"
+        ),
+    }
+    # An ended pull request's board is not read, so it has no counts to give.
+    if not observation.is_terminal:
+        entry["checks"] = {
+            "passing": len(observation.bucket("passing")),
+            "failing": len(observation.bucket("failing")),
+            "pending": len(observation.bucket("pending")),
+            "complete": bool(observation.checks_complete),
+        }
+    return entry
+
+
+async def _live_pull_requests(snapshot: TaskSnapshot) -> list[dict[str, Any]]:
+    """Live GitHub state for *snapshot*'s pull requests, off the loop.
+
+    Any failure (no gh, no auth, a refusal, a timeout) drops that entry, and
+    the whole set past ``_LIVE_PR_TIMEOUT_SECS``: the brief then runs on the
+    ledger alone, exactly as without this read.
+    """
+    if not snapshot.pr_refs:
+        return []
+
+    async def one(item_id: str, repo: str, pr: int) -> dict[str, Any] | None:
+        try:
+            observation = await asyncio.to_thread(_fetch_pr, repo, pr)
+            return _live_entry(item_id, repo, pr, observation)
+        except Exception:
+            logger.debug("warm task brief live read failed for %s#%s", repo, pr, exc_info=True)
+            return None
+
+    try:
+        entries = await asyncio.wait_for(
+            asyncio.gather(*(one(*ref) for ref in snapshot.pr_refs)), _LIVE_PR_TIMEOUT_SECS
+        )
+    except TimeoutError:
+        logger.debug("warm task brief live reads timed out for %s", snapshot.slot_key)
+        return []
+    return [entry for entry in entries if entry]
 
 
 def _conductor_payload(record: Any) -> dict[str, Any] | None:
@@ -738,6 +852,7 @@ def _snapshot_sync(
         work_items=items,
         running_workers=running_workers,
         progress=_goal_progress(conductor_record, items),
+        pr_refs=_pr_refs(items_raw),
         previous_claim=_record_claim(rows),
         last_claim_at=_claim_epoch(rows),
         user_fingerprint=user_fingerprint,
@@ -868,21 +983,30 @@ def _style_hint(verbosity: object) -> str:
     return _STYLE_HINTS.get(level if isinstance(level, str) else "", _STYLE_HINTS["default"])
 
 
-def _build_prompt(snapshot: TaskSnapshot, verbosity: object = "default") -> str:
+def _build_prompt(
+    snapshot: TaskSnapshot,
+    verbosity: object = "default",
+    live_prs: list[dict[str, Any]] | None = None,
+) -> str:
     progress = snapshot.progress
-    payload = {
+    payload: dict[str, Any] = {
         "original_request": snapshot.original_request,
         "progress": {"accepted": progress[0], "total": progress[1]} if progress else None,
-        "session_state": snapshot.session_state,
-        "conductor": snapshot.conductor,
-        "work_items": snapshot.work_items,
-        "running_worker_sessions": snapshot.running_workers,
-        "transcript": snapshot.transcript,
     }
+    # Ahead of the ledger and the transcript, which have no size cap of their
+    # own, so the snapshot's length cap never cuts the live block.
+    if live_prs:
+        payload["live_pull_requests"] = live_prs
+    payload["session_state"] = snapshot.session_state
+    payload["conductor"] = snapshot.conductor
+    payload["work_items"] = snapshot.work_items
+    payload["running_worker_sessions"] = snapshot.running_workers
+    payload["transcript"] = snapshot.transcript
     rendered = json.dumps(payload, ensure_ascii=False)
     return _PROMPT.format(
         snapshot=rendered[:40_000],
         style=_style_hint(verbosity),
+        live=_LIVE_RULE if live_prs else "",
         headline_cap=_MAX_HEADLINE_CHARS,
         item_cap=_MAX_ITEM_CHARS,
         max_items=_MAX_ITEMS,
@@ -1219,6 +1343,7 @@ async def _run_warm_task_brief(
     text = ""
     try:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        live_prs = await _live_pull_requests(snapshot)
         state._warm_task_brief_model_active.add(slot.key)
         try:
             text = await run_bg_oneliner(
@@ -1226,6 +1351,7 @@ async def _run_warm_task_brief(
                 _build_prompt(
                     snapshot,
                     getattr(getattr(cfg, "dashboard", None), "verbosity", "default"),
+                    live_prs,
                 ),
                 model=cfg.agent.resolve_model("background"),
                 sel_source="warm_task_brief",

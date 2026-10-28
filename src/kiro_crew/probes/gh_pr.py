@@ -576,8 +576,15 @@ class _Transport:
     loses one of them.
     """
 
-    def __init__(self, host: str = "", *, budget_secs: float = _TICK_BUDGET_SECS) -> None:
+    def __init__(
+        self,
+        host: str = "",
+        *,
+        budget_secs: float = _TICK_BUDGET_SECS,
+        audit_caller: str = _AUDIT_CALLER,
+    ) -> None:
         self.host = host
+        self.audit_caller = audit_caller
         self.deadline = time.monotonic() + max(1.0, budget_secs)
         self.rate_limit_remaining: int | None = None
         self.rate_limit_reset: float | None = None
@@ -689,7 +696,7 @@ class _Transport:
                 proc = run_gh(
                     [resolve_gh(), *args],
                     timeout=min(_GH_TIMEOUT_SECS, remaining),
-                    audit_caller=_AUDIT_CALLER,
+                    audit_caller=self.audit_caller,
                     pin_host=self.host,
                 )
                 headers, body = _parse_headers(proc.stdout or "")
@@ -1193,14 +1200,20 @@ def _fetch_statuses(
     return _fetch_counted(transport, f"repos/{repo}/commits/{head}/status", "statuses", "statuses")
 
 
-def fetch(message: object, *, budget_secs: float = _TICK_BUDGET_SECS) -> PrObservation:
+def fetch(
+    message: object,
+    *,
+    budget_secs: float = _TICK_BUDGET_SECS,
+    audit_caller: str = _AUDIT_CALLER,
+) -> PrObservation:
     """One pull request's current facts. Never raises for a forge failure.
 
     A ``ValueError`` still escapes for a message that can never be valid, because
-    that is a watch to remove rather than a tick to retry.
+    that is a watch to remove rather than a tick to retry. *audit_caller* tags
+    every gh spawn, so a reader other than the watch is audited as itself.
     """
     repo, pr, host = _parse_config(message)
-    transport = _Transport(host, budget_secs=budget_secs)
+    transport = _Transport(host, budget_secs=budget_secs, audit_caller=audit_caller)
     clock = time.time()
 
     def observation(status: str, incomplete: tuple[str, ...] = (), **fields: Any) -> PrObservation:
