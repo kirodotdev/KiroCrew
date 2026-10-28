@@ -7176,7 +7176,16 @@
       "default_destination_global_unset": "Usa il valore globale (nessuno)",
       "default_destination_not_registered": "{{id}} (non registrata)",
       "default_destination_load_failed": "Impossibile caricare le crew.",
-      "default_destination_retry": "Riprova"
+      "default_destination_retry": "Riprova",
+      "default_crew": "Crew predefinito",
+      "default_crew_hint": "Le nuove chat avviate da questa cartella vengono eseguite su questo Crew. Una chat esistente spostata qui continua a funzionare dove si trova.",
+      "default_crew_offline_notice": "Questo Crew è offline. Una nuova chat in questa cartella lo segnalerà e offrirà Locale solo per quella chat.",
+      "default_crew_not_registered_notice": "Questo Crew non è più registrato. Una nuova chat in questa cartella lo segnalerà e offrirà Locale solo per quella chat. Scegli un altro Crew perché le nuove chat ripartano lì.",
+      "default_agent_hint_with_crew": "Preselezionato per le nuove chat avviate in locale. Una chat sul Crew della cartella usa l'agente predefinito di quel Crew.",
+      "crew_local": "Locale",
+      "crew_online": "{{name}} (online)",
+      "crew_offline": "{{name}} (offline)",
+      "crew_not_registered": "{{id}} (non registrato)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggerimento cartella",
@@ -13262,7 +13271,13 @@
       "broadcast_open_unknown": "Non confermato · apri",
       "broadcast_delivery_hint": "Nessun lavoro in corso viene interrotto: un turno attivo lo legge dopo la chiamata allo strumento in corso; una sessione inattiva avvia un nuovo turno.",
       "broadcast_retry": "Riprova {{n}} non riusciti",
-      "folder_renamed_to": "Cartella rinominata in {{name}}"
+      "folder_renamed_to": "Cartella rinominata in {{name}}",
+      "folder_crew_offline": "{{name}} è offline, quindi non è stata avviata alcuna chat. Le nuove chat di questa cartella vengono eseguite su quel Crew.",
+      "folder_crew_offline_use_local": "Avvia invece questa chat in locale",
+      "folder_crew_starting": "Avvio di una chat su {{name}}…",
+      "folder_crew_started_background": "È stata avviata una chat su {{name}}. La trovi sotto {{name}} nella barra laterale.",
+      "folder_crew_not_registered": "{{name}} non è più un Crew registrato, quindi non è stata avviata alcuna chat. Scegli un altro Crew nelle Impostazioni della cartella oppure avvia questa chat in locale.",
+      "folder_crew_new_on_local": "Nuova chat in {{name}} in locale"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

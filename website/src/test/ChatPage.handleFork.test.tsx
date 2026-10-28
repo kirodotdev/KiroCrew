@@ -320,7 +320,7 @@ describe('handleFork surfaces its failure on the shared action-error notice', ()
     expect(helper).toContain('findReport(raw)')
     // The report rides the SHARED notice: the fork path needed a report, not a
     // second surface, so `showActionError` grew the argument instead.
-    expect(turnActions).toMatch(/const showActionError = useCallback\(\(message: string, title\?: string, report\?: ErrorReport\)/)
+    expect(turnActions).toMatch(/const showActionError = useCallback\(\(message: string, title\?: string, report\?: ErrorReport, status\?: boolean[,)]/)
     expect(shared.slice(0, 400)).toContain('report={actionError?.report}')
   })
 
