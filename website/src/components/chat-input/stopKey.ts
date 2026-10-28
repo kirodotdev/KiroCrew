@@ -10,7 +10,9 @@ import { escapeStoppedSpeech } from '../../utils/speechStopKey'
    into the editors' own key handling (the textarea's keydown in keyboard.ts,
    the rich-text editor's Escape command in LexicalComposerInput), so a
    dialog, the command bar, a terminal or the transcript holding focus never
-   reaches it. */
+   reaches it. The one page-level caller is the composer's Escape-stack layer
+   (hooks/useEscapeLayer), registered only while an optimize runs, where the
+   locked rich-text editor drops keys; there it can only cancel the optimize. */
 
 /** The part of an Escape keydown the gate reads. Both React's synthetic event
  *  (textarea) and the native event Lexical hands its Escape command fit it. */

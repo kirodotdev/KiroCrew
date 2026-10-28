@@ -71,6 +71,7 @@ import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } fro
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { useComposerStopKey } from './chat-input/stopKey'
+import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
@@ -710,6 +711,28 @@ function ChatInput({
     isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
     optimizingRef, onCancelOptimize: cancelOptimize,
   })
+  // While an optimize runs the rich-text editor is not editable, so Lexical
+  // drops key events and its Escape command never fires (issue #22470). This
+  // composer then answers Escape through the shared Escape stack, on the same
+  // gate, where it can only cancel the optimize. It owns a press aimed inside
+  // it, or at the page body (where focus lands once the locked editor drops
+  // it) while it was the last composer to hold focus. The textarea keeps its
+  // own keydown path, so a press aimed at it is passed on.
+  const ownsFocusRef = useRef(false)
+  useEffect(() => {
+    ownsFocusRef.current = !!wrapperRef.current?.contains(document.activeElement)
+    const onFocusIn = (e: FocusEvent) => { ownsFocusRef.current = !!wrapperRef.current?.contains(e.target as Node) }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  }, [])
+  useEscapeLayer(optimizing, e => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !optimizingRef.current) return 'pass'
+    const target = e.target as Element | null
+    const inside = !!target && !!wrapperRef.current?.contains(target)
+    if (!inside && !(target === document.body && ownsFocusRef.current)) return 'pass'
+    if (target?.tagName === 'TEXTAREA') return 'pass'
+    return stopTurnOnEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
+  }, ESCAPE_PRIORITY.composer)
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, valueFromUserRef, optimizingRef,
     fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
