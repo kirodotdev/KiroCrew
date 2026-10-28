@@ -22,6 +22,7 @@ from kiro_crew.validation_parts.input_bounds import (
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
     MAX_CRON_MESSAGE,
+    MAX_PROJECT_DIR_LEN,
     REGISTERED_AGENT_NAME_RE,
 )
 
@@ -62,6 +63,9 @@ CRON_ADD_SCHEMA = ToolSchema(
         ),
         FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
         FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
+        # Shape gate only; the store resolves the path and enforces
+        # absolute / existing-directory / not-sensitive.
+        FieldSpec("project_dir", str, max_len=MAX_PROJECT_DIR_LEN),
         FieldSpec("persistent_session", bool),
         FieldSpec("minimal_context", bool),
         FieldSpec("hide_in_chat", bool),
@@ -190,6 +194,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("clear_skip_dates", bool),
             FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
             FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
+            FieldSpec("project_dir", str, max_len=MAX_PROJECT_DIR_LEN),
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),

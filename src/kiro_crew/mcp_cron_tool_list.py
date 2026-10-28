@@ -193,6 +193,20 @@ def _list_tools() -> list[dict[str, Any]]:
                         "id (e.g. 'Veille'). A missing name is created. Empty or omitted "
                         "leaves the job ungrouped.",
                     },
+                    "project_dir": {
+                        "type": "string",
+                        "description": "Absolute path of the repository/project this job's agent "
+                        "session runs in (agent jobs only; refused with script/command). The "
+                        "session is rooted there, so that repo's .kiro/steering/**/*.md loads "
+                        "into every wake exactly as for an interactive chat scoped to the "
+                        "project, and the [PROJECT] context line names it. Must be an existing, "
+                        "non-sensitive directory under a configured "
+                        "agent.subagent_cwd_allowed_roots entry (the same confinement as "
+                        "spawn_run's cwd). Omitted: the gateway default working "
+                        "directory, which carries no repo steering. Set this for any job that "
+                        "does real work in a repository (builds, commits, PRs) so the repo's "
+                        "policies reach the job instead of having to be restated in message.",
+                    },
                     "persistent_session": {
                         "type": "boolean",
                         "description": "Whether this cron reuses one agent session across "
@@ -359,6 +373,18 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Empty string clears the override (inherits from agent/global). Applies "
                         "when the job's session is created; a running persistent session keeps "
                         "its current model until it is reset.",
+                    },
+                    "project_dir": {
+                        "type": "string",
+                        "description": "Absolute path of the repository/project the job's agent "
+                        "session runs in (agent jobs only). Its .kiro/steering/**/*.md loads "
+                        "into every wake exactly as for an interactive chat scoped to that "
+                        "project. Confined like cron_add's: under a configured "
+                        "agent.subagent_cwd_allowed_roots entry. Empty string "
+                        "clears it (back to the gateway default cwd). "
+                        "A changed value takes effect on the next wake: a live persistent "
+                        "session rooted elsewhere is reset so it cold-starts in the new "
+                        "directory.",
                     },
                 },
                 "required": ["job_id"],

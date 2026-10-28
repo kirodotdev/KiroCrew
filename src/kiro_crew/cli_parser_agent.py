@@ -89,6 +89,8 @@ Examples:
       --no-persistent-session --minimal-context
   kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60
   kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"
+  kirocrew cron add "nightly-drift" "graduate schema drift; open a PR" --cron "0 3 * * *" \\
+      --project-dir ~/Repos/my-service
 """,
         formatter_class=_fmt,
     )
@@ -184,6 +186,18 @@ Examples:
         help="Model id for the agent wake (as advertised by kiro-cli --list-models)",
     )
     cron_add.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default="",
+        metavar="DIR",
+        help="Absolute path of the repository the agent wake runs in. The session is "
+        "rooted there, so that repo's .kiro/steering/**/*.md loads into every wake "
+        "exactly as for a chat scoped to the project. Must be an existing, non-sensitive "
+        "directory under agent.subagent_cwd_allowed_roots; agent jobs only (refused "
+        "with --script/--command). Omitted: the "
+        "gateway default working directory, which carries no repo steering.",
+    )
+    cron_add.add_argument(
         "--persistent-session",
         dest="persistent_session",
         action=argparse.BooleanOptionalAction,
@@ -269,6 +283,15 @@ Examples:
         choices=["auto", "default"],
         default=None,
         help='Tool approval mode ("auto" to auto-approve, "default" to reset)',
+    )
+    cron_update.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=None,
+        metavar="DIR",
+        help="Absolute path of the repository the agent wake runs in (agent jobs only); "
+        'an empty string ("") clears it. Takes effect on the next wake: a live '
+        "persistent session rooted elsewhere is reset so it cold-starts there.",
     )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)

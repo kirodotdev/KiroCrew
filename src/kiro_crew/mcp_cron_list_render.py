@@ -255,6 +255,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
             "minimal_context": bool(job.minimal_context),
             "persistent_session": bool(job.persistent_session),
             "hide_in_chat": bool(job.hide_in_chat),
+            "project_dir": _sanitize(str(getattr(job, "project_dir", "") or "")),
             "message": message[:_JSON_MESSAGE_LEN],
             # A consumer classifies the prompt, and anything past the cut is
             # invisible to it -- including the words that would RULE OUT a
@@ -394,6 +395,9 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
             # _sanitize applies the full redact_credentials +
             # redact_exfiltration_urls chain required for LLM-controlled values.
             extras.append(f"model={_sanitize(model_val)}")
+        project_dir_raw = getattr(j, "project_dir", "")
+        if isinstance(project_dir_raw, str) and project_dir_raw:
+            extras.append(f"project_dir={_sanitize(project_dir_raw)}")
         if channel:
             extras.append(f"channel={_sanitize(channel)}")
         last_status = getattr(j, "last_status", None)

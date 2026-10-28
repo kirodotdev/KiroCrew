@@ -98,14 +98,14 @@ _SPELLS_THE_FACADE = re.compile(
 #: stay bound here because callers and tests read and patch them as attributes of this
 #: module, and a patch of one reaches every owner holding it.
 _BASE_IMPORTS = frozenset("""
-    __version__ _AGENT_NAME_RE _JOB_TIMEOUT_SECS _lesson_display_text _lesson_scope
+    __version__ _AGENT_NAME_RE _agent_cwd_allowed_roots _JOB_TIMEOUT_SECS _lesson_display_text _lesson_scope
     _lesson_scope_unusable _marker_port _MODEL_NAME_RE _SUBPROC_CLEANUP_ALLOWANCE_SECS
     _TERMINAL_CTRL_RE _time _vet_cron_capability_governance _vet_script_file _vet_shell_command
     app_lifecycle_client argparse AssertionType asyncio beacon build_provider_factory
     BUILTIN_DENIED_RULES BUILTIN_DENY_PATTERNS Callable CHANNEL_ID_RE CHANNEL_MAX_LEN
     check_crew_label coerce_dict_section config_dir config_local_path config_path
     ConfigReadError contextlib ConversationLog convert_plugin_package Counter crew_teams
-    CRON_ADD_SCHEMA CronSchedule CronService CronStoreBusy CronStoreUnreadable dataclass
+    CRON_ADD_SCHEMA CronProjectDirOutOfScope CronSchedule CronService CronStoreBusy CronStoreUnreadable dataclass
     dataclasses datetime declared_store DEFAULT_MEMORY_STORE deregister_app
     deregister_app_crons_from_service disable_app discard_app_session_pointers enable_app
     EnvStagingRefused EvalRunner external_text_requires_redaction find_plugin_manifest

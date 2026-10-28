@@ -115,6 +115,22 @@ def test_a_schedule_fingerprint_sees_edits_not_runs():
     assert cards._cron_job_revision(job) != first
 
 
+def test_a_project_only_edit_makes_the_undo_stale_but_the_wake_marker_does_not():
+    from kiro_crew.cron_service.model import CronJob, CronSchedule
+
+    job = CronJob(
+        id="j1",
+        name="Standup",
+        message="hi",
+        schedule=CronSchedule(kind="cron", cron_expr="0 9 * * *"),
+    )
+    first = cards._cron_job_revision(job)
+    job.project_dir_was = "/srv/old"
+    assert cards._cron_job_revision(job) == first
+    job.project_dir = "/srv/repo"
+    assert cards._cron_job_revision(job) != first
+
+
 def test_a_waiting_poll_resumes_its_own_step_and_an_undo_resumes_too(tmp_path):
     store = CardStore(tmp_path / "c.json")
     plan = {"apply": [{}, {"repeat": True}], "undo": [{}, {}]}

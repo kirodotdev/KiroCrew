@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from kiro_crew.cron_service.fields import validate_managed_by
 from kiro_crew.cron_service.identity import bind_cron_memory
@@ -67,6 +67,9 @@ def add_job(
     timeout: int = 0,
     timeout_secs: int = 0,
     auto_pause_after_failures: int | None = None,
+    project_dir: str = "",
+    audit_caller: str = "",
+    project_dir_allowed_roots: Sequence[str] | None = None,
 ) -> CronJob:
     """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -129,6 +132,9 @@ def add_job(
         timeout=timeout,
         timeout_secs=timeout_secs,
         auto_pause_after_failures=auto_pause_after_failures,
+        project_dir=project_dir,
+        audit_caller=audit_caller,
+        project_dir_allowed_roots=project_dir_allowed_roots,
     )
     self._persist_add_locked(job)
     self._arm_timer()
@@ -366,19 +372,24 @@ async def add_job_async(
     timeout: int = 0,
     timeout_secs: int = 0,
     auto_pause_after_failures: int | None = None,
+    project_dir: str = "",
     source_preset: str = "",
     source_template_prompt: str = "",
+    audit_caller: str = "",
+    project_dir_allowed_roots: Sequence[str] | None = None,
 ) -> CronJob:
-    """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
+    """Event-loop-safe :meth:`add_job`: build, lock and save all run off the loop.
 
     The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
     calling the sync :meth:`add_job` there parks the loop in the bounded lock
-    spin under contention. This builds+validates on the loop (no I/O),
-    offloads the lock+persist to a worker thread via ``asyncio.to_thread``
-    (the disk core is thread-safe — flock on separate fds mutually excludes
-    in-process too), then re-arms the timer back on the loop. Raises
-    :class:`CronStoreBusy` (retryable) on sustained contention; the public
-    boundaries translate it to a clean 409 / structured error.
+    spin under contention. This offloads the build+validate to a worker
+    thread (``validate_cron_project_dir`` resolves and stats the project
+    path, and a network-mounted directory can stall that call), then the
+    lock+persist via ``asyncio.to_thread`` (the disk core is thread-safe —
+    flock on separate fds mutually excludes in-process too), then re-arms
+    the timer back on the loop. Raises :class:`CronStoreBusy` (retryable)
+    on sustained contention; the public boundaries translate it to a clean
+    409 / structured error.
 
     Optional presentation/routing fields (``agent_id``, ``model``,
     ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
@@ -386,7 +397,8 @@ async def add_job_async(
     follow-up unlocked ``_save()`` (which could race a concurrent create and
     drop a job).
     """
-    job = self._build_job(
+    job = await asyncio.to_thread(
+        self._build_job,
         name,
         message,
         every_secs=every_secs,
@@ -418,6 +430,9 @@ async def add_job_async(
         timeout=timeout,
         timeout_secs=timeout_secs,
         auto_pause_after_failures=auto_pause_after_failures,
+        project_dir=project_dir,
+        audit_caller=audit_caller,
+        project_dir_allowed_roots=project_dir_allowed_roots,
     )
     # Dashboard-only template provenance. Set on the freshly-built job
     # BEFORE the off-loop persist -- the object has no other reference yet,

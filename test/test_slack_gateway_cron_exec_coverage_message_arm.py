@@ -308,3 +308,107 @@ class TestCronResolvesAgentAlias:
         assert kw.get("cwd") is None
         # No alias to collapse → no crew identity is asserted.
         assert kw.get("crew_agent") is None
+
+    @pytest.mark.asyncio
+    async def test_a_jobs_project_dir_outranks_the_alias_workspace(self, tmp_path, monkeypatch):
+        # Both name a directory: the operator scoped THIS job to a repository,
+        # so the session roots there; the alias workspace is the fallback for
+        # a job that did not.
+        from kiro_crew.slack import gateway as _gw
+
+        monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+        ws_dir = str(tmp_path / "in-3d-ws")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(ws_dir)
+        orch.sessions = _message_arm_sessions()
+        orch.sessions.get_provider = MagicMock(return_value=None)
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(id="ja2", name="scoped alias", agent_id="in-3d", project_dir=str(repo))
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            await callback(job)
+
+        kw = orch.sessions.get_or_create.await_args.kwargs
+        assert kw.get("agent") == "kirocrew"
+        assert kw.get("crew_agent") == "in-3d"
+        assert kw.get("cwd") == str(repo.resolve())
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_project_dir_falls_back_to_the_alias_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        # A rescoped job with no project left roots where an unscoped alias
+        # job roots -- the alias workspace -- and its conversation still sitting
+        # in the old repository is ended rather than resumed there.
+        from kiro_crew.slack import gateway as _gw
+
+        monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+        ws_dir = tmp_path / "in-3d-ws"
+        ws_dir.mkdir()
+        old_repo = tmp_path / "old"
+        old_repo.mkdir()
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(str(ws_dir))
+        orch.sessions = _message_arm_sessions()
+        orch.sessions.discard_conversation = AsyncMock(return_value=True)
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(
+            id="ja3",
+            name="rescoped alias",
+            agent_id="in-3d",
+            project_dir="",
+            project_dir_was=str(old_repo),
+        )
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            orch.cron_svc.update_job_async = AsyncMock(return_value=job)
+            await callback(job)
+
+        # Re-rooted this wake: the store's rescope marker is cleared.
+        orch.cron_svc.update_job_async.assert_awaited_once_with(
+            "ja3", project_dir_was="", expect_project_scope=("", str(old_repo))
+        )
+        orch.sessions.discard_conversation.assert_awaited_once_with("cron:ja3", skip_if_busy=True)
+        kw = orch.sessions.get_or_create.await_args.kwargs
+        assert kw.get("cwd") == str(ws_dir)
+
+    @pytest.mark.asyncio
+    async def test_clearing_a_project_that_was_the_alias_workspace_runs_there(
+        self, tmp_path, monkeypatch
+    ):
+        # The previous project IS the alias workspace the cleared job falls
+        # back to. Being at the fallback wins; the session claimed there is
+        # run, not refused as "still in the previous project".
+        from kiro_crew.slack import gateway as _gw
+
+        monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+        ws_dir = tmp_path / "in-3d-ws"
+        ws_dir.mkdir()
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(str(ws_dir))
+        orch.sessions = _message_arm_sessions()
+        client = MagicMock()
+        client.cwd = str(ws_dir)
+        orch.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        orch.sessions.discard_conversation = AsyncMock(return_value=True)
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(
+            id="ja4",
+            name="cleared to alias",
+            agent_id="in-3d",
+            project_dir="",
+            project_dir_was=str(ws_dir),
+        )
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            orch.cron_svc.update_job_async = AsyncMock(return_value=job)
+            await callback(job)
+
+        orch.sessions.get_or_create.assert_awaited_once()
+        assert orch.sessions.get_or_create.await_args.kwargs.get("cwd") == str(ws_dir)
+        orch.sessions.discard_conversation.assert_awaited_once_with("cron:ja4", skip_if_busy=True)
+        orch.cron_svc.update_job_async.assert_awaited_once_with(
+            "ja4", project_dir_was="", expect_project_scope=("", str(ws_dir))
+        )

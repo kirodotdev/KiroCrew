@@ -110,6 +110,9 @@ _CRON_CONFIG_FIELDS = (
     "command",
     "timeout",
     "secret_env",
+    # project_dir_was is the store's own rescope marker, written by a wake,
+    # so it is deliberately absent.
+    "project_dir",
 )
 
 

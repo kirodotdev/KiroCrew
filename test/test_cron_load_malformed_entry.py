@@ -303,8 +303,17 @@ _COERCED_OPT_STR_FIELDS = ["channel", "thread_ts", "last_status", "last_error", 
 # would silently become an LLM agent job (mode fallthrough in _cron_callback),
 # and a member binding coerced to "" would run the job with its memory
 # identity silently stripped (resolve_cron_memory raises on malformed
-# bindings rather than falling back).
-_SELECTOR_FIELDS = ["script", "command", "agent_id", "member_id", "memory_store"]
+# bindings rather than falling back). A project scope coerced to "" would run
+# the job unscoped (the wake skips the project check for an empty field).
+_SELECTOR_FIELDS = [
+    "script",
+    "command",
+    "agent_id",
+    "member_id",
+    "memory_store",
+    "project_dir",
+    "project_dir_was",
+]
 
 
 def _corrupted_metadata(job_id: str) -> dict:

@@ -31,6 +31,7 @@ from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     CronJob,
+    CronProjectDirOutOfScope,
     CronService,
     CronStoreBusy,
     CronStoreUnreadable,
@@ -63,6 +64,8 @@ from kiro_crew.mcp_cron_list_render import (
 )
 from kiro_crew.mcp_cron_tool_list import _list_tools
 from kiro_crew.mcp_cron_vet import (
+    _agent_cwd_allowed_roots,
+    _audit_project_dir_scope_refusal,
     _log_cron_denial,
     _resolve_cron_folder,
     _vet_cron_capability_governance,
@@ -936,6 +939,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             folder_id, folder_err = _resolve_cron_folder(args["folder"], session_key=session_key)
             if folder_err:
                 return f"Error: {folder_err}"
+        # Validated by the store (absolute, existing, not sensitive, agent job
+        # only) and confined to the agent allowlist, both on the canonical
+        # value inside the single locked add_job below; a refusal surfaces as
+        # the ValueError branch and leaves no job behind.
+        project_dir = str(args.get("project_dir") or "").strip()
         try:
             # A member-named ``agent`` must record a member selection, not a bare
             # template id the reply path cannot resolve.
@@ -961,6 +969,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                 hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
                 folder_id=folder_id,
+                project_dir=project_dir,
+                project_dir_allowed_roots=_agent_cwd_allowed_roots() if project_dir else None,
+                audit_caller=session_key or "mcp",
                 command=command or "",
                 script=script or "",
                 persistent_session=(
@@ -976,6 +987,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return "Error: cron store busy, please retry"
         except CronStoreUnreadable as exc:
             return f"Error: {exc}"
+        except CronProjectDirOutOfScope as e:
+            _audit_project_dir_scope_refusal("cron_add", e)
+            return f"Error: {e}"
         except ValueError as e:
             return f"Error: {e}"
         sched_str = format_schedule(job.schedule, tz_name=job.timezone or "")
@@ -1089,6 +1103,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     # "auto" sentinel — explicit inherit, same as clearing.
                     m = ""
             kwargs["model"] = m
+        if "project_dir" in args:
+            # "" clears; anything else is resolved, checked and confined to the
+            # agent allowlist by the store, on the canonical value it persists.
+            new_root = str(args["project_dir"] or "").strip()
+            kwargs["project_dir"] = new_root
+            if new_root:
+                kwargs["project_dir_allowed_roots"] = _agent_cwd_allowed_roots()
         if "cron_expr" in args and args["cron_expr"]:
             kwargs["cron_expr"] = args["cron_expr"]
         if "every" in args and args["every"]:
@@ -1103,11 +1124,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return "Error: no fields to update"
         kwargs["audit_actor"] = _authz_session_key()
         try:
-            updated = svc.update_job(jid, **kwargs)
+            updated = svc.update_job(jid, audit_caller=_authz_session_key() or "mcp", **kwargs)
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
         except CronStoreUnreadable as exc:
             return f"Error: {exc}"
+        except CronProjectDirOutOfScope as e:
+            _audit_project_dir_scope_refusal("cron_update", e)
+            return f"Error: {e}"
         except ValueError as e:
             return f"Error: {e}"
         if not updated:
@@ -1480,6 +1504,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import (  # noqa: F401
+        KiroCrewConfig,
         read_local_secret,
     )
     from kiro_crew.cron import (  # noqa: F401

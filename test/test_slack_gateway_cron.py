@@ -125,6 +125,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -198,6 +200,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -276,6 +280,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -352,6 +358,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["planner", "worker"]
         job.agent_id = None
         job.channel = ""
@@ -444,6 +452,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["planner", "worker"]
         job.agent_id = None
         job.channel = ""
@@ -530,6 +540,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = "test-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["planner", "worker"]
         job.agent_id = None
         job.channel = ""
@@ -608,6 +620,8 @@ class TestInitCron:
         job.id = "j1"
         job.name = f"nightly {secret} sweep"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -677,6 +691,8 @@ class TestInitCron:
         job.id = "j2"
         job.name = "dedup-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -746,6 +762,8 @@ class TestInitCron:
         job.id = "j3"
         job.name = "silent-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -860,6 +878,8 @@ class TestCronFailurePaths:
         job.id = "jfail"
         job.name = "fail-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -933,6 +953,8 @@ class TestCronFailurePaths:
         job.id = "jfail2"
         job.name = "fail-dedup"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1007,6 +1029,8 @@ class TestCronFailurePaths:
         job.id = "jmulti"
         job.name = "multi-agent"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = ["agent-a", "agent-b"]
         job.agent_id = None
         job.channel = ""
@@ -1038,6 +1062,253 @@ class TestCronFailurePaths:
         job.set_run_result.assert_called_once_with("agent result")
         # get_or_create called twice (once per agent)
         assert orch.sessions.get_or_create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_rescoped_sequence_ends_each_keys_conversation_once(self, tmp_path):
+        """A repeated alias claims the same key twice; the rescope ends that
+        key's old conversation on the FIRST claim only, so the second does not
+        cancel the work the first step left running in the new project."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.sessions.discard_conversation = AsyncMock(return_value=True)
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs_inst.update_job_async = AsyncMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.execution_context = None
+        job.member_id = ""
+        job.memory_store = ""
+        job.script = ""
+        job.command = ""
+        job.id = "jrepeat"
+        job.name = "repeat-agent"
+        job.persistent_session = True
+        job.project_dir = str(repo)
+        job.project_dir_was = str(tmp_path / "old")
+        job.agent_sequence = ["worker", "worker"]
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = ""
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="agent result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jrepeat", "run"),
+            ):
+                result = await callback(job)
+
+        assert result == "agent result"
+        assert orch.sessions.get_or_create.await_count == 2
+        ended = [c.args[0] for c in orch.sessions.discard_conversation.await_args_list]
+        assert ended.count("cron:jrepeat:worker") == 1, ended
+
+    @staticmethod
+    def _rescoped_sequence_job(tmp_path, aliases):
+        repo = tmp_path / "repo"
+        repo.mkdir(exist_ok=True)
+        job = MagicMock()
+        job.execution_context = None
+        job.member_id = ""
+        job.memory_store = ""
+        job.script = ""
+        job.command = ""
+        job.id = "jseq"
+        job.name = "seq-rescoped"
+        job.persistent_session = True
+        job.project_dir = str(repo)
+        job.project_dir_was = str(tmp_path / "old")
+        job.agent_sequence = list(aliases)
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = ""
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+        return job
+
+    async def _run_rescoped_sequence(self, job, *, settle, order):
+        """Drive a rescoped sequence through the real callback; ``order``
+        receives the trace of ends, the marker clear and streamed steps."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+
+        async def _discard(key, **_kw):
+            order.append(f"end:{key}")
+            return True
+
+        orch.sessions.discard_conversation = _discard
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        async def _update(job_id, **kwargs):
+            order.append("clear-marker")
+            return settle()
+
+        async def _stream(*_a, **_kw):
+            order.append("stream")
+            return "agent result"
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs_inst.update_job_async = _update
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        with patch("kiro_crew.slack.gateway.stream_and_collect", _stream):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jseq", "run"),
+            ):
+                result = await callback(job)
+        return result, orch
+
+    @pytest.mark.asyncio
+    async def test_a_rescoped_sequence_ends_every_key_and_clears_the_marker_before_its_first_turn(
+        self, tmp_path
+    ):
+        # A marker still set once the steps have started would make the next
+        # wake end these keys again -- and the children the steps left
+        # running in the new project. So every step key's old conversation is
+        # ended and the clear committed before any step streams.
+        job = self._rescoped_sequence_job(tmp_path, ["agent-a", "agent-b"])
+        order: list[str] = []
+        result, orch = await self._run_rescoped_sequence(job, settle=lambda: job, order=order)
+        assert result == "agent result"
+        assert order.index("clear-marker") < order.index("stream")
+        ends = [o for o in order if o.startswith("end:")]
+        assert sorted(ends) == ["end:cron:jseq:agent-a", "end:cron:jseq:agent-b"]
+        assert all(order.index(e) < order.index("clear-marker") for e in ends)
+        assert order.count("stream") == 2
+        assert orch.sessions.get_or_create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_rescoped_sequence_runs_no_step_when_the_store_cannot_clear_the_marker(
+        self, tmp_path
+    ):
+        from kiro_crew.cron import CronStoreBusy
+
+        def _busy():
+            raise CronStoreBusy("cron store lock held")
+
+        job = self._rescoped_sequence_job(tmp_path, ["agent-a", "agent-b"])
+        order: list[str] = []
+        with pytest.raises(RuntimeError, match="rescope marker"):
+            await self._run_rescoped_sequence(job, settle=_busy, order=order)
+        assert "stream" not in order, order
+        assert order[-1] == "clear-marker"
+        job.set_run_result.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_stateless_rescoped_sequence_runs_no_step_when_the_stable_key_is_busy(
+        self, tmp_path
+    ):
+        # persistent_session off: the steps run on their own keys, and the
+        # STABLE key's old conversation is ended too before the clear. When
+        # that end is declined (a dashboard turn holds the key) the marker
+        # must stay set, so no step may start -- a step's work would be
+        # cancelled by the next wake's end of these same step keys.
+        job = self._rescoped_sequence_job(tmp_path, ["agent-a", "agent-b"])
+        job.persistent_session = False
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+
+        async def _discard(key, **_kw):
+            order.append(f"end:{key}")
+            return key != "cron:jseq"  # the stable key is busy elsewhere
+
+        orch.sessions.discard_conversation = _discard
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = None
+        orch.slack = None
+
+        async def _stream(*_a, **_kw):
+            order.append("stream")
+            return "agent result"
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs_inst.update_job_async = AsyncMock(
+                side_effect=lambda *a, **k: order.append("clear-marker")
+            )
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        with patch("kiro_crew.slack.gateway.stream_and_collect", _stream):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:jseq:run-1", "run"),
+            ):
+                with pytest.raises(RuntimeError, match="busy"):
+                    await callback(job)
+        assert "end:cron:jseq" in order
+        assert "stream" not in order, order
+        assert "clear-marker" not in order, order
+        job.set_run_result.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1085,6 +1356,8 @@ class TestCronSuccessReminder:
         job.id = "j_remind"
         job.name = "reminder-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1161,6 +1434,8 @@ class TestCronAcpRetry:
         job.id = "jacp"
         job.name = "acp-retry"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1239,6 +1514,8 @@ class TestCronAckedItems:
         job.id = "jack"
         job.name = "acked-job"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""
@@ -1318,6 +1595,8 @@ class TestCronSlackDeliveryFailure:
         job.id = "jslack"
         job.name = "slack-fail"
         job.persistent_session = True
+        job.project_dir = ""
+        job.project_dir_was = ""
         job.agent_sequence = []
         job.agent_id = None
         job.channel = ""

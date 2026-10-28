@@ -92,6 +92,7 @@ from kiro_crew.config.sections import normalize_agent_model
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     _SUBPROC_CLEANUP_ALLOWANCE_SECS,
+    CronProjectDirOutOfScope,
     CronSchedule,
     CronService,
     CronStoreBusy,
@@ -123,6 +124,7 @@ from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_cron import (
+    _agent_cwd_allowed_roots,
     _vet_cron_capability_governance,
     _vet_script_file,
     _vet_shell_command,

@@ -140,12 +140,14 @@ from kiro_crew.cron import (
     _AUTO_PAUSE_THRESHOLD,
     _SUBPROC_CLEANUP_ALLOWANCE_SECS,
     CronJob,
+    CronPendingMismatch,
     CronService,
     CronStoreBusy,
     CronStoreUnreadable,
     agent_sequence_dispatches,
     build_cron_session_context,
     effective_wake_budget,
+    validate_cron_project_dir,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
@@ -493,6 +495,9 @@ from kiro_crew.slack.gateway_runtime.cron_fire import (
     _annotate_model_downgrade,
     _cron_extra_env,
     _CronCapture,
+    _MisrootedSession,
+    _ProjectDirUnusable,
+    _rooted_elsewhere,
 )
 from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _CRON_FAILURE_DETAIL_CAP,
@@ -911,6 +916,11 @@ class GatewayOrchestrator:
     _retained_session_agent_mismatch = _cron_fire._retained_session_agent_mismatch
     _announce_cron_quarantine = _cron_fire._announce_cron_quarantine
     _start_cron_after_memory_ready = _cron_fire._start_cron_after_memory_ready
+
+    _end_rescoped_conversation = _cron_fire._end_rescoped_conversation
+
+    _settle_rescope = _cron_fire._settle_rescope
+
     # gateway_runtime/cron_exec.py
     _cron_run_command = _cron_exec._cron_run_command
     _deliver_script_result = _cron_exec._deliver_script_result
