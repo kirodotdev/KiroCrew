@@ -1596,11 +1596,39 @@ def _pr_number(worktree: str) -> Optional[str]:
     return None if number is None else str(number)
 
 
-def _shell_join(args: list[str]) -> str:
-    """One pasteable command line for this host's shell."""
-    if os.name == "nt":
-        return subprocess.list2cmdline(args)
-    return shlex.join(args)
+#: Every character PowerShell reads as a single quote: the ASCII apostrophe and
+#: U+2018 to U+201B. A doubled one stands for itself.
+_POWERSHELL_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+
+
+def _powershell_quoted(word: str) -> str:
+    return "'{}'".format("".join(ch * 2 if ch in _POWERSHELL_SINGLE_QUOTES else ch for ch in word))
+
+
+def _cmd_quoted(word: str) -> str:
+    # A backslash before the closing quote would escape it, so trailing ones are doubled.
+    trailing = len(word) - len(word.rstrip("\\"))
+    return '"{}{}"'.format(word, "\\" * trailing)
+
+
+def _shell_lines(commands: list[list[str]], windows: bool) -> list[str]:
+    """Indented lines that run ``commands`` in order, under a label per Windows shell.
+
+    PowerShell reads a line that opens with a quoted path as a string, so its lines
+    put the call operator before single-quoted words. cmd.exe gets every word
+    double-quoted, and no lines when a word holds ``%`` or ``!``, which it expands
+    even inside quotes, or a ``"``, which would end the quoting. The quoting follows
+    the launcher hints in ``kiro_prerequisite_status.py``, which this stdlib-only
+    script cannot import.
+    """
+    if not windows:
+        return ["    " + shlex.join(command) for command in commands]
+    lines = ["In PowerShell:"]
+    lines += ["    & " + " ".join(map(_powershell_quoted, command)) for command in commands]
+    if not any(ch in word for command in commands for word in command for ch in '%!"'):
+        lines.append("In cmd.exe:")
+        lines += ["    " + " ".join(map(_cmd_quoted, command)) for command in commands]
+    return lines
 
 
 def _read_text(path: str) -> Optional[str]:
@@ -1650,12 +1678,10 @@ def stale_copy_hint(worktree: str, base_sha: str, base_ref: str) -> Optional[lis
     # `git worktree add` accepts an existing empty directory.
     detached = tempfile.mkdtemp(prefix="kirocrew-prepare-pr-base-")
     commands = [
-        _shell_join(["git", "-C", worktree, "worktree", "add", "--detach", detached, base_sha]),
-        _shell_join(
-            [sys.executable, os.path.join(detached, *_SCRIPT_PARTS),
-             "--worktree", worktree, "--base", base_ref]
-        ),
-        _shell_join(["git", "-C", worktree, "worktree", "remove", detached]),
+        ["git", "-C", worktree, "worktree", "add", "--detach", detached, base_sha],
+        [sys.executable, os.path.join(detached, *_SCRIPT_PARTS),
+         "--worktree", worktree, "--base", base_ref],
+        ["git", "-C", worktree, "worktree", "remove", detached],
     ]
     return [
         "The local_review.py running here ({}) is not the base commit's copy "
@@ -1663,7 +1689,7 @@ def stale_copy_hint(worktree: str, base_sha: str, base_ref: str) -> Optional[lis
         "another release can fail parity on a shape the base's own copy "
         "handles.".format(running, relpath, base_sha[:12]),
         "Run the base commit's copy instead:",
-    ] + ["    " + command for command in commands] + [
+    ] + _shell_lines(commands, windows=os.name == "nt") + [
         "If the installed skill is older than the base, update Kiro Crew to bring "
         "it up to date. Do not fall back to the hand-written charters for this "
         "failure.",
