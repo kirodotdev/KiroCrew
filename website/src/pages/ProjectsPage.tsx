@@ -423,10 +423,15 @@ export default function ProjectsPage() {
 
   const runs = data?.runs || []
   const anyPlanning = isPlanning || runs.some(r => r.status === 'planning')
+  // Newest first, like the Workflows tab: the run just started or just finished
+  // is the one the user wants. The wire order is the registry's insertion order,
+  // so sort on `started_at`; the stable sort over the reversed array keeps the
+  // later row first when two stamps are equal (an unstarted plan reads 0).
+  const listedRuns = [...runs].reverse().sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
 
   const projectList = (
     <div className="flex flex-col gap-1.5">
-      {runs.map(r => {
+      {listedRuns.map(r => {
         const name = r.name || r.spec_name || r.task_id
         const icon: ReactNode = r.running ? <RefreshCw className="lucide-inline" /> : r.status === 'completed' ? <CheckCircle className="lucide-inline" /> : r.status === 'failed' ? <XCircle className="lucide-inline" /> : r.status === 'cancelled' ? <Square className="lucide-inline" /> : r.status === 'planned' ? <ClipboardList className="lucide-inline" /> : <Square className="lucide-inline" />
         const pct = r.tasks > 0 ? Math.round((r.completed / r.tasks) * 100) : 0
