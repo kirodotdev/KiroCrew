@@ -79,6 +79,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
@@ -234,7 +235,7 @@ async def _dispatch_events(
                 )
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,
-                    stop_reason="error: cancel unacked",
+                    stop_reason=STOP_REASON_CANCEL_UNACKED,
                     usage=self.last_prompt_stats.to_turn_usage(),
                 )
                 return

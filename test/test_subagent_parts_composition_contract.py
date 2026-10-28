@@ -639,6 +639,10 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "_keep_recorded_on_disk": ("method", "(self, key: 'str') -> 'bool'"),
     "_kill_orphan_pid": ("async staticmethod", "(pid: 'int') -> 'str | None'"),
+    "_leave_for_next_start": (
+        "method",
+        "(self, info: 'SubagentInfo', *, stop_reason: 'str | None' = None) -> 'bool'",
+    ),
     "_leave_startup": ("method", "(self, info: 'SubagentInfo') -> 'None'"),
     "_live_shared_count": (
         "method",

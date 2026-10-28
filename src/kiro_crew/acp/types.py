@@ -582,6 +582,12 @@ STOP_REASON_TOOL_STALL = "error: tool stall"
 # it deliberately triggers NO retry — the user-visible compaction notice
 # already explains what happened, and this only releases the slot.
 STOP_REASON_COMPACTION_FAILED = "error: compaction failed"
+# Signalled by the session handle when a session/cancel got no ack within the
+# cancel grace window and the runtime is still up: the caller is unblocked with
+# this completion and the runtime is kept for its other sessions. Kept in the
+# "error:" family, so it classifies as ``failed``; to the caller that sent the
+# cancel it is that cancel, left unanswered.
+STOP_REASON_CANCEL_UNACKED = "error: cancel unacked"
 
 # ── Stop-reason classes ──
 #

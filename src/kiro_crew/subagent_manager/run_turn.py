@@ -1799,9 +1799,9 @@ async def _run_inner_impl(
             _count_success()
     else:
         Stats().inc_subagent_failed()
-        self._manager._write_tombstone(
-            info, "cancelled" if _stop.name == STOP_CLASS_CANCELLED else "error"
-        )
+        _tombstone_cause = "cancelled" if _stop.name == STOP_CLASS_CANCELLED else "error"
+        if not self._leave_for_next_start_impl(info, stop_reason=_stop.stop_reason):
+            self._manager._write_tombstone(info, _tombstone_cause)
         logger.warning(
             "Subagent %s ended %s (stop_reason=%r, recovery attempts=%d, partial=%s)",
             info.id,

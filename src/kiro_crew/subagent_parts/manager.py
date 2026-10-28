@@ -1042,6 +1042,7 @@ class SubagentManager:
     _hold_for_detached_writer = _run_surface._hold_for_detached_writer
     _cap_unclaimed_result = _run_surface._cap_unclaimed_result
     _record_reap_ending = _run_surface._record_reap_ending
+    _leave_for_next_start = _run_surface._leave_for_next_start
     _run_inner = _run_surface._run_inner
     _stop_recovery_wanted = _run_surface._stop_recovery_wanted
     _yield_for_stop_recovery = _run_surface._yield_for_stop_recovery

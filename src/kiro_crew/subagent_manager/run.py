@@ -239,6 +239,7 @@ class RunEventCoordinator(ManagerComponent):
     update_completion_keep_impl = _run_lifecycle.update_completion_keep_impl
     _teardown_run_session_impl = _run_lifecycle._teardown_run_session_impl
     _record_reap_ending_impl = _run_lifecycle._record_reap_ending_impl
+    _leave_for_next_start_impl = _run_lifecycle._leave_for_next_start_impl
     _run_impl = _run_lifecycle._run_impl
     _touch_activity_impl = _run_lifecycle._touch_activity_impl
     _fire_event_impl = _run_lifecycle._fire_event_impl
