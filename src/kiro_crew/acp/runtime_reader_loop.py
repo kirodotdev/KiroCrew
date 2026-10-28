@@ -15,7 +15,7 @@ Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots`
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
-``_turn_active_sessions``, ``recording_allowed``.
+``_turn_active_sessions``, ``_workflow_sink``, ``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.harness import NotificationAliases
 from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
@@ -440,6 +441,47 @@ async def _reader_loop(self: AcpRuntime) -> None:
             # _answer_ownerless_request below, rather than being left to
             # hang.
 
+            # A harness-native workflow engine's run notifications name a
+            # run, not a session (node_start names the STEP's session, which
+            # is registered nowhere). On a runtime whose owner installed a
+            # sink they go to it, never to the session demux below: a
+            # broadcast would hand one run's progress to every tenant.
+            _sink = self._workflow_sink
+            if (
+                _sink is not None
+                and msg.id is None
+                and msg.method
+                and _sink.claims_notification(msg.method)
+            ):
+                try:
+                    _sink.on_notification(
+                        msg.method, msg.params if isinstance(msg.params, dict) else {}
+                    )
+                except Exception:  # noqa: BLE001 -- one frame must not cost the demux
+                    logger.warning(
+                        "workflow sink failed on %s; frame dropped",
+                        _loggable_request_id(msg.method),
+                        exc_info=True,
+                    )
+                continue
+            if (
+                _sink is not None
+                and msg.id is None
+                and msg.method
+                and _sink.watches_notification(msg.method)
+            ):
+                # Seen by the sink, then routed below as usual.
+                try:
+                    _sink.on_watched_notification(
+                        msg.method, msg.params if isinstance(msg.params, dict) else {}
+                    )
+                except Exception:  # noqa: BLE001 -- the frame still routes
+                    logger.warning(
+                        "workflow sink failed watching %s",
+                        _loggable_request_id(msg.method),
+                        exc_info=True,
+                    )
+
             # Route notifications by sessionId
             session_id = (msg.params or {}).get("sessionId")
             if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
@@ -554,6 +596,48 @@ async def _reader_loop(self: AcpRuntime) -> None:
                         if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
                             emit_counter(CHILD_PERMISSION_ROUTED, {"surface": "runtime"})
                         await next(iter(self._session_queues.values())).put(msg)
+                elif (
+                    msg.id is not None
+                    and _sink is not None
+                    and msg.method
+                    and _sink.claims_step_request(session_id, msg.method)
+                ):
+                    # A request on a workflow STEP's session, which the
+                    # harness opened itself. The sink that owns this runtime
+                    # recognised the step and now owes the one answer, so the
+                    # fail-closed auto-reject below does not run. Admitted
+                    # under the same bound as every other answer so a
+                    # flooding backend still trips the dead-pipe cap.
+                    if not await self._wait_for_answer_capacity(msg, request_kind="workflow step"):
+                        continue
+                    try:
+                        _sink.on_step_request(
+                            msg.id,
+                            session_id,
+                            msg.method,
+                            msg.params if isinstance(msg.params, dict) else {},
+                        )
+                    except Exception:  # noqa: BLE001 -- answer rather than strand
+                        logger.warning(
+                            "workflow sink failed on a step request; auto-rejecting",
+                            exc_info=True,
+                        )
+                        await self._spawn_answer_task(msg, session_id, reason="workflow_sink_error")
+                elif msg.id is not None and msg.method == "_kiro/userInput":
+                    # A KAS structured question (acp.kas_wire.METHOD_USER_INPUT)
+                    # on a session nobody reads and no sink claimed. A
+                    # request is owed one answer: dropped, the asking turn
+                    # would wait forever. Method-not-found reads to KAS as
+                    # "no answer", which moves that turn on. Same bound as
+                    # every other answer task.
+                    if len(self._answer_tasks) >= self._max_answer_tasks:
+                        self._note_dropped_frame(session_id, msg.method)
+                    else:
+                        _q = asyncio.ensure_future(
+                            self._answer_ownerless_request(msg.id, msg.method)
+                        )
+                        self._answer_tasks.add(_q)
+                        _q.add_done_callback(self._answer_tasks.discard)
                 elif msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
                     # Unannounced, ambiguous, or announced past the
                     # recognition cap: nobody on this client can see or

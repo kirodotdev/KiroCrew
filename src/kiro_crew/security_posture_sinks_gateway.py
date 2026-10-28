@@ -510,6 +510,28 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes through the credential + exfiltration-URL chain before egress.",
     ),
     (
+        "Kiro Workflows run messages",
+        "kas_workflows/router.py",
+        "Run and step names, step notes, held approval titles, commands and plan text, "
+        "and the launch / reconnect replies the router writes into a chat transcript, "
+        "a bell notification, the security event log or an approval card. Kiro Agent "
+        "and the recipe author supply this text, so it is redacted where the router "
+        "builds it, before any of those surfaces sees it.",
+    ),
+    (
+        "Kiro Workflows step questions",
+        "kas_workflows/asks.py",
+        "A workflow step's (or a chat's own Kiro Agent) question text, answer labels "
+        "and plan task text, shown on the run view, the chat's permission card and a "
+        "channel approval card. Redacted where the question is parsed.",
+    ),
+    (
+        "Kiro Workflows step transcripts",
+        "kas_workflows/transcript.py",
+        "Text of a workflow step's own session, read off Kiro Agent's session files "
+        "and served by the step transcript route. Redacted as each record is read.",
+    ),
+    (
         "Chat pin previews",
         "dashboard/chat_pins.py",
         "Message previews submitted to POST /api/chat/pins are persisted to "

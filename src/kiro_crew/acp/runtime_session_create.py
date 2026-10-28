@@ -17,7 +17,8 @@ Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_d
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_remote_session_servers``, ``_remote_workspace_agents``,
-``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``, ``_workflow_sink``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -57,6 +58,11 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.kas_workflows.chat import attach_workflow_settings as attach_kas_workflow_settings
+from kiro_crew.kas_workflows.chat import creator_effort as kas_chat_creator_effort
+from kiro_crew.kas_workflows.chat import is_chat_session_key as kas_is_chat_session
+from kiro_crew.kas_workflows.chat import wants_workflows as kas_chat_wants_workflows
+from kiro_crew.kas_workflows.chat import with_workflow_tools as kas_with_workflow_tools
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import START_QUEUE_SESSION_NEW, StartPriority, notify_start_queue
 
@@ -347,11 +353,30 @@ async def create_session(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
     kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
+    # KAS's own workflow surface, for a dashboard chat the operator opted in
+    # (kiro_crew.kas_workflows.chat). Only a runtime with a workflow sink can
+    # route the runs it would start, so no sink means the setting stays off.
+    # The agent's allowlist filters KAS's native tools too, so the wire copy
+    # of the active agent names the workflow tools the setting turns on.
+    kas_wants = await kas_chat_wants_workflows(session_key)
+    kas_workflows_on = self._workflow_sink is not None and kas_wants
     params = build_session_new_params(
         session_work_dir,
         mcp_servers=wire_servers,
-        kas_custom_agents=kas_agents,
+        kas_custom_agents=(
+            kas_with_workflow_tools(kas_agents, active_agent) if kas_workflows_on else kas_agents
+        ),
     )
+    if kas_workflows_on:
+        attach_kas_workflow_settings(params, creator_effort=await kas_chat_creator_effort())
+    elif kas_is_chat_session(session_key) and not kas_wants:
+        # Gap 5b: a dashboard chat whose Kiro Workflows switch is off must say
+        # workflows.enabled:false out loud. KAS resolves it as
+        # enabled ?? persisted ?? false, so without this a chat that once ran
+        # with the surface on would keep its /workflow-* commands and steering.
+        # Keyed on ``kas_wants`` (chat AND switch on), so a switch-ON chat on a
+        # runtime with no sink is left untouched rather than turned off here.
+        attach_kas_workflow_settings(params, enabled=False)
 
     projected_sources: dict[str, str] = {}
     if self._member_context:

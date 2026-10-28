@@ -31,6 +31,7 @@ import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     classify_notification,
@@ -96,16 +97,30 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 
 
 async def _dispatch_events(
-    self: AcpSessionHandle, req_id: int, timeout: float, *, extract_command_result: bool = False
+    self: AcpSessionHandle,
+    req_id: int,
+    timeout: float,
+    *,
+    extract_command_result: bool = False,
+    observe_idle: float | None = None,
 ) -> AsyncGenerator[AcpEvent, None]:
     """Core event dispatch loop. Yields AcpEvent objects from the session queue.
 
     ``extract_command_result`` (commands/execute turns): the command's
     output arrives in the RESPONSE result rather than as session/update
     chunks — surface it as a text chunk before the terminal event.
+
+    ``observe_idle`` (observed turns, :meth:`observe_turn`): no response
+    will name *req_id*. The turn ends on the engine's own ``turn_end`` for
+    this session, read only after its ``turn_start``; with neither a
+    ``turn_start`` nor a permission request within that many seconds it
+    ends with a synthetic ``end_turn``.
     """
     deadline = time.monotonic() + timeout
     last_data_ts = time.monotonic()
+    # Observed-turn state. Unread on a prompted turn (observe_idle is None).
+    _observe_t0 = last_data_ts
+    _observe_started = False
     # Cleared per turn: armed by the compaction branch below on a
     # `failed` status, then read by the post-failure budget check at the
     # loop top (mirrors AcpClient._prompt_loop).
@@ -268,8 +283,38 @@ async def _dispatch_events(
             )
 
             try:
-                msg = await asyncio.wait_for(self._queue.get(), timeout=min(remaining, 5.0))
+                _get_wait = min(remaining, 5.0)
+                if observe_idle is not None and not _observe_started:
+                    # Wake at the idle deadline, not up to 5s past it. Never
+                    # zero: a zero wait would refuse a frame already queued.
+                    _get_wait = max(
+                        0.01,
+                        min(_get_wait, _observe_t0 + observe_idle - time.monotonic()),
+                    )
+                msg = await asyncio.wait_for(self._queue.get(), timeout=_get_wait)
             except asyncio.TimeoutError:
+                if (
+                    observe_idle is not None
+                    and not _observe_started
+                    and self._queue.empty()
+                    and time.monotonic() - _observe_t0 >= observe_idle
+                ):
+                    # The engine started no turn here: its nudge went to a
+                    # later turn (the session was busy) or there was none.
+                    logger.info(
+                        "observed turn on session %s: no engine turn began within "
+                        "%.0fs; ending it",
+                        self._session_id,
+                        observe_idle,
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=STOP_REASON_END_TURN,
+                        synthetic_completion=True,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
                 # ── Verdict-driven watchdogs ──
                 # Wellness (the liveness oracle) is the detector; timeouts
                 # govern only the UNKNOWN class. Idle clocks: the stale clock
@@ -780,6 +825,16 @@ async def _dispatch_events(
                 await self._answer_kas_hooks_request(msg)
                 continue
 
+            # A KAS structured question (``_kiro/userInput``), surfaced as a
+            # permission event so every surface that holds a KAS question
+            # for a person (answers_only + kas_builtin_ids) holds it as is;
+            # the answer goes back in the question's own shape.
+            if self._is_kas_user_input_request(msg):
+                self._awaiting_permission = True
+                _observe_started = True
+                yield self._build_user_input_event(msg)
+                continue
+
             self._note_mcp_sign_in_status(msg, offer=True)
             # A server this session was signing in to has connected. The
             # status snapshot is classified "skip", so its completion is
@@ -857,6 +912,8 @@ async def _dispatch_events(
                 # an observer reading the park mid-flight must be able to tell
                 # "waiting for a human" from "the consumer stopped pulling".
                 self._awaiting_permission = True
+                # An observed turn that asks is under way (unread otherwise).
+                _observe_started = True
                 yield _perm_event
             elif action == "elicitation":
                 # An MCP server's human-in-the-loop ask. The handle answers it
@@ -873,6 +930,29 @@ async def _dispatch_events(
             elif action == "server_request_unknown":
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
             elif action == "update":
+                _boundary = self._observed_turn_boundary(msg) if observe_idle is not None else None
+                if _boundary is not None and _boundary[0] == kas_wire.KIND_TURN_START:
+                    _observe_started = True
+                elif _boundary is not None and _observe_started:
+                    # The engine's own end of the turn it started: the
+                    # observed turn's terminal, read like a prompt response's.
+                    reason = _boundary[1] or STOP_REASON_END_TURN
+                    if self._stale_probe and reason == STOP_REASON_CANCELLED:
+                        reason = STOP_REASON_STALE_RECOVER
+                        self._stale_probe = False
+                    reason, _refusal = self.last_prompt_stats.terminal_refusal(reason)
+                    self._last_stop_reason = reason
+                    self._tool_dispatched = False
+                    for _injected in self._release_proven_steers(reason, _refusal):
+                        yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_injected)
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=reason,
+                        refusal=_refusal,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this

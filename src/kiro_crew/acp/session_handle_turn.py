@@ -1,6 +1,6 @@
 """One turn end to end.
 
-``prompt`` and ``stream_command``, the per-turn reset and pre-turn drain in ``_run_turn``,
+``prompt``, ``stream_command`` and ``observe_turn``, the per-turn reset and pre-turn drain in ``_run_turn``,
 the abandoned-turn close and the turn-done wait.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
@@ -37,7 +37,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_profile
+from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -85,6 +85,8 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
+from kiro_crew.kas_workflows.asks import USER_INPUT_DISMISSED
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -126,6 +128,15 @@ _PROMPT_TRANSPORT_COMMANDS = frozenset({"compact", "help"})
 # dispatched), so an unanswered request would otherwise drain silently for the
 # full chat-turn ceiling (hours) while holding the session's turn slot.
 _COMMAND_TURN_TIMEOUT_SECS = 60.0
+# An OBSERVED turn (``observe_turn``) sends nothing: it reads a turn the engine
+# started on its own. If the engine's ``turn_start`` has not arrived within this
+# window the engine did not start one (it queued its nudge for a later turn, or
+# its turn was already read), and the observer ends cleanly instead of holding
+# the session for the chat-turn ceiling.
+OBSERVE_IDLE_WINDOW_SECS = 20.0
+# The request id an observed turn waits on: none. Every id this process issues is
+# positive, so no response can ever match it.
+_OBSERVE_NO_REQUEST = -1
 
 
 async def wait_turn_done(self: AcpSessionHandle, timeout: float = 30.0) -> bool:
@@ -296,12 +307,52 @@ async def stream_command(
         await turn.aclose()
 
 
+async def observe_turn(
+    self: AcpSessionHandle,
+    timeout: float | None = None,
+    *,
+    idle_window: float = OBSERVE_IDLE_WINDOW_SECS,
+) -> AsyncGenerator[AcpEvent, None]:
+    """Yield a turn the ENGINE started on this session, with no prompt sent.
+
+    KAS starts a model turn on a workflow run's parent session by itself when
+    the run ends (its auto-wake). No ``session/prompt`` was sent for it, so no
+    response will ever close it: its frames reach this session's queue with
+    nobody reading them, and its permission requests wait for an answer that,
+    without a reader, never comes.
+
+    This is that reader. It runs the turn lifecycle :meth:`prompt` runs --
+    the concurrent-turn guard, the per-turn resets, ``mark_turn_active`` so a
+    child's permission request routes here, and the same dispatch loop, so
+    approvals, text and tools reach the consumer exactly as a prompted turn's
+    would -- with two differences. Nothing is sent, and the pre-turn drain is
+    skipped, because the frames already queued ARE this turn. And the turn
+    ends on the engine's own ``session_info_update`` ``turn_end`` (its
+    ``stopReason`` is the turn's), read only after its ``turn_start``: a
+    ``turn_end`` that trails an earlier prompted turn's response is that
+    turn's, not this one's. When neither a ``turn_start`` nor a permission
+    request arrives within *idle_window* seconds, the turn ends with a
+    synthetic ``end_turn``.
+    """
+
+    async def _build() -> tuple[str, dict[str, Any]]:
+        return "", {}
+
+    turn = self._run_turn(_build, timeout, observe_idle=max(0.0, float(idle_window)))
+    try:
+        async for event in turn:
+            yield event
+    finally:
+        await turn.aclose()
+
+
 async def _run_turn(
     self: AcpSessionHandle,
     build_request: Callable[[], Awaitable[tuple[str, dict[str, Any]]]],
     timeout: float | None,
     *,
     extract_command_result: bool = False,
+    observe_idle: float | None = None,
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared turn lifecycle for :meth:`prompt` and :meth:`stream_command`.
 
@@ -310,6 +361,10 @@ async def _run_turn(
     bookkeeping. ``build_request`` returns the JSON-RPC ``(method, params)``
     to send; it runs BEFORE the turn is marked active (see the comment at
     the send site below).
+
+    ``observe_idle`` set makes this an OBSERVED turn (:meth:`observe_turn`):
+    no drain, no send, and the dispatch loop ends on the engine's own turn
+    boundary or after that many idle seconds.
 
     ``timeout=None`` (every dashboard turn) resolves from
     ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
@@ -396,6 +451,7 @@ async def _run_turn(
     self._native_child_tool_call_ids.clear()
     self._permission_options.clear()
     self._permission_gate_events.clear()
+    self._user_input_map().clear()
     # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
     # each turn): otherwise a completed sub-agent from a prior turn stays in
     # the roster and is re-emitted in the next turn's EVENT_SUBAGENT_LIST,
@@ -451,7 +507,9 @@ async def _run_turn(
     _stale_reasons: list[str] = []
     _stale_owed: list[JsonRpcMessage] = []
     _sign_in_holds = getattr(self._runtime, "mcp_sign_in_holds", None)
-    while True:
+    # An observed turn drains nothing: the frames already queued are the
+    # engine's turn this call exists to read (see observe_turn).
+    while observe_idle is None:
         try:
             stale = self._queue.get_nowait()
         except asyncio.QueueEmpty:
@@ -489,6 +547,35 @@ async def _run_turn(
             # EVENT_MCP_OAUTH_REQUEST rather than destroyed with the
             # abandoned turn's frames.
             _stale_owed.append(stale)
+            continue
+        if (
+            stale is not None
+            and stale.id is not None
+            and stale.method == kas_wire.METHOD_USER_INPUT
+            and self._runtime.acp_backend in ACP_BACKENDS_NATIVE_WORKFLOWS
+        ):
+            # A KAS question left from a turn nobody reads any more. It is a
+            # server->client request, so it is owed an answer exactly like
+            # the stranded permission request below: answered "dismissed",
+            # which KAS reads as "no answer" and moves its turn on. Owed
+            # frames go back first, for the same reason as below.
+            for _owed in _stale_owed:
+                self._queue.put_nowait(_owed)
+            _stale_owed.clear()
+            try:
+                await self._runtime.send_response(stale.id, dict(USER_INPUT_DISMISSED))
+            except asyncio.CancelledError:
+                self._queue.put_nowait(stale)
+                self._turn_done.set()
+                raise
+            except Exception:
+                logger.exception("failed to answer stranded KAS question")
+                self._runtime._mark_dead("pre-turn drain question answer failed")
+                continue
+            logger.warning(
+                "dismissed KAS question id=%s stranded in the pre-turn drain",
+                _loggable_request_id(stale.id),
+            )
             continue
         if (
             stale is not None
@@ -717,8 +804,12 @@ async def _run_turn(
         _mark = getattr(self._runtime, "mark_turn_active", None)
         if _mark is not None:
             _mark(self._session_id, True)
-        req_id = await self._runtime.send_request(_method, _params)
-        self._prompt_written = True
+        if observe_idle is None:
+            req_id = await self._runtime.send_request(_method, _params)
+            self._prompt_written = True
+        else:
+            # Nothing to send: the engine started this turn itself.
+            req_id = _OBSERVE_NO_REQUEST
     except BaseException:
         self._turn_done.set()
         _mark = getattr(self._runtime, "mark_turn_active", None)
@@ -748,8 +839,10 @@ async def _run_turn(
         self._runtime, "acp_backend", ""
     ) in ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR and not prompt_is_adapter_command(_params)
     _held: list[AcpEvent] = []
-    _dispatch = self._dispatch_events(
-        req_id, timeout, extract_command_result=extract_command_result
+    _dispatch = (
+        self._dispatch_events(req_id, timeout, extract_command_result=extract_command_result)
+        if observe_idle is None
+        else self._dispatch_events(req_id, timeout, observe_idle=observe_idle)
     )
     try:
         # Surface any drain-time rejections (see the pre-turn drain above)
@@ -878,10 +971,12 @@ async def _run_turn(
         # close, a cancel, or an exception.
         _exhausted_clean = True
     except (asyncio.CancelledError, GeneratorExit):
-        if not _yielded_terminal:
+        if not _yielded_terminal and observe_idle is None:
             # The consumer left before the turn ended (a caller's timeout, a
             # cancelled task, a closed stream). The backend has not been told,
             # so its late frames would reach the next turn on this session.
+            # An observed turn sent no request, so there is no response to
+            # wait out: its late frames meet the next turn's drain.
             self._abandoned_prompt_id = req_id
         raise
     finally:

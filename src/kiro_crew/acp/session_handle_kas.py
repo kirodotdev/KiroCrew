@@ -1,15 +1,16 @@
 """What KAS speaks beyond ACP on a session.
 
-Its hooks requests (list, session start, execute), the checkpoint rewind of an
-unanswered prompt, and its own session-update discriminants (mode, session info).
+Its hooks requests (list, session start, execute), its structured questions
+(``_kiro/userInput``), the checkpoint rewind of an unanswered prompt, and its own
+session-update discriminants (mode, session info, an observed turn's boundaries).
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen``,
-``_hook_tasks``, ``_kas_prompt_row``, ``_last_kas_mode_id``, ``kas_auto_approved``,
-``kas_projected_agent``, ``last_compaction_transient``.
+``_hook_tasks``, ``_kas_prompt_row``, ``_last_kas_mode_id``, ``_user_inputs``,
+``kas_auto_approved``, ``kas_projected_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_crew_agent``, ``_listed_hooks``, ``_prompt_starts``,
 ``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
@@ -27,9 +28,11 @@ from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
 from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKENDS_HOOKS_LIST,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
+    EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
     EVENT_STEER_QUEUED,
@@ -40,6 +43,13 @@ from kiro_crew.acp.types import (
     UPDATE_SESSION_INFO,
     AcpEvent,
     JsonRpcMessage,
+)
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
+from kiro_crew.kas_workflows.asks import (
+    USER_INPUT_DISMISSED,
+    PendingQuestion,
+    question_from_user_input,
+    user_input_answered,
 )
 
 if TYPE_CHECKING:
@@ -95,6 +105,109 @@ async def discard_unanswered_prompt(self: AcpSessionHandle) -> bool:
     )
     result = getattr(await self._wait_for_response(req_id, timeout=10.0), "result", None)
     return isinstance(result, dict) and result.get("success") is True
+
+
+# ── KAS structured questions (``_kiro/userInput``) ──
+
+
+def _user_input_map(self: AcpSessionHandle) -> dict[str | int, PendingQuestion]:
+    # Read defensively: a handle assembled without ``__init__`` carries none.
+    held = getattr(self, "_user_inputs", None)
+    if held is None:
+        held = {}
+        self._user_inputs = held
+    return held
+
+
+def _is_kas_user_input_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> bool:
+    """Whether *msg* is a KAS ``_kiro/userInput`` request this session must answer.
+
+    A request (it carries an id), of that method, on a backend that brings
+    the native workflow engine (``ACP_BACKENDS_NATIVE_WORKFLOWS``, KAS): the
+    engine whose switch announces the surface. Any other backend sending
+    the method is answered ``-32601`` by the classifier like every method it
+    was never offered.
+    """
+    return (
+        msg.id is not None
+        and msg.method == kas_wire.METHOD_USER_INPUT
+        and self._runtime.acp_backend in ACP_BACKENDS_NATIVE_WORKFLOWS
+    )
+
+
+def _build_user_input_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent:
+    """The permission event a ``_kiro/userInput`` request is held as.
+
+    ``answers_only`` and ``kas_builtin_ids`` are set, so the chat, every
+    channel and every approval mode treat it exactly as they treat the
+    legacy bridge's question: it waits for a person. ``options`` lists the
+    answers by their shown titles (what a surface that cannot draw the rich
+    card shows), and ``user_input`` carries the request's params, so the
+    chat's question card draws the whole question.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    question = question_from_user_input(
+        params,
+        key=str(msg.id),
+        request_id=msg.id,
+        session_id=self._session_id,
+        owner=("", ""),
+        created_at=time.time(),
+        runtime=None,
+        path=None,
+        slot=None,
+    )
+    assert msg.id is not None  # _is_kas_user_input_request
+    self._user_input_map()[msg.id] = question
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=msg.id,
+        title=question.prompt,
+        tool_kind="other",
+        options=[{"id": o.option_id, "label": o.label} for o in question.options],
+        tool_call_id=question.question_id,
+        kas_builtin_ids=True,
+        answers_only=True,
+        user_input=dict(params),
+    )
+
+
+async def answer_user_input(
+    self: AcpSessionHandle, request_id: str | int, answer: str | None
+) -> bool:
+    """Answer a held ``_kiro/userInput`` question with *answer* text, or dismiss it.
+
+    *answer* None dismisses (``{action: "dismissed"}``: KAS moves its turn on
+    without an answer). False when *request_id* is no question this session
+    holds; nothing is sent then.
+    """
+    question = self._user_input_map().pop(request_id, None)
+    if question is None:
+        return False
+    self._end_human_wait()
+    result = user_input_answered(answer) if answer else dict(USER_INPUT_DISMISSED)
+    await self._runtime.send_response(request_id, result)
+    return True
+
+
+async def _answer_user_input_approval(
+    self: AcpSessionHandle, request_id: str | int, option_id: str | None
+) -> bool | None:
+    """Answer a held question an APPROVE reached; None when *request_id* is no question.
+
+    An approve carries no typed answer. A named offered option is answered
+    with that option (every sub-option on, KAS's default); a bare approve (a
+    channel's Allow) with the recommended option, else the first
+    (:meth:`PendingQuestion.default_answer`), and a free-form question,
+    which has nothing to pick, is dismissed.
+    """
+    question = self._user_input_map().get(request_id)
+    if question is None:
+        return None
+    option = next((o for o in question.options if o.option_id == option_id), None)
+    answer = option.compose(option.sub_options) if option else question.default_answer()
+    await self.answer_user_input(request_id, answer)
+    return answer is not None
 
 
 def _is_kas_hooks_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> bool:
@@ -283,6 +396,20 @@ def _handle_kas_update(
     # available-commands UI for any backend (kiro-cli's
     # _kiro.dev/commands/available is likewise unconsumed), so there is
     # nothing to render and no separate branch is needed.
+    return None
+
+
+def _observed_turn_boundary(self: AcpSessionHandle, msg: JsonRpcMessage) -> tuple[str, str] | None:
+    """This session's own engine turn boundary in *msg*, for an observed turn.
+
+    Only a frame that names THIS session and was routed to it (not fanned out
+    to every co-tenant) counts: a child's or a co-tenant's ``turn_end`` says
+    nothing about the turn being observed here.
+    """
+    if self._runtime.acp_backend == ACP_BACKEND_KAS and not msg.fanout_no_owner:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if str(params.get("sessionId") or "") == self._session_id:
+            return kas_wire.turn_boundary(params.get("update"))
     return None
 
 

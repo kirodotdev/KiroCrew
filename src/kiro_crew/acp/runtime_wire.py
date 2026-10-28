@@ -9,7 +9,7 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``,
-``_routed_requests``, ``_stdin_lock``.
+``_routed_requests``, ``_stdin_lock``, ``_workflow_sink``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
 ``_native_skill_projection``,
@@ -46,6 +46,7 @@ from kiro_crew.acp.types import (
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.workflow_sink import WorkflowFrameSink
 
 #: The runtime's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.runtime")
@@ -709,3 +710,25 @@ async def _send_and_await(
             queued_starts,
         )
     return result
+
+
+def set_workflow_sink(self: AcpRuntime, sink: WorkflowFrameSink | None) -> None:
+    """Replace (or remove) the owner of this runtime's native workflow frames.
+
+    Construction installs the router's sink; this exists for tests and for a
+    caller that must detach it. See :mod:`kiro_crew.acp.workflow_sink` for
+    the contract the reader loop holds it to.
+    """
+    self._workflow_sink = sink
+
+
+async def extension_request(
+    self: AcpRuntime, method: str, params: dict[str, Any], *, timeout: float = _REQUEST_TIMEOUT
+) -> dict[str, Any]:
+    """Send a connection-level extension request and await its answer.
+
+    For a harness method that answers immediately and whose response belongs
+    to the caller, not to a session's turn (``_kiro/workflow/*``). Params are
+    sent untranslated: none of them name a skill the projection renames.
+    """
+    return await self._send_and_await(method, params, timeout=timeout, translate=False)
