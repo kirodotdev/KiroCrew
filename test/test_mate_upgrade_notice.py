@@ -142,8 +142,9 @@ def test_the_migration_owes_the_notice_only_for_crewmates_it_moved(monkeypatch, 
 def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
     monkeypatch, tmp_path, dispatched
 ):
-    """``orbit``'s template denies writes under ``/etc``, which its worker would not
-    keep, so it stays on its template; its thread says so once, with the reason."""
+    """A user-level agent Kiro Crew does not own carries ``orbit``'s id, so its own file
+    would never be read and it stays on its template; its thread says so once, with
+    the reason."""
     _migrate_atlas_and_orbit(monkeypatch, tmp_path)
     assert notice.claim_kept_notice(members_mod.member_slug("atlas"), "atlas") == ""
     slot = _thread("orbit")
@@ -154,7 +155,7 @@ def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
     assert len(dispatched) == 1
     key, prompt = dispatched[0]
     assert key == slot.key and prompt.startswith(notice.WORKER_UPGRADE_PREFIX)
-    assert "toolsSettings" in prompt and "left as it was" in prompt
+    assert "user-level agent" in prompt and "left as it was" in prompt
 
 
 def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
@@ -162,16 +163,11 @@ def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
 ):
     """Start 1 leaves ``orbit`` behind with its thread unopened; start 2 moves it.
     Its thread then gets the moved notice only, never the stale kept one."""
-    import json
-
     import kiro_crew.config.paths as paths_mod
     from kiro_crew.mate_config_migration import migrate_existing_crewmates
 
     cfg = _migrate_atlas_and_orbit(monkeypatch, tmp_path)
-    shell = paths_mod.kiro_agents_dir() / "shell.json"
-    spec = json.loads(shell.read_text(encoding="utf-8"))
-    spec.pop("toolsSettings")
-    shell.write_text(json.dumps(spec), encoding="utf-8")
+    (paths_mod.kiro_agents_dir() / "orbit.json").unlink()
     assert migrate_existing_crewmates(cfg).migrated == ["orbit"]
     slot = _thread("orbit")
 
@@ -216,7 +212,7 @@ def test_a_kept_notice_claimed_while_the_thread_is_busy_follows_its_next_turn_en
 
 
 def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
-    """``atlas`` moves; ``orbit``'s worker would not keep its write limit, so it stays."""
+    """``atlas`` moves; a user-level agent named ``orbit`` shadows its file, so it stays."""
     import json
 
     import kiro_crew.config.paths as paths_mod
@@ -232,16 +228,9 @@ def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
     mates.mkdir(parents=True)
     (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
     (user / "plain.json").write_text(json.dumps({**base, "name": "plain"}), encoding="utf-8")
-    (user / "shell.json").write_text(
-        json.dumps(
-            {
-                **base,
-                "name": "shell",
-                "toolsSettings": {"fs_write": {"deniedPaths": ["/etc/**"]}},
-            }
-        ),
-        encoding="utf-8",
-    )
+    (user / "shell.json").write_text(json.dumps({**base, "name": "shell"}), encoding="utf-8")
+    # Someone else's agent under orbit's id: not Kiro Crew's to move or write.
+    (user / "orbit.json").write_text(json.dumps({**base, "name": "orbit"}), encoding="utf-8")
     cfg = KiroCrewConfig()
     cfg.agents = {
         "atlas": KiroCrewAgentConfig(member_id="atlas", kiro_agent="plain"),

@@ -97,6 +97,14 @@ def _cfg(**agents: KiroCrewAgentConfig) -> KiroCrewConfig:
     return cfg
 
 
+def saved_notice(name: str) -> str:
+    """The one upgrade notice crewmate *name* is owed, as its thread will read it."""
+    from kiro_crew.mate_upgrade_notice import claim_notice_prompt
+    from kiro_crew.members import member_slug
+
+    return claim_notice_prompt(member_slug(name), name)
+
+
 def _file(mates: Path, name: str) -> dict:
     return json.loads((mates / f"{name}.json").read_text(encoding="utf-8"))
 
@@ -282,7 +290,8 @@ def test_a_grant_the_worker_would_gain_is_withheld_for_the_card(layout, persiste
 
 
 def test_an_agent_whose_prompt_does_not_resolve_keeps_its_stated_limits(layout, persisted):
-    """It parses, so the deny it states is read; the default template would drop it."""
+    """It parses, so the deny it states is read; the default template cannot carry it,
+    so the crewmate moves as is and its notice names the restriction."""
     user, mates = layout
     _write(user, "kirocrew", _template("kirocrew"))
     deny = {"fs_write": {"deniedPaths": ["/etc/**"]}}
@@ -296,10 +305,11 @@ def test_an_agent_whose_prompt_does_not_resolve_keeps_its_stated_limits(layout, 
 
     report = migrate_existing_crewmates(cfg)
 
-    assert report.migrated == [] and report.moved_from_default == []
-    assert "toolsSettings" in report.dry_run_failed["ijk"]
-    assert cfg.agents["ijk"].kiro_agent == "careful"
-    assert saved == {} and not (mates / "ijk.json").exists()
+    assert report.moved_from_default == ["ijk"] and report.dry_run_failed == {}
+    assert cfg.agents["ijk"].kiro_agent == "ijk"
+    assert saved["ijk"]["expected_values"] == {"kiro_agent": "careful"}
+    assert "fs_write" not in _file(mates, "ijk").get("excludedTools", [])
+    assert "toolsSettings for fs_write" in saved_notice("ijk")
 
 
 def test_a_prompt_that_does_not_resolve_keeps_its_switched_off_server_and_tools_off(
@@ -378,8 +388,9 @@ def test_an_unreadable_agent_moves_onto_the_default_template_and_says_so(layout,
         ("permissions", {"rules": [{"capability": "fs_write", "effect": "deny"}]}),
     ],
 )
-def test_a_crewmate_whose_template_denies_writes_is_not_moved(layout, persisted, field, limit):
-    """The worker merge carries neither field, so the template's deny would be lost."""
+def test_a_crewmate_whose_template_denies_writes_moves_and_is_told(layout, persisted, field, limit):
+    """The worker merge carries neither field, so the deny does not apply on the
+    worker: the crewmate moves as is, nothing is withheld, and the one notice names it."""
     user, mates = layout
     _write(user, "careful", _template("careful", **{field: limit}))
     cfg = _cfg(ijk=KiroCrewAgentConfig(member_id="ijk", kiro_agent="careful"))
@@ -387,10 +398,14 @@ def test_a_crewmate_whose_template_denies_writes_is_not_moved(layout, persisted,
 
     report = migrate_existing_crewmates(cfg)
 
-    assert report.migrated == []
-    assert field in report.dry_run_failed["ijk"]
-    assert cfg.agents["ijk"].kiro_agent == "careful"
-    assert not (mates / "ijk.json").exists()
+    assert report.migrated == ["ijk"] and report.dry_run_failed == {}
+    written = _file(mates, "ijk")
+    assert field not in written and "excludedTools" not in written
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    assert "fs_write" not in merged.get("excludedTools", [])
+    assert "fs_write" in report.moved_with_changes["ijk"]
+    notice = saved_notice("ijk")
+    assert "no longer apply" in notice and field in notice and "fs_write" in notice
 
 
 def test_allow_only_permissions_are_grants_not_a_restriction(layout, persisted):
@@ -517,7 +532,7 @@ def test_the_default_template_as_installed_moves_onto_the_worker(layout, persist
     assert "hooks" not in _file(mates, "rty")
 
 
-def test_a_hook_the_worker_base_lacks_still_keeps_the_crewmate_where_it_is(layout, persisted):
+def test_a_hook_the_worker_base_lacks_moves_and_is_named(layout, persisted):
     user, mates = layout
     base = _installed_layout(user)
     hooks = {"postToolUse": [*AUDIT_HOOK["postToolUse"], {"matcher": "fs_write", "command": "x"}]}
@@ -527,9 +542,10 @@ def test_a_hook_the_worker_base_lacks_still_keeps_the_crewmate_where_it_is(layou
 
     report = migrate_existing_crewmates(cfg)
 
-    assert report.migrated == []
-    assert "hooks" in report.dry_run_failed["uio"]
-    assert not (mates / "uio.json").exists()
+    assert report.migrated == ["uio"]
+    written = _file(mates, "uio")
+    assert "hooks" not in written and "excludedTools" not in written
+    assert "its postToolUse hook on fs_write" in report.moved_with_changes["uio"]
 
 
 def _ray_kirocrew(base: dict) -> dict:
@@ -812,8 +828,10 @@ def test_the_old_thread_s_next_turn_binds_the_conductor_on_the_same_store(
 def test_other_records_and_a_skipped_crewmate_s_thread_are_left_alone(layout, persisted, threads):
     user, _mates = layout
     _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
-    # A hook the worker base lacks keeps this one where it is (see the dry-run tests).
-    _write(user, "hooked", _template("hooked", hooks={"stop": [{"command": "x"}]}))
+    # A user-level agent named after it keeps this one where it is: its own file
+    # would never be read.
+    _write(user, "hooked", _template("hooked"))
+    _write(user, "sty", _template("sty"))
     cfg = _cfg(
         zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"),
         qwe=KiroCrewAgentConfig(member_id="qwe", kiro_agent="builder"),
@@ -1052,3 +1070,306 @@ def test_a_crash_right_after_the_repoint_still_moves_the_old_threads(
 
     assert migrate_existing_crewmates(cfg).threads_repointed == {"zxc": [key]}
     assert _now(ec, key).template_id == mate_worker.MATE_CONDUCTOR_AGENT
+
+
+def test_a_crewmate_shadowed_by_its_own_private_copy_moves_and_the_copy_is_retired(
+    layout, persisted, monkeypatch
+):
+    """The copy that shadows its file is the fork Kiro Crew made for it, so it is
+    retired (kept for a rollback) and its lineage dropped before the repoint."""
+    from kiro_crew import agent_state
+
+    user, mates = layout
+    fork = _template("rust", prompt="Write Rust.", mcpServers={"jira": JIRA}, tools=["@jira"])
+    _write(user, "rust", fork)
+    lineage = {"rust": {"forked_from": "kirocrew", "private_to": "rust"}}
+    monkeypatch.setattr(agent_state, "get_fork_info", lambda n, strict=False: lineage.get(n))
+    monkeypatch.setattr(agent_state, "clear_fork_info", lambda n: lineage.pop(n, None))
+    cfg = _cfg(rust=KiroCrewAgentConfig(member_id="rust", kiro_agent="rust"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["rust"] and report.dry_run_failed == {}
+    assert not (user / "rust.json").exists()
+    assert json.loads((mates.parent / "retired" / "rust.json").read_text()) == fork
+    assert lineage == {}
+    assert _file(mates, "rust")["prompt"] == "Write Rust."
+
+
+def test_a_crewmate_shadowed_by_a_spec_crew_does_not_own_stays_and_it_is_untouched(
+    layout, persisted, monkeypatch
+):
+    """Someone else's spec under the crewmate's id: the crewmate stays, is told once,
+    and that file is byte-identical after the pass."""
+    from kiro_crew import agent_state
+
+    user, mates = layout
+    raw = '{ "name": "pkg",  "allowedTools": ["execute_bash"] }\n'
+    (user / "pkg.json").write_text(raw, encoding="utf-8")
+    monkeypatch.setattr(agent_state, "get_fork_info", lambda n, strict=False: None)
+    cfg = _cfg(pkg=KiroCrewAgentConfig(member_id="pkg", kiro_agent="pkg"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == []
+    assert "user-level agent" in report.dry_run_failed["pkg"]
+    assert (user / "pkg.json").read_text(encoding="utf-8") == raw
+    assert not (mates / "pkg.json").exists()
+
+
+def test_an_unmigrated_row_on_a_package_spec_moves_and_leaves_that_spec_byte_identical(
+    layout, persisted
+):
+    """The reported case: a crewmate on a package-installed spec. It moves onto its own
+    file and the package's file is exactly as the package wrote it."""
+    user, mates = layout
+    raw = json.dumps(
+        _template("pkg-reviewer", prompt="Review.", allowedTools=["execute_bash"]), indent=3
+    )
+    (user / "pkg-reviewer.json").write_text(raw, encoding="utf-8")
+    cfg = _cfg(rvw=KiroCrewAgentConfig(member_id="rvw", kiro_agent="pkg-reviewer"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["rvw"]
+    assert cfg.agents["rvw"].kiro_agent == "rvw"
+    assert (user / "pkg-reviewer.json").read_text(encoding="utf-8") == raw
+    assert _file(mates, "rvw")["prompt"] == "Review."
+
+
+@pytest.fixture
+def minting(monkeypatch):
+    """Provisioning that records its calls; chat evidence answered per name."""
+    from kiro_crew import crewmate_prune_migration, memory_stores
+
+    calls: list[tuple[str, bool]] = []
+    chatted: set[str] = set()
+
+    def provision(config, member, *, upgrade=False):
+        calls.append((member, upgrade))
+        config.agents[member].member_id = member
+        config.agents[member].memory_store = f"member-{member}"
+        return f"member-{member}"
+
+    monkeypatch.setattr(memory_stores, "provision_member_memory", provision)
+    monkeypatch.setattr(
+        crewmate_prune_migration, "_chatted", lambda cfg, name, sessions: name in chatted
+    )
+    return calls, chatted
+
+
+def test_a_used_synced_row_with_no_identity_gets_one_and_moves(layout, persisted, minting):
+    calls, chatted = minting
+    user, mates = layout
+    _write(user, "pkg-reviewer", _template("pkg-reviewer", prompt="Review."))
+    cfg = _cfg(
+        rvw=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="package"),
+        idle=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="package"),
+        app=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="auto-improvement"),
+        old=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="builtin"),
+    )
+    chatted.update({"rvw", "app", "old"})
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    # Upgrade allocation keeps the name-derived slug its thread already uses.
+    assert calls == [("rvw", True)]
+    assert report.identities_minted == ["rvw"] and report.migrated == ["rvw"]
+    assert cfg.agents["rvw"].kiro_agent == "rvw"
+    assert "own memory" in report.moved_with_changes["rvw"]
+    # Never chatted (left for the prune), an app's row, a legacy built-in: untouched.
+    for name in ("idle", "app", "old"):
+        assert cfg.agents[name].member_id == "" and cfg.agents[name].kiro_agent == "pkg-reviewer"
+
+
+def test_a_row_on_a_spec_crew_owns_is_not_given_an_identity(layout, persisted, minting):
+    calls, chatted = minting
+    user, _mates = layout
+    _write(user, "kirocrew", _template("kirocrew"))
+    cfg = _cfg(helper=KiroCrewAgentConfig(kiro_agent="kirocrew", source="kirocrew"))
+    chatted.add("helper")
+    persisted(cfg)
+
+    migrate_existing_crewmates(cfg)
+
+    assert calls == []
+
+
+def test_a_private_copy_that_changed_is_not_retired(layout, persisted, monkeypatch):
+    """Retirement re-proves the copy is Crew's under the spec lock, so a copy the fork
+    refresh or the user changed in between is left where it is."""
+    from kiro_crew import agent_state
+    from kiro_crew.mate_config_migration import MateConfigError, _retire_shadow
+
+    user, mates = layout
+    _write(user, "rust", _template("rust"))
+    monkeypatch.setattr(agent_state, "get_fork_info", lambda n, strict=False: None)
+    cfg = _cfg(rust=KiroCrewAgentConfig(member_id="rust", kiro_agent="rust"))
+
+    with pytest.raises(MateConfigError, match="changed"):
+        _retire_shadow(cfg, "rust", user / "rust.json")
+    assert (user / "rust.json").is_file()
+
+
+def test_retirement_rescans_the_agent_snapshot(layout, persisted, monkeypatch):
+    from kiro_crew import agent_state
+    from kiro_crew.config import loader_snapshots
+
+    user, _mates = layout
+    _write(user, "rust", _template("rust", prompt="Write Rust."))
+    lineage = {"rust": {"forked_from": "kirocrew", "private_to": "rust"}}
+    monkeypatch.setattr(agent_state, "get_fork_info", lambda n, strict=False: lineage.get(n))
+    monkeypatch.setattr(agent_state, "clear_fork_info", lambda n: lineage.pop(n, None))
+    scans: list[bool] = []
+    monkeypatch.setattr(
+        loader_snapshots, "refresh_materialized_agents", lambda **kw: scans.append(True)
+    )
+    cfg = _cfg(rust=KiroCrewAgentConfig(member_id="rust", kiro_agent="rust"))
+    persisted(cfg)
+
+    assert migrate_existing_crewmates(cfg).migrated == ["rust"]
+    assert scans == [True]
+
+
+def test_a_used_row_that_cannot_move_is_not_given_an_identity(layout, persisted, minting):
+    """The identity is given only once the move is proven: a row the migration keeps
+    where it is keeps the memory it had."""
+    calls, chatted = minting
+    user, _mates = layout
+    _write(user, "pkg-reviewer", _template("pkg-reviewer"))
+    # A user-level agent under its own id keeps it where it is.
+    _write(user, "rvw", _template("rvw"))
+    cfg = _cfg(rvw=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="package"))
+    chatted.add("rvw")
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == [] and "rvw" in report.dry_run_failed
+    assert calls == [] and cfg.agents["rvw"].member_id == ""
+
+
+def test_moved_from_agents_lists_the_agents_moved_crewmates_ran_on(layout, persisted):
+    from kiro_crew.mate_config_migration import moved_from_agents
+
+    user, _mates = layout
+    _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+
+    assert migrate_existing_crewmates(cfg).migrated == ["zxc"]
+    assert moved_from_agents() == {"builder"}
+
+
+def test_a_minted_row_publishes_its_identity_with_its_repoint(layout, persisted, minting):
+    """One write carries ``member_id``, ``memory_store`` and ``kiro_agent`` together."""
+    calls, chatted = minting
+    user, _mates = layout
+    _write(user, "pkg-reviewer", _template("pkg-reviewer"))
+    cfg = _cfg(rvw=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="package"))
+    chatted.add("rvw")
+    saved = persisted(cfg)
+
+    assert migrate_existing_crewmates(cfg).migrated == ["rvw"]
+    assert saved["rvw"]["changed_fields"] == {"kiro_agent", "member_id", "memory_store"}
+    assert saved["rvw"]["expected_values"] == {"kiro_agent": "pkg-reviewer"}
+
+
+def test_a_minted_row_whose_move_fails_before_publish_keeps_its_memory(
+    layout, persisted, minting, monkeypatch
+):
+    """A failure after the allocation and before the publish retires the allocation,
+    so the row stays on its old agent with the memory it had."""
+    from kiro_crew import mate_config_migration as migration
+    from kiro_crew import memory_stores
+
+    calls, chatted = minting
+    user, _mates = layout
+    _write(user, "pkg-reviewer", _template("pkg-reviewer"))
+    cfg = _cfg(rvw=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="package"))
+    chatted.add("rvw")
+    saved = persisted(cfg)
+    retired: list[str] = []
+    monkeypatch.setattr(
+        memory_stores, "retire_unpublished_allocation", lambda c, n, store, **kw: retired.append(n)
+    )
+    real_record = migration._record_migrated
+
+    def disk_full(name, source="", *, moved=True, reason=""):
+        if not moved:
+            raise OSError(28, "No space left on device")
+        real_record(name, source, moved=moved, reason=reason)
+
+    monkeypatch.setattr(migration, "_record_migrated", disk_full)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == [] and "rvw" in report.repoint_failed
+    assert calls == [("rvw", True)] and retired == ["rvw"]
+    assert saved == {} and cfg.agents["rvw"].kiro_agent == "pkg-reviewer"
+
+
+def test_a_private_copy_with_a_markdown_twin_is_not_retired(layout, persisted, monkeypatch):
+    """Retiring the copy would leave the user's markdown twin shadowing the crewmate's
+    file, so the crewmate stays, is told once, and both files are left as they are."""
+    from kiro_crew import agent_state
+
+    user, mates = layout
+    _write(user, "rust", _template("rust"))
+    twin = "---\nname: rust\n---\nmine\n"
+    (user / "rust.md").write_text(twin, encoding="utf-8")
+    lineage = {"rust": {"forked_from": "kirocrew", "private_to": "rust"}}
+    monkeypatch.setattr(agent_state, "get_fork_info", lambda n, strict=False: lineage.get(n))
+    cfg = _cfg(rust=KiroCrewAgentConfig(member_id="rust", kiro_agent="rust"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == [] and "user-level agent" in report.dry_run_failed["rust"]
+    assert (user / "rust.json").is_file() and (user / "rust.md").read_text() == twin
+    assert lineage
+
+
+@pytest.mark.parametrize("step", ["lineage", "repoint"])
+def test_a_retirement_whose_move_fails_puts_the_copy_back(layout, persisted, monkeypatch, step):
+    """A lineage drop or a repoint that fails after the copy moved puts the copy and
+    its lineage back, so the crewmate keeps running where it was."""
+    from kiro_crew import agent_state
+    from kiro_crew import mate_config_migration as migration
+
+    user, _mates = layout
+    fork = _template("rust", prompt="Write Rust.")
+    _write(user, "rust", fork)
+    original = {"forked_from": "kirocrew", "private_to": "rust"}
+    lineage = {"rust": dict(original)}
+    monkeypatch.setattr(agent_state, "get_fork_info", lambda n, strict=False: lineage.get(n))
+    monkeypatch.setattr(
+        agent_state,
+        "set_fork_info",
+        lambda n, f, p: lineage.__setitem__(n, {"forked_from": f, "private_to": p}),
+    )
+    if step == "lineage":
+
+        def unwritable(_name):
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr(agent_state, "clear_fork_info", unwritable)
+    else:
+        monkeypatch.setattr(agent_state, "clear_fork_info", lambda n: lineage.pop(n, None))
+
+        def refused(*_a, **_k):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(migration, "_repoint", refused)
+    cfg = _cfg(rust=KiroCrewAgentConfig(member_id="rust", kiro_agent="rust"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == [] and "rust" in report.repoint_failed
+    assert json.loads((user / "rust.json").read_text()) == fork
+    assert lineage == {"rust": original}

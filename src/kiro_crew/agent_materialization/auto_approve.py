@@ -66,9 +66,16 @@ def declared_auto_approve(emitted: Mapping[str, object]) -> dict[str, tuple[str,
     }
 
 
-def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
-    """Local alias so tests can monkeypatch one name (see governance)."""
-    return dict(strip_ungoverned_auto_approve(servers))
+def _strip_ungoverned_auto_approve(
+    servers: dict[str, Any], *, audit: bool = True
+) -> dict[str, Any]:
+    """Local alias so tests can monkeypatch one name (see governance).
+
+    *audit* False is for a read-only check that writes the result nowhere.
+    """
+    if audit:
+        return dict(strip_ungoverned_auto_approve(servers))
+    return dict(strip_ungoverned_auto_approve(servers, audit=False))
 
 
 def _write_derived_permissions(
@@ -308,7 +315,7 @@ def _may_auto_approve(ref: str) -> bool:
     return may_skip_gate_now(ref)
 
 
-def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:
+def _apply_allowed_tools_ceiling(config: dict, *, source: str, audit: bool = True) -> None:
     """Filter ``config["allowedTools"]`` through the governance ceiling, in place.
 
     ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so
@@ -327,7 +334,9 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:
     Withholding a grant is a permission DECISION, so it leaves the same
     ``mcp_auto_approve_withheld`` SEL record every other ``allowedTools``
     writer emits — best-effort, never raising, so an audit failure cannot
-    break a build or an install.
+    break a build or an install. *audit* False is for a caller that only asks
+    whether a pass would remove something and writes the result nowhere, so no
+    grant was withheld and there is no decision to record.
     """
     allowed = config.get("allowedTools")
     if not isinstance(allowed, list):
@@ -339,7 +348,7 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:
             continue
         (kept if _may_auto_approve(ref) else withheld).append(ref)
     config["allowedTools"] = kept
-    if withheld:
+    if withheld and audit:
         try:
             agent_mod.sel().log_api_access(
                 caller="system",

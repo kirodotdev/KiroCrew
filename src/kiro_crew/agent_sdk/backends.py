@@ -196,6 +196,9 @@ with no row here.
    * - ``ACP_BACKENDS_MCP_WIRE_REINJECT``
      - pre-session registry query (whether the dashboard may skip a session reset
        because Crew re-sends the projection at the next turn boundary)
+   * - ``ACP_BACKENDS_SPEC_FILE_GRANTS``
+     - pre-session registry query (whether a start on a crew-bound spec Crew does
+       not own is refused while the file's grants exceed the ceiling)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
@@ -848,6 +851,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
+    ACP_BACKENDS_SPEC_FILE_GRANTS,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,

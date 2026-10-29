@@ -303,6 +303,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     )
     from kiro_crew.agent_materialization.fork_refresh import (  # noqa: F401
         _FORK_REFRESH_WAIT_SECS,
+        SharedTemplateOverCeiling,
         _fork_refresh_count_lock,
         _fork_refresh_failed,
         _fork_refresh_lock,
@@ -312,6 +313,8 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _refresh_forked_templates_locked,
         fork_origin_is_owned,
         hold_spawn_gate,
+        name_has_another_claimant,
+        require_shared_template_within_ceiling,
     )
     from kiro_crew.agent_materialization.guide_platform import (  # noqa: F401
         grant_guide_platform_once,
@@ -987,6 +990,9 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_refresh_forked_templates",
         "_refresh_forked_templates_locked",
         "fork_origin_is_owned",
+        "require_shared_template_within_ceiling",
+        "SharedTemplateOverCeiling",
+        "name_has_another_claimant",
         "hold_spawn_gate",
     ),
     "kiro_crew.agent_materialization.service_agents": (

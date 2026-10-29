@@ -579,6 +579,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"
     ),
+    "ACP_BACKENDS_SPEC_FILE_GRANTS": (
+        "whether a start on a crew-bound spec Kiro Crew does not own is refused "
+        "while that file's grants exceed the ceiling, because the host reads them. "
+        "Both states hold the governance ceiling, so it is no feature a reader "
+        "would choose a harness for"
+    ),
     "ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY": (
         "which directory a host resolves its agent specs from, and therefore "
         "whether the session's project checkout scopes the broker-overlay lookup. "

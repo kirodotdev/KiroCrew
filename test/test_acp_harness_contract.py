@@ -244,6 +244,26 @@ async def test_kiro_spawn_refuses_when_fork_governance_is_unresolved(
 
 
 @pytest.mark.asyncio
+async def test_kiro_spawn_refuses_a_bound_unowned_spec_over_the_ceiling(
+    found_binary, kiro_gates_pass, monkeypatch, tmp_path
+):
+    """kiro-cli honours the spec file's grants and Crew never rewrites a spec it does
+    not own, so the spawn asks, under kiro-cli's own backend id, and is refused."""
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    calls: list[tuple[str | None, str]] = []
+
+    def _over(agent, backend):
+        calls.append((agent, backend))
+        raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
+
+    monkeypatch.setattr(agent_mod, "require_shared_template_within_ceiling", _over)
+    with pytest.raises(AcpRuntimeError, match="over the ceiling"):
+        await harness_for(ACP_BACKEND_KIRO).resolve_spawn(_ctx(tmp_path))
+    assert calls == [("a", ACP_BACKEND_KIRO)]
+
+
+@pytest.mark.asyncio
 async def test_kiro_spawn_refuses_a_workspace_overlapping_the_agents_tree(
     found_binary, kiro_gates_pass, monkeypatch, tmp_path
 ):
