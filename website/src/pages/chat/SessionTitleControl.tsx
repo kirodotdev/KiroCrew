@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { EyeOff, Loader, Pen, Pin, Sparkles, Undo2, VenetianMask } from 'lucide-react'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import useHeldWindow from '../../hooks/useHeldWindow'
+import { claimSlotTitleGeneration, useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { Btn, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { MOVE_UNDO_MS } from '../../components/MoveUndoBar'
@@ -75,6 +76,7 @@ const UNDO_WINDOW_MS = MOVE_UNDO_MS
 // the client cap is never looser than the server's.
 const TITLE_MAX_LENGTH = 200
 const renameRecovery = new Map<string, RenameRecovery>()
+
 export default function SessionTitleControl({
   slotKey,
   title,
@@ -116,9 +118,10 @@ export default function SessionTitleControl({
   useEffect(() => { setLocalEditing(false) }, [slotKey])
   // Keyed by slot, not a bare boolean: the main header re-targets this same
   // instance when the user switches sessions mid-generation, and the spinner
-  // must follow the slot that is generating, not the one in front.
-  const [generatingSlots, setGeneratingSlots] = useState<Set<string>>(new Set())
-  const generating = generatingSlots.has(slotKey)
+  // must follow the slot that is generating, not the one in front. Read from
+  // the per-slot set every title control shares, so each pane and menu showing
+  // the slot shows the spinner and none of them starts a second generation.
+  const generating = useSlotTitleGenerating(slotKey)
   // One-shot undo for a generated title. Auto-title replaces a name the user
   // may have typed with no confirm, and cold readers refused to press it for
   // exactly that reason (UX rounds); the previous name is kept here and
@@ -281,18 +284,20 @@ export default function SessionTitleControl({
   }
 
   const regenerate = () => {
-    if (generating) return
+    // The shared claim, not this render's `generating`: a press in another
+    // pane or menu this same tick has already taken the slot.
+    const slot = slotKey
+    const slotTitleNow = () => store.getState().dashboard.slots.find((s) => s.key === slot)?.title ?? title
+    const atClick = slotTitleNow()
+    const call = claimSlotTitleGeneration(slot)
+    if (!call) return
     onAttempt?.()
     setUndoable(null)
     // Same region, same rule as `commit`: emptied when the attempt starts,
     // written when the server answers. A typed rename and Auto-title are the
     // one control's two rename paths, so a screen reader hears both confirmed.
     setRenameAnnouncement('')
-    const slot = slotKey
-    const slotTitleNow = () => store.getState().dashboard.slots.find((s) => s.key === slot)?.title ?? title
-    const atClick = slotTitleNow()
-    setGeneratingSlots((prev) => new Set(prev).add(slot))
-    api.generateTitle(slot).then((r) => {
+    call.then((r) => {
       /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */
       if (r.title) {
         // The Undo baseline is the title on screen at the moment the generated
@@ -315,7 +320,7 @@ export default function SessionTitleControl({
       }
     }).catch((e) => {
       report(e, 'pages.chatPage.could_not_generate_title')
-    }).finally(() => setGeneratingSlots((prev) => { const next = new Set(prev); next.delete(slot); return next }))
+    })
   }
 
   // The memory-mode glyph's tooltip text. Beside the editor the glyph names
@@ -434,7 +439,7 @@ export default function SessionTitleControl({
             ? 'text-[13px] font-semibold text-text-strong font-body truncate min-w-0'
             : 'session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]'}
         />
-        <Pen size={compact ? 12 : 13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 group-focus-visible/title:opacity-60 transition-opacity" />
+        <Pen size={compact ? 12 : 13} className={`shrink-0 text-muted opacity-0 group-hover/header:opacity-60 group-focus-visible/title:opacity-60 transition-opacity${compact ? ' @max-[20rem]/panehead:hidden' : ''}`} />
       </Clickable>
       {undo
         ? (
@@ -473,7 +478,12 @@ export default function SessionTitleControl({
           <Btn
             aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')}
             title={i18nT('pages.chatPage.regenerate_title_with_llm')}
-            className="shrink-0 flex items-center gap-1 text-muted opacity-0 group-hover/header:opacity-70 [@media(hover:none)]:opacity-70 focus-visible:opacity-100 focus-visible:text-accent hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0"
+            // In a narrow split pane (below 20rem of the pane's title row,
+            // `@container/panehead` in ChatPane) the button would squeeze the
+            // title to a letter and run into the pane's own buttons, so it
+            // hides there with the Pen; the title stays readable and tapping
+            // it still renames. Auto-title is offered in a wider pane.
+            className={`shrink-0 flex items-center gap-1 text-muted opacity-0 group-hover/header:opacity-70 [@media(hover:none)]:opacity-70 focus-visible:opacity-100 focus-visible:text-accent hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0${compact ? ' @max-[20rem]/panehead:hidden' : ''}`}
             onClick={(e) => { e.stopPropagation(); regenerate() }}
           >
             <Sparkles size={compact ? 14 : 16} />
