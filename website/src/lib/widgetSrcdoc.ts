@@ -42,6 +42,7 @@
 
 import { parseCssColor, relativeLuminance } from './iconContrast'
 import { TAILWIND_RUNTIME_PATH as TAILWIND_RUNTIME_PATH_ROOT } from './vendorPaths'
+import { runtimeScriptText } from './tailwindRuntimeInline'
 import { withBase } from './basePath'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
@@ -1533,9 +1534,10 @@ interface BuildSrcdocOptions {
    * FRAME_WHEEL_RELAY_BODY), for a host whose desktop trackpad swipe must be
    * able to run over the frame. Off by default. */
   relayWheel?: boolean
-  /** The Tailwind runtime's own text, written inline instead of the same-origin
-   *  `<script src>`, for a document opened away from the dashboard (a saved file).
-   *  Unset by default, so no rendered surface changes. */
+  /** The Tailwind runtime's source, carried inside the document instead of
+   * linked. Set by surfaces that open the document as a blob or save it as a
+   * file (lib/tailwindRuntimeInline.ts says why); the link stays when it is
+   * unset or cannot be inlined safely. */
   inlineRuntime?: string
 }
 
@@ -1657,12 +1659,15 @@ export function buildSrcdoc({
   // environments that lack a running dev server. Using a non-fetching placeholder
   // avoids the network dial entirely — the iframe's browser loads the script from
   // the serialized HTML string, never from a live DOM node in our process.
-  if (inlineRuntime !== undefined) {
+  // A bundle that cannot sit inside a script element (or an empty one) keeps
+  // the link; runtimeScriptText says why.
+  const runtimeText = inlineRuntime ? runtimeScriptText(inlineRuntime) : null
+  if (runtimeText !== null) {
     // A document that will be opened away from the dashboard (a saved file) cannot
     // load the runtime by URL, so the caller hands in its text and it is written
     // here, in the same place and under the same nonce as the script it replaces.
     const runtime = hostScript()
-    runtime.textContent = escapeScriptClose(inlineRuntime)
+    runtime.textContent = runtimeText
     head.appendChild(runtime)
   } else {
     const tailwindPlaceholder = doc.createElement('meta')

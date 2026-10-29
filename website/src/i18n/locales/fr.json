@@ -9875,7 +9875,8 @@
       "save_failed": "échec de l'enregistrement",
       "star_as_artifact": "Ajouter aux favoris comme artefact",
       "starred_as_click_to_remove": "Ajouté aux favoris sous « {{name}} » — clique pour le retirer",
-      "open_artifact_named": "Ouvrir l’artefact « {{slug}} »"
+      "open_artifact_named": "Ouvrir l’artefact « {{slug}} »",
+      "runtime_unavailable": "Impossible de lire le script de style : Ouvrir dans un nouvel onglet et Télécharger risquent d'afficher ce widget sans mise en forme."
     },
     "widgetPlaceholder": {
       "generating": "génération…"
@@ -12049,7 +12050,8 @@
       "content_copied_from_version": "contenu copié depuis la v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "Impossible de lire le script de style : le fichier téléchargé risque de s'ouvrir sans mise en forme."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefact",

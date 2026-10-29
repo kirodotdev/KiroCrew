@@ -9657,7 +9657,8 @@
       "save_failed": "Speichern fehlgeschlagen",
       "star_as_artifact": "Als Artefakt markieren",
       "starred_as_click_to_remove": "Markiert als „{{name}}“ — klicken, um die Markierung zu entfernen",
-      "open_artifact_named": "Artefakt „{{slug}}“ öffnen"
+      "open_artifact_named": "Artefakt „{{slug}}“ öffnen",
+      "runtime_unavailable": "Das Styling-Skript konnte nicht gelesen werden, daher zeigen „In neuem Tab öffnen“ und „Herunterladen“ dieses Widget möglicherweise ohne Styling."
     },
     "widgetPlaceholder": {
       "generating": "wird erstellt…"
@@ -11801,7 +11802,8 @@
       "content_copied_from_version": "Inhalt kopiert von v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "Das Styling-Skript konnte nicht gelesen werden, daher öffnet sich die heruntergeladene Datei möglicherweise ohne Styling."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefakt",

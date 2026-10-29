@@ -9657,7 +9657,8 @@
       "save_failed": "सहेजना विफल",
       "star_as_artifact": "आर्टिफ़ैक्ट के रूप में स्टार करें",
       "starred_as_click_to_remove": "\"{{name}}\" के रूप में स्टार किया गया — हटाने के लिए क्लिक करें",
-      "open_artifact_named": "आर्टिफ़ैक्ट “{{slug}}” खोलो"
+      "open_artifact_named": "आर्टिफ़ैक्ट “{{slug}}” खोलो",
+      "runtime_unavailable": "स्टाइलिंग स्क्रिप्ट पढ़ी नहीं जा सकी, इसलिए नए टैब में खोलने या डाउनलोड करने पर यह विजेट बिना स्टाइल के दिख सकता है।"
     },
     "widgetPlaceholder": {
       "generating": "जनरेट हो रहा है…"
@@ -11801,7 +11802,8 @@
       "content_copied_from_version": "सामग्री v{{version}} से कॉपी की गई",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "स्टाइलिंग स्क्रिप्ट पढ़ी नहीं जा सकी, इसलिए डाउनलोड की गई फ़ाइल बिना स्टाइल के खुल सकती है।"
     },
     "artifactPopoutFrame": {
       "artifact": "आर्टिफ़ैक्ट",

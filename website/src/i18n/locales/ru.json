@@ -10093,7 +10093,8 @@
       "save_failed": "не удалось сохранить",
       "star_as_artifact": "В избранное как артефакт",
       "starred_as_click_to_remove": "В избранном как «{{name}}» — нажми, чтобы убрать",
-      "open_artifact_named": "Открыть артефакт «{{slug}}»"
+      "open_artifact_named": "Открыть артефакт «{{slug}}»",
+      "runtime_unavailable": "Не удалось прочитать скрипт стилей, поэтому «Открыть в новой вкладке» и «Скачать» могут показать этот виджет без стилей."
     },
     "widgetPlaceholder": {
       "generating": "генерация…"
@@ -12297,7 +12298,8 @@
       "content_copied_from_version": "содержимое скопировано из v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "Не удалось прочитать скрипт стилей, поэтому скачанный файл может открыться без стилей."
     },
     "artifactPopoutFrame": {
       "artifact": "Артефакт",

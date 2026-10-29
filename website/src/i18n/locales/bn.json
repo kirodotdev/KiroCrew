@@ -9657,7 +9657,8 @@
       "save_failed": "সেভ ব্যর্থ হয়েছে",
       "star_as_artifact": "আর্টিফ্যাক্ট হিসেবে স্টার দাও",
       "starred_as_click_to_remove": "\"{{name}}\" নামে স্টার দেওয়া — সরাতে ক্লিক করো",
-      "open_artifact_named": "আর্টিফ্যাক্ট “{{slug}}” খোলো"
+      "open_artifact_named": "আর্টিফ্যাক্ট “{{slug}}” খোলো",
+      "runtime_unavailable": "স্টাইলিং স্ক্রিপ্ট পড়া যায়নি, তাই নতুন ট্যাবে খুলুন ও ডাউনলোড এই উইজেটটি স্টাইল ছাড়া দেখাতে পারে।"
     },
     "widgetPlaceholder": {
       "generating": "তৈরি হচ্ছে…"
@@ -11801,7 +11802,8 @@
       "content_copied_from_version": "v{{version}} থেকে কনটেন্ট কপি করা হয়েছে",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "স্টাইলিং স্ক্রিপ্ট পড়া যায়নি, তাই ডাউনলোড করা ফাইলটি স্টাইল ছাড়া খুলতে পারে।"
     },
     "artifactPopoutFrame": {
       "artifact": "আর্টিফ্যাক্ট",
