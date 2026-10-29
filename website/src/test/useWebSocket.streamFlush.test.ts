@@ -248,4 +248,28 @@ describe('useWebSocket lands each frame as one stream flush', () => {
     runFrames()
     expect(status(BG[0])?.kind).toBe('thinking')
   })
+
+  it('a refinement that follows its call\'s final result does not put the finished call back', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage(toolCall(OPEN, 'call-1')) })
+    act(() => { ws.simulateMessage({ type: 'tool_result', data: { slot: OPEN, output: 'ok', tool_call_id: 'call-1' } }) })
+    runFrames()
+    expect(status(OPEN)?.kind).toBe('thinking')
+    act(() => {
+      ws.simulateMessage({ type: 'tool_call', data: { slot: OPEN, tool: 'make test', kind: 'execute', input_preview: 'make test', tool_call_id: 'call-1', is_update: true, is_shell: true } })
+    })
+    runFrames()
+    expect(status(OPEN)?.kind).toBe('thinking')
+  })
+
+  it('a refinement while its call still runs keeps updating the line', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage(toolCall(OPEN, 'call-1')) })
+    act(() => { ws.simulateMessage({ type: 'tool_result', data: { slot: OPEN, output: 'partial', tool_call_id: 'call-1', final: false } }) })
+    act(() => {
+      ws.simulateMessage({ type: 'tool_call', data: { slot: OPEN, tool: 'make test', kind: 'execute', input_preview: 'make test', tool_call_id: 'call-1', is_update: true, is_shell: true } })
+    })
+    runFrames()
+    expect(status(OPEN)).toMatchObject({ kind: 'tool', toolCallId: 'call-1' })
+  })
 })

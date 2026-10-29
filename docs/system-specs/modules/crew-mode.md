@@ -3407,8 +3407,10 @@ both the pill and the pane, so a Stop from another tab reads "Stopping…" on
 both surfaces from the one seam — as the footer the caption replaces did. The caption's text is the DM
 header identity pill's OWN reading, through the one shared hook
 `useSlotActivity` (`pages/members/useSlotActivity.ts` → `resolvePillActivity`
-over the slot's live status record `slotStatusDetail`, the stream state and
-the tool log's returned flag, labelled by the shared `toolStatusLabel`), so
+over the slot's live status record `slotStatusDetail` and the stream state,
+labelled by the shared `toolStatusLabel`; a returned call needs no flag of its
+own, because `sseToolResult` moves `slotStatusDetail` to thinking when the
+named call's final result arrives, for every surface that renders it), so
 the header and the chat read one moment from one seam and can never disagree
 on WHAT the mate is doing — only on when the chat line says it, see the
 hold below. It answers

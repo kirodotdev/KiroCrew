@@ -4,7 +4,7 @@
 import { useMemo, type MutableRefObject } from 'react'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote } from '../../store/chatSlice'
+import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote, selectSlotToolLog } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
 import { isSlotMuted } from '../sessionMute'
@@ -245,6 +245,16 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         // in toolStatusLabel, so this frame handler only stores the parts.
         const tcid = (data as Record<string, unknown>).tool_call_id as string | undefined
         const isUpdate = (data as Record<string, unknown>).is_update === true
+        // A refinement can arrive AFTER its call's final result (the backend
+        // relays a completed `tool_call_update` as an `is_update` frame behind
+        // the result). The result already moved the line to thinking
+        // (`sseToolResult`); the refinement still merges into the tool log
+        // above, but it must not put the finished call back on the status line.
+        if (isUpdate && tcid) {
+          const entry = selectSlotToolLog(store.getState(), data.slot)
+            .findLast((e) => e.type === 'tool' && e.tool_call_id === tcid)
+          if (entry && entry.output !== undefined && !entry.output_partial) return
+        }
         const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
         const frame = data as Record<string, unknown>
         const toolName = sanitizeLlmOutput(data.tool || '')
