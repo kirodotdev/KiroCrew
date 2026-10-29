@@ -858,6 +858,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         mcp_search_path,
         resolved_command_casing,
         sanitize_spec_env,
+        saved_command_casing,
         spec_path_key,
     )
     from kiro_crew.executors import (  # noqa: F401

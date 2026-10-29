@@ -1241,7 +1241,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     # The names the unsplit module imported from the rest of kiro_crew and that only
     # an owner reads now, from their home modules.
     from kiro_crew.config.paths import config_dir  # noqa: F401
-    from kiro_crew.env import spec_path_key  # noqa: F401
+    from kiro_crew.env import saved_command_casing, spec_path_key  # noqa: F401
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         KIROCREW_BIN_MCP_SERVERS,
         mcp_entry_is_muted,

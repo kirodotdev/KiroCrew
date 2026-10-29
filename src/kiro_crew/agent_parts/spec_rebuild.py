@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         project_agent_names,
         repair_agent_configs,
         resolved_command_casing,
+        saved_command_casing,
         service_agents,
         spec_path_key,
         worker_agent,
@@ -701,7 +702,7 @@ def rebuild_agent_config(
         if not cmd:
             return None, ""
         if os.path.isabs(cmd) and os.path.isfile(cmd) and os.access(cmd, os.X_OK):
-            return cmd, ""
+            return saved_command_casing(cmd), ""
         # Case-insensitive PATH key: a Windows-authored spec says "Path", and
         # resolving against a DIFFERENT path than the emitted spec carries would
         # reopen the probe/session split from the other side.

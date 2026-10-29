@@ -1264,6 +1264,27 @@ def resolved_command_casing(path: str | None) -> str:
     return path[: -len(name)] + matches[0]
 
 
+def saved_command_casing(path: str) -> str:
+    """Heal a saved absolute command whose only flaw is a PATHEXT extension.
+
+    Builds before :func:`resolved_command_casing` existed persisted
+    ``shutil.which`` results such as ``...\\demo-mcp.EXE`` as absolute
+    commands, and every resolver accepts an existing absolute command verbatim,
+    so the spelling never healed. This repairs only that signature: the stem
+    matches the on-disk entry exactly and the extension differs in case alone.
+    Any other spelling, a stem written in different case included, is the
+    operator's own and is returned unchanged.
+    """
+    repaired = resolved_command_casing(path)
+    if repaired == path:
+        return path
+    stem, ext = os.path.splitext(os.path.basename(path))
+    new_stem, new_ext = os.path.splitext(os.path.basename(repaired))
+    if stem == new_stem and ext != new_ext:
+        return repaired
+    return path
+
+
 def mcp_runtime_path(base_path: str = "") -> str:
     """Contributed MCP directories, then :func:`augmented_path` unchanged.
 

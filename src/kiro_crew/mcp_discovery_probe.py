@@ -29,6 +29,7 @@ from kiro_crew.env import (
     mcp_search_path,
     resolved_command_casing,
     sanitize_spec_env,
+    saved_command_casing,
     spec_path_key,
 )
 from kiro_crew.executors import mcp_probe_executor
@@ -391,16 +392,17 @@ async def probe_server(
         # Same rule the agent-config resolver and gatewayd's rewriter apply, so
         # the probe spawns the spelling the session will use: an absolute
         # command that exists and is executable is the operator's own spelling
-        # and runs verbatim; a PATH-resolved one gets the casing repair, since
-        # a PATHEXT-synthesized ``.EXE`` reaching an ``argv[0]``-dispatching
-        # shim would fail (or pass) the probe for a reason the session does
-        # not share.
+        # and runs verbatim, except a saved PATHEXT ``.EXE`` extension, which
+        # ``saved_command_casing`` heals; a PATH-resolved one gets the casing
+        # repair, since a PATHEXT-synthesized ``.EXE`` reaching an
+        # ``argv[0]``-dispatching shim would fail (or pass) the probe for a
+        # reason the session does not share.
         if (
             os.path.isabs(server.command)
             and os.path.isfile(server.command)
             and os.access(server.command, os.X_OK)
         ):
-            resolved = server.command
+            resolved = saved_command_casing(server.command)
         else:
             resolved = resolved_command_casing(shutil.which(server.command, path=effective_path))
         if not resolved:
