@@ -150,7 +150,7 @@ describe('slotDraftStore', () => {
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', maxEntries: 3, evictAfterWrite: true, sanitize: isString })
       const d: Record<string, string> = {}
       for (let i = 0; i < 6; i++) d[`slot-${i}`] = `d${i}`
-      s.save(d)
+      expect(s.save(d)).toBe(true)
       expect(Object.keys(d).sort()).toEqual(['slot-3', 'slot-4', 'slot-5'])
       expect(d['slot-0']).toBeUndefined()
       expect(d['slot-5']).toBe('d5')
@@ -163,7 +163,7 @@ describe('slotDraftStore', () => {
       for (let i = 0; i < 6; i++) d[`slot-${i}`] = `d${i}`
       const orig = Storage.prototype.setItem
       Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
-      try { s.save(d) } finally { Storage.prototype.setItem = orig }
+      try { expect(s.save(d)).toBe(false) } finally { Storage.prototype.setItem = orig }
       // Persist failed, so NO eviction is mirrored back — every draft survives.
       expect(Object.keys(d).length).toBe(6)
       expect(d['slot-0']).toBe('d0')

@@ -353,8 +353,10 @@ class TestSubagentCriticalRules:
         assert "Do not assume anyone's gender." in rules
 
     def test_other_runtimes_keep_their_variants(self):
+        # A dashboard slot full chat can open gets the dashboard block plus the
+        # goal rule (test_goal_marker_rule.py covers the slots that do not).
         assert context_module._critical_rules_for("dashboard:x", None) == (
-            context_module._CRITICAL_RULES
+            context_module._CRITICAL_RULES_GOAL
         )
         assert context_module._critical_rules_for("cron:x", None) == (
             context_module._CRITICAL_RULES_CHANNEL

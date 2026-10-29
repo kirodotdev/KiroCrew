@@ -4,7 +4,8 @@ Pins what the mirror-link endpoint answers for a malformed body, a reminder that
 posted, a target that cannot be resolved, a failed first send or backfill send, a lost
 ownership race, a failing occupancy precheck and governance that narrows before the first
 send; the non-Slack backfill (turn-aware selection, chunking, the delivery budget, numbered
-options, unconverted markdown, redaction) and the claim ordering and rollback around it;
+options, stripped goal lines, unconverted markdown, redaction) and the claim ordering and
+rollback around it;
 and the inbound marker on the claim, which follows the transport's resume capability and
 target policy, never survives a governance denial and has the occupancy precheck in front of
 it.
@@ -310,6 +311,24 @@ class TestMirrorBackfillFidelity:
         body = "\n".join(self._sent(transport))
         assert "[OPTIONS" not in body
         assert "1. Ship now" in body and "2. Wait" in body
+
+    @pytest.mark.asyncio
+    async def test_a_goal_marker_is_not_backfilled_as_prose(self, tmp_path, monkeypatch):
+        # Backfill reaches the channel through strip_control_comments alone, so
+        # that shared boundary must remove the dashboard-only goal line.
+        state = _prep(tmp_path, monkeypatch)
+        transport = _real_caps_transport("telegram")
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "ship it?")
+        slot.append("assistant", "Ready.\n[GOAL: Deliver the result]\n[OPTIONS: Ship now | Wait]")
+        slot.drain()
+
+        await self._link(state)
+        body = "\n".join(self._sent(transport))
+        assert "[GOAL" not in body
+        assert "Ready." in body and "1. Ship now" in body
 
     @pytest.mark.asyncio
     async def test_long_message_is_chunked_not_truncated(self, tmp_path, monkeypatch):
