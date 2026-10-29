@@ -262,6 +262,8 @@ export default function AppDetailPage() {
             origin: installed.origin,
             resources: installed.resources,
             lifecycle: installed.lifecycle,
+            // Set when boot skipped this built-in; the notice below reads it.
+            unavailable: installed.unavailable,
             updateAvailable: registryEntry.updateAvailable || false,
             // Built-ins never carry a star count (they have no repository of
             // their own) — enforce the invariant here rather than trusting the
@@ -387,6 +389,8 @@ export default function AppDetailPage() {
             origin: installed.origin,
             resources: installed.resources,
             lifecycle: installed.lifecycle,
+            // Set when boot skipped this built-in; the notice below reads it.
+            unavailable: installed.unavailable,
             updateAvailable: registryEntry?.updateAvailable || false,
             manifest: m,
           })
@@ -870,6 +874,18 @@ export default function AppDetailPage() {
           <div className="mb-4 bg-ok/10 border border-ok/20 rounded-lg p-3 animate-rise">
             <span className="text-ok text-sm block">{successMsg}</span>
           </div>
+        )}
+
+        {/* A built-in app the gateway skipped at boot: its page cannot open, so say
+            why here instead of leaving the user with a page that fails silently.
+            It is a caught import error, so it renders through ErrorNotice; the
+            hand-off is safe because this page holds no unsaved state. */}
+        {app.installed && app.unavailable && (
+          <ErrorNotice
+            message={i18nT('pages.appDetailPage.unavailable_notice', { reason: app.unavailable.reason })}
+            askAgent
+            className="mb-4 animate-rise"
+          />
         )}
 
         {/* Re-consent after an update that widened the session-approval grant.

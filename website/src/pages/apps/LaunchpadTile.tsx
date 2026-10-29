@@ -91,9 +91,12 @@ export default function LaunchpadTile({
   const iconUrlDark = installedIcon(m?.iconPathDark, m?.iconUrlDark, app.name)
   const pageIcon = m?.ui?.pages?.[0]?.icon || ''
 
-  const disabled = !app.enabled
+  // A built-in app the gateway skipped at boot has no routes, so it renders like a
+  // disabled app and its tile opens the detail page, which says why.
+  const unavailable = !!app.unavailable
+  const disabled = !app.enabled || unavailable
   const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
-  const openable = app.enabled && (hasUI || !!m?.openCommand)
+  const openable = app.enabled && !unavailable && (hasUI || !!m?.openCommand)
   const canUninstall = app.lifecycle !== 'locked'
 
   // Status caption under the name: an in-flight management action wins (the
@@ -106,7 +109,9 @@ export default function LaunchpadTile({
   const actionInFlight = !!actionLoading && actionLoading.startsWith(`${name}:`)
   const caption = actionInFlight
     ? i18nT('apps.commandBar.working')
-    : disabled
+    : unavailable
+      ? i18nT('pages.libraryPage.tile_unavailable')
+      : disabled
       ? i18nT('pages.libraryPage.tile_disabled')
       : !pinnable
         ? i18nT('pages.libraryPage.tile_no_sidebar_page')
@@ -245,7 +250,8 @@ export default function LaunchpadTile({
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            {disabled ? (
+            {/* The stored switch, not `disabled`: an unavailable app may still be enabled. */}
+            {!app.enabled ? (
               <DropdownMenuItem
                 disabled={actionLoading === `${name}:enable`}
                 onSelect={() => onAction(name, 'enable')}

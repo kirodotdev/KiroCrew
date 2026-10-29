@@ -98,6 +98,12 @@ export type InstalledApp = {
   lifecycle?: string  // "gateway" | "app" | "locked"
   migratedTo?: string
   orphaned?: boolean
+  /**
+   * Set on a built-in app the gateway skipped at boot because its files could not
+   * be read; `reason` is the redacted `"<ExceptionType>: <message>"`. Absent on an
+   * app that loaded.
+   */
+  unavailable?: { reason: string }
   updateAvailable?: boolean
   manifest: {
     name: string
@@ -335,11 +341,20 @@ export function normalizeInstalledApp<T extends InstalledApp>(raw: T): T {
   const name = str(raw?.name)
   const version = str(raw?.version, '0.0.0')
   const displayName = str(raw?.displayName, name)
+  // Kept only in the one shape the server sends, so a reader can trust `reason`.
+  const unavailableRaw = (raw as { unavailable?: unknown }).unavailable
+  const unavailableReason =
+    unavailableRaw && typeof unavailableRaw === 'object'
+      ? (unavailableRaw as { reason?: unknown }).reason
+      : undefined
   return {
     ...raw,
     name,
     version,
     displayName,
+    ...('unavailable' in raw
+      ? { unavailable: typeof unavailableReason === 'string' ? { reason: unavailableReason } : undefined }
+      : {}),
     manifest: {
       ...manifest,
       name: str(manifest.name, name),

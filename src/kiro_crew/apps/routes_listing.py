@@ -20,6 +20,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps.backend import list_app_processes
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.hooks_integration import get_all_hook_health
 from kiro_crew.apps.manager import (
     _credential_free_source_metadata,
@@ -121,7 +123,11 @@ async def handle_list_apps(request: web.Request) -> web.Response:
     # than a second flat name to maintain. The envelope also keeps the subsystem
     # explicit: this is hook-wiring health, not the subprocess backend_status.
     hook_health = get_all_hook_health()
+    # A built-in app skipped at boot is listed as unavailable, with the reason, so
+    # the App Store does not present it as a working app.
+    skipped = _unavailable_builtins(request.app)
     for app in apps:
+        _mark_unavailable(app, skipped)
         proc = procs.get(app["name"])
         if proc:
             app["backend_status"] = {
@@ -353,7 +359,8 @@ async def handle_get_app(request: web.Request) -> web.Response:
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(await asyncio.to_thread(_installed_app_detail, name, info))
+    detail = await asyncio.to_thread(_installed_app_detail, name, info)
+    return web.json_response(_mark_unavailable(detail, _unavailable_builtins(request.app)))
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:

@@ -372,6 +372,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/routes_lifecycle.py",
         "apps/routes_listing.py",
         "apps/routes_registry.py",
+        # Same partition: scrubs the skipped built-in's reason that
+        # apps/routes_listing.py returns on GET /api/apps.
+        "apps/builtin_unavailable.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py and the cron.py owners) are the covered surfaces.
