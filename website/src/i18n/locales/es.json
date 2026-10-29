@@ -15245,7 +15245,11 @@
       "jump_to_new_other": "{{count}} nuevos · Ir al final",
       "jump_to_new_many": "{{count}} nuevos · Ir al final",
       "could_not_repair_images": "No se pudieron reparar las imágenes",
-      "session_closed_elsewhere": "Este chat se cerró fuera de esta ventana."
+      "session_closed_elsewhere": "Este chat se cerró fuera de esta ventana.",
+      "fork_point_forked_into": "Bifurcado en",
+      "fork_point_continued_in": "Los mensajes siguientes continúan en",
+      "fork_point_show_all": "Mostrar todo",
+      "fork_point_open": "Abrir {{name}}"
     },
     "chatSidebar": {
       "sign_in_then_resume": "Inicia sesión y luego pulsa Reanudar",

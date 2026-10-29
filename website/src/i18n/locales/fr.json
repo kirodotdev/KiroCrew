@@ -15245,7 +15245,11 @@
       "jump_to_new_other": "{{count}} nouveaux · Aller en bas",
       "jump_to_new_many": "{{count}} nouveaux · Aller en bas",
       "could_not_repair_images": "Impossible de réparer les images",
-      "session_closed_elsewhere": "Cette conversation a été fermée en dehors de cette fenêtre."
+      "session_closed_elsewhere": "Cette conversation a été fermée en dehors de cette fenêtre.",
+      "fork_point_forked_into": "Dérivé vers",
+      "fork_point_continued_in": "Les messages suivants continuent dans",
+      "fork_point_show_all": "Tout afficher",
+      "fork_point_open": "Ouvrir {{name}}"
     },
     "chatSidebar": {
       "sign_in_then_resume": "Connecte-toi, puis Reprendre",

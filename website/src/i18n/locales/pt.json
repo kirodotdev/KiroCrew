@@ -15245,7 +15245,11 @@
       "jump_to_new_other": "{{count}} novas · Ir para o final",
       "jump_to_new_many": "{{count}} novas · Ir para o final",
       "could_not_repair_images": "Não foi possível reparar as imagens",
-      "session_closed_elsewhere": "Este chat foi fechado fora desta janela."
+      "session_closed_elsewhere": "Este chat foi fechado fora desta janela.",
+      "fork_point_forked_into": "Bifurcado em",
+      "fork_point_continued_in": "As mensagens seguintes continuam em",
+      "fork_point_show_all": "Mostrar tudo",
+      "fork_point_open": "Abrir {{name}}"
     },
     "chatSidebar": {
       "sign_in_then_resume": "Entre e depois toque em Retomar",
