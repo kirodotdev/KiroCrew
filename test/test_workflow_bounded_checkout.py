@@ -11,6 +11,7 @@ ALLOWED with a comment explaining why it cannot be migrated to a bounded fetch.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -48,10 +49,17 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
 )
 
 
-def _violations() -> list[tuple[str, str]]:
+def _tightest(timeout: object) -> int:
+    """A per-leg expression is judged by its smallest number, the tightest leg."""
+    numbers = [int(n) for n in re.findall(r"\d+", re.sub(r"'[^']*'", "", str(timeout)))]
+    assert numbers, f"timeout-minutes {timeout!r} holds no integer to judge"
+    return min(numbers)
+
+
+def _violations(workflows: Path = WORKFLOWS) -> list[tuple[str, str]]:
     """Return (workflow filename, job id) pairs that violate the invariant."""
     found: list[tuple[str, str]] = []
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in sorted(workflows.glob("*.yml")):
         try:
             doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError:
@@ -62,7 +70,7 @@ def _violations() -> list[tuple[str, str]]:
             if not isinstance(job_body, dict):
                 continue
             timeout = job_body.get("timeout-minutes")
-            if timeout is None or timeout > _THRESHOLD:
+            if timeout is None or _tightest(timeout) > _THRESHOLD:
                 continue
             for step in job_body.get("steps") or []:
                 if not isinstance(step, dict):
@@ -118,3 +126,12 @@ def test_no_new_full_history_checkout_under_tight_timeout() -> None:
         "     HEAD^1 is the base tip; HEAD is the merge commit. No extra fetch step needed.\n"
         "Or add the job to ALLOWED with a comment explaining why full history is required."
     )
+
+
+def test_a_tight_leg_inside_a_matrix_expression_is_still_flagged(tmp_path: Path) -> None:
+    (tmp_path / "x.yml").write_text(
+        "jobs:\n  j:\n    timeout-minutes: ${{ matrix.os == 'x' && 5 || 60 }}\n"
+        "    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n",
+        encoding="utf-8",
+    )
+    assert _violations(tmp_path) == [("x.yml", "j")]

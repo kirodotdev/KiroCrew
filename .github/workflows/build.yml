@@ -427,7 +427,8 @@ jobs:
     # resolver output is ever empty.
     runs-on: ${{ matrix.os == 'ubuntu-22.04' && (needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}
     # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
-    timeout-minutes: 45
+    # Its healthy build already takes ~35 min, so it gets 60 and Linux keeps 45.
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 60 || 45 }}
     strategy:
       max-parallel: 4
       fail-fast: false
