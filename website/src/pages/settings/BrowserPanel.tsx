@@ -95,7 +95,9 @@ export function BrowserPanel() {
   const [unknownSince, setUnknownSince] = useState<number | null>(null)
 
   const installMut = useMutation({
-    mutationFn: () => api.installBrowserCli(),
+    // No argument is the ordinary install; `{ registry: 'public' }` is the
+    // opt-in retry the status region offers after a registry refusal.
+    mutationFn: (opts: { registry: 'public' } | void) => (opts ? api.installBrowserCli(opts) : api.installBrowserCli()),
     onSuccess: (fresh) => qc.setQueryData(INSTALL_KEY, fresh),
     onError: (e) => {
       const job = browserInstallConflictJob(e)
@@ -244,6 +246,8 @@ export function BrowserPanel() {
         receivedAt={q.dataUpdatedAt}
         statusError={statusUnavailable ? failText(q.error, i18nT('pages.settings.browserPanel.cannot_load')) : null}
         allowHandoff={allowHandoff}
+        onRetryPublicRegistry={() => installMut.mutate({ registry: 'public' })}
+        retryBlockedText={installBlockText}
       />
 
       <ManagedBrowsersSection

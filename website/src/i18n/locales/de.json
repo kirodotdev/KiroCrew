@@ -16441,6 +16441,10 @@
         "backfill_folder_gone_nothing_filed": "Der Ordner {{folder}} wurde entfernt, während dies lief, daher wurde nichts einsortiert. Speichern Sie diese Einstellungen zuerst, um ihn neu zu erstellen."
       },
       "browserPanel": {
+        "public_registry_refused_message": "Auch die öffentliche npm-Registry (https://registry.npmjs.org/) hat die Anfrage abgelehnt (npm {{code}}). Möglicherweise blockiert ein Proxy oder eine Netzwerkrichtlinie auf diesem Rechner sie. Melden Sie sich erneut bei Ihrer eigenen npm-Registry an und installieren Sie dann erneut.",
+        "registry_auth_message": "npm konnte sich nicht bei Ihrer konfigurierten npm-Registry anmelden ({{registry}}, npm {{code}}). Die Anmeldung dort ist wahrscheinlich abgelaufen. Melden Sie sich erneut bei dieser Registry an (für AWS CodeArtifact: aws codeartifact login --tool npm ...) und installieren Sie erneut, oder installieren Sie einmalig aus der öffentlichen npm-Registry (https://registry.npmjs.org/).",
+        "registry_auth_message_unknown": "npm konnte sich nicht bei Ihrer konfigurierten npm-Registry anmelden (npm {{code}}). Die Anmeldung dort ist wahrscheinlich abgelaufen. Melden Sie sich erneut bei dieser Registry an (für AWS CodeArtifact: aws codeartifact login --tool npm ...) und installieren Sie erneut, oder installieren Sie einmalig aus der öffentlichen npm-Registry (https://registry.npmjs.org/).",
+        "retry_public_registry": "Aus der öffentlichen npm-Registry installieren",
         "use_builtin_label": "Integrierten Browser verwenden",
         "use_builtin_desc": "Öffnet Seiten im integrierten Panel von {{productName}}. Deaktivieren, um stattdessen mit playwright-cli zu surfen.",
         "browsing": "Surfen",

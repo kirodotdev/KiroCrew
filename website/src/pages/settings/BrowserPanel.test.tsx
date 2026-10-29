@@ -422,6 +422,63 @@ describe('BrowserPanel', () => {
     expect(screen.getByTitle(/open a chat with this error/i)).toBeTruthy()
   })
 
+  const refusedSetup = (overrides: Partial<BrowserInstallJob>) =>
+    state({
+      install_job: job({
+        kind: 'cli_setup',
+        engine: null,
+        status: 'failed',
+        stage: 'installing_cli',
+        finished_at: '2026-01-01T00:01:00Z',
+        elapsed_s: 60,
+        error_detail: 'npm-install-global: npm error code E401\nnpm error   npm login',
+        ...overrides,
+      }),
+    })
+
+  it('explains a registry refusal by name and offers the public-registry retry only on request', async () => {
+    await renderPanel(
+      refusedSetup({
+        error_code: 'registry_auth',
+        error_params: { registry: 'https://registry.example.test/npm/shared/', npm_code: 'E401' },
+      }),
+    )
+    const region = screen.getByTestId('browser-install-status')
+    expect(region.textContent).toMatch(/configured npm registry \(https:\/\/registry\.example\.test\/npm\/shared\/, npm E401\)/)
+    expect(region.textContent).toMatch(/aws codeartifact login --tool npm/)
+    // npm's own advice is not repeated.
+    expect(region.textContent).not.toMatch(/npm login/)
+    expect(api.installBrowserCli).not.toHaveBeenCalled()
+    fireEvent.click(within(region).getByRole('button', { name: /Install from the public npm registry/ }))
+    await waitFor(() => expect(api.installBrowserCli).toHaveBeenCalledWith({ registry: 'public' }))
+  })
+
+  it('offers no further retry when the public registry refused too', async () => {
+    await renderPanel(
+      refusedSetup({
+        error_code: 'public_registry_refused',
+        error_params: { registry: 'https://registry.npmjs.org/', npm_code: 'E403' },
+      }),
+    )
+    const region = screen.getByTestId('browser-install-status')
+    expect(region.textContent).toMatch(/public npm registry \(https:\/\/registry\.npmjs\.org\/\) refused the request too \(npm E403\)/)
+    expect(within(region).queryByRole('button', { name: /public npm registry/ })).toBeNull()
+  })
+
+  it('shows the gateway detail rather than invent an npm code when the parameters are missing', async () => {
+    await renderPanel(refusedSetup({ error_code: 'public_registry_refused', error_params: null }))
+    const region = screen.getByTestId('browser-install-status')
+    expect(region.textContent).toMatch(/npm error code E401/)
+    expect(region.textContent).not.toMatch(/refused the request too/)
+  })
+
+  it('keeps any other CLI setup failure verbatim, with no registry retry', async () => {
+    await renderPanel(refusedSetup({ error_code: 'step_failed', error_detail: 'npm-install-global: npm error code E404' }))
+    const region = screen.getByTestId('browser-install-status')
+    expect(region.textContent).toMatch(/npm error code E404/)
+    expect(within(region).queryByRole('button', { name: /public npm registry/ })).toBeNull()
+  })
+
   it('explains the desktop-only toggle on the web, readable and linked to the switch', async () => {
     await renderPanel(installed())
     const toggle = screen.getByRole('switch', { name: /Use the built-in browser/ })

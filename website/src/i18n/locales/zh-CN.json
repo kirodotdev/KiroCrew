@@ -16158,6 +16158,10 @@
         "backfill_folder_gone_nothing_filed": "{{folder}} 文件夹在运行期间被删除，因此没有放入任何内容。请先保存此设置以重新创建。"
       },
       "browserPanel": {
+        "public_registry_refused_message": "公共 npm 注册表（https://registry.npmjs.org/）也拒绝了请求（npm {{code}}）。可能是这台机器上的代理或网络策略阻止了它。请重新登录你自己的 npm 注册表，然后再次安装。",
+        "registry_auth_message": "npm 无法登录你配置的 npm 注册表（{{registry}}，npm {{code}}）。那里的登录可能已过期。请重新登录该注册表（AWS CodeArtifact：aws codeartifact login --tool npm ...）后再次安装，或从公共 npm 注册表（https://registry.npmjs.org/）安装一次。",
+        "registry_auth_message_unknown": "npm 无法登录你配置的 npm 注册表（npm {{code}}）。那里的登录可能已过期。请重新登录该注册表（AWS CodeArtifact：aws codeartifact login --tool npm ...）后再次安装，或从公共 npm 注册表（https://registry.npmjs.org/）安装一次。",
+        "retry_public_registry": "从公共 npm 注册表安装",
         "use_builtin_label": "使用内置浏览器",
         "use_builtin_desc": "在 {{productName}} 的内置面板中打开页面。关闭后改用 playwright-cli 浏览。",
         "browsing": "网页浏览",

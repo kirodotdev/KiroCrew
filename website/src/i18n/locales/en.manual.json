@@ -8788,6 +8788,10 @@
       },
       "browserPanel": {
         "attach_title": "Use your own logged-in browser",
+        "public_registry_refused_message": "The public npm registry (https://registry.npmjs.org/) refused the request too (npm {{code}}). A proxy or network policy on this machine may block it. Sign in to your own npm registry again, then install again.",
+        "registry_auth_message": "npm could not sign in to your configured npm registry ({{registry}}, npm {{code}}). The login there has probably expired. Sign in to that registry again (for AWS CodeArtifact: aws codeartifact login --tool npm ...) and install again, or install once from the public npm registry (https://registry.npmjs.org/).",
+        "registry_auth_message_unknown": "npm could not sign in to your configured npm registry (npm {{code}}). The login there has probably expired. Sign in to that registry again (for AWS CodeArtifact: aws codeartifact login --tool npm ...) and install again, or install once from the public npm registry (https://registry.npmjs.org/).",
+        "retry_public_registry": "Install from the public npm registry",
         "token_stored": "saved",
         "install_steps_intro": "Installing runs three steps.",
         "step_npm": "Install @playwright/cli globally with npm.",

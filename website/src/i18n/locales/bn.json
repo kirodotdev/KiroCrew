@@ -16441,6 +16441,10 @@
         "backfill_folder_gone_nothing_filed": "{{folder}} ফোল্ডারটি চলার সময় সরিয়ে ফেলা হয়েছে, তাই কিছুই রাখা হয়নি। প্রথমে এটি আবার তৈরি করতে এই সেটিং সংরক্ষণ করো।"
       },
       "browserPanel": {
+        "public_registry_refused_message": "পাবলিক npm রেজিস্ট্রিও (https://registry.npmjs.org/) অনুরোধটি প্রত্যাখ্যান করেছে (npm {{code}})। এই মেশিনের কোনো প্রক্সি বা নেটওয়ার্ক নীতি এটি আটকাতে পারে। আপনার নিজের npm রেজিস্ট্রিতে আবার সাইন ইন করুন, তারপর আবার ইনস্টল করুন।",
+        "registry_auth_message": "npm আপনার কনফিগার করা npm রেজিস্ট্রিতে ({{registry}}, npm {{code}}) সাইন ইন করতে পারেনি। সেখানকার লগইনের মেয়াদ সম্ভবত শেষ হয়ে গেছে। সেই রেজিস্ট্রিতে আবার সাইন ইন করুন (AWS CodeArtifact-এর জন্য: aws codeartifact login --tool npm ...) এবং আবার ইনস্টল করুন, অথবা একবার পাবলিক npm রেজিস্ট্রি (https://registry.npmjs.org/) থেকে ইনস্টল করুন।",
+        "registry_auth_message_unknown": "npm আপনার কনফিগার করা npm রেজিস্ট্রিতে সাইন ইন করতে পারেনি (npm {{code}})। সেখানকার লগইনের মেয়াদ সম্ভবত শেষ হয়ে গেছে। সেই রেজিস্ট্রিতে আবার সাইন ইন করুন (AWS CodeArtifact-এর জন্য: aws codeartifact login --tool npm ...) এবং আবার ইনস্টল করুন, অথবা একবার পাবলিক npm রেজিস্ট্রি (https://registry.npmjs.org/) থেকে ইনস্টল করুন।",
+        "retry_public_registry": "পাবলিক npm রেজিস্ট্রি থেকে ইনস্টল করুন",
         "use_builtin_label": "বিল্ট-ইন ব্রাউজার ব্যবহার করুন",
         "use_builtin_desc": "{{productName}}-এর বিল্ট-ইন প্যানেলে পেজ খুলুন। পরিবর্তে playwright-cli দিয়ে ব্রাউজ করতে বন্ধ করুন।",
         "browsing": "ব্রাউজিং",

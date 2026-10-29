@@ -16724,6 +16724,10 @@
         "backfill_folder_gone_nothing_filed": "La carpeta {{folder}} se eliminó mientras esto se ejecutaba, así que no se archivó nada. Primero guarda estos ajustes para volver a crearla."
       },
       "browserPanel": {
+        "public_registry_refused_message": "El registro público de npm (https://registry.npmjs.org/) también rechazó la solicitud (npm {{code}}). Puede que un proxy o una política de red de este equipo la bloquee. Vuelve a iniciar sesión en tu propio registro de npm y luego instala de nuevo.",
+        "registry_auth_message": "npm no pudo iniciar sesión en tu registro de npm configurado ({{registry}}, npm {{code}}). Es probable que la sesión haya caducado. Vuelve a iniciar sesión en ese registro (para AWS CodeArtifact: aws codeartifact login --tool npm ...) e instala de nuevo, o instala una vez desde el registro público de npm (https://registry.npmjs.org/).",
+        "registry_auth_message_unknown": "npm no pudo iniciar sesión en tu registro de npm configurado (npm {{code}}). Es probable que la sesión haya caducado. Vuelve a iniciar sesión en ese registro (para AWS CodeArtifact: aws codeartifact login --tool npm ...) e instala de nuevo, o instala una vez desde el registro público de npm (https://registry.npmjs.org/).",
+        "retry_public_registry": "Instalar desde el registro público de npm",
         "use_builtin_label": "Usar el navegador integrado",
         "use_builtin_desc": "Abre las páginas en el panel integrado de {{productName}}. Desactívalo para navegar con playwright-cli en su lugar.",
         "browsing": "Navegación",

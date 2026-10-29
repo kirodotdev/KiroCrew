@@ -16724,6 +16724,10 @@
         "backfill_folder_gone_nothing_filed": "Le dossier {{folder}} a été supprimé pendant l'exécution, donc rien n'a été classé. Enregistrez d'abord ces paramètres pour le recréer."
       },
       "browserPanel": {
+        "public_registry_refused_message": "Le registre npm public (https://registry.npmjs.org/) a lui aussi refusé la requête (npm {{code}}). Un proxy ou une règle réseau de cette machine la bloque peut-être. Reconnectez-vous à votre propre registre npm, puis réinstallez.",
+        "registry_auth_message": "npm n'a pas pu se connecter à votre registre npm configuré ({{registry}}, npm {{code}}). La connexion a probablement expiré. Reconnectez-vous à ce registre (pour AWS CodeArtifact : aws codeartifact login --tool npm ...) puis réinstallez, ou installez une fois depuis le registre npm public (https://registry.npmjs.org/).",
+        "registry_auth_message_unknown": "npm n'a pas pu se connecter à votre registre npm configuré (npm {{code}}). La connexion a probablement expiré. Reconnectez-vous à ce registre (pour AWS CodeArtifact : aws codeartifact login --tool npm ...) puis réinstallez, ou installez une fois depuis le registre npm public (https://registry.npmjs.org/).",
+        "retry_public_registry": "Installer depuis le registre npm public",
         "use_builtin_label": "Utiliser le navigateur intégré",
         "use_builtin_desc": "Ouvre les pages dans le panneau intégré de {{productName}}. Désactivez pour naviguer avec playwright-cli à la place.",
         "browsing": "Navigation",

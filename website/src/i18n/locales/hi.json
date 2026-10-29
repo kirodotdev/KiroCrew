@@ -16441,6 +16441,10 @@
         "backfill_folder_gone_nothing_filed": "{{folder}} फ़ोल्डर को चलते समय हटा दिया गया, इसलिए कुछ भी नहीं रखा गया। पहले इसे फिर बनाने के लिए ये सेटिंग सहेजें।"
       },
       "browserPanel": {
+        "public_registry_refused_message": "सार्वजनिक npm रजिस्ट्री (https://registry.npmjs.org/) ने भी अनुरोध अस्वीकार कर दिया (npm {{code}})। इस मशीन पर कोई प्रॉक्सी या नेटवर्क नीति इसे रोक रही हो सकती है। अपनी npm रजिस्ट्री में फिर से साइन इन करें, फिर से इंस्टॉल करें।",
+        "registry_auth_message": "npm आपकी कॉन्फ़िगर की गई npm रजिस्ट्री ({{registry}}, npm {{code}}) में साइन इन नहीं कर सका। वहाँ का लॉगिन शायद समाप्त हो गया है। उस रजिस्ट्री में फिर से साइन इन करें (AWS CodeArtifact के लिए: aws codeartifact login --tool npm ...) और फिर से इंस्टॉल करें, या एक बार सार्वजनिक npm रजिस्ट्री (https://registry.npmjs.org/) से इंस्टॉल करें।",
+        "registry_auth_message_unknown": "npm आपकी कॉन्फ़िगर की गई npm रजिस्ट्री में साइन इन नहीं कर सका (npm {{code}})। वहाँ का लॉगिन शायद समाप्त हो गया है। उस रजिस्ट्री में फिर से साइन इन करें (AWS CodeArtifact के लिए: aws codeartifact login --tool npm ...) और फिर से इंस्टॉल करें, या एक बार सार्वजनिक npm रजिस्ट्री (https://registry.npmjs.org/) से इंस्टॉल करें।",
+        "retry_public_registry": "सार्वजनिक npm रजिस्ट्री से इंस्टॉल करें",
         "use_builtin_label": "बिल्ट-इन ब्राउज़र का उपयोग करें",
         "use_builtin_desc": "{{productName}} के बिल्ट-इन पैनल में पेज खोलें। इसके बजाय playwright-cli से ब्राउज़ करने के लिए बंद करें।",
         "browsing": "ब्राउज़िंग",
