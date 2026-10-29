@@ -8415,12 +8415,14 @@
         "confirm_detail": "Re-embedding runs in the background and can take a while on a large memory. Keyword search keeps working throughout.",
         "confirm_title": "Change the embedding model?",
         "counts": "{{done}} / {{total}} · {{pct}}%",
-        "err_config": "config.json could not be parsed — fix it before changing the model.",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH is set and overrides this setting. Unset it to change the model here.",
         "err_in_progress": "A model change is already being applied.",
+        "err_memory_unavailable": "Memory is not available, so the model cannot be changed: {{error}}",
         "err_not_a_file": "That path is a directory, not a file.",
         "err_not_absolute": "The path must be absolute.",
         "err_not_found": "No file at that path.",
+        "err_owner_only": "Only the dashboard owner can change the embedding model.",
+        "err_probe_busy": "The file check is busy. Try again in a moment.",
         "err_protected": "That location is protected and cannot be used as a model.",
         "err_restricted": "Not available in this session.",
         "err_too_small": "That file is too small to be model weights.",
@@ -8438,7 +8440,7 @@
         "subtitle": "Runs locally. Changing it re-embeds stored memories in the background.",
         "title": "Embedding Model",
         "will_revert": "Empty — this will revert to the bundled model.",
-        "err_env_override_with_ref": "<settingRef/> is set and overrides this setting. Unset it to change the model here."
+        "err_vector_store_unavailable": "Vector memory is unavailable, so the model cannot be changed. Try again shortly."
       },
       "kiroCrewCfgTab": {
         "applies_to_sessions_started_after_the_change": "Applies to sessions started after the change. 'auto' sandboxes the agent but keeps credential tooling working; 'strict' also hides cloud, SSH, kube and registry credentials, so those tools stop working inside the agent — only where {{productName}}'s own sandbox confines the spawn, not on Windows or on a macOS spawn delegated to kiro-cli's internal sandbox; 'off' skips {{productName}}'s sandbox (on macOS kiro-cli's own sandbox still applies when enabled).",

@@ -14619,12 +14619,14 @@
         "confirm_detail": "Die Neuberechnung läuft im Hintergrund und kann bei großem Speicher dauern. Die Stichwortsuche bleibt verfügbar.",
         "confirm_title": "Embedding-Modell wechseln?",
         "counts": "{{done}} / {{total}} · {{pct}} %",
-        "err_config": "config.json konnte nicht gelesen werden – bitte zuerst reparieren.",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH ist gesetzt und überschreibt diese Einstellung. Entferne sie, um das Modell hier zu ändern.",
         "err_in_progress": "Ein Modellwechsel wird bereits angewendet.",
+        "err_memory_unavailable": "Das Gedächtnis ist nicht verfügbar, daher kann das Modell nicht gewechselt werden: {{error}}",
         "err_not_a_file": "Dieser Pfad ist ein Verzeichnis, keine Datei.",
         "err_not_absolute": "Der Pfad muss absolut sein.",
         "err_not_found": "Unter diesem Pfad gibt es keine Datei.",
+        "err_owner_only": "Nur der Besitzer des Dashboards kann das Embedding-Modell wechseln.",
+        "err_probe_busy": "Die Dateiprüfung ist ausgelastet. Versuche es gleich noch einmal.",
         "err_protected": "Dieser Ort ist geschützt und kann nicht als Modell dienen.",
         "err_restricted": "In dieser Sitzung nicht verfügbar.",
         "err_too_small": "Diese Datei ist zu klein für Modellgewichte.",
@@ -14642,9 +14644,9 @@
         "subtitle": "Läuft lokal. Ein Wechsel berechnet die Embeddings gespeicherter Erinnerungen im Hintergrund neu.",
         "title": "Embedding-Modell",
         "will_revert": "Leer – es wird zum mitgelieferten Modell zurückgewechselt.",
-        "err_env_override_with_ref": "<settingRef/> ist gesetzt und überschreibt diese Einstellung. Entfernen Sie es, um das Modell hier zu ändern.",
         "apply_reapply": "Speichervektoren neu erstellen",
-        "confirm_reapply_body": "Dadurch wird das konfigurierte Modell neu geladen und die gespeicherten Speichervektoren werden gelöscht und neu erstellt."
+        "confirm_reapply_body": "Dadurch wird das konfigurierte Modell neu geladen und die gespeicherten Speichervektoren werden gelöscht und neu erstellt.",
+        "err_vector_store_unavailable": "Die Vektor-Erinnerung ist nicht verfügbar, daher kann das Modell nicht gewechselt werden. Versuche es gleich noch einmal."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "Als welches Crewmitglied die wartenden Agenten starten. Leer nutzt das Standard-Crewmitglied.",

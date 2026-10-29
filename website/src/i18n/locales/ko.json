@@ -14377,12 +14377,14 @@
         "confirm_detail": "재임베딩은 백그라운드에서 실행되며 메모리가 크면 시간이 걸릴 수 있습니다. 그동안에도 키워드 검색은 계속 작동합니다.",
         "confirm_title": "임베딩 모델을 변경할까요?",
         "counts": "{{done}} / {{total}} · {{pct}}%",
-        "err_config": "config.json을 구문 분석할 수 없습니다 — 모델을 변경하기 전에 수정하세요.",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH가 설정되어 이 설정을 재정의합니다. 여기서 모델을 변경하려면 해당 값을 해제하세요.",
         "err_in_progress": "모델 변경이 이미 적용되고 있습니다.",
+        "err_memory_unavailable": "메모리를 사용할 수 없어 모델을 변경할 수 없습니다: {{error}}",
         "err_not_a_file": "해당 경로는 파일이 아니라 디렉터리입니다.",
         "err_not_absolute": "경로는 절대 경로여야 합니다.",
         "err_not_found": "해당 경로에 파일이 없습니다.",
+        "err_owner_only": "대시보드 소유자만 임베딩 모델을 변경할 수 있습니다.",
+        "err_probe_busy": "파일 확인이 사용 중입니다. 잠시 후 다시 시도하세요.",
         "err_protected": "해당 위치는 보호되어 있어 모델로 사용할 수 없습니다.",
         "err_restricted": "이 세션에서는 사용할 수 없습니다.",
         "err_too_small": "해당 파일은 모델 가중치로 쓰기에 너무 작습니다.",
@@ -14400,9 +14402,9 @@
         "subtitle": "로컬에서 실행됩니다. 변경하면 저장된 메모리를 백그라운드에서 다시 임베딩합니다.",
         "title": "임베딩 모델",
         "will_revert": "비어 있음 — 번들된 모델로 되돌아갑니다.",
-        "err_env_override_with_ref": "<settingRef/>이(가) 설정되어 있어 이 설정을 재정의합니다. 여기에서 모델을 변경하려면 해제하세요.",
         "apply_reapply": "메모리 벡터 재구축",
-        "confirm_reapply_body": "구성된 모델을 다시 로드하고 저장된 메모리 벡터를 지운 후 재구축합니다."
+        "confirm_reapply_body": "구성된 모델을 다시 로드하고 저장된 메모리 벡터를 지운 후 재구축합니다.",
+        "err_vector_store_unavailable": "벡터 메모리를 사용할 수 없어 모델을 변경할 수 없습니다. 잠시 후 다시 시도하세요."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "대기 에이전트가 어떤 크루메이트로 시작할지. 비우면 기본 크루메이트.",

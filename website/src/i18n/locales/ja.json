@@ -14377,12 +14377,14 @@
         "confirm_detail": "再埋め込みはバックグラウンドで実行され、大規模なメモリでは時間がかかることがあります。キーワード検索は常に機能します。",
         "confirm_title": "埋め込みモデルを変更しますか？",
         "counts": "{{done}} / {{total}} · {{pct}}%",
-        "err_config": "config.json を解析できません。モデルを変更する前に修正してください。",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH が設定されており、この設定をオーバーライドしています。ここでモデルを変更するには、その設定を解除してください。",
         "err_in_progress": "モデル変更がすでに適用中です。",
+        "err_memory_unavailable": "メモリが利用できないため、モデルを変更できません: {{error}}",
         "err_not_a_file": "そのパスはディレクトリであり、ファイルではありません。",
         "err_not_absolute": "パスは絶対パスである必要があります。",
         "err_not_found": "そのパスにファイルがありません。",
+        "err_owner_only": "埋め込みモデルを変更できるのはダッシュボードの所有者だけです。",
+        "err_probe_busy": "ファイルの確認が混み合っています。少し待ってからもう一度お試しください。",
         "err_protected": "その場所は保護されており、モデルとして使用できません。",
         "err_restricted": "このセッションでは利用できません。",
         "err_too_small": "そのファイルはモデル重みとしては小さすぎます。",
@@ -14400,9 +14402,9 @@
         "subtitle": "ローカルで実行されます。変更するとバックグラウンドで保存されたメモリが再埋め込みされます。",
         "title": "埋め込みモデル",
         "will_revert": "空です。バンドルされたモデルに戻ります。",
-        "err_env_override_with_ref": "<settingRef/> が設定されており、この設定を上書きしています。ここでモデルを変更するには、設定を解除してください。",
         "apply_reapply": "メモリベクトルを再構築",
-        "confirm_reapply_body": "設定済みのモデルを再読み込みし、保存されているメモリベクトルを消去して再構築します。"
+        "confirm_reapply_body": "設定済みのモデルを再読み込みし、保存されているメモリベクトルを消去して再構築します。",
+        "err_vector_store_unavailable": "ベクトルメモリが利用できないため、モデルを変更できません。しばらくしてからもう一度お試しください。"
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "待機エージェントをどのクルーメイトとして起動するか。空欄は既定のクルーメイト。",

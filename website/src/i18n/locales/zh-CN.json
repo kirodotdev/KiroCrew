@@ -14377,12 +14377,14 @@
         "confirm_detail": "重新嵌入在后台运行，记忆较多时可能需要一段时间。期间关键词搜索保持可用。",
         "confirm_title": "要更改嵌入模型吗？",
         "counts": "{{done}} / {{total}} · {{pct}}%",
-        "err_config": "无法解析 config.json — 请先修复后再更改模型。",
         "err_env_override": "已设置 KIROCREW_EMBED_MODEL_PATH，它会覆盖此设置。请取消该环境变量后再在此处更改模型。",
         "err_in_progress": "已有一次模型更改正在应用。",
+        "err_memory_unavailable": "记忆不可用，因此无法更改模型：{{error}}",
         "err_not_a_file": "该路径是目录，不是文件。",
         "err_not_absolute": "路径必须是绝对路径。",
         "err_not_found": "该路径下没有文件。",
+        "err_owner_only": "只有仪表板的所有者才能更改嵌入模型。",
+        "err_probe_busy": "文件检查繁忙。请稍后再试。",
         "err_protected": "该位置受保护，不能用作模型。",
         "err_restricted": "此会话中不可用。",
         "err_too_small": "该文件太小，不像模型权重。",
@@ -14400,9 +14402,9 @@
         "subtitle": "在本地运行。更改后将在后台重新嵌入已存储的记忆。",
         "title": "嵌入模型",
         "will_revert": "为空 — 将恢复为内置模型。",
-        "err_env_override_with_ref": "<settingRef/> 已设置并覆盖此设置。取消设置以在此处更改模型。",
         "apply_reapply": "重建记忆向量",
-        "confirm_reapply_body": "此操作会重新加载已配置的模型，并清除、重建已存储的记忆向量。"
+        "confirm_reapply_body": "此操作会重新加载已配置的模型，并清除、重建已存储的记忆向量。",
+        "err_vector_store_unavailable": "向量记忆不可用，因此无法更改模型。请稍后重试。"
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "等待中的代理以哪个成员身份启动。留空则用默认成员。",

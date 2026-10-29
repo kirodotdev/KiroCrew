@@ -14861,12 +14861,14 @@
         "confirm_detail": "Il ricalcolo avviene in background e può richiedere tempo con una memoria ampia. La ricerca per parole chiave resta disponibile.",
         "confirm_title": "Cambiare il modello di embedding?",
         "counts": "{{done}} / {{total}} · {{pct}} %",
-        "err_config": "Impossibile analizzare config.json: correggilo prima di cambiare modello.",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH è impostata e sovrascrive questa impostazione. Rimuovila per cambiare il modello qui.",
         "err_in_progress": "È già in corso una modifica del modello.",
+        "err_memory_unavailable": "La memoria non è disponibile, quindi non è possibile cambiare modello: {{error}}",
         "err_not_a_file": "Quel percorso è una cartella, non un file.",
         "err_not_absolute": "Il percorso deve essere assoluto.",
         "err_not_found": "Nessun file in quel percorso.",
+        "err_owner_only": "Solo il proprietario della dashboard può cambiare il modello di embedding.",
+        "err_probe_busy": "Il controllo dei file è occupato. Riprova tra un momento.",
         "err_protected": "Quella posizione è protetta e non può essere usata come modello.",
         "err_restricted": "Non disponibile in questa sessione.",
         "err_too_small": "Quel file è troppo piccolo per essere pesi di modello.",
@@ -14884,9 +14886,9 @@
         "subtitle": "Gira in locale. Cambiarlo ricalcola gli embedding delle memorie in background.",
         "title": "Modello di embedding",
         "will_revert": "Vuoto: tornerà al modello incluso.",
-        "err_env_override_with_ref": "<settingRef/> è impostata e sovrascrive questa impostazione. Rimuovila per cambiare il modello qui.",
         "apply_reapply": "Ricostruisci i vettori di memoria",
-        "confirm_reapply_body": "Questa operazione ricarica il modello configurato e cancella e ricostruisce i vettori di memoria archiviati."
+        "confirm_reapply_body": "Questa operazione ricarica il modello configurato e cancella e ricostruisce i vettori di memoria archiviati.",
+        "err_vector_store_unavailable": "La memoria vettoriale non è disponibile, quindi non è possibile cambiare modello. Riprova tra poco."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "Come quale compagno partono gli agenti in attesa. Vuoto usa il compagno predefinito.",

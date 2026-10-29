@@ -14861,12 +14861,14 @@
         "confirm_detail": "A regeneração roda em segundo plano e pode demorar com uma memória grande. A busca por palavras-chave continua disponível.",
         "confirm_title": "Alterar o modelo de embeddings?",
         "counts": "{{done}} / {{total}} · {{pct}}%",
-        "err_config": "Não foi possível interpretar o config.json — corrija antes de trocar o modelo.",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH está definida e substitui esta configuração. Remova-a para trocar o modelo aqui.",
         "err_in_progress": "Já há uma troca de modelo sendo aplicada.",
+        "err_memory_unavailable": "A memória não está disponível, então o modelo não pode ser trocado: {{error}}",
         "err_not_a_file": "Esse caminho é um diretório, não um arquivo.",
         "err_not_absolute": "O caminho precisa ser absoluto.",
         "err_not_found": "Nenhum arquivo nesse caminho.",
+        "err_owner_only": "Somente o proprietário do painel pode trocar o modelo de embeddings.",
+        "err_probe_busy": "A verificação de arquivos está ocupada. Tente novamente em instantes.",
         "err_protected": "Esse local é protegido e não pode ser usado como modelo.",
         "err_restricted": "Indisponível nesta sessão.",
         "err_too_small": "Esse arquivo é pequeno demais para ser pesos de modelo.",
@@ -14884,9 +14886,9 @@
         "subtitle": "Roda localmente. Alterá-lo regenera os embeddings das memórias em segundo plano.",
         "title": "Modelo de embeddings",
         "will_revert": "Vazio — voltará ao modelo incluído.",
-        "err_env_override_with_ref": "<settingRef/> está definida e substitui esta configuração. Remova-a para alterar o modelo aqui.",
         "apply_reapply": "Reconstruir vetores de memória",
-        "confirm_reapply_body": "Isso recarrega o modelo configurado e apaga e reconstrói os vetores de memória armazenados."
+        "confirm_reapply_body": "Isso recarrega o modelo configurado e apaga e reconstrói os vetores de memória armazenados.",
+        "err_vector_store_unavailable": "A memória vetorial está indisponível, então o modelo não pode ser trocado. Tente novamente em breve."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "Como qual colega os agentes em espera iniciam. Vazio usa o colega padrão.",

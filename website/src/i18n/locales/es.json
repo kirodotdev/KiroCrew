@@ -14861,12 +14861,14 @@
         "confirm_detail": "La regeneración se ejecuta en segundo plano y puede tardar con una memoria grande. La búsqueda por palabras clave sigue disponible.",
         "confirm_title": "¿Cambiar el modelo de embeddings?",
         "counts": "{{done}} / {{total}} · {{pct}} %",
-        "err_config": "No se pudo analizar config.json: corrígelo antes de cambiar el modelo.",
         "err_env_override": "KIROCREW_EMBED_MODEL_PATH está definida y anula este ajuste. Quítala para cambiar el modelo aquí.",
         "err_in_progress": "Ya se está aplicando un cambio de modelo.",
+        "err_memory_unavailable": "La memoria no está disponible, así que no se puede cambiar el modelo: {{error}}",
         "err_not_a_file": "Esa ruta es un directorio, no un archivo.",
         "err_not_absolute": "La ruta debe ser absoluta.",
         "err_not_found": "No hay ningún archivo en esa ruta.",
+        "err_owner_only": "Solo el propietario del panel puede cambiar el modelo de embeddings.",
+        "err_probe_busy": "La comprobación de archivos está ocupada. Vuelve a intentarlo en un momento.",
         "err_protected": "Esa ubicación está protegida y no puede usarse como modelo.",
         "err_restricted": "No disponible en esta sesión.",
         "err_too_small": "Ese archivo es demasiado pequeño para ser pesos de modelo.",
@@ -14884,9 +14886,9 @@
         "subtitle": "Se ejecuta localmente. Cambiarlo vuelve a generar los embeddings de las memorias en segundo plano.",
         "title": "Modelo de embeddings",
         "will_revert": "Vacío: volverá al modelo incluido.",
-        "err_env_override_with_ref": "<settingRef/> está configurada y anula esta configuración. Desactívala para cambiar el modelo aquí.",
         "apply_reapply": "Reconstruir vectores de memoria",
-        "confirm_reapply_body": "Esto recarga el modelo configurado y borra y reconstruye los vectores de memoria almacenados."
+        "confirm_reapply_body": "Esto recarga el modelo configurado y borra y reconstruye los vectores de memoria almacenados.",
+        "err_vector_store_unavailable": "La memoria vectorial no está disponible, así que no se puede cambiar el modelo. Vuelve a intentarlo en breve."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agent": "Como qué compañero arrancan los agentes en espera. Vacío usa el compañero predeterminado.",
