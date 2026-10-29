@@ -666,10 +666,10 @@ yet decided: install from a committed constraints file, or set
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback |
 | `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
-| `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on uncontainerized `ubuntu-latest` with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts. **Skipped on a frontend-only diff** (`only_frontend`); Coverage Gate accepts `skipped` in that case |
+| `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on an uncontainerized hosted VM (the `kirocrew-runners` group here, `ubuntu-latest` in a fork) with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts. **Skipped on a frontend-only diff** (`only_frontend`); Coverage Gate accepts `skipped` in that case |
 | `pod-boot-windows` | Boots a real worktree Pod under Windows Task Scheduler and pins three canary tests. A PR carrying `ci:pod-scenarios` before its next push also runs the 55-test Pod scenario suite against a built SPA |
 | `backend-test-windows-fail-closed` | Same actor-gated Windows routing, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It boots a real gateway and drives one ACP prompt turn on Windows against real filesystem state |
-| `new-test-stability` | Two matrix jobs on GitHub-hosted `ubuntu-latest` and `windows-latest` (never CodeBuild). On a pull request where `changes.outputs.leaf_tests` is not already `true` (leaf PRs are already covered by `backend-test`'s LEAF_REPEAT loop), selects `test_*.py` files directly under `test/` that the PR adds or modifies (`scripts/new_test_stability_scope.py`), excluding corpus-scanning gates and — on Windows — `test/windows-collect-ignore.txt` via `platform_ignore_names("win32")`. Scope uses `HEAD^1..HEAD` on a merge-commit checkout (where `HEAD^1` is the base-branch tip and `HEAD` is the merge commit), so main-branch commits landing after the PR was opened do not inflate the scope. Runs the file list `LEAF_REPEAT` (= 3) times with `-q -n auto --timeout=120` (Linux) / `--timeout=180` (Windows) `--no-cov -m "not ipv6_required" --max-worker-restart=0`. Exits 0 immediately when the filtered list is empty. A failure fails the CI workflow, which PR Readiness reads as blocking |
+| `new-test-stability` | Two matrix jobs on GitHub-hosted Linux (the `kirocrew-runners` group here, `ubuntu-latest` in a fork) and `windows-latest` (never CodeBuild). On a pull request where `changes.outputs.leaf_tests` is not already `true` (leaf PRs are already covered by `backend-test`'s LEAF_REPEAT loop), selects `test_*.py` files directly under `test/` that the PR adds or modifies (`scripts/new_test_stability_scope.py`), excluding corpus-scanning gates and — on Windows — `test/windows-collect-ignore.txt` via `platform_ignore_names("win32")`. Scope uses `HEAD^1..HEAD` on a merge-commit checkout (where `HEAD^1` is the base-branch tip and `HEAD` is the merge commit), so main-branch commits landing after the PR was opened do not inflate the scope. Runs the file list `LEAF_REPEAT` (= 3) times with `-q -n auto --timeout=120` (Linux) / `--timeout=180` (Windows) `--no-cov -m "not ipv6_required" --max-worker-restart=0`. Exits 0 immediately when the filtered list is empty. A failure fails the CI workflow, which PR Readiness reads as blocking |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those assertions (the `~/.kiro/crew` keystone among them) actually execute. **Skipped on a frontend-only diff** (`only_frontend`) |
 | `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree: every module and every named test the source declares must yield an item, and the total must be at or above `_MIN_COLLECTED` and no more than `_FLOOR_MARGIN` above it. A declared module or test name that stops yielding an item reds on its own name, with no number involved; the count is what catches a test whose parametrize cases drain while its name is still collected. `_MIN_COLLECTED`'s own comment states what that does and does not catch, and is the only place that bound is spelled out. **Skipped on a frontend-only diff** (`only_frontend`) |
 | `real-adapter-contract` | "Real Adapter Contract Tests". The one lane that INSTALLS the adapters the codex and opencode projections were measured against — `@agentclientprotocol/codex-acp` and `opencode-ai`, `npm ci` from the locked manifest in `test/real_adapters/` (its own manifest, not the product's; Dependabot bumps it weekly so drift shows up in the bump PR) — so the four contract tests that drive a real adapter execute instead of skipping. Everywhere else they skip, which left the element shape, the child environment, the refused transports and the eviction verb resting on one local run. Selects them by the `real_adapter` marker, so one added later is included rather than left out of a list. Sets `KIROCREW_E2E_REQUIRE=1` — the repository's existing "this job declared its preconditions must hold" switch, shared with the E2E suites — which turns an absent adapter into a failure, and then asserts on the junit report that at least the known contracts ran and none was skipped, so a broken install cannot report a green lane that measured nothing |
@@ -681,12 +681,12 @@ yet decided: install from a committed constraints file, or set
 | `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report. **CodeBuild-hosted runner** (pilot, below) except for forks. Skipped on a backend-only diff (`only_backend`) |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint`. **Runs on the CodeBuild-hosted runner** (pilot, below) except for fork PRs |
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
-| `wheel-closure` | "Install Requires Wheel Closure (x86_64 / aarch64)". Resolves `setup.cfg`'s `install_requires` as wheels only at the manylinux2014 / `manylinux_2_17` floor for CPython 3.12 (`scripts/ci/install_requires_closure.py` evaluates each environment marker for the target arch, since pip evaluates markers against the runner, then `pip download --only-binary=:all:`), so a sdist-only dependency that the wheel-only installers (`cli.sh`, `install.sh`, the self-update venv) would refuse on old glibc fails here instead of only on users' hosts. Path-filtered on `setup.cfg`, `pyproject.toml` and that script; hosted `ubuntu-latest`. Advisory: not a required check |
+| `wheel-closure` | "Install Requires Wheel Closure (x86_64 / aarch64)". Resolves `setup.cfg`'s `install_requires` as wheels only at the manylinux2014 / `manylinux_2_17` floor for CPython 3.12 (`scripts/ci/install_requires_closure.py` evaluates each environment marker for the target arch, since pip evaluates markers against the runner, then `pip download --only-binary=:all:`), so a sdist-only dependency that the wheel-only installers (`cli.sh`, `install.sh`, the self-update venv) would refuse on old glibc fails here instead of only on users' hosts. Path-filtered on `setup.cfg`, `pyproject.toml` and that script; hosted off the fleet (the `kirocrew-runners` group here, `ubuntu-latest` in a fork). Advisory: not a required check |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `i18n-render` | "i18n Render Gate (en-XA, head vs base)". Runs `npm run i18n:render` in `website/`: builds the SPA in DEV mode for HEAD and for the base commit, renders every surface under the `en-XA` pseudolocale in Chromium and fails on any per-surface increase. No gateway, no token, no backend. Default-size Linux runner, skipped on a backend-only diff. Its own job because the ~13 minutes of CPU it takes on a hosted 4-vCPU runner starved the `e2e` Playwright suite past its ceiling on fork PRs. Details: [i18n-gates.md](i18n-gates.md) |
 | `e2e` | Runs `python scripts/ci_e2e_parallel.py`, which awaits `python setup.py test_e2e` and the dedicated Memory UI pytest command in parallel. **CodeBuild-hosted large runner where eligible**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix`. Details: [e2e-gate.md](e2e-gate.md) |
-| `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted `ubuntu-latest`, clears the AppArmor userns restriction first, no SPA or browser |
+| `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted off the fleet (the `kirocrew-runners` group here, `ubuntu-latest` in a fork), clears the AppArmor userns restriction first, no SPA or browser |
 | `integration` | "Integration (in-process gateway)". The middle layer: `test/integration/` boots the real `GatewayOrchestrator.run()` inside the pytest process on a scratch `KIROCREW_HOME` with the packaged fake ACP backend and talks HTTP to the port it bound, so one test can assert across a restart, across two concurrent requests on one event loop, or on a file the boot itself wrote. Opt-in by `KIROCREW_INTEGRATION=1`, so the unit shards collect and skip it; Linux only. Gated on ROUTE coverage -- `scripts/check_integration_route_coverage.py` reports the share of registered dashboard routes the suite requested (`--min` is a ratchet kept a little under what `main` measures) and the report is uploaded as the `integration-route-coverage` artifact. Details: `docs/system-specs/common/testing-conventions.md`, "The integration layer" |
 | `e2e-boot-matrix` | Boots a real fake-backed gateway and pins seven tests on Linux and Windows for PRs; push-to-main runs add `macos-15`. Every leg is fail-closed on missing prerequisites or a collapsed pass count |
 
@@ -815,8 +815,8 @@ infrastructure, worker-count or privilege change is needed.
 `ipv6_required` marks only tests whose native loopback contract needs `::1`.
 The ordinary Linux and Windows shards exclude this marker in every invocation,
 including hosted fallback, frontend-only scope and leaf gates/repeats. The
-`backend-test-ipv6` matrix runs the marked population on `ubuntu-latest` and
-`windows-latest`. No fleet network or privilege setting changes. Local pytest
+`backend-test-ipv6` matrix runs the marked population on hosted Linux and
+Windows. No fleet network or privilege setting changes. Local pytest
 has no default marker filter; macOS keeps its existing hosted selection.
 
 Five nodes are routed: the three real DNS-rebinding tests in
@@ -987,7 +987,7 @@ record permits the existing honest unknown-owner refusal. Read errors and confli
 records fail; a production lookup returning `None` alone never selects that branch.
 
 The permanent hosted exception `backend-test-kernel-lock-owner` runs the same live-
-holder and orphan cases on an uncontainerized `ubuntu-latest` runner, with no designated
+holder and orphan cases on an uncontainerized hosted runner, with no designated
 lock root and `KIROCREW_LOCK_OWNER_STRICT=1`. It requires the exact dead acquirer, rejects
 environmental returns, and validates both JUnit identities with zero skips or failures.
 The ordinary fleet still runs both cases. Full-scope coverage uses the same four
@@ -1060,10 +1060,11 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 ### Larger runners for the review lanes and CodeQL
 
 Twenty-five `runs-on` sites draw on the `kirocrew-runners` larger-runner group
-by `group:` rather than `ubuntu-latest`, and nine more reach it conditionally by
-label (see **Five sites reach the group by LABEL** and **Four PR-time sites
-reach the group by LABEL** below), so thirty-four sites in all can land on its
-cap -- which is the figure **Capacity** below is about. The twenty-five are the
+by `group:` rather than `ubuntu-latest`, and fifteen more reach it conditionally
+by label (see **Five sites reach the group by LABEL**, **Four PR-time sites
+reach the group by LABEL** and **Six `ci.yml` lanes reach the group by LABEL**
+below), so forty sites in all can land on its cap -- which is the figure
+**Capacity** below is about. The twenty-five are the
 six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
 `fork-ux-review`, and the three credentialed jobs of
@@ -1168,7 +1169,9 @@ twenty-five group-targeted sites, not just CodeQL. The five fleet-fallback label
 sites below are covered by the same rule but have their own recipe, since a
 whole-line replacement there would take the fleet route out with it; the four
 PR-time label sites take the plain replacement, since they carry no fleet route
-to preserve.
+to preserve; and of the six `ci.yml` label sites, the four single-OS lanes take
+the plain replacement while the two matrix lanes go back to
+`runs-on: ${{ matrix.os }}`.
 
 **Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
 and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
@@ -1325,6 +1328,73 @@ whole-line replacement, since
 these four carry no fleet route to preserve: restore `runs-on: ubuntu-latest` on
 the affected line.
 
+**Six `ci.yml` lanes reach the group by LABEL too, for the same reason.** Six
+jobs in `ci.yml` that were pinned to a default hosted runner now reach the
+group through its `kirocrew-linux-4-core` label instead of through group
+targeting: `wheel-closure`, `native-redaction-gate`,
+`backend-test-kernel-lock-owner`, `e2e-private-namespace`, and the Linux leg of
+each of the two matrix lanes `backend-test-ipv6` and `new-test-stability`.
+
+What puts `ci.yml` in this group is that it also runs **in a contributor's own
+repository** -- a push to the fork's `main`, or a pull request opened inside the
+fork -- so the four single-OS lanes take the same expression as the four above:
+
+```yaml
+runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+```
+
+As above, this is about a fork running its own copy, not about a fork pull
+request against this repository: that `pull_request` run executes in the base
+repository, so `github.repository` matches and all six lanes do land on the
+group, against `kirocrew-linux-4-core`'s `maximum_runners: 100`. A
+`merge_group` run does the same.
+
+The rename exposure the group form avoids is real and accepted here: renaming
+the definition again breaks all six of these lines at once, where a group
+reference would have survived it.
+
+**The two matrix lanes keep their `name:` and their `os:` values unchanged**, so
+the rendered check names (`Backend Tests (IPv6, ubuntu-latest)` and
+`New-test stability (ubuntu-latest)`) are byte-identical and branch protection
+sees no new or missing context. The destination is resolved per leg in
+`runs-on`, the shape `e2e-boot-matrix` already uses:
+
+```yaml
+runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
+```
+
+The Windows leg falls through to `matrix.os` and is untouched; a Windows group
+is a separate change.
+
+**These six can hold merges.** They are `ci.yml` jobs on the `pull_request`
+path, `pr-readiness.yml` carries `ci.yml|CI` in its `workflow_specs` and
+`ci.yml` in `MONITORED_LANES`, and `merge-queue-readiness.yml` polls it too, so
+one of them queued against the group's cap is merge latency. They are also
+new PR-time occupancy, which is what **Capacity** below says to measure before
+adding, so the rollback rule applies with full force: roll the affected line
+back at once rather than waiting for a queue to clear. **The two shapes roll
+back differently.** The four single-OS lanes return to
+`runs-on: ubuntu-latest`. The two matrix lanes return to
+`runs-on: ${{ matrix.os }}`, the recipe `e2e-boot-matrix` and
+`denial-differential` already use above. Writing `ubuntu-latest` on a matrix
+line instead drops the `|| matrix.os` fall-through and runs that lane's Windows
+leg on Linux. On `backend-test-ipv6` that reds `test_ci_ipv6_routing.py`, which
+pins the whole expression. On `new-test-stability` nothing reads that line, so
+`New-test stability (windows-latest)` would report green from a Linux VM and no
+check would say otherwise.
+
+**Three of the six are pinned by a routing test, and three are not.**
+`test_ci_ipv6_routing.py`, `test_ci_kernel_owner_routing.py` and
+`test_ci_nonroot_boundary.py` assert the whole expression for
+`backend-test-ipv6`, `backend-test-kernel-lock-owner` and
+`e2e-private-namespace`, fork branch included, so dropping the
+`|| 'ubuntu-latest'` on one of those three lines reds that test rather than
+stranding fork runs on a label no runner a fork can see carries. No test reads
+the `runs-on` of `wheel-closure`, `native-redaction-gate` or
+`new-test-stability`, so the same edit on those three lines is silent. Removing
+the fallback from each line in turn reds exactly one test for the first three
+and nothing for the last three.
+
 **What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets
 `in_scope=true` while giving the model no shell, flow or cron surface to propose
@@ -1356,8 +1426,10 @@ shared pool, and because these lanes feed `PR Readiness` the cost of being
 wrong shows up as slower merges rather than as a broken check.
 
 Rollback is per site and needs no AWS or runner-group change: restore
-`runs-on: ubuntu-latest` on the affected line. The five fleet-fallback sites are
-the exception twice over. It is not a whole-line replacement there, because the
+`runs-on: ubuntu-latest` on the affected line -- except on the two `ci.yml`
+matrix lanes, where the line goes back to `runs-on: ${{ matrix.os }}` instead,
+so the rollback does not send the Windows leg to Linux. The five fleet-fallback
+sites are the exception twice over. It is not a whole-line replacement there, because the
 fleet route has to survive: drop the middle branch so the expression's tail is
 `|| 'ubuntu-latest' }}` again, and drop `_GROUP_THEN_HOSTED_TAIL` from that
 policy's constant. And it is **not per site but per policy** -- the three

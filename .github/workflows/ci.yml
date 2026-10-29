@@ -457,8 +457,12 @@ jobs:
     name: Install Requires Wheel Closure (${{ matrix.machine }})
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.wheel_closure == 'true' }}
-    # Hosted, not the fleet: two short pip downloads that need only PyPI.
-    runs-on: ubuntu-latest
+    # Hosted, not the fleet: two short pip downloads that need only PyPI. The
+    # hosted runner is the `kirocrew-runners` group, whose cap is this
+    # organization's own, rather than the standard pool, whose concurrency is
+    # shared enterprise-wide. A fork cannot reach an organization group, so its
+    # own copy of this job stays on the standard image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       max-parallel: 4
@@ -841,7 +845,10 @@ jobs:
     name: Native Redaction Gate (kc_native)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
-    runs-on: ubuntu-latest
+    # Hosted, off the enterprise-shared standard pool: the `kirocrew-runners`
+    # group is the same Ubuntu image on a cap this organization owns. A fork
+    # cannot reach an organization group, so its own copy stays hosted-standard.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1262,7 +1269,12 @@ jobs:
     name: Backend Tests (IPv6, ${{ matrix.os }})
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ matrix.os }}
+    # Keep matrix.os stable: the check name and the artifact names use it, so
+    # the destination is resolved per leg here instead. The Linux leg takes the
+    # `kirocrew-runners` group, off the enterprise-shared standard pool, in this
+    # repository only -- a fork cannot reach an organization group. Every other
+    # leg, Windows here, keeps the runner matrix.os names.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
     timeout-minutes: 15
     strategy:
       max-parallel: 4
@@ -1350,7 +1362,11 @@ jobs:
     name: Backend Tests (Kernel Lock Owner, hosted)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
-    runs-on: ubuntu-latest
+    # Still an ordinary hosted VM, which is the whole contract above: the
+    # `kirocrew-runners` group is the same image with no job container, on a cap
+    # this organization owns rather than the enterprise-shared standard pool. A
+    # fork cannot reach an organization group, so it stays hosted-standard.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     env:
       KIROCREW_TMP_RESIDUE_STRICT: "1"
@@ -1782,7 +1798,9 @@ jobs:
   # non-leaf PRs -- where source changes land alongside new or modified test
   # files -- by running those test files LEAF_REPEAT times on both hosted
   # platforms.  GitHub-hosted runners only: the CodeBuild fleet is saturated
-  # by the eight-shard backend-test matrix.
+  # by the eight-shard backend-test matrix.  The Linux leg's hosted runner is
+  # the `kirocrew-runners` group rather than the enterprise-shared standard
+  # pool; a fork cannot reach an organization group and stays standard.
   new-test-stability:
     name: New-test stability (${{ matrix.os }})
     needs: [changes, await-fast-gate, lint-gate]
@@ -1791,7 +1809,9 @@ jobs:
       && !cancelled()
       && needs.lint-gate.result == 'success'
       && needs.changes.outputs.leaf_tests != 'true' }}
-    runs-on: ${{ matrix.os }}
+    # Keep matrix.os stable: the check name uses it, and each leg's
+    # pytest_timeout is keyed to it. Resolve the destination per leg instead.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -3985,7 +4005,12 @@ jobs:
     name: E2E (private member namespace, hosted)
     needs: [await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ubuntu-latest
+    # Hosted is the requirement -- `unshare --map-root-user` on an ordinary VM,
+    # which the fleet container refuses. The `kirocrew-runners` group is that
+    # same VM on a cap this organization owns, off the enterprise-shared
+    # standard pool. A fork cannot reach an organization group, so it stays
+    # hosted-standard.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
