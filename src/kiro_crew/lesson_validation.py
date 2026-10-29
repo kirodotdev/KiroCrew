@@ -7,6 +7,7 @@ import re
 from collections.abc import Sequence
 
 from kiro_crew import context_omissions
+from kiro_crew._sqlite_compat import is_cjk_char, script_runs
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 
 
@@ -221,18 +222,55 @@ def tighter_lesson_budget(*budgets: int) -> int:
 _RELEVANCE_MIN_TOKEN = 3
 
 
+def split_cjk_word(word: str) -> tuple[list[str], set[str]]:
+    """Split *word* into its non-CJK pieces and the pairs of its CJK runs.
+
+    Chinese and Japanese are written without spaces, so a word-character split
+    keeps a whole sentence -- or a mixed run such as ``检查redis缓存`` -- as ONE
+    token that no other text shares. Each CJK run (the character set
+    ``script_runs`` shares with session search; Hangul is spaced and excluded)
+    instead yields its adjacent two-character pairs, and a one-character run
+    yields none, since a lone character is too common to be evidence. The
+    non-CJK pieces are returned for the caller's own length and stop-word rules.
+
+    A word with no CJK character comes back as itself with no pairs, so Latin
+    text tokenizes exactly as it would without this split.
+    """
+    if not any(is_cjk_char(ch) for ch in word):
+        return [word], set()
+    pieces: list[str] = []
+    pairs: set[str] = set()
+    for run, cjk in script_runs(word):
+        if cjk:
+            pairs.update(run[i : i + 2] for i in range(len(run) - 1))
+        else:
+            pieces.append(run)
+    return pieces, pairs
+
+
 def _relevance_tokens(text: str) -> frozenset[str]:
-    """Lowercase word tokens of length >= 3, for a cheap lexical overlap score."""
-    token, tokens = [], set()
+    """Lowercase tokens for a cheap lexical overlap score.
+
+    The result is a superset of the plain word split: every alphanumeric word
+    of length >= 3 is kept whole, and a word holding CJK text adds its non-CJK
+    pieces (same length rule) and the pairs of its CJK runs (``split_cjk_word``).
+    A word with no CJK character contributes only itself.
+    """
+    words, word = [], []
     for char in text.lower():
         if char.isalnum():
-            token.append(char)
+            word.append(char)
         else:
-            if len(token) >= _RELEVANCE_MIN_TOKEN:
-                tokens.add("".join(token))
-            token = []
-    if len(token) >= _RELEVANCE_MIN_TOKEN:
-        tokens.add("".join(token))
+            words.append("".join(word))
+            word = []
+    words.append("".join(word))
+    tokens: set[str] = set()
+    for candidate in words:
+        if len(candidate) >= _RELEVANCE_MIN_TOKEN:
+            tokens.add(candidate)
+        pieces, pairs = split_cjk_word(candidate)
+        tokens.update(piece for piece in pieces if len(piece) >= _RELEVANCE_MIN_TOKEN)
+        tokens |= pairs
     return frozenset(tokens)
 
 
