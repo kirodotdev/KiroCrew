@@ -6443,6 +6443,7 @@
       "clear_goal_for_good": "Borrar",
       "cancel": "Cancelar",
       "clear_goal_question": "¿Eliminar este objetivo definitivamente?",
+      "run_first_cycle_now": "Ejecutar el primer ciclo ahora",
       "stop_file_help": "{{token}} se rellena al enviar cada empujón: pasa a ser la ruta del archivo de parada de esta sesión. Crea ese archivo para detener el bucle.",
       "stop_file_help_none": "Este bucle se activó sin archivo de parada, así que {{token}} se envía vacío.",
       "judge_wake_when": "Juez: despertar cuando {{criterion}}",

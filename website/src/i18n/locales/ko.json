@@ -6227,6 +6227,7 @@
       "clear_goal_for_good": "지우기",
       "cancel": "취소",
       "clear_goal_question": "이 목표를 영구히 삭제하시겠습니까?",
+      "run_first_cycle_now": "첫 사이클을 지금 실행",
       "stop_file_help": "{{token}}은(는) 넛지를 보낼 때마다 채워져 이 세션의 중지 파일 경로가 됩니다. 그 파일을 만들면 루프가 멈춥니다.",
       "stop_file_help_none": "이 루프는 중지 파일 없이 시작되어 {{token}}이(가) 빈 값으로 전송됩니다.",
       "judge_wake_when": "판정: {{criterion}}일 때 깨움",

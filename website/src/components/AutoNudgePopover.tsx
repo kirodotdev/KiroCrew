@@ -85,6 +85,22 @@ type LoopFields = { message: string; idle_secs: number; max_cycles: number }
  *  since the form read its baseline: the 409 `goal_stale_baseline`. */
 class StaleGoalBaseline extends Error {}
 
+/** A refused first fire after Start loop (#23803), per slot. The created loop
+ *  re-keys the popover onto its id (`SessionAutomationPopover`), which REMOUNTS
+ *  it, and the websocket frame for the create can do that before the fire even
+ *  answers. So the refusal is published here, and the mounted instance for that
+ *  loop adopts it whenever it lands. It is dropped when that popover closes or
+ *  the notice is dismissed. */
+const startRefusals = new Map<string, { loopId: string, message: string }>()
+const startRefusalListeners = new Set<() => void>()
+function holdStartRefusal(slotKey: string, loopId: string, message: string) {
+  startRefusals.set(slotKey, { loopId, message })
+  startRefusalListeners.forEach(listener => listener())
+}
+function dropStartRefusal(slotKey: string, loopId: string | undefined) {
+  if (startRefusals.get(slotKey)?.loopId === loopId) startRefusals.delete(slotKey)
+}
+
 /** One armed script cron owned by this chat slot. */
 interface SlotWatch {
   id: string
@@ -111,7 +127,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   /* Two-step on the clear only. The erase is irreversible and sits beside the
      primary CTA, so one press asks and the second performs. */
   const [confirmClear, setConfirmClear] = useState(false)
+  /** "Run first cycle now" on the create form (#23803). Unchecked by default:
+   *  Start loop then waits one interval, as before. */
+  const [runFirstNow, setRunFirstNow] = useState(false)
   const [error, setError] = useState('')
+  /** A refused first fire this instance adopted (see `startRefusals`). */
+  const adoptedRefusal = useRef('')
   // Watches armed on this slot, read through the SHARED `cron-jobs` query rather
   // than a private fetch. That key is invalidated by the websocket hook, so a
   // watch deleted or paused elsewhere disappears from an open popover instead of
@@ -254,9 +275,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // One read seeds all three fields. Runs in an effect (not render) so the
   // render itself performs no storage read/write.
   useEffect(() => {
-    if (!open) return
+    if (!open) { dropStartRefusal(slotKey, loop?.id); adoptedRefusal.current = ''; return }
     hasEdited.current = false
-    setError('')
+    setError(adoptedRefusal.current)
     // A pending confirmation must not survive a close: reopening later would
     // put a primed erase under the next press.
     setConfirmClear(false)
@@ -287,6 +308,24 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
   }, [open])
+
+  // Adopt a refused first fire held for THIS loop, now or when it lands. Runs
+  // after the open-edge reset above, so a fresh mount ends on the refusal.
+  // Taken out of the store once adopted, and kept in a ref so StrictMode's
+  // second effect pass (the open-edge reset runs again) still shows it.
+  const loopId = loop?.id
+  useEffect(() => {
+    const adopt = () => {
+      const held = startRefusals.get(slotKey)
+      if (!held || held.loopId !== loopId) return
+      dropStartRefusal(slotKey, loopId)
+      adoptedRefusal.current = held.message
+      setError(held.message)
+    }
+    adopt()
+    startRefusalListeners.add(adopt)
+    return () => { startRefusalListeners.delete(adopt) }
+  }, [slotKey, loopId])
 
   // Flush a pending debounced edit synchronously when the popover closes OR
   // unmounts while open, so edits within the last DRAFT_SAVE_DEBOUNCE_MS
@@ -534,17 +573,32 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     })
   }
 
-  /** Play with no loop: create and start it from the form, NO fire (product
-   *  owner, 2026-10-01): the first nudge goes out after `idle_secs`, or when
-   *  the user presses Play on the running loop. The write's hand-off re-keys
-   *  the popover onto the created id; a refused create lands in this notice. */
+  /** Play with no loop: create and start it from the form. By default NO fire
+   *  (product owner, 2026-10-01): the first nudge goes out after `idle_secs`,
+   *  or when the user presses Play on the running loop. With "Run first cycle
+   *  now" ticked (#23803) the created loop is then fired through the same
+   *  route Nudge now uses, so its refusals (a turn in flight) still apply.
+   *  The fire goes out BEFORE the hand-off, because the hand-off re-keys and
+   *  remounts the popover onto the created id: a refused create lands in this
+   *  notice, and a refused fire reaches the remounted one via `startRefusals`. */
   function startNow() {
     const fields = formFields()
     return runControl(async () => {
-      await writeLoop(
-        { url: '/api/autonudge', method: 'POST', body: { slot_key: slotKey, ...fields } },
-        fields,
-      )
+      const created = await loopWrite.mutateAsync({ url: '/api/autonudge', method: 'POST', body: { slot_key: slotKey, ...fields } })
+      let refusal = ''
+      if (runFirstNow && created?.id) {
+        try {
+          await loopWrite.mutateAsync({ url: `/api/autonudge/${created.id}/fire`, method: 'POST' })
+        } catch (e: unknown) {
+          refusal = e instanceof Error ? e.message : String(e)
+          holdStartRefusal(slotKey, created.id, refusal)
+        }
+      }
+      adoptBaseline(created, fields)
+      adoptStored(created, fields)
+      onChange(created)
+      if (refusal) throw new Error(refusal)
+      if (runFirstNow && created?.id) onFired(created)
     })
   }
 
@@ -931,7 +985,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           className="mb-2"
           testId="auto-nudge-error"
           message={error}
-          onDismiss={() => setError('')}
+          onDismiss={() => { adoptedRefusal.current = ''; setError('') }}
         />
 
         {/* THE ACTION ROW (product owner, 2026-10-01). While a loop exists it is
@@ -1009,7 +1063,18 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             </div>
           </div>
         ) : (
-          <div className="flex items-center justify-end gap-2" data-testid="auto-nudge-actions">
+          <div className="flex items-center justify-between gap-2" data-testid="auto-nudge-actions">
+            <label className="flex items-center gap-1.5 text-muted text-[11px] cursor-pointer">
+              <input
+                type="checkbox"
+                aria-label={i18nT('components.autoNudgePopover.run_first_cycle_now')}
+                data-testid="auto-nudge-run-first-now"
+                checked={runFirstNow}
+                disabled={saving || writeDisabled}
+                onChange={e => setRunFirstNow(e.target.checked)}
+              />
+              {i18nT('components.autoNudgePopover.run_first_cycle_now')}
+            </label>
             <div className="flex items-center gap-2" data-testid="auto-nudge-controls">
               <Btn
                 type="button"

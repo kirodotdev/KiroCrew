@@ -2068,6 +2068,7 @@
       "clear_goal_for_good": "Clear",
       "cancel": "Cancel",
       "clear_goal_question": "Remove this goal for good?",
+      "run_first_cycle_now": "Run first cycle now",
       "stop_file_help": "{{token}} is filled in when each nudge is sent: it becomes the path of this session's stop file. Create that file to halt the loop.",
       "stop_file_help_none": "This loop was armed without a stop file, so {{token}} is sent blank.",
       "judge_wake_when": "Judge: wake when {{criterion}}",

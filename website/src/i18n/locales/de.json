@@ -6335,6 +6335,7 @@
       "clear_goal_for_good": "Leeren",
       "cancel": "Abbrechen",
       "clear_goal_question": "Dieses Ziel endgültig löschen?",
+      "run_first_cycle_now": "Ersten Zyklus sofort ausführen",
       "stop_file_help": "{{token}} wird beim Senden jedes Anstoßes ausgefüllt: Es wird zum Pfad der Stoppdatei dieser Sitzung. Lege diese Datei an, um die Schleife anzuhalten.",
       "stop_file_help_none": "Diese Schleife wurde ohne Stoppdatei gestartet, daher wird {{token}} leer gesendet.",
       "judge_wake_when": "Prüfer: wecken, wenn {{criterion}}",

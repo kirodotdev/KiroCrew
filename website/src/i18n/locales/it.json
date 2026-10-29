@@ -6443,6 +6443,7 @@
       "clear_goal_for_good": "Cancella",
       "cancel": "Annulla",
       "clear_goal_question": "Eliminare definitivamente questo obiettivo?",
+      "run_first_cycle_now": "Esegui subito il primo ciclo",
       "stop_file_help": "{{token}} viene compilato all’invio di ogni sollecito: diventa il percorso del file di arresto di questa sessione. Crea quel file per fermare il ciclo.",
       "stop_file_help_none": "Questo ciclo è stato avviato senza file di arresto, quindi {{token}} viene inviato vuoto.",
       "judge_wake_when": "Giudice: sveglia quando {{criterion}}",

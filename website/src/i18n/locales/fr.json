@@ -6443,6 +6443,7 @@
       "clear_goal_for_good": "Effacer",
       "cancel": "Annuler",
       "clear_goal_question": "Supprimer définitivement cet objectif ?",
+      "run_first_cycle_now": "Lancer le premier cycle maintenant",
       "stop_file_help": "{{token}} est rempli à l’envoi de chaque relance : il devient le chemin du fichier d’arrêt de cette session. Crée ce fichier pour arrêter la boucle.",
       "stop_file_help_none": "Cette boucle a été armée sans fichier d’arrêt, donc {{token}} est envoyé vide.",
       "judge_wake_when": "Juge : réveiller quand {{criterion}}",

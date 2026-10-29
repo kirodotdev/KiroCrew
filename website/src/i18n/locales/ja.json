@@ -6227,6 +6227,7 @@
       "clear_goal_for_good": "クリア",
       "cancel": "キャンセル",
       "clear_goal_question": "この目標を完全に削除しますか？",
+      "run_first_cycle_now": "最初のサイクルを今すぐ実行",
       "stop_file_help": "{{token}} は各ナッジの送信時に埋め込まれ、このセッションの停止ファイルのパスになります。そのファイルを作成するとループを止められます。",
       "stop_file_help_none": "このループは停止ファイルなしで開始されたため、{{token}} は空のまま送信されます。",
       "judge_wake_when": "判定：{{criterion}} のとき起こす",
