@@ -260,6 +260,7 @@ class TestRestartIndeterminateLock:
             cli_server.service_controller, "restart_service", lambda: RestartReport()
         )
         monkeypatch.setattr(cli_server.service_controller, "is_service_active", lambda: False)
+        monkeypatch.setattr(cli_server.service_controller, "installed_unit_path", lambda: None)
         monkeypatch.setattr(platform_compat, "find_listening_pids", lambda port: [])
         monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
         monkeypatch.setattr(cli_server, "_report_authenticated_shutdown", lambda port: False)

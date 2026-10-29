@@ -200,7 +200,7 @@ async def restart_remote(self: SshTunnelManager, instance_id: str, *, force: boo
         if answer.outcome == "refused":
             return {"ok": False, "code": FAIL_IDLE_CHECK_FAILED, "message": err}
     else:
-        rc, err = await self._run_remote_subcommand(inst, params, "restart")
+        rc, err = await self._run_remote_subcommand(inst, params, "restart", stdout_tail=True)
     if rc == 0:
         logger.info("Restarted remote gateway for %s", instance_id)
         return {"ok": True, "message": "remote gateway restart requested"}
@@ -387,7 +387,7 @@ async def _update_then_restart(
             return
     job.advance(PHASE_RESTARTING)
     if job.force:
-        rc, err = await self._run_remote_subcommand(inst, params, "restart")
+        rc, err = await self._run_remote_subcommand(inst, params, "restart", stdout_tail=True)
         if rc != 0:
             logger.warning("Remote restart after update for %s failed (rc=%s): %s", iid, rc, err)
             job.fail(err or f"restart exited {rc}")
