@@ -9798,6 +9798,7 @@
       "composer_chip_label": "このチャットでは Crew Mode がオンです",
       "breadcrumb_label": "クルーメンバー",
       "back_to_main_chat": "メインチャットに戻る",
+      "parent_row_hint": "このチャットのクルーメンバーを表示中",
       "steer_too_long": "{{name}} へのメッセージは {{max}} 文字までです。短くしてから送信してください。",
       "steer_placeholder": "{{name}} へメッセージ: 次のステップの前に読みます",
       "summary_approval": "承認が必要 · {{n}}",

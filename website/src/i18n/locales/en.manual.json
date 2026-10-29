@@ -4091,6 +4091,7 @@
       "composer_chip_label": "Crew Mode is on for this chat",
       "breadcrumb_label": "Crew member",
       "back_to_main_chat": "Back to main chat",
+      "parent_row_hint": "Showing one of its crew members",
       "steer_too_long": "A message to {{name}} can be at most {{max}} characters. Shorten it to send.",
       "steer_placeholder": "Message {{name}}: it reads this before its next step",
       "summary_approval": "Approval needed · {{n}}",

@@ -9798,6 +9798,7 @@
       "composer_chip_label": "这个对话已开启 Crew Mode",
       "breadcrumb_label": "团队成员",
       "back_to_main_chat": "返回主聊天",
+      "parent_row_hint": "正在查看它的一位团队成员",
       "steer_too_long": "发给 {{name}} 的消息最多 {{max}} 个字符。请缩短后再发送。",
       "steer_placeholder": "给 {{name}} 的消息：它会在下一步之前读取",
       "summary_approval": "需要批准 · {{n}}",

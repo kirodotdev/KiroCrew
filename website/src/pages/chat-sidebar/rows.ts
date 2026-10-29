@@ -217,6 +217,9 @@ export interface RowScene {
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
    *  null. While one is open it is the active row, and no local row is. */
   crewWindow: { instanceId: string; key: string } | null
+  /** The LOCAL Crew Mode root whose worker the chat pane shows, or null. Workers
+   *  are not listed, so the root's row is marked as the shown worker's parent. */
+  crewParent: string | null
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -269,6 +272,9 @@ export interface SessionRowView {
    *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
    *  would cause). */
   isSidebarActiveSlot: boolean
+  /** This row is the Crew Mode root whose worker the chat pane shows: not the
+   *  active row, but the way the person found the worker, so it stays marked. */
+  isCrewParent: boolean
   /** Whether a crew window is open over the chat pane. While it is, the active
    *  session's composer is hidden under an opaque cover (`ChatPaneChrome`), so a
    *  staged reference would land on a composer the user cannot see — the same
@@ -942,6 +948,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     // when a crew window covers the pane (where isActiveIn is false but the
     // session is still active). Matches the key the drop handler refuses against.
     isSidebarActiveSlot: local !== null && scene.activeSlot === local,
+    isCrewParent: local !== null && !scene.crewWindow && scene.crewParent === local,
     // A crew window covers the chat pane, so no composer is visible to stage a
     // reference into — withhold "Reference in chat" on every row, same reason as
     // the no-active-slot case.
@@ -987,7 +994,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true,
-  isActive: true, isSidebarActiveSlot: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  isActive: true, isSidebarActiveSlot: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,

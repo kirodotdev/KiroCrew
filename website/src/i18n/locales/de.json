@@ -9943,6 +9943,7 @@
       "composer_chip_label": "Crew Mode ist für diesen Chat an",
       "breadcrumb_label": "Crew-Mitglied",
       "back_to_main_chat": "Zurück zum Hauptchat",
+      "parent_row_hint": "Zeigt eines seiner Crew-Mitglieder",
       "steer_too_long": "Eine Nachricht an {{name}} darf höchstens {{max}} Zeichen lang sein. Kürze sie zum Senden.",
       "steer_placeholder": "Nachricht an {{name}}: liest sie vor dem nächsten Schritt",
       "summary_approval": "Freigabe nötig · {{n}}",

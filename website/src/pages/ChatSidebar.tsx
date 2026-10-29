@@ -770,8 +770,10 @@ function ChatSidebar({
   ])
   // What this render shows rows with. The row model reads the local-only members
   // for a local row alone.
+  // A worker in the pane is not listed, so its root's row is marked as its parent.
+  const crewParent = (activeSlot && slotsProp.find(s => s.key === activeSlot)?.crew_root) || null
   const rowScene: RowScene = {
-    activeSlot, crewWindow, shell: rowShell,
+    activeSlot, crewWindow, crewParent, shell: rowShell,
     local: {
       recentRank, subagentCounts, subagentApprovalCounts, poppedOut,
       digits: digitModifierHeld ? shortcutDigitByKey : null,
