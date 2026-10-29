@@ -5807,3 +5807,12 @@ pops by object identity — if a racing cold-start already replaced the
 entry, only the old session object is shut down; the fresh replacement
 and its session_map entry survive (the old provider is still reaped so
 its process never leaks).
+
+A failed `/compact` whose key holds no session at all is not a compaction
+failure. A close (`remove`) popped the session and shut its provider down, so
+the stream died with the process. That arm returns `"absent"`, next to the
+user-Stop arm and checked after it, with no warning, no failure callback or
+`CONTEXT_COMPACTIONS` count, and no recycle: the close owns the shutdown, and a
+recycle here would shut the same process down a second time. A key that holds a
+DIFFERENT session takes the ordinary failure arm, because that replacement did
+not reap the held session and `_restart_held` still must.
