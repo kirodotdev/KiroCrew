@@ -346,6 +346,97 @@ class TestTheBarrierPollClassifiesEveryOutcome:
         assert "in_progress" in proc.stdout
 
 
+# A run whose status lags its jobs: every job is done and green, the run still
+# reads in_progress. The fake clock starts well after the jobs finished.
+_LONG_DONE = "2026-10-27T13:32:33Z"
+_CLOCK_LATER = 1793190000  # about 23 hours after _LONG_DONE
+
+
+def _jobs(*rows: tuple[str, str | None, str | None]) -> str:
+    jobs = [
+        {"id": i, "status": status, "conclusion": conclusion, "completed_at": done}
+        for i, (status, conclusion, done) in enumerate(rows, 1)
+    ]
+    return json.dumps({"total_count": len(jobs), "jobs": jobs})
+
+
+@needs_bash
+class TestARunWhoseStatusLagsItsJobs:
+    def _lagging(
+        self, tmp_path: Path, jobs: str
+    ) -> tuple[_Harness, subprocess.CompletedProcess[str]]:
+        h = _Harness(tmp_path, [_page(_run(16, "in_progress", None))], tick=200, jobs=jobs)
+        (tmp_path / "clock").write_text(str(_CLOCK_LATER), encoding="utf-8")
+        return h, h.run(appear_budget=180, total_budget=300)
+
+    def test_all_jobs_green_releases_the_matrix_at_the_total_budget(self, tmp_path: Path) -> None:
+        h, proc = self._lagging(
+            tmp_path,
+            _jobs(("completed", "success", _LONG_DONE), ("completed", "skipped", _LONG_DONE)),
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert "has not rolled them up into the run yet" in proc.stdout
+        assert "Releasing the heavy jobs" in proc.stdout
+        assert h.writes() == [], h.calls
+        assert any("/actions/runs/16/attempts/1/jobs" in c for c in h.calls), h.calls
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            # A job still running.
+            (("completed", "success", _LONG_DONE), ("in_progress", None, None)),
+            # A job that failed.
+            (("completed", "success", _LONG_DONE), ("completed", "failure", _LONG_DONE)),
+            # Nothing but skips: no gate actually ran.
+            (("completed", "skipped", _LONG_DONE),),
+        ],
+    )
+    def test_an_unfinished_or_failed_job_still_fails_closed(
+        self, tmp_path: Path, rows: tuple[tuple[str, str | None, str | None], ...]
+    ) -> None:
+        _h, proc = self._lagging(tmp_path, _jobs(*rows))
+        assert proc.returncode == 1, proc.stdout
+        assert "Failing closed rather than starting the matrix unverified" in proc.stdout
+
+    def test_no_jobs_still_fails_closed(self, tmp_path: Path) -> None:
+        _h, proc = self._lagging(tmp_path, json.dumps({"total_count": 0, "jobs": []}))
+        assert proc.returncode == 1, proc.stdout
+
+    def test_jobs_that_only_just_finished_are_not_trusted_yet(self, tmp_path: Path) -> None:
+        # The fake clock reads seconds after the last job finished: a job that
+        # `needs:` the others may not have been created yet.
+        h = _Harness(
+            tmp_path,
+            [_page(_run(17, "in_progress", None))],
+            tick=1,
+            jobs=_jobs(("completed", "success", _LONG_DONE)),
+        )
+        (tmp_path / "clock").write_text("1793107953", encoding="utf-8")
+        proc = h.run(appear_budget=1, total_budget=5)
+        assert proc.returncode == 1, proc.stdout
+        assert "Failing closed rather than starting the matrix unverified" in proc.stdout
+
+    def test_a_rerun_attempt_still_fails_closed(self, tmp_path: Path) -> None:
+        # A rerun of one job lists only that job; a job that failed in the
+        # first attempt and was not rerun is absent from it.
+        h = _Harness(
+            tmp_path,
+            [_page(_run(18, "in_progress", None, run_attempt=2))],
+            tick=200,
+            jobs=_jobs(("completed", "success", _LONG_DONE)),
+        )
+        (tmp_path / "clock").write_text(str(_CLOCK_LATER), encoding="utf-8")
+        proc = h.run(appear_budget=180, total_budget=300)
+        assert proc.returncode == 1, proc.stdout
+        assert "is on attempt 2" in proc.stdout
+        assert not any("/jobs" in c for c in h.calls), h.calls
+
+    def test_an_unreadable_jobs_list_still_fails_closed(self, tmp_path: Path) -> None:
+        _h, proc = self._lagging(tmp_path, "__FAIL__")
+        assert proc.returncode == 1, proc.stdout
+        assert "Could not read the jobs of Fast Gate run 16" in proc.stdout
+
+
 # Shaped on a real eviction: the gate run for this commit waited in Fast Gate's
 # group behind an older run that held the running slot, and the next push's run
 # entered the group one second before this one was cancelled.
