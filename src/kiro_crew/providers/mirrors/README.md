@@ -318,7 +318,10 @@ expensive one: a healthy session with a silently missing tool, which nothing
 downstream reports. Client-side transport narrowing is therefore both a defence
 against a fatal refusal AND the only guard that the array Crew sends is the array
 the adapter honours, and that argument had been load-bearing for a whole
-harness's tool surface in one direction only.
+harness's tool surface in one direction only. codex-acp 2.3.0 then started
+validating the array against the ACP schema, so the fail-open half closed there:
+the bare `sse` element, the `nonsense-type` control and a stdio element with no
+`command` now each fail the whole `session/new` with `-32602`.
 
 So a new mirror's transport and environment rules are MEASURED. `codex.py` cites
 what was run and `test/test_codex_session_mcp.py` pins it against an installed

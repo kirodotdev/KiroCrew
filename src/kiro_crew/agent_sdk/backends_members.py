@@ -36,7 +36,7 @@ from kiro_crew.agent_sdk.backends import (
 # Claude's consumed projection is captured live on claude-agent-acp 0.94.0
 # (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``): the
 # server the mirror projected out of a saved spec ran in the session. Codex's is
-# captured live on codex-acp 2.2.2, the lane's pin
+# captured live on codex-acp 2.3.0, the lane's pin
 # (``test/fixtures/acp_frames/codex/saved-spec-projection-live.jsonl``): the
 # element codex's mirror projected out of a saved spec, on a session armed
 # read-only, answered the model's call with the server's own result after one
@@ -154,7 +154,7 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
 #     structurally stronger than claude's ``settings.local.json`` ownership check,
 #     which covers a routing this core declares and does not enforce.
 #
-# Captured live on codex-acp 2.2.2, the lane's pin:
+# Captured live on codex-acp 2.3.0, the lane's pin:
 # ``test/fixtures/acp_frames/codex/member-dispatch-live.jsonl``. With the member
 # entry as the session's one ``session/new`` element and ``mode`` set to
 # ``read-only``, the model's ``session_status`` call raised one permission request

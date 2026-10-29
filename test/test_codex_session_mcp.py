@@ -41,6 +41,7 @@ import pytest
 from real_adapter_gate import MEASURED_CODEX_ACP_VERSION, require_real_adapter
 
 from kiro_crew.acp import runtime as acp_runtime
+from kiro_crew.acp import session_mcp
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.providers.mirrors.codex import (
     codex_name,
@@ -479,17 +480,16 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
     3. The child inherits ALMOST NOTHING. ``codex-rs`` runs ``env_clear()`` and
        re-adds an allowlist, so ``KIROCREW_SESSION_KEY`` arrives only because the
        element carried it -- which is why ``codex_elements`` carries it.
-    4. The elements of the array decide whether ``session/new`` survives, and the
-       adapter is not consistent about which ones. A meaningless
-       ``{"type": "nonsense-type"}`` element is ACCEPTED -- an ordinary
-       ``sessionId``, that server silently unwired -- and so is a MALFORMED stdio
-       element, answered with the element dropped. An ``sse`` element is the one
-       the adapter may instead name and refuse, failing the whole session. Both
-       dispositions are measured rather than assumed, because each makes the
-       client-side narrowing load-bearing on its own: an accepted element is a
-       server no error reports missing, and a refused one is a whole session lost
-       over one spec entry. What is NOT admitted is a third answer, where the
-       adapter reports having wired a transport its own ``mcpCapabilities`` denies.
+    4. ONE bad element fails the whole ``session/new``. A schema-complete ``sse``
+       element is named and refused (``-32600``). Since 2.3.0, which validates the
+       array against the ACP schema, a meaningless ``{"type": "nonsense-type"}``
+       element, a headerless ``sse`` one and a MALFORMED stdio one (no
+       ``command``) are refused too, with ``-32602 Invalid params``; up to 2.2.2
+       those three were accepted, the server silently unwired. Either way the
+       client-side narrowing is load-bearing: every element Crew lets through
+       must be one the adapter takes, or the session is lost over one spec entry.
+       What is NOT admitted is an answer where the adapter reports having wired a
+       transport its own ``mcpCapabilities`` denies.
 
     A fabricated API key in a throwaway ``CODEX_HOME`` is what gets past the
     adapter's auth check, which fires BEFORE it looks at ``mcpServers`` (verified:
@@ -556,9 +556,9 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
         assert "PATH" in child["env"]
         assert "STUB_MCP_REPORT" in child["env"]
 
-        # 4: what the adapter does with a transport its own advertisement denies,
-        # and it is TWO measured answers keyed on the element's shape -- each pinned
-        # exactly, because a hedge admitting either would let the contract drift.
+        # 4: what the adapter does with an element it will not take: it refuses the
+        # whole session/new, with -32600 or -32602 depending on the shape -- each
+        # pinned exactly, because a hedge admitting either would let the contract drift.
         #
         # A schema-complete sse element (with the required `headers` array, which
         # is the shape Crew's own translation emits) is named and REFUSED, and the
@@ -574,24 +574,27 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
             "not name the transport, so this measures something other than the "
             f"transport check: {measured['sse_error']!r}\n" + context
         )
-        # A schema-INCOMPLETE sse element (no `headers`) does not parse as sse at
-        # all; it falls to the untagged variant and is ACCEPTED, the server silently
-        # never wired. Nothing downstream reports it. Both dispositions make the
-        # client-side narrowing load-bearing, from opposite directions.
-        assert measured["sse_bare_ok"] and not measured["sse_bare_error"], (
-            "codex-acp no longer accepts a headerless sse element silently: "
-            f"ok={measured['sse_bare_ok']!r} error={measured['sse_bare_error']!r}. "
-            "Re-measure before changing this assertion.\n" + context
-        )
-        assert measured["unknown_type_ok"] and not measured["unknown_type_error"], (
-            "codex-acp refused a meaningless transport type. The filter keeps only "
-            "POSITIVELY advertised transports because the adapter validates the tag "
-            "not at all, and this is the control for the sse measurement above.\n" + context
-        )
-        assert measured["malformed_ok"], (
-            "a malformed stdio element fails the whole session/new. The translator "
-            "degrades on a bad spec entry rather than raising, so this would turn "
-            "one hand-edited spec line into a dead session.\n" + context
+        # Since 2.3.0 the adapter validates the array against the ACP schema, so an
+        # element that parses as no variant -- a headerless sse one, a meaningless
+        # transport tag, a stdio one with no `command` -- fails the WHOLE session/new
+        # with -32602 too. Up to 2.2.2 each was accepted and silently never wired.
+        for shape in ("sse_bare", "unknown_type", "malformed"):
+            assert not measured[f"{shape}_ok"] and (
+                (measured[f"{shape}_error"] or {}).get("code") == -32602
+            ), (
+                f"codex-acp no longer refuses the {shape} element with -32602: "
+                f"ok={measured[f'{shape}_ok']!r} error={measured[f'{shape}_error']!r}. "
+                "Re-measure before changing this assertion.\n" + context
+            )
+        # So Crew must never send those shapes. The translator skips an entry with
+        # no command and no url, and the filter drops a tag nobody advertised.
+        assert session_mcp.acp_server_element("no-command", {"args": []}) is None
+        assert (
+            drop_unadvertised_transports(
+                [{"name": "junk", "type": "nonsense-type", "url": "http://x/j"}],
+                measured["mcp_capabilities"],
+            )
+            == []
         )
         # The advertisement the client captures and the filter consumes, so this is
         # also the assertion that the two agree on a real adapter.

@@ -138,14 +138,11 @@ CAPTURED_HISTORY_REPLAY: dict[str, Any] = {
 }
 
 
-#: codex-acp 2.2.2's ``/compact`` turn, captured in the Real Adapter Contract
-#: Tests lane: the same pair with NO ``_meta``, and a terminal with no title.
+#: codex-acp's ``/compact`` turn on the lane pin (2.3.0; 2.2.2 sent the same),
+#: captured in the Real Adapter Contract Tests lane: the same pair with NO
+#: ``_meta``, and a terminal with no title.
 FIXTURE_222 = (
-    Path(__file__).resolve().parent
-    / "fixtures"
-    / "acp_frames"
-    / "codex"
-    / "compact-live-2.2.2.jsonl"
+    Path(__file__).resolve().parent / "fixtures" / "acp_frames" / "codex" / "compact-live.jsonl"
 )
 
 
