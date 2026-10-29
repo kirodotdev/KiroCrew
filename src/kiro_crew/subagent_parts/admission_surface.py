@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         asyncio,
         cached_session_start_concurrency,
         logger,
+        parent_project_dirs,
         parent_spawn_policy,
         parent_template_allowlists,
         redact_credentials,
@@ -301,6 +302,7 @@ def spawn(
     label: str = "",
     _execution_context: dict | None = None,
     _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
+    _parent_project_dirs: "list[str] | None" = None,
     _agent_check: "AgentCheck | None" = None,
     _recovering_row: bool = False,
     _stop_before_memory_read: bool = False,
@@ -344,6 +346,7 @@ def spawn(
         label=label,
         _execution_context=_execution_context,
         _parent_spawn_policy=_parent_spawn_policy,
+        _parent_project_dirs=_parent_project_dirs,
         _agent_check=_agent_check,
         _recovering_row=_recovering_row,
         _stop_before_memory_read=_stop_before_memory_read,
@@ -474,6 +477,13 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
         or getattr(self._sessions, "admission_closed", False) is True
     ):
         return self.spawn(task, **kwargs)
+    if kwargs.get("_parent_project_dirs") is None:
+        # The parent's project scope, read before the first await (dict reads
+        # only), so the policy reads below and the queued row all use the scope
+        # the parent had when it asked, even if its session ends meanwhile.
+        kwargs["_parent_project_dirs"] = list(
+            parent_project_dirs(str(kwargs.get("parent_session_key") or ""))
+        )
     if kwargs.get("_execution_context") is None:
         from kiro_crew.execution_context import read_session_execution
         from kiro_crew.subagent_persistence import read_run_execution
@@ -516,7 +526,12 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
                 kwargs["_parent_spawn_policy"] = (
                     template,
                     (
-                        await asyncio.to_thread(parent_template_allowlists, parent, template)
+                        await asyncio.to_thread(
+                            parent_template_allowlists,
+                            parent,
+                            template,
+                            kwargs.get("_parent_project_dirs"),
+                        )
                         if template
                         else ()
                     ),
@@ -561,7 +576,9 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
         # parent's declaration is read OFF the loop here, like the record
         # above, so the gate below consumes it without a directory scan.
         kwargs["_parent_spawn_policy"] = await asyncio.to_thread(
-            parent_spawn_policy, str(kwargs.get("parent_session_key") or "")
+            parent_spawn_policy,
+            str(kwargs.get("parent_session_key") or ""),
+            kwargs.get("_parent_project_dirs"),
         )
     if kwargs.get("_agent_check") is None:
         # The agent-directory scan, off the loop: the gate consumes this

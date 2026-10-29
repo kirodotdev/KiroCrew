@@ -199,6 +199,40 @@ class TestSpawnEndpoint:
         assert mgr.spawn.call_args.kwargs["backend"] == reaches
 
     @pytest.mark.asyncio
+    async def test_the_parent_scope_is_read_before_the_backend_probe(
+        self, selectable, monkeypatch, tmp_path
+    ):
+        """The parent's session ends while the route awaits its backend probe:
+        the spawn still carries the project scope the parent had when it asked."""
+        from kiro_crew import subagent
+        from kiro_crew.dashboard.handlers import messaging
+
+        live = [str(tmp_path)]
+        monkeypatch.setattr(
+            subagent,
+            "_parent_project_resolver",
+            lambda key: list(live) if key == "dashboard:p" else [],
+        )
+        real_probe = messaging._requested_backend
+
+        async def _probe_then_end_parent(raw):
+            live.clear()
+            return await real_probe(raw)
+
+        monkeypatch.setattr(messaging, "_requested_backend", _probe_then_end_parent)
+
+        async def _persistent(*_a):
+            return "persistent"
+
+        monkeypatch.setattr(messaging, "_spawn_request_memory_mode", _persistent)
+        request, mgr = _request({"task": "x", "backend": "claude", "parent_session": "dashboard:p"})
+        request.app["state"]._slots = {}
+        response = await messaging.api_spawn(request)
+        assert response.status == 200, response.text
+        assert not live, "the backend probe did not run"
+        assert mgr.spawn.call_args.kwargs["_parent_project_dirs"] == [str(tmp_path)]
+
+    @pytest.mark.asyncio
     async def test_no_backend_reaches_spawn_as_none(self, selectable):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 

@@ -131,7 +131,7 @@ _BASE_NAMES = frozenset("""
         extract_options format_overflow generate_token get_command_bus
         guard_owner_surface_routes internal_memory_scope is_direct_local_request
         is_proxied_request is_sensitive_path live logger mint_options_token
-        parent_template_allowlists parent_work_supported persisted_replay_denial_reason
+        parent_project_dirs parent_template_allowlists parent_work_supported persisted_replay_denial_reason
         persisted_snapshot_denial_reason pip_extra_install_command platform_compat
         read_bounded_json read_config_text read_panel_records read_state read_tombstone
         record_panel_dismissal_outcome redact_credentials redact_exfiltration_urls
