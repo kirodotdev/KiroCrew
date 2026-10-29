@@ -125,6 +125,45 @@ async def test_a_resume_whose_deletion_cannot_be_cancelled_is_refused_and_rearch
     assert len(scheduled) == 1 and key in scheduled[0]
 
 
+async def test_a_refused_revive_of_an_open_session_does_not_archive_it(
+    tmp_path, scheduled, monkeypatch
+):
+    # A revive of a session that was never closed (only unloaded) takes the
+    # refusal window through its hook. Refused after the cancellation ran, it
+    # must not put an open session's workspace on retention.
+    from kiro_crew.dashboard.chat_handlers import ResumeRefusal, resume_slot_from_history
+
+    reopened: list[tuple[str, ...]] = []
+
+    async def keep(keys):
+        reopened.append(tuple(keys))
+        return None
+
+    monkeypatch.setattr(retention, "keep_reopened", keep)
+    state, slot, key = _state(tmp_path)
+    await _archive_closed(state, slot)
+    await asyncio.to_thread(state.conversation_log.clear_closed, key)
+    assert not state.conversation_log.get_metadata(key).get("closed")
+    scheduled.clear()
+    passes: list[str] = []
+
+    async def second_pass_refuses(_built):
+        passes.append(_built.key)
+        if len(passes) < 2:
+            return None
+        return ResumeRefusal("no", "hook_said_no", 403)
+
+    outcome = await resume_slot_from_history(
+        state, name=slot.key, history_key=key, containment=second_pass_refuses
+    )
+    assert outcome.slot is None and outcome.refusal is not None
+    assert outcome.refusal.code == "hook_said_no"
+    # The cancellation really ran before the refusal, so the assertion below is
+    # about the discard, not a resume that stopped early.
+    assert len(reopened) == 1 and key in reopened[0]
+    assert scheduled == []
+
+
 async def test_a_close_whose_key_a_replacement_took_schedules_nothing(
     tmp_path, scheduled, monkeypatch
 ):

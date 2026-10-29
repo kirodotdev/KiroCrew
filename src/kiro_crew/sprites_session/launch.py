@@ -2,7 +2,7 @@
 
 A sprite is a persistent VM that goes cold when idle (a cold sprite bills storage
 only), so a session keeps one sprite for its life. The lifecycle -- when a sprite
-is created, kept or deleted -- is :class:`~kiro_crew.coder.persistent_vm.PersistentVmEnvironments`;
+is created, kept or deleted -- is :class:`~kiro_crew.session_environments.persistent_vm.PersistentVmEnvironments`;
 this module is the Sprites API side of it.
 
 Security properties:
@@ -22,12 +22,12 @@ import hashlib
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from kiro_crew.coder.persistent_vm import PersistentVmEnvironments, SessionResource
 from kiro_crew.config.session_environments import (
     SPRITES_TOKEN_SECRET_DEFAULT,
     VM_REGISTRY_FILES,
 )
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
+from kiro_crew.session_environments.persistent_vm import PersistentVmEnvironments, SessionResource
 from kiro_crew.sprites_session.client import SpritesClient
 from kiro_crew.sprites_session.shell import SpritesShell, SpritesWorkerLaunch
 
@@ -103,9 +103,20 @@ class SpritesSessionEnvironments(PersistentVmEnvironments):
         client, used = await self._client_and_id(profile)
         return await client.get_sprite(name), used
 
-    async def remote_create(self, profile: dict[str, Any], name: str) -> tuple[dict[str, Any], str]:
-        client, used = await self._client_and_id(profile)
-        return await client.create_sprite(name), used
+    async def remote_credential(self, profile: dict[str, Any]) -> str:
+        return (await self._client_and_id(profile))[1]
+
+    async def remote_create(
+        self, profile: dict[str, Any], name: str, *, used: str
+    ) -> dict[str, Any]:
+        client, current = await self._client_and_id(profile)
+        if current != used:
+            # Another token was saved after the row recorded this one.
+            raise SessionEnvironmentUnavailable(
+                f"the Sprites API token changed before sprite {name} was created; "
+                "nothing was created, start the chat again"
+            )
+        return await client.create_sprite(name)
 
     async def remote_delete(
         self, profile: Optional[dict[str, Any]], name: str, *, used: str

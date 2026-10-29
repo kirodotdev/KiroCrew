@@ -203,14 +203,20 @@ def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
     return merged
 
 
-def _profile_ids(section: dict) -> set[object]:
-    """Every profile id across the section's profile lists, of any provider."""
+def _profile_ids(section: dict) -> set[str]:
+    """Every profile id across the section's profile lists, of any provider,
+    read the way the loader reads each list: a hand-edited entry it drops (an
+    id that is not a string, say) names no profile and cannot fail the write."""
+    from kiro_crew.config.session_environments import (
+        load_boxd_profiles,
+        load_session_environments,
+        load_sprites_profiles,
+    )
+
+    _coder_url, coder = load_session_environments(section)
     return {
-        item.get("id")
-        for entries in section.values()
-        if isinstance(entries, list)
-        for item in entries
-        if isinstance(item, dict)
+        item["id"]
+        for item in (*coder, *load_sprites_profiles(section), *load_boxd_profiles(section))
     }
 
 
@@ -579,9 +585,21 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if path_key == "session_environments.default_profile":
                 # Under the lock, against the profiles saved at this write.
                 _check_default_profile_is_saved(section, value)
+            if path_key in (
+                "session_environments.sprites_profiles",
+                "session_environments.boxd_profiles",
+            ):
+                # A list may not drop the profile the saved default names: every
+                # new chat would then run locally, and the next whole save fail.
+                _check_default_profile_is_saved(
+                    {**section, parts[-1]: value}, section.get("default_profile")
+                )
             if path_key == "session_environments" and isinstance(value, dict):
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
+                # The submitted default must name a profile of the merged
+                # section, which includes a provider list the save omitted.
+                _check_default_profile_is_saved(stored, value.get("default_profile"))
             section[parts[-1]] = stored
             if parts[0] == "session_environments":
                 # On the merged section, under the lock: a leaf write of one

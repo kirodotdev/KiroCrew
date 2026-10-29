@@ -10,8 +10,8 @@ import pytest
 from kiro_crew.boxd_session import cli as boxd_cli
 from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
 from kiro_crew.coder import retention
-from kiro_crew.coder.persistent_vm import SessionResource
 from kiro_crew.dashboard.handlers import session_environments as handlers
+from kiro_crew.session_environments.persistent_vm import SessionResource
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +59,9 @@ async def test_provider_callers_resolve_off_loop_and_reuse_cli(tmp_path, discove
     environments = BoxdSessionEnvironments(SimpleNamespace(boxd_profiles=[PROFILE]), tmp_path)
     if method == "remote_delete":
         await environments.remote_delete(*args[:2], used=args[2])
+    elif method == "remote_create":
+        used = await environments.remote_credential(PROFILE)
+        await environments.remote_create(*args, used=used)
     else:
         await getattr(environments, method)(*args)
     first, second = await asyncio.wait_for(
