@@ -11,6 +11,7 @@ from typing import Any
 from kiro_crew import session_ledger
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_FOLD_NAME,
     DASHBOARD_FOLD_NAME,
     GOAL_FOLD_NAME,
     PANEL_FOLD_NAME,
@@ -381,12 +382,13 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         # units would evict the newest unit's rows and keep a retired session's. Order by
         # the durable succession chain instead of the header clock.
         return units_in_succession(slot)
-    if name == DASHBOARD_FOLD_NAME:
+    if name in (DASHBOARD_FOLD_NAME, CUSTOM_FOLD_NAME):
         # Nor here, and for the reason the panel fold gives: this fold keeps the LATEST
         # value per field, so whichever unit is folded last wins each cell. A backward
         # clock step between two units of one slot sorts the retired unit last under the
         # header clock, and its stale value would then overwrite a value the live session
         # wrote and the write path accepted -- silently, because both are well-formed.
+        # The custom fold keeps the latest record per TYPE and is the same case.
         return units_in_succession(slot)
     if name in (GOAL_FOLD_NAME, WAITING_FOLD_NAME):
         # The same reason again: each keeps the NEWEST snapshot whole, so a retired

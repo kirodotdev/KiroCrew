@@ -491,25 +491,29 @@ inbox" line that goes to `/notifications` (through the navigation leave guard) â
 the same place the popover's "Open inbox" goes, so "inbox" names one place. On the mobile breakpoint only the newest card renders,
 full width, with its close visible at rest (no hover on touch).
 
-On the mobile breakpoint the card also goes with a horizontal swipe
+On the mobile breakpoint the card also goes with a sideways or upward swipe
 (`components/notifications/SwipeToDismiss.tsx`, wrapped around the card; inert on
 desktop). The gesture is touch-only and calls the same `removeNotes` the close
 control calls, so a swiped note waits unread in the bell exactly as a closed one
 does, and the close stays visible for keyboard and screen-reader users. A touch
-becomes a swipe once it has travelled `SWIPE_DISMISS_SLOP` (10 px) horizontally;
-a touch that first drifts past `SWIPE_DISMISS_SCROLL_SLOP` (8 px) vertically is
-declined for good, the wrapper is `touch-action: pan-y`, and a `pointercancel`
-(the browser took the scroll) snaps the card back, so a vertical scroll is never
-taken. The card follows the finger 1:1 in either direction; a release past
-`SWIPE_DISMISS_DISTANCE` (80 px) dismisses, a shorter one snaps back
+locks the sideways axis once it has travelled `SWIPE_DISMISS_SLOP` (10 px)
+sideways, or the upward axis once it has travelled that far up, whichever comes
+first; a touch that first drifts past `SWIPE_DISMISS_SCROLL_SLOP` (8 px) downward
+is declined for good. The wrapper is `touch-action: none`, because under `pan-y`
+the browser claims an upward drag as a scroll and cancels it (WebKit has no
+`pan-up`); this covers the card's own box only, so a finger that starts anywhere
+else still scrolls the page, and a `pointercancel` snaps the card back. The card
+follows the finger 1:1 sideways in either direction, and upward but never below
+its rest position; a release past `SWIPE_DISMISS_DISTANCE` (80 px) on the locked
+axis dismisses, a shorter one snaps back
 (`transition-transform`, none under `prefers-reduced-motion`), and the click a
 release fires is swallowed for `SWIPE_CLICK_SWALLOW_MS` (350 ms, the drawer's
 own ceiling) so a snapped-back swipe does not also open the note; a cancel arms
 no swallow, and past the window a keyboard activation goes through, since a
 touch that moved past the tap slop may fire no click at all.
-`NotificationBanner.test.tsx` ("swipe to dismiss") pins the threshold, the
-snap-back, the vertical decline, the cancel, the click swallow, the mouse and
-desktop no-ops and the reduced-motion class.
+`NotificationBanner.test.tsx` ("swipe to dismiss") pins the thresholds on both
+axes, the snap-back, the axis lock, the downward decline, the cancel, the click
+swallow, the mouse and desktop no-ops and the reduced-motion class.
 
 ### Motion
 

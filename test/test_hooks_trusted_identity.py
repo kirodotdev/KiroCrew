@@ -359,6 +359,181 @@ class TestClassifierOnlyHostTrustedProof:
         assert r.action == TOOL_DENY
 
 
+class TestReadsModeFirstPartyMcpProof:
+    """Under the Reads approval mode, Kiro Crew's OWN read-only MCP tools auto-approve.
+
+    ``_is_first_party_read_only_mcp_tool`` is the MCP counterpart of the host
+    built-in proof: the same positive ``mcp_identity_trusted`` provenance, an exact
+    ``(server, tool)`` pair from the closed ``_FIRST_PARTY_READ_ONLY_MCP_TOOLS``
+    set, and nothing read from the title or the payload. The gate consults it only
+    when the surface passed ``trust_reads=True``.
+    """
+
+    CORE = "kirocrew-core"
+
+    #: Core tools that write, spend or send; none may ever be on the allowlist.
+    _CORE_WRITE_TOOLS = frozenset(
+        {
+            "learn_add",
+            "learn_remove",
+            "knowledge_add_document",
+            "knowledge_dedup",
+            "spawn_run",
+            "spawn_sub_agents",
+            "spawn_continue",
+            "spawn_steer",
+            "spawn_release",
+            "send_message",
+            "send_notification",
+            "file_send",
+            "artifact_save",
+            "artifact_update",
+            "artifact_delete",
+            "set_project",
+            "reset_conversation",
+            # ``summarize=true`` asks the gateway to spend model tokens; the
+            # allowlist is matched on identity, never on arguments, so it stays out.
+            "list_sessions",
+        }
+    )
+
+    def test_first_party_read_only_mcp_tools_are_core_reads(self):
+        """The set is CLOSED: exactly these tools, all served by the core server,
+        each a tool the core server really registers, none a write tool."""
+        from kiro_crew.hooks import _FIRST_PARTY_READ_ONLY_MCP_TOOLS
+        from kiro_crew.mcp_tools import build_tool_names
+        from kiro_crew.session_directive import CORE_MCP_SERVER
+
+        served = set(build_tool_names())
+        assert CORE_MCP_SERVER == self.CORE
+        assert _FIRST_PARTY_READ_ONLY_MCP_TOOLS == frozenset(
+            {
+                (self.CORE, "memory_recall"),
+                (self.CORE, "search_chat_history"),
+                (self.CORE, "get_chat_session"),
+                (self.CORE, "skill_search"),
+                (self.CORE, "local_knowledge_search"),
+            }
+        )
+        for server, tool in sorted(_FIRST_PARTY_READ_ONLY_MCP_TOOLS):
+            assert server == CORE_MCP_SERVER, (server, tool)
+            assert tool in served, tool
+            assert tool not in self._CORE_WRITE_TOOLS, tool
+        # And the write list names real tools too, or it pins nothing.
+        assert self._CORE_WRITE_TOOLS <= served, sorted(self._CORE_WRITE_TOOLS - served)
+
+    def test_a_trusted_allowlisted_pair_is_proven_read_only(self):
+        from kiro_crew.hooks import _is_first_party_read_only_mcp_tool
+
+        assert (
+            _is_first_party_read_only_mcp_tool(
+                "memory_recall", self.CORE, mcp_identity_trusted=True
+            )
+            is True
+        )
+
+    def test_an_untrusted_identity_proves_nothing(self):
+        # Same pair, provenance not the ``_meta.kiro`` parse this client made:
+        # prose, not identity. Harness parity is positive -- a harness that
+        # stamps no identity simply never sets the flag.
+        from kiro_crew.hooks import _is_first_party_read_only_mcp_tool
+
+        assert (
+            _is_first_party_read_only_mcp_tool(
+                "memory_recall", self.CORE, mcp_identity_trusted=False
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("server", ["evil-server", "kirocrew-dashboard", "KIROCREW-CORE", ""])
+    def test_the_same_tool_name_on_another_server_is_not_proven(self, server):
+        from kiro_crew.hooks import _is_first_party_read_only_mcp_tool
+
+        assert (
+            _is_first_party_read_only_mcp_tool("memory_recall", server, mcp_identity_trusted=True)
+            is False
+        ), server
+
+    @pytest.mark.parametrize(
+        "tool", ["learn_add", "spawn_run", "send_message", "list_sessions", "Memory_Recall", ""]
+    )
+    def test_another_core_tool_is_not_proven(self, tool):
+        from kiro_crew.hooks import _is_first_party_read_only_mcp_tool
+
+        assert (
+            _is_first_party_read_only_mcp_tool(tool, self.CORE, mcp_identity_trusted=True) is False
+        ), tool
+
+    def _judge(self, manager: HookManager | None = None, **overrides):
+        """The gate's verdict on a core ``memory_recall`` call, as the dashboard
+        asks it: trusted identity from the frame, the title it displays."""
+        call = {
+            "mcp_server_name": self.CORE,
+            "mcp_tool_name": "memory_recall",
+            "mcp_identity_trusted": True,
+            "trust_reads": True,
+        }
+        call.update(overrides)
+        return (manager or HookManager()).on_tool_call(
+            "Running: @kirocrew-core/memory_recall", **call
+        )
+
+    def test_under_reads_mode_an_allowlisted_call_auto_approves_as_read_only(self):
+        r = self._judge()
+        assert r.action == TOOL_AUTO_APPROVE
+        assert r.read_only is True
+        assert r.tier == "read-only"
+
+    def test_off_reads_mode_the_same_call_still_prompts(self):
+        # Normal mode: the surface passes no ``trust_reads``, so the MCP call is
+        # as unprovable as before and falls to the interactive card.
+        assert self._judge(trust_reads=False).action == TOOL_ALLOW
+
+    def test_the_side_chat_classifier_does_not_gain_the_proof(self):
+        # READ_ONLY (``classifier_only``) passes no ``trust_reads`` either; its
+        # host-trusted proofs are unchanged and an MCP call is refused there.
+        assert self._judge(trust_reads=False, classifier_only=True).action == TOOL_ALLOW
+
+    def test_the_same_tool_name_on_another_server_still_prompts(self):
+        assert self._judge(mcp_server_name="evil-server").action == TOOL_ALLOW
+
+    def test_a_core_write_tool_still_prompts(self):
+        assert self._judge(mcp_tool_name="learn_add").action == TOOL_ALLOW
+
+    def test_an_untrusted_identity_still_prompts(self):
+        assert self._judge(mcp_identity_trusted=False).action == TOOL_ALLOW
+
+    def test_a_title_naming_the_tool_proves_nothing_without_the_identity(self):
+        # The title is model-authored. With no trusted pair behind it the call
+        # is an anonymous MCP call and prompts, whatever it calls itself.
+        assert self._judge(mcp_server_name="", mcp_tool_name="").action == TOOL_ALLOW
+
+    def test_an_operator_confirm_list_still_asks_first(self):
+        # ``confirm_tools`` withholds every grant and the read-only classifier's
+        # MCP verdicts; the Reads-mode proof sits below that check.
+        for pattern in ("@kirocrew-core", "@kirocrew-core/memory_recall", "*"):
+            manager = HookManager(HooksConfig(confirm_tools=[pattern]))
+            assert self._judge(manager).action == TOOL_ALLOW, pattern
+
+    def test_a_deny_on_the_identity_still_wins(self):
+        # Deny tiers run before the classifier; Reads mode re-admits nothing.
+        manager = HookManager(HooksConfig(auto_deny_tools=["@kirocrew-core/memory_recall"]))
+        assert self._judge(manager).action == TOOL_DENY
+
+    def test_reads_mode_is_a_surface_fact_of_the_gate(self):
+        # ``trust_reads`` describes the consultation, like ``classifier_only``:
+        # it is a keyword of ``judge`` and ``on_tool_call``, not a ``ToolCall``
+        # field, so no event can carry it in.
+        import dataclasses
+        import inspect
+
+        from kiro_crew.hooks import ToolCall
+
+        assert "trust_reads" in inspect.signature(HookManager.judge).parameters
+        assert "trust_reads" in inspect.signature(HookManager.on_tool_call).parameters
+        assert "trust_reads" not in {f.name for f in dataclasses.fields(ToolCall)}
+
+
 class TestMutatingKindBeatsTheTitle:
     """Only an explicitly READ-ONLY ``tool_kind`` may auto-approve on a title.
 

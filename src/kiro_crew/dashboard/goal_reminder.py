@@ -653,7 +653,11 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
 
 async def fire(state: Any, job: Any) -> str:
     """Run one check-in for *job*'s crewmate; returns a one-line outcome for the run log."""
-    from kiro_crew.dashboard.mate_welcome import dispatch_hidden_turn
+    from kiro_crew.dashboard.mate_welcome import (
+        dispatch_hidden_turn,
+        hidden_turn_language,
+        with_language,
+    )
 
     cadence = cadence_of(job)
     if cadence is None:
@@ -726,7 +730,19 @@ async def fire(state: Any, job: Any) -> str:
         prompt = reminder_prompt(
             rec, cadence, finished=finished, dashboard=dashboard, page_tools=page_tools
         )
-    dispatch_hidden_turn(state, slot, prompt, human_seen=False)
+    # No tab opened this turn, so only the configured language is known; it
+    # replaces the preamble's language sentence (mate_welcome.with_language).
+    language = await asyncio.to_thread(hidden_turn_language)
+    if gateway_stopping():
+        return STOPPING_SKIP
+    again, skip = _idle_thread(state, slot_key, member)
+    if skip:
+        return skip
+    if again is not slot:
+        return "skipped: the mate's thread is not open"
+    dispatch_hidden_turn(
+        state, slot, with_language(prompt, language, in_thread=True), human_seen=False
+    )
     return "started"
 
 

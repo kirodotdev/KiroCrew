@@ -43,14 +43,26 @@ def _dir(name: str) -> Path:
     return members_mod.member_dir(members_mod.member_slug(name))
 
 
-def mark_notice_owed(name: str) -> None:
-    """Record that crewmate *name* owes its upgrade notice. Never raises."""
+def notice_prompt(changes: str = "") -> str:
+    """The hidden turn that tells a moved crewmate's user; *changes* names what moved differently."""
+    if not changes:
+        return NOTICE_PROMPT
+    return NOTICE_PROMPT + crewmate_prompts.fill("upgrade_notice_changes", changes=changes)
+
+
+def mark_notice_owed(name: str, changes: str = "") -> None:
+    """Record that crewmate *name* owes its upgrade notice, naming *changes*. Never raises.
+
+    *changes* is the migration's own sentence on what the move did not carry over
+    and what it withheld; empty when the worker grants exactly what the old agent did.
+    """
     try:
         path = _dir(name) / NOTICE_OWED_FILENAME
         path.parent.mkdir(parents=True, exist_ok=True)
         from kiro_crew.atomic_write import atomic_write
 
-        atomic_write(path, json.dumps({"member": name}) + "\n", restrict_to_owner=True)
+        record = {"member": name, "changes": changes} if changes else {"member": name}
+        atomic_write(path, json.dumps(record) + "\n", restrict_to_owner=True)
     except Exception:  # noqa: BLE001 - no notice is the safe direction
         logger.warning("could not record the upgrade notice owed by %r", name, exc_info=True)
 
@@ -103,7 +115,20 @@ def _claim(slug: str, member: str, owed: str, claimed: str) -> dict | None:
 
 def claim_notice(slug: str, member: str) -> bool:
     """Claim *member*'s owed notice once. True exactly once, and only when owed."""
-    return _claim(slug, member, NOTICE_OWED_FILENAME, NOTICE_CLAIMED_FILENAME) is not None
+    return bool(claim_notice_prompt(slug, member))
+
+
+def claim_notice_prompt(slug: str, member: str) -> str:
+    """Claim *member*'s owed notice once: its prompt, ``""`` when not owed or claimed.
+
+    The prompt names what changed when the migration recorded it (:func:`notice_prompt`),
+    so a move that dropped or withheld something is told in this one notice.
+    """
+    record = _claim(slug, member, NOTICE_OWED_FILENAME, NOTICE_CLAIMED_FILENAME)
+    if record is None:
+        return ""
+    changes = record.get("changes")
+    return notice_prompt(changes if isinstance(changes, str) else "")
 
 
 def claim_kept_notice(slug: str, member: str) -> str:
