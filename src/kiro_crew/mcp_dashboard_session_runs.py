@@ -348,6 +348,8 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
 
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
+    if args.get("work_item") and "crew" not in args:
+        return "Error: work_item is taken only with crew; bind a local session with work_ledger_record."
     if "crew" in args:
         from kiro_crew.mcp_session_crew import run_crew_create
 

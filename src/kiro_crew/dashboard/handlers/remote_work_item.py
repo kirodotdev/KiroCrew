@@ -285,20 +285,31 @@ async def close_work_item_for_slot(slot_key: str) -> None:
 
 
 async def _slot_mailbox(
-    request: web.Request, operation: str
+    request: web.Request, operation: str, *, live_only: bool = True
 ) -> tuple[tuple[str, str] | None, web.Response | None]:
     """``(board, item_id)`` for the route's slot, or the refusal. Gate order: preview,
-    owner, live slot, hub-mailbox binding."""
+    owner, live slot, hub-mailbox binding.
+
+    With *live_only* off (the read), a slot that is already closed still answers
+    while its binding names a mailbox item that names it back: the worker's last
+    reports stay readable for the hub after its slot is gone.
+    """
     if not await _preview_on():
         return None, _not_found()
     denied = await require_owner_dashboard_request(request, operation)
     if denied is not None:
         return None, denied
     slot_key = request.match_info.get("slot", "")
-    if request.app["state"]._slots.get(slot_key) is None:
+    live = request.app["state"]._slots.get(slot_key) is not None
+    if not live and live_only:
         return None, _not_found()
-    bound = await asyncio.to_thread(mailbox.bound_mailbox, slot_key)
+    try:
+        bound = await asyncio.to_thread(mailbox.bound_mailbox, slot_key)
+    except work_ledger.WorkLedgerError:
+        bound = None
     if bound is None:
+        return None, _not_found()
+    if not live and not await asyncio.to_thread(mailbox.names_worker, bound, slot_key):
         return None, _not_found()
     return bound, None
 
@@ -316,7 +327,7 @@ def _event_limit(request: web.Request) -> int | None:
 
 async def api_chat_slot_work_item_get(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot}/work-item — the worker's side of the hub's item."""
-    bound, refusal = await _slot_mailbox(request, "chat_slot_work_item.read")
+    bound, refusal = await _slot_mailbox(request, "chat_slot_work_item.read", live_only=False)
     if refusal is not None:
         return refusal
     assert bound is not None

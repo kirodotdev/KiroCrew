@@ -1517,6 +1517,13 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # key is bound to, never an item and never another session's. Reads nothing
         # but the worker's own binding and item.
         "undelivered_call_watch.py",
+        # The hub half of remote dispatch (rfc-conductor-remote-dispatch wave 4). A
+        # remote worker reports into its OWN crew's store, so the hub files those
+        # reports on the conductor's read: it reads the conductor's own board (the
+        # key the read route resolved) and writes worker-owned fields only through
+        # ``apply_remote_report``, on an item already bound to that crew. It takes
+        # no supplied identity; ``create_bound`` binds the caller's own item.
+        "dashboard/handlers/remote_ingest.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are
         # gone and the one that remains is a crew-log bus subscription whose event

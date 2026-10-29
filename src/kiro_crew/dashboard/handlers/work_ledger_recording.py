@@ -160,6 +160,7 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "verdict": item.verdict,
         "decision": item.decision or None,
         "worker_session_key": item.worker_session_key or None,
+        "worker_instance_id": getattr(item, "worker_instance_id", None) or None,
         "round": item.round,
         "fails": item.fails,
         "status": item.status,
