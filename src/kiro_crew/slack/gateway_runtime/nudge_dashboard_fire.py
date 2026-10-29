@@ -258,8 +258,13 @@ async def _fire_dashboard_nudge(
             # read, so the conductor was not told which item had moved and spent
             # a ``work_ledger_read`` finding out.
             tagged = f"{_wake_text}\n\n{tagged}"
+        # Skill triggers read the loop's own message: the cycle header and the
+        # ledger news are Kiro Crew's words, so "patrol budget" in the header
+        # must not load a skill the loop never asked for.
+        trigger_text: str | None = _fired_message
     else:
         tagged = wake_message
+        trigger_text = None
         # Capture the generation on THIS arm too. A monitor wake runs the
         # loop's own cycle just as a plain nudge does, so the directive
         # consumers (the structural-terminal verdict and the failed-cycle
@@ -491,6 +496,7 @@ async def _fire_dashboard_nudge(
     # is NOT a self-wake (no loop, so the consumers are guarded off anyway);
     # every self-wake fire passes its true generation here.
     run_kwargs["_directive_loop_gen"] = _fired_generation
+    run_kwargs["_skill_trigger_text"] = trigger_text
     if completion_hook is not None:
         run_kwargs["monitor_completion"] = completion_hook
         # Structured monitor turns own a single durable budgeted turn.

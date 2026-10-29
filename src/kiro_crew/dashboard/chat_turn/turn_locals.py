@@ -81,6 +81,7 @@ class _ChatTurn:
     _directive_self_wake: "bool"
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
+    _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
     _commands_off: "bool"
     _recovery_echo_owed: "bool"
@@ -316,6 +317,7 @@ class _ChatTurn:
         _directive_self_wake: "bool",
         _directive_loop_id: "str",
         _directive_loop_gen: "int",
+        _skill_trigger_text: "str | None",
         _directive_channel_origin: "bool",
         _commands_off: "bool",
         _recovery_echo_owed: "bool",
@@ -345,6 +347,7 @@ class _ChatTurn:
         self._directive_self_wake = _directive_self_wake
         self._directive_loop_id = _directive_loop_id
         self._directive_loop_gen = _directive_loop_gen
+        self._skill_trigger_text = _skill_trigger_text
         self._directive_channel_origin = _directive_channel_origin
         self._commands_off = _commands_off
         self._recovery_echo_owed = _recovery_echo_owed

@@ -278,7 +278,8 @@ The mechanism, when on:
 - The message matched is the person's own request, so a sub-agent completion the
   gateway injects into a channel or `cron:` parent passes `""` (`slack/gateway_runtime/subagent_injection.py`). The dashboard passes it as
   `skill_trigger_text`, without the context it prepends (sub-agent notices,
-  background context), and passes `""` on a turn whose text the person did not
+  background context, and on an auto-nudge cycle the `[auto-nudge cycle N]`
+  header and ledger news), and passes `""` on a turn whose text the person did not
   write (a recovery or Continue continuation, the synthesis prompt, an MCP
   App's message), which then matches and selects nothing. Other callers match
   the turn text.

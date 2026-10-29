@@ -982,9 +982,16 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # whose text the person did not write (a recovery or Continue
                 # continuation, the synthesis prompt, an MCP App's message). A
                 # sub-agent completion is the parent's own work coming back, so
-                # its echoed task and result trigger nothing either.
+                # its echoed task and result trigger nothing either. A loop's
+                # wake matches the loop's own message, not the cycle header.
                 skill_trigger_text=(
-                    "" if _is_synthetic or turn._turn_actor == "subagent" else _jev_route_text
+                    ""
+                    if _is_synthetic or turn._turn_actor == "subagent"
+                    else (
+                        _jev_route_text
+                        if turn._skill_trigger_text is None
+                        else turn._skill_trigger_text
+                    )
                 ),
             )
             turn.full_message = full_message

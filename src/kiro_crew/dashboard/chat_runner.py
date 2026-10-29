@@ -796,6 +796,11 @@ async def _run_chat(
     # deactivate a loop whose config advanced since (the A->B->A race that a
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
+    # The text skill triggers match on a loop's wake, when it is not the
+    # message: a plain nudge passes the loop's own message, without the cycle
+    # header the fire path prepends. ``None`` matches the turn's own text. Set
+    # only by ``_fire_dashboard_nudge``.
+    _skill_trigger_text: str | None = None,
     _directive_channel_origin: bool = False,
     # The message is turn CONTENT and its first word is never read as a dashboard
     # command: set by the drain for an entry the channel hand-off stamped
@@ -841,6 +846,7 @@ async def _run_chat(
         _directive_self_wake=_directive_self_wake,
         _directive_loop_id=_directive_loop_id,
         _directive_loop_gen=_directive_loop_gen,
+        _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,
