@@ -72,7 +72,7 @@ export function accountProviderLabel(accountType?: string, startUrl?: string): s
       ? i18nT('app.builder_id')
       : rawType?.toLowerCase().replace(/[^a-z0-9]/g, '') === 'externalidp'
         // The organization's own sign-in: the sign-in flow's plain-language
-        // name for it ("Organization identity provider"), never the protocol's.
+        // name for it ("Work account"), never the protocol's.
         ? providerLabelFromWire('externalidp')
         : rawType
           ? humanizeProviderId(rawType)

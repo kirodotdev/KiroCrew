@@ -17,7 +17,7 @@ function CloseWhenSignedIn({ onDone }: { onDone: () => void }) {
 
 /**
  * The shared Kiro sign-in content (`KasLoginEmbedded`, driven by
- * `hooks/useKasLogin`): the four choices, the browser wait or the device code,
+ * `hooks/useKasLogin`): the sign-in choices, the browser wait or the device code,
  * cancel. The dialog below wraps it.
  * Settings > Kiro account renders it in its card for both states, passing
  * *renderSignedIn* for the signed-in summary, so the flow stays mounted when a

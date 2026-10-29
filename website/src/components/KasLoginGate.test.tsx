@@ -47,6 +47,10 @@ const kasLoginBeginLoopback = vi.mocked(api.kasLoginBeginLoopback)
 const kasLoginPoll = vi.mocked(api.kasLoginPoll)
 const kasLoginCancel = vi.mocked(api.kasLoginCancel)
 
+/** A named ceiling for the organization form's lazy chunk (the dynamic
+ *  `import('./KasOrganizationForm')` in KasLoginGate.tsx) to load and commit. */
+const CHUNK_SETTLE_TIMEOUT_MS = 5000
+
 function loopbackShape() {
   kasLoginStatus.mockResolvedValue({
     authenticated: false,
@@ -88,7 +92,7 @@ describe('KasLoginGate', () => {
       screen.getByRole('button', { name: 'Continue with AWS Builder ID' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: 'Continue with company SSO' }),
+      screen.getByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }),
     ).toBeInTheDocument()
     expect(
       screen.getByRole('heading', { name: 'Sign in to Kiro' }),
@@ -102,7 +106,7 @@ describe('KasLoginGate', () => {
       await screen.findByRole('button', { name: 'Continue with AWS Builder ID' }),
     ).not.toHaveAccessibleDescription()
     expect(
-      screen.getByRole('button', { name: 'Continue with company SSO' }),
+      screen.getByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }),
     ).not.toHaveAccessibleDescription()
   })
 
@@ -163,7 +167,7 @@ describe('KasLoginGate', () => {
   it('Start over after an expired code begins a fresh code for the same sign-in in one click', async () => {
     kasLoginPoll.mockResolvedValue({ status: 'expired' })
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     fireEvent.change(await screen.findByLabelText('Company sign-in URL'), {
       target: { value: 'https://acme.awsapps.com/start' },
     })
@@ -452,10 +456,12 @@ describe('KasLoginGate', () => {
 
   it('company SSO expands a form and only begins once a start URL is supplied', async () => {
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     // The form replaces the button; nothing has begun yet.
     const form = await screen.findByTestId('kas-login-sso-form')
     expect(form).toBeInTheDocument()
+    // The open form still names the choice that opened it.
+    expect(screen.getByRole('form', { name: 'Company SSO' })).toBe(form)
     expect(kasLoginBeginDevice).not.toHaveBeenCalled()
     // Empty start URL keeps the submit disabled — no dead-end 400 round-trip.
     const submit = screen.getByRole('button', { name: 'Continue' })
@@ -474,7 +480,7 @@ describe('KasLoginGate', () => {
 
   it('company SSO sends a start URL pasted without https:// for the gateway to complete', async () => {
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     const field = screen.getByLabelText('Company sign-in URL') as HTMLInputElement
     fireEvent.change(field, { target: { value: 'acme.awsapps.com/start' } })
@@ -490,7 +496,7 @@ describe('KasLoginGate', () => {
 
   it('company SSO form sends a supplied region and can be cancelled back to the chooser', async () => {
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
       target: { value: 'https://acme.awsapps.com/start' },
@@ -502,10 +508,10 @@ describe('KasLoginGate', () => {
     // Cancel collapses the form without beginning anything and restores the button.
     expect(kasLoginBeginDevice).not.toHaveBeenCalled()
     expect(
-      await screen.findByRole('button', { name: 'Continue with company SSO' }),
+      await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }),
     ).toBeInTheDocument()
     // Re-open: the form starts fresh; fill both fields and submit.
-    fireEvent.click(screen.getByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
       target: { value: 'https://acme.awsapps.com/start' },
     })
@@ -522,7 +528,7 @@ describe('KasLoginGate', () => {
 
   it('company SSO form remembers the submitted URL and region for the next visit', async () => {
     const first = renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
       target: { value: ' https://acme.awsapps.com/start ' },
@@ -536,7 +542,7 @@ describe('KasLoginGate', () => {
 
     // A reload or gateway restart mounts the chooser again; the fields are filled.
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('https://acme.awsapps.com/start')
     expect(screen.getByLabelText('AWS Region (optional)')).toHaveValue('eu-west-1')
@@ -552,7 +558,7 @@ describe('KasLoginGate', () => {
       company_sign_in: { start_url: 'https://default-org.awsapps.com/start', region: 'us-east-1' },
     })
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     const input = screen.getByLabelText('Company sign-in URL')
     expect(input).toHaveValue('https://default-org.awsapps.com/start')
@@ -582,7 +588,7 @@ describe('KasLoginGate', () => {
       company_sign_in: { start_url: 'https://default-org.awsapps.com/start', region: 'us-east-1' },
     })
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('https://mine.awsapps.com/start')
     expect(screen.queryByTestId('kas-login-sso-prefilled')).toBeNull()
@@ -591,7 +597,7 @@ describe('KasLoginGate', () => {
   it('company SSO normalizes a remembered scheme-less URL before submitting', async () => {
     localStorage.setItem(COMPANY_SIGN_IN_URL_KEY, 'example.awsapps.com/start')
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     const input = screen.getByLabelText('Company sign-in URL') as HTMLInputElement
     expect(input).toHaveValue('https://example.awsapps.com/start')
@@ -605,7 +611,7 @@ describe('KasLoginGate', () => {
 
   it('company SSO form keeps nothing that was only typed, never submitted', async () => {
     const first = renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
       target: { value: 'https://half.awsapps.com/start' },
@@ -614,7 +620,7 @@ describe('KasLoginGate', () => {
     first.unmount()
 
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('')
   })
@@ -634,7 +640,7 @@ describe('KasLoginGate', () => {
       new ApiError(status, 'gateway detail', JSON.stringify({ error: 'gateway detail', code })),
     )
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     await screen.findByTestId('kas-login-sso-form')
     fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
       target: { value: 'https://acme.awsapps.com/strat' },
@@ -895,7 +901,7 @@ describe('KasLoginGate', () => {
   async function companySsoPollAnswers(code: string) {
     kasLoginPoll.mockResolvedValue({ status: 'error', code })
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }))
     fireEvent.change(await screen.findByLabelText('Company sign-in URL'), {
       target: { value: 'https://acme.awsapps.com/start' },
     })
@@ -921,7 +927,7 @@ describe('KasLoginGate', () => {
     // The provider list stays one click away for switching method.
     fireEvent.click(screen.getByRole('button', { name: 'Use a different sign-in' }))
     expect(
-      await screen.findByRole('button', { name: 'Continue with company SSO' }),
+      await screen.findByRole('button', { name: 'Company SSO — I have an …awsapps.com/start URL' }),
     ).toBeInTheDocument()
   })
 
@@ -987,17 +993,32 @@ describe('KasLoginGate', () => {
     await screen.findByRole('button', { name: 'Continue with Google' })
     // Device shape: the organization sign-in has no device flow, so no choice.
     expect(
-      screen.queryByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+      screen.queryByRole('button', { name: 'Work account — sign in with my work email' }),
     ).not.toBeInTheDocument()
   })
 
   it('organization sign-in sends a domain hint over the loopback route', async () => {
     loopbackShape()
     renderWithProviders(<KasLoginGate />)
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
-    )
-    const form = await screen.findByTestId('kas-login-org-form')
+    const choice = await screen.findByRole('button', {
+      name: 'Work account — sign in with my work email',
+    })
+    // No caption under the Work account button, as under Builder ID and
+    // Company SSO: its helper line is shown only under the form's heading.
+    expect(choice).not.toHaveAccessibleDescription()
+    fireEvent.click(choice)
+    const form = await screen.findByTestId('kas-login-org-form', {}, { timeout: CHUNK_SETTLE_TIMEOUT_MS })
+    // The form is titled with the same name the button and the stored sign-in
+    // use, and the browser instruction stands on its own line.
+    expect(
+      screen.getByRole('form', { name: 'Work account' }),
+    ).toBe(form)
+    expect(
+      screen.getByText("Signs in directly with your organization's identity provider, not through AWS IAM Identity Center"),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Finish the sign-in in a browser on this computer.'),
+    ).toBeInTheDocument()
     fireEvent.change(
       screen.getByLabelText('Work email domain or Kiro start URL (optional)'),
       { target: { value: 'example.com' } },
@@ -1018,9 +1039,9 @@ describe('KasLoginGate', () => {
     loopbackShape()
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(
-      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+      await screen.findByRole('button', { name: 'Work account — sign in with my work email' }),
     )
-    const form = await screen.findByTestId('kas-login-org-form')
+    const form = await screen.findByTestId('kas-login-org-form', {}, { timeout: CHUNK_SETTLE_TIMEOUT_MS })
     fireEvent.change(
       screen.getByLabelText('Work email domain or Kiro start URL (optional)'),
       { target: { value: ' https://kiro.dev/start/K-ABC ' } },
@@ -1044,9 +1065,9 @@ describe('KasLoginGate', () => {
     )
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(
-      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+      await screen.findByRole('button', { name: 'Work account — sign in with my work email' }),
     )
-    fireEvent.submit(await screen.findByTestId('kas-login-org-form'))
+    fireEvent.submit(await screen.findByTestId('kas-login-org-form', {}, { timeout: CHUNK_SETTLE_TIMEOUT_MS }))
     expect(await screen.findByTestId('kas-login-begin-error')).toBeInTheDocument()
     expect(kasLoginBeginDevice).not.toHaveBeenCalled()
   })
@@ -1056,9 +1077,9 @@ describe('KasLoginGate', () => {
     kasLoginPoll.mockResolvedValue({ status: 'expired', code: 'loopback_timeout' })
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(
-      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+      await screen.findByRole('button', { name: 'Work account — sign in with my work email' }),
     )
-    fireEvent.submit(await screen.findByTestId('kas-login-org-form'))
+    fireEvent.submit(await screen.findByTestId('kas-login-org-form', {}, { timeout: CHUNK_SETTLE_TIMEOUT_MS }))
     expect(await screen.findByText('Sign-in failed')).toBeInTheDocument()
     expect(screen.queryByText('The code expired')).not.toBeInTheDocument()
     expect(kasLoginBeginDevice).not.toHaveBeenCalled()

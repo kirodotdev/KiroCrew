@@ -916,7 +916,7 @@ describe('TeamCrewsGroup account line', () => {
     [{ accountType: 'BuilderId' }, 'Signed in with Builder ID'],
     [{ accountType: 'IamIdentityCenter', startUrl: PORTAL }, 'Signed in with IAM Identity Center · example-portal.awsapps.example.test'],
     [{ accountType: 'SocialGoogle' }, 'Signed in with Google'],
-    [{ accountType: 'ExternalIdP' }, 'Signed in with Organization identity provider'],
+    [{ accountType: 'ExternalIdP' }, 'Signed in with Work account'],
   ])('names the account %j the list was read for', async (account, text) => {
     expect(await accountLine(account)).toBe(text)
   })

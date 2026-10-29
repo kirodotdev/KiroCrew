@@ -33,6 +33,7 @@ import GithubLogo from './icons/GithubLogo'
 import { Btn, IconButton } from './ui'
 import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
+import { lazyRetry } from './lazyRetry'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { openAuthTab, useKasLoginFlow, type KasLoginExtra } from '../hooks/useKasLogin'
@@ -50,18 +51,18 @@ const LOOPBACK_SLOW_HINT_MS = 30_000
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
 
-/** Split the organization lookup field into the hint the portal takes: a value
- *  that reads as a URL is a Kiro start URL, anything else a work e-mail domain
- *  (the gateway also accepts a whole e-mail address and keeps its domain). */
-export function organizationLookupExtra(lookup: string, region: string): KasLoginExtra {
-  const value = lookup.trim()
-  const extra: KasLoginExtra = {}
-  const lower = value.toLowerCase()
-  if (lower.startsWith('https://') || lower.startsWith('http://')) extra.external_idp_start_url = value
-  else if (value) extra.external_idp_domain = value
-  if (region.trim()) extra.region = region.trim()
-  return extra
-}
+// Lazy: the chooser is on the dashboard's first load, and this form renders
+// only after the organization choice is clicked. A chunk that fails to load
+// shows its failure in the form's place, with Try Again, so the throw never
+// reaches the host's boundary (the Settings card, the sign-in notice, the chat
+// page) and the other sign-in choices stay usable.
+// No hand-off: the lookup and region fields the form holds are unsaved.
+const KasOrganizationForm = lazyRetry(() => import('./KasOrganizationForm'), {
+  layout: 'block',
+  title: () => i18nT('components.kasLogin.could_not_start_sign_in'),
+  scope: 'kas-org-form',
+  askAgent: false,
+})
 
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
@@ -339,6 +340,25 @@ function LinkField({ value, onCopied }: { value: string; onCopied: (ok: boolean)
 }
 
 /**
+ * Makes `target` focusable for as long as this is mounted, and focuses it once,
+ * when it mounts, only if nothing else holds focus: a re-render never moves
+ * focus, and a field the person moved to keeps it. The attribute is set here,
+ * not as a prop, so the container is not focusable once the content it holds
+ * the place of has rendered.
+ */
+function FocusOnMount({ target }: { target: { current: HTMLElement | null } }) {
+  useEffect(() => {
+    const el = target.current
+    if (!el) return
+    el.setAttribute('tabindex', '-1')
+    const active = document.activeElement
+    if (!active || active === document.body) el.focus()
+    return () => el.removeAttribute('tabindex')
+  }, [target])
+  return null
+}
+
+/**
  * One sign-in choice. `primary` renders the accent-filled variant — on the
  * gate only. In card chrome every choice is the outlined, shorter form and the
  * choices sit in a two-column grid: the card lives inside a Settings detail whose
@@ -420,6 +440,16 @@ function Chooser({
     setOrgOpenState(open)
     if (open) setSsoOpenState(false)
   }
+  const orgSlot = useRef<HTMLDivElement>(null)
+  const organizationChoice = (disabled: boolean, onClick: () => void) => (
+    <ProviderButton
+      icon={<KeyRound className="lucide-inline" />}
+      label={i18nT('components.kasLogin.continue_with_organization_idp')}
+      wide
+      disabled={disabled}
+      onClick={onClick}
+    />
+  )
   // Seeded from the last company sign-in submitted on this browser, else the
   // gateway's default portal, so a person need not look the URL up.
   const [initial] = useState(() => initialCompanySignIn(companyDefault))
@@ -504,6 +534,7 @@ function Chooser({
           <form
             className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
             data-testid="kas-login-sso-form"
+            aria-labelledby="kas-sso-form-title"
             onSubmit={(e) => {
               e.preventDefault()
               if (!startUrlReady || busy) return
@@ -514,6 +545,11 @@ function Chooser({
               })
             }}
           >
+            {/* Each open form names the choice that opened it, so the
+                button it replaced is not the only place that said what it is. */}
+            <h2 id="kas-sso-form-title" className="mb-2 text-[13px] font-semibold text-text-strong">
+              {i18nT('components.kasLogin.provider_company_sso')}
+            </h2>
             <label
               className="block text-[12px] font-medium text-text-strong"
               htmlFor="kas-sso-start-url"
@@ -575,6 +611,9 @@ function Chooser({
                 className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted aria-invalid:border-danger"
               />
             </label>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              {i18nT('components.kasLogin.org_region_hint')}
+            </p>
             <div className="mt-3 flex items-center gap-2">
               <Btn type="submit" primary disabled={!startUrlReady || busy}>
                 {i18nT('components.kasLogin.sso_continue')}
@@ -590,73 +629,39 @@ function Chooser({
           <ProviderButton
             icon={<Building2 className="lucide-inline" />}
             label={i18nT('components.kasLogin.continue_with_company_sso')}
+            wide
             disabled={busy}
             onClick={() => setSsoOpen(true)}
           />
         )}
         {offerOrganization && orgOpen ? (
-          <form
-            className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
-            data-testid="kas-login-org-form"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (busy) return
-              onPick('external_idp', organizationLookupExtra(orgLookup, orgRegion))
-            }}
-          >
-            <label
-              className="block text-[12px] font-medium text-text-strong"
-              htmlFor="kas-org-lookup"
-            >
-              {i18nT('components.kasLogin.org_lookup_label')}
-              <input
-                id="kas-org-lookup"
-                type="text"
-                aria-label={i18nT('components.kasLogin.org_lookup_label')}
-                autoFocus
-                value={orgLookup}
-                onChange={(e) => setOrgLookup(e.target.value)}
-                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted"
-              />
-            </label>
-            <p className="mt-1 text-[12px] leading-relaxed text-muted">
-              {i18nT('components.kasLogin.org_helper')}
-            </p>
-            <label
-              className="mt-3 block text-[12px] font-medium text-text-strong"
-              htmlFor="kas-org-region"
-            >
-              {i18nT('components.kasLogin.sso_region_label')}
-              <input
-                id="kas-org-region"
-                type="text"
-                aria-label={i18nT('components.kasLogin.sso_region_label')}
-                value={orgRegion}
-                onChange={(e) => setOrgRegion(e.target.value)}
-                placeholder="us-east-1"
-                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted"
-              />
-            </label>
-            <p className="mt-1 text-[12px] leading-relaxed text-muted">
-              {i18nT('components.kasLogin.org_region_hint')}
-            </p>
-            <div className="mt-3 flex items-center gap-2">
-              <Btn type="submit" primary disabled={busy}>
-                {i18nT('components.kasLogin.sso_continue')}
-              </Btn>
-              <Btn type="button" disabled={busy} onClick={() => setOrgOpen(false)}>
-                {i18nT('components.kasLogin.sso_cancel')}
-              </Btn>
-            </div>
-          </form>
+          // The slot is focusable and takes focus only while the chunk loads or
+          // its failure notice shows, so focus is not left on the page when the
+          // clicked choice unmounts, and the notice's Try Again is inside it.
+          // Once the form renders, the slot is a plain container again and the
+          // form's own autoFocus places focus.
+          <div ref={orgSlot} className="outline-none sm:col-span-full">
+            <KasOrganizationForm
+              // While the chunk loads, the clicked choice holds its row, so the
+              // rows below do not move.
+              loading={
+                <>
+                  <FocusOnMount target={orgSlot} />
+                  {organizationChoice(true, () => undefined)}
+                </>
+              }
+              keepOnFailure={<FocusOnMount target={orgSlot} />}
+              lookup={orgLookup}
+              region={orgRegion}
+              busy={busy}
+              onLookup={setOrgLookup}
+              onRegion={setOrgRegion}
+              onSubmit={(extra) => onPick('external_idp', extra)}
+              onCancel={() => setOrgOpen(false)}
+            />
+          </div>
         ) : offerOrganization ? (
-          <ProviderButton
-            icon={<KeyRound className="lucide-inline" />}
-            label={i18nT('components.kasLogin.continue_with_organization_idp')}
-            wide
-            disabled={busy}
-            onClick={() => setOrgOpen(true)}
-          />
+          organizationChoice(busy, () => setOrgOpen(true))
         ) : null}
       </div>
       {/* The failure appears in place after the click (ErrorNotice is
@@ -1073,7 +1078,7 @@ export interface KasLoginFlowSlots {
    * `renderAuthenticated`; the gate never re-authenticates.
    */
   renderReauthCancel?: (cancel: () => void, busy: boolean) => ReactNode
-  /** Only the four choices: no intro line, no browser note (the dialog's form). */
+  /** Only the sign-in choices: no intro line, no browser note (the dialog's form). */
   bare?: boolean
   /** Show the choices over a stored sign-in too: a switch, or one Kiro refused. */
   startInReauth?: boolean
