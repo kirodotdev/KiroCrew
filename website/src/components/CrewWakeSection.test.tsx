@@ -202,10 +202,24 @@ describe('CrewWakeSection', () => {
 
   it('never lists a script job, even when it carries a stale agent', async () => {
     H.crons.mockResolvedValue({ jobs: [
-      { ...JOB, id: 'x1', name: 'stale-script', script: '~/.kiro/crew/crons/p.py:run' },
+      { ...JOB, id: 'x1', name: 'stale-script', member_id: '', agent: 'kirocrew-autofix', script: '~/.kiro/crew/crons/p.py:run' },
     ] })
     wrap(<CrewWakeSection crew="kirocrew-autofix" memberId="kirocrew-autofix" isDefaultCrew={false} />)
     expect(await screen.findByText(/No schedules run this agent automatically/i)).toBeTruthy()
+  })
+
+  // A crewmate that creates a script or command cron gets `member_id` stamped on
+  // it by the server, so the job is that crewmate's and belongs on its profile.
+  it('lists a script or command job owned through member_id', async () => {
+    H.crons.mockResolvedValue({ jobs: [
+      { ...JOB, id: 'm1', name: 'owned-poller', agent: '', member_id: 'kirocrew-autofix', script: '~/.kiro/crew/crons/p.py:run' },
+      { ...JOB, id: 'm2', name: 'owned-cleanup', agent: '', member_id: 'kirocrew-autofix', command: 'echo hi' },
+      { ...JOB, id: 'm3', name: 'other-poller', agent: '', member_id: 'ops-triage', script: '~/.kiro/crew/crons/p.py:run' },
+    ] })
+    wrap(<CrewWakeSection crew="kirocrew-autofix" memberId="kirocrew-autofix" isDefaultCrew={false} />)
+    expect(await screen.findByText('owned-poller')).toBeTruthy()
+    expect(screen.getByText('owned-cleanup')).toBeTruthy()
+    expect(screen.queryByText('other-poller')).toBeNull()
   })
 
   // Absence of an answer and an answer of "none" must not render the same.

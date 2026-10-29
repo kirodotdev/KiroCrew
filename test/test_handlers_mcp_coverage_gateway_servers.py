@@ -540,6 +540,28 @@ class TestGatewayServers:
         assert rows["never-mcp"]["stub"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("vendor", ["creds-agent", "local-creds-agent-mcp"])
+    async def test_a_credential_vendor_can_never_be_stubbed(
+        self, agents_dir: Path, routed_allowlist, vendor: str
+    ) -> None:
+        # Live set, not patched: each chat's copy of a credential vendor runs
+        # inside that chat's sandbox, a shared one outside every sandbox. Even an
+        # operator who lists it gets no stub, so no single toggle or bulk action
+        # can share it.
+        routed_allowlist([vendor])
+        (agents_dir / "a.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": {vendor: {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows[vendor]["denylisted"] is True
+        assert rows[vendor]["can_stub"] is False
+        assert rows[vendor]["stub"] is False
+
+    @pytest.mark.asyncio
     async def test_two_agents_disagreeing_on_the_command_withhold_the_measurement(
         self, agents_dir: Path, routed_allowlist, monkeypatch
     ) -> None:
@@ -1201,11 +1223,10 @@ class TestStubEligibility:
     def test_a_denylisted_server_is_never_eligible(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``UNPOOLABLE_SERVERS`` is empty today, so the branch is patched in.
+        """The branch is exercised with a patched-in name.
 
-        Testing it against the live set would pass by vacuum: an empty denylist
-        makes the assertion unfalsifiable, and the day a name is added is exactly
-        when this needs to already work.
+        That keeps it independent of which credential vendors the live set lists;
+        the live set has its own tests in this file.
         """
         import kiro_crew.mcp_gateway.rewriter as rewriter_mod
 
@@ -1217,6 +1238,21 @@ class TestStubEligibility:
         )
         assert eligible == []
         assert skipped == [{"name": "walled-mcp", "reason": "cannot_stub"}]
+
+    @pytest.mark.parametrize("vendor", ["creds-agent", "local-creds-agent-mcp"])
+    def test_a_credential_vendor_is_never_eligible_even_when_the_evidence_says_share(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, vendor: str
+    ) -> None:
+        # Live set: a bulk action must not share a credential vendor whatever
+        # the assessment concluded, because the shared copy runs outside the
+        # chat sandbox that keeps each chat's copy away from the credential files.
+        self._spec(agents_dir, {vendor: {"command": "run"}})
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, skipped = mcp_mod._stub_eligibility(
+            [vendor], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": vendor, "reason": "cannot_stub"}]
 
     def test_a_measurement_of_a_replaced_command_does_not_count(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

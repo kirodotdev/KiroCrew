@@ -32,7 +32,11 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import managed_server_is_session_bound, probe_metadata
 from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
-from kiro_crew.mcp_gateway.launch_approval import display_launches, refused_servers
+from kiro_crew.mcp_gateway.launch_approval import (
+    display_launches,
+    refused_servers,
+    refused_shares,
+)
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -74,6 +78,10 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
             # outside the sandbox. Each resolved argv is paired with its
             # redacted declared environment for an informed re-approval.
             "launch_refused": launch_refused,
+            # Share-list names (as configured) whose launch is refused, with the
+            # reason. Matched here rather than in the client because a refusal is
+            # recorded under the rewriter's alias for a slash-named server.
+            "share_refused": refused_shares(cfg.stub_servers, launch_refused),
             "running": bool(running),
             "ping_ok": bool(ping_ok),
             # Whether the broker can run on this OS at all. The UI reads this to

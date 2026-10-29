@@ -38,8 +38,10 @@ from kiro_crew.apps.registry import (
     _manifest_cache_path,
     _owner_designated_repo_target,
     _read_external_registry_cache,
+    _read_manifest_negative_cache,
     _safe_cache_stem,
     _write_external_registry_cache,
+    _write_manifest_negative_cache,
     get_registry_app,
     get_registry_app_by_repo,
     is_clone_host_trusted,
@@ -1048,9 +1050,7 @@ class TestExternalRegistryCachePath:
         assert _external_registry_cache_path(name) == _external_registry_cache_path(name)
 
     def test_credential_rotation_does_not_change_public_cache_identity(self, cache_dir):
-        first = _external_registry_cache_path(
-            "https://user:first-secret@git.example.com/acme/apps"
-        )
+        first = _external_registry_cache_path("https://user:first-secret@git.example.com/acme/apps")
         second = _external_registry_cache_path(
             "https://user:second-secret@git.example.com/acme/apps"
         )
@@ -1112,6 +1112,41 @@ class TestRefreshRegistries:
         assert result["results"] == [{"name": "acme", "ok": True}]
         assert result["apps"] == 1
         assert isinstance(result["lastSyncedAt"], str)
+
+    @pytest.mark.asyncio
+    async def test_success_expires_failed_fetch_markers(self, cache_dir, monkeypatch):
+        # A refresh must retry a row whose last listing fetch failed, for the
+        # prior index's coordinates and the fresh index's alike.
+        mock_reg = MagicMock()
+        mock_reg.name = "acme"
+        mock_reg.repo = "https://github.com/acme/apps"
+        mock_reg.branch = "main"
+        git_url = "https://github.com/acme/cool-app"
+        prior_row = {"name": "cool-app", "repo": "R", "branch": "main", "gitUrl": git_url}
+        fresh_row = {"name": "cool-app", "repo": "R", "branch": "dev", "gitUrl": git_url}
+        _write_external_registry_cache(_external_registry_cache_identity(mock_reg), [prior_row])
+        _write_manifest_negative_cache(prior_row)
+        _write_manifest_negative_cache(fresh_row)
+        assert _read_manifest_negative_cache(prior_row) is True
+        assert _read_manifest_negative_cache(fresh_row) is True
+
+        mock_config = MagicMock()
+        mock_config.registries = [mock_reg]
+        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", lambda: mock_config)
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry._fetch_external_registry_index",
+            AsyncMock(return_value=[fresh_row]),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry.list_registry",
+            AsyncMock(return_value=[{"name": "cool-app"}]),
+        )
+
+        result = await refresh_registries()
+
+        assert result["refreshed"] == ["acme"]
+        assert _read_manifest_negative_cache(prior_row) is False
+        assert _read_manifest_negative_cache(fresh_row) is False
 
     @pytest.mark.asyncio
     async def test_fetch_failure_preserves_stale_and_reports_failed(self, cache_dir, monkeypatch):

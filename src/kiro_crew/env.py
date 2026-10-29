@@ -875,6 +875,23 @@ def _managed_browser_cli_dirs() -> list[str]:
     return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
 
 
+def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
+    """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
+
+    On Windows Toolbox does not use ``~/.toolbox/bin``: its install guide puts
+    every tool (``claude``, ``kiro-cli``, ...) under ``%LOCALAPPDATA%\\Toolbox\\bin``
+    and has the user add that to their own PATH, which a gateway started before
+    that edit (or by a launcher that does not read it) never sees. So the Agent
+    Harness probe reported a Toolbox-installed Claude Code as not installed.
+
+    ``LOCALAPPDATA`` names the account running this process, so a caller that
+    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    """
+    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
+    base = local or os.path.join(resolved_home, "AppData", "Local")
+    return _validated_bin_dir(os.path.join(base, "Toolbox", "bin"))
+
+
 def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
@@ -920,6 +937,10 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
+    if platform_compat.IS_WINDOWS and (
+        toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
+    ):
+        extra.append(toolbox_bin)
     extra += _node_all_bin_dirs(resolved_home, mise_data, _xdg_config_dir(resolved_home))
     parts = extra + ([base_path] if base_path else [])
     parts.append(str(Path(sys.executable).parent))

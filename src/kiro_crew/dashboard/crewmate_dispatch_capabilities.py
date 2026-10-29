@@ -34,7 +34,8 @@ def _note(app: Any, caller_history_key: str, target_history_key: str) -> str:
 
     caller = read_session_execution(caller_history_key)
     target = read_session_execution(target_history_key)
-    if caller is None or target is None or not is_conductor_execution(caller):
+    config = KiroCrewConfig.load()
+    if caller is None or target is None or not is_conductor_execution(caller, config):
         return ""
     if (
         getattr(target, "selection_kind", "") != "template"
@@ -45,7 +46,6 @@ def _note(app: Any, caller_history_key: str, target_history_key: str) -> str:
         return ""
     from kiro_crew import crewmate_dynamic_capabilities
 
-    config = KiroCrewConfig.load()
     member = crewmate_name_for(config, caller)
     if not member or not mate_capabilities.binding_is_mate(member):
         return ""

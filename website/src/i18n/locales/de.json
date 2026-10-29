@@ -14509,6 +14509,11 @@
         "default_crewmate_unknown_reason": "{{name}} steht nicht mehr in der Crewmate-Liste"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} Server, den du teilen willst, wird nicht geteilt: {{names}}. Sein Start braucht deine Freigabe, daher startet jeder Chat eine eigene Kopie.",
+        "share_refused_other": "{{count}} Server, die du teilen willst, werden nicht geteilt: {{names}}. Ihr Start braucht deine Freigabe, daher startet jeder Chat eine eigene Kopie.",
+        "share_refused_restart": "Gib in MCP-Verwaltung jeden davon zum Teilen frei. Starte danach das Gateway neu (Einstellungen → Über → Gateway neu starten), damit neue Chats die geteilte Kopie nutzen.",
+        "share_refused_review": "In MCP-Verwaltung prüfen",
+        "share_status_failed": "Konnte nicht prüfen, ob die Server, die du teilen willst, freigegeben sind.",
         "actions": "Aktionen",
         "add_custom": "Benutzerdefiniert hinzufügen",
         "add_server": "Server hinzufügen",
@@ -16454,7 +16459,7 @@
         "immediate": "Sofort",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Der Sofortmodus zeigt rohe Blöcke, sobald sie eintreffen. Der geglättete Modus puffert und blendet Text in gleichmäßigem Tempo ein.",
         "it_ops": "IT / Betrieb",
-        "keep_your_computer_awake_while_a_task_is_running": "Halte den Computer wach, während eine Aufgabe ausgeführt wird",
+        "keep_your_computer_awake_while_a_task_is_running": "Halte den Computer wach, während eine Aufgabe ausgeführt wird. Auf manchen Windows-Laptops (Modern Standby) kann er trotzdem in den Ruhezustand wechseln, wenn du den Bildschirm sperrst. Lass den Bildschirm bei langen Aufgaben daher eingeschaltet.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro passt Wortwahl und Beispiele an Ihren beruflichen Hintergrund an",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro verwendet diese Beschreibung, um Wortschatz und Beispiele an deine Rolle anzupassen.",
         "knowledge_library": "Wissensbibliothek",
@@ -19326,6 +19331,8 @@
       "switch_sessions": "das Wechseln von Sitzungen"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "In der Desktop-App funktionieren Pop-out-Fenster in einer Remote-Crew nicht. Arbeite in dieser Crew hier weiter.",
+      "desktop_app_could_not_open_pop_out_window": "Die Desktop-App konnte das Pop-out-Fenster nicht öffnen. Arbeite in diesem Fenster weiter.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Dein Browser hat das Pop-out-Fenster blockiert. Erlaube Pop-ups für diese Seite und versuche es erneut."
     },
     "sanitize": {

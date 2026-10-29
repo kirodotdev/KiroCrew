@@ -281,9 +281,9 @@ _REPLAY_INJECT_MAX_ROWS = (
 
 _REPLAY_CONVERSATION_MAX_ROWS = 500
 
-#: ``meta.notice`` on the row the conductor context cap appends when it trims a
-#: session (``dashboard/chat_turn/context_cap.py``). The row is for the person: the
-#: trimmed session learns of the trim from its seed, so no replay carries the row.
+#: ``meta.notice`` on a conductor context cap notice row. A trim writes none
+#: (``dashboard/chat_turn/context_cap.py``), but a transcript may still hold one, and
+#: no replay carries it: the trimmed session learns of its trim from its seed.
 CONTEXT_CAP_NOTICE = "context_cap"
 
 

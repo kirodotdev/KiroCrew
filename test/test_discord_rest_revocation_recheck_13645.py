@@ -279,6 +279,83 @@ class TestNoWaitNoRecheck:
         assert [kind for kind, _ in harness.events if kind == "ceiling"] == []
 
 
+# -- A read-only lookup is paced but not re-judged ---------------------------
+
+
+class TestAdmissionLookupAfterAWait:
+    """``thread_origin`` looks up a thread that is NOT yet on the roster (that
+    is why it is asked), so re-reading the roster after a hold would refuse the
+    very lookup that decides re-admission. It alone opts out of the re-check;
+    its caller re-reads both rosters once the answer arrives. Every other
+    route, GETs included, is still re-judged after a wait."""
+
+    @pytest.mark.asyncio
+    async def test_a_global_hold_does_not_refuse_a_thread_origin_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(
+            monkeypatch,
+            [
+                _rate_limited(20.0, is_global=True),
+                _Resp(200, {"type": 11, "parent_id": "c1", "owner_id": "bot"}),
+            ],
+        )
+        harness.roster.clear()
+        origin = await harness.client.thread_origin(_CHANNEL)
+        assert origin is not None
+        assert (origin.parent_id, origin.owner_id) == ("c1", "bot")
+        assert harness.sleeps == [20.0]
+        assert len(harness.requests) == 2
+        assert harness.asked == []
+        assert [kind for kind, _ in harness.events if kind == "ceiling"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_preemptive_hold_does_not_refuse_the_admission_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(
+            monkeypatch,
+            [
+                _Resp(200, {"type": 11}, headers=_bucket_headers("b1", 0, "4.0")),
+                _Resp(200, {"type": 11, "parent_id": "c1", "owner_id": "bot"}),
+            ],
+        )
+        harness.roster.clear()
+        assert (await harness.client.api_json("GET", f"/channels/{_CHANNEL}", None)).data
+        harness.asked.clear()
+        assert await harness.client.thread_origin(_CHANNEL) is not None
+        assert harness.sleeps, "the lookup still honours the bucket"
+        assert harness.asked == []
+
+    @pytest.mark.asyncio
+    async def test_any_other_get_is_still_re_judged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``is_thread_channel`` classifies a thread an inbound message arrived
+        in; a reload that removes it during a hold must still refuse the read,
+        or the message would be dispatched into a revoked thread."""
+        harness = _harness(
+            monkeypatch,
+            [_rate_limited(20.0, is_global=True), _Resp(200, {"type": 11})],
+        )
+        harness.revoke_during_next_wait()
+        assert await harness.client.is_thread_channel(_CHANNEL) is False
+        assert len(harness.requests) == 1
+        assert harness.asked == [_CHANNEL]
+
+    @pytest.mark.asyncio
+    async def test_a_write_on_the_same_route_is_still_re_judged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(
+            monkeypatch,
+            [_rate_limited(20.0, is_global=True), _Resp(200, {"id": "2"})],
+        )
+        harness.roster.clear()
+        result = await harness.client.api_json("PATCH", f"/channels/{_CHANNEL}", {})
+        assert result.outcome == DISCORD_BLOCKED
+        assert len(harness.requests) == 1
+        assert harness.asked == [_CHANNEL]
+
+
 # -- Each of the ladder's four waits ----------------------------------------
 
 

@@ -11,6 +11,7 @@ import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import AgentSpecNotRewrittenNotice from '../../components/AgentSpecNotRewrittenNotice'
+import McpShareRefusedNotice from './McpShareRefusedNotice'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
@@ -713,6 +714,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       {/* No hand-off while changes are staged: opening the chat unmounts this tab
           and drops the pending MCP changes it holds. */}
       {specNotRewritten && <AgentSpecNotRewrittenNotice className="mb-3" askAgent={pendingCount === 0} />}
+      {/* Staged changes live only in this tab: with any pending, the notice keeps
+          its chat hand-off off and opens MCP Management in a new tab. */}
+      <McpShareRefusedNotice className="mb-3" stagedChanges={pendingCount > 0} />
 
       {/* Pending-changes banner */}
       {pendingCount > 0 && (

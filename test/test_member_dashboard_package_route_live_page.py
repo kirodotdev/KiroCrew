@@ -571,7 +571,7 @@ async def test_a_tree_bound_page_does_not_fly_the_stale_band(tree_wired: Any) ->
     _status, body = await _call(md.api_member_dashboard, _request(tree_wired.app, "GET", TREE_PATH))
     island = body["rendered_html"].split('id="kirocrew-dashboard-data">')[1].split("</script>")[0]
     read = json.loads(island.replace("\\u003c", "<").replace("\\u003e", ">"))
-    assert read["stale"] is False
+    assert "stale" not in read
     assert "boards" not in read["missing"]
 
 

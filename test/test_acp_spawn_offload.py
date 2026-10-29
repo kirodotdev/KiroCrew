@@ -1210,7 +1210,11 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         # scratch owner probes, or browser socket discovery.
         monkeypatch.setattr(runtime_mod, "finish_suspended_spawn", lambda *a, **kw: None)
         monkeypatch.setattr(
-            runtime_mod, "agent_scratch", SimpleNamespace(allocate_scratch=lambda _: None)
+            runtime_mod,
+            "agent_scratch",
+            SimpleNamespace(
+                allocate_scratch=lambda _: None, drop_inherited_scratch_env=lambda env: ()
+            ),
         )
         monkeypatch.setattr(runtime_mod, "browser_session_env", lambda env: {})
 

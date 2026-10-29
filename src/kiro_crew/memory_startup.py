@@ -32,6 +32,7 @@ class MemoryStartup:
     def __init__(self) -> None:
         self.error = ""
         self.store_errors: dict[str, str] = {}
+        self.store_remedies: dict[str, str] = {}
         self.ready = False
         self.stopped = False
         self._worker: int | None = None
@@ -73,10 +74,17 @@ class MemoryStartup:
         with _lock:
             self.error = str(error)
 
-    def fail_store(self, store: str, error: Exception) -> None:
-        """Retain this store's failure until gateway restart, even after cancel."""
+    def fail_store(self, store: str, error: Exception, *, remedy: str = "") -> None:
+        """Retain this store's failure until gateway restart, even after cancel.
+
+        *remedy* replaces the default "pending restore" advice when the caller
+        knows the failure has another cause (a damaged database file).
+        """
+        name = store or DEFAULT_MEMORY_STORE
         with _lock:
-            self.store_errors[store or DEFAULT_MEMORY_STORE] = str(error)
+            self.store_errors[name] = str(error)
+            if remedy:
+                self.store_remedies[name] = remedy
 
     def stop(self) -> bool:
         """Fence new work; return whether the caller owns final handle cleanup."""
@@ -91,6 +99,27 @@ class MemoryStartup:
         with _lock:
             if self.stopped and self._worker is None and _active is self:
                 _active = None
+
+
+def damaged_database_remedy(path: object, error: BaseException) -> str:
+    """The repair advice for a damaged memory database, or ``""`` for any other failure.
+
+    A damaged ``memory.db`` has no pending restore to cancel, so the default
+    advice sent users looking for one. The file is left exactly where it is:
+    it holds the store's only copy of its memories, so moving it aside is the
+    user's decision, not a startup side effect.
+    """
+    from kiro_crew.sqlite_quarantine import is_damaged_database_error
+
+    if not is_damaged_database_error(error):
+        return ""
+    where = f" ({path})" if path else ""
+    return (
+        f"The memory database file{where} is damaged; it was left untouched. Stop the "
+        "gateway, copy that file and any -wal/-shm file beside it somewhere safe, then "
+        "rename them (for example to memory.db.corrupt) so a new one is created, and "
+        "restart. Do not delete it."
+    )
 
 
 def require_memory_prepared() -> None:
@@ -174,7 +203,8 @@ def require_memory_ready(store: str = DEFAULT_MEMORY_STORE, *, allow_failed: boo
         require_memory_prepared()
         error = memory_store_startup_error(store)
         if error and not allow_failed:
-            raise MemoryStartupUnavailable(
-                f"Memory recovery failed for {store or DEFAULT_MEMORY_STORE!r}: {error} "
+            name = store or DEFAULT_MEMORY_STORE
+            remedy = (_active.store_remedies.get(name, "") if _active else "") or (
                 "Inspect or cancel this store's pending restore, then restart the gateway."
             )
+            raise MemoryStartupUnavailable(f"Memory recovery failed for {name!r}: {error} {remedy}")

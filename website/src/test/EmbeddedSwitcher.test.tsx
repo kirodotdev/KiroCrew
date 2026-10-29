@@ -9,7 +9,7 @@ import { readIndexCss } from './indexCssSource'
 import InstanceTabBar from '../components/InstanceTabBar'
 import EmbeddedHostBridge from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
-import { noteHostOrigin } from '../lib/hostRelay'
+import { isDesktopAppPane, noteHostOrigin } from '../lib/hostRelay'
 
 // Embedded panes never hit the instances API; mock it to a no-op so the import
 // is inert and any accidental call is observable.
@@ -307,6 +307,30 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     expect(store.getState().instances.host?.macInset).toBe(true)
     expect(store.getState().instances.host?.stableOrder).toBe(true)
     expect(document.documentElement.classList.contains('embedded-mac-inset')).toBe(true)
+  })
+
+  it('reads the desktop-app flag from the stored host model while mounted', async () => {
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    const { unmount } = renderWithProviders(<EmbeddedHostBridge />, { store })
+    const send = (electron: boolean) => act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent,
+        origin: HUB,
+        data: { type: 'mc-host-model', ...model({ electron }) },
+      }))
+    })
+    expect(isDesktopAppPane()).toBe(false)
+    send(true)
+    await waitFor(() => expect(store.getState().instances.host?.electron).toBe(true))
+    expect(isDesktopAppPane()).toBe(true)
+    send(false)
+    await waitFor(() => expect(store.getState().instances.host?.electron).toBe(false))
+    expect(isDesktopAppPane()).toBe(false)
+    send(true)
+    await waitFor(() => expect(isDesktopAppPane()).toBe(true))
+    unmount()
+    expect(isDesktopAppPane()).toBe(false)
   })
 
   it('applies the Windows caption inset when the host relays winInset', async () => {

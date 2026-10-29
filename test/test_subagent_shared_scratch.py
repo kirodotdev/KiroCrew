@@ -606,6 +606,7 @@ class TestAnInheritingRuntimeJoinsTheMarkerOnceLive:
         calls: list[tuple[str, Path, int]] = []
         fake_scratch = SimpleNamespace(
             allocate_scratch=lambda _label: None,
+            drop_inherited_scratch_env=lambda env: (),
             shared_scratch_window=lambda path: path,
             record_owner=lambda path, pid: calls.append(("record", path, pid)) or "recorded",
             adopt_owner=lambda path, pid: calls.append(("adopt", path, pid)) or adopt_outcome,

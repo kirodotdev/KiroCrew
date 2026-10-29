@@ -602,6 +602,41 @@ describe('New mate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
+  it('a just-created mate at work on its greeting moves as one picture in its row, with nothing animating inside it', async () => {
+    // Right after create the greeting turn runs, so the new row is the first
+    // place the working icon shows. An SVG that animates itself is re-rastered
+    // in pieces on iOS Safari: head, tail and one eye out of step.
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await clickAddCrewmate()
+    await screen.findByTestId('crewmate-create-look')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    membersMock.mockImplementation(() => {
+      const sent = vi.mocked(api.createKirocrewAgent).mock.calls[0]?.[0] as { avatar?: unknown } | undefined
+      return Promise.resolve({
+        members: [
+          row(),
+          row({ name: 'radar', slug: 'radar', dashboard_created: true, avatar: sent?.avatar, running: true, bound: true, slot_key: 'member-radar' }),
+        ],
+        default_agent: 'kirocrew',
+      })
+    })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    const radar = (await rosterRow('radar')).closest('li') as HTMLElement
+    // Running, as a fresh mate is while it greets: the presence dot is on.
+    await within(radar).findByTestId('member-presence-dot', undefined, PANE_READY)
+    const motion = await within(radar).findByTestId('crew-icon-motion', undefined, PANE_READY)
+    // One moving root and one picture in the row: the silhouette and its eyes
+    // are the same image, so they share every transform.
+    expect(within(radar).getAllByTestId('crew-icon-motion')).toHaveLength(1)
+    const imgs = radar.querySelectorAll('img')
+    expect(imgs).toHaveLength(1)
+    expect(motion.contains(imgs[0])).toBe(true)
+    expect(decodeURIComponent(imgs[0].getAttribute('src') ?? '')).not.toMatch(/<style|animation|@keyframes/)
+  })
+
   it('a mate not created on the dashboard asks for no greeting when opened', async () => {
     await renderPage([row({ name: 'synced', slug: 'synced' })], 'kirocrew', { route: '/members?member=synced' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-synced')

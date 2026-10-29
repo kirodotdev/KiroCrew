@@ -987,11 +987,22 @@ def _trusted_page(slug: str, record: Any) -> str | None:
     return entry.html
 
 
-def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = None) -> Any:
+def read_fields(
+    slug: str,
+    member: str,
+    manifest: Any,
+    *,
+    slot: str | None = None,
+    prime_wait: float | None = None,
+) -> Any:
     """One read of *manifest*'s field values for this crewmate, as the page gets them.
 
     The page's own read, shared with ``dashboard_fields`` so the values an agent is
     shown are the values the reader sees. File IO; raises on a failed read.
+
+    *prime_wait* caps the wait for cold slot folds (``DashboardFeed.wait_for_primes``);
+    ``None`` is its default. The turn block passes ``0``, because a prompt build must
+    not wait on a prime: a cold fold then reads as unseen, which the block skips.
     """
     from kiro_crew import agent_panel
     from kiro_crew.crew_log import projection
@@ -1018,7 +1029,10 @@ def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = Non
         feed.subscribe(manifest)
         # One-shot: a cold slot fold arrives from its background prime, not as a
         # baseline, so wait for it before reading instead of reporting it missing.
-        feed.wait_for_primes()
+        if prime_wait is None:
+            feed.wait_for_primes()
+        else:
+            feed.wait_for_primes(prime_wait)
         agentic: Any = {}
         if any(spec.agentic for spec in manifest.fields.values()):
             agentic = projection.read_slot_projection(slot, "agentic").value

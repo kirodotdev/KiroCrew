@@ -474,12 +474,14 @@ class TestCallSites:
         assert result["ok"] is True
         assert result["refreshed"] == ["official", "second"]
         assert fetched == ["official", "second"]
-        # One manifest expiry per registry row happened BEFORE either prewarm ran.
-        assert len(expired) == 2, expired
+        # Each registry row's manifest file and failed-fetch marker were expired
+        # BEFORE either prewarm ran.
+        assert len(expired) == 4, expired
+        assert sum(p.endswith(".miss.json") for p in expired) == 2, expired
         assert [name for name, _f, _e, _rows in seen_at_prewarm] == ["official", "second"]
         for name, fetched_at, expired_at, rows in seen_at_prewarm:
             assert fetched_at == frozenset({"official", "second"}), (name, fetched_at)
-            assert expired_at == 2, (name, expired_at)
+            assert expired_at == 4, (name, expired_at)
             assert rows is rows_by_name[name], "each prewarm gets its own fresh rows"
 
 

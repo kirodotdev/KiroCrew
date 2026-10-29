@@ -6758,6 +6758,11 @@
         "default_crewmate_unknown_reason": "{{name}} is no longer in the mate list"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} server set to share is not shared: {{names}}. Its launch needs your approval, so every chat starts its own copy.",
+        "share_refused_other": "{{count}} servers set to share are not shared: {{names}}. Their launch needs your approval, so every chat starts its own copy.",
+        "share_refused_restart": "In MCP Management, press Approve sharing for each one. Then restart the gateway (Settings → About → Restart gateway) so new chats use the shared copy.",
+        "share_refused_review": "Review in MCP Management",
+        "share_status_failed": "Could not check whether the servers set to share are approved.",
         "applied_change_one": "Applied {{count}} change",
         "applied_change_other": "Applied {{count}} changes",
         "edit_json_for": "Edit JSON for {{name}}",
@@ -9217,6 +9222,8 @@
       "switch_sessions": "switch sessions"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "In the desktop app, pop-out windows don't work inside a remote crew. Keep working in this crew here.",
+      "desktop_app_could_not_open_pop_out_window": "The desktop app couldn't open the pop-out window. Keep working in this window.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."
     },
     "sanitize": {

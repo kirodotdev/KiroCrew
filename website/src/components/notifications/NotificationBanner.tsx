@@ -21,6 +21,7 @@ import {
 import type { Notification } from '../../types'
 import { notePriority, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
+import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 
 /** Where a leaving card travels: the vector from its own top-right corner to
@@ -468,35 +469,41 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
                     onClick={() => setExpanded(true)}
                   />
                 ) : (
-                  <NotificationCard
-                    n={n}
-                    onOpen={() => openNote(n)}
-                    openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
-                    onDismiss={() => removeNotes([n.ts])}
-                    dismissLabel={i18nT('components.notifications.notificationBanner.dismiss_notification')}
-                    dismissTestId="notification-banner-dismiss"
-                    dismissVisible={isMobile}
-                    actions={actions}
-                    actionsAlign="end"
-                    footer={ackFailed[n.ts] || n.ts === rosterReportTs ? (
-                      <>
-                        {ackFailed[n.ts] && (
-                          /* No hand-off: this card floats over whatever page the
-                             user is on, which may hold an unsaved draft (a chat
-                             composer, a settings form) that the hand-off's
-                             navigation to the chat would destroy. The action
-                             button on the card is the retry. */
-                          <ErrorNotice
-                            variant="inline"
-                            testId="notification-banner-ack-failed"
-                            message={i18nT('components.notifications.notificationBanner.mark_read_failed')}
-                            onDismiss={() => setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })}
-                          />
-                        )}
-                        {n.ts === rosterReportTs && <CrewmateRosterError />}
-                      </>
-                    ) : null}
-                  />
+                  // On a phone the card also goes with a horizontal swipe,
+                  // through the SAME removal the X performs, so a swiped note
+                  // waits in the bell exactly as a closed one does. The X stays
+                  // visible there for keyboard and screen-reader users.
+                  <SwipeToDismiss enabled={isMobile} reduced={reduced} onDismiss={() => removeNotes([n.ts])}>
+                    <NotificationCard
+                      n={n}
+                      onOpen={() => openNote(n)}
+                      openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
+                      onDismiss={() => removeNotes([n.ts])}
+                      dismissLabel={i18nT('components.notifications.notificationBanner.dismiss_notification')}
+                      dismissTestId="notification-banner-dismiss"
+                      dismissVisible={isMobile}
+                      actions={actions}
+                      actionsAlign="end"
+                      footer={ackFailed[n.ts] || n.ts === rosterReportTs ? (
+                        <>
+                          {ackFailed[n.ts] && (
+                            /* No hand-off: this card floats over whatever page the
+                               user is on, which may hold an unsaved draft (a chat
+                               composer, a settings form) that the hand-off's
+                               navigation to the chat would destroy. The action
+                               button on the card is the retry. */
+                            <ErrorNotice
+                              variant="inline"
+                              testId="notification-banner-ack-failed"
+                              message={i18nT('components.notifications.notificationBanner.mark_read_failed')}
+                              onDismiss={() => setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })}
+                            />
+                          )}
+                          {n.ts === rosterReportTs && <CrewmateRosterError />}
+                        </>
+                      ) : null}
+                    />
+                  </SwipeToDismiss>
                 )}
               </motion.div>
             )

@@ -14280,6 +14280,10 @@
         "default_crewmate_unknown_reason": "크루메이트 목록에 {{name}}이(가) 더 이상 없습니다"
       },
       "mcpTab": {
+        "share_refused_other": "공유하도록 설정한 서버 {{count}}개가 공유되지 않습니다: {{names}}. 실행하려면 승인이 필요해서 채팅마다 별도 사본이 실행됩니다.",
+        "share_refused_restart": "MCP 관리에서 각각 공유를 승인하세요. 그런 다음 게이트웨이를 다시 시작하면(설정 → 정보 → 게이트웨이 다시 시작) 새 채팅이 공유 사본을 사용합니다.",
+        "share_refused_review": "MCP 관리에서 검토",
+        "share_status_failed": "공유하도록 설정한 서버가 승인되었는지 확인하지 못했습니다.",
         "actions": "동작",
         "add_custom": "사용자 지정 추가",
         "add_server": "서버 추가",
@@ -16185,7 +16189,7 @@
         "immediate": "즉시",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "즉시 모드는 도착하는 원본 청크를 그대로 보여줍니다. 부드러움 모드는 텍스트를 버퍼링해 일정한 속도로 페이드인합니다.",
         "it_ops": "IT / 운영",
-        "keep_your_computer_awake_while_a_task_is_running": "작업이 실행되는 동안 컴퓨터를 절전 모드로 전환하지 않습니다",
+        "keep_your_computer_awake_while_a_task_is_running": "작업이 실행되는 동안 컴퓨터를 절전 모드로 전환하지 않습니다. 일부 Windows 노트북(Modern Standby)에서는 화면을 잠그면 절전 모드로 전환될 수 있으므로, 긴 작업 중에는 화면을 켜 두세요.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro가 사용자의 전문 배경에 맞춰 어휘와 예시를 조정합니다",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro는 이 설명을 사용해 사용자의 역할에 맞게 어휘와 예시를 조정합니다.",
         "knowledge_library": "지식 라이브러리",
@@ -19032,6 +19036,8 @@
       "switch_sessions": "세션을 전환"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "데스크톱 앱에서는 원격 크루 안에서 팝아웃 창을 쓸 수 없습니다. 이 크루에서 여기서 계속 작업하세요.",
+      "desktop_app_could_not_open_pop_out_window": "데스크톱 앱에서 팝아웃 창을 열 수 없습니다. 이 창에서 계속 작업하세요.",
       "your_browser_blocked_the_pop_out_window_allow_po": "브라우저가 팝아웃 창을 차단했습니다. 이 사이트의 팝업을 허용한 다음 다시 시도하세요."
     },
     "sanitize": {
