@@ -9029,18 +9029,19 @@
       "var_warning": "Warnung"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Eine thematische Persona im Assistenten annehmen (Sicherheit und Genauigkeit haben immer Vorrang; Sie können jederzeit verlangen, die Persona aufzugeben).",
-      "enable_experience": "Erlebnis aktivieren",
       "enable_named_experience": "„{{name}}“-Erlebnis aktivieren?",
       "keep_colors_only": "Nur Farben behalten",
+      "keep_persona_off": "Persona aus lassen",
       "mute_theme_sounds": "Theme-Sounds stummschalten",
       "persona_text": "Persona-Text",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Persona, die dem System-Prompt des Assistenten hinzugefügt wird:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Thematische Töne abspielen (berücksichtigt Ihren Stummschalter und die Einstellung für reduzierte Bewegung).",
-      "show_animated_visual_overlays": "• Animierte visuelle Overlays anzeigen.",
       "theme_overlay": "Theme-Overlay {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Dies ist ein Erlebnis-Theme. Das Aktivieren wird:",
-      "unmute_theme_sounds": "Theme-Sounds einschalten"
+      "unmute_theme_sounds": "Theme-Sounds einschalten",
+      "save": "Speichern",
+      "sounds": "Sounds",
+      "overlays": "Overlays",
+      "persona": "Persona",
+      "save_failed_storage": "Speichern nicht möglich. Der Browserspeicher ist voll oder deaktiviert."
     },
     "timezoneSelect": {
       "render_timezone": "Zeitzone für die Darstellung"
@@ -17309,6 +17310,7 @@
         "installed_theme_could_not_be_loaded": "Das installierte Theme konnte nicht geladen werden. Installiere es erneut oder wähle ein anderes Theme.",
         "custom_theme_could_not_be_loaded": "Dieses Theme konnte nicht geladen werden. Wähle ein anderes Theme oder bearbeite dieses.",
         "local_folder": "Lokaler Ordner",
+        "zip_file": "Zip-Datei",
         "mode": "Modus",
         "native_window_zoom_tip": "Nativer Fensterzoom, dieselbe Einstellung wie {{mod}}+ / {{mod}}− (50–300 %). Wird über Neustarts hinweg beibehalten.",
         "new_theme": "+ Neues Theme",
@@ -17316,8 +17318,6 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Keine, automatisch wechseln oder eine feste Farbe wählen.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Wählen Sie ein Theme für das Dashboard",
-        "enable_theme_experience": "Erlebnis aktivieren",
-        "enable_theme_experience_hint": "Sie haben „Nur Farben behalten“ gewählt, daher sind Sounds, Overlays und Persona dieses Designs aus.",
         "sidebar_colors": "Seitenleistenfarben",
         "terminal": "Terminal",
         "terminal_font_family": "Schriftart",
@@ -17396,7 +17396,12 @@
         "desktop_app": "Desktop-App",
         "keep_running_when_window_closed": "Nach dem Schließen des Fensters im Hintergrund weiterlaufen",
         "keep_running_when_window_closed_desc": "Beim Schließen des Fensters wird {{productName}} ausgeblendet, und deine Sitzungen und Jobs laufen weiter. Schalte dies aus, damit die Schließen-Schaltfläche die App beendet. Ein von dieser App gestartetes Gateway wird mit ihr beendet, ein Gateway, mit dem sie nur verbunden ist, läuft weiter.",
-        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut."
+        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut.",
+        "choose_zip_file": ".zip-Datei auswählen",
+        "theme_experience": "Erlebnis",
+        "theme_experience_sounds": "Sounds",
+        "theme_experience_overlays": "Overlays",
+        "theme_experience_persona": "Persona"
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

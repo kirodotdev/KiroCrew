@@ -157,7 +157,7 @@ const API_KEY_ORDER = [
   'fileDiff', 'fileSearch', 'pathComplete', 'uploadFiles',
   'screenshot', 'themes', 'dashboardConfig', 'featureVideoNext',
   'featureVideoFeedback', 'featureVideoProbe', 'featureVideoStatus', 'featureVideoFetchAll',
-  'updateDashboardConfig', 'createTheme', 'installTheme', 'updateTheme',
+  'updateDashboardConfig', 'createTheme', 'installTheme', 'installThemeZip', 'updateTheme',
   'deleteTheme', 'themeDetail', 'themeBoot', 'updateThemeConfig',
   'voiceConfig', 'updateVoiceConfig', 'voiceVoices', 'voiceSystemVoices',
   'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'credentialRedaction',

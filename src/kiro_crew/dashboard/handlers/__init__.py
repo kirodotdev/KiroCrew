@@ -613,6 +613,7 @@ from kiro_crew.dashboard.handlers.themes import (  # noqa: E402, F401
     api_themes,
     api_themes_create,
     api_themes_install,
+    api_themes_install_zip,
 )
 
 # ── Browser UI preference backup (extracted to handlers/ui_prefs.py) ──

@@ -9167,18 +9167,19 @@
       "var_warning": "Advertencia"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adoptar una personalidad temática en el asistente (la seguridad y la precisión siempre tienen prioridad; puedes pedirle que abandone la personalidad en cualquier momento).",
-      "enable_experience": "Activar la experiencia",
       "enable_named_experience": "¿Activar la experiencia “{{name}}”?",
       "keep_colors_only": "Mantener solo los colores",
+      "keep_persona_off": "Mantener la Persona desactivada",
       "mute_theme_sounds": "Silenciar los sonidos del tema",
       "persona_text": "Texto de la personalidad",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Personalidad que se añadirá al prompt de sistema del asistente:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Reproducir sonidos temáticos (respeta tu opción de silencio y el ajuste de movimiento reducido).",
-      "show_animated_visual_overlays": "• Mostrar superposiciones visuales animadas.",
       "theme_overlay": "superposición del tema {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Este es un tema de experiencia. Al activarlo:",
-      "unmute_theme_sounds": "Reactivar los sonidos del tema"
+      "unmute_theme_sounds": "Reactivar los sonidos del tema",
+      "save": "Guardar",
+      "sounds": "Sonidos",
+      "overlays": "Superposiciones",
+      "persona": "Persona",
+      "save_failed_storage": "No se pudo guardar. El almacenamiento del navegador está lleno o desactivado."
     },
     "timezoneSelect": {
       "render_timezone": "Zona horaria de visualización"
@@ -17605,6 +17606,7 @@
         "installed_theme_could_not_be_loaded": "No se pudo cargar el tema instalado. Reinstálalo o elige otro tema.",
         "custom_theme_could_not_be_loaded": "No se pudo cargar este tema. Elige otro tema o edita este.",
         "local_folder": "Carpeta local",
+        "zip_file": "Archivo zip",
         "mode": "Modo",
         "native_window_zoom_tip": "Zoom nativo de la ventana, el mismo ajuste que {{mod}}+ / {{mod}}− (50%–300%). Se recuerda entre inicios.",
         "new_theme": "+ Tema nuevo",
@@ -17612,8 +17614,6 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Ninguno, ciclo automático o elige un color fijo.",
         "palette": "Paleta",
         "select_a_theme_for_the_dashboard": "Selecciona un tema para el panel",
-        "enable_theme_experience": "Activar la experiencia",
-        "enable_theme_experience_hint": "Elegiste «Mantener solo los colores», así que los sonidos, las superposiciones y la persona de este tema están desactivados.",
         "sidebar_colors": "Colores de la barra lateral",
         "terminal": "Terminal",
         "terminal_font_family": "Fuente",
@@ -17692,7 +17692,12 @@
         "desktop_app": "Aplicación de escritorio",
         "keep_running_when_window_closed": "Mantener la aplicación en segundo plano al cerrar la ventana",
         "keep_running_when_window_closed_desc": "Al cerrar la ventana, {{productName}} se oculta y tus sesiones y trabajos programados siguen en ejecución. Desactívalo para que el botón de cerrar cierre la aplicación por completo. Un gateway iniciado por esta aplicación se detiene con ella, y un gateway al que solo se conecta sigue en ejecución.",
-        "keep_running_when_window_closed_save_failed": "No se pudo guardar este ajuste. No se cambió nada. Inténtalo de nuevo."
+        "keep_running_when_window_closed_save_failed": "No se pudo guardar este ajuste. No se cambió nada. Inténtalo de nuevo.",
+        "choose_zip_file": "Elegir un archivo .zip",
+        "theme_experience": "Experiencia",
+        "theme_experience_sounds": "Sonidos",
+        "theme_experience_overlays": "Superposiciones",
+        "theme_experience_persona": "Persona"
       },
       "importPanel": {
         "agent_data": "Datos del agente",

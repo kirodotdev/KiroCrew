@@ -9029,18 +9029,19 @@
       "var_warning": "সতর্কতা"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• সহকারীতে একটি থিমযুক্ত পার্সোনা গ্রহণ করা হবে (নিরাপত্তা ও নির্ভুলতা সর্বদাই অগ্রাধিকার পায়; আপনি যেকোনো সময় পার্সোনাটি বাদ দিতে বলতে পারেন)।",
-      "enable_experience": "অভিজ্ঞতা চালু করুন",
       "enable_named_experience": "“{{name}}” অভিজ্ঞতাটি চালু করবেন?",
       "keep_colors_only": "শুধু রং রাখুন",
+      "keep_persona_off": "পারসোনা বন্ধ রাখুন",
       "mute_theme_sounds": "থিমের শব্দ মিউট করো",
       "persona_text": "পার্সোনা টেক্সট",
       "persona_that_will_be_added_to_the_assistant_s_sy": "সহকারীর সিস্টেম প্রম্পটে যে পার্সোনা যোগ করা হবে:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• থিমযুক্ত সাউন্ড বাজানো হবে (আপনার মিউট টগল ও রিডিউসড-মোশন সেটিং মেনে চলে)।",
-      "show_animated_visual_overlays": "• অ্যানিমেটেড ভিজ্যুয়াল ওভারলে দেখানো হবে।",
       "theme_overlay": "থিম ওভারলে {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "এটি একটি এক্সপেরিয়েন্স থিম। এটি চালু করলে:",
-      "unmute_theme_sounds": "থিমের শব্দ আনমিউট করো"
+      "unmute_theme_sounds": "থিমের শব্দ আনমিউট করো",
+      "save": "সংরক্ষণ",
+      "sounds": "সাউন্ড",
+      "overlays": "ওভারলে",
+      "persona": "পারসোনা",
+      "save_failed_storage": "সংরক্ষণ করা যায়নি। ব্রাউজারের স্টোরেজ পূর্ণ বা বন্ধ আছে।"
     },
     "timezoneSelect": {
       "render_timezone": "প্রদর্শনের টাইমজোন"
@@ -17309,6 +17310,7 @@
         "installed_theme_could_not_be_loaded": "ইনস্টল করা থিম লোড করা যায়নি। এটি আবার ইনস্টল করো বা অন্য একটি থিম বেছে নাও।",
         "custom_theme_could_not_be_loaded": "এই থিম লোড করা যায়নি। অন্য একটি থিম বেছে নাও বা এটি সম্পাদনা করো।",
         "local_folder": "স্থানীয় ফোল্ডার",
+        "zip_file": "Zip ফাইল",
         "mode": "মোড",
         "native_window_zoom_tip": "নেটিভ উইন্ডো জুম, {{mod}}+ / {{mod}}− এর মতো একই সেটিং (50%–300%)। অ্যাপ আবার চালু করলেও মনে রাখা হয়।",
         "new_theme": "+ নতুন থিম",
@@ -17316,8 +17318,6 @@
         "none_auto_cycle_or_pick_a_fixed_color": "কোনোটি নয়, স্বয়ংক্রিয়ভাবে বদলাতে থাকুক, বা একটি নির্দিষ্ট রঙ বেছে নিন।",
         "palette": "প্যালেট",
         "select_a_theme_for_the_dashboard": "ড্যাশবোর্ডের জন্য একটি থিম বেছে নিন",
-        "enable_theme_experience": "অভিজ্ঞতা চালু করুন",
-        "enable_theme_experience_hint": "আপনি \"শুধু রং রাখুন\" বেছে নিয়েছেন, তাই এই থিমের সাউন্ড, ওভারলে ও পারসোনা বন্ধ আছে।",
         "sidebar_colors": "সাইডবারের রঙ",
         "terminal": "টার্মিনাল",
         "terminal_font_family": "ফন্ট",
@@ -17396,7 +17396,12 @@
         "desktop_app": "ডেস্কটপ অ্যাপ",
         "keep_running_when_window_closed": "উইন্ডো বন্ধ করলে অ্যাপটি পটভূমিতে চালু রাখো",
         "keep_running_when_window_closed_desc": "উইন্ডো বন্ধ করলে {{productName}} লুকিয়ে যায় এবং তোমার সেশন ও নির্ধারিত কাজ চলতে থাকে। বন্ধ বোতামে অ্যাপটি বন্ধ করতে চাইলে এটি বন্ধ করো। এই অ্যাপ যে গেটওয়ে চালু করেছে সেটি অ্যাপের সাথে থেমে যায়, আর যে গেটওয়েতে এটি শুধু সংযুক্ত হয় সেটি চলতে থাকে।",
-        "keep_running_when_window_closed_save_failed": "এই সেটিংটি সংরক্ষণ করা যায়নি। কিছুই বদলায়নি। আবার চেষ্টা করো।"
+        "keep_running_when_window_closed_save_failed": "এই সেটিংটি সংরক্ষণ করা যায়নি। কিছুই বদলায়নি। আবার চেষ্টা করো।",
+        "choose_zip_file": ".zip ফাইল বেছে নাও",
+        "theme_experience": "অভিজ্ঞতা",
+        "theme_experience_sounds": "সাউন্ড",
+        "theme_experience_overlays": "ওভারলে",
+        "theme_experience_persona": "পারসোনা"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
