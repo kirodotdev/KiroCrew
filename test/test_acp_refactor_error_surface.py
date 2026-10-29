@@ -195,8 +195,8 @@ _ERROR_ROWS = [
         _frame("HTTP 401 unauthorized"),
         None,
         "Your session has expired. kiro-cli is not logged in. Run `kiro-cli login` in your "
-        "terminal, then start a new chat. Retrying or switching models will not help — "
-        "this is a sign-in issue, not a backend error.",
+        "terminal, then send your message again. Switching models will not help — this is a "
+        "sign-in issue, not a backend error.",
         _tags(),
         id="session-expired-kiro-backend",
     ),
@@ -341,14 +341,14 @@ def test_raise_acp_error_type_and_tags(error, available, expected_text, expected
             True,
             "Not signed in to Kiro. Sign in again from Settings → Agent Harness → Kiro "
             "sign-in, or run `kiro-cli login` in your terminal if kiro-cli owns the sign-in, "
-            "then start a new chat.",
+            "then send your message again.",
             id="host-auth-backend-tags-sign-in",
         ),
         pytest.param(
             "",
             False,
-            "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then start a "
-            "new chat.",
+            "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then send your "
+            "message again.",
             id="kiro-backend-leaves-untagged",
         ),
     ],
@@ -359,8 +359,8 @@ def test_session_expired_sign_in_tag_follows_the_backend(backend, auth_required,
     assert caught.value.auth_required is auth_required
     assert caught.value.transient is False
     assert str(caught.value) == (
-        f"Your session has expired. {sign_in_text} Retrying or switching models will not "
-        "help — this is a sign-in issue, not a backend error."
+        f"Your session has expired. {sign_in_text} Switching models will not help — "
+        "this is a sign-in issue, not a backend error."
     )
 
 

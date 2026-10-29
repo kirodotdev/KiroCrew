@@ -765,18 +765,19 @@ def test_the_unprobed_remedy_never_asserts_the_sign_in_state() -> None:
             )
 
 
-def test_the_kiro_signed_out_message_is_unchanged() -> None:
-    """The auth-required path raises exactly the string it always raised.
+def test_the_kiro_signed_out_message_tells_the_user_to_resend() -> None:
+    """The signed-out message ends at re-sending, not at starting a new chat.
 
-    That path reaches the message on the harness's own stderr evidence, so moving
-    it into a declaration must not reword what an operator already reads when
-    kiro-cli's login has lapsed.
+    Re-authenticating does not retire the session: once ``kiro-cli login`` lands,
+    the next message in the SAME chat succeeds, so telling the operator to start a
+    new chat would discard a conversation they do not need to discard.
     """
     expected = (
         "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, "
-        "then start a new chat."
+        "then send your message again."
     )
     assert host_auth.signed_out_message("") == expected
+    assert "start a new chat" not in host_auth.signed_out_message("")
     # KAS may draw its access token from Crew's own vault (the dashboard's Kiro
     # sign-in card, under Settings > Agent Harness) OR from kiro-cli's store,
     # and the formatter cannot see which one a process had, so its sentence
@@ -786,7 +787,8 @@ def test_the_kiro_signed_out_message_is_unchanged() -> None:
     assert kas != expected
     assert "`kiro-cli login`" in kas
     assert "Settings → Agent Harness → Kiro sign-in" in kas
-    assert "start a new chat" in kas
+    assert "send your message again" in kas
+    assert "start a new chat" not in kas
     # The standing (unprobed) remedy names the same two paths, in plain prose.
     remedy = host_auth.declaration_for("kas").sign_in_remedy
     assert "Settings → Agent Harness → Kiro sign-in" in remedy and "kiro-cli login" in remedy

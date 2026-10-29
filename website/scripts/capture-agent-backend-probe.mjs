@@ -76,11 +76,11 @@ const AUTH = {
   // suppresses the line is `signs_in_separately`, not an absent sentence, and a
   // scene that omitted it would be testing the wrong field.
   kiro: {
-    sign_in_remedy: 'Run kiro-cli login in your terminal, then start a new chat.',
+    sign_in_remedy: 'Run kiro-cli login in your terminal, then send your message again.',
     signs_in_separately: false,
   },
   kas: {
-    sign_in_remedy: 'Run kiro-cli login in your terminal, then start a new chat.',
+    sign_in_remedy: 'Run kiro-cli login in your terminal, then send your message again.',
     signs_in_separately: false,
   },
 }
