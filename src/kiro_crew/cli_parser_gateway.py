@@ -18,6 +18,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
+from kiro_crew.cli_arg_types import non_negative_int
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -282,7 +283,11 @@ def register_logs_parser(sub: _Commands) -> None:
         "-f", "--follow", action="store_true", help="Follow log output (live tail)"
     )
     logs_parser.add_argument(
-        "-n", "--lines", type=int, default=100, help="Number of lines to show (default: 100)"
+        "-n",
+        "--lines",
+        type=non_negative_int,
+        default=100,
+        help="Number of lines to show (default: 100; 0 shows none, useful with -f)",
     )
 
 

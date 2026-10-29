@@ -19,6 +19,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
+from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices
 
 if TYPE_CHECKING:
@@ -144,7 +145,9 @@ def register_security_parser(sub: _Commands) -> None:
     sec_sub.add_parser("audit", help="Scan conversation history for suspicious tool usage")
     sec_sub.add_parser("deny-list", help="Show active deny patterns")
     sel_parser = sec_sub.add_parser("events", help="Show recent security event log entries")
-    sel_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
+    sel_parser.add_argument(
+        "-n", "--limit", type=positive_int, default=20, help="Number of entries (default: 20)"
+    )
     # A count alone cannot express "what happened around 14:05" — on a busy log
     # 6000 entries reach only 15 minutes back, so answering a question about a
     # two-hour-old event means pulling ~90k entries and filtering by hand.
@@ -503,7 +506,9 @@ def register_pod_parser(sub: _Commands) -> None:
     )
     pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
     pod_logs.add_argument("name", help="Worktree name")
-    pod_logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to tail (default: 50)")
+    pod_logs.add_argument(
+        "-n", "--lines", type=positive_int, default=50, help="Lines to tail (default: 50)"
+    )
     pod_exec = pod_sub.add_parser(
         "exec",
         help="Run a kirocrew command against a pod, using the pod's own binary and data",
