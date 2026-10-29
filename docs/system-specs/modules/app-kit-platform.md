@@ -2582,6 +2582,17 @@ dashboard subject that is not the owner, and any app token, gets 403 `owner_only
 self-ownership would otherwise reach. `test_apps_install_owner_gate.py` pins the
 app-token refusals.
 
+**A body that is not a JSON object is a 400.** Those five, plus
+`POST /api/apps/register` and `POST /api/apps/<name>/dev`, parse with
+`await request.json()` and then read fields with `body.get()`, so each returns
+`body_not_object_error(body)` (`dashboard/handlers/_shared.py`) right after the
+parse: a list, string, number or `null` body is answered
+`400 body_not_object` instead of raising `AttributeError` as a 500, and
+`PUT /api/apps/registries` audits it as a denial like its other refusals.
+`POST /api/apps/<name>/uninstall` is not one of them: its parse keeps the safe
+defaults for any body, so data is kept. `test_apps_routes_non_object_body.py` pins
+each route.
+
 **Implicit self-ownership stops at the shared literal routes.** Beyond the
 declared `permissions.api` allowlist, `_app_owns_path` grants an app token
 implicit ownership of its own namespace on both the reverse-proxy/UI surface

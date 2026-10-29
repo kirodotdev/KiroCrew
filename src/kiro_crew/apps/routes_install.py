@@ -53,7 +53,10 @@ logger = logging.getLogger("kiro_crew.apps.routes")
 
 async def handle_update_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/update — update an installed app from its source path."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_update")
     if denied is not None:
@@ -77,6 +80,9 @@ async def handle_update_app(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         body = {}
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     source = body.get("source", info.get("source", ""))
 
@@ -249,7 +255,10 @@ async def handle_register_external(request: web.Request) -> web.Response:
     Body: { name, version, displayName, source?, manifest? }
     """
     # local import: avoids a circular import with dashboard.handlers
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_register_external")
     if denied is not None:
@@ -258,6 +267,9 @@ async def handle_register_external(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     name = body.get("name", "")
     version = body.get("version", "")
@@ -326,7 +338,10 @@ async def handle_register_external(request: web.Request) -> web.Response:
 
 async def handle_install_app(request: web.Request) -> web.Response:
     """POST /api/apps/install — install an app from a local path."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_install")
     if denied is not None:
@@ -335,6 +350,9 @@ async def handle_install_app(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     source = body.get("source", "")
     if not source:

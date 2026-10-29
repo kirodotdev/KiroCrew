@@ -492,12 +492,16 @@ async def handle_app_dev_mode(request: web.Request) -> web.Response:
     ``kirocrew app dev <name> --confirm-out-of-install-root``.
     """
     from kiro_crew.apps.dev_mode import set_dev_mode
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
 
     name = request.match_info["name"]
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
