@@ -11967,7 +11967,7 @@
       },
       "crewDispatchNotice": {
         "openCrewTab": "Ouvrir l'onglet Crew",
-        "text": "Un membre du crew a été démarré. Les membres du crew figurent dans l'onglet Crew du panneau latéral, pas dans la liste des sessions."
+        "text": "Des membres du crew ont été démarrés : ils figurent dans l'onglet Crew du panneau latéral, pas dans la liste des sessions."
       },
       "compactionCard": {
         "after_turn": "Contexte à {{pct}}, au-delà du seuil de compactage automatique de {{limit}} — la conversation sera résumée à la fin de ce tour",

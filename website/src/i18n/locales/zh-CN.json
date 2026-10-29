@@ -11621,7 +11621,7 @@
       },
       "crewDispatchNotice": {
         "openCrewTab": "打开 Crew 标签页",
-        "text": "已启动一个 crew 成员。crew 成员列在侧边栏的 Crew 标签页中，而不在会话列表里。"
+        "text": "已启动 crew 成员。crew 成员列在侧边栏的 Crew 标签页中，而不在会话列表里。"
       },
       "compactionCard": {
         "after_turn": "上下文已达 {{pct}}，超过 {{limit}} 自动压缩阈值，本轮次结束后将汇总对话",

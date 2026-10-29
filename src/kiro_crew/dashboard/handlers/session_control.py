@@ -415,8 +415,15 @@ def _write_crew_dispatch_notice(
     """
     from kiro_crew.dashboard.crew_dispatch_notice import maybe_write_dispatch_notice
 
-    caller_key = sc.caller_slot_key(state, caller_session_key)
-    caller_slot = state.get_slot(caller_key) if caller_key else None
+    # The create already committed; the notice is extra. Resolving the caller
+    # slot off `state` must never fault the route -- a stub or slotless state
+    # (as the member-gate contract passes) is a safe no-op, matching the other
+    # post-create hooks (`own_worker_note`).
+    try:
+        caller_key = sc.caller_slot_key(state, caller_session_key)
+        caller_slot = state.get_slot(caller_key) if caller_key else None
+    except Exception:  # noqa: BLE001 - the dispatch already happened; the notice is extra
+        return
     if caller_slot is not None:
         maybe_write_dispatch_notice(state, caller_slot, result)
 

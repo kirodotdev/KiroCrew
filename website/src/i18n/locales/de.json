@@ -11794,7 +11794,7 @@
       },
       "crewDispatchNotice": {
         "openCrewTab": "Crew-Tab öffnen",
-        "text": "Ein Crew-Mitglied wurde gestartet. Crew-Mitglieder stehen im Crew-Tab der Seitenleiste, nicht in der Sitzungsliste."
+        "text": "Crew-Mitglieder wurden gestartet – sie stehen im Crew-Tab der Seitenleiste, nicht in der Sitzungsliste."
       },
       "compactionCard": {
         "after_turn": "Kontext bei {{pct}}, über dem Schwellenwert für automatische Verdichtung von {{limit}} – der Chat wird nach diesem Zug zusammengefasst",

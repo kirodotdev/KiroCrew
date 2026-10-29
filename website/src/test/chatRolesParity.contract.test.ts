@@ -54,6 +54,7 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   subagent_run_tool: 'launch card refining the tool line; store-connected',
   tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
   conversation_card: 'the change card / guide offer row; needs the card and guide stores, which the store-free registry has none of (it leaves the role undrawn)',
+  crew_dispatch_notice: 'the Crew Mode dispatch notice row; its Open Crew tab button needs the host slot + onOpenCrewTab reveal the store-free registry has no seam for (a peer/crew window renders it inert)',
   // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
   hidden_invisible_assistant: 'zero-width-space quiet-cycle rows; the registry applies the same skip inside its assistant entry',

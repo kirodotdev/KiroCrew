@@ -26,6 +26,12 @@ Who gets it, and exactly once:
 * Only a **successful** dispatch: the route calls this after the create has
   committed (a refused or dry-run create never reaches here), so a failed
   dispatch writes nothing.
+* Only a turn the **person sent in the dashboard** (``_turn_user_sent``). A Crew
+  Mode conductor dispatches on its own automated turns too -- a monitor loop
+  wake, a cron fire, a ``[Subagent completion event]`` inject -- and the issue
+  requires nothing be written for those, since the person typed nothing. Every
+  turn bumps ``_turn_generation``, so the per-turn dedupe alone would still fire
+  once per automated turn; the person-turn gate is what makes it per PERSON turn.
 * **Once per person turn**: the dispatch reaches the create route while the
   conductor's turn task is in flight, and the slot bumps ``_turn_generation``
   once per turn. The first dispatch of a turn stamps
@@ -45,8 +51,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import crew_mode
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard.state import DashboardState
-    from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 logger = logging.getLogger("kiro_crew.dashboard.crew_dispatch_notice")
 
@@ -65,8 +70,8 @@ CREW_DISPATCH_NOTICE_KIND = "crew_dispatch_notice"
 #: kind, so this wording and the catalog wording may differ without either side
 #: falling back to raw English. Kept free of internal vocabulary.
 CREW_DISPATCH_NOTICE_TEXT = (
-    "A crew member was started. Crew members are listed in the Crew tab of the "
-    "side panel, not the session list."
+    "Crew members were started — they're listed in the Crew tab of the side "
+    "panel, not the session list."
 )
 
 
@@ -94,6 +99,19 @@ def maybe_write_dispatch_notice(
     """
     try:
         if not _caller_is_turned_on_crew_root(caller_slot, result):
+            return False
+        # Only a turn the PERSON sent in the dashboard earns a notice. A Crew
+        # Mode conductor also dispatches on its OWN automated turns -- a monitor
+        # loop wake, a cron fire, a `[Subagent completion event]` inject -- and
+        # the issue is explicit that nothing is written for those (the person
+        # typed nothing). `_turn_user_sent` is the gateway's canonical
+        # person-sent-in-the-dashboard signal (set in `chat_turn/turn_entry.py`,
+        # cleared to False on every non-user turn in `queue_cycle.py` /
+        # `chat_delivery.py`); `handlers/guide.py` reads it the same way to fence
+        # user-only operations. Without it the one-per-`_turn_generation` dedupe
+        # still fires once PER automated turn, because every turn bumps the
+        # generation -- so the gate must be the person-turn, not just the turn.
+        if getattr(caller_slot, "_turn_user_sent", False) is not True:
             return False
         generation = int(getattr(caller_slot, "_turn_generation", 0) or 0)
         if getattr(caller_slot, "_crew_dispatch_notice_turn_gen", -1) == generation:

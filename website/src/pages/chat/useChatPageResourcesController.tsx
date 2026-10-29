@@ -27,6 +27,7 @@ import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
 import type { AppDispatch } from '../../store'
 import { openActivityPanel } from '../../store/chatSlice'
+import { openCrewSession } from './command-center/CrewWorkerList'
 import type { ChatMessage } from '../../types'
 import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
 import { classifyDrop } from '../../utils/dropClassify'
@@ -575,6 +576,27 @@ export function useChatPageResourcesController({
   }, [tabsCtl, dispatch, search.close])
 
 
+  /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
+   *
+   *  Host-owned because the find pane's open state lives only here (local to
+   *  `useMessageSearch`, and `shouldMountSidePanel` leaves the dock UNMOUNTED
+   *  while it is open, so a reveal that does not close Find mounts nothing).
+   *  The slot rebind + tab select + panel open is the SHARED
+   *  `openCrewSession` reveal (switch to the card's slot so the panel it opens
+   *  is that chat's, not the active one's in split view; select Workers; open
+   *  the dock) — reused rather than re-spelled, so there is ONE reveal path.
+   *  `keepPanel` is true: the button is a deliberate "open the Crew tab", so it
+   *  always reveals, on desktop and the mobile sheet alike. The one thing
+   *  `openCrewSession` does not do — close Find — is added here. This single
+   *  callback is threaded to every notice surface (single chat and split pane),
+   *  so there is no second copy. */
+  const handleOpenCrewTab = useCallback((slot: string) => {
+    openCrewSession(dispatch, slot, true)
+    search.close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- same as handleFolderOpen: `search.close` is a useCallback([]) and its enclosing object is rebuilt every render, so listing it would churn the onOpenCrewTab prop on every transcript row
+  }, [dispatch, search.close])
+
+
   // Open the diff panel from a file-change chip click. Closes the
   // markdown viewer and the activity panel so panels stay mutually exclusive.
   const handleOpenDiff = useCallback((filePath: string, modified: string, original: string) => {
@@ -901,6 +923,7 @@ export function useChatPageResourcesController({
     handleFileOpen,
     handleOpenWorkingTreeDiff,
     handleFolderOpen,
+    handleOpenCrewTab,
     handleArtifactOpen,
     handleOpenDiff,
     handleFileSave,

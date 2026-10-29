@@ -77,9 +77,13 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * into the steps pane hides the record of what they did behind a toggle.
  * card: a change card or guide offer — only the user can confirm it, so
  * it is never folded away with the tool steps that proposed it.
+ * crew_dispatch_notice: the Crew Mode dispatch notice and its "Open Crew tab"
+ * button exist to make a mid-turn dispatch visible — folding it into the steps
+ * pane on the default collapseAll path would hide the one row it adds.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
+  it.msg.meta?.kind === 'crew_dispatch_notice' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 

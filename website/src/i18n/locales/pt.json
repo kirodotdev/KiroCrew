@@ -11967,7 +11967,7 @@
       },
       "crewDispatchNotice": {
         "openCrewTab": "Abrir a aba Crew",
-        "text": "Um membro do crew foi iniciado. Os membros do crew aparecem na aba Crew do painel lateral, não na lista de sessões."
+        "text": "Foram iniciados membros do crew: eles aparecem na aba Crew do painel lateral, não na lista de sessões."
       },
       "compactionCard": {
         "after_turn": "Contexto em {{pct}}, acima do limite de compactação automática de {{limit}} — o chat será resumido ao fim deste turno",

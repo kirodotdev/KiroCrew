@@ -117,6 +117,13 @@ export interface TranscriptRendererOptions {
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** Open a directory in the host's side panel. Same #3300 blocker. */
   onFolderOpen?: (path: string) => void
+  /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
+   *  Host-owned because it must close the find pane (which keeps the dock
+   *  unmounted while open) and rebind a background pane's slot to the active one
+   *  before opening — neither reachable from the card. Absent (a side/embedded
+   *  chat, a crew window) leaves the card's button inert, the same opt-in shape
+   *  as the other host reveals above. */
+  onOpenCrewTab?: (slot: string) => void
   /** "Show in side panel" on a sub-agent completion card. Same #3300 blocker. */
   onOpenSubagentPanel?: (parsed: ParsedSubagentCompletion) => void
   /** Expanded-state map for tool rows, held ABOVE the row: a virtualised or
@@ -397,7 +404,13 @@ export function createTranscriptRenderers(
       id: 'crew_dispatch_notice',
       roles: ['notice'],
       match: m => m.meta?.kind === 'crew_dispatch_notice',
-      render: (_m, ctx) => ctx.row(<CrewDispatchNoticeCard key={ctx.key} slot={o.slot} />),
+      render: (_m, ctx) => ctx.row(
+        <CrewDispatchNoticeCard
+          key={ctx.key}
+          slot={o.slot}
+          onOpenCrewTab={o.onOpenCrewTab}
+        />,
+      ),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──
     {

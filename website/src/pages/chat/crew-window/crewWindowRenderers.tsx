@@ -36,7 +36,7 @@ export function crewWindowSlot(instanceId: string, key: string): string {
 export const PEER_SAFE_ROWS: ReadonlySet<string> = new Set([
   'skill_load', 'subagent_completion', 'tool', 'tool_completion', 'thinking_block',
   'nudge', 'recovery_inject', 'automation_notice_inject', 'system_notice', 'workflow_completion', 'error',
-  'warm_task_brief_claim',
+  'warm_task_brief_claim', 'crew_dispatch_notice',
 ])
 
 /** The peer's file name, by the same record check every `file` row uses

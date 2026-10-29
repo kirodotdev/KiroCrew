@@ -55,6 +55,7 @@ def _root_slot(key: str = "r", *, turn_generation: int = 1) -> SimpleNamespace:
         messages=[{"role": "user", "content": "dispatch two workers"}],
         _disk_older_count=0,
         _turn_generation=turn_generation,
+        _turn_user_sent=True,
         _crew_dispatch_notice_turn_gen=-1,
     )
 
@@ -112,6 +113,36 @@ def test_member_sub_dispatch_writes_nothing(appended: list[dict[str, Any]]) -> N
     assert not crew_mode.slot_is_crew_mode_root(slot)
     wrote = cdn.maybe_write_dispatch_notice(object(), slot, _CREW_RESULT)
     assert wrote is False
+    assert appended == []
+
+
+def test_automated_conductor_turn_writes_nothing(appended: list[dict[str, Any]]) -> None:
+    """A dispatch on the conductor's OWN automated turn writes no notice.
+
+    A Crew Mode conductor also dispatches on turns the person did not send -- a
+    monitor loop wake, a cron fire, a ``[Subagent completion event]`` inject.
+    Those carry ``_turn_user_sent=False``. Every turn bumps ``_turn_generation``,
+    so without the person-turn gate the per-turn dedupe would still fire once per
+    automated turn; this pins that it does NOT. (Opus 5.5 finding on the "per
+    person turn" promise.)
+    """
+    slot = _root_slot()
+    slot._turn_user_sent = False  # a loop wake / cron / subagent inject
+    assert crew_mode.slot_is_crew_mode_root(slot)  # still a crew root
+    wrote = cdn.maybe_write_dispatch_notice(object(), slot, _CREW_RESULT)
+    assert wrote is False
+    assert appended == []
+
+
+def test_each_automated_turn_stays_silent_even_as_the_generation_bumps(
+    appended: list[dict[str, Any]],
+) -> None:
+    """Several automated turns in a row (each a new generation) write nothing."""
+    slot = _root_slot(turn_generation=1)
+    slot._turn_user_sent = False
+    for gen in (1, 2, 3):
+        slot._turn_generation = gen
+        cdn.maybe_write_dispatch_notice(object(), slot, _CREW_RESULT)
     assert appended == []
 
 
