@@ -159,6 +159,8 @@ class TestMeetingLifecycleRoutes:
             assert resp.status == 409
             body = await resp.json()
             assert body["code"] == "meeting_already_active"
+            # The id lets the notice offer an action that opens the blocker.
+            assert body["blocking_meeting_id"] == "first"
             assert body["blocking_meeting_title"] == "Weekly sync"
             assert body["blocking_meeting_status"] == blocker_status
 
