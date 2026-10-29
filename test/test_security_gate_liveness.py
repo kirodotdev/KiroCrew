@@ -635,7 +635,12 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 166, from 33,723 for the shell reader's carrier assignments: the glued
+#: first name read under its suffixes as one more view of a glued carrier's script
+#: (``_GluedBindings``) and the whole quoted script walked as its own frame
+#: (``_quoted_assignment_scripts``). Deny-only: the walk gains frames and views and
+#: loses none; no allow widened.
+_PACKAGE_LINE_BUDGET = 33_889
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
