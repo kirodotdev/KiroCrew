@@ -1231,3 +1231,11 @@ from kiro_crew.dashboard.handlers.tool_grants import (  # noqa: E402, F401
     api_tool_grant_remove,
     api_tool_grants_list,
 )
+
+# SSH_AUTH_SOCK forward consent -- owner-gated, the ONLY in-tree writer of
+# ``ssh_auth_sock_consent.json``. Grant is one owner POST, revoke one DELETE.
+from kiro_crew.dashboard.handlers.ssh_auth_sock_consent import (  # noqa: E402, F401
+    api_ssh_agent_consent_delete,
+    api_ssh_agent_consent_get,
+    api_ssh_agent_consent_post,
+)

@@ -511,8 +511,9 @@ def ssh_auth_sock_consent_path() -> Path:
     un-flippable from inside the sandbox.
 
     Holds ``{"enabled": bool, "mcp_gateway_backends": [str]}``; every read fails
-    soft to DISABLED (see ``ssh_auth_sock_consent``). The operator writes it by
-    hand from outside the agent sandbox; Kiro Crew only reads it. There is
+    soft to DISABLED (see ``ssh_auth_sock_consent``). The owner-gated dashboard
+    handler (``dashboard/handlers/ssh_auth_sock_consent.py``) is the only in-tree
+    writer; a hand edit from outside the agent sandbox still works. There is
     deliberately NO CLI verb -- a terminal command that records the grant on
     request is a grant an automated caller can take. Respects
     ``KIROCREW_HOME``.
