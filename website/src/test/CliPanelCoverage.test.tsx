@@ -151,6 +151,7 @@ const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
 import CliPanel, {
+  prewarmTerminal,
   __resetTerminalThemeSyncForTests,
   disposeTerminalSession,
   isThemeSignal,
@@ -462,6 +463,22 @@ describe('CliPanel mount', () => {
       view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
       expect(view.term.focusCalls).toBe(1)
     } finally { chip.remove() }
+  })
+
+  it('attaches a terminal built ahead of time, focusing it in the opening tap with no stand-in', () => {
+    const sessionId = nextId()
+    live.add(sessionId)
+    prewarmTerminal(sessionId, 390, 300)
+    const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
+    expect(term.openCalls).toBe(1)
+    const host = term.element!.parentElement!
+    expect(host.style.left).toBe('-10000px')
+    const view = mount({ sessionId, deferOpen: true })
+    expect(view.term).toBe(term)
+    expect(term.openCalls).toBe(1) // re-attached, not opened again
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+    expect(term.focusCalls).toBe(1)
+    expect(host.isConnected).toBe(false)
   })
 
   it('focuses an already-opened terminal straight away even while its host holds new ones', () => {
