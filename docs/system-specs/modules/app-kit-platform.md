@@ -3800,6 +3800,18 @@ order it this way, and
 For an adopted backend, where we hold no handle to poll, "we still track it"
 is the only honest answer and `healthy` is the load-bearing signal.
 
+**A built-in app skipped at boot is reported as unavailable.** When
+`dashboard.routes.system.register` cannot import a built-in app because reading
+its files raises `OSError`, it logs the warning, skips the app's routes and
+records the skip with `apps.builtin_unavailable.record_unavailable_builtin`, on
+the aiohttp application, keyed by the installed-app name (`builtin_app_name`: the
+package name with `_` spelled `-`, pinned for every shipped built-in). `GET /api/apps` and `GET /api/apps/{name}` then carry
+`unavailable: {"reason": "<ExceptionType>: <message>"}` (redacted) on that app's
+built-in record, and the Library tile and the app detail page show it as
+unavailable with the reason (an `ErrorNotice` with the agent hand-off) instead of
+as a working app. A record that loaded
+carries no `unavailable` key. Only `origin == "builtin"` records are stamped.
+
 Writers: `apps/backend_runtime/supervision.py` (`_health_check_loop`,
 `_watch_backend_health`, `_supervise_backend_health`, `_start_health_supervisor`,
 `_start_adopted_health_watch`), `apps/backend_runtime/registration.py` (`_demote`,

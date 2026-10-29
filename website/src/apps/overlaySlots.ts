@@ -21,6 +21,8 @@ export interface AppOverlayDecl {
 export interface OverlayAppRecord {
   name: string
   enabled?: boolean
+  /** Set when the gateway skipped this built-in at boot: it has no routes, so it is not live. */
+  unavailable?: { reason: string }
   /** Provenance. Only `'builtin'` may claim a host overlay slot. */
   origin?: string
   manifest?: {
@@ -64,7 +66,7 @@ export function resolveSlotOverlays(apps: readonly OverlayAppRecord[]): SlotOwne
   // which app wins a contested slot must be the same answer for every viewer.
   const sorted = [...apps].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const app of sorted) {
-    if (!app.enabled) continue
+    if (!app.enabled || app.unavailable) continue
     // Provenance, not just enable state. An overlay id only resolves to a component
     // compiled into this bundle, so a non-builtin app cannot supply its own -- but it
     // CAN name a builtin's id, and that is the reachable case: a self-managed app

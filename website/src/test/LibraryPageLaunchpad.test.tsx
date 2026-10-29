@@ -481,6 +481,39 @@ describe('LaunchpadTile — the disabled gate is the tile’s own branch', () =>
   })
 })
 
+describe('LaunchpadTile — a built-in app skipped at boot', () => {
+  it('says Unavailable, opens its detail page, and still offers Disable', async () => {
+    const { default: LaunchpadTile } = await import('../pages/apps/LaunchpadTile')
+    const onOpen = vi.fn()
+    const onDetail = vi.fn()
+    render(
+      <MemoryRouter>
+        <LaunchpadTile
+          app={installedApp('secretary', 'Secretary', {
+            unavailable: { reason: 'PermissionError: denied' },
+          }) as never}
+          pinned
+          pinnable
+          actionLoading={null}
+          onTogglePin={vi.fn()}
+          onAction={vi.fn()}
+          onOpen={onOpen}
+          onDetail={onDetail}
+        />
+      </MemoryRouter>,
+    )
+    const scope = within(screen.getByTestId('launchpad-tile-secretary'))
+    expect(scope.getByText('Unavailable')).toBeInTheDocument()
+    fireEvent.click(scope.getByRole('button', { name: 'Secretary' }))
+    expect(onDetail).toHaveBeenCalledTimes(1)
+    expect(onOpen).not.toHaveBeenCalled()
+    fireEvent.click(scope.getByRole('button', { name: 'More actions for Secretary' }))
+    // Still enabled on disk, so the switch it offers is Disable, not Enable.
+    expect(scope.getByRole('menuitem', { name: 'Disable' })).toBeInTheDocument()
+    expect(scope.queryByRole('menuitem', { name: 'Enable' })).toBeNull()
+  })
+})
+
 describe('LibraryPage — a guide picks an app by its card menu', () => {
   it('reports the app whose ⋯ menu is open, by its own name, and outlines only the named card', async () => {
     const { selectionState, selectedName } = await import('../guide/guidePredicates')

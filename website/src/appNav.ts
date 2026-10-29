@@ -33,6 +33,8 @@ export interface AppNavRecord {
   name: string
   displayName?: string
   enabled?: boolean
+  /** Set when the gateway skipped this built-in at boot: it has no routes, so it is not live. */
+  unavailable?: { reason: string }
   origin?: string
   orphaned?: boolean
   /** Git URL the install recorded — the repo an external app's art resolves against. */
@@ -142,11 +144,12 @@ function firstUiPage(app: AppNavRecord): AppNavPage | null {
 /**
  * Whether *app* contributes a dashboard destination at all.
  *
- * Disabled apps and apps with no UI page have nowhere to go, so no surface should
- * offer to open them.
+ * Disabled apps, built-ins the gateway skipped at boot (`unavailable`: no routes
+ * were registered) and apps with no UI page have nowhere to go, so no surface
+ * should offer to open them.
  */
 export function isAppNavigable(app: AppNavRecord): boolean {
-  return !!app.enabled && !!firstUiPage(app)
+  return !!app.enabled && !app.unavailable && !!firstUiPage(app)
 }
 
 /**
@@ -162,7 +165,7 @@ export function isAppNavigable(app: AppNavRecord): boolean {
  *     registered at the page's own route.
  */
 export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
-  const page = app.enabled ? firstUiPage(app) : null
+  const page = app.enabled && !app.unavailable ? firstUiPage(app) : null
   if (!page) return null
   const isBuiltin = app.origin === 'builtin'
   const orphaned = !!app.orphaned

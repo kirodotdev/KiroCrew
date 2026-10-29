@@ -34,6 +34,11 @@ describe('resolveSlotOverlays', () => {
     expect(resolveSlotOverlays([app({ enabled: undefined })])['quick-search']).toBeUndefined()
   })
 
+  it('leaves the slot to the host while the app was skipped at boot', () => {
+    const skipped = app({ unavailable: { reason: 'PermissionError: denied' } })
+    expect(resolveSlotOverlays([skipped])['quick-search']).toBeUndefined()
+  })
+
   it('ignores a declaration with no id or no replaces', () => {
     const noId = app({
       manifest: { ui: { overlays: [{ replaces: 'quick-search' }] } },
