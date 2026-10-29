@@ -489,6 +489,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_start.py",
         "acp/client_tool_events.py",
         "acp/client_transport.py",
+        # The two-spelling stderr-tail check behind client_transport's exit error
+        # and runtime_liveness's death summary: it decides whether those strings
+        # may carry the tail, and both of its callers are already listed here.
+        "acp/stderr_tail.py",
         "acp/client_turn.py",
         "acp/client_turn_control.py",
         "acp/client_usage.py",
