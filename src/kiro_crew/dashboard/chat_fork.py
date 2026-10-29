@@ -568,6 +568,9 @@ def _shape_fork_child(
     # Keep the app-owned agent binding with the agent it binds: the fork runs as
     # the same app agent, so the per-turn shadow check must still apply to it.
     new_slot.app_agent_owner = slot.app_agent_owner
+    # Copied beside the project, because a cleared parent spells it "" exactly as a
+    # never-set one does: without the marker the fork's claim states NO directory.
+    new_slot.project_cleared = slot.project_cleared
     # Inherit the sidebar folder so the fork appears next to its parent in the UI.
     new_slot.folder_id = slot.folder_id
     # Inherit tags (copied, so later edits to either slot's list stay independent).

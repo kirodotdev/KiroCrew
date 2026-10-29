@@ -931,7 +931,7 @@ async def _spawn_admitted_prefetch(
                 # alias applied, so no override applies.
                 crew_agent=crew_alias,
                 model=_requested_model or None,
-                cwd=slot.project or None,
+                cwd=slot.claim_cwd,
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,

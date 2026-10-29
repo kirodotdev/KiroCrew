@@ -850,6 +850,56 @@ def config_dir() -> Path:
     return d
 
 
+class _ClearedCwd(str):
+    def __eq__(self, other: object) -> bool:
+        return other is self
+
+    def __ne__(self, other: object) -> bool:
+        return other is not self
+
+    __hash__ = str.__hash__
+
+
+CWD_CLEARED: str = _ClearedCwd()
+"""The ``cwd`` a caller states to say the project was CLEARED, not left unspecified.
+
+``None`` means the caller has no requirement, so a stored or inherited directory may
+still be restored over it. ``CWD_CLEARED`` is a requirement: the user removed the
+project, and the claim must bind the default workspace. It is an empty ``str`` so a
+provider factory binds its per-session default, but it equals only itself: an
+accidental ``x or ""`` is not a clear, and ``get_or_create`` treats it as ``None``.
+"""
+
+
+def resolved_cwd(cwd: str, session_key: str | None = None) -> str:
+    """Resolve a directory the way a provider resolves its own ``work_dir``.
+
+    A provider handed a falsy ``work_dir`` binds a default, so ``provider.cwd`` reports a
+    concrete path in the platform's own spelling and never the empty string. Comparing a raw
+    stored value against it is two bugs waiting: a cleared project's ``""`` never matches, and
+    a directory differing only by separator or trailing slash reads as a DIFFERENT one.
+
+    ``session_key`` is REQUIRED for the empty case, because the provider FACTORY resolves an
+    empty ``cwd`` to a PER-SESSION directory (``workspace_root()/<key>``). Answering a shared
+    root would compare a claim against a directory no provider ever binds, and any caller
+    that BINDS that answer collapses isolated sessions onto one directory.
+
+    :raises ValueError: if ``cwd`` is empty and no ``session_key`` is given.
+    """
+    if cwd:
+        return str(Path(cwd).expanduser())
+    if not session_key:
+        raise ValueError(
+            "resolved_cwd() needs a session_key to resolve an empty cwd: the per-session "
+            "default is the only directory a provider binds for a cleared project"
+        )
+    # Deferred: this module is a LEAF by design (see the module docstring) and
+    # ``config.loader`` imports it at module load, so a top-level import cycles.
+    from kiro_crew.config.loader import _session_work_dir
+
+    return str(_session_work_dir(session_key))
+
+
 def data_home() -> Path:
     """The resolved data home, WITHOUT re-running start-of-process maintenance.
 

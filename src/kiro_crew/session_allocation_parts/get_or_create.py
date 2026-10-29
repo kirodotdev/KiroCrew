@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -40,6 +41,7 @@ from kiro_crew.aws_project_profiles import (
     bound_profile_env,
     configured_project_profiles,
 )
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
@@ -55,6 +57,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SpeculativeResumeRefused,
 )
 from kiro_crew.session_lifecycle import adopt_parked_queue
+from kiro_crew.session_map import PROJECT_CLEARED_FLAG
 from kiro_crew.start_priority import (
     START_QUEUE_COLD_START,
     START_QUEUE_LOG_MIN_MS,
@@ -78,6 +81,34 @@ async def _session_runs_remotely(session_key: str) -> bool:
     return await asyncio.to_thread(session_runs_remotely, session_key)
 
 
+def cwd_moved_for_reuse(raw_bound: object, cwd: str | None, requested_default: str | None) -> bool:
+    """Whether a claim's directory disagrees with the one a live session is bound to.
+
+    Both sides go through ``resolved_cwd``, and that symmetry is the point. Only one side
+    normalized makes the answer depend on which side happened through ``Path``: a provider
+    reporting a raw string disagrees with a caller's normalized one, and on Windows ``Path``
+    rewrites separators, so two spellings of one directory compare unequal and every reuse
+    evicts. Not realpath: that is a filesystem call, and this runs under the registry lock;
+    ``_reacquire_and_validate`` resolves realpaths before the lock when the spellings differ.
+    """
+    # The ABC default is "": a provider tracking no directory STRING reports nothing to
+    # disagree with, which is not the same as reporting no directory.
+    bound_readable = isinstance(raw_bound, str) and raw_bound != ""
+    bound_cwd, requested_cwd = normalized_reuse_cwds(raw_bound, cwd, requested_default)
+    return cwd is not None and bound_readable and requested_cwd != bound_cwd
+
+
+def normalized_reuse_cwds(
+    raw_bound: object, cwd: str | None, requested_default: str | None
+) -> tuple[str, str]:
+    """The two spellings the reuse comparison is made on, as ``(bound, requested)``."""
+    bound_cwd = resolved_cwd(raw_bound) if isinstance(raw_bound, str) and raw_bound else ""
+    requested_cwd = (
+        "" if cwd is None else (requested_default if not cwd else resolved_cwd(cwd))
+    ) or ""
+    return bound_cwd, requested_cwd
+
+
 async def _reacquire_and_validate(
     self: SessionAllocationService,
     key: str,
@@ -85,6 +116,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    cwd: str | None = None,
 ) -> bool:
     """Acquire with the global lock released, then validate exact identity -- and meet the key's ending fence again.
 
@@ -99,31 +131,112 @@ async def _reacquire_and_validate(
     semaphore and ``get_or_create`` turns it into a wait for the lift and a
     fresh allocation. ``open_task_session`` passes no token and is refused
     while the fence is up, as at its entry.
+
+    ``cwd`` also validates the session's BOUND directory. It is applied when a provider is
+    CREATED and never re-applied, so a live session whose project has since changed would
+    otherwise be handed back bound to the OLD directory, and the turn's relative writes
+    would land there.
+
+    Checked HERE rather than at the reuse decision because this runs with the semaphore
+    HELD: any turn that was streaming has finished, so returning False -- which sends the
+    caller through ``_evict_stale_session`` -- cannot tear a live reply down mid-stream.
+
+    Guarded on BOTH sides being set, mirroring the pool gate: a caller passing no ``cwd``
+    states no requirement and must not evict a session serving others correctly, and a
+    provider tracking no real directory string reports no binding to disagree with.
     """
     if not wait_if_busy and session.semaphore.locked():
         raise SessionBusyError(key)
-    # An idle Semaphore(1) acquires without suspension, so this is the
-    # authoritative non-waiting claim boundary after the locked check.
+    # Resolved off-thread BEFORE the lock, because synchronous I/O with the registry held
+    # wedges every session; member-aware like the cold start, or every reuse reads as moved.
+    from kiro_crew.session_capabilities import cleared_claim_target
+
+    crew = getattr(session, "capability_member", "")
+    requested_default = (
+        await asyncio.to_thread(cleared_claim_target, session.agent, crew, key)
+        if cwd == CWD_CLEARED
+        else None
+    )
+    # Realpaths resolved here, never under the lock: a descriptor-bound Kiro runtime (macOS)
+    # reports its session cwd by the descriptor's own name, the realpath of a symlinked claim.
+    pre_bound = getattr(session.provider, "cwd", None)
+    pre_pair = normalized_reuse_cwds(pre_bound, cwd, requested_default)
+    same_real = False
+    if cwd is not None and all(pre_pair) and pre_pair[0] != pre_pair[1]:
+        reals = await asyncio.to_thread(lambda: [os.path.realpath(p) for p in pre_pair])
+        same_real = reals[0] == reals[1]
+    # Re-checked AFTER the await above: a suspension point separates the first check
+    # from the acquire, so a caller that asked never to block would block here.
+    if not wait_if_busy and session.semaphore.locked():
+        raise SessionBusyError(key)
+    # An idle Semaphore(1) acquires without suspension, so the re-check above is authoritative.
     await session.semaphore.acquire()
     # Named before the lock wait below: a reset that pops this session
     # during that wait reads ``turn_owner`` to learn whose permit it
     # releases, and from here on that is this task's.
     session.turn_owner = asyncio.current_task()
+    cwd_moved = False
     try:
         async with self._lock:
             self._refuse_if_ending(key, reservation)
+            raw_bound = getattr(session.provider, "cwd", None)
+            bound_readable = isinstance(raw_bound, str) and raw_bound != ""
+            bound_cwd, requested_cwd = normalized_reuse_cwds(raw_bound, cwd, requested_default)
+            cwd_moved = cwd_moved_for_reuse(raw_bound, cwd, requested_default)
+            real_match = same_real and raw_bound == pre_bound
+            if real_match:
+                cwd_moved = False
+            armed_target = self.state.retire_arms.get(key)
+            # A CLEARED claim is answered by its binding, whatever that resolved to: a member's
+            # binds its own workspace. An explicit directory still has to match what it names.
+            if cwd == CWD_CLEARED and cwd == getattr(session, "claimed_cwd", None):
+                arm_agrees = armed_target is None or armed_target in (bound_cwd, requested_cwd)
+                requested_cwd = bound_cwd
+                cwd_moved = False
+            else:
+                arm_agrees = armed_target is None or armed_target == bound_cwd
+                arm_agrees = arm_agrees or (real_match and armed_target == requested_cwd)
+            if real_match:
+                requested_cwd = bound_cwd
+            # Only the REGISTERED session interacts with the arm: a claimant holding a
+            # session already replaced would otherwise spend it for the successor.
+            cwd_satisfied = (
+                self._sessions.get(key) is session
+                and bound_readable
+                and arm_agrees
+                and (cwd is None or requested_cwd == bound_cwd)
+            )
+            retire_applies = armed_target is not None and not cwd_satisfied
+            if retire_applies:
+                # This frame can refuse WITHOUT evicting, so a claim racing the
+                # registration would find the arm gone and reuse the stale provider.
+                session.retire_on_identity_change = True
             still_valid = (
                 self._sessions.get(key) is session
                 and not session.retire_on_identity_change
+                and not retire_applies
                 and self._deps.provider_effectively_alive(session.provider)
+                and not cwd_moved
             )
+            if armed_target is not None and cwd_satisfied and still_valid:
+                # Spent on ACCEPTANCE, not on satisfaction: a rejected claim (dead
+                # provider, moved key) must leave the arm for its replacement to pay.
+                self.state.retire_arms.pop(key, None)
     except BaseException:
         # The held-semaphore contract was never returned to the caller
         # (a fence refusal above included).
         self._release_reacquired(key, session)
         raise
     if not still_valid:
-        self._release_reacquired(key, session)
+        try:
+            if cwd_moved:
+                # Tear down BEFORE the permit is released, and ONLY for a moved directory:
+                # releasing first lets another acquirer win a free permit mid-eviction.
+                await self._evict_stale_session(key, session)
+        finally:
+            # In a `finally` so a cancellation mid-eviction cannot leave this permit held
+            # and wedge the key; safe to release early because the check is IDEMPOTENT.
+            self._release_reacquired(key, session)
     return still_valid
 
 
@@ -149,6 +262,8 @@ async def _evict_stale_session(self: SessionAllocationService, key: str, session
             del self._sessions[key]
             self.advance_ownership_generation(key)
             dead = session.provider
+            # The arm is NOT spent here: eviction is not acceptance, and a successor
+            # can register under it and die before serving. Only a live claim spends it.
             # Same tick as the removal. Left unrecorded, the start crumb
             # survives and the next boot calls this a crash.
             await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -429,6 +544,20 @@ async def _get_or_create_impl(
     owner = self._owner
     constants = self._deps.constants
     key = owner._fold_key(key)
+    if cwd == "":
+        cwd = None
+    cwd_from_arm = cwd is None
+    arm_at_entry = self.state.retire_arms.get(key)
+    if cwd is None and (armed := arm_at_entry) is not None:
+        # A claim stating no directory must still honour an armed change, or it binds the old one.
+        cleared_target = await asyncio.to_thread(resolved_cwd, CWD_CLEARED, key)
+        cwd = CWD_CLEARED if armed == cleared_target else armed
+    elif cwd is None and owner._session_map.get_flag(key, PROJECT_CLEARED_FLAG) is True:
+        stored = owner._session_map.get_cwd(key) or ""
+        if stored and resolved_cwd(stored) == await asyncio.to_thread(
+            resolved_cwd, CWD_CLEARED, key
+        ):
+            cwd = CWD_CLEARED
     # The app that owns this session (a dashboard app slot), an input to the
     # session's own model resolution only. Taken out of the factory kwargs so
     # no provider factory is handed a key it does not know; each retry below
@@ -468,6 +597,8 @@ async def _get_or_create_impl(
                     raise RuntimeError(
                         "This conversation's privacy mode changed; open a new conversation"
                     )
+                # The cwd match is NOT checked here: this runs before the semaphore is
+                # claimed, so evicting now could tear down a reply that is still streaming.
                 alive = session.provider.is_process_alive()
                 if not alive:
                     if (
@@ -497,6 +628,7 @@ async def _get_or_create_impl(
                     if (
                         self._deps.is_claude_provider(session.provider)
                         and session.provider.session_id
+                        and not session.retire_on_identity_change
                         and not owner._session_map.get(key)
                     ):
                         owner._session_map.set(
@@ -533,6 +665,7 @@ async def _get_or_create_impl(
             session,
             wait_if_busy=wait_if_busy,
             reservation=_reservation,
+            cwd=cwd,
         ):
             first_turn = session.first_turn
             if not speculative:
@@ -564,7 +697,7 @@ async def _get_or_create_impl(
             channel_id=channel_id,
             approval_policy=approval_policy,
             model=model,
-            cwd=cwd,
+            cwd=None if cwd_from_arm or self.state.retire_arms.get(key) != arm_at_entry else cwd,
             extra_env=extra_env,
             speculative=speculative,
             speculative_resume=speculative_resume,
@@ -590,13 +723,29 @@ async def _get_or_create_impl(
         resume_sid = owner._session_map.get(key)
         if not resume_sid:
             native_fork = owner._session_map.get_native_fork(key)
+    cleared_default: str | None = None
+    if cwd == CWD_CLEARED:
+        from kiro_crew.session_capabilities import cleared_claim_target
+
+        cleared_default = await asyncio.to_thread(
+            cleared_claim_target, agent, extra_factory_kwargs.get("crew_agent"), key
+        )
+    if resume_sid and cleared_default is not None:
+        # Only a SID stored for another directory is the conversation the clear dropped; one
+        # stored in the default workspace is its replacement and must resume after a restart.
+        stored_sid_cwd = owner._session_map.get_cwd(key)
+        if not stored_sid_cwd or resolved_cwd(stored_sid_cwd) != cleared_default:
+            owner._session_map.clear_sid(key)
+            resume_sid = None
     if speculative and (resume_sid or native_fork) and not speculative_resume:
         raise SpeculativeResumeRefused(key)
 
     from kiro_crew.session_capabilities import prepare_runtime
 
     effective_cwd = cwd
-    if not effective_cwd and (resume_sid or native_fork):
+    # `is None` and not falsy: an explicit `""` is a CLEARED project, and
+    # restoring the persisted directory over it re-binds the old one forever.
+    if effective_cwd is None and (resume_sid or native_fork):
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
             effective_cwd = stored_cwd
@@ -666,7 +815,9 @@ async def _get_or_create_impl(
         owner._pool_cwd,
     )
     provider_switched = False
-    cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
+    # ``None`` states no preference, so the pool's shared binding is fine, but
+    # CWD_CLEARED names the PER-SESSION default that no pooled child can be in.
+    cwd_blocks_pool = cwd == CWD_CLEARED or bool(cwd and cwd != owner._pool_cwd)
     if not owner._pool_size:
         pool_decision = "disabled"
     elif preparation.revision:
@@ -1097,6 +1248,8 @@ async def _get_or_create_impl(
                     session.agent = session_agent
                 won_race_session = session
                 duplicate_provider = provider
+            elif self.state.retire_arms.get(key) != arm_at_entry:
+                duplicate_provider = provider
             else:
                 if not speculative:
                     first_turn = self._deps.first_turn_nothing_armed
@@ -1131,6 +1284,7 @@ async def _get_or_create_impl(
                 # Stamped from the same local rather than re-resolved, which is
                 # what keeps the id sent and the id read identical.
                 session.requested_model = model or ""
+                session.claimed_cwd = cwd
                 session.backend_override = extra_factory_kwargs.get("backend_override")
                 session.app_launch_agent = app_launch_agent
                 session.extra_env = dict(caller_env) if caller_env else None
@@ -1195,6 +1349,20 @@ async def _get_or_create_impl(
                 )
 
                 provider_cwd = provider.cwd
+                armed_cwd = self.state.retire_arms.get(key)
+                claim_target = cleared_default if cwd == CWD_CLEARED else cwd and resolved_cwd(cwd)
+                if armed_cwd is not None and (
+                    armed_cwd == claim_target
+                    or (armed_cwd == arm_at_entry and (not cwd_from_arm or cwd == CWD_CLEARED))
+                    or (
+                        isinstance(provider_cwd, str)
+                        and provider_cwd
+                        and armed_cwd == resolved_cwd(provider_cwd)
+                    )
+                ):
+                    # Bound where the arm points, so nothing is left to retire; an unspent arm
+                    # would bounce a later relaunch elsewhere back to this directory.
+                    del self.state.retire_arms[key]
                 if not is_stateless and self._deps.is_acp_provider(provider):
                     sid = cast(Any, provider).client._session_id
                     if sid and not defer_sid_promotion:
@@ -1245,7 +1413,7 @@ async def _get_or_create_impl(
         if starting_pid is not None:
             self._starting_pids.discard(starting_pid)
 
-    if won_race_session is not None:
+    if won_race_session is not None or duplicate_provider is not None:
         if duplicate_provider is not None:
             # ``existing`` won this key and runs in the very directory the
             # loser derived from it: a reclaim at the loser's shutdown would
@@ -1259,11 +1427,12 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
-        if await owner._reacquire_and_validate(
+        if won_race_session is not None and await owner._reacquire_and_validate(
             key,
             won_race_session,
             wait_if_busy=wait_if_busy,
             reservation=_reservation,
+            cwd=cwd,
         ):
             first_turn = won_race_session.first_turn
             if not speculative:
@@ -1279,13 +1448,17 @@ async def _get_or_create_impl(
                 f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                 "session kept going stale between acquire and re-validate"
             )
+        # An arm that moved since entry outranks this frame's cwd; None lets the entry map a
+        # default-workspace arm back to CWD_CLEARED, which a resolved path would skip.
+        live_arm = self.state.retire_arms.get(key)
+        retry_cwd = None if cwd_from_arm or live_arm != arm_at_entry else cwd
         return await owner.get_or_create(
             key,
             agent=session_agent,
             channel_id=channel_id,
             approval_policy=approval_policy,
             model=model,
-            cwd=cwd,
+            cwd=retry_cwd,
             extra_env=caller_env,
             speculative=speculative,
             speculative_resume=speculative_resume,

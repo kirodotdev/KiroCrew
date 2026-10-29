@@ -126,6 +126,9 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 #: it is consumed, by the first cold start that honours it.
 SUPPRESS_REPLAY_FLAG = "suppress_replay"
 
+#: A cleared project, kept through a restart until a later project change supersedes it.
+PROJECT_CLEARED_FLAG = "project_cleared"
+
 #: The sid of a fresh native session that still owes its Kiro Crew history: the
 #: session was mapped at creation, but no turn has delivered the history to it yet
 #: (``SessionManager.mark_first_turn_history_owed`` writes it, the settle in
@@ -162,7 +165,7 @@ NATIVE_FORK_FIELD = "native_fork"
 # ONE-SHOT, so the row it keeps alive is collectable again as soon as the first
 # cold start consumes it. (The privacy flags below are retained on separate
 # grounds and bounded by a count; their own comment says why.)
-_DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG})
+_DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG, PROJECT_CLEARED_FLAG})
 
 # The ``!temporary`` / ``!incognito`` privacy modes, spelled exactly as
 # ``messaging.privacy_mode`` names them (MODE_TEMPORARY / MODE_INCOGNITO; a test

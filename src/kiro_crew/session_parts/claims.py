@@ -16,6 +16,7 @@ Instance fields read: none.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -88,6 +89,35 @@ def mark_lifecycle_lease(self: SessionManager, key: str) -> bool:
 def has_session(self: SessionManager, key: str) -> bool:
     """Return whether a live session exists for the folded key."""
     return self._allocation_boundary().has_session(key)
+
+
+async def resolve_arm_cwd(
+    self: SessionManager, key: str, cwd: str, agent: str = "", kind: str = ""
+) -> str:
+    """Resolve a cleared claim's target off-thread: it stats, mkdirs and realpaths the root.
+
+    With ``agent`` set it resolves a member's own workspace, unless ``kind`` names a template.
+    """
+    if cwd:
+        return cwd
+    from kiro_crew.session_capabilities import cleared_claim_target
+
+    crew = "" if kind == "template" else None
+    return await asyncio.to_thread(cleared_claim_target, agent, crew, self._fold_key(key))
+
+
+def mark_retire_on_next_claim(self: SessionManager, key: str, cwd: str | None) -> None:
+    """Mark a live session invalid for reuse without disturbing its turn.
+
+    Synchronous by design: pass ``cwd`` already resolved, because resolving it here
+    would put filesystem work on the event loop. See :meth:`resolve_arm_cwd`.
+    """
+    self._allocation_boundary().mark_retire_on_next_claim(key, cwd)
+
+
+def drop_resume_outside(self: SessionManager, key: str, cwd: str) -> None:
+    """Drop a resume SID stored outside ``cwd``, which must arrive already resolved."""
+    self._allocation_boundary().drop_resume_outside(key, cwd)
 
 
 def get_provider(self: SessionManager, key: str) -> LLMProvider | None:
@@ -167,6 +197,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    cwd: str | None = None,
 ) -> bool:
     """Acquire outside the registry lock, revalidate identity and meet the key's ending fence again."""
     return await self._allocation_boundary()._reacquire_and_validate(
@@ -174,6 +205,7 @@ async def _reacquire_and_validate(
         sess,
         wait_if_busy=wait_if_busy,
         reservation=reservation,
+        cwd=cwd,
     )
 
 
