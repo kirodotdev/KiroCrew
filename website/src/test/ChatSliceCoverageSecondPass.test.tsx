@@ -1533,7 +1533,11 @@ describe('chatSlice side conversation frames', () => {
     expect(side.pending).toBe(false)
   })
 
-  it('ignores a redelivered side chunk with byte-identical content', () => {
+  it('appends a repeated side chunk instead of dropping it as a duplicate', () => {
+    // The side wire sends each frame once (`broadcast_ws_owners`, no replay for
+    // `chat.side_result`), and the server settles a row against exactly the
+    // deltas it sent, so two byte-identical deltas are two: dropping the second
+    // would lose a repeated "\n" and leave the row shorter than the server's.
     const store = makeStore()
     store.dispatch(setActiveSlot('A'))
     store.dispatch(sseSideResult({ slot: 'A', run_id: 'r1', role: 'user', content: 'question' }))
@@ -1541,7 +1545,8 @@ describe('chatSlice side conversation frames', () => {
     store.dispatch(sseSideResult({ slot: 'A', run_id: 'r1', role: 'assistant', content: 'answer', ts: 2 }))
     const side = chat(store).slotSide.A
     expect(side.messages.filter(m => m.role === 'assistant')).toHaveLength(1)
-    expect(side.messages[1].ts).toBe(new Date(1000).toISOString())
+    expect(side.messages[1].content).toBe('answeranswer')
+    expect(side.messages[1].ts).toBe(new Date(2000).toISOString())
   })
 })
 

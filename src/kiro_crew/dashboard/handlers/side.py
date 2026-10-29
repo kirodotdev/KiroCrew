@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +35,15 @@ from kiro_crew.config.loader import (
     refresh_materialized_agents,
     resolve_agent_bindings,
 )
+from kiro_crew.dashboard.handlers.side_support import (  # noqa: F401 -- re-exported
+    _MAX_QUESTION_BYTES,
+    _check_slot_ownership,
+    _read_side_queue_body,
+    _requeue_unconsumed_side_steers,
+    _resolve_side_queue_slot,
+    _side_session_key,
+    _try_side_steer,
+)
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
@@ -43,7 +54,7 @@ from kiro_crew.dashboard.side_state import (
     STEER_REQUEUED,
     SideState,
 )
-from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
+from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.ws import (
     broadcast_side_closed,
@@ -57,13 +68,270 @@ from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     stream_and_collect,
 )
-from kiro_crew.security import StreamRedactor, redact
+from kiro_crew.security import StreamRedactor
+from kiro_crew.security import redact
+from kiro_crew.security import redact as _batch_redact
+from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
-_MAX_QUESTION_BYTES = 32_768
+#: Cap on a tool row's ``input_preview`` and ``purpose`` in the side stream. The
+#: row is an ephemeral preview the pill folds at 800 characters, not the main
+#: transcript's audit record (``chat_utils._MAX_TOOL_FIELD``, 1 MB): the audit
+#: trail of a side turn's tool calls is SEL's tool-invocation row (title and
+#: kind, written by ``stream_and_collect``), never the panel.
+_SIDE_TOOL_PREVIEW_CHARS = 2_000
+
+
+# The stream redactor holds back one trailing credential-class run, plus the
+# shapes its own anchors know (a Bearer header, a ``token=`` parameter, a JWT).
+# Every pattern the batch pass knows is matched inside one such run except
+# three, whose match waits for text the model may write much later and spans
+# bytes outside that class: a key block needs its footer (or body lines the
+# truncated-block form knows) and has newlines inside; a URL is judged whole (a
+# password needs the ``@`` that ends it, an exfiltration URL its payload) and
+# its path or query may hold a ``!`` or a ``$``; a labelled value (an AWS field,
+# ``aws_secret_access_key: ``; an ``Authorization: Bearer `` header) is folded
+# with its label into one tag, and the space after the label commits the label
+# alone (the stream redactor's own Bearer anchor lets go of the header once a
+# byte outside its value class, a quote, follows). Text inside an open one is
+# held back here too, from the header, the scheme or the label, until the
+# pattern can be judged: a key block until its footer, a URL until the
+# whitespace that ends it, a label until its value's first byte.
+_KEY_BLOCK_HEADER_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_KEY_BLOCK_FOOTER_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_OPEN_URL_RE = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://\S*\Z")
+_OPEN_LABEL_RE = re.compile(
+    r"(?:(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token"
+    r"|AccessKeyId|aws_access_key_id)[\"']?\s*(?:[:=]\s*[\"']?)?"
+    r"|(?i:Authorization)[\"']?\s*(?:[:=]\s*[\"']?(?:(?i:Bearer)\s*)?)?)\Z"
+)
+
+# Up to this many committed characters every commit gets its own whole-text
+# pass. Past it a pass waits for ``committed // 32`` new characters (at most
+# ``_PASS_STEP_MAX``), so a long reply costs a bounded number of passes, each
+# over the reply so far, instead of one per chunk.
+_PASS_EVERY_COMMIT_BELOW = 8_192
+_PASS_STEP_MAX = 1_024
+
+
+def _open_credential_start(text: str) -> int | None:
+    """Offset of a key block, URL or value label ``text`` opens and does not
+    close, else ``None``. Everything from it must wait for the text that
+    decides it."""
+    starts = []
+    for header in _KEY_BLOCK_HEADER_RE.finditer(text):
+        if not _KEY_BLOCK_FOOTER_RE.search(text, header.end()):
+            starts.append(header.start())  # the first header with no footer after it
+            break
+    for pattern in (_OPEN_URL_RE, _OPEN_LABEL_RE):
+        match = pattern.search(text)
+        if match is not None:
+            starts.append(match.start())
+    return min(starts) if starts else None
+
+
+class _SegmentRedactor:
+    """Redact a side reply that tool rows split into text rows.
+
+    The main chat settles its one row with ``redact()`` over the whole reply.
+    A tool row splits the side reply into rows, and a row cannot be redacted
+    from its own text alone: a pattern that spans the split (a key header above
+    the row, its base64 body below; ``postgres://user:pass`` above, ``@host``
+    below) matches only with both halves in one text. So one pass over the
+    whole reply so far decides every frame, and a row's text is what that pass
+    produces past the rows above it.
+
+    The :class:`StreamRedactor` inside says WHEN the pass may run: it withholds
+    a trailing credential-class run the way the main chat's live stream does
+    (``chat_runner._wsred``), and ``_open_credential_start`` extends that hold
+    over the two shapes whose judgment waits for later text, so the text a pass
+    runs over never ends inside a credential the batch patterns know. The
+    stream redactor's own output is not drawn; the live view is the whole-text
+    pass over the committed text, so a commit the pass rewrites (a key body
+    committed under its header) never reaches the wire. The run still held when
+    a tool row lands is neither flushed nor drawn: the text after the call
+    decides it.
+
+    The pass runs over the reply as written, with one substitution. A value the
+    stream redactor DROPS (a credential still open at its hold-back ceiling,
+    ``_STREAM_HOLDBACK_JWT_MAX``, or a complete ``token=`` value its cut
+    bisects: it emits its tag and swallows the bytes, holding nothing) is a
+    value the batch patterns need not see whole, so a pass over the bytes as
+    written would hand them on (an unsigned JWT's claims, a bearer token's
+    head). In the text the passes see (``_view``), the dropped bytes are the
+    tag they were traded for; see ``_take``. The stored reply is the pass over
+    that text too, so a dropped value stays dropped.
+
+    What a frame can still carry is what ``redact()`` leaves in the reply as
+    written so far. A row above a tool row is settled once and cannot be taken
+    back, so the holds above keep everything a later byte could turn into a
+    credential out of it; a key block the reply never closes is held to the
+    end and judged there by the batch pass on what the reply has (the
+    truncated-block form of the pattern), which is stricter than the main
+    chat's live stream, which draws such a body as it comes.
+    """
+
+    __slots__ = (
+        "_wsred",
+        "_committed_through",
+        "_view",
+        "_len",
+        "_wrote",
+        "_passed",
+        "_rows",
+        "_settled",
+        "_streamed",
+    )
+
+    def __init__(self) -> None:
+        # The stream redactor commits through the batch function it is given;
+        # ``_take`` reads what it committed off this hook.
+        self._committed_through: list[tuple[str, str]] = []
+        self._wsred = StreamRedactor(self._batch)
+        self._view: list[str] = []  # the reply as the passes see it (``_take``)
+        self._len = 0  # len("".join(_view))
+        self._wrote = False  # whether the model wrote any text
+        self._passed = 0  # committed length at the last live pass
+        self._rows = 0  # tool rows drawn so far
+        self._settled = ""  # the pass over the reply up to the row above
+        self._streamed = ""  # live deltas drawn for the current row
+
+    @property
+    def rows(self) -> int:
+        return self._rows
+
+    @property
+    def wrote(self) -> bool:
+        return self._wrote
+
+    def _batch(self, text: str) -> str:
+        """What the stream redactor commits through: the batch function it
+        would use on its own (its commits are not the whole-text pass, which
+        is ``redact`` above and may be stubbed in tests), recorded."""
+        out = _batch_redact(text)
+        self._committed_through.append((text, out))
+        return out
+
+    def _take(self, text: str) -> str:
+        """Feed a delta to the stream redactor and keep ``_view`` in step with
+        it; return what the stream redactor emitted (``""`` while it holds).
+
+        ``_view`` holds the bytes the stream redactor has consumed from its
+        buffer (the run it still holds is not in it yet), as written, except
+        the bytes it DROPPED, which stand in the view as what it emitted for
+        them. What it emits in a feed is the batch redaction of each run it
+        commits (through ``_batch``, which records the run and its redaction)
+        with its own tag where it drops a value: the feed that arms a drop
+        emits the committed prefix's redaction and the tag for the value to the
+        buffer's end (or for a complete token value its cut bisects), a feed
+        that continues a drop emits nothing (or the tag again at its bound),
+        and the feed that ends a drop swallows the run and commits the rest of
+        the delta as usual. So the view takes each committed run as written in
+        place of its redaction, and whatever else was emitted as it is. The
+        rule is on what the redactor did, not on which path did it, so a path
+        this docstring does not list is covered too.
+        """
+        self._committed_through.clear()
+        out = self._wsred.feed(text)
+        take = ""
+        pos = 0
+        for committed, redacted in self._committed_through:
+            # The stream redactor emits each commit's redaction in order, with
+            # only its own tags between them. A commit that cannot be found
+            # where the previous one ended means that contract changed under
+            # this code; failing the turn is safer than splicing text that is
+            # not the reply (the handler reports the turn as interrupted).
+            at = out.find(redacted, pos)
+            if at < 0:
+                raise RuntimeError("StreamRedactor emitted a commit out of order")
+            take += out[pos:at] + committed
+            pos = at + len(redacted)
+        take += out[pos:]
+        self._view.append(take)
+        self._len += len(take)
+        return out
+
+    def _committed(self) -> str:
+        """The text a pass may run over: the view (which never ends inside the
+        run the stream redactor holds) minus an open key block or URL."""
+        committed = "".join(self._view)
+        cut = _open_credential_start(committed)
+        return committed if cut is None else committed[:cut]
+
+    def _share(self, whole: str) -> str:
+        """The current row's share of a pass over the reply: what it produces
+        past the rows above. Those rows were settled by a pass over a prefix of
+        the same text. A later pass agrees with it except where the batch
+        redactor's judgment of that prefix changed with the text after it (a
+        header name folded into the tag of the value that followed the call),
+        so the share starts where the two passes stop agreeing: the rewrite is
+        drawn in this row, and the row above keeps what it was settled with."""
+        if whole.startswith(self._settled):
+            return whole[len(self._settled) :]
+        return whole[len(os.path.commonprefix((whole, self._settled))) :]
+
+    def feed(self, text: str) -> str:
+        """Take a delta; return the part safe to draw now (possibly empty).
+
+        A live pass is one ``redact()`` over the committed reply (about 1.4 ms
+        per 10k characters, measured), paid on the event loop like the main
+        chat's per-flush redaction. Past ``_PASS_EVERY_COMMIT_BELOW`` committed
+        characters the pass waits for a step of new text (see ``_pass_step``):
+        a 64k-character reply costs about 60 passes past that point, not one
+        per chunk.
+        """
+        self._wrote = self._wrote or bool(text)
+        if not self._take(text):
+            return ""
+        if self._len - self._passed < self._pass_step():
+            return ""
+        self._passed = self._len
+        expected = self._share(redact(self._committed()))
+        if not expected.startswith(self._streamed):
+            # The pass rewrote text this row already shows. A delta cannot fix
+            # that; the frame that settles the row replaces it.
+            return ""
+        out = expected[len(self._streamed) :]
+        self._streamed = expected
+        return out
+
+    def _pass_step(self) -> int:
+        """New committed characters a live pass waits for."""
+        if self._passed < _PASS_EVERY_COMMIT_BELOW:
+            return 1
+        return min(_PASS_STEP_MAX, self._passed // 32)
+
+    def close_row(self) -> str | None:
+        """A tool row lands: settle the current row, start the next.
+
+        Returns the row's text when it differs from the live deltas drawn for
+        it (``None`` otherwise, nothing to send). The client draws every plain
+        delta as sent and replaces the row only on a settle or terminal frame
+        (``store/chat/side.ts``), so the deltas drawn are exactly ``_streamed``.
+        """
+        self._passed = self._len
+        whole = redact(self._committed())
+        row_text = self._share(whole)
+        result = row_text if row_text != self._streamed else None
+        self._settled = whole
+        self._streamed = ""
+        self._rows += 1
+        return result
+
+    def reply(self) -> str:
+        """The whole reply redacted, as stored: the pass over the view plus the
+        run the stream redactor still holds, nothing held back (a key block or
+        URI the reply left open is judged by the batch pass on what the reply
+        has, as the main chat's terminal frame judges it)."""
+        return redact("".join(self._view) + self._wsred.held)
+
+    def finish(self) -> str:
+        """The terminal frame's text: ``reply()`` past the rows above."""
+        return self._share(self.reply())
+
 
 # How long the stop handler waits for a cancelled side turn's cleanup (session
 # release, queue hold, is_complete flip) to run before settling the client
@@ -73,18 +341,6 @@ _STOP_CLEANUP_TIMEOUT = 5.0
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _side_session_key(slot_key: str, gen: str = "") -> str:
-    """Return the isolated ACP session key for a side turn.
-
-    ``side:<slot>:<gen>`` when the sidecar's generation is known (every live
-    path), so a sidecar that was closed and reopened never shares a session with
-    a turn still finishing on its predecessor: the old task can only destroy,
-    acquire or release ITS generation's key. The bare ``side:<slot>`` form is the
-    legacy spelling, kept for a caller with no sidecar in hand.
-    """
-    return f"side:{slot_key}:{gen}" if gen else f"side:{slot_key}"
 
 
 def _dispatch_side_turn(
@@ -133,69 +389,6 @@ def _dispatch_side_turn(
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     return run_id
-
-
-def _requeue_unconsumed_side_steers(
-    state: DashboardState, slot, run_id: str, side_at_start: Any = None
-) -> None:
-    """Degrade steers the backend never confirmed into visible queue cards.
-
-    A steer is a fire-and-forget write, so ``steer()`` returning True only proves
-    the bytes left; the ``steering_consumed`` echo is the authoritative signal.
-    Anything still pending when the turn ends reached no generation and would
-    otherwise vanish having been reported as delivered.
-
-    Requeued at the HEAD, preserving relative order — a steer was meant to be
-    injected before anything the user queued after it. Each becomes an ordinary
-    card, so a user who no longer wants it cancels it with one click.
-
-    Gated on ``side_at_start`` identity as well as ``run_id``: the run id alone
-    would let a superseded turn write onto a sidecar a close+reopen replaced.
-    """
-    side = slot._side
-    if side is None or not side.open or side.last_run_id != run_id:
-        return
-    if side_at_start is not None and side is not side_at_start:
-        return
-    orphaned = side.steer_pending()
-    if not orphaned:
-        return
-    for entry in orphaned:
-        side.steer_mark(entry["id"], STEER_REQUEUED)
-    for entry in reversed(orphaned):
-        message = entry["text"]
-        qid = side.queue_insert_front(message, steer_id=entry["id"])
-        if qid is None:
-            # Acceptance reserves a slot per in-flight steer, so this should be
-            # unreachable. Log loudly rather than broadcasting a null id: a
-            # phantom card the user can neither cancel nor run is worse than a
-            # recorded gap.
-            logger.error(
-                "Side steer requeue found no room: slot=%s depth=%d",
-                slot.key,
-                len(side.queue),
-            )
-            continue
-        broadcast_side_queue(
-            state,
-            slot_key=slot.key,
-            action="push",
-            queue_id=qid,
-            content=message,
-            depth=len(side.queue),
-            front=True,
-            # Name the steer this card came from. The card's id is brand new, so a
-            # client holding the raw text of its own steer has no other way to
-            # recognise it — and the content on the wire is redacted, which is a
-            # permanently corrupted restore for a credential-bearing question.
-            steer_id=entry["id"],
-        )
-    logger.info(
-        "Requeued %d unconsumed side steer(s): slot=%s run_id=%s",
-        len(orphaned),
-        slot.key,
-        run_id,
-    )
 
 
 def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
@@ -259,66 +452,6 @@ def _drain_side_queue(state: DashboardState, slot, run_id: str) -> None:
         )
 
 
-async def _try_side_steer(state: DashboardState, slot, question: str) -> str | None:
-    """Inject *question* into the side turn already streaming on this slot.
-
-    Returns the ledger id the attempt was recorded under, or None when it was
-    never attempted (no session, no steer support, no live turn) or the write
-    failed — every one of which must fall through to the queue rather than drop
-    the user's text.
-
-    The entry is registered BEFORE the RPC suspends. ``steer()`` returning True
-    only proves the bytes left; the ``steering_consumed`` echo is what proves
-    injection. Registering first is what makes the ordering safe: if the turn's
-    ``finally`` runs while this is suspended, it already sees the entry and
-    requeues it. The caller then reads its OWN entry's state, so it never has to
-    infer an outcome from an absence.
-    """
-    side = slot._side
-    if side is None:
-        return None
-    provider = state.sessions.get_provider(_side_session_key(slot.key, side.gen))
-    if provider is None or not getattr(provider, "supports_steer", False):
-        return None
-    steer = getattr(provider, "steer", None)
-    if steer is None:
-        return None
-    # ``has_active_turn`` gates on a GENUINELY live prompt: the provider stays
-    # registered through post-turn bookkeeping, and kiro-cli silently swallows a
-    # steer for a prompt that already ended. Absent the probe, attempt the steer
-    # and let its boolean decide.
-    has_active = getattr(provider, "has_active_turn", None)
-    if has_active is not None and not has_active():
-        return None
-    side = slot._side
-    if side is None:
-        return None
-    if not side.steer_can_accept():
-        # No room to requeue this steer if the turn ends without consuming it, and
-        # a requeue that cannot land would drop a question already reported as
-        # delivered. Decline here instead: the caller falls through to the queue,
-        # which either takes it or answers 429 — both visible, both recoverable.
-        return None
-    steer_id = side.steer_register(question)
-    if steer_id is None:
-        # Every ledger slot is an in-flight steer. Fall through to the queue
-        # rather than accept a steer whose outcome we could not record.
-        return None
-    try:
-        delivered = bool(await steer(question))
-    except Exception as exc:
-        logger.warning("Side steer failed for slot %s: %s", slot.key, exc)
-        delivered = False
-    if not delivered:
-        # The write did not land. If the entry is still pending it is ours to
-        # discard; if the echo or the finally already resolved it, leave their
-        # outcome alone and let the caller read it.
-        if side.steer_state(steer_id) == STEER_PENDING:
-            side.steers[:] = [e for e in side.steers if e["id"] != steer_id]
-            return None
-    return steer_id
-
-
 async def _side_read_only_tools(side_backend: str | None) -> bool:
     """Whether a side turn on *side_backend* runs read-only tools.
 
@@ -367,13 +500,19 @@ async def _run_side_turn(
     # The prompt envelope is built below, once the harness is known: the boundary
     # it states (read-only allowance vs. no tools) follows the approval policy
     # the turn will actually run under.
-    chunks: list[str] = []
-    # Rolling-buffer redactor for the live side stream. broadcast_side_result
-    # already redacts each frame, but per-frame redaction alone misses a secret
-    # split across streaming chunk boundaries; StreamRedactor withholds a
-    # trailing credential-class run until it's confirmed safe. Mirrors
-    # chat_runner._wsred so /side has the same protection as the main chat.
-    _wsred = StreamRedactor()
+    # Redaction for the live side stream. broadcast_side_result already redacts
+    # each frame, but per-frame redaction alone misses a secret split across
+    # streaming chunk boundaries (the StreamRedactor inside withholds a trailing
+    # credential-class run until it's confirmed safe, as chat_runner._wsred
+    # does) or across a tool row, which splits the reply into rows: every row is
+    # redacted with the whole reply as its context.
+    _redactor = _SegmentRedactor()
+    drawn_tool_ids: set[str] = set()
+
+    def _emit(text: str) -> None:
+        """Broadcast a live delta."""
+        if text:
+            _broadcast(role="assistant", content=text)
 
     def _broadcast(**frame: Any) -> None:
         """Broadcast one of this run's frames while its sidecar is still the slot's.
@@ -387,10 +526,76 @@ async def _run_side_turn(
             broadcast_side_result(state, slot_key=slot.key, run_id=run_id, **frame)
 
     def _on_chunk(text: str) -> None:
-        chunks.append(text)
-        safe = _wsred.feed(text)
-        if safe:
-            _broadcast(role="assistant", content=safe)
+        _emit(_redactor.feed(text))
+
+    def _on_tool_call(event: Any, approved: bool) -> None:
+        """Draw a tool attempt where it happened in the reply.
+
+        ``event`` is the ``LLMEvent`` ``stream_and_collect`` reports. The row is
+        a ``🔧 <title>``, shaped as the main chat's (``chat_runner._tool_meta``
+        / ``_tool_call_ws_payload``) so the shared transcript draws it with the
+        same pill; a refused attempt also gets the hidden ``🚫`` sibling the
+        transcript reads as "blocked". Every field is LLM-authored:
+        ``broadcast_side_result`` redacts each one. kiro-cli reports an attempt
+        as a tool-call event and then asks permission for it, so a refusal can
+        arrive for a row already drawn: that adds the sibling alone.
+
+        The text row ends at every tool row, the ``🚫`` sibling included: the
+        client starts a new text row under each, so the server closes one there
+        too, or a delta that landed between a row and its sibling would be drawn
+        twice by the terminal frame. The row is settled with a whole-text pass
+        (see ``_SegmentRedactor``) the way the terminal frame settles the last
+        row; the run the stream redactor still withholds is neither flushed nor
+        settled, and is drawn under the row once the text after the call has
+        proven it safe.
+        """
+        if slot._side is not side_at_start:
+            return
+        title = event.title or event.tool_name or "tool"
+        call_id = event.tool_call_id or ""
+
+        def _close_row() -> None:
+            # The frame replaces the row's streamed deltas and is sent only
+            # when the whole-text pass rewrites them.
+            settled = _redactor.close_row()
+            if settled is not None:
+                _broadcast(
+                    role="assistant",
+                    content=settled,
+                    settle=True,
+                )
+
+        if call_id and call_id in drawn_tool_ids:
+            if not approved:
+                _close_row()
+                _broadcast(
+                    role="tool",
+                    content=f"🚫 {title}",
+                    meta={"tool_call_id": call_id},
+                )
+            return
+        _close_row()
+        if call_id:
+            drawn_tool_ids.add(call_id)
+        # Redacted whole, then cut: a cut inside a credential leaves a prefix no
+        # pattern matches (``postgres://user:pass`` without its ``@host``).
+        preview = redact_and_truncate(event.tool_input or "", _SIDE_TOOL_PREVIEW_CHARS)
+        meta = {
+            "tool_call_id": call_id,
+            "kind": event.tool_kind or "",
+            "purpose": redact_and_truncate(event.tool_purpose or "", _SIDE_TOOL_PREVIEW_CHARS),
+            "input_preview": preview,
+        }
+        content = f"🔧 {title}"
+        if preview and preview != title:
+            content += f"\n{preview}"
+        _broadcast(role="tool", content=content, meta=meta)
+        if not approved:
+            _broadcast(
+                role="tool",
+                content=f"🚫 {title}",
+                meta={"tool_call_id": call_id},
+            )
 
     def _on_steer_consumed(snapshot: str) -> None:
         """Settle the steers this echo proves the backend injected.
@@ -689,7 +894,7 @@ async def _run_side_turn(
             cfg=cfg,
         )
         try:
-            response_text = await stream_and_collect(
+            returned_text = await stream_and_collect(
                 provider,
                 message,
                 # Reads-mode semantics with reject as the fallback on a harness in
@@ -709,20 +914,25 @@ async def _run_side_turn(
                 app=slot._app or "",
                 on_chunk=_on_chunk,
                 on_steer_consumed=_on_steer_consumed,
+                on_tool_call=_on_tool_call,
             )
-            # Redact the assembled text before it is stored/broadcast as the
-            # terminal frame (which replaces the streamed deltas). Never trust
-            # LLM output on an external surface. redact() applies BOTH passes —
+            # The reply as stored and as the terminal frame carries it (that
+            # frame replaces the streamed deltas) is the redactor's pass over
+            # the text it saw chunk by chunk, not redact() over the text
+            # stream_and_collect returns: the two differ only where the stream
+            # redactor dropped an over-long value, which the batch patterns
+            # could not judge and must not get back. Never trust LLM output on
+            # an external surface. redact() applies BOTH passes —
             # redact_exfiltration_urls() then redact_credentials() (security.py)
             # — so exfil URLs and credentials are both scrubbed here.
-            response_text = redact(response_text)
+            response_text = _redactor.reply()
         except PromptBusyExhaustedError:
             logger.warning(
                 "Side turn aborted (prompt busy exhausted): slot=%s run_id=%s",
                 slot.key,
                 run_id,
             )
-            response_text = redact("".join(chunks))
+            response_text = _redactor.reply()
             notice = "(side conversation interrupted — please retry)"
             # The partial answer stays in the history the model is handed; the
             # notice is stored after it, so a panel restored from ``GET .../side``
@@ -736,11 +946,15 @@ async def _run_side_turn(
                     partial_message_id = slot._side.append_assistant(response_text, run_id=run_id)
                 message_id = slot._side.append_assistant(notice, run_id=run_id, is_error=True)
             if partial_message_id:
+                # A tool row split the partial answer: the frame settles the row
+                # below the last tool row, as the success path's does.
+                split = bool(_redactor.rows)
                 _broadcast(
                     role="assistant",
-                    content=response_text,
+                    content=_redactor.finish() if split else response_text,
                     final=True,
                     message_id=partial_message_id,
+                    reply=response_text if split else "",
                 )
             _broadcast(
                 role="assistant",
@@ -751,7 +965,7 @@ async def _run_side_turn(
             )
             return
 
-        if not response_text:
+        if not returned_text:
             # The returned text, not the streamed chunks: a prompt-busy retry starts
             # its text over, so chunks from an earlier attempt can stand beside an
             # empty answer.
@@ -780,12 +994,25 @@ async def _run_side_turn(
         if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
             message_id = slot._side.append_assistant(response_text, run_id=run_id)
 
+        # The terminal frame replaces what the client streamed for the row it
+        # lands on. With no tool row that row holds the whole reply, and the
+        # frame carries the whole redacted text as before. A tool row split the
+        # reply into rows, and the frame then carries only the last row's text:
+        # the whole reply redacted in one pass (so a pattern that spans a tool
+        # row is matched whole), past what the rows above show. A turn that ran
+        # tools but wrote nothing keeps the fallback sentence above.
+        final_text = response_text
+        whole_reply = ""
+        if _redactor.rows and returned_text:
+            final_text = _redactor.finish()
+            whole_reply = response_text
         _broadcast(
             role="assistant",
-            content=response_text,
+            content=final_text,
             ts=time.time(),
             final=True,
             message_id=message_id,
+            reply=whole_reply,
         )
     except asyncio.CancelledError:
         # A stop request (``api_side_stop``) cancels this task. The terminal
@@ -898,21 +1125,6 @@ async def _run_side_turn(
         # Only the DISPATCH is withheld, so nothing is lost, merely paused.
         if not auth_required and not cancelled:
             _drain_side_queue(state, slot, run_id)
-
-
-def _check_slot_ownership(
-    request: web.Request,
-    slot,
-    operation: str,
-) -> web.Response | None:
-    """The uniform app-isolation 404 if the request app can't access ``slot``, else None.
-
-    App Kit §5.2: dashboard users (empty ``request_app``) can access everything.
-    The auth gate is upstream in ``token_auth_middleware`` and the per-slot
-    checkpoint (``slot_ownership_middleware``) has already made this decision for
-    every /side route; this re-applies the same shared decision at the handler.
-    """
-    return deny_app_slot_access(request.get("app", ""), slot, slot.key, operation)
 
 
 async def api_side_open(request: web.Request) -> web.Response:
@@ -1613,65 +1825,6 @@ async def _cancel_and_settle_side_turn(
     # audit; the frontend ignores the response body (fires the mutation,
     # wires only ``onError``), so the success body is the minimal ``{ok}``.
     return web.json_response({"ok": True})
-
-
-async def _read_side_queue_body(request: web.Request) -> str | web.Response:
-    """Parse ``{"content": str}`` from a side-queue edit. Returns the trimmed
-    content, or the error response to send."""
-    if not request.body_exists:
-        return web.json_response({"error": "missing JSON body", "code": "missing_body"}, status=400)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body", "code": "invalid_body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"},
-            status=400,
-        )
-    content = body.get("content")
-    if not isinstance(content, str):
-        return web.json_response(
-            {"error": "content must be a string", "code": "invalid_content"},
-            status=400,
-        )
-    content = content.strip()
-    if not content:
-        return web.json_response(
-            {"error": "content must not be empty", "code": "empty_content"},
-            status=400,
-        )
-    if len(content.encode("utf-8")) > _MAX_QUESTION_BYTES:
-        return web.json_response(
-            {
-                "error": f"content too long (max {_MAX_QUESTION_BYTES} bytes)",
-                "code": "content_too_long",
-            },
-            status=400,
-        )
-    return content
-
-
-def _resolve_side_queue_slot(
-    request: web.Request, operation: str
-) -> tuple[Any, web.Response | None]:
-    """Shared lookup for the side-queue mutation endpoints.
-
-    Returns ``(slot, None)`` on success or ``(None, response)`` to send.
-    """
-    state: DashboardState = request.app["state"]
-    slot = state._slots.get(request.match_info["slot"])
-    if not slot:
-        return None, slot_not_found()
-    own = _check_slot_ownership(request, slot, operation)
-    if own is not None:
-        return None, own
-    if slot._side is None or not slot._side.open:
-        return None, web.json_response(
-            {"error": "side conversation is not open", "code": "side_not_open"},
-            status=409,
-        )
-    return slot, None
 
 
 async def api_side_queue_cancel(request: web.Request) -> web.Response:

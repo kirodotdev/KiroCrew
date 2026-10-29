@@ -85,7 +85,7 @@ from kiro_crew.metrics.tool_calls import (  # noqa: F401
 )
 from kiro_crew.platform.guest_paths import GuestPathParams  # noqa: F401
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS  # noqa: F401
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 from kiro_crew.security.credential_sources import tool_output_fingerprints  # noqa: F401
 from kiro_crew.session_environment import (  # noqa: F401
     WORKSPACE_DENY_ALIASES,
@@ -395,9 +395,11 @@ def _refusal_str(value: object, limit: int) -> str:
     """
     if not isinstance(value, str):
         return ""
-    text, _ = redact_exfiltration_urls(value.strip())
-    text, _ = redact_credentials(text)
-    return text[:limit]
+    # The composed pass: run in sequence, the URL pass can swallow a credential
+    # label and leave its value for no pattern to find.
+    from kiro_crew.security import redact
+
+    return redact(value.strip())[:limit]
 
 
 #: The one JSON-RPC error the Kiro service is observed to send as a content-filter

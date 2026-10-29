@@ -112,6 +112,7 @@ async def stream_and_collect(
     on_complete: Callable[[LLMEvent], None] | None = None,
     on_compaction: Callable[[LLMEvent], None] | None = None,
     on_tool_gate: Callable[[str, bool, bool, str], None] | None = None,
+    on_tool_call: Callable[[LLMEvent, bool], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -170,6 +171,22 @@ async def stream_and_collect(
             LLM-authored text: redact them before display or persistence. Raising
             from the callback is swallowed; observing a gate decision must never
             fail the turn.
+        on_tool_call: Optional callback invoked LIVE, as the stream reports each
+            tool attempt, with ``(event, approved)``: the ``EVENT_TOOL_CALL``
+            that starts an execution (``approved=True``), or the
+            ``EVENT_PERMISSION_REQUEST`` a refusal ended (``approved=False``).
+            An approved request is not reported; its own tool-call event is.
+            kiro-cli reports a tool-call event BEFORE it asks permission for
+            the same ``tool_call_id``, so a refusal can follow an attempt the
+            callback already saw: a caller drawing attempts dedupes on the id.
+            Lets a caller draw the attempt where it happened in the reply, which
+            ``on_tool_gate`` cannot: that one settles after the attempt, and
+            only once per gate decision. The price of being live is that an
+            attempt a transient retry later abandons has already been reported;
+            a retry only ever replays a prompt that fired no tool, so the
+            callback sees at most the refusals of such an attempt twice. Every
+            text field on the event is LLM-authored: redact before display.
+            Raising from the callback is swallowed.
         retry_transient: When True (default), transient backend errors are
             retried in-place with bounded backoff. Set False from callers that
             already own an outer transient-retry loop, so the inner arm doesn't
@@ -306,6 +323,11 @@ async def stream_and_collect(
                         if event.tool_call_id:
                             gate_decided_ids.add(event.tool_call_id)
                     if not approved:
+                        if on_tool_call:
+                            try:
+                                on_tool_call(event, False)
+                            except Exception:
+                                logger.debug("on_tool_call callback failed", exc_info=True)
                         continue
                 elif event.kind == EVENT_TOOL_CALL:
                     tool_call_count += 1
@@ -315,6 +337,11 @@ async def stream_and_collect(
                     _turn_tool_activity = True
                     if on_tool_gate:
                         executed_calls.append((event.tool_call_id or "", event.title or ""))
+                    if on_tool_call:
+                        try:
+                            on_tool_call(event, True)
+                        except Exception:
+                            logger.debug("on_tool_call callback failed", exc_info=True)
                     if max_turns is not None and tool_call_count > max_turns:
                         logger.warning(
                             "max_turns=%d exceeded (%d tool calls), breaking",

@@ -18,7 +18,6 @@ from typing import Any
 
 from kiro_crew.acp._dispatch_parts.tool_call_identity import is_shell_kind
 from kiro_crew.acp.types import TOOL_PURPOSE_KEYS
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Appended when a diff is cut at ``max_len``. Uses the unified-diff escape
 # convention ("\ ...", the same lead-in as "\ No newline at end of file"), so
@@ -204,12 +203,21 @@ def extract_tool_purpose(raw_input: object) -> str:
 
 
 def _redact(text: str) -> str:
-    """Run a string through both redactors (URL exfil + credentials)."""
+    """Run a string through both redactors (URL exfil + credentials) in one composed pass.
+
+    ``security.redact`` finds both passes' spans on the ORIGINAL text. Running the
+    URL pass first and the credential pass over its output does not: a URL whose
+    query swallows a credential label (``...?d=...&Authorization: Bearer <token>``)
+    is collapsed with the label, and the token left behind fails to match the
+    labelled pattern, so it would reach the pill title raw.
+    """
     if not text:
         return text
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
+    # Imported here, not at module level: a module-level name would be served by
+    # the ``_dispatch`` facade's mirror as a name from outside the family.
+    from kiro_crew.security import redact
+
+    return redact(text)
 
 
 def redact_text(text: str) -> str:

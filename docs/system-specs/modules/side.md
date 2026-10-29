@@ -300,9 +300,10 @@ after its conversation was closed and replaced in this tab changes nothing
 Event name: `chat.side_result`  
 Kind field: `"side"` (translated from upstream `"btw"`)
 
-Payload shape (broadcast per chunk and per final response, built by
-`dashboard/ws.py`, which owns the wire). `final`, `steer` and `message_id` are
-optional, and `is_error` is present only when true:
+Payload shape (broadcast per chunk, per tool attempt and per final response,
+built by `dashboard/ws.py`, which owns the wire). `final`, `steer`,
+`message_id`, `settle`, `meta` and `reply` are optional, and `is_error` is
+present only when true:
 
 ```json
 {
@@ -310,14 +311,17 @@ optional, and `is_error` is present only when true:
   "data": {
     "slot": "<parent-slot-key>",
     "run_id": "<hex-uuid>",
-    "role": "user" | "assistant",
+    "role": "user" | "assistant" | "tool",
     "content": "<text>",
     "kind": "side",
     "ts": <unix-float | null>,
     "is_error": true,
     "final": true,
     "steer": true,
-    "message_id": "<sidecar row id>"
+    "message_id": "<sidecar row id>",
+    "settle": true,
+    "meta": { "tool_call_id": "...", "kind": "...", "purpose": "...", "input_preview": "..." },
+    "reply": "<the whole answer, on a terminal frame after tool rows>"
   }
 }
 ```
@@ -326,6 +330,34 @@ optional, and `is_error` is present only when true:
 a consumed steer, a final answer or the stop row. Streaming deltas, and the error
 notices the sidecar does not store, carry none. It is what lets a panel restored
 from `GET .../side` recognise a frame for a row it already holds.
+
+A `settle` frame closes the answer row above a tool row: it carries that row's
+whole text as the pass over the whole reply has it, and the client replaces the
+row's streamed text with it even when the pass rewrote that text. A plain
+assistant frame is a delta and always extends the row (two equal deltas are two;
+the server settles the row against exactly the deltas it sent). The terminal
+frame replaces the row the same way as `settle`; an empty `settle` or terminal
+frame removes the row it lands on (the pass left it no text of its own).
+
+A `tool` frame is a tool attempt the side turn made, sent live where it
+happened between the text deltas: `content` is `"🔧 <title>"` (the input
+preview on a second line when it differs from the title) and `meta` carries
+the call's fields, each redacted like `content`. A refused attempt is followed
+by the hidden sibling `"🚫 <title>"` with the same `tool_call_id`, which is how
+the shared transcript marks the 🔧 row as blocked — the same vocabulary the
+main chat's rows use. The terminal frame (`final`) carries the text written
+AFTER the last tool row (the whole reply when there was none): the client
+settles the one answer row under that tool row with it, so a reply a tool row
+split into two rows is never appended under the last one a second time. The row
+ABOVE a tool row is settled the same way as its row closes, by a `settle` frame
+carrying the row's text as the pass over the whole reply has it (never the run
+the stream redactor still withholds), sent only when that differs from the
+deltas the client streamed for the row.
+
+`reply` rides a terminal frame only when tool rows split the answer: it is the
+whole answer as the sidecar stores it, redacted like `content`. A panel waiting
+on that run's final frame (it joined part-way, see **Reload**) drew none of the
+rows above, so it draws `reply` as the run's one answer row.
 
 Run-ID isolation: the frontend routes `chat.side_result` frames to the chat
 state's `slotSide` map via a dedicated reducer (`sseSideResult`, owned by
@@ -491,6 +523,70 @@ with `side_read_only` (below) — acquires an isolated session via
 `state.sessions.get_or_create`, streams with `ToolApprovalPolicy.READ_ONLY`,
 broadcasts chunks over `broadcast_side_result`, and appends the final assembled
 text to `slot._side.messages`.
+
+Tool attempts are drawn as they happen. `stream_and_collect`'s `on_tool_call`
+(live, `(event, approved)`: the `EVENT_TOOL_CALL` that starts an execution, or
+the refused `EVENT_PERMISSION_REQUEST`) feeds `_run_side_turn`'s `_on_tool_call`,
+which closes the text row and broadcasts the `🔧` row (plus the `🚫` sibling for
+a refusal). Its `input_preview` and `purpose` are redacted whole and THEN cut to
+`_SIDE_TOOL_PREVIEW_CHARS` (`security.redact_and_truncate`): a cut inside a
+credential would leave a prefix no pattern matches. kiro-cli reports the
+tool-call event and then asks permission for the same `tool_call_id`, so a
+refusal for an id already drawn adds the `🚫` sibling alone; it closes the text
+row as well, since the client starts a new row under every tool row.
+
+The text rows are redacted by `_SegmentRedactor` (same module). A row cannot be
+redacted from its own text: a pattern that spans a tool row (a key header above
+it, the base64 body below; `postgres://user:pass` above, `@host` below) matches
+only with both halves in one text. So one `redact()` pass over the WHOLE reply
+so far decides every frame, and a row's text is what that pass produces past
+the rows above it (past the longest common prefix with the pass that settled
+them, where the batch redactor's judgment of the earlier text changed with what
+followed). The `StreamRedactor` inside only says WHEN the pass may run: it
+withholds a trailing credential-class run the way the main chat's live stream
+does, and `_open_credential_start` extends that hold over the three shapes whose
+judgment waits for later text and spans bytes outside the stream redactor's
+credential class: a key block (held from the first header with no footer after
+it until that footer), a URL (held from the scheme until the whitespace that
+ends it: a password needs its `@`, an exfiltration URL its payload, and either
+may hold a `!`) and a value label (an AWS field name such as
+`aws_secret_access_key: `, or `Authorization: Bearer `, held until its value's
+first byte: the batch pass folds the label into the value's tag, and the space
+after the label commits it alone); every other pattern the batch pass knows is
+matched inside one credential-class run or one of the stream redactor's own
+anchors (a `token=` parameter, a JWT), so the text a pass runs over never ends
+inside a credential the batch
+patterns know. The stream redactor's own output is not drawn; a live delta is
+the whole-text pass over the committed text, so a commit the pass rewrites (a
+key body committed under its header) never reaches the wire, and a delta the
+pass would contradict is withheld until the frame that settles the row replaces
+it. Past 8k committed characters a live pass waits for a step of new text
+(`_PASS_EVERY_COMMIT_BELOW`, `_PASS_STEP_MAX`), so a long reply costs a bounded
+number of passes. The run still held when a tool row lands is neither flushed
+nor drawn (the frame that settles the row above cannot be taken back, and the
+text after the call may be what makes the run a credential); the text after the
+call decides it, and it is drawn under the tool row as that text commits it.
+Once a tool row has been drawn the terminal frame carries the last row's text
+this way instead of the whole reply; a turn that ran tools and wrote nothing
+keeps the read-only fallback sentence. The rows together are exactly the stored
+reply: a row above a tool row never carries a byte the reply does not have, and
+a key block the reply never closes is held to the end and judged there by the
+batch pass on what the reply has (its truncated-block form), which is stricter
+than the main chat's live stream, which draws such a body as it comes. The pass runs over the reply as written with one
+substitution: a value the stream redactor DROPS (a credential still open at its
+hold-back ceiling, or a complete `token=` value its cut bisects: it emits its
+tag and swallows the bytes, holding nothing) is a value the batch patterns need
+not see whole (an unsigned JWT's claims), so the passes see the tag in place of
+the dropped bytes, where the main chat's live stream shows it. The view is read
+off what the stream redactor did, not off which of its paths did it
+(`_SegmentRedactor._take`): it commits every run through the batch function it
+is given, which records the run and its redaction, so the view takes each
+committed run as written in place of its redaction and keeps whatever else the
+redactor emitted (its tag for dropped bytes) as it is. `slot._side.messages`
+stores that pass over the whole reply (it feeds the cold-start recovery, which
+has no rows to split), not `redact()` over the text `stream_and_collect`
+returns, so a
+dropped value stays dropped there too; it never stores a tool row.
 
 **The derived read-only spec is what makes the guarantee hold.** kiro-cli
 approves a tool on the agent's `allowedTools` (and an MCP server's
@@ -894,7 +990,9 @@ chat.
 
 Module-level helper emitting `chat.side_result` frames to owner sockets only
 (`broadcast_ws_owners`), never to app sockets, matching `_check_slot_ownership`.
-Deliberately separate from `broadcast_ws` main-channel events.
+Deliberately separate from `broadcast_ws` main-channel events. `content` and
+every value of the optional `meta` mapping (a `tool` row's per-call fields) go
+through `redact_exfiltration_urls` then `redact_credentials`.
 
 ### `dashboard/ws.py` — `broadcast_side_closed`
 
@@ -990,6 +1088,17 @@ dashboard; a path link stays a plain link; an artifact link navigates away).
 `website/src/test/SideChat.fileOpen.test.tsx` pins both the wired and the
 unwired behaviour.
 
+A `tool` row keeps its role and `meta` on the way in (`cls: 'msg msg-tool'`), so
+the list's own `tool` renderer draws the 🔧 pill and reads the hidden 🚫 sibling
+as "blocked", and a finished turn folds its tool rows under the same "N tool
+calls" header the main chat uses. The "Add to main chat" hand-off stages EVERY
+text row of the last run in order (joined with a blank line), not the row under
+the last tool call alone; a steer chip spliced into the run does not end the
+walk, the question that started the run does. It is offered once the turn has
+settled whatever row is the tail — a turn that ended on a tool call has its text
+above the pill. `website/src/test/SideChat.toolRows.test.tsx` pins the reducer
+shape and both pill states.
+
 ### `store/chat/side.ts` — Side State
 
 `website/src/store/chat/side.ts` owns the side reducers; `chatSlice.ts` composes
@@ -1005,8 +1114,21 @@ action types stay `chat/<name>` and every consumer keeps importing them from
   `steer` user frame is spliced in ABOVE a streaming assistant row of the same
   run. A frame whose `message_id` the panel already holds is dropped, and so is a
   delta for a settled answer or for a run waiting on its final frame.
+  A `tool` frame appends a `tool` row (with its `meta`) and keeps the turn
+  busy (`pending` off, `streaming` on); because that row is now the tail, the
+  next assistant delta starts a NEW answer row under it, and the terminal frame
+  (the text after the last tool row) settles that row alone. An empty terminal
+  frame after a tool row ends the turn without adding a row; an empty `settle`
+  or terminal frame landing on a streamed row removes that row. A run waiting on
+  its final frame drops its `tool` and `settle` frames too, and draws `reply`.
+  A terminal frame with `reply` that this tab's rows for the run plus the
+  frame's own text do not add up to (frames missed while the socket was down)
+  drops the run's partial rows and draws `reply` as its one answer row. An
+  empty terminal frame puts its `message_id` on the run's last answer row.
 - `sideRestore` reducer: merges `GET .../side` into the slot once per page (see
-  **Reload** above).
+  **Reload** above). The gateway stores a run's answer as one row and never
+  stores tool rows, so a run this tab drew with tool rows keeps this tab's rows
+  (text, tool, text) in place of the stored answer.
 - `sseSideQueue` reducer: `push` appends, or head-inserts on `front`
   (replay-safe — a redelivered id is ignored, never rewritten, so a redacted
   duplicate cannot overwrite the raw text), `edit` rewrites, `cancel`/`drain`

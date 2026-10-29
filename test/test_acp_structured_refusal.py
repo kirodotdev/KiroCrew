@@ -372,6 +372,16 @@ class TestRedactionSeesTheWholeValue:
         assert secret not in text
         assert len(text) <= 128
 
+    def test_a_credential_label_inside_a_url_query_does_not_strand_its_value(self):
+        """The URL pass and the credential pass find their spans on the same
+        text. Run in sequence, the URL pass swallows the ``Authorization:`` label
+        and leaves ``Bearer <value>`` for no pattern to recognise."""
+        value = "opaque" + "x7Qz" * 10
+        explanation = (
+            "see https://example.invalid/c?d=" + "a" * 64 + f"&Authorization: Bearer {value}"
+        )
+        assert value not in _dispatch._refusal_str(explanation, 4096)
+
 
 class TestWorkerPoolPathFoldsRefusal:
     """Round-3 Opus finding: the string-returning ``_read_prompt_response``

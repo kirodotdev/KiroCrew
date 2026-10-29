@@ -267,21 +267,44 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
   const localRows = (local?.messages ?? []).map(row => ({ ...row }))
   const localById = new Map(localRows.filter(row => row.id).map(row => [row.id as string, row]))
   const restoredIds = new Set<string>()
-  const messages: SideMessage[] = (snapshot.messages ?? []).map(m => {
+  // The gateway stores a run's answer as one row and never stores its tool
+  // rows. A run this tab drew with tool rows is several rows here (text, tool,
+  // text), so the stored answer gives way to this tab's rows for that run, in
+  // the order they were drawn. A tab that never saw the run draws the stored text.
+  // Only once this tab drew the run's terminal frame, which put the stored row's
+  // id on one of its rows: a tab whose socket dropped mid-run holds a partial
+  // split, and the stored answer is the whole of it.
+  const localSplit = (runId: string | undefined, storedId: string): SideMessage[] => {
+    if (!runId || !localRows.some(r => r.run_id === runId && r.role === 'tool')) return []
+    const rows = localRows.filter(r => r.run_id === runId && (r.role === 'tool' || (r.role === 'assistant' && !r.is_error)))
+    return rows.some(r => r.id === storedId) ? rows : []
+  }
+  const placed = new Set<SideMessage>()
+  const messages: SideMessage[] = (snapshot.messages ?? []).flatMap(m => {
     restoredIds.add(m.id)
-    return localById.get(m.id) ?? {
+    if (m.role === 'assistant' && !m.is_error) {
+      const split = localSplit(m.run_id, m.id).filter(r => !placed.has(r))
+      if (split.length) {
+        split.forEach(r => placed.add(r))
+        return split
+      }
+    }
+    return [localById.get(m.id) ?? {
       id: m.id, role: m.role, content: m.content, ts: m.ts,
       ...(m.run_id ? { run_id: m.run_id } : {}),
       ...(m.steer ? { steer: true } : {}),
       ...(m.is_error ? { is_error: true } : {}),
-    }
+    }]
   })
   const knownRuns = new Set(messages.map(m => m.run_id).filter((r): r is string => !!r))
   if (snapshot.last_run_id) knownRuns.add(snapshot.last_run_id)
   const sawStart = (runId: string) => localRows.some(m => m.run_id === runId && m.role === 'user' && !m.steer && !m.optimistic)
-  const storedAnswer = (runId: string) => messages.some(m => m.run_id === runId && m.role === 'assistant' && !m.is_error && !!m.id)
+  // Read off the snapshot, not `messages`: a run's stored answer can stand in
+  // `messages` as this tab's split rows, which carry no id until the final frame.
+  const storedAnswer = (runId: string) => (snapshot.messages ?? []).some(m => m.run_id === runId && m.role === 'assistant' && !m.is_error)
   let keptOptimistic = false
   for (const row of localRows) {
+    if (placed.has(row)) continue
     if (row.id && restoredIds.has(row.id)) continue
     if (row.optimistic) {
       keptOptimistic = true
@@ -290,6 +313,9 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
     }
     const streamedAnswer = row.role === 'assistant' && !row.is_error && !row.id
     if (streamedAnswer && row.run_id && knownRuns.has(row.run_id) && (storedAnswer(row.run_id) || !sawStart(row.run_id))) continue
+    // A tool row of a run whose stored answer stands in its place (not this
+    // tab's split, placed above) would land under that answer.
+    if (row.role === 'tool' && row.run_id && storedAnswer(row.run_id)) continue
     insertAfterRun(messages, row)
   }
 
@@ -304,7 +330,7 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
     streaming = !!local.streaming
   } else if (snapshot.running && snapshot.last_run_id) {
     const runId = snapshot.last_run_id
-    const settled = messages.some(m => m.run_id === runId && m.role === 'assistant' && (!!m.id || !!m.is_error))
+    const settled = storedAnswer(runId) || messages.some(m => m.run_id === runId && m.role === 'assistant' && (!!m.id || !!m.is_error))
     if (!settled && sawStart(runId)) {
       pending = !!local?.pending
       streaming = !!local?.streaming
@@ -352,8 +378,9 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
 }
 
 export const sideReducers = {
-  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; message_id?: string }>) {
-    const { slot, run_id, role, content, ts, is_error, final, steer, message_id } = action.payload
+  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant' | 'tool'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; message_id?: string; settle?: boolean; meta?: Record<string, string>; reply?: string }>) {
+    const { slot, run_id, role, ts, is_error, final, steer, message_id, settle, meta, reply } = action.payload
+    let { content } = action.payload
     if (isUnsafeKey(slot)) return
     const tsIso = typeof ts === 'number' ? new Date(ts * 1000).toISOString() : new Date().toISOString()
     // A steer is an echo of the conversation being closed, never a request to re-open it,
@@ -458,12 +485,58 @@ export const sideReducers = {
     if (!is_error && !final) {
       // This run's answer began before this tab joined it, so its deltas start
       // part-way through. The final frame carries the whole text; wait for it.
+      // Its tool and settle frames too: the rows above them never reached this tab.
       if (side.awaitingFinalRunId === run_id) return
       // A settled answer takes no more deltas. One arriving now was overtaken by
       // the restore, which already holds the stored answer.
       if (side.messages.some(m => m.role === 'assistant' && m.run_id === run_id && !m.is_error && m.id)) return
     }
-    if (final && side.awaitingFinalRunId === run_id) delete side.awaitingFinalRunId
+    if (final && side.awaitingFinalRunId === run_id) {
+      delete side.awaitingFinalRunId
+      // A terminal frame after tool rows carries only the text below the last
+      // one; `reply` is the whole answer, which is the one row this tab draws.
+      if (reply) content = reply
+    } else if (final && reply && !is_error) {
+      // The rows of a split answer add up to exactly the stored reply, so a
+      // tab that missed some of this run's frames (its socket dropped
+      // mid-run) finds that its rows plus this frame do not. It then drops
+      // the run's partial rows and draws `reply` as the run's one answer row.
+      const isRunRow = (m: SideMessage) => m.run_id === run_id && (m.role === 'tool' || (m.role === 'assistant' && !m.is_error))
+      const tail = side.messages[side.messages.length - 1]
+      const tailIsAnswer = tail?.role === 'assistant' && tail.run_id === run_id && !tail.is_error
+      const above = side.messages.slice(0, tailIsAnswer ? -1 : undefined)
+        .filter(m => m.role === 'assistant' && isRunRow(m)).map(m => m.content).join('')
+      if (above + content !== reply) {
+        side.messages = side.messages.filter(m => !isRunRow(m))
+        content = reply
+      }
+    }
+    // An empty terminal frame leaves no row of its own, so the stored row's id
+    // goes on the run's last answer row: a later restore keeps this tab's
+    // rows only when one of them carries it.
+    const keepId = () => {
+      if (!final || !message_id) return
+      for (let i = side.messages.length - 1; i >= 0; i--) {
+        const m = side.messages[i]
+        if (m.run_id === run_id && m.role === 'assistant' && !m.is_error) {
+          m.id = message_id
+          return
+        }
+      }
+    }
+    if (role === 'tool') {
+      // A tool attempt, drawn where it happened: the row lands at the tail, so
+      // the next text delta starts a NEW assistant row under it instead of
+      // growing the one above (see the tail check below). The turn is at work,
+      // not waiting: a tool row is output, so the thinking dots give way to the
+      // row's own spinner.
+      side.messages.push({ role: 'tool', content, ts: tsIso, run_id, ...(meta ? { meta } : {}) })
+      if (!earlierRun) {
+        side.pending = false
+        side.streaming = true
+      }
+      return
+    }
     if (!earlierRun) {
       side.pending = false
       side.streaming = !final
@@ -476,9 +549,33 @@ export const sideReducers = {
     const last = side.messages[side.messages.length - 1]
     if (last?.role === 'assistant' && last.run_id === run_id && !last.is_error) {
       if (message_id) last.id = message_id
-      if (content === last.content) return
-      last.content = final ? content : content.startsWith(last.content) ? content : last.content + content
+      if (settle || final) {
+        // A settle frame and the terminal frame each carry the row's whole
+        // text as one redaction pass over the reply has it, and replace what
+        // was streamed for it even when the pass rewrote that text (so the row
+        // never shows the raw deltas and the redacted copy both). An empty one
+        // says the pass left the row no text of its own: no row.
+        if (!content) {
+          side.messages.pop()
+          keepId()
+          return
+        }
+        last.content = content
+      } else {
+        // A delta extends the row, always: the server settles the row against
+        // exactly the deltas it sent, so two equal deltas are two, and one that
+        // happens to start with the row's text is not a replacement.
+        last.content += content
+      }
       last.ts = tsIso
+      return
+    }
+    // The tail is not this run's answer row: a tool row, or nothing yet.
+    // A terminal frame carries the text written after the last tool row, so
+    // an empty one says the turn ended on that tool call and has no text row
+    // to settle; a delta or a non-empty terminal frame starts the row below.
+    if ((final || settle) && !content) {
+      keepId()
       return
     }
     side.messages.push({ role: 'assistant', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}) })

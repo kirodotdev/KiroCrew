@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from kiro_crew.dashboard.state import DashboardState
 
 SIDE_RESULT_EVENT = "chat.side_result"
@@ -35,6 +37,9 @@ def broadcast_side_result(
     ts: float | None = None,
     steer: bool = False,
     message_id: str = "",
+    settle: bool = False,
+    meta: Mapping[str, str] | None = None,
+    reply: str = "",
 ) -> None:
     """Broadcast a side conversation event on the dedicated side channel.
 
@@ -50,7 +55,27 @@ def broadcast_side_result(
     ``local_side_run_ids``.
 
     Set final=True on the terminal frame of a side turn so the frontend
-    can flip the streaming flag off cleanly.
+    can flip the streaming flag off cleanly. The terminal frame carries the
+    text written AFTER the turn's last tool row (the whole reply when there
+    was none) and settles the answer row the client streamed under that tool
+    row, so a tool row that split the text leaves two rows rather than one
+    duplicated one. ``settle=True`` marks the frame that closes the row ABOVE
+    a tool row with that row's whole text. The client replaces the row with a
+    ``settle`` or terminal frame even when the frame rewrites the streamed
+    text (both carry the row as one redaction pass over the whole reply has
+    it), and removes the row when such a frame is empty; a plain frame is a
+    delta that always extends the row.
+
+    ``role="tool"`` is a tool attempt drawn where it happened in the reply:
+    ``content`` is ``"🔧 <title>"`` (an input preview may follow on a second
+    line) and ``meta`` carries the call's fields. A refused attempt adds the
+    hidden ``"🚫 <title>"`` sibling with the same ``tool_call_id``, which is
+    how the shared transcript marks the 🔧 row as blocked.
+
+    ``reply`` is the whole answer as the sidecar stores it, sent on a terminal
+    frame whose ``content`` is only the text below the turn's last tool row. A
+    panel that joined the run part-way never drew the rows above, so it draws
+    this one text instead.
 
     ``message_id`` names the sidecar row the frame announces (a question, a
     steer, a final answer, a stop row). A panel restored from ``GET .../side``
@@ -75,6 +100,17 @@ def broadcast_side_result(
         payload["steer"] = True
     if message_id:
         payload["message_id"] = message_id
+    if settle:
+        payload["settle"] = True
+    if reply:
+        payload["reply"] = redact_credentials(redact_exfiltration_urls(reply)[0])[0]
+    if meta:
+        # A ``tool`` row's per-call fields (``tool_call_id``, ``kind``,
+        # ``purpose``, ``input_preview``). Every value is LLM-authored or
+        # LLM-derived, so each goes through the same two passes as ``content``.
+        payload["meta"] = {
+            k: redact_credentials(redact_exfiltration_urls(str(v))[0])[0] for k, v in meta.items()
+        }
     # Owner-only, matching the queue frame and `_check_slot_ownership`: side answers and
     # steer echoes are the owner's own conversation, and an app that asks the HTTP API
     # about a slot it does not own gets a 404.
