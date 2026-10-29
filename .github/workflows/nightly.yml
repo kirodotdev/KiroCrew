@@ -355,7 +355,7 @@ jobs:
       # legible, and the job log carries just the tail `pod up` chose to print.
       - name: Upload the pod logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pod-scenarios-logs-${{ matrix.os }}
           path: |
@@ -464,7 +464,7 @@ jobs:
       # process is named, and the job log carries only the tail pytest chose.
       - name: Upload the harness log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: process-leak-invariant-log
           path: process-leak.log

@@ -367,7 +367,7 @@ jobs:
       - name: Upload screenshots, steps and verdict
         id: artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gui-user-test-${{ github.run_id }}
           path: |
@@ -486,7 +486,7 @@ jobs:
       # Only the nightly on main is the ledger's writer (see the merge step).
       - name: Upload the friction ledger
         if: always() && github.event_name == 'schedule' && steps.friction.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gui-user-test-friction-ledger
           path: ${{ env.GUI_OUT }}/results/friction_ledger.json

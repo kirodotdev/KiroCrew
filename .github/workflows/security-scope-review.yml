@@ -602,7 +602,7 @@ jobs:
           steps.scope.outputs.in_scope == 'true'
           && steps.human_override.outputs.active != 'true'
           )
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-scope-candidates-raw
           path: candidates.json
@@ -626,7 +626,7 @@ jobs:
           && steps.scope.outputs.in_scope == 'true'
           && steps.human_override.outputs.active != 'true'
           )
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-scope-review-text-raw
           path: scope-review.md
@@ -1110,7 +1110,7 @@ jobs:
 
       - name: Upload the normalized corpus
         if: steps.validate.outputs.adjudicate == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-scope-corpus
           path: normalized.json
@@ -1126,7 +1126,7 @@ jobs:
       # rather than the job's conclusion.
       - name: Upload the review text
         if: always() && steps.scrub_review.outputs.scrub_ok == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-scope-review-text
           path: scope-review.md
@@ -1327,7 +1327,7 @@ jobs:
       # travel.
       - name: Upload this leg's report
         if: always() && steps.classify.outputs.scrub_ok == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-scope-report-${{ matrix.os }}
           path: report-${{ matrix.os }}.json
@@ -2634,7 +2634,7 @@ jobs:
         # verdict and never part of one: it may be loud, and a failed step is
         # still annotated, but it may not change what the lane concluded.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Named by the publish step: the head SHA leads, so every record for
           # one revision is reachable from the revision alone, and the run and
