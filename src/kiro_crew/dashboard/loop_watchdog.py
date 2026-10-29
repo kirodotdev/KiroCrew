@@ -75,12 +75,15 @@ things turn the silence that follows a wedge into an actionable artifact:
 host spends suspended (``CLOCK_MONOTONIC`` on Linux, the mach timebase on
 macOS, and on Windows, where ``time.monotonic()`` counts a sleep, the
 unbiased interrupt time), so across a laptop sleep neither sees silence.
-Each poll also samples the suspend-inclusive clock
-:func:`kiro_crew.platform_compat.boottime_now`
-(``CLOCK_BOOTTIME`` on Linux, the wall clock on macOS, ``None`` where no
-such clock exists); when it advances :data:`SUSPEND_SKEW_MIN_SECS` further
-than the monotonic clock did since the last poll, the host slept for that
-long, and the watchdog says so once at INFO.
+Each poll also samples a suspend-inclusive clock (:func:`suspend_inclusive_now`:
+``CLOCK_BOOTTIME`` on Linux, the wall clock on macOS, ``time.monotonic()``
+on Windows); when it advances :data:`SUSPEND_SKEW_MIN_SECS` further than
+the awake clock did since the last poll, the host slept for that long, and
+the watchdog says so once at INFO.  It then grants the exit
+:data:`RESUME_GRACE_SECS` more silence for that long after the wake: a host
+that just woke can stall for a while without a wedge, and on Windows a
+deadline faulthandler armed before the sleep can fall due soon after the
+wake (see :data:`RESUME_GRACE_SECS`).
 
 **A paging loop thread is not a wedge.**  When the host runs short of memory
 the kernel swaps out part of the gateway's heap, and the loop thread stops
@@ -108,6 +111,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 import typing
 from collections.abc import Callable
 
@@ -132,6 +136,31 @@ SUSPEND_SKEW_MIN_SECS: float = 2.0
 #: taking major page faults.  Bounds the deferral so a thread that never stops
 #: paging still ends the process.
 PAGING_GRACE_MAX_SECS: float = 600.0
+
+#: Extra seconds of silence the exit allows for this long after a resume.  A
+#: host that just woke can leave the loop silent for tens of seconds (disks
+#: spinning up, helper processes paged back in) without a wedge.  On Windows
+#: the exit is faulthandler's timer; the reading here, not yet checked on a
+#: real Windows sleep, is that its wait skips the sleep while its deadline
+#: counts it, so a deadline armed before the sleep fires once the rest of its
+#: wait runs out after the wake (the issue's exits came 27-28 s after the wake).
+#: The first poll after the wake, at most one poll interval in, replaces it
+#: with the longer budget.  The desktop's liveness grace
+#: (``RESUME_GRACE_MS`` in ``website/electron/gateway-liveness.js``) covers
+#: this plus the exit budget.
+RESUME_GRACE_SECS: float = 60.0
+
+
+def suspend_inclusive_now() -> float | None:
+    """A clock a host sleep advances, read beside :func:`awake_now` to spot a resume.
+
+    :func:`boottime_now` where the platform has one.  Otherwise
+    ``time.monotonic()``: on Windows that clock counts a sleep while
+    ``awake_now`` does not, and where both are the same clock the two never
+    diverge, so nothing is reported.
+    """
+    boot = boottime_now()
+    return time.monotonic() if boot is None else boot
 
 
 def read_thread_major_faults(native_thread_id: int | None) -> int | None:
@@ -335,8 +364,7 @@ class LoopStallWatchdog:
             suspend does not advance on any platform.
         suspend_clock: Suspend-inclusive clock read beside ``now`` on every
             poll to recognise a resume, ``None`` where the platform has none;
-            injectable for tests.  Defaults to
-            :func:`kiro_crew.platform_compat.boottime_now`.
+            injectable for tests.  Defaults to :func:`suspend_inclusive_now`.
         dump: Soft stack-dump callback, injectable for tests. By default a
             soft dump is stderr-only while the alarm is armed, otherwise it is
             written to both ``dump_file`` and stderr.
@@ -393,7 +421,9 @@ class LoopStallWatchdog:
         self._exit_after = exit_after
         self._poll_interval = poll_interval
         self._now = now
-        self._suspend_clock = suspend_clock or boottime_now
+        self._suspend_clock = suspend_clock or suspend_inclusive_now
+        # Until this reading of ``now``, the exit allows RESUME_GRACE_SECS more.
+        self._resume_grace_until = float("-inf")
         self._dump_file = dump_file
         self._dump = dump
         self._arm_later = arm_later or (lambda t: _default_arm_later(t, dump_file))
@@ -450,8 +480,20 @@ class LoopStallWatchdog:
         if self._later_active and self._exit_after is not None:
             self._rearm_alarm(self._exit_after)
 
-    def _rearm_alarm(self, seconds: float, *, unless_beat_since: int | None = None) -> bool:
-        """Cancel the pending alarm and arm a fresh one ``seconds`` from now.
+    def _exit_budget(self, exit_after: float, now: float) -> float:
+        """Seconds of silence the exit allows from ``now``: ``exit_after``, plus
+        what is left of a resume's grace, so no deadline reaches past the end of
+        the grace by more than ``exit_after``."""
+        return exit_after + max(0.0, self._resume_grace_until - now)
+
+    def _rearm_alarm(
+        self,
+        exit_after: float,
+        *,
+        cap: float | None = None,
+        unless_beat_since: int | None = None,
+    ) -> bool:
+        """Cancel the pending alarm and arm the grace-aware budget, bounded by ``cap``.
 
         Runs on the loop thread for a beat and on the daemon thread for a
         paging deferral, so the cancel-then-arm pair holds ``_alarm_lock``.
@@ -466,6 +508,9 @@ class LoopStallWatchdog:
                 return False
             if unless_beat_since is not None and unless_beat_since != self._beat_generation:
                 return False
+            seconds = self._exit_budget(exit_after, self._now())
+            if cap is not None:
+                seconds = min(seconds, cap)
             try:
                 self._cancel_later()
             except Exception:  # pragma: no cover - never let petting crash the loop
@@ -505,9 +550,13 @@ class LoopStallWatchdog:
         A poll first compares the two clocks' advance since the previous poll:
         the suspend-inclusive clock running ahead of the monotonic one by
         :data:`SUSPEND_SKEW_MIN_SECS` or more means the host was suspended for
-        that long.  That is reported once at INFO and changes no decision —
-        the silence measured here is monotonic, and the alarm pauses during a
-        suspend, so a suspend never counts as a stall on either layer.
+        that long.  That is reported once at INFO, and for
+        :data:`RESUME_GRACE_SECS` after it the exit allows that much more
+        silence: the poll re-arms it at once, because on Windows a deadline
+        armed before the sleep can fall due soon after the wake (see
+        :data:`RESUME_GRACE_SECS`), and every beat in the window arms the longer
+        budget.  The silence measured here is on the awake clock, so the sleep
+        itself never counts as a stall.
 
         Enrichment deliberately never touches ``dump_file``: that file is the
         boot-time crash sentinel (``crash_dump_store._is_header_only`` counts
@@ -612,7 +661,7 @@ class LoopStallWatchdog:
         remaining_budget = exit_after + PAGING_GRACE_MAX_SECS - silence
         if remaining_budget <= 0:
             return
-        if not self._rearm_alarm(min(exit_after, remaining_budget), unless_beat_since=generation):
+        if not self._rearm_alarm(exit_after, cap=remaining_budget, unless_beat_since=generation):
             return
         if self._paging_logged_generation != generation:
             self._paging_logged_generation = generation
@@ -688,16 +737,23 @@ class LoopStallWatchdog:
         mono_delta = mono - prev_mono
         skew = (suspend_now - prev_suspend) - mono_delta
         if skew >= SUSPEND_SKEW_MIN_SECS:
+            # Grant the grace before anything else: the exit armed before the
+            # sleep may come due soon after the wake (see RESUME_GRACE_SECS).
+            self._resume_grace_until = mono + RESUME_GRACE_SECS
+            if self._exit_after is not None:
+                self._rearm_alarm(self._exit_after)
             self._log.info(
                 "host was suspended (or its clock stepped forward) for about %.0fs: the "
                 "suspend-inclusive clock advanced %.0fs while the monotonic clock advanced "
                 "%.1fs since the last poll; the event loop's heartbeat silence is %.1fs on "
-                "the monotonic clock and the stall alarm paused with the host, so this is "
-                "not a stall and nothing exits",
+                "the monotonic clock, so this is not a stall, and for the next %.0fs the "
+                "stall exit allows %.0fs more silence while the host settles",
                 skew,
                 skew + mono_delta,
                 mono_delta,
                 mono - self._last_beat,
+                RESUME_GRACE_SECS,
+                RESUME_GRACE_SECS,
             )
 
     def _run(self) -> None:

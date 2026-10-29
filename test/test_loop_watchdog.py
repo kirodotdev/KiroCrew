@@ -31,6 +31,7 @@ from test_stall_enrichment import loop_thread, wait_until_inside_handle
 from kiro_crew import platform_compat
 from kiro_crew.dashboard import loop_watchdog
 from kiro_crew.dashboard.loop_watchdog import (
+    RESUME_GRACE_SECS,
     SUSPEND_SKEW_MIN_SECS,
     LoopStallWatchdog,
 )
@@ -400,6 +401,24 @@ def test_the_paging_deferral_stops_at_the_grace_cap(monkeypatch: pytest.MonkeyPa
         fx.wd.stop()
 
 
+def test_a_paging_deferral_after_a_resume_keeps_the_resume_grace() -> None:
+    """A managed gateway that wakes and then pages: the paging re-arm must not
+    replace the resume's longer deadline with a bare ``exit_after``."""
+    fx = _PagingFixture()
+    suspend = _Clock()
+    fx.wd._suspend_clock = suspend
+    try:
+        fx.poll_at(5.0)  # baseline for both clocks
+        suspend.t += 5.0 + 600.0  # a 10-minute sleep ended since that poll
+        fx.poll_at(10.0)  # resume seen; also the paging baseline
+        assert fx.arms == [_MANAGED_BUDGET + RESUME_GRACE_SECS]
+        suspend.t += 5.0
+        fx.poll_at(15.0, add_faults=3)  # 5 s into the grace, still paging
+        assert fx.arms[-1] == pytest.approx(_MANAGED_BUDGET + RESUME_GRACE_SECS - 5.0)
+    finally:
+        fx.wd.stop()
+
+
 def test_a_beat_ends_the_paging_episode() -> None:
     fx = _PagingFixture()
     try:
@@ -735,9 +754,8 @@ class _SuspendFixture:
 
 def test_suspend_is_not_a_stall() -> None:
     """A wall-clock jump of 120 s with a monotonic delta of 5 s is a suspend:
-    exactly one INFO line, no dump, nothing written to the crash file, the
-    daemon thread touches no timer, and the heartbeat's next beat re-arms the
-    alarm for ``exit_after`` as on any other tick."""
+    exactly one INFO line, no dump, nothing written to the crash file, and the
+    poll re-arms the exit once with the resume grace added."""
     fx = _SuspendFixture(exit_after=25.0)
     fx.wd.start()
     try:
@@ -752,15 +770,69 @@ def test_suspend_is_not_a_stall() -> None:
         assert "120" in info[0]
         assert fx.dumps == []
         assert fx.dump_file.written == []
-        assert (fx.arms, fx.cancels) == (arms_before, cancels_before)
-        # A later quiet poll does not repeat the line.
+        assert fx.arms == arms_before + [25.0 + RESUME_GRACE_SECS]
+        assert fx.cancels == cancels_before + [1]
+        # A later quiet poll neither repeats the line nor re-arms again.
         assert fx.tick(5.0) is False
         assert len([m for m in fx.records(logging.INFO) if "suspend" in m]) == 1
-        # The heartbeat's own re-arm is unaffected.
-        fx.wd.beat()
-        assert fx.arms == arms_before + [25.0]
+        assert len(fx.arms) == len(arms_before) + 1
     finally:
         fx.wd.stop()
+
+
+def test_a_resume_grants_the_exit_a_bounded_grace() -> None:
+    """A gateway slow right after a wake keeps a longer exit.  The first poll after a
+    resume re-arms the exit for ``exit_after + RESUME_GRACE_SECS``; beats in
+    the window arm what is left of the grace on top of ``exit_after``, so no
+    deadline lands past the window's end plus ``exit_after``; after the window
+    a beat arms plain ``exit_after`` again."""
+    fx = _SuspendFixture(exit_after=25.0)
+    fx.wd.start()
+    try:
+        fx.wd.beat()
+        fx.tick(5.0)
+        fx.arms.clear()
+        fx.tick(5.0, suspend=7 * 60.0)  # a 7-minute sleep ended since the last poll
+        assert fx.arms == [25.0 + RESUME_GRACE_SECS]
+        fx.mono.advance(20.0)
+        fx.wd.beat()  # 20 s into the grace
+        assert fx.arms[-1] == pytest.approx(25.0 + RESUME_GRACE_SECS - 20.0)
+        fx.mono.advance(RESUME_GRACE_SECS)
+        fx.wd.beat()  # past the grace
+        assert fx.arms[-1] == 25.0
+    finally:
+        fx.wd.stop()
+
+
+def test_a_resume_between_a_beat_and_its_alarm_lock_keeps_the_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fx = _SuspendFixture(exit_after=_EXIT_BUDGET)
+    fx.wd._later_active = True
+    fx.wd.check()
+    fx.mono.advance(5.0)
+    fx.suspend.advance(125.0)
+    rearm = fx.wd._rearm_alarm
+
+    def resume_before_rearm(*args: typing.Any, **kwargs: typing.Any) -> bool:
+        monkeypatch.setattr(fx.wd, "_rearm_alarm", rearm)
+        fx.wd.check()
+        return rearm(*args, **kwargs)
+
+    monkeypatch.setattr(fx.wd, "_rearm_alarm", resume_before_rearm)
+    fx.wd.beat()
+    assert fx.arms == [_EXIT_BUDGET + RESUME_GRACE_SECS] * 2
+
+
+def test_suspend_inclusive_now_falls_back_to_monotonic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Where no boot clock exists (Windows) the resume comparison reads
+    ``time.monotonic()``, which counts a sleep there, instead of switching off."""
+    monkeypatch.setattr(loop_watchdog, "boottime_now", lambda: None)
+    before = time.monotonic()
+    reading = loop_watchdog.suspend_inclusive_now()
+    assert reading is not None and before <= reading <= time.monotonic()
+    monkeypatch.setattr(loop_watchdog, "boottime_now", lambda: 7.0)
+    assert loop_watchdog.suspend_inclusive_now() == 7.0
 
 
 def test_overnight_suspend_is_still_not_a_stall() -> None:

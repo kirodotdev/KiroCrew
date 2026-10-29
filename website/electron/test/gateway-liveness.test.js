@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { createLivenessMonitor } = require("../gateway-liveness");
+const { createLivenessMonitor, RESUME_GRACE_MS } = require("../gateway-liveness");
 
 // Drive tick() directly with a stubbed probe — no timers, fully deterministic.
 function harness({ results, failureThreshold = 3, isWindowAlive = () => true } = {}) {
@@ -227,7 +227,7 @@ function suspendHarness(plan) {
     intervalMs: 10_000,
     log: () => {},
   });
-  return { m, events };
+  return { m, events, clock };
 }
 
 const slept = { ok: false, heldMs: 600_000 }; // in flight through a 10-minute sleep
@@ -250,12 +250,44 @@ test("a real hang still trips on its third failure", async () => {
 });
 
 test("a suspend neither counts nor resets a run of real failures", async () => {
-  const { m, events } = suspendHarness([timedOut, timedOut, slept, timedOut]);
+  const { m, events, clock } = suspendHarness([
+    timedOut, timedOut, slept, ...Array(9).fill(timedOut),
+  ]);
   for (let k = 0; k < 3; k++) await m.tick();
   assert.deepStrictEqual(events, []);
   assert.strictEqual(m.getState().consecutiveFailures, 2);
-  await m.tick();
+  for (let k = 0; k < 8; k++) {
+    clock.t += 2_000;
+    await m.tick();
+  }
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 2);
+  clock.t += 2_000;
+  await m.tick(); // the preserved run trips once the 90 s grace ends
   assert.deepStrictEqual(events, ["unresponsive"]);
+});
+
+test("a probe held across sleep starts grace without powerMonitor events", async () => {
+  const { m, events, clock } = suspendHarness([slept, timedOut, timedOut, timedOut]);
+  await m.tick();
+  for (let k = 0; k < 3; k++) {
+    clock.t += 2_000; // 8 s probe plus 2 s idle: starts one interval apart
+    await m.tick();
+  }
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 0);
+});
+
+test("a probe that answers after a sleep still starts the grace", async () => {
+  const sleptOk = { ok: true, heldMs: 600_000 }; // answered right after the wake
+  const { m, events, clock } = suspendHarness([sleptOk, timedOut, timedOut, timedOut]);
+  await m.tick();
+  for (let k = 0; k < 3; k++) {
+    clock.t += 2_000;
+    await m.tick();
+  }
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 0);
 });
 
 test("a failure is read as a suspend only past two intervals", async () => {
@@ -266,4 +298,65 @@ test("a failure is read as a suspend only past two intervals", async () => {
   assert.strictEqual(m.getState().consecutiveFailures, 1);
   await m.tick();
   assert.strictEqual(m.getState().consecutiveFailures, 1);
+});
+
+// After a wake the gateway can stay slow for tens of seconds without being
+// wedged. Each probe here fails at its own 8 s budget, never across the
+// sleep, so only the resume grace can spare it. `clock.t` is the wall clock.
+function resumeHarness() {
+  const clock = { t: 0 };
+  const events = [];
+  const m = createLivenessMonitor({
+    probe: () => {
+      clock.t += 8_000;
+      return Promise.reject(new Error("unresponsive"));
+    },
+    onUnresponsive: () => events.push("unresponsive"),
+    now: () => clock.t,
+    intervalMs: 10_000,
+    log: () => {},
+  });
+  // One interval between ticks: the probe took 8 s, the timer waits 2 s more.
+  const tickAfter = async (gapMs = 2_000) => { clock.t += gapMs; await m.tick(); };
+  return { m, events, clock, tickAfter };
+}
+
+test("failures right after a powerMonitor resume are not counted", async () => {
+  const { m, events, tickAfter } = resumeHarness();
+  m.noteResume();
+  for (let k = 0; k < 3; k++) await tickAfter();
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 0);
+});
+
+test("a gap between ticks reads as a sleep and starts the grace", async () => {
+  const { m, events, tickAfter } = resumeHarness();
+  await tickAfter(); // ran before the sleep: one real failure
+  assert.strictEqual(m.getState().consecutiveFailures, 1);
+  await tickAfter(420_000); // first tick after a 7-minute sleep
+  await tickAfter();
+  await tickAfter();
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 1);
+});
+
+test("a backend still failing once the grace ends trips as usual", async () => {
+  const { m, events, clock, tickAfter } = resumeHarness();
+  m.noteResume();
+  for (let k = 0; k < 3; k++) await tickAfter(); // inside the grace
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 0);
+  // Keep ticking one interval apart until the next probe settles past the grace.
+  while (clock.t < RESUME_GRACE_MS - 10_000) await tickAfter();
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 0);
+  for (let k = 0; k < 3; k++) await tickAfter();
+  assert.deepStrictEqual(events, ["unresponsive"]);
+});
+
+test("ticks one interval apart are not a sleep", async () => {
+  const { m, events, tickAfter } = resumeHarness();
+  for (let k = 0; k < 3; k++) await tickAfter();
+  assert.deepStrictEqual(events, ["unresponsive"]);
+  assert.strictEqual(m.getState().consecutiveFailures, 3);
 });
