@@ -805,7 +805,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RESTART_STOP_TIMEOUT,
         _RESTART_TOKEN_TTL,
         _RESTART_TOKEN_WAIT,
-        _config_dir_owner,
         _died_replacement_message,
         _gateway_log_lines_since,
         _gateway_log_mark,
@@ -828,9 +827,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_server_stop import (  # noqa: F401
         _MAX_ECHOED_NAME_LEN,
         _SHUTDOWN_RESPONSE_MAX_BYTES,
+        _SUPERVISOR_SEARCH_DEPTH,
+        _config_dir_owner,
+        _desktop_supervisor_pid,
         _gateway_pid,
         _manual_stop_command,
         _pid_exited,
+        _process_path,
+        _refuse_desktop_supervised,
         _refuse_if_lock_held,
         _refuse_lock_holder,
         _refuse_service_alias,
@@ -841,6 +845,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stop_mcp_gateway_daemon,
         _terminal_safe_name,
         _verified_loopback_gateway_pids,
+        desktop_app_supervisor,
     )
     from kiro_crew.cli_server_update import (  # noqa: F401
         _refresh_agent_config,

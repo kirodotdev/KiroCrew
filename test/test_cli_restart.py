@@ -713,6 +713,9 @@ class TestRestart:
             self._mock_sel(),
             self._tool_absent_acked_shutdown(4242, kirocrew=False),
             patch("kiro_crew.cli_server.lock_holder", side_effect=_probe),
+            # The up-front desktop-app check reads the lock too; these tests
+            # count the reads the stop-and-wait path makes.
+            patch("kiro_crew.cli_server._config_dir_owner", return_value=None),
             patch("kiro_crew.cli_server.os.kill") as mock_kill,
             patch("kiro_crew.cli_server.platform_compat.kill_process_tree") as mock_tree,
             patch("kiro_crew.cli_server._wait_for_pids_exit", side_effect=_wait),
@@ -809,6 +812,9 @@ class TestRestart:
             self._mock_sel(),
             self._tool_absent_acked_shutdown(4242),
             patch("kiro_crew.cli_server.lock_holder", side_effect=_probe),
+            # The up-front desktop-app check reads the lock too; these tests
+            # count the reads the stop-and-wait path makes.
+            patch("kiro_crew.cli_server._config_dir_owner", return_value=None),
             patch("kiro_crew.cli_server._wait_for_pids_exit", side_effect=_wait),
             patch(
                 "kiro_crew.cli_server._spawn_detached_gateway",
