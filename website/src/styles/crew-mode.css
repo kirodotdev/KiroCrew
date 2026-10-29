@@ -1,6 +1,6 @@
 /* ── Crew Mode surfaces ──
    One gradient ties every Crew Mode surface together: the session list root
-   row's ghost badge and "CREW MODE" eyebrow (the row itself stays a plain
+   row's "CREW MODE" eyebrow (the row itself stays a plain
    session row), the filter chip and the composer's Crew Mode chip. It runs from the theme's own `--aim` (the
    crew's purple) to `--info` (its blue), so a theme that moves either token
    moves Crew Mode with it, light and dark alike. Nothing here covers other UI:

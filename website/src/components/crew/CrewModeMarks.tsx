@@ -17,10 +17,12 @@ export function CrewGhostBadge({ size = 28 }: { size?: number }) {
   )
 }
 
-/** "CREW MODE" in the crew gradient, the root row's first line. */
+/** "CREW MODE" in the crew gradient, the root row's first line. The tracking is a
+ *  whole pixel: at 10px, a 0.12em step (1.2px) lands letters on fractional pixels
+ *  and one gap reads wider ("CRE W"). */
 export function CrewEyebrow() {
   return (
-    <span data-testid="crew-eyebrow" className="crew-eyebrow-text font-bold uppercase tracking-[0.12em] truncate">
+    <span data-testid="crew-eyebrow" className="crew-eyebrow-text font-bold uppercase tracking-[1px] truncate">
       {i18nT('components.crewMode.eyebrow')}
     </span>
   )

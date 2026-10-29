@@ -235,7 +235,15 @@ describe('chat sidebar — conductor lane', () => {
     // A plain session row: no tinted card frame.
     expect(card.className).not.toContain('crew-card')
     expect(within(card).getByTestId('crew-eyebrow')).toHaveTextContent('Crew Mode')
-    expect(within(card).getByTestId('crew-ghost-badge')).toBeTruthy()
+    // The ghost is a 12px mark inline before the eyebrow, not a badge beside the
+    // title, so the title keeps the row's width.
+    expect(within(card).queryByTestId('crew-ghost-badge')).toBeNull()
+    const eyebrow = within(card).getByTestId('crew-eyebrow')
+    const ghost = eyebrow.parentElement!.querySelector('[data-testid="kiro-ghost-mark"]') as HTMLElement
+    expect(ghost).toBeTruthy()
+    expect(ghost.nextElementSibling).toBe(eyebrow)
+    expect(ghost.style.width).toBe('12px')
+    expect(eyebrow.className).toContain('tracking-[1px]')
     // The conductor's name is not shown: Crew Mode chooses it.
     expect(within(card).queryByText('kirocrew-conductor')).toBeNull()
     // The server's groups, not a guess from the rows: W1's "done" comes from the API.

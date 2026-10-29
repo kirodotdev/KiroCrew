@@ -48,7 +48,8 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
-import { CrewEyebrow, CrewGhostBadge, CrewWorkerStack } from '../../components/crew/CrewModeMarks'
+import { CrewEyebrow, CrewWorkerStack } from '../../components/crew/CrewModeMarks'
+import { KiroGhostMark } from '../../components/KiroGhostMark'
 import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -1476,7 +1477,6 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             // shifted left by the missing chevron.
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
-          {crewRoot && <span className="mt-2 mr-2"><CrewGhostBadge size={26} /></span>}
           {/* The `:has` rule hides the title line below while a crewmate head (`MemberRowHead`),
               which already carries the name, is drawn on the first line. Not while
               renaming: the rename box lives in that title line. */}
@@ -1491,6 +1491,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
               {/* A Crew Mode root names the mode, not the conductor behind it: the
                 *  conductor is Crew Mode's to choose and may be swapped. */}
+              {/* The crew's ghost sits inline before the eyebrow, at the eyebrow's
+                *  size, so the title keeps the row's full width. */}
+              {crewRoot && <KiroGhostMark size={12} className="inline-block shrink-0 crew-tone-aim" />}
               {crewRoot && <CrewEyebrow />}
               {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
