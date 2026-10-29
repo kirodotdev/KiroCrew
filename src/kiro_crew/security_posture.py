@@ -863,6 +863,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "mcp_dashboard_folder_runs.py",
         "mcp_dashboard_references.py",
         "mcp_dashboard_session_runs.py",
+        # The ``crew=`` half of five session tools: re-redacts text the gateway
+        # route (``dashboard/handlers/remote_dispatch_routes.py``, the registered
+        # sink) already scrubbed, on its way into the tool reply.
+        "mcp_session_crew.py",
         "mcp_dashboard_tag_runs.py",
         # Same class again: this stdio server redacts the ledger's own
         # worker-authored prose before returning it, but the egress boundary is

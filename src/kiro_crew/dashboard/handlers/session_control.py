@@ -20,6 +20,7 @@ from aiohttp import web
 
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
 from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
 from kiro_crew.dashboard.handlers._shared import (
     _read_session_key,
@@ -335,6 +336,8 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "create", body)
         # Strictly typed, never truthiness: the string "false" is truthy, and a
         # caller asking for a real create must never get a silent preview.
         dry_run = body.get("dry_run", False)
@@ -463,6 +466,8 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "stop", body)
         result = await sc.stop_target(
             state,
             caller_session_key=_read_session_key(request),
@@ -675,6 +680,8 @@ async def api_session_control_close(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "close", body)
         result = await sc.close_target(
             state,
             caller_session_key=_read_session_key(request),
@@ -751,6 +758,8 @@ async def api_session_control_send(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if crew_routes.has_crew(body):
+            return await crew_routes.handle_crew_call(request, "send", body)
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise sc.SessionControlError("message is required", code="message_required")
@@ -985,6 +994,8 @@ async def api_session_control_read(request: web.Request) -> web.Response:
     # synchronous query parsing (`request.query` is already available and
     # `read_messages` does not await), so there is no suspension to invalidate it.
     # The target's window loads ahead of it, off the loop, for the same reason.
+    if "crew" in request.query:
+        return await crew_routes.handle_crew_call(request, "read", dict(request.query))
     state: DashboardState = request.app["state"]
     await sc.load_target_window(state, request.query.get("target") or "")
     await sc.prewarm_enabled_check()
