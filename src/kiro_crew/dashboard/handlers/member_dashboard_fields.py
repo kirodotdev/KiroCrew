@@ -23,7 +23,7 @@ WHY THIS IS BUILT ON :class:`~kiro_crew.dashboard_feed.DashboardFeed` rather tha
 it. The feed already solves the hard half: one keyed bus subscription per fold with a
 baseline that closes the join race, values ordered by REVISION (a slot fold's seq cannot
 order two values of one key), a cached value per fold so a read is O(fields), and
-staleness as a fact about a path that stopped resolving rather than a timer. All of that
+an unresolved field named with its reason rather than a timer. All of that
 is the same for a page out of a package as for a page out of a template -- what differs
 is only WHICH document declares the fields, and that difference is one function here.
 
@@ -200,9 +200,9 @@ class LivePage:
         # reading outside the lock is what let a stale snapshot win -- see `_full_read`.
         self._lock = threading.RLock()
         self._sent: dict[str, Any] = {}
-        #: What the page's stale band was last told, so a change in it is a
+        #: Which cells the page was last told are missing, so a change in it is a
         #: reason to send even when every value compares equal.
-        self._sent_band: tuple[bool, tuple[str, ...]] = (False, ())
+        self._sent_missing: tuple[str, ...] = ()
         self._version = 0
         #: This page's own counter, named so a reader can tell one counter's numbers
         #: from another's. Minted per instance because the version restarts with the
@@ -250,8 +250,8 @@ class LivePage:
         self._read_trees()
         if unavailable:
             # REPORTED, never raised: one unsubscribable fold must not deny the page the
-            # others, and the fields it feeds read as missing -- which the frame draws as
-            # its stale band rather than as an error.
+            # others, and the fields it feeds read as missing and unresolved -- which
+            # dims their cells and reaches the crewmate's turn block, never an error.
             logger.info(
                 "dashboard %s: no subscription for fold(s) %s; their fields read as missing",
                 self.slug,
@@ -282,7 +282,7 @@ class LivePage:
         full read anyway.
 
         A fold that cannot be read leaves its entry absent, so its fields read as
-        missing and the page shows the band rather than a tree drawn from nothing.
+        missing rather than as a tree drawn from nothing.
         """
         from kiro_crew.crew_log import projection
 
@@ -314,28 +314,45 @@ class LivePage:
     def _resolve_trees(self, read: Any) -> None:
         """Fill the tree-bound fields from the cached read, in place.
 
-        The feed reported them missing, because it has no subscription for a fold with
-        no scope. Resolved here from the cache :meth:`_read_trees` filled, and taken OUT
-        of ``missing`` when they resolve -- a tree-bound page would otherwise fly the
-        stale band permanently, which teaches a reader to ignore it.
+        The feed reported them missing and unresolved, because it has no subscription
+        for a fold with no scope. Resolved here from the cache :meth:`_read_trees`
+        filled, and taken OUT of both when they resolve -- a tree-bound page would
+        otherwise dim its cells and tell the crewmate the tree is unseen on every turn.
+        A tree read that FAILED leaves the feed's ``fold_unseen`` standing; a tree that
+        has a value without the path reads ``path_missing``, or ``older_value`` when
+        the field resolved before.
         """
-        from kiro_crew.dashboard_feed import MISSING, resolve_path
+        from kiro_crew.dashboard_feed import (
+            FOLD_UNSEEN,
+            MISSING,
+            OLDER_VALUE,
+            PATH_MISSING,
+            remember_resolved,
+            resolve_path,
+            resolved_before,
+        )
 
         with self._lock:
             trees = dict(self._trees)
+        resolved_here: list[str] = []
         for name, spec in self._manifest.fields.items():
             fold = spec.fold or ""
             if fold not in self._tree_folds or fold not in trees:
                 continue
             resolved = resolve_path(trees[fold], spec.path or "")
             if resolved is MISSING:
+                # The tree HAS a value, so a miss is the path, not an unseen fold.
+                if read.unresolved.get(name) == FOLD_UNSEEN:
+                    read.unresolved[name] = (
+                        OLDER_VALUE if name in resolved_before(self._feed.slot) else PATH_MISSING
+                    )
                 continue
             read.fields[name] = resolved
+            resolved_here.append(name)
             if name in read.missing:
                 read.missing.remove(name)
-        read.stale = bool(read.missing) and any(
-            not self._manifest.fields[n].agentic for n in read.missing if n in self._manifest.fields
-        )
+            read.unresolved.pop(name, None)
+        remember_resolved(self._feed.slot, resolved_here)
 
     def _payload(self, fields: Mapping[str, Any], read: Any, version: int) -> dict[str, Any]:
         """One frame's ``read``, in the shape the frame's own builder produces."""
@@ -345,7 +362,6 @@ class LivePage:
             fields,
             agentic=sorted(self._agentic),
             seq=getattr(read, "seq", 0),
-            stale=bool(getattr(read, "stale", False)),
             missing=sorted(getattr(read, "missing", ()) or ()),
             written_at={
                 name: str(self._redact(at))
@@ -418,8 +434,8 @@ class LivePage:
         be in flight at once -- a page asks on every gap it sees -- and with the tree
         read outside the lock the older of the two can finish last, replace ``_trees``
         with what it saw, and then be stamped with the higher version. The page accepts
-        that as the latest and draws a tree from before the newer one, with
-        ``stale: false`` beside it. Holding the lock across both is what makes the
+        that as the latest and draws a tree from before the newer one, with nothing
+        saying so. Holding the lock across both is what makes the
         values and the version describe one instant, which is the same reason
         ``_full_read`` holds it across its own read.
 
@@ -464,16 +480,13 @@ class LivePage:
             # `DashboardFeed.read` DROPS a field whose fold path does not resolve, so
             # its last value stays in `self._sent` and nothing compares unequal. A
             # comparison of values alone therefore sends nothing, and the page keeps
-            # drawing that value with its stale band hidden -- reporting a number as
-            # current at the moment the product cannot read it. So the band's own
-            # inputs are part of what "moved".
-            band = (
-                bool(getattr(read, "stale", False)),
-                tuple(sorted(getattr(read, "missing", ()) or ())),
-            )
-            if not moved and band == self._sent_band:
+            # drawing that value undimmed -- reporting a number as current at the
+            # moment the product cannot read it. So the missing set is part of what
+            # "moved".
+            missing_now = tuple(sorted(getattr(read, "missing", ()) or ()))
+            if not moved and missing_now == self._sent_missing:
                 return
-            self._sent_band = band
+            self._sent_missing = missing_now
             self._sent.update(moved)
             self._version += 1
             version = self._version
@@ -513,8 +526,8 @@ def render_package_page(
     html = ((package.get("view") or {}).get("html")) or ""
     dashboard_frame.validate_page(html)
     # WITH NO SCRIPT, NOTHING ELSE FILLS THE CELLS. The bootstrap is what sets a
-    # binding's text, so a page mounted without it has every bound cell EMPTY while
-    # its stale band stays hidden -- an empty page that reads as a current one.
+    # binding's text, so a page mounted without it has every bound cell EMPTY -- an
+    # empty page that reads as a current one.
     # Filled here instead, ESCAPED, so this path keeps the same promise the
     # assignment makes: a value can never become markup.
     #

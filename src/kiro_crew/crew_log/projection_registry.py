@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping
 from typing import Any, Final, cast
 
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_ENTRY_TYPE,
+    CUSTOM_FOLD_NAME,
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_FOLD_NAME,
     DASHBOARD_REFUSED_ENTRY_TYPE,
@@ -53,6 +55,10 @@ from kiro_crew.crew_log.projection_dashboard import (
     _agentic_rows,
     _agentic_start,
     _agentic_step,
+    _custom_render,
+    _custom_rows,
+    _custom_start,
+    _custom_step,
     _mistakes_render,
     _mistakes_rows,
     _mistakes_start,
@@ -727,6 +733,17 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=frozenset({WAITING_ENTRY_TYPE}),
         copy_state=_flat_copy,
         count_rows=_waiting_rows,
+    ),
+    # The records a script cron writes for its crewmate, keyed by record type and
+    # keeping the latest per type -- the agentic fold's shape with the writer stamped
+    # on every row, so a page can bind a script's result with no model turn.
+    CUSTOM_FOLD_NAME: _Fold(
+        CUSTOM_FOLD_NAME,
+        _custom_start,
+        _custom_step,
+        _custom_render,
+        affects=frozenset({CUSTOM_ENTRY_TYPE}),
+        count_rows=_custom_rows,
     ),
     # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
     # and when, under the cap. What each worker is doing is ``worker``, merged in at

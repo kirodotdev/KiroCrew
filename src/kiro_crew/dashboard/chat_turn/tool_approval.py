@@ -436,6 +436,14 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             # maps to a concrete kiro agent, so it must never decide
             # which builtin app an agent belongs to.
             resolved_agent=read_effective_agent(client),
+            # The slot's Reads approval mode, so the gate's read-only
+            # tier may prove one of Kiro Crew's OWN read-only MCP
+            # tools by its trusted identity (``@kirocrew-core/
+            # memory_recall`` and its siblings). A surface fact, like
+            # ``classifier_only``: it unlocks that one proof and
+            # nothing else, and the auto-approve it yields walks the
+            # same hook branch below -- PreToolUse hooks and all.
+            trust_reads=bool(slot._trust_reads),
         )
         if tool_result.action == TOOL_DENY:
             # Surface WHY: carry the deny reason into the pill so

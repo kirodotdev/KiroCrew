@@ -14738,6 +14738,12 @@
         "default_crewmate_unknown_reason": "{{name}} ne figure plus dans la liste des coéquipiers"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} serveur que tu veux partager n'est pas partagé : {{names}}. Son lancement attend ton approbation, donc chaque chat lance sa propre copie.",
+        "share_refused_many": "{{count}} serveurs que tu veux partager ne sont pas partagés : {{names}}. Leur lancement attend ton approbation, donc chaque chat lance sa propre copie.",
+        "share_refused_other": "{{count}} serveurs que tu veux partager ne sont pas partagés : {{names}}. Leur lancement attend ton approbation, donc chaque chat lance sa propre copie.",
+        "share_refused_restart": "Dans Gestion MCP, approuve le partage de chacun. Redémarre ensuite le gateway (Paramètres → À propos → Redémarrer la passerelle) pour que les nouveaux chats utilisent la copie partagée.",
+        "share_refused_review": "Vérifier dans Gestion MCP",
+        "share_status_failed": "Impossible de vérifier si les serveurs que tu veux partager sont approuvés.",
         "actions": "Actions",
         "add_custom": "Ajouter personnalisé",
         "add_server": "Ajouter un serveur",
@@ -16723,7 +16729,7 @@
         "immediate": "Immédiat",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Le mode immédiat affiche les fragments bruts dès leur arrivée. Le mode fluide les met en tampon et fait apparaître le texte à un rythme régulier.",
         "it_ops": "IT / Exploitation",
-        "keep_your_computer_awake_while_a_task_is_running": "Gardez votre ordinateur actif pendant l'exécution d'une tâche",
+        "keep_your_computer_awake_while_a_task_is_running": "Garde ton ordinateur actif pendant l'exécution d'une tâche. Sur certains portables Windows (Modern Standby), verrouiller l'écran peut quand même le mettre en veille, donc laisse l'écran allumé pour les longues tâches.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro adapte le vocabulaire et les exemples à votre profil professionnel",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro utilise cette description pour adapter le vocabulaire et les exemples à ton rôle.",
         "knowledge_library": "Bibliothèque de connaissances",
@@ -19620,6 +19626,8 @@
       "switch_sessions": "changer de session"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "Dans l'app de bureau, les fenêtres détachées ne fonctionnent pas dans une crew distante. Continue à travailler dans cette crew ici.",
+      "desktop_app_could_not_open_pop_out_window": "L'app de bureau n'a pas pu ouvrir la fenêtre détachée. Continue à travailler dans cette fenêtre.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Votre navigateur a bloqué la fenêtre détachée. Autorisez les fenêtres pop-up pour ce site et réessayez."
     },
     "sanitize": {

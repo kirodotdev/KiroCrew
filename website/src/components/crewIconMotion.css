@@ -1,0 +1,84 @@
+/*
+ * Body motion for a WORKING icon-tier avatar (see CrewAvatar's icon branch).
+ *
+ * The tile is the root element's background. One still image of the silhouette
+ * sits inside four nested wrappers, and the wrappers move it: fit (a static
+ * shrink that makes headroom), sway, bob and squash. The numbers come from
+ * `iconMotionVars()` in lib/avatarPoses.ts, as custom properties on the root, so
+ * the tempo and amplitude stay the ghost tier's own.
+ *
+ * Only transforms move, on elements outside the image. The browser rasters the
+ * picture once and moves that raster, so the eyes and the body cannot be painted
+ * at different moments — the tearing an SVG-internal animation showed on iOS.
+ */
+.crew-icon-motion {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+}
+
+.crew-icon-motion span,
+.crew-icon-motion img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.crew-icon-fit {
+  transform: translateY(calc(var(--crew-icon-fit-drop) * 1%)) scale(var(--crew-icon-fit-scale));
+  transform-origin: calc(var(--crew-icon-fit-origin-x) * 1%) calc(var(--crew-icon-fit-origin-y) * 1%);
+}
+
+.crew-icon-sway {
+  animation: crew-icon-sway var(--crew-icon-sway-secs) ease-in-out infinite;
+  transform-origin: calc(var(--crew-icon-sway-origin-x) * 1%) calc(var(--crew-icon-sway-origin-y) * 1%);
+}
+
+.crew-icon-bob {
+  animation: crew-icon-bob var(--crew-icon-secs) ease-in-out infinite;
+}
+
+.crew-icon-sq {
+  animation: crew-icon-sq var(--crew-icon-secs) ease-in-out infinite;
+  transform-origin: calc(var(--crew-icon-sq-origin-x) * 1%) calc(var(--crew-icon-sq-origin-y) * 1%);
+}
+
+@keyframes crew-icon-sway {
+  0%,
+  100% {
+    transform: rotate(var(--crew-icon-sway-from));
+  }
+  50% {
+    transform: rotate(var(--crew-icon-sway-to));
+  }
+}
+
+@keyframes crew-icon-bob {
+  0%,
+  100% {
+    transform: translateY(calc(var(--crew-icon-sink) * 1%));
+  }
+  50% {
+    transform: translateY(calc(var(--crew-icon-rise) * 1%));
+  }
+}
+
+@keyframes crew-icon-sq {
+  0%,
+  100% {
+    transform: scale(var(--crew-icon-stretch-x), var(--crew-icon-stretch-y));
+  }
+  50% {
+    transform: scale(var(--crew-icon-squash-x), var(--crew-icon-squash-y));
+  }
+}
+
+/* The still frame: no motion and no headroom shrink, so it matches the still icon. */
+@media (prefers-reduced-motion: reduce) {
+  .crew-icon-motion span {
+    animation: none !important;
+  }
+  .crew-icon-fit {
+    transform: none;
+  }
+}

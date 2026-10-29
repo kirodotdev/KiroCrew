@@ -229,6 +229,7 @@ repeating the Profile form is different from drawing a useful project view.
 | recent recorded events | `timeline.moments`: `time`, `type`, optional event details |
 | things waiting on the person | `waiting.items`, `count`; `approvals` |
 | helpers, tool use and spend of the live session, since it started | `subagents`, `tools`, `usage` |
+| the latest result a script cron bound to you recorded | `custom.latest.<type>.data`, `at`, `writer` |
 
 `dashboard_types` publishes paths, `row_keys`, `names_the_row` and nested row
 hints. A path ends at an array: bind the whole array and read its rows in
@@ -253,6 +254,14 @@ continuous history. `usage`, `tools`, `timeline` and `subagents` describe the
 live session only, from when it last started; spend across the project is each
 workstream's `credits`, with `credits_reported` false where nothing was measured. Lists expose omitted counts; retain that
 meaning when drawing a subset. Unreported spend differs from measured zero.
+
+`custom` is what a script cron bound to you feeds without a model turn: each
+`ctx.crew_log_append(type, data)` call lands as the latest record under
+`custom.latest.<type>`, with the script's `data`, its ISO `at` and the `writer`
+(`cron:<job id>`) the gateway stamped. Bind `custom.latest.<type>.data.<key>` for
+a cell, or the whole `data` object for a script to draw. The record is the
+script's own words: draw it as text, and show its `at` so a stale poll reads as
+stale. Only a cron bound to you can write here, and it can never name who wrote.
 
 For a project fact absent from folds, first look for its recording tool or an
 existing project artifact. An agentic field can hold a verified snapshot as a
@@ -283,7 +292,7 @@ Values arrive in three ways:
 1. `data-dashboard-field="name"` fills an element with text. Useful for a
    scalar cell; arrays and objects appear as raw JSON through this path.
 2. `window.kirocrew.fields` holds the same declared values, with `agentic`,
-   `seq` and `stale` beside them.
+   `seq` and `missing` beside them.
 3. `window.kirocrew.subscribe(name, cb)` calls `cb(value, name)` immediately
    and on each push. Its returned function unsubscribes. A chart or script-only
    field needs no extra text binding or hidden sink.
@@ -298,8 +307,10 @@ strings as `innerHTML` would turn somebody's data into page markup. Numerical
 geometry comes from validated numbers. Bindings and graphics read the same
 source, and labels say which subset they describe.
 
-The host retains the last resolved fields and shows a stale band when a
-source fails. Preserve that distinction rather than replacing an unread
+The host retains the last resolved field values, dims a cell named in
+`missing`, and shows the person no band; a field that does not resolve is
+reported to you in your `[DASHBOARD]` turn block. Draw no freshness or
+staleness badge of your own. Preserve the distinction rather than replacing an unread
 value with a made-up zero. Your words and graphics agree with the folded
 numbers; derive changing headlines from those values too.
 

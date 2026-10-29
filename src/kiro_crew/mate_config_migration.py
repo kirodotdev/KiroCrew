@@ -4,8 +4,11 @@ RFC *mate-owned-agent-config* §6; the steps are in ``crew-mode.md``, "Existing
 crewmates move at startup". Per crewmate whose ``kiro_agent`` does not yet name
 its own file: read and govern the agent it runs on, build the file from what that
 agent adds to the worker base (:func:`kiro_crew.mate_worker.worker_additions`),
-dry-run the merge (:func:`dry_run`: nothing lost, nothing gained), write and
-re-check the file and its kit record, then, once every candidate is proven,
+dry-run the merge (:func:`plan_move`: nothing gained and no limit loosened; a
+grant that would be gained is withheld for the capability card, a loss moves
+anyway and is named in the crewmate's one notice; an unreadable agent moves onto
+the default template), write and re-check the file and its kit record, then,
+once every candidate is proven,
 repoint each binding under the create path's optimistic lock and move its
 pre-upgrade threads (:func:`repoint_moved_threads`).
 
@@ -62,7 +65,14 @@ class MigrationReport:
     copy_failed: dict[str, str] = dataclasses.field(default_factory=dict)
     dry_run_failed: dict[str, str] = dataclasses.field(default_factory=dict)
     repoint_failed: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: Kept for callers that read it; an unreadable agent now moves onto the
+    #: default template (``moved_from_default``), so nothing lands here.
     skipped_no_source: list[str] = dataclasses.field(default_factory=list)
+    #: Moved although its worker does not grant exactly what its old agent did:
+    #: per crewmate, the sentence its one notice names (what it lost, what was withheld).
+    moved_with_changes: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: Moved onto the default template because the agent it ran on was unreadable.
+    moved_from_default: list[str] = dataclasses.field(default_factory=list)
     #: Per crewmate, the pre-upgrade DM threads moved onto its conductor.
     threads_repointed: dict[str, list[str]] = dataclasses.field(default_factory=dict)
 
@@ -135,13 +145,14 @@ def _already_moved(data: dict[str, Any], name: str, member_id: str) -> bool:
     return recorded is None or recorded == member_id
 
 
-def _record_migrated(name: str, source: str = "", *, moved: bool = True) -> None:
+def _record_migrated(name: str, source: str = "", *, moved: bool = True, reason: str = "") -> None:
     """Record *name* as moved (*moved*); with *source*, owe a repoint of its old threads.
 
     *source* is the agent the crewmate ran on before the move. Its entry under
     ``threads`` names it, so :func:`repoint_moved_threads` knows which records are
     the crewmate's pre-upgrade chats. Written with ``moved=False`` before the
     repoint (the intent), so a crash after the repoint still owes the threads.
+    *reason* is how it moved, kept under ``reasons``.
     """
     data = _read_ledger()
     member_id = _member_id(name)
@@ -153,6 +164,11 @@ def _record_migrated(name: str, source: str = "", *, moved: bool = True) -> None
         else:
             ids.pop(name, None)
         data["migrated_ids"] = dict(sorted(ids.items()))
+        if reason:
+            reasons = data.get("reasons")
+            reasons = reasons if isinstance(reasons, dict) else {}
+            reasons[name] = reason
+            data["reasons"] = dict(sorted(reasons.items()))
     if source:
         threads = data.get("threads")
         threads = threads if isinstance(threads, dict) else {}
@@ -458,12 +474,83 @@ def _by_design(grant: tuple[str, ...], owned: set[str], withheld: set[str]) -> b
     return False
 
 
-def dry_run(base: dict[str, Any], source: dict[str, Any], mate_file: dict[str, Any]) -> str:
-    """Why the merged worker would not grant exactly its old capabilities, else ``""``.
+@dataclasses.dataclass
+class Differences:
+    """How the worker merged from a crewmate file differs from its old agent.
 
-    The worker merged from *mate_file* over *base* must keep every grant *source*
-    has beyond the base and add none (what the base withholds by design,
-    :func:`_by_design`, is no loss), carry the old prompt, and run every hook.
+    Two kinds. A *loss* (a grant the old agent had that the worker does not, or
+    its prompt) leaves the worker able to do less: the crewmate still moves and
+    its user is told once (owner decision, ``docs/decisions``). A *loosening* (a grant
+    gained, a switched-off server started, a hook or a ``permissions`` /
+    ``toolsSettings`` restriction not kept) would let the worker do more than the
+    old agent was allowed to: the crewmate never moves with one.
+    """
+
+    lost: set[tuple[str, ...]] = dataclasses.field(default_factory=set)
+    gained: set[tuple[str, ...]] = dataclasses.field(default_factory=set)
+    relaunched: set[str] = dataclasses.field(default_factory=set)
+    prompt_lost: bool = False
+    hooks_lost: bool = False
+    limits_lost: set[str] = dataclasses.field(default_factory=set)
+
+    def loosening(self) -> str:
+        """Why the worker would be allowed more than the old agent, else ``""``."""
+        problems = []
+        if self.gained:
+            problems.append(_describe("its worker would gain", self.gained))
+        if self.relaunched:
+            problems.append(
+                _describe("its worker would start", {("server", n) for n in self.relaunched})
+                + " it had switched off"
+            )
+        if self.hooks_lost:
+            problems.append("its hooks would not run on the worker")
+        if self.limits_lost:
+            problems.append(
+                "its worker would not keep its " + " and ".join(sorted(self.limits_lost))
+            )
+        return "; ".join(problems)
+
+    def losses(self) -> str:
+        """What the old agent had that the worker lacks, for the user's notice, else ``""``."""
+        parts = []
+        if self.lost:
+            parts.append(_describe("it no longer has", self.lost))
+        if self.prompt_lost:
+            parts.append("its old instructions were not carried over")
+        return "; ".join(parts)
+
+    def text(self) -> str:
+        """Every difference, in the order :func:`dry_run` has always named them."""
+        problems = []
+        if self.lost:
+            problems.append(_describe("its worker would lose", self.lost))
+        if self.gained:
+            problems.append(_describe("its worker would gain", self.gained))
+        if self.relaunched:
+            problems.append(
+                _describe("its worker would start", {("server", n) for n in self.relaunched})
+                + " it had switched off"
+            )
+        if self.prompt_lost:
+            problems.append("its worker would not carry its prompt")
+        if self.hooks_lost:
+            problems.append("its hooks would not run on the worker")
+        if self.limits_lost:
+            problems.append(
+                "its worker would not keep its " + " and ".join(sorted(self.limits_lost))
+            )
+        return "; ".join(problems)
+
+
+def differences(
+    base: dict[str, Any], source: dict[str, Any], mate_file: dict[str, Any]
+) -> Differences:
+    """How the worker merged from *mate_file* over *base* differs from *source*.
+
+    It should keep every grant *source* has beyond the base and add none (what
+    the base withholds by design, :func:`_by_design`, is no loss), carry the old
+    prompt, run every hook and keep every restriction.
     """
     additions = worker_additions(base, mate_file)
     merged = merge_worker_spec(base, additions)
@@ -471,50 +558,115 @@ def dry_run(base: dict[str, Any], source: dict[str, Any], mate_file: dict[str, A
     have_base = _grants(base, base_servers)
     have_source = _grants(source, base_servers)
     have_merged = _grants(merged, base_servers)
-    problems = []
     withheld = _worker_withheld(base)
     owned = _base_owned_servers(base)
-    lost = {
+    out = Differences()
+    out.lost = {
         t for t in (have_source - have_base) - have_merged if not _by_design(t, owned, withheld)
     }
-    gained = have_merged - (have_base | have_source)
-    if lost:
-        problems.append(_describe("its worker would lose", lost))
-    if gained:
-        problems.append(_describe("its worker would gain", gained))
+    out.gained = have_merged - (have_base | have_source)
     # A server the old agent switched off stays off: the worker base declaring it
     # is no licence to launch it. Base-owned or not, this is a restriction to keep.
-    relaunched = {
+    merged_servers = _servers(merged.get("mcpServers"))
+    out.relaunched = {
         name
         for name, entry in _servers(source.get("mcpServers")).items()
         if mcp_entry_is_muted(entry)
-        and name in _servers(merged.get("mcpServers"))
-        and not mcp_entry_is_muted(_servers(merged.get("mcpServers"))[name])
+        and name in merged_servers
+        and not mcp_entry_is_muted(merged_servers[name])
     }
-    if relaunched:
-        problems.append(
-            _describe("its worker would start", {("server", n) for n in relaunched})
-            + " it had switched off"
-        )
     old_prompt, base_prompt, new_prompt = (
         p if isinstance(p, str) else ""
         for p in (source.get("prompt"), base.get("prompt"), merged.get("prompt"))
     )
     if old_prompt.strip() and old_prompt.strip() != base_prompt.strip():
-        if old_prompt.strip() not in new_prompt:
-            problems.append("its worker would not carry its prompt")
-    if _hook_entries(source) - _hook_entries(base):
-        problems.append("its hooks would not run on the worker")
+        out.prompt_lost = old_prompt.strip() not in new_prompt
+    out.hooks_lost = bool(_hook_entries(source) - _hook_entries(base))
     # The worker merge carries no ``permissions`` or ``toolsSettings`` from the
     # file, so an agent with a restriction there (a deny or ask rule, an
     # ``exclude``, a ``toolsSettings`` entry such as ``fs_write.deniedPaths``) the
     # worker would not have is not moved: the restriction would be lost.
-    lost_limits = _restrictions(source) - _restrictions(merged)
-    if lost_limits:
-        problems.append(
-            "its worker would not keep its " + " and ".join(sorted({k for k, _ in lost_limits}))
-        )
-    return "; ".join(problems)
+    out.limits_lost = {k for k, _ in _restrictions(source) - _restrictions(merged)}
+    return out
+
+
+def dry_run(base: dict[str, Any], source: dict[str, Any], mate_file: dict[str, Any]) -> str:
+    """Why the merged worker would not grant exactly its old capabilities, else ``""``.
+
+    Every difference :func:`differences` finds, as one sentence for a reader.
+    """
+    return differences(base, source, mate_file).text()
+
+
+def _without(spec: dict[str, Any], key: str, drop: Any) -> None:
+    """Drop from list *key* of *spec* every item *drop* answers True for, if *key* is there."""
+    if key in spec:
+        spec[key] = [item for item in _strings(spec.get(key)) if not drop(item)]
+
+
+def _strip_grants(spec: dict[str, Any], tokens: set[tuple[str, ...]]) -> dict[str, Any]:
+    """*spec* with every grant in *tokens* taken out of it; *spec* is not changed.
+
+    The planned file of a crewmate whose worker would gain something its old
+    agent never had: the gain is not written, so nothing is granted silently.
+    The user asks for it, if they want it, on the capability card.
+    """
+    out = copy_json_document(spec)
+    servers = out.get("mcpServers")
+    servers = servers if isinstance(servers, dict) else {}
+    for token in tokens:
+        kind, ref = token[0], token[1]
+        if kind in ("server", "transport"):
+            if isinstance(servers.get(ref), dict) and not mcp_entry_is_muted(servers[ref]):
+                servers.pop(ref)
+            for key in ("tools", "allowedTools"):
+                _without(out, key, lambda r, s=ref: _ref_server(r) == s)
+        elif kind == "approve":
+            server, _, tool = ref[1:].partition("/")
+            entry = servers.get(server)
+            if isinstance(entry, dict) and "autoApprove" in entry:
+                _without(entry, "autoApprove", lambda t, x=tool: t == x)
+            _without(out, "allowedTools", lambda r, x=ref: r == x)
+        elif kind == "allow":
+            _without(out, "allowedTools", lambda r, x=ref: r == x)
+        elif kind == "tool":
+            _without(out, "tools", lambda r, x=ref: r == x)
+        elif kind in ("resources", "skills"):
+            _without(out, kind, lambda r, x=ref: r == x)
+    return out
+
+
+def plan_move(
+    name: str, base: dict[str, Any], source: dict[str, Any]
+) -> tuple[dict[str, Any], Differences, set[tuple[str, ...]]]:
+    """The file crewmate *name* gets, how its worker then differs, and what was withheld.
+
+    :func:`migration_file`, then made never to loosen: a server the old agent
+    switched off is written switched off, and a grant the worker would gain is
+    taken out (returned as *withheld*, for the user to ask for on a card). What
+    is left in :meth:`Differences.loosening` keeps the crewmate where it is.
+    """
+    planned = migration_file(name, base, source)
+    diff = differences(base, source, planned)
+    if diff.relaunched:
+        servers = planned.setdefault("mcpServers", {})
+        for server in diff.relaunched:
+            servers[server] = {"disabled": True}
+        diff = differences(base, source, planned)
+    withheld = set(diff.gained)
+    if withheld:
+        planned = _strip_grants(planned, withheld)
+        diff = differences(base, source, planned)
+        withheld -= diff.gained
+    return planned, diff, withheld
+
+
+def change_notice(diff: Differences, withheld: set[tuple[str, ...]]) -> str:
+    """The sentence a moved crewmate's notice carries on what changed, ``""`` when nothing."""
+    parts = [diff.losses()] if diff.losses() else []
+    if withheld:
+        parts.append(_describe("it was not given", withheld))
+    return "; ".join(parts)
 
 
 def uncarried_restrictions(source: dict[str, Any]) -> list[str]:
@@ -627,6 +779,58 @@ def _governed_source(source_agent: str) -> dict[str, Any]:
     return spec
 
 
+def _tool_offs(spec: dict[str, Any]) -> set[str]:
+    """Every tool *spec* takes out: its ``excludedTools`` and its servers' ``disabledTools``."""
+    return set(_strings(spec.get("excludedTools"))) | set(
+        disabled_tool_refs(spec.get("mcpServers"))
+    )
+
+
+def _fallback_keeping_limits(
+    source_agent: str, base: dict[str, Any], fallback: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """The default-template *fallback* made to keep *source_agent*'s readable limits.
+
+    For an agent :func:`_governed_source` refused. One whose spec does not parse
+    states no limit, so *fallback* is returned as it is. One that parses (a
+    ``file://`` prompt that does not resolve, say) is read raw, and the fallback
+    never loosens it: a server it switched off is written switched off, a tool it
+    takes out is written into ``excludedTools``, and a grant it never had is
+    taken out. Returns the file and why it would still loosen (a hook or a
+    ``permissions`` / ``toolsSettings`` restriction it cannot carry), else ``""``.
+    """
+    try:
+        raw = agent_specs.load_agent_spec(source_agents_dir(source_agent), source_agent)
+    except (agent_specs.AgentSpecUnreadable, OSError):
+        return fallback, ""
+    raw = {**copy_json_document(raw), "prompt": ""}
+    planned = copy_json_document(fallback)
+    diff = differences(base, raw, planned)
+    if diff.relaunched:
+        servers = planned.setdefault("mcpServers", {})
+        for server in diff.relaunched:
+            servers[server] = {"disabled": True}
+    offs = _tool_offs(raw)
+    if offs:
+        planned["excludedTools"] = list(
+            dict.fromkeys([*_strings(planned.get("excludedTools")), *sorted(offs)])
+        )
+    diff = differences(base, raw, planned)
+    if diff.gained:
+        planned = _strip_grants(planned, diff.gained)
+        diff = differences(base, raw, planned)
+    merged = merge_worker_spec(base, worker_additions(base, planned))
+    reason = diff.loosening()
+    kept_off = offs - set(_strings(merged.get("excludedTools")))
+    if kept_off:
+        reason = "; ".join(
+            filter(
+                None, [reason, _describe("its worker would run", {("tool", t) for t in kept_off})]
+            )
+        )
+    return planned, reason
+
+
 def _worker_base() -> dict[str, Any]:
     """The worker's source base with its prompt as literal text.
 
@@ -727,6 +931,8 @@ def migrate_existing_crewmates(
 
     verified: list[str] = []
     unchanged: set[str] = set()
+    #: Per crewmate moved with a difference, the sentence its notice names.
+    changes: dict[str, str] = {}
     for name, source in candidates.items():
         label = _label(cfg, name)
         if source == MATE_CONDUCTOR_AGENT:
@@ -763,18 +969,46 @@ def migrate_existing_crewmates(
         try:
             old = _governed_source(source)
         except MateConfigError as exc:
-            report.skipped_no_source.append(name)
+            # Moved anyway (owner decision, docs/decisions): its worker starts from
+            # the default template, as a fresh create's does, and its user is told.
             logger.info("crewmate migration: %s's agent %r unreadable: %s", label, source, exc)
+            fallback, kept_limit = _fallback_keeping_limits(
+                source, base, _default_template_file(name, base)
+            )
+            if kept_limit:
+                # Its spec parses (only its prompt did not resolve) and states a
+                # limit the fallback would not keep: moving would loosen it.
+                report.dry_run_failed[name] = kept_limit
+                logger.warning(
+                    "crewmate migration: %s stays on %r because %s", label, source, kept_limit
+                )
+                continue
+            try:
+                _write_file(name, fallback)
+                _read_back(name)
+            except (MateConfigError, agent_specs.AgentSpecUnreadable) as write_exc:
+                report.copy_failed[name] = str(write_exc)
+                logger.warning(
+                    "crewmate migration: %s's file was not written: %s", label, write_exc
+                )
+                continue
+            report.moved_from_default.append(name)
+            changes[name] = (
+                f"the agent it ran on ({source}) could not be read, so its worker starts "
+                "from the default template and nothing that agent added was carried over"
+            )
+            verified.append(name)
             continue
-        planned = migration_file(name, base, old)
-        reason = dry_run(base, old, planned)
+        planned, diff, withheld = plan_move(name, base, old)
+        reason = diff.loosening()
         if reason:
             report.dry_run_failed[name] = reason
             logger.warning("crewmate migration: %s stays on %r because %s", label, source, reason)
             continue
         try:
             _write_file(name, planned)
-            reason = dry_run(base, old, _read_back(name))
+            diff = differences(base, old, _read_back(name))
+            reason = diff.loosening()
         except (MateConfigError, agent_specs.AgentSpecUnreadable) as exc:
             report.copy_failed[name] = str(exc)
             logger.warning("crewmate migration: %s's file was not written: %s", label, exc)
@@ -788,6 +1022,12 @@ def migrate_existing_crewmates(
                 reason,
             )
             continue
+        change = change_notice(diff, withheld)
+        if change:
+            # Moved anyway (owner decision, docs/decisions): a loss is told once, a gain
+            # was not written and waits for the user's card.
+            changes[name] = change
+            logger.warning("crewmate migration: %s moves from %r; %s", label, source, change)
         _record_kit(name, source, planned)
         verified.append(name)
 
@@ -808,14 +1048,22 @@ def migrate_existing_crewmates(
             logger.warning("crewmate migration: repoint failed for %s: %s", _label(cfg, name), exc)
             continue
         report.migrated.append(name)
+        if name in changes and name not in report.moved_from_default:
+            report.moved_with_changes[name] = changes[name]
         from kiro_crew.mate_upgrade_notice import clear_kept_owed, mark_notice_owed
 
         # A moved crewmate owes no "left as it was" notice from any earlier start.
         clear_kept_owed(name)
         if name not in unchanged:
-            mark_notice_owed(name)
+            mark_notice_owed(name, changes.get(name, ""))
+        if name in unchanged:
+            how = "already on the conductor"
+        elif name in changes:
+            how = "moved; " + changes[name]
+        else:
+            how = "moved; its worker grants what its old agent did"
         try:
-            _record_migrated(name, source)
+            _record_migrated(name, source, reason=how)
         except OSError:
             # The binding already points at the file, so it is not a candidate
             # again either way; only a later hand-made rollback is affected.

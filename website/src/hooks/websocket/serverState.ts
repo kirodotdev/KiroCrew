@@ -273,7 +273,7 @@ export const SESSION_DASHBOARD_QUERY_PREFIX = 'session-dashboard'
  *  one thing a live project report must not do.
  *
  *  Invalidate rather than write a value in: the page is composed server-side with
- *  its data island, its agentic marks and its stale band already decided, so there
+ *  its data island, its agentic marks and its missing cells already decided, so there
  *  is no client-side shape to patch. */
 export function handleDashboardMoved(queryClient: QueryClient, data: FrameData): void {
   const frame = (data ?? {}) as { slug?: unknown; slot?: unknown }

@@ -11,6 +11,7 @@ import {
   distanceFromBottom,
   bottomTarget,
   isSelfScroll,
+  heightAnchorClampedToCeiling,
   heightAnchorStillUsable,
   resolveUserScrollStick,
   evaluateAutoPin,
@@ -72,6 +73,21 @@ describe('geometry helpers', () => {
     expect(distanceFromBottom(geom)).toBe(50)
     expect(computeAtBottom(geom, DEFAULT_BOTTOM_THRESHOLD)).toBe(true)
     expect(computeAtBottom({ ...geom, scrollTop: 400 }, DEFAULT_BOTTOM_THRESHOLD)).toBe(false)
+  })
+})
+
+describe('heightAnchorClampedToCeiling', () => {
+  const geom = (scrollTop: number) => ({ scrollTop, scrollHeight: 7500, clientHeight: 400 })
+  it('names the engine clamp: capture past the new maximum, live flush on it', () => {
+    expect(heightAnchorClampedToCeiling(8580, geom(7100))).toBe(true)
+    expect(heightAnchorClampedToCeiling(8580, geom(7101))).toBe(true) // sub-pixel
+  })
+  it('is not a clamp when the reader is anywhere but the ceiling', () => {
+    expect(heightAnchorClampedToCeiling(8580, geom(6000))).toBe(false)
+  })
+  it('is not a clamp when the capture still fits the shrunk document', () => {
+    // A reader who scrolled DOWN to the end from a position that still fits.
+    expect(heightAnchorClampedToCeiling(5000, geom(7100))).toBe(false)
   })
 })
 

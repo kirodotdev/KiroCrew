@@ -270,6 +270,7 @@ from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
+    BLOCKED_LINKS_ORDERED_KEY,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,

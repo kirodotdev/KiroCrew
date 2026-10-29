@@ -63,6 +63,7 @@ from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
     kas_client_meta_settings,
+    kas_never_defer_ids,
     spec_grants_tool_search,
     with_client_meta_settings,
 )
@@ -1158,11 +1159,13 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     for a host that reads it (``client_meta_settings``) and only with values
     the operator threaded in. Today that is MCP Tool Search, and the value
     sent is gated on the spawn agent's spec granting the ``tool_search``
-    loader: KAS defers every MCP spec when told to and never checks that a
-    loader is mounted, so a spec without the grant would run with its MCP
-    tools deferred and no way to load one. ``enabled`` therefore goes out as
-    an explicit false for such a spec rather than being left to the host's
-    default. The spec judged is the one the KAS projection will PUT ON THE
+    loader. KAS's deferral path ignores ``enabled`` and defers every MCP tool
+    not on ``toolSearch.neverDefer``, so for a spec without the grant the
+    payload lists every MCP tool that spec can call there
+    (``kas_never_defer_ids``, expanding whole-server grants from
+    :func:`_known_server_tool_names`) and ``enabled`` goes out as an explicit
+    false. A spec that grants the loader is sent no ``neverDefer``.
+    The spec judged is the one the KAS projection will PUT ON THE
     WIRE at session/new -- the freshness gate's snapshot for a derived agent,
     else the spec ``resolve_projected_spec`` resolves nearest-first, the same
     call the projection makes: a spec judged here that differed from the one
@@ -1176,17 +1179,43 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
         return base
     spec = await asyncio.to_thread(self._projected_spawn_spec)
     loader_granted = spec_grants_tool_search(spec)
-    settings = kas_client_meta_settings(self._tool_search, loader_granted=loader_granted)
+    never_defer: list[str] = []
+    if not loader_granted:
+        never_defer = await asyncio.to_thread(kas_never_defer_ids, spec, _known_server_tool_names)
+    settings = kas_client_meta_settings(
+        self._tool_search, loader_granted=loader_granted, never_defer=never_defer
+    )
     self._tool_search_wire = settings
     logger.info(
         "AcpRuntime handshake: MCP Tool Search %s for agent=%s "
-        "(configured=%s, spec grants tool_search=%s)",
+        "(configured=%s, spec grants tool_search=%s, never-defer ids=%d)",
         "enabled" if settings["toolSearch"]["enabled"] else "disabled",
         self._agent or "<none>",
         self._tool_search.enabled,
         loader_granted,
+        len(never_defer),
     )
     return with_client_meta_settings(base, settings)
+
+
+def _known_server_tool_names(server: str) -> list[str] | None:
+    """The tool names Crew already holds for *server*, read without spawning it.
+
+    The last probe's ``tools/list``, expired or not, because a stale list only
+    risks a tool staying deferred or an id that matches nothing. Nothing is
+    imported to answer: a Kiro Crew server's declaration module lives in a
+    package the agent's uid can write, so this read stays on the probe cache the
+    sandboxed probe fills. ``None`` when the cache has no list -- the caller
+    then leaves that server to KAS's own deferral.
+    """
+    from kiro_crew.mcp_discovery import _get_cached
+
+    try:
+        _status, tools, *_rest = _get_cached(server)
+    except Exception:
+        logger.debug("no tool list for MCP server %s at handshake", server, exc_info=True)
+        return None
+    return list(tools) if tools else None
 
 
 async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -> dict[str, Any]:

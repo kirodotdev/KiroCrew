@@ -138,6 +138,8 @@ The predicate retains exactly one thing, the DM pairing, and it is bounded: both
 
 The route is classified before either authority is read, but only to settle **which id names the destination**: a route naming a channel in its path uses that, a route naming none uses the destination its **caller supplies** (a button press's own reply carries its destination in an opaque token, so the path cannot yield it while the dispatcher holds it directly), and a route naming neither reads nothing. When both name one the **path wins**, because that is where the bytes go; re-checking the caller's id instead would authorize one channel and write to another. Both authorities then apply to whichever id was settled on, and the **roster is read last**: the governance read is an `await`, so a roster reading taken before it describes a destination that may already have been withdrawn, which would rebuild this very defect one layer up. **Only an attempt that actually waited pays for any of this**, so a send that never blocks costs nothing.
 
+**One admission lookup opts out** (`recheck_destination=False`). `thread_origin` looks up a thread that is NOT yet on the roster (that is why it asks), so re-reading the roster after a hold would refuse the very lookup that decides re-admission. It keeps the pacing, and its only caller, `readmit_own_thread`, re-reads the sender roster, the channel roster and the revoked set once the answer arrives. Every other route, `GET`s included, is still re-judged: `is_thread_channel` classifies a thread an inbound message arrived in, and a reload that removes it during a hold must still refuse the read (pinned by `TestAdmissionLookupAfterAWait`).
+
 Three arms decide everything a channel id can decide. Both CURRENT rosters are read first, so moving an id between `allowed_thread_ids` and `allowed_channel_ids` reads as the reclassification it is rather than as a withdrawal. Then a DM whose peer this process can name is decided on **that peer**. Then **anything left is refused**: an id on no roster is either withdrawn or never admitted, and both answer the same at an egress boundary. The pairing is learned wherever it is knowable: `create_dm_channel` knows it when the bot opens a DM, an authorized inbound DM names it, and so does an authorized DM interaction. Both inbound cases matter because the answer goes to the channel the message or press arrived on, without ever opening it. All of them record on the authorized path only, so a denied sender or presser cannot plant one.
 
 That last arm is deliberate. A DM channel this process never opened - a destination read back from a persisted link - names nobody, and asking instead whether the roster admits ANYBODY would let one remaining peer authorize a different, revoked one. At a network egress boundary "cannot tell" reads as no. Each refusal reports WHICH of the three it is, because only the rosters can tell them apart and only the caller reports them: a destination an authority can place and no longer admits is a withdrawal, one nothing can place says exactly that instead, and a predicate that raised means the check itself never answered. All three stop the send; reporting any of them as a withdrawal sends whoever is debugging a dropped notification after a policy change that never happened. The cost is that an unattended proactive DM to such a channel is refused rather than delivered when it serves one of the ladder's waits; a caller that needs it to survive re-opens the DM through `create_dm_channel`, which establishes the pairing. Reading a pairing's PRESENCE as proof that an id is a DM channel is what lets the middle arm be that short, so every writer of one is reachable only for a direct message: `create_dm_channel` POSTs the route that can return nothing else, and both inbound writers sit under a `guild_id` gate. That is pinned structurally as well as behaviourally, because it is a claim about writers not yet added. A button press is re-authorized after its acknowledgement as well: the rosters are read once before the ack, the ack serves the ladder's waits, and the governance read after it is off-loop, so the user and thread rosters are read again before the press resolves anything. An explicit reject still lands, because a denial is what a withdrawal wants. Its CONFIRMATION does not follow automatically: writing the verdict back is outbound traffic, the reject reaches it without that re-read, and the edit may serve no wait at all, so nothing else would judge it - both authorities are read once more before the verdict is written, the ceiling through its OUTBOUND entry point because the write is this process's own egress, and the rosters last. The verdict is identical either way over one `channels` allowlist; what the direction buys is the row's name, and an egress refusal filed as an ingress one is unreadable to whoever later asks why a message did not go out. The gate before the press RESOLVES stays inbound, because what it decides is an arriving press. A channel the ceiling no longer permits receives NO edit, whichever verdict it would have carried and whether or not the press was a reject: the card is an ordinary channel message posted while that channel was still permitted, so writing nothing leaves it exactly as the operator last allowed it, while replacing its text names a tool and its outcome into a destination that is no longer permitted. The decision is resolved before this point, so a withheld edit costs the presser a confirmation and never the decision. The ceiling is read again here even on the arm that already read it before resolving, rather than carrying that answer forward, because a value taken before a suspension is the defect this whole section exists to close; on an ungoverned install the read permits without recording a row, so the second reading costs a row only where an operator asked for the audit trail.
@@ -1509,8 +1511,9 @@ Four properties are load-bearing:
   checked against `_allowed_threads`, the set `receive` itself gates inbound on,
   so outbound is exactly as tight as inbound. That also settles the auto-created
   thread: those ids are registered in memory only, so after a restart such a thread
-  cannot drive a turn either, and continuing to post into it would make outbound
-  the more permissive of the two. A **DM** route is checked against `_allowed` via
+  is refused outbound until an approved sender's message or command re-admits it
+  from Discord's own record (`readmit_own_thread`); posting into it earlier would
+  make outbound the more permissive of the two. A **DM** route is checked against `_allowed` via
   the principal.
 
   **Webex** has the same two, and a group space is why: a **space** route is
@@ -3607,7 +3610,32 @@ new authorized disclosure boundary appears at runtime, and without the record th
 log shows the turns that ran in the thread but never the decision that admitted
 it. The allow-set is deliberately unbounded, because each entry is a thread an
 already-approved user created, and evicting one would silently stop answering in
-a conversation they are still holding. Existing thread IDs still require a REST channel lookup confirming
+a conversation they are still holding. The grant lives in memory only, and a
+restart does not forget the thread: when an approved sender writes, or runs a
+command, in a thread missing from the roster, `DiscordTransport.readmit_own_thread`
+asks Discord for the thread (`DiscordClient.thread_origin`, an uncached
+`GET /channels/{id}`) and re-admits it only when Discord reports a public or
+announcement thread (type 10/11, the only kinds `create_thread_from_message`
+makes) whose `owner_id` is this bot and whose `parent_id` is in
+`allowed_channel_ids`, with the sender still in `allowed_user_ids`; both rosters
+are read when the answer arrives, so a reload during the lookup refuses the grant. Nothing is persisted
+locally, so no file the agent can write grants a thread; the decision rests on
+Discord's own record, and after the next restart a thread whose parent an
+operator removed stays refused. A live reload does not revoke it sooner:
+`reconfigure` unions every runtime-promoted thread back into the roster, a
+re-admitted one included, so removing the parent channel takes effect at the
+next restart (pinned by
+`test_removing_the_parent_takes_effect_at_the_next_restart`). A thread an
+operator removes from `allowed_thread_ids` on a live reload is remembered as
+revoked (`_revoked_threads`, in memory), and `readmit_own_thread` refuses it,
+checked before and after the lookup, until it is listed again or the process
+restarts (pinned by `test_thread_removed_from_config_is_not_readmitted`). The re-grant is audited as `discord_transport.auto_thread` /
+`thread_reauthorized` and pushed to the dispatcher's copy through
+`register_allowed_thread`, the inbound path calls it only for an approved
+sender (so unrelated chatter costs no REST call), and the dispatcher's
+`_interaction_actionable` calls it for a command or button in such a thread. Outbound
+stays as tight as inbound: until the first such message or command, a
+proactive send into the thread is still refused. Existing thread IDs still require a REST channel lookup confirming
 Discord type 10/11/12. An approved thread is a shared disclosure
 boundary: every member who can view it can read agent/tool output. Enabling any
 thread also means Discord delivers message content from every server channel

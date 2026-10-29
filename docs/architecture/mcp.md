@@ -214,6 +214,13 @@ a verb a server spec DECLARES still survives.
 
 Ownership is judged by the entry's shape -- its name and provenance marker -- never by
 who wrote the file, so a plainly-named entry an agent appended reads as the owner's.
+
+On KAS the key has no slot, and the projection drops it from the server entry. The
+verbs `strip_ungoverned_auto_approve` keeps for the kiro-cli route travel instead as
+`@server/tool` entries in the `allowedTools` input the `permissions` block is derived
+from (`acp/kas_auto_approve.py`), so they meet the same per-entry ceiling and
+PreToolUse-hook withholding as any other grant. A verb that is not one literal tool
+name prompts.
 `~/.kiro/settings/mcp.json` is therefore on the write-protected tier of the file-tool
 floor: an agent's file-edit tools cannot write it. The shell route is not fenced by
 that floor; [governance.md](../system-specs/modules/governance.md#self-protection-the-keystone)
@@ -3767,7 +3774,11 @@ servers defer like any other when the spawn runs the pinned kiro-cli install or 
 `kiro-cli-chat`, and both are >= 2.27.0. For any other executable (a pod bundle, a `kiro-cli`
 found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
 servers resident to avoid the thinking-signature
-"tools list differs" rejection that bricks a session. A deferred tool costs a name
+"tools list differs" rejection that bricks a session. KAS ignores the toggle and the
+thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so for an
+agent whose `tools` grants no `tool_search` Crew sends that list with each of the
+agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
+it already holds; a server it holds none for stays deferred. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
 scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including

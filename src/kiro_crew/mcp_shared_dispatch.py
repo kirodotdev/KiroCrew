@@ -586,7 +586,7 @@ def _run_stdio_dispatch_loop(
                 # gatewayd injects the per-call ``_meta.kirocrew.caller`` block
                 # only into a backend that advertised this capability, and
                 # nothing declines to POOL one that did not (see
-                # ``rewriter.UNPOOLABLE_SERVERS``, which is empty and documents
+                # ``rewriter.UNPOOLABLE_SERVERS``, which lists only credential vendors and documents
                 # exactly that). So NOT advertising does not buy a per-session
                 # spawn -- it buys a shared process whose dispatch-loop caller
                 # slot never receives gateway-authored metadata, which is how a

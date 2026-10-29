@@ -136,6 +136,154 @@ class TestKasClientMetaSettings:
         )
 
 
+class TestKasNeverDefer:
+    """KAS defers every MCP tool not on ``toolSearch.neverDefer``, whatever
+    ``enabled`` says, so a spec without the loader must list its tools there."""
+
+    TOOLS = {
+        "kirocrew-core": ["memory_recall", "skill_search", "skill_fetch"],
+        "example-app:example-mcp": ["read_state", "write_state"],
+    }
+
+    def _ids(self, spec):
+        from kiro_crew.agent_sdk.tool_search import kas_never_defer_ids
+
+        return kas_never_defer_ids(spec, self.TOOLS.get)
+
+    def test_a_named_tool_is_spelled_the_way_kas_matches_it(self):
+        spec = {"tools": ["fs_read", "@example-app:example-mcp/read_state"]}
+        assert self._ids(spec) == ["example-app:example-mcp::read_state"]
+
+    def test_a_whole_server_grant_expands_from_the_known_list(self):
+        assert self._ids({"tools": ["@kirocrew-core"]}) == [
+            "kirocrew-core::memory_recall",
+            "kirocrew-core::skill_fetch",
+            "kirocrew-core::skill_search",
+        ]
+
+    def test_a_tool_glob_expands_to_its_matches(self):
+        assert self._ids({"tools": ["@kirocrew-core/skill_*"]}) == [
+            "kirocrew-core::skill_fetch",
+            "kirocrew-core::skill_search",
+        ]
+
+    def test_a_server_with_no_known_list_contributes_nothing(self):
+        assert self._ids({"tools": ["@unprobed", "@unprobed/x*"]}) == []
+
+    def test_the_wildcard_stands_for_every_declared_server(self):
+        spec = {
+            "tools": ["*"],
+            "excludedTools": ["tool_search"],
+            "mcpServers": {"example-app:example-mcp": {}, "unprobed": {}},
+        }
+        assert self._ids(spec) == [
+            "example-app:example-mcp::read_state",
+            "example-app:example-mcp::write_state",
+        ]
+
+    @pytest.mark.parametrize(
+        "spec", [None, {}, {"tools": None}, {"tools": ["@builtin", "fs_read", "@", 3]}]
+    )
+    def test_no_mcp_grant_lists_nothing(self, spec):
+        assert self._ids(spec) == []
+
+    def test_without_the_loader_the_payload_carries_the_list(self):
+        out = kas_client_meta_settings(
+            ToolSearchSettings(True, 5, 50_000),
+            loader_granted=False,
+            never_defer=["b::y", "a::x", "a::x"],
+        )
+        assert out["toolSearch"]["neverDefer"] == ["a::x", "b::y"]
+        assert out["toolSearch"]["enabled"] is False
+
+    def test_without_the_loader_an_empty_list_is_still_sent(self):
+        out = kas_client_meta_settings(ToolSearchSettings(False), loader_granted=False)
+        assert out["toolSearch"]["neverDefer"] == []
+
+    def test_with_the_loader_no_list_is_sent(self):
+        """The spec-grants-tool_search path keeps deferring exactly as before."""
+        out = kas_client_meta_settings(
+            ToolSearchSettings(True, 5, 50_000), loader_granted=True, never_defer=["a::x"]
+        )
+        assert "neverDefer" not in out["toolSearch"]
+
+
+class TestHandshakeNeverDefer:
+    """The KAS ``initialize`` request built from the projected spawn spec."""
+
+    def _caps(self, monkeypatch, spec):
+        from kiro_crew.acp import kas_secret_storage, runtime_spawn_launch
+
+        monkeypatch.setattr(kas_secret_storage, "persistence_enabled", lambda: False)
+        monkeypatch.setattr(
+            runtime_spawn_launch,
+            "_known_server_tool_names",
+            {"kirocrew-core": ["memory_recall", "skill_search"]}.get,
+            raising=False,
+        )
+        rt = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
+        rt._tool_search = ToolSearchSettings(True, 5, 50_000)
+        rt._projected_spawn_spec = lambda: spec
+        caps = asyncio.run(runtime_spawn_launch._handshake_client_capabilities(rt))
+        return caps["_meta"]["kiro"]["settings"]["toolSearch"]
+
+    def test_a_spec_without_the_loader_keeps_its_mcp_tools_direct(self, monkeypatch):
+        wire = self._caps(monkeypatch, {"tools": ["@kirocrew-core", "@srv/one"]})
+        assert wire["enabled"] is False
+        assert wire["neverDefer"] == [
+            "kirocrew-core::memory_recall",
+            "kirocrew-core::skill_search",
+            "srv::one",
+        ]
+
+    def test_a_spec_with_the_loader_still_defers(self, monkeypatch):
+        wire = self._caps(monkeypatch, {"tools": ["tool_search", "@kirocrew-core"]})
+        assert wire == {"enabled": True, "minPct": 5, "minTokens": 50_000}
+
+    def test_an_unreadable_spec_lists_nothing(self, monkeypatch):
+        wire = self._caps(monkeypatch, None)
+        assert wire["enabled"] is False
+        assert wire["neverDefer"] == []
+
+
+class TestKnownServerToolNames:
+    def test_a_crew_server_is_never_imported_into_the_gateway(self, monkeypatch):
+        """Its declaration module sits in an agent-writable package, so the
+        handshake reads the probe cache and imports nothing."""
+        from kiro_crew import mcp_discovery
+        from kiro_crew.acp.runtime_spawn_launch import _known_server_tool_names
+
+        reads: list[str] = []
+
+        def record(name, *_a, **_k):
+            reads.append(name)
+            return ["declared_tool"]
+
+        # Through the facade only: it is the one import path the handshake has.
+        monkeypatch.setattr(mcp_discovery, "_managed_tools_in_process", record)
+        monkeypatch.setattr(
+            mcp_discovery, "_get_cached", lambda name: ("unknown", [], "", 0.0, "handshake")
+        )
+        assert _known_server_tool_names("kirocrew-guide") is None
+        assert reads == []
+
+    def test_an_unknown_server_answers_none(self):
+        from kiro_crew.acp.runtime_spawn_launch import _known_server_tool_names
+
+        assert _known_server_tool_names("no-such-server-for-this-test") is None
+
+    def test_a_third_party_server_answers_from_the_probe_cache(self, monkeypatch):
+        from kiro_crew import mcp_discovery
+        from kiro_crew.acp.runtime_spawn_launch import _known_server_tool_names
+
+        monkeypatch.setattr(
+            mcp_discovery,
+            "_get_cached",
+            lambda name: ("outdated", ["a", "b"], "", 0.0, "handshake"),
+        )
+        assert _known_server_tool_names("third-party") == ["a", "b"]
+
+
 class TestWithClientMetaSettings:
     def test_fills_the_channel_and_keeps_the_declaration(self):
         out = with_client_meta_settings(KAS_CLIENT_CAPABILITIES, {"toolSearch": {"enabled": True}})

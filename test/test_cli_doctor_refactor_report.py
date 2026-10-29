@@ -57,6 +57,7 @@ _SECTIONS = (
     "_doctor_name_grant_platform_scope",
     "_doctor_strict_identity",
     "_doctor_mcp_gateway_daemon",
+    "_doctor_mcp_share_refused",
     "_doctor_unresolved_mcp_refs",
     "_doctor_backend_ability_cards",
     "_doctor_selected_backend_projection",
@@ -116,6 +117,7 @@ _ISSUES_POSITION = {
     "_doctor_member_dispatchability": 1,
     "_doctor_member_memory_bindings": 1,
     "_doctor_deprecated_agent_specs": 1,
+    "_doctor_mcp_share_refused": 1,
     "_doctor_mcp_tools": 1,
     "_doctor_mcp_governance": 1,
     "_doctor_discord": 3,
@@ -408,6 +410,7 @@ Configuration
   <<_doctor_name_grant_platform_scope>>
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
+  <<_doctor_mcp_share_refused>>
   <<_doctor_unresolved_mcp_refs>>
   <<_doctor_backend_ability_cards>>
   <<_doctor_selected_backend_projection>>
@@ -589,6 +592,7 @@ Configuration
   <<_doctor_name_grant_platform_scope>>
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
+  <<_doctor_mcp_share_refused>>
   <<_doctor_unresolved_mcp_refs>>
   <<_doctor_backend_ability_cards>>
   <<_doctor_selected_backend_projection>>

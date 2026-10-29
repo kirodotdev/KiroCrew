@@ -30,6 +30,10 @@ Routing needs that approval. The approval is tied to the server's launch
 since you approved it, is refused: it is left unwrapped, runs directly inside each
 session, and its results render as plain text. MCP Management lists it as needing
 approval (`added_outside_dashboard`) or re-approval (`changed_needs_reapproval`).
+The MCP Servers list under Connections names each refused server with a link to
+MCP Management (`/developer?tab=mcp-pool`, open whether or not Developer Mode is
+on), and `kirocrew doctor` reports it as an issue. An approval takes effect for new
+chats after the gateway restarts.
 
 Only command-based stdio entries can be routed through a stub. URL-based HTTP/SSE entries remain direct and cannot render MCP Apps through this host.
 

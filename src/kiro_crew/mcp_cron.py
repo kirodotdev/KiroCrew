@@ -1347,7 +1347,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 #: backend advertised this capability -- so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how
 #: correctly it is written. Nothing declines to POOL an unadvertised backend
-#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: (``rewriter.UNPOOLABLE_SERVERS`` lists only credential vendors and documents that the capability is
 #: read only to decide injection), so the unadvertised state was not "per-session
 #: spawn" -- it was pooled AND identity-blind.
 #:

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _BUILTIN_APP_AGENTS,
         _BUILTIN_APP_MCP_SERVERS,
         _BUILTIN_APP_NAMES,
+        _FIRST_PARTY_READ_ONLY_MCP_TOOLS,
         _GLOBAL_INLINE_FLAGS_RE,
         _HOST_READ_ONLY_BUILTIN_TOOLS,
         _TITLE_ONLY_GRANT_NOTED,
@@ -362,6 +363,38 @@ def _is_host_read_only_builtin(
     if not kas_builtin_ids:
         return False
     return any(alias in _HOST_READ_ONLY_BUILTIN_TOOLS for alias in policy_aliases(mcp_tool_name))
+
+
+def _is_first_party_read_only_mcp_tool(
+    mcp_tool_name: str, mcp_server_name: str, *, mcp_identity_trusted: bool
+) -> bool:
+    """True when the host-trusted identity names one of Kiro Crew's OWN read-only MCP tools.
+
+    The MCP counterpart of :func:`_is_host_read_only_builtin`, with the same
+    positive provenance rule and the opposite server rule:
+
+    * ``mcp_identity_trusted`` -- the pair came from the ``_meta.kiro`` parse this
+      client made of the tool_call frame, never from an inline payload, a title or
+      a hand-built event. On a harness that stamps no identity the flag is False
+      and nothing is proven.
+    * ``mcp_server_name`` AND ``mcp_tool_name`` non-empty -- a trusted cache hit
+      on two empty strings is a built-in, not an MCP call, and matches nothing
+      here.
+    * the exact ``(server, tool)`` pair is in :data:`_FIRST_PARTY_READ_ONLY_MCP_TOOLS`,
+      compared byte for byte: ``memory_recall`` on any server but
+      :data:`CORE_MCP_SERVER` is some other server's tool and stays unproven, as
+      does a case or spacing variant of either half.
+
+    What this cannot see, like its built-in sibling: a backend that stamps a
+    server name the transport did not verify. The provenance flag proves the pair
+    came from the frame this client parsed, and the stamping contract belongs to
+    the harness.
+    """
+    if not mcp_identity_trusted:
+        return False
+    if not mcp_server_name or not mcp_tool_name:
+        return False
+    return (mcp_server_name, mcp_tool_name) in _FIRST_PARTY_READ_ONLY_MCP_TOOLS
 
 
 def _is_harness_read_only_builtin(harness_builtin_tool: str, mcp_server_name: str) -> bool:

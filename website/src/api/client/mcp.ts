@@ -130,7 +130,7 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
   const gateway = {
     // MCP Gateway (shared pool)
-    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
+    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
     mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
     mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
     mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpManagedServer[] }>,

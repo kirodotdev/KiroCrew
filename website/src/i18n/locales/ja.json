@@ -14280,6 +14280,10 @@
         "default_crewmate_unknown_reason": "{{name}} はクルーメイト一覧にありません"
       },
       "mcpTab": {
+        "share_refused_other": "共有に設定した {{count}} 個のサーバーが共有されていません: {{names}}。起動には承認が必要なため、チャットごとに個別のコピーが起動します。",
+        "share_refused_restart": "MCP 管理 でそれぞれの共有を承認してください。その後、ゲートウェイを再起動すると (設定 → バージョン情報 → ゲートウェイを再起動)、新しいチャットが共有コピーを使います。",
+        "share_refused_review": "MCP 管理 で確認",
+        "share_status_failed": "共有に設定したサーバーが承認済みか確認できませんでした。",
         "actions": "アクション",
         "add_custom": "カスタムを追加",
         "add_server": "サーバーを追加",
@@ -16185,7 +16189,7 @@
         "immediate": "即座",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "即座モードは到着時の生チャンクを表示します。スムーズモードはテキストをバッファリングして一定の速度でフェードインさせます。",
         "it_ops": "IT / 運用",
-        "keep_your_computer_awake_while_a_task_is_running": "タスクの実行中はコンピューターをスリープさせません",
+        "keep_your_computer_awake_while_a_task_is_running": "タスクの実行中はコンピューターをスリープさせません。一部の Windows ノート PC (Modern Standby) では画面をロックするとスリープすることがあるため、長いタスクの間は画面をオンのままにしてください。",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro はあなたのプロフェッショナルな背景に合わせて語彙と例を調整します",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro は、この説明を使用して語彙や例をあなたの役割に合わせます。",
         "knowledge_library": "ナレッジライブラリ",
@@ -19032,6 +19036,8 @@
       "switch_sessions": "セッションを変更"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "デスクトップアプリでは、リモートクルー内でポップアウトウィンドウを使えません。このクルーでここで作業を続けてください。",
+      "desktop_app_could_not_open_pop_out_window": "デスクトップアプリでポップアウトウィンドウを開けませんでした。このウィンドウで作業を続けてください。",
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"
     },
     "sanitize": {

@@ -486,7 +486,7 @@ def test_per_crewmate_hand_off_summary(roster, monkeypatch):
         selection_kind="template", template_id=mate_worker.MATE_WORKER_AGENT, member_id="m"
     )
     monkeypatch.setattr(execution_context, "read_session_execution", lambda key: rec)
-    monkeypatch.setattr(mate_worker, "is_conductor_execution", lambda e: True)
+    monkeypatch.setattr(mate_worker, "is_conductor_execution", lambda e, config=None: True)
     monkeypatch.setattr(mate_capabilities, "binding_is_mate", lambda m: True)
     monkeypatch.setattr(
         cards_mod, "_capability_service", lambda app: SimpleNamespace(_mate_catalog=lambda m: {})

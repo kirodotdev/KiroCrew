@@ -13,24 +13,38 @@ takes a different road to each:
   ``tool_search``. The engine keeps the invariant itself.
 - **KAS** reads it from the ACP ``initialize`` request --
   ``clientCapabilities._meta.kiro.settings.toolSearch`` -- and never opens the
-  overlay file. It defers every MCP spec whenever ``enabled`` is true, whether or
-  not the agent's ``tools`` grants the loader; a spec without the grant is
-  simply left without one. So on that channel the invariant is the CLIENT's to
-  keep, and :func:`kas_client_meta_settings` keeps it: ``enabled`` is sent as
-  true only when the spec grants the loader, and as an explicit false otherwise,
-  so a host-side default can never flip a session into "deferred, unreachable".
+  overlay file. Its schema there is ``{minPct, minTokens, neverDefer}``, and its
+  deferral path reads only ``neverDefer``: it defers EVERY MCP tool whose
+  ``<server>::<tool>`` id is not on that list (or whose server is not one of the
+  operator's mandatory servers), whatever ``enabled`` says, and injects its own
+  ``tool_load`` / ``tool_call`` pair to reach them. So on that channel the
+  invariant is the CLIENT's to keep, and :func:`kas_client_meta_settings` keeps
+  it: for a spec that grants no ``tool_search`` it lists every MCP tool the spec
+  can call in ``neverDefer`` (:func:`kas_never_defer_ids`), so those tools stay
+  direct. ``enabled`` still goes out -- true only when the spec grants the
+  loader, an explicit false otherwise -- for a host that does read it.
+
+  A whole-server grant (``@server``) names no tools, and KAS's ``neverDefer``
+  has no server-level or wildcard form, so such a grant is expanded from the
+  tool list Crew already holds for that server (the last probe's
+  ``tools/list``; nothing is imported into the gateway to answer). A server Crew
+  holds no list for stays deferred and reachable through KAS's own ``tool_load``: that is
+  the host's behaviour without this list, so the gap costs a tool's directness,
+  never the tool.
 
 The thresholds are kiro-cli's own activation floor (deferral starts once the
 specs cross ``min_pct`` of the context window OR ``min_tokens``) and are
 mirrored as the defaults of ``AgentConfig.tool_search_min_pct`` /
 ``tool_search_min_tokens``; a test pins the two spellings together. KAS accepts the same two
-keys on the wire; whether it honours them as a floor is its own business, and
-they are forwarded verbatim either way so one setting means one thing.
+keys on the wire but its deferral path does not read them; they are forwarded
+verbatim so one setting means one thing.
 """
 
 from __future__ import annotations
 
 import copy
+import fnmatch
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +58,7 @@ __all__ = [
     "clamp_min_pct",
     "clamp_min_tokens",
     "kas_client_meta_settings",
+    "kas_never_defer_ids",
     "resume_takes_tool_search_replay",
     "spec_grants_tool_search",
     "with_client_meta_settings",
@@ -169,8 +184,73 @@ def resume_takes_tool_search_replay(
     )
 
 
+#: The id separator KAS's ``neverDefer`` matches: it turns a tool's
+#: ``@<server>/<tool>`` tag into ``<server>::<tool>`` before the lookup.
+_KAS_TOOL_ID_SEPARATOR = "::"
+
+
+def kas_never_defer_ids(
+    spec: dict[str, Any] | None,
+    server_tools: Callable[[str], Iterable[str] | None],
+) -> list[str]:
+    """Every MCP tool *spec* can call, as KAS's ``neverDefer`` ids, sorted.
+
+    KAS keeps a tool direct only when ``<server>::<tool>`` is on that list, so
+    each ``tools`` entry is translated: ``@server/tool`` names its one tool;
+    ``@server`` and a tool glob (``@server/read_*``) are expanded from
+    *server_tools*, which answers the tool names Crew holds for a server, or
+    ``None`` when it holds none; ``"*"`` stands for every server the spec
+    declares in ``mcpServers``. ``@builtin`` and bare built-in names are not
+    MCP tools and are skipped. A server *server_tools* cannot list contributes
+    nothing -- KAS then defers it and reaches it through its own loader, which
+    is what it does with no list at all.
+
+    ``excludedTools`` is not subtracted: KAS drops an excluded tool before it
+    partitions, so an id for it on this list keeps nothing direct.
+    """
+    if not isinstance(spec, dict):
+        return []
+    raw = spec.get("tools")
+    if raw == "*":
+        entries = ["*"]
+    elif isinstance(raw, list):
+        entries = [t for t in raw if isinstance(t, str)]
+    else:
+        entries = []
+    ids: set[str] = set()
+
+    def expand(server: str, pattern: str) -> None:
+        names = server_tools(server)
+        for name in names or ():
+            if isinstance(name, str) and name and fnmatch.fnmatchcase(name, pattern):
+                ids.add(f"{server}{_KAS_TOOL_ID_SEPARATOR}{name}")
+
+    for entry in entries:
+        if entry == "*":
+            servers = spec.get("mcpServers")
+            for server in servers if isinstance(servers, dict) else ():
+                if isinstance(server, str) and server:
+                    expand(server, "*")
+            continue
+        if not entry.startswith("@") or entry == "@builtin" or entry.startswith("@builtin/"):
+            continue
+        server, sep, tool = entry[1:].partition("/")
+        if not server:
+            continue
+        if not sep:
+            expand(server, "*")
+        elif any(ch in tool for ch in "*?["):
+            expand(server, tool)
+        elif tool:
+            ids.add(f"{server}{_KAS_TOOL_ID_SEPARATOR}{tool}")
+    return sorted(ids)
+
+
 def kas_client_meta_settings(
-    settings: ToolSearchSettings | None, *, loader_granted: bool
+    settings: ToolSearchSettings | None,
+    *,
+    loader_granted: bool,
+    never_defer: Iterable[str] = (),
 ) -> dict[str, Any]:
     """The ``_meta.kiro.settings`` object KAS should read Tool Search from.
 
@@ -178,19 +258,24 @@ def kas_client_meta_settings(
     channel stays open and says nothing, exactly as before. Otherwise the
     ``toolSearch`` entry is ALWAYS present with an explicit ``enabled`` -- true
     only when the operator turned it on AND the agent's spec grants the loader.
-    An unset key would leave the decision to whatever the host defaults to, and
-    on KAS a default of "on" for a spec without the loader is the outage this
-    gate exists to prevent.
+    An unset key would leave the decision to whatever the host defaults to.
+
+    For a spec that grants no loader, ``neverDefer`` carries *never_defer* (the
+    caller's :func:`kas_never_defer_ids`), because KAS's deferral path reads that
+    list and not ``enabled``: without it every MCP tool of such a spec would be
+    deferred. A spec that grants the loader gets no ``neverDefer``, so its
+    deferral is exactly what it was.
     """
     if settings is None:
         return {}
-    return {
-        "toolSearch": {
-            "enabled": bool(settings.enabled and loader_granted),
-            "minPct": settings.min_pct,
-            "minTokens": settings.min_tokens,
-        }
+    tool_search: dict[str, Any] = {
+        "enabled": bool(settings.enabled and loader_granted),
+        "minPct": settings.min_pct,
+        "minTokens": settings.min_tokens,
     }
+    if not loader_granted:
+        tool_search["neverDefer"] = sorted({t for t in never_defer if isinstance(t, str) and t})
+    return {"toolSearch": tool_search}
 
 
 def with_client_meta_settings(

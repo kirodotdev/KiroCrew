@@ -1328,7 +1328,14 @@ the roster and the switcher show the new name at once through the roster project
 with no reload and no confirm card. The kickoff says the user has typed nothing,
 frames it as the mate's first conversation with the user, so it greets as someone it is meeting for the first time, and allows a user name only when the User Preferences block
 or a memory result states one, never one inferred from a username, home path, email
-or host name. The route answers `{"outcome": ...}` (`started`, `already_greeted`,
+or host name. The kickoff carries exactly one language sentence: the preamble's
+"`[UI LANGUAGE]` when shown, else English" is swapped for one naming the tag to write
+in -- the configured `dashboard.language`, else the tab's `X-UI-Lang` header that
+`api.memberGreet` sends -- and left as it is for English or no usable tag
+(`mate_welcome.hidden_turn_language`, `with_language`;
+[config](config.md#the-tag-also-writes-a-crewmates-hidden-turns)); a goal check-in's
+`wake.preamble` sentence is swapped the same way, telling it to follow the user's
+language in the thread. The route answers `{"outcome": ...}` (`started`, `already_greeted`,
 `not_empty`, `busy`, `not_crewmate`, `no_thread`, `not_owed`). A welcome turn that
 fails surfaces through the ordinary turn error path once; the marker is already
 claimed, so it never loops, and the composer stays usable.
@@ -1519,17 +1526,32 @@ so the two pages cannot drift; the resulting call-time
 import cycle is resolved because both reference the other's bindings only inside
 component bodies.
 
-The roster lists a row unasked only when its DM thread holds a message
-(`has_dm_message` on `GET /api/members`: the thread's transcript has a row, or
-the live slot holds one) or the user starred it -- whoever sent the message,
-the user, the mate, a scheduled run, an app -- or when it is Mate, the
-first mate (key `mate`), listed from the start so its welcome has a row to
-open. An empty thread is not listed,
-as a messages app lists no empty conversation; the search still reaches it, the
-mate open in the thread stays listed while open, and a remembered mate
-is restored even when the rule hides it. The built-in `default` mate, a
-dashboard-created mate, an app's mate and a legacy built-in binding with no
-member id follow the same rule. Recent
+The roster lists a row unasked (`listedByDefault`) when the user starred it;
+when it is Mate, the first mate (key `mate`), listed from the start so its
+welcome has a row to open; when it is a mate the PERSON created
+(`dashboard_created` on `GET /api/members`: `source` `kirocrew` and a member
+id, which both the Crewmates page's create and an approved `crewmate.create`
+or `crewmate.import` card write through `POST /api/agents`), even while its
+chat is empty and was never opened; and, for every other row, when its DM
+thread holds a message (`has_dm_message`: the thread's transcript has a row, or
+the live slot holds one), whoever sent it -- the user, the mate, a scheduled
+run, an app. The rows the product made on its own -- a template-derived or
+synced row, an app's mate, a legacy built-in binding with no member id -- are
+the ones an empty thread hides, as a messages app lists no conversation it did
+not start; the search still reaches them, the mate open in the thread stays
+listed while open, and a remembered mate is restored even when the rule hides
+it. The reserved `default` member is never `dashboard_created`, whatever its
+record says, and is listed only on a stricter signal: `has_user_dm_message`,
+shipped on that row alone, true once its thread (live file, archived segments
+or the live slot) holds a message the person sent -- a `user` row that is
+neither a `session_send` relay nor automation by the rule the session summary
+reads (`session_summary.is_injected_text`; `transcript_person_rows`), so the
+roster and the summary agree on whether a person spoke. A welcome, a cron result
+(`inject`), an auto-nudge (`nudge`) or a relayed message does not list it, so a
+fresh install's roster shows only Mate, and an upgraded install shows `default`
+only where the person talked to it. The rule is recorded in
+`docs/decisions/2026-10-27-a-crewmate-the-person-created-is-listed-with-an-empty-chat.md`.
+Recent
 order is by `last_active_ts`, the crew log's fold of the thread's last
 `member/message` (see `_recency_for_row`), so the list reads newest conversation
 first like a messages app. The client stamps a send on the row bound to the
@@ -1545,7 +1567,8 @@ list every mate the user put on that team -- placing a mate on a team is
 itself a choice to use it -- and a team whose mates are all hidden keeps its
 (empty) roster header. Where nothing auto-opens (below md) and every row is
 hidden, the roster says so and names the search. A row from an older gateway
-that carries no `has_dm_message` is listed. The header count and the filter
+that carries no `has_dm_message` is listed, and a `default` row that carries no
+`has_user_dm_message` keeps the `has_dm_message` rule. The header count and the filter
 tallies count the listed rows plus any hidden row the search reaches. So that
 count is not read as the whole crew (#21852), the list ends with one muted line
 naming the mates the rule hides by the label their row shows, the ones the
@@ -1699,7 +1722,8 @@ motion); it is not drawn at rest, and neither is the roster count (#19045):
 what the page is and how big the crew is are not what a reader comes to this
 corner for. The action ("Switch mate") is the tooltip.
 Its popover lists the roster's own population, not every crewmate: the rows
-`listedByDefault` keeps (chatted-with, starred, Mate, the default crew) plus the
+`listedByDefault` keeps (chatted-with, starred, Mate, created by the person,
+and `default` once the person messaged it) plus the
 open mate (`rosterPopulation`), the same rule the roster column reads, so
 the chip can never disagree with the column. A typed search decides alone and
 falls back to the full roster, so a hidden row -- a background or app-driven
@@ -3562,11 +3586,22 @@ run under one cross-process lock (`mates/owners.lock`), so two instances
 writing one name at once cannot both pass the check
 (`test/test_mate_owned_config.py`). So a crewmate's first chat, the goal-setup turn included, is
 already on the conductor. A name the set does not know at all (a file another
-process wrote) is rescanned before the answer off the loop, and on the loop a
-rescan is scheduled. A `member` record whose `template_id` names the crewmate's
+process wrote) is rescanned before the answer off the loop. On the loop a rescan
+is scheduled and the answer is two file stats, never a directory scan
+(`mate_worker._mate_file_on_disk`): mate-owned when `~/.kiro/mates/agents/<name>.json`
+exists and `~/.kiro/agents/<name>.json` does not, so a crewmate created a moment
+ago chats on the conductor, never on its own file, and a user-level agent of that
+name stays itself. A `member` record whose `template_id` names the crewmate's
 own file is read as the conductor (`mate_worker.member_chat_template`) by the
 chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
-(`test/test_mate_conductor_every_create_path.py`). The three parts:
+(`test/test_mate_conductor_every_create_path.py`). With the config at hand, the
+chat and `is_conductor_execution` also read the member's CURRENT bound
+`kiro_agent` (`mate_worker.member_record_template`): when that binding owns a
+crewmate file the record is the conductor, whatever older `template_id` it kept
+(the pre-conductor `kirocrew-conductor`), with no record rewritten. Any other
+member keeps the template its record names, so a shared-agent crewmate's thread
+runs the agent it recorded. A `template` record (a worker included) stays exact
+(`test/test_mate_chat_agent_resolution.py`). The three parts:
 
 - **The conductor**, `kirocrew-mate-conductor`, is what its own chat runs on.
   `mate_worker.member_chat_agent` maps the binding to it, and it is the one rule
@@ -3877,7 +3912,7 @@ the loop before the slot restores, never gating readiness). Every crewmate whose
 `kiro_agent` does not name its own file is a candidate. A binding with an empty
 `member_id` is not a crewmate (an old `assistant`, the built-in
 `kirocrew-conductor`): skipped silently. Its roster rows follow the rule for
-any row the dashboard did not create: `GET /api/members` ships it with
+any row the person did not create: `GET /api/members` ships it with
 `dashboard_created` false and the page lists it once `has_dm_message` holds,
 and `GET /api/agents` (the pickers) lists it only when its DM thread holds a
 message (`mate_worker.is_legacy_binding` names the candidates; no name is
@@ -3888,14 +3923,44 @@ Otherwise its source is the agent `kiro_agent` names (a shared template or its
 `crew-<hex>` copy), read with its prompt inlined and governed, and the file is
 what it adds to the worker base (`migration_file`, via `worker_additions`):
 prompt, servers the base lacks with their approvals and selectors, skills, and
-its restrictions. Before any write, `dry_run` merges the planned file as a
-worker session would: nothing the source has beyond the base is lost, nothing
-is gained, no switched-off server starts, the prompt is carried, and the source
-has no `hooks`. What the base withholds by design is no loss
-(`_by_design`, 2026-10-19 owner decision). A crewmate whose id is also a
-user-level agent's name is skipped. A failing crewmate is left as it was, with
-one WARNING (`MigrationReport.dry_run_failed`), and is tried again next boot. A
-written file is read back and checked, and the kit record names its source.
+its restrictions. Before any write, `plan_move` merges the planned file as a
+worker session would (`differences`; `dry_run` is the same as one sentence)
+and sorts what differs (`docs/decisions/2026-10-27-every-used-crewmate-moves-to-the-conductor.md`).
+A **loosening** keeps the crewmate where it is: a grant the worker would gain,
+a switched-off server it would start, a `hooks` entry it would not run, or a
+`permissions` / `toolsSettings` restriction it would not keep. Two are cured
+first: a server the source switched off is written `{"disabled": true}`, and a
+grant the worker would gain is taken out of the file (`_strip_grants`), so
+nothing the old agent lacked is ever granted; the user gets it only through
+the capability card (`request_capabilities`, `mate_capability_catalog`).
+A **loss** (a grant the source had beyond the base that the worker cannot
+carry, such as a built-in tool the base does not mount, or its prompt) no
+longer keeps it: it moves, and its one upgrade notice names what it lost and
+what was withheld (`change_notice`, `MigrationReport.moved_with_changes`).
+What the base withholds by design is no loss (`_by_design`, 2026-10-19 owner
+decision). An agent that cannot be read is no reason to stay either: the
+crewmate moves onto the default template's file (`_default_template_file`,
+`MigrationReport.moved_from_default`), with no kit record, and its notice says
+the agent could not be read. An agent whose spec parses but cannot be read
+governed (its `file://` prompt does not resolve) still has its stated limits
+read raw, and the default template's file never loosens them
+(`_fallback_keeping_limits`): a server it switched off is written
+`{"disabled": true}`, a tool it excludes or disables goes into
+`excludedTools`, and a grant it never had is taken out. A hook or a
+`permissions` / `toolsSettings` restriction the file cannot carry leaves it
+where it is. Governance applies as before: the source is read
+governed, and the worker session still passes POLICY ∩ PROFILE. A crewmate
+whose id is also a user-level agent's name, or a spec Kiro Crew generates, is
+skipped: its file would never be read, and giving it another file name breaks
+every reader that knows a crewmate's file by its binding key
+(`mate_capabilities.binding_is_mate`, `member_mate_tools`,
+`mate_worker._claimed_file`, the revocations keyed by file id). A binding with
+no `member_id` stays out of the migration: a `member_id` on a store that is not
+its own V2 store fails every turn (`memory_stores.require_member_memory_store`).
+A crewmate left where it was gets one WARNING (`MigrationReport.dry_run_failed`)
+and is tried again next boot. A written file is read back and checked against
+the same loosening rule, and the kit record names its source. The ledger keeps
+how each crewmate moved under `reasons.<name>`.
 Only after every candidate is proven are bindings repointed, one at a time:
 the ledger entry (`~/.kiro/mates/migrated.json`, `threads.<name>`) is written
 first as intent, then the binding is repointed (the create path's locked
@@ -3934,7 +3999,11 @@ naming why: the dry-run reason as written, else a plain cause. It is claimed
 once the same way (`worker_kept_claimed.json`), so a crewmate still left behind
 at a later start is not told again. A crewmate that moves later drops its
 unclaimed kept record (`clear_kept_owed`), and a kept notice is never claimed
-once a moved notice is owed or claimed. One claimed while the thread is busy
+once a moved notice is owed or claimed. A crewmate moved with a loss, a
+withheld gain or an unreadable agent has its sentence stored in the owed record
+(`changes`); the same one notice then appends it (`notice_prompt`,
+`upgrade_notice_changes`) and tells the conductor to raise any withheld grant
+with `request_capabilities` on the user's next message. One claimed while the thread is busy
 waits for its next turn end, like a pending report
 (`test/test_mate_upgrade_notice.py`).
 

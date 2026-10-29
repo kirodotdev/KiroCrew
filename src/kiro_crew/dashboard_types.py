@@ -54,7 +54,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Mapping
 
-from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME
+from kiro_crew.crew_log.entry_types import CUSTOM_FOLD_NAME, DASHBOARD_FOLD_NAME
 from kiro_crew.crew_log.projection import (
     _FOLDS,
     _SLOT_FOLD_ROW_BYTES,
@@ -209,6 +209,9 @@ _OPAQUE: Final[dict[str, str]] = {
     # validator that no key below it is valid. That is the opposite of what this entry
     # says, and it is the one failure in this module that is silent.
     f"{DASHBOARD_FOLD_NAME}.fields": "an agentic field name",
+    # The same, for the records a script cron appends: each key is the record type
+    # the script named, and a page binds ``custom.latest.<type>.data.<key>``.
+    f"{CUSTOM_FOLD_NAME}.latest": "a custom record type a script cron named",
 }
 
 
@@ -281,6 +284,15 @@ def _row_keys() -> dict[str, dict[str, Any]]:
             "row_keys": [*_WAITING_TEXT_KEYS, "options", "options_omitted"],
             "names_the_row": "text",
             "row_note": "options is a list of strings; asked_at is the recorded time string",
+        },
+        "custom.latest": {
+            "row_keys": ["data", "at", "seq", "writer", "member", "crew_key"],
+            "names_the_row": "writer",
+            "row_note": (
+                "one row per record type, the latest record only; data is the object the "
+                "script sent (bind custom.latest.<type>.data.<key>), at is its ISO time, "
+                "writer is cron:<job id> stamped by the gateway"
+            ),
         },
         "workstreams.series": series,
         "workstreams.items": {
