@@ -269,6 +269,13 @@ def test_the_header_is_real_elapsed_time_and_summed_credits():
     assert live["elapsed_ms"] == 99_000
 
 
+def test_a_finished_timeline_with_no_timed_row_has_no_end():
+    # A finished header with no recorded moment has no end; it never takes the request's clock.
+    lane = _lane([{"role": "user", "content": "go"}])
+    head = crew_timeline.summarize([lane], now=T0 + timedelta(seconds=99), live=False)
+    assert head["ended"] == "" and head["elapsed_ms"] == 0
+
+
 def test_a_long_lane_keeps_its_newest_bars_and_counts_the_rest(monkeypatch):
     monkeypatch.setattr(crew_timeline, "MAX_SEGMENTS_PER_LANE", 2)
     rows = [_row("tool", i, f"🔧 @x/t{i}", tool_call_id=str(i)) for i in range(4)]

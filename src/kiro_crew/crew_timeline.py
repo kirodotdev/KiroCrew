@@ -452,7 +452,12 @@ def summarize(lanes: list[dict[str, Any]], *, now: datetime, live: bool) -> dict
     firsts = [ts for ts in (parse_ts(lane.get("first_ts")) for lane in lanes) if ts]
     lasts = [ts for ts in (parse_ts(lane.get("last_ts")) for lane in lanes) if ts]
     started = min(firsts) if firsts else None
-    ended = now if live else (max(lasts) if lasts else None)
+    if live:
+        ended = now
+    elif lasts:
+        ended = max(lasts)
+    else:
+        ended = None
     elapsed_ms = 0
     if started and ended and ended >= started:
         elapsed_ms = int((ended - started).total_seconds() * 1000)
