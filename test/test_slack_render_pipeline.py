@@ -32,6 +32,8 @@ Two tiers, deliberately:
   captions) and so cannot be banned outright the way a conversion call can; it is
   a judgment-tier problem, not a deterministic one. ``security_posture.py`` states
   the same bound, deliberately, rather than claiming every Slack path is enforced.
+  ``test_slack_post_message_call_sites.py`` does not ban those calls; it pins
+  each module's count to a baseline, so a NEW direct send path fails the build.
 
   BEHAVIOURAL tier -- the ordering tests below. They prove the pipeline the
   structural tier funnels everyone into actually closes both hazards, in both
