@@ -172,6 +172,15 @@ class CronJob:
     # (e.g. a delivery-path exception) and then overran its deadline during
     # cleanup is counted once, not twice.
     failure_recorded: bool = False
+    # Runtime-only, reset with ``failure_recorded``: True once THIS run's
+    # record_failure() auto-paused the job because its count reached the limit.
+    # The merge reads it (settle_auto_pause_on_limit) to lift only a pause the
+    # limit caused, never one with another cause.
+    paused_by_limit: bool = False
+    # Runtime-only, on a run record: the pause decision apply_run_record made
+    # when it settled the record against the store's current limit, kept until
+    # a save persists the record and emit_pending_pause_audit() writes its row.
+    pending_pause_audit: str = ""
     # Runtime-only: ``auto_paused`` as it stood when THIS run started, stamped by
     # _run_job_isolated and carried on the run's record. A store whose
     # ``auto_paused`` differs from it was changed by someone else while the
@@ -537,7 +546,52 @@ class CronJob:
         if limit is not None and self.consecutive_failures >= limit and not self.auto_paused:
             self.enabled = False
             self.auto_paused = True
+            self.paused_by_limit = True
             self._audit_pause_change("auto_paused")
+
+    def emit_pending_pause_audit(self, saved_auto_paused: bool | None = None) -> None:
+        """Write the SEL row for the pause decision this record carries, once.
+
+        Called on a run record after a save persisted it, by whichever path
+        landed it (:meth:`CronService._merge_job_result` or the held-record
+        flush), so the row follows the save and is written one time however
+        many copies the record was applied to. ``saved_auto_paused`` is the
+        pause state that save wrote for the job, when known: a decision it
+        does not match was overtaken before the save (a user edit, or a limit
+        changed back), so no row is written for it.
+        """
+        outcome, self.pending_pause_audit = self.pending_pause_audit, ""
+        if not outcome:
+            return
+        if saved_auto_paused is not None and saved_auto_paused != (outcome == "auto_paused"):
+            return
+        self._audit_pause_change(outcome)
+
+    def settle_auto_pause_on_limit(self, run: CronJob) -> str:
+        """Re-decide the limit's auto-pause on this, the store's copy, from its limit now.
+
+        Called when a failed run's record ``run`` lands. The run counted its
+        failure on its own copy, against the limit that copy held, so a limit
+        changed while the run was in flight takes effect here: a count that has
+        reached the current limit pauses the job, and a pause the run took
+        because it reached its old limit (``run.paused_by_limit``) is lifted
+        when the current limit is higher or never. A one-shot ``at`` job keeps
+        that pause: its time has passed, so the pause is also what stops it
+        firing again. Writes no audit row: it returns the outcome
+        (``"auto_paused"``, ``"auto_pause_cleared"`` or ``""``) for the caller to
+        carry on the run record until a save persists it.
+        """
+        limit = self.auto_pause_limit()
+        due = limit is not None and self.consecutive_failures >= limit
+        if due and not self.auto_paused:
+            self.enabled = False
+            self.auto_paused = True
+            return "auto_paused"
+        if not due and self.auto_paused and run.paused_by_limit and self.schedule.kind != "at":
+            self.auto_paused = False
+            self.enabled = not self.user_paused
+            return "auto_pause_cleared"
+        return ""
 
     def record_success(self) -> None:
         """Reset the failure counter and lift any execution auto-pause.

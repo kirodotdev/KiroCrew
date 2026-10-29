@@ -278,6 +278,10 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     ``target`` is the store's copy of the job, freshly reloaded under the lock:
     a different object than the run's, so every field the run produces is
     copied explicitly. The caller has already checked the record's generation.
+    A record can be applied many times (to a throwaway copy, on every reload,
+    then by the merge), so a pause decision made here is kept on the record
+    (``run.pending_pause_audit``) and audited once, after the save that
+    persists it (:meth:`CronJob.emit_pending_pause_audit`).
     """
     target.run_generation = run.run_generation
     target.last_run_ts = run.last_run_ts
@@ -323,6 +327,17 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     target.last_failure_at = run.last_failure_at
     if not keep_pause:
         target.consecutive_failures = run.consecutive_failures
+        # The run decided its pause against the limit its own copy held. The
+        # store's copy carries the limit as it is now, so a change made while
+        # the run was in flight decides this run's pause. A run that started
+        # auto-paused keeps that pause: it predates the run.
+        if run.failure_recorded and not run.auto_paused_at_start:
+            # The latest decision replaces an earlier one: a limit changed
+            # again between two applies decides the pause anew. An apply that
+            # finds the decision already made keeps the earlier one.
+            outcome = target.settle_auto_pause_on_limit(run)
+            if outcome:
+                run.pending_pause_audit = outcome
     # Same shape as the other runtime->disk copies on this call: a
     # field `_execute` sets on the in-memory `run` is invisible after
     # reload unless copied here explicitly. A cancelled run never

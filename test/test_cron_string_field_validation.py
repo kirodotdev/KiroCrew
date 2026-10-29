@@ -346,10 +346,13 @@ class TestAntiDrift:
     #   table (which also gates apply_job_update). Validated by its own stricter
     #   validate_managed_by (ASCII charset + 200 cap) at its only writer,
     #   CronService.add_managed_job.
+    # - pending_pause_audit: set only by apply_run_record on a run record, from
+    #   a fixed outcome name; never persisted and never accepted from a caller
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
             "managed_by",
+            "pending_pause_audit",
             "last_status",
             "last_error",
             "last_result",

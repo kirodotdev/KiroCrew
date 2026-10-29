@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew import cron as cron_facade
 from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule, CronService
+from kiro_crew.cron_service.execution import apply_run_record
 from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_MAX,
     _NEVER_PAUSE_BACKOFF_BASE_SECS,
@@ -438,6 +439,193 @@ class TestStore:
         records = {r["id"]: r for r in (data["jobs"] if isinstance(data, dict) else data)}
         assert "auto_pause_after_failures" not in records[plain.id]
         assert records[custom.id]["auto_pause_after_failures"] == 0
+
+
+class TestLimitChangedWhileARunIsInFlight:
+    """A run counts its failure on its own copy; the store's copy has the limit now.
+
+    ``apply_run_record`` lands the run's record on the store's copy, which a
+    ``cron_update`` made during the run has already changed.
+    """
+
+    @staticmethod
+    def _failed_run(start_limit: int, failures_before: int) -> CronJob:
+        run = _job(auto_pause_after_failures=start_limit, consecutive_failures=failures_before)
+        run.auto_paused_at_start = False
+        run.record_failure()
+        return run
+
+    @staticmethod
+    def _store_copy(run: CronJob, limit: int) -> CronJob:
+        return _job(
+            auto_pause_after_failures=limit,
+            consecutive_failures=run.consecutive_failures - 1,
+            run_generation=run.run_generation,
+        )
+
+    def test_a_limit_lowered_mid_run_pauses_at_the_end_of_that_run(self) -> None:
+        run = self._failed_run(start_limit=10, failures_before=2)
+        assert run.auto_paused is False
+        target = self._store_copy(run, limit=3)
+        apply_run_record(target, run)
+        assert target.consecutive_failures == 3
+        assert target.auto_paused is True and target.enabled is False
+
+    @pytest.mark.parametrize("new_limit", [0, 10])
+    def test_a_limit_raised_mid_run_does_not_pause_on_the_old_one(self, new_limit: int) -> None:
+        run = self._failed_run(start_limit=3, failures_before=2)
+        assert run.auto_paused is True
+        target = self._store_copy(run, limit=new_limit)
+        apply_run_record(target, run)
+        assert target.consecutive_failures == 3
+        assert target.auto_paused is False and target.enabled is True
+
+    def test_an_unchanged_limit_keeps_the_runs_decision(self) -> None:
+        run = self._failed_run(start_limit=3, failures_before=2)
+        target = self._store_copy(run, limit=3)
+        apply_run_record(target, run)
+        assert target.auto_paused is True and target.enabled is False
+
+    def test_a_raised_limit_keeps_a_user_pause(self) -> None:
+        run = self._failed_run(start_limit=3, failures_before=2)
+        target = self._store_copy(run, limit=10)
+        target.user_paused = True
+        target.enabled = False
+        apply_run_record(target, run)
+        assert target.auto_paused is False and target.enabled is False
+
+    def test_a_run_that_started_auto_paused_keeps_its_pause(self) -> None:
+        run = _job(auto_pause_after_failures=3, consecutive_failures=3, auto_paused=True)
+        run.enabled = False
+        run.auto_paused_at_start = True
+        run.record_failure()
+        target = _job(auto_pause_after_failures=10, consecutive_failures=3, auto_paused=True)
+        target.enabled = False
+        apply_run_record(target, run)
+        assert target.auto_paused is True and target.enabled is False
+
+    def test_a_raised_limit_keeps_a_pause_the_limit_did_not_cause(self) -> None:
+        run = self._failed_run(start_limit=3, failures_before=0)
+        run.enabled = False
+        run.auto_paused = True  # a failed one-shot's pause, below the limit
+        target = self._store_copy(run, limit=10)
+        apply_run_record(target, run)
+        assert target.auto_paused is True and target.enabled is False
+
+    @pytest.mark.parametrize("new_limit", [0, 10])
+    def test_a_failed_one_shot_keeps_its_pause_when_the_limit_is_raised(
+        self, new_limit: int
+    ) -> None:
+        def one_shot(limit: int, failures: int) -> CronJob:
+            return CronJob(
+                id="j",
+                name="n",
+                message="m",
+                schedule=CronSchedule(kind="at", at_ts=1_770_000_000.0),
+                delete_after_run=True,
+                auto_pause_after_failures=limit,
+                consecutive_failures=failures,
+            )
+
+        run = one_shot(limit=1, failures=0)
+        run.auto_paused_at_start = False
+        run.record_failure()
+        assert run.auto_paused is True and run.paused_by_limit is True
+        target = one_shot(limit=new_limit, failures=0)
+        target.run_generation = run.run_generation
+        apply_run_record(target, run)
+        assert target.auto_paused is True and target.enabled is False
+
+    @pytest.fixture
+    def audit_rows(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        rows: list[str] = []
+        monkeypatch.setattr(
+            CronJob, "_audit_pause_change", lambda self, outcome: rows.append(outcome)
+        )
+        return rows
+
+    def test_a_record_applied_many_times_is_audited_once_after_the_save(
+        self, audit_rows: list[str]
+    ) -> None:
+        run = self._failed_run(start_limit=3, failures_before=2)
+        audit_rows.clear()  # the run's own pause row, written on the run's copy
+        for _ in range(3):  # a throwaway copy, a reload, then the merge
+            apply_run_record(self._store_copy(run, limit=10), run)
+        assert audit_rows == []
+        run.emit_pending_pause_audit()
+        run.emit_pending_pause_audit()
+        assert audit_rows == ["auto_pause_cleared"]
+
+    def test_a_pause_a_reload_applied_is_still_audited_after_the_merge(
+        self, audit_rows: list[str]
+    ) -> None:
+        # Lowered from 10 to 3 mid-run: a reload applies the held record first,
+        # so the merge finds the store already paused and settles nothing.
+        run = self._failed_run(start_limit=10, failures_before=2)
+        reloaded = self._store_copy(run, limit=3)
+        apply_run_record(reloaded, run)
+        assert reloaded.auto_paused is True
+        merged = self._store_copy(run, limit=3)
+        merged.auto_paused, merged.enabled = True, False
+        apply_run_record(merged, run)
+        assert audit_rows == []
+        run.emit_pending_pause_audit()
+        assert audit_rows == ["auto_paused"]
+
+    def test_a_limit_changed_back_before_the_merge_audits_the_saved_pause(
+        self, audit_rows: list[str]
+    ) -> None:
+        # Paused at 3 (the run's own record_failure wrote that row), raised to
+        # 10 before the hold, which lifts the pause on its copy, then put back
+        # to 3 before the merge: the merge's save writes the job paused, so the
+        # stale clearance is not written and the run's own row stands alone.
+        run = self._failed_run(start_limit=3, failures_before=2)
+        assert audit_rows == ["auto_paused"]
+        held = self._store_copy(run, limit=10)
+        apply_run_record(held, run)
+        assert held.auto_paused is False
+        assert run.pending_pause_audit == "auto_pause_cleared"
+        merged = self._store_copy(run, limit=3)
+        apply_run_record(merged, run)
+        assert merged.auto_paused is True
+        run.emit_pending_pause_audit(merged.auto_paused)
+        assert audit_rows == ["auto_paused"]
+
+    def test_a_limit_lowered_then_restored_before_the_merge_audits_nothing(
+        self, audit_rows: list[str]
+    ) -> None:
+        # Lowered from 10 to 3 before the hold, which pauses its copy, then put
+        # back to 10 before the merge: the save writes the job running.
+        run = self._failed_run(start_limit=10, failures_before=2)
+        held = self._store_copy(run, limit=3)
+        apply_run_record(held, run)
+        assert run.pending_pause_audit == "auto_paused"
+        merged = self._store_copy(run, limit=10)
+        apply_run_record(merged, run)
+        assert merged.auto_paused is False
+        run.emit_pending_pause_audit(merged.auto_paused)
+        assert audit_rows == []
+
+    @pytest.mark.parametrize(
+        ("outcome", "saved_auto_paused"),
+        [("auto_pause_cleared", True), ("auto_paused", False)],
+    )
+    def test_a_decision_the_save_did_not_write_is_not_audited(
+        self, audit_rows: list[str], outcome: str, saved_auto_paused: bool
+    ) -> None:
+        run = _job()
+        run.pending_pause_audit = outcome
+        run.emit_pending_pause_audit(saved_auto_paused)
+        assert audit_rows == [] and run.pending_pause_audit == ""
+
+    def test_a_successful_run_is_not_resettled(self) -> None:
+        run = _job(auto_pause_after_failures=3, consecutive_failures=2)
+        run.auto_paused_at_start = False
+        run.record_success()
+        target = self._store_copy(run, limit=1)
+        target.consecutive_failures = 0
+        apply_run_record(target, run)
+        assert target.consecutive_failures == 0 and target.auto_paused is False
 
 
 class TestMcpTools:
