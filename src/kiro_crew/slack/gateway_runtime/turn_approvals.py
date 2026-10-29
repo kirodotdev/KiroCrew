@@ -401,7 +401,7 @@ def _interactive_approval(
                 from kiro_crew import crew_mode
 
                 if crew_mode.APPROVAL_ROUTING_LIVE:
-                    from kiro_crew.dashboard.session_control_parts.session_create import (
+                    from kiro_crew.dashboard.session_control_parts.crew_filing import (
                         _frame_parents,
                     )
 

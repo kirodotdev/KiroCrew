@@ -315,7 +315,7 @@ def _person_crew_worker_root(request: web.Request, state: Any, slot: Any, app: s
 
         if not is_owner_dashboard_request(request):
             return ""
-        from kiro_crew.dashboard.session_control_parts.session_create import _frame_parents
+        from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
 
         # The lineage the slot frame reads: a session its conductor released is a
         # plain session again, and an adopted one belongs to its new conductor.

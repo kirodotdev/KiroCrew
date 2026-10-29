@@ -64,7 +64,7 @@ class _Req(dict):
 def test_a_released_session_typed_into_is_a_plain_send(monkeypatch):
     from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import source_providers
-    from kiro_crew.dashboard.session_control_parts import session_create
+    from kiro_crew.dashboard.session_control_parts import crew_filing
 
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
     root = _live("r", "kirocrew-conductor")
@@ -72,13 +72,13 @@ def test_a_released_session_typed_into_is_a_plain_send(monkeypatch):
     state = SimpleNamespace(_slots={"r": root, "w": worker})
     # Born under the conductor: a steer while the edge stands.
     monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
-    monkeypatch.setattr(session_create, "_frame_parents", lambda s: None)
+    monkeypatch.setattr(crew_filing, "_frame_parents", lambda s: None)
     assert chat_send._person_crew_worker_root(object(), state, worker, "") == "r"  # type: ignore[arg-type]
     # Released: the settled tree has no edge, so the birth stamp does not count.
     monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: True)
     monkeypatch.setattr(crew_mode, "persisted_tree_slots", lambda: frozenset({"r", "w"}))
     monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
-    monkeypatch.setattr(session_create, "_frame_parents", lambda s: {"r": None, "w": None})
+    monkeypatch.setattr(crew_filing, "_frame_parents", lambda s: {"r": None, "w": None})
     assert chat_send._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
 
 
@@ -87,12 +87,12 @@ def test_with_the_routing_off_a_crew_members_composer_is_a_plain_send(monkeypatc
     steer and refuses nothing, as it does today."""
     from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import source_providers
-    from kiro_crew.dashboard.session_control_parts import session_create
+    from kiro_crew.dashboard.session_control_parts import crew_filing
 
     monkeypatch.setattr(crew_mode, "APPROVAL_ROUTING_LIVE", False)
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
     monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
-    monkeypatch.setattr(session_create, "_frame_parents", lambda s: None)
+    monkeypatch.setattr(crew_filing, "_frame_parents", lambda s: None)
     root = _live("r", "kirocrew-conductor")
     worker = _live("w", "kirocrew-worker", created_by="r")
     state = SimpleNamespace(_slots={"r": root, "w": worker})
