@@ -609,7 +609,7 @@ def build_member_section(
         # every build.
         from kiro_crew import dashboard_agentic
 
-        dashboard = dashboard_agentic.turn_block(slug)
+        dashboard = dashboard_agentic.turn_block(slug, member)
         if dashboard:
             parts.append("\n\n" + dashboard)
     parts.append("\n[END MEMBER IDENTITY]\n\n")

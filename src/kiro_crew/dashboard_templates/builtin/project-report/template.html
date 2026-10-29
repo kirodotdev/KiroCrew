@@ -264,31 +264,6 @@
   .pr-lane-w { font-size: 10.5px; color: var(--muted, #7f7f88); min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* ---- the stale band: the fold itself has stopped advancing ----
-     Distinct from the frame's own band, which says a FIELD did not resolve. This
-     one says every field resolved and none of them is being produced any more,
-     which is the difference between "working" and "dead". */
-  .pr-stale { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
-    padding: 9px 13px; border-radius: var(--pr-radius);
-    border: 1px solid color-mix(in oklab, var(--pr-s1) 45%, var(--pr-line));
-    background: color-mix(in oklab, var(--pr-card) 88%, var(--pr-s1) 12%);
-    font-size: 12px; color: var(--text, #e4e4e7); }
-  .pr-stale b { font-weight: 650; }
-  .pr-stale i { margin-left: auto; font-style: normal; font-size: 10px;
-    color: var(--muted, #7f7f88); white-space: nowrap; }
-
-  /* ---- the live indicator: whether this page is being fed, and as of when ----
-     Two different facts in one row, kept apart. The dot answers "is anything
-     arriving"; the time answers "as of when is what I am reading true". A page that
-     showed only the second looks current while its feed is dead. */
-  .pr-live { display: inline-flex; align-items: center; gap: 7px;
-    font-size: 10.5px; color: var(--muted, #7f7f88); white-space: nowrap;
-    font-variant-numeric: tabular-nums; }
-  .pr-live-dot { width: 7px; height: 7px; border-radius: 999px; flex: none;
-    background: var(--pr-s3); }
-  .pr-live[data-live="false"] .pr-live-dot { background: var(--pr-s1); }
-  .pr-live b { font-weight: 600; color: var(--text, #e4e4e7); }
-
   /* A row whose own values moved on the last refresh. Brief, once, and never on
      first paint -- a page that flashed every row the moment it opened would be
      telling the reader that everything just changed. Honoured only where motion is
@@ -519,22 +494,14 @@
       <div>
         <div class="pr-eyebrow" id="pr-eyebrow" data-i18n="doing">What this mate is doing</div>
         <div class="pr-title" id="pr-title">Project report</div>
-        <!-- Whether the page is being fed, and as of when. Under the title rather
-             than in a footer: it qualifies every number above it. -->
-        <div class="pr-live" id="pr-live" data-live="true" hidden>
-          <i class="pr-live-dot"></i><span id="pr-live-t"></span>
-        </div>
       </div>
       <div class="pr-sentence" id="pr-sentence" style="margin-left:auto"></div>
     </div>
     <div class="pr-pills" id="pr-pills"></div>
   </div>
 
-  <!-- Filled by the script, in this order: the band that says whether these numbers
-       are still being produced, then the lead's verdict, then the red lanes under it.
-       Above `pr-view` because a reader who learns the page is dead should learn it
-       before reading a number off it. -->
-  <div id="pr-stale-host"></div>
+  <!-- Filled by the script, in this order: the lead's verdict, then the red lanes
+       under it. Above `pr-view`, because a reader takes the verdict first. -->
   <div id="pr-verdict-host"></div>
   <div id="pr-lanes-host"></div>
 
@@ -580,7 +547,6 @@
       page_title: 'Project report',
       note_more_not_shown: 'more not shown', note_with_spend: 'with spend',
       note_raised: 'raised by the mate', note_verdict: 'verdict', note_last_entry: 'last entry',
-      live_yes: 'Live', live_no: 'No new entry', updated: 'Updated', entry_label: 'entry',
       just_now: 'just now', ago: '{t} ago', quiet_prefix: 'quiet ',
       verdict_on_track: 'On track', verdict_needs_you: 'Needs you', verdict_blocked: 'Blocked',
       verdict_no_word: 'No word yet',
@@ -597,8 +563,7 @@
       lanes_red: '{n} red', lanes_did_not_run: '{n} did not run',
       lane_never_started: 'lane never started \u2014 not a finding',
       rerun_it: 'rerun it', owner_maintainer: 'maintainer', owner_yours: 'yours',
-      stale_no_entry: 'No new entry for {t}.',
-      stale_reading: 'Every number below is a last-known reading.', fold_seq: 'fold seq {n}',
+
       kpi_in_flight: 'In flight', kpi_accepted: 'Accepted', kpi_needs_you: 'Needs you',
       kpi_nothing_waiting: 'nothing waiting on you', kpi_one_answer: 'one answer needed',
       kpi_answers: 'answers needed', kpi_in_chat: '{n} asked before you wrote in chat',
@@ -676,7 +641,6 @@
       page_title: '\u9879\u76ee\u62a5\u544a',
       note_more_not_shown: '\u5176\u4f59\u672a\u663e\u793a', note_with_spend: '\u6709\u82b1\u8d39',
       note_raised: '\u7531\u961f\u53cb\u63d0\u51fa', note_verdict: '\u88c1\u5b9a', note_last_entry: '\u6700\u540e\u6761\u76ee',
-      live_yes: '\u5b9e\u65f6', live_no: '\u65e0\u65b0\u6761\u76ee', updated: '\u5237\u65b0\u4e8e', entry_label: '\u6761\u76ee',
       just_now: '\u521a\u521a', ago: '{t}\u524d', quiet_prefix: '\u6c89\u9ed8 ',
       verdict_on_track: '\u8fdb\u5c55\u987a\u5229', verdict_needs_you: '\u9700\u8981\u4f60', verdict_blocked: '\u53d7\u963b',
       verdict_no_word: '\u6682\u65e0\u6d88\u606f',
@@ -693,8 +657,7 @@
       lanes_red: '{n} \u6761\u7ea2\u8272', lanes_did_not_run: '{n} \u6761\u672a\u8fd0\u884c',
       lane_never_started: '\u8be5\u901a\u9053\u4ece\u672a\u542f\u52a8 \u2014 \u5e76\u975e\u95ee\u9898',
       rerun_it: '\u91cd\u8dd1\u5b83', owner_maintainer: '\u7ef4\u62a4\u8005', owner_yours: '\u4f60\u7684',
-      stale_no_entry: '{t} \u6ca1\u6709\u65b0\u6761\u76ee\u3002',
-      stale_reading: '\u4e0b\u9762\u6bcf\u4e2a\u6570\u5b57\u90fd\u662f\u6700\u8fd1\u4e00\u6b21\u8bfb\u6570\u3002', fold_seq: 'fold \u5e8f\u53f7 {n}',
+
       kpi_in_flight: '\u8fdb\u884c\u4e2d', kpi_accepted: '\u901a\u8fc7', kpi_needs_you: '\u9700\u8981\u4f60',
       kpi_nothing_waiting: '\u6ca1\u6709\u5f85\u4f60\u5904\u7406\u7684\u4e8b', kpi_one_answer: '\u9700\u8981\u4e00\u4e2a\u56de\u7b54',
       kpi_answers: '\u9700\u8981\u56de\u7b54', kpi_in_chat: '{n} \u4e2a\u5728\u4f60\u53d1\u804a\u5929\u6d88\u606f\u4e4b\u524d\u63d0\u51fa',
@@ -1152,40 +1115,6 @@
     rowWas = now;
     flashSeen = true;
     return marks;
-  }
-
-  //: Is anything still arriving, and as of when.
-  //:
-  //: The dot is the fold's own advance, which is the same reading the stale band is
-  //: raised from -- one source, so the two cannot disagree. The time is when THIS
-  //: page last read, which is a different fact: a page can read every minute and
-  //: still be reading a log that stopped an hour ago.
-  function renderLive() {
-    var host = document.getElementById('pr-live');
-    var label = document.getElementById('pr-live-t');
-    if (!host || !label) return;
-    var at = txt(fields().last_entry_at);
-    var since = sinceMs(at);
-    var live = since !== null && since < QUIET_MS;
-    host.hidden = false;
-    host.setAttribute('data-live', live ? 'true' : 'false');
-    clear(label);
-    label.appendChild(el('b', null, live ? i18n('live_yes') : i18n('live_no')));
-    // A WALL-CLOCK read time, which is the one place this page spells a local hour:
-    // "updated" is about the reader's own now, not about an hour in the record.
-    //
-    // Through `Date.now()` and not `new Date()`, so this page reads ONE clock. Both
-    // forms answer the same thing in a browser; they part company in the evidence
-    // harness, which pins `Date.now` to the instant its fixture describes. A page
-    // mixing them renders a different "Updated" on every shoot, which makes the
-    // committed screenshots differ byte for byte from one run to the next -- and an
-    // image nobody can reproduce is a claim rather than a reading.
-    var d = new Date(Date.now());
-    var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
-    label.appendChild(document.createTextNode(
-      '\u00a0\u00b7 ' + i18n('updated') + ' ' + hh +
-      (since === null ? '' : ' \u00b7 ' + i18n('entry_label') + ' ' + fmtAgo(since))
-    ));
   }
 
   //: STATE is the conductor's own stamp; STATUS is the worker's last claim. The board
@@ -2247,7 +2176,6 @@
           var qid = txt(ts[j].item_id) || txt(ts[j].id) || '';
           var ruling = parseRuling(raw);
           rows.push({ kind: 'Asks you',
-
             step: 'Answer in chat',
             key: 'w:' + (qid || txt(ts[j].title)),
             choices: choicesFor('Asks you', txt(ts[j].title), qid, raw, null),
@@ -3030,12 +2958,10 @@
     //: old the page is, which an hour bucket cannot answer to within an hour.
     var since = sinceMs(fields().last_entry_at);
     put('last_entry_at', since === null ? null : fmtAgo(since));
-    //: ABOVE the view, in the order a reader needs them: whether these numbers are
-    //: still being produced, then the lead's word on them, then the lanes in the way.
-    renderStale();
+    //: ABOVE the view, in the order a reader needs them: the lead's word on these
+    //: numbers, then the lanes in the way.
     renderVerdict(vd);
     renderLanes(board);
-    renderLive();
     //: BEFORE the tree is built, because a row cannot ask whether it changed while
     //: it is being built -- and after this, `rowWas` already holds the new state, so
     //: a second render with no new read marks nothing.
@@ -3147,28 +3073,6 @@
       card.appendChild(row);
     }
     host.appendChild(card);
-  }
-
-  //: The band that says these numbers have stopped being produced.
-  //:
-  //: Distinct from the frame's own stale band, which says a FIELD did not resolve.
-  //: Here every field resolved and the log behind them has gone quiet, which is the
-  //: difference between "nothing is happening" and "nothing is reaching me" -- and
-  //: the second is what a restarted gateway leaves behind, with every number on the
-  //: page intact and correct as of a time nothing else on it names.
-  function renderStale() {
-    var host = document.getElementById('pr-stale-host');
-    if (!host) return;
-    clear(host);
-    var at = txt(fields().last_entry_at);
-    var ms = sinceMs(at);
-    if (ms === null || ms < QUIET_MS) return;
-    var band = el('div', 'pr-stale');
-    band.appendChild(el('b', null, i18n('stale_no_entry', { t: fmtSince(ms) })));
-    band.appendChild(document.createTextNode(i18n('stale_reading')));
-    var seq = num((window.kirocrew || {}).seq);
-    if (seq !== null) band.appendChild(el('i', null, i18n('fold_seq', { n: seq })));
-    host.appendChild(band);
   }
 
   // --------------------------------------------------------------- the drawer

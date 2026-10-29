@@ -23,6 +23,40 @@ describe('interactive model visibility', () => {
     expect(filterInteractiveModels([...next, MODELS[2]], hidden, ['model-b']).map(model => model.name)).toContain('model-b')
   })
 
+  it('keeps a model hidden after a harness switch respells its id', () => {
+    // Hidden under the kiro backend's id; the Claude Code backend lists the
+    // same model by its bare wire id, its prefixed wire id or its registry key.
+    const hidden = ['claude-opus-4.7']
+    for (const spelling of ['claude-opus-4-7[1m]', 'global.anthropic.claude-opus-4-7[1m]', 'opus-4.7-1m']) {
+      const models = [{ name: 'auto' }, { name: spelling }, { name: 'model-a' }]
+      expect(filterInteractiveModels(models, hidden).map(model => model.name)).toEqual(['auto', 'model-a'])
+    }
+  })
+
+  it('matches a bare family alias only by itself', () => {
+    // Claude Code's `opus` is its newest Opus, while the registry folds the
+    // alias to Opus 4.8 (1M). Hiding one must not hide the other.
+    const models = [{ name: 'auto' }, { name: 'opus' }, { name: 'claude-opus-4.8' }, { name: 'claude-opus-4-8[1m]' }, { name: 'claude-opus-5.5' }]
+    expect(filterInteractiveModels(models, ['opus']).map(model => model.name))
+      .toEqual(['auto', 'claude-opus-4.8', 'claude-opus-4-8[1m]', 'claude-opus-5.5'])
+    expect(filterInteractiveModels(models, ['claude-opus-4.8']).map(model => model.name))
+      .toEqual(['auto', 'opus', 'claude-opus-5.5'])
+    expect(filterInteractiveModels(models, ['Opus']).map(model => model.name)).not.toContain('opus')
+  })
+
+  it('keeps distinct registry models distinct when matching hidden ids', () => {
+    // `claude-opus-4-8` (200K) and `claude-opus-4.8` (1M) are different models.
+    const models = [{ name: 'auto' }, { name: 'claude-opus-4-8' }, { name: 'claude-opus-4.8' }]
+    expect(filterInteractiveModels(models, ['claude-opus-4.8']).map(model => model.name)).toEqual(['auto', 'claude-opus-4-8'])
+  })
+
+  it('keeps a hidden active model visible when the harness spells it differently', () => {
+    // The session pinned `claude-opus-4.8`; Claude Code lists it as `claude-opus-4-8[1m]`.
+    const models = [{ name: 'auto' }, { name: 'claude-opus-4-8[1m]' }, { name: 'model-a' }]
+    expect(filterInteractiveModels(models, ['claude-opus-4.8'], ['claude-opus-4.8']).map(model => model.name))
+      .toEqual(['auto', 'claude-opus-4-8[1m]', 'model-a'])
+  })
+
   it('hides the first-use row while loading and follows only the server acknowledgement', async () => {
     let finish!: (value: { model_picker_configured: boolean }) => void
     const response = new Promise<{ model_picker_configured: boolean }>(resolve => { finish = resolve })

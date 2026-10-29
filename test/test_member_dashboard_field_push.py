@@ -166,8 +166,8 @@ class TestOnlyWhatMoved:
         ``DashboardFeed.read`` DROPS a field whose fold path does not resolve, so its
         last value stays in the sent table and nothing compares unequal. A comparison
         of values alone therefore sends nothing, and the page keeps drawing that value
-        with its stale band hidden -- reporting a number as current at the moment the
-        product cannot read it.
+        undimmed -- reporting a number as current at the moment the product cannot
+        read it.
         """
         live, _first, sent = page
         publish("work", {"conductor": {"goal": "atlas"}, "omitted": 0}, revision=1)
@@ -177,9 +177,9 @@ class TestOnlyWhatMoved:
         publish("work", {"omitted": 0}, revision=2)
         assert len(sent) > before, (
             "a field stopped resolving and the page was told nothing, so it is still "
-            "showing the last value with no stale band"
+            "showing the last value undimmed"
         )
-        assert sent[-1]["stale"] is True or "goal" in (sent[-1].get("missing") or [])
+        assert "goal" in (sent[-1].get("missing") or [])
 
     def test_a_value_returning_to_an_earlier_one_is_a_change(self, page: Any) -> None:
         """The comparison is against what was SENT, not against a history: a field that
@@ -361,9 +361,9 @@ class TestACustomValueRidesTheSameSubscription:
         finally:
             live.disarm()
 
-    def test_an_unwritten_custom_field_does_not_raise_the_stale_band(self) -> None:
-        """A cell the owner has not filled is ABSENT, not older than the record. Counting
-        it as stale would raise the band forever, about a value nothing has produced."""
+    def test_an_unwritten_custom_field_is_missing_and_no_stale_flag_is_sent(self) -> None:
+        """A cell the owner has not filled is ABSENT, not older than the record: it is
+        dimmed through `missing`, and the read carries no staleness flag at all."""
         live = mdf.LivePage(
             SLOT,
             SLOT,
@@ -372,7 +372,7 @@ class TestACustomValueRidesTheSameSubscription:
         )
         first = live.arm()
         try:
-            assert first["stale"] is False
+            assert "stale" not in first
             assert first["missing"] == ["verdict"]
         finally:
             live.disarm()
