@@ -2497,7 +2497,12 @@ they reviewed with the `license-override` label, honored **only** on the `labele
 event, so a later push arrives as `synchronize` and re-runs the gate; a new,
 unvetted dependency cannot ride in on a stale override. It is not a `pr-policy.yml`
 step: it needs `pull-requests: write` for its failure comment, and that job is
-read-only.
+read-only. GitHub's dependency-graph API has outages in which the action fails
+every PR with "Dependency review is not supported on this repository", so a failed
+review is retried once after 60s; when the retry fails too, the job probes
+`dependency-graph/compare` for the PR's range and fails either as the action's
+license verdict (the API answers) or as "could not run" naming the API's answer
+(it does not). Both fail closed; only the message differs.
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
