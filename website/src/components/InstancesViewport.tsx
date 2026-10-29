@@ -1228,7 +1228,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // Ordered as a tree, exactly as the local bar orders it, so a pane's own
       // switcher shows the same shape the window's does. A pane cannot derive
       // this: it never sees the host's registry.
-      const tabs = chainRows(visibleInstanceTabs(insts, warm)).map(
+      const tabs = chainRows(visibleInstanceTabs(insts, warm), insts).map(
         ({ inst: i, depth, parentName, reachable, brokenAt }) => ({
           id: i.id,
           name: i.name,

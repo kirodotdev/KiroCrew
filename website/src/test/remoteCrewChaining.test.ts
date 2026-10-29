@@ -172,7 +172,32 @@ describe('chainRows', () => {
     const rows = chainRows([chained('c', 'never-connected')])
     expect(rows).toHaveLength(1)
     expect(rows[0].depth).toBe(0)
-    expect(rows[0].parentName).toBe('')
+  })
+
+  it('names the absent parent of a re-rooted crew from the full list (#14631)', () => {
+    // The parent has no tab, so it is only in the full instance list. The row
+    // must still name the hop it rides, and read unreachable through it: a parent
+    // with no tab is not connected.
+    const parent = inst('b', { name: 'Build Box', was_connected: false, status: { instance_id: 'b', state: 'disconnected' } })
+    const child = chained('c', 'b')
+    const rows = chainRows([child], [parent, child])
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ depth: 0, parentName: 'Build Box', reachable: false, brokenAt: 'Build Box' })
+    expect(rowStateLabel({ state: 'connected', reachable: rows[0].reachable, brokenAt: rows[0].brokenAt })).toContain('Build Box')
+  })
+
+  it('falls back to the parent id when the parent is in no list', () => {
+    const rows = chainRows([chained('c', 'gone')])
+    expect(rows[0].parentName).toBe('gone')
+    expect(rows[0].reachable).toBe(false)
+  })
+
+  it('carries the absent hop down to the re-rooted crew\u2019s own children', () => {
+    const rows = chainRows([chained('c', 'b'), chained('d', 'c')], [inst('b', { name: 'B' })])
+    expect(rows.map(r => [r.inst.id, r.depth, r.parentName, r.reachable, r.brokenAt])).toEqual([
+      ['c', 0, 'B', false, 'B'],
+      ['d', 1, 'c', false, 'B'],
+    ])
   })
 
   it('marks a crew unreachable when an ancestor hop is down', () => {
@@ -201,6 +226,8 @@ describe('chainRows', () => {
     const rows = chainRows([chained('a', 'b'), chained('b', 'a')])
     expect(rows.map(r => r.inst.id).sort()).toEqual(['a', 'b'])
     expect(new Set(rows.map(r => r.inst.id)).size).toBe(rows.length)
+    // Each recovered row still names the hop it rides.
+    expect(Object.fromEntries(rows.map(r => [r.inst.id, r.parentName]))).toEqual({ a: 'b', b: 'a' })
   })
 
   it('leaves a list with no chained crew exactly as it was', () => {
