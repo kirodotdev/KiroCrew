@@ -26,6 +26,7 @@ pass one that reads the ordinal they wrap each entry in.
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -102,15 +103,36 @@ class ProjectionRegistry:
         STREAM: a per-definition loop has to re-read, so it forces the whole history
         into a list first, and that list is as long as the store's life. The cost
         is unchanged either way -- definitions times events -- only the peak moves.
+
+        A definition that offers ``apply_owned`` is folded onto ONE private state:
+        ``init()`` is deep-copied once, and every event then edits that copy in place.
+        Nothing outside this method can see the states between the first event and the
+        last -- no callback fires and no cell holds them until the loop ends -- so the
+        copy ``apply`` makes per event to keep an observed state intact buys nothing
+        here, and paying it costs a copy that grows with the state on every event: a
+        cold prime of N events would be O(N^2). A definition without ``apply_owned``
+        keeps ``apply``. :meth:`drive` always uses ``apply``, because there the prior
+        state IS observed: :meth:`cells` hands it out as held.
         """
         with self._lock:
             defns = list(self._defns.values())
-            states = [defn.init() for defn in defns]
+            folders: list[Callable[[Any, Any], Any]] = []
+            states: list[Any] = []
+            for defn in defns:
+                owned = getattr(defn, "apply_owned", None)
+                if owned is None:
+                    folders.append(defn.apply)
+                    states.append(defn.init())
+                else:
+                    folders.append(owned)
+                    # The one copy: ``init()`` may hand back an object it keeps, and the
+                    # state about to be edited in place has to be this pass's alone.
+                    states.append(copy.deepcopy(defn.init()))
             last_seq = EMPTY_WATERMARK
             for ev in events:
                 last_seq = self._seq_of(ev)
-                for i, defn in enumerate(defns):
-                    states[i] = defn.apply(states[i], ev)
+                for i, folder in enumerate(folders):
+                    states[i] = folder(states[i], ev)
             for defn, state in zip(defns, states):
                 self._cells[(defn.key, store)] = _Cell(state, last_seq)
 
@@ -184,9 +206,61 @@ class ProjectionRegistry:
         # fold about the same bytes, and nothing in the file would say which one is
         # right. Emission is off for the same reason :meth:`prime` has none: these
         # events are history the client's store already holds.
+        #
+        # A COLD pass (EVERY cell at or below seq 0: no unit has folded an event yet,
+        # since seqs start at 1 -- the crew log's session reader hands in ``initial()``
+        # checkpoints at seq 0 rather than no checkpoints) whose definitions all offer ``apply_owned`` is folded onto private copies instead --
+        # one deep copy per definition, then in place per event, with the same per-cell
+        # watermark rule ``_fold_one`` applies -- and installed once at the end. A cold
+        # session fold reaches here over the whole log, and stepping each event through
+        # ``apply`` copied the growing state once per entry: O(N^2). A RESUMED pass keeps
+        # ``apply``: its tail is only what arrived since the savepoint, and a restored
+        # state is untrusted -- a fold's copier is what refuses one malformed below its
+        # top level, which the savepoint readers rely on to retire the file. A registry
+        # with any definition lacking ``apply_owned`` (the member event log's, driven
+        # live by other threads) keeps this path too.
+        # Every cell, not the floor: a bundle mixing one fold at seq 0 with another
+        # resumed further along has a floor of 0, and that resumed state is exactly the
+        # untrusted one the copier must still see.
+        owned = [getattr(defn, "apply_owned", None) for defn in defns]
+        with self._lock:
+            cold = all(self._cells[(defn.key, store)].observed_seq <= 0 for defn in defns)
+        if cold and all(fn is not None for fn in owned):
+            self._fold_tail_owned(store, defns, owned, tail_from(floor))
+            return floor
         for event in tail_from(floor):
             self._fold_one(store, event, emit=False)
         return floor
+
+    def _fold_tail_owned(
+        self,
+        store: str,
+        defns: list[ProjectionDefinition],
+        owned: list[Any],
+        events: Iterable[Any],
+    ) -> None:
+        """:meth:`prime_checkpointed`'s tail onto private states, installed at the end."""
+        with self._lock:
+            seeds = [self._cells[(defn.key, store)] for defn in defns]
+        states = [copy.deepcopy(cell.state) for cell in seeds]
+        marks = [cell.observed_seq for cell in seeds]
+        started = list(marks)
+        for event in events:
+            seq = self._seq_of(event)
+            for i, folder in enumerate(owned):
+                if seq <= marks[i]:
+                    continue
+                states[i] = folder(states[i], event)
+                marks[i] = seq
+        # Install only over the cell this pass started from, still at the seq it started
+        # at. A ``drive`` that landed on this store while the tail folded outside the
+        # lock has advanced that cell (``_fold_one`` edits the cell object), and
+        # overwriting it would move its watermark backwards and drop an event already
+        # announced; the shared path's watermark check would have kept it instead.
+        with self._lock:
+            for defn, seed, begun, state, mark in zip(defns, seeds, started, states, marks):
+                if self._cells.get((defn.key, store)) is seed and seed.observed_seq == begun:
+                    self._cells[(defn.key, store)] = _Cell(state, mark)
 
     def savepoints(
         self,

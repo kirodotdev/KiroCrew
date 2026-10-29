@@ -284,6 +284,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         radar_ci_state,
     )
     from kiro_crew.crew_log.projection_readers import (  # noqa: F401
+        _WORKERS_PART_FOLDS,
         _WORKERS_READ_LOCKS,
         _WORKERS_REVISIONS,
         _WORKERS_REVISIONS_LOCK,
@@ -327,12 +328,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.crew_log.projection_session import (  # noqa: F401
         SessionProjections,
+        _above,
         _cells_as_checkpoints,
+        _custody_kept,
         _drive_session,
         _fold_attempt,
         _HeldCheckpoints,
         _note_session_fold_origin,
         _persisted,
+        _reached_point,
         _resume_from_disk,
         _session_registry,
         _SessionFold,
@@ -342,6 +346,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.crew_log.projection_session_log import (  # noqa: F401
         _log_identity,
+        _unit_log_identity,
         log_origin,
         open_session_log,
     )
@@ -389,14 +394,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.crew_log.projection_slot_memo import (  # noqa: F401
         _ALL_RECORDS,
         _CUT,
+        _PRIMING_POLL_SECONDS,
         _UNCUT,
         _UNPROVEN,
         OVERSIZE_SLOT_CELL_LIMIT,
+        SlotFoldNotReady,
         _acquire_fold_lock,
+        _acquire_unless_cold,
         _cell_weight,
+        _cold_keys,
         _continuable,
         _cut_verdict,
         _digest_to_carry,
+        _fold_slot_cold,
         _fold_slot_warm_locked,
         _folded_marks,
         _folded_prefix_holds,
@@ -432,6 +442,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unit_prefix,
         _UnitMark,
         _vouched,
+        any_cold_fold_running,
+        cold_fold_running,
         fold_slot_warm,
         fold_slot_warm_revised,
         forget_slot_folds,
@@ -686,6 +698,11 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
     )
     from kiro_crew.crew_log.otel_session_tree_fold import (  # noqa: F401
         depth_observation,
+    )
+    from kiro_crew.crew_log.prefix_extent import (  # noqa: F401
+        PrefixExtent,
+        extent_at,
+        extent_holds,
     )
     from kiro_crew.crew_log.schema import (  # noqa: F401
         KIND_SESSION,

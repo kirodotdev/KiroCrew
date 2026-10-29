@@ -18,6 +18,16 @@ keep a stale value until some later event happens to move the fold. So state is
 treated as immutable -- ``apply`` returns a new object or the original, never a
 modified original.
 
+ONE OPTIONAL METHOD steps outside that rule, and only where nobody can watch:
+``apply_owned(state, event) -> state`` folds *event* into a *state* the caller owns
+outright, so it may edit *state* in place and return it, and it must not edit the
+event. The registry calls it only on a COLD pass --
+:meth:`~kiro_crew.projection.registry.ProjectionRegistry.prime`, and the tail of
+``prime_checkpointed`` when every cell is still at seq 0 -- on a state it copied once
+at the start and that no reader can see until the pass ends. It must reach the same
+value ``apply`` reaches over the same events. A definition without it is folded
+through ``apply``, one copy per changed event.
+
 This module is separate from the registry so a domain can DECLARE its folds
 without importing the driver. The declaration is the part other code reads, and a
 fold is testable by calling ``init`` / ``apply`` / ``view`` with no registry in

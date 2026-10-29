@@ -109,7 +109,9 @@ def fold_slot(name: str, unit_ids: Sequence[str], *, slot: str = "") -> Projecti
     return projection_of(fold_slot_checkpoint(name, unit_ids, slot=slot))
 
 
-def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()) -> Projection:
+def read_slot_projection(
+    slot: str, name: str, *, also_slots: Sequence[str] = (), cold: bool = True
+) -> Projection:
     """One slot-keyed projection for *slot*, folded over every unit it ran under.
 
     The units come from the fold's OWNER, not from a raw store listing. For the ledger
@@ -121,9 +123,14 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
     further slots whose units join the fold after those -- a caller that knows of a
     party the record itself does not name yet (a worker bound before the board was
     recorded) says so here.
+
+    ``cold=False`` is the request-path form: where the slot has no warm cell and no
+    usable savepoint it raises
+    :class:`~kiro_crew.crew_log.projection_slot_memo.SlotFoldNotReady` instead of folding
+    every unit (see :mod:`kiro_crew.crew_log.slot_prime`).
     """
     if name == WORKERS_FOLD_NAME:
-        return _read_workers(slot)
+        return _read_workers(slot, cold=cold)
     units = list(_slot_units_for_fold(slot, name))
     known = set(units)
     for extra in also_slots:
@@ -131,7 +138,7 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot)
+    checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
     return projection_of(checkpoint, revision=revision)
 
 
@@ -146,7 +153,7 @@ _WORKERS_REVISIONS_LOCK = threading.Lock()
 _WORKERS_READ_LOCKS: "tuple[threading.Lock, ...]" = tuple(threading.Lock() for _ in range(64))
 
 
-def _read_workers(slot: str) -> Projection:
+def _read_workers(slot: str, *, cold: bool = True) -> Projection:
     """``workers`` for crewmate *slot*: its own creates merged with each worker's row.
 
     Each part is a warm cell of its own (:func:`fold_slot_warm_revised`): ``workers``
@@ -160,22 +167,46 @@ def _read_workers(slot: str) -> Projection:
     past the cap) would otherwise move the number backwards.
     """
     key = (str(data_home()), slot)
-    with _WORKERS_READ_LOCKS[hash(key) % len(_WORKERS_READ_LOCKS)]:
-        return _read_workers_locked(slot, key)
+    lock = _WORKERS_READ_LOCKS[hash(key) % len(_WORKERS_READ_LOCKS)]
+    if cold:
+        with lock:
+            return _read_workers_locked(slot, key, cold=cold)
+    # The request-path form must not wait out a COLD fold another read is doing under
+    # this stripe (a background prime of this crewmate, or of another one sharing the
+    # stripe): it answers "not ready" instead, the rule the per-cell lock follows.
+    from kiro_crew.crew_log.projection_slot_memo import (
+        _PRIMING_POLL_SECONDS,
+        SlotFoldNotReady,
+        any_cold_fold_running,
+    )
+
+    while not lock.acquire(timeout=_PRIMING_POLL_SECONDS):
+        if any_cold_fold_running(_WORKERS_PART_FOLDS):
+            raise SlotFoldNotReady(slot, WORKERS_FOLD_NAME)
+    try:
+        return _read_workers_locked(slot, key, cold=cold)
+    finally:
+        lock.release()
 
 
-def _read_workers_locked(slot: str, key: "tuple[str, str]") -> Projection:
+#: The folds a ``workers`` read folds under its stripe lock.
+_WORKERS_PART_FOLDS: "frozenset[str]" = frozenset({WORKERS_FOLD_NAME, WORKER_FOLD_NAME})
+
+
+def _read_workers_locked(slot: str, key: "tuple[str, str]", *, cold: bool = True) -> Projection:
     from kiro_crew.crew_log.projection_slot_memo import _minted_revision
 
     seeded = tree_seeded()
-    own, own_revision = fold_slot_warm_revised(WORKERS_FOLD_NAME, workers_units(slot), slot=slot)
+    own, own_revision = fold_slot_warm_revised(
+        WORKERS_FOLD_NAME, workers_units(slot), slot=slot, cold=cold
+    )
     parts = [own_revision]
     workers: dict[str, Any] = {}
     for child in workers_children(slot):
         units = worker_units(child, units_in_succession(child))
         if not units:
             continue
-        cell, revision = fold_slot_warm_revised(WORKER_FOLD_NAME, units, slot=child)
+        cell, revision = fold_slot_warm_revised(WORKER_FOLD_NAME, units, slot=child, cold=cold)
         workers[child] = _FOLDS[WORKER_FOLD_NAME].render(cell.state)
         parts.append(revision)
     value = merge_render(own.state, slot, workers)

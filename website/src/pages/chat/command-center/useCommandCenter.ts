@@ -8,6 +8,7 @@ import { useAppDispatch, useAppSelector } from '../../../store'
 import { isAnsweredQuestionEnding, markQuestionSettled } from '../../../store/chatSlice'
 import { answersAsText, questionName } from '../../../utils/questionAnswers'
 import { restoreToComposer } from '../../../utils/composerRestore'
+import { viewSubagentSlots } from '../../../lib/subagentReplayScope'
 import type { SubagentActivity } from '../../../types'
 import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
@@ -69,6 +70,13 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const connected = useAppSelector(s => s.dashboard.connected)
   const fleet = scope === 'fleet'
   const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
+  // These slots' subagent runs are drawn here, finished ones included, so the
+  // gateway's durable replay is asked for them (it covers only named slots).
+  const scopedKeys = useMemo(() => scoped.map(s => s.key).join('\n'), [scoped])
+  useEffect(() => {
+    if (!enabled || !scopedKeys) return
+    return viewSubagentSlots(scopedKeys.split('\n'))
+  }, [enabled, scopedKeys])
   const canRead = enabled && (fleet || !!root && scoped.length > 0)
   // The app-wide policy is never-stale; a finite staleTime here made every
   // window focus re-read all of these. Frames and reconnect own freshness; a

@@ -61,6 +61,11 @@ def read_projection(session_id: str, name: str) -> Projection:
 # pass whose bundle has moved far enough past its savepoint to earn a write
 # (``checkpoint.write_is_earned``) folds from the DISK savepoint instead, which replays at
 # most that many entries and writes the savepoint back.
+#
+# Only for a bundle WITHOUT custody of its prefix. A bundle that carries the unit's cut
+# count (``SessionProjections.cuts``) vouches for the bytes it was folded from, so
+# ``fold_session`` writes the savepoint from the state it already holds and the advance
+# costs the new entries alone. A unit with no cut counter keeps the fold from disk.
 
 #: Default ceiling on the bytes every warm SESSION cell may hold together. 64 MiB.
 #:
@@ -176,9 +181,16 @@ def _fold_session_warm_locked(
     with _session_memo_guard:
         held = _session_memos.get(key)
     since = held.bundle if held is not None else None
-    if since is not None and savepoints.write_is_earned(since.last_seq, since.saved_seq):
-        # Far enough past the disk savepoint to owe it a write, and only a pass that
-        # folds the prefix itself may write one. See this section's header.
+    if (
+        since is not None
+        and since.cuts is None
+        and savepoints.write_is_earned(since.last_seq, since.saved_seq)
+    ):
+        # Far enough past the disk savepoint to owe it a write, and a bundle with no
+        # custody of its prefix (no cut counter on this unit) cannot vouch for one, so
+        # only a pass that folds the prefix itself may write it. A bundle that HAS
+        # custody (``SessionProjections.cuts``) writes from the state it already holds,
+        # and the advance costs the new entries only. See this section's header.
         since = None
     bundle = fold_session(session_id, names, since=since)
     # A different file, or one whose identity could not be held still: nothing the memo

@@ -2043,7 +2043,11 @@ requested name while the generic default agent answers **with none of the app's
 MCP tools and no error**, leaving the app unusable until a gateway restart happens
 to re-warm the snapshot. `_turn_admit` therefore guards the resolve, strictly behind
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
-common hot path — no `_app`, or already resolved):
+common hot path — no `_app`, or already resolved). The first rescan step also
+runs for a named non-app slot that did not resolve while
+`materialized_snapshot_complete()` is False (a scan skipped a spec, or the boot
+scan has not landed); if the re-resolve still misses, that turn fails with
+`memory_unavailable`. A complete snapshot is trusted and costs no rescan:
 
 1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
    loop** with the same pattern the gateway boot uses (`dashboard/server_runtime/app_platform.py`) —
@@ -2127,7 +2131,13 @@ The snapshot is only ever rebuilt off-loop:
   config through `hooks.safe_read_file`, so a symlink planted in that
   user-writable directory cannot make a boot refresh read a protected file;
   refused paths are skipped. A stem is trusted only after the file parses as a
-  JSON object.
+  JSON object. A scan that skipped a spec is **incomplete**: the installed
+  snapshot keeps the names and stem mappings the previous snapshot held for the
+  skipped files (their stem, or the name that stem mapped to), because those
+  files are still on disk, and drops everything else the scan no longer sees. A
+  failed directory listing keeps the whole previous user-level snapshot. An
+  incomplete scan never heals the default agent. `materialized_snapshot_complete()`
+  reads the flag, in memory.
 - `schedule_materialized_agents_refresh()` — safe from anywhere: offloads to the
   default executor when a loop is running, refreshes inline when not.
 - `publish_materialized_agents(names)` — pure set union, no I/O, so it is safe on

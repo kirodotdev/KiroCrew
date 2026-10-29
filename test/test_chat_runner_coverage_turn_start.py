@@ -882,6 +882,69 @@ class TestAppAgentDispatchGuard:
         assert any("my-app-agent" in e and "isn't loaded yet" in e for e in errors)
 
     @pytest.mark.asyncio
+    async def test_template_missing_from_an_incomplete_snapshot_is_rescanned_once(self, tmp_path):
+        # A refresh that could not read one spec leaves its template out of the
+        # snapshot while the file is on disk. Before failing the turn
+        # memory_unavailable, the snapshot is rescanned off the loop once.
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+        slot = _slot()
+        slot.agent = "team-lead"
+
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="", requested_resolved=False)
+        warm = _bindings(kiro_agent="team-lead", resolved_alias="", requested_resolved=True)
+        refresh = MagicMock()
+        with (
+            patch.object(
+                chat_runner, "resolve_agent_bindings", side_effect=[cold, warm]
+            ) as resolve,
+            patch.object(chat_runner, "refresh_materialized_agents", refresh),
+            patch(
+                "kiro_crew.config.loader_snapshots.materialized_snapshot_complete",
+                return_value=False,
+            ),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            patch.object(chat_runner, "warm_project_agent_names", new=AsyncMock()),
+        ):
+            await _drive(state, slot)
+
+        refresh.assert_called_once()
+        assert resolve.call_count == 2
+        assert state.sessions.get_or_create.await_args.kwargs["agent"] == "team-lead"
+        assert _errors(slot) == []
+
+    @pytest.mark.asyncio
+    async def test_template_missing_from_a_complete_snapshot_ends_the_turn_visibly(self, tmp_path):
+        # A complete snapshot is trusted: no rescan. The turn ends with a
+        # memory_unavailable row and releases the slot, so the session does not
+        # sit looking busy with nothing on screen.
+        state, _client = _runner_state(tmp_path)
+        slot = _slot()
+        slot.agent = "team-lead"
+
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="", requested_resolved=False)
+        refresh = MagicMock()
+        with (
+            patch.object(chat_runner, "resolve_agent_bindings", side_effect=[cold]) as resolve,
+            patch.object(chat_runner, "refresh_materialized_agents", refresh),
+            patch(
+                "kiro_crew.config.loader_snapshots.materialized_snapshot_complete",
+                return_value=True,
+            ),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            patch.object(chat_runner, "warm_project_agent_names", new=AsyncMock()),
+        ):
+            await _drive(state, slot)
+
+        refresh.assert_not_called()
+        assert resolve.call_count == 1
+        state.sessions.get_or_create.assert_not_awaited()
+        rows = [m for m in slot.messages if m.get("role") == "error"]
+        assert [m["meta"]["code"] for m in rows] == ["memory_unavailable"]
+        assert "team-lead" in rows[0]["content"]
+        assert not slot.running
+
+    @pytest.mark.asyncio
     async def test_recovery_awaits_register_before_releasing_lock_on_cancel(self, tmp_path):
         # register_app runs in a non-cancellable executor thread. If the recovery
         # coroutine is cancelled mid-registration it must WAIT for that thread to

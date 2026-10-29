@@ -196,9 +196,14 @@ from kiro_crew.crew_log.store_tail_repair import (  # noqa: F401
     _refuse_content_repair,
 )
 from kiro_crew.crew_log.store_units import (  # noqa: F401
+    _RACY_WINDOW_NS,
+    _SLOT_INDEX_TRUST,
     _any_now_provable,
+    _monotonic_ns,
+    _next_trust,
     _proved_header,
     _refuse_unprovable_unit,
+    _root_stat_key,
     _slot_root_fingerprint,
     _unit_header_object,
     _unproven_holding_content,

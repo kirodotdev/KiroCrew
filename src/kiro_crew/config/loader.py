@@ -924,6 +924,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         agent_alias_snapshot,
         default_template,
         dispatch_kiro_agent,
+        materialized_snapshot_complete,
         member_template_id,
         next_config_load_ticket,
         publish_agent_alias_snapshot,

@@ -28,6 +28,7 @@ import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
+import { viewSubagentSlots } from '../lib/subagentReplayScope'
 import { useSlotActivity } from '../pages/members/useSlotActivity'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { sessionMemoryTag } from '../lib/agentMemorySource'
@@ -150,6 +151,8 @@ export default function ChatPane({
   }, [pinItemsRef, updatePinnedPrompt])
   // A different session starts collapsed with nothing pinned.
   useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
+  // This pane draws the slot's subagent cards, so the gateway's durable replay is asked for it.
+  useEffect(() => (slotKey ? viewSubagentSlots([slotKey]) : undefined), [slotKey])
   const getDisplayItems = useCallback(() => pinItemsRef.current, [pinItemsRef])
   // Which slot's authoritative page has landed in the store. A live frame can
   // put a partial transcript in `slotMessages` before this fetch resolves; the

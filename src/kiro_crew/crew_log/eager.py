@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import sys
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -569,9 +570,20 @@ def paused() -> Iterator[bool]:
     else:
         timeout = 0.0
     held = _fold_gate.acquire(timeout=timeout) if timeout > 0 else _fold_gate.acquire(False)
+    # A background prime (``slot_prime``) reads unit files off this worker, under its own
+    # gate so it never holds up a wake: the caller waits for it the same bounded way.
+    primes = sys.modules.get("kiro_crew.crew_log.slot_prime")
+    prime_gate = getattr(primes, "_fold_gate", None)
+    prime_held = False
+    if held and prime_gate is not None:
+        prime_held = (
+            prime_gate.acquire(timeout=timeout) if timeout > 0 else prime_gate.acquire(False)
+        )
     try:
-        yield held
+        yield held and (prime_gate is None or prime_held)
     finally:
+        if prime_held and prime_gate is not None:
+            prime_gate.release()
         if held:
             _fold_gate.release()
 
@@ -848,7 +860,15 @@ def _advance(slot: str, name: str) -> None:
     started = _begin_pass()
     folded = None
     try:
-        folded = projection.read_slot_projection(slot, name)
+        # Never COLD here: a cell with no warm state and no usable savepoint would fold
+        # every unit the slot ran under on this one worker, stalling every wake behind
+        # it. That fold goes to one background prime per cell, which publishes itself.
+        folded = projection.read_slot_projection(slot, name, cold=False)
+    except projection.SlotFoldNotReady:
+        from kiro_crew.crew_log import slot_prime
+
+        slot_prime.schedule(slot, name)
+        return
     except CrewLogError:
         # A refusal is about the record, not about this path: the read route raises the
         # same thing for the same slot, and inventing a value here would serve one the
@@ -930,17 +950,21 @@ def drain(timeout: float = 5.0) -> bool:
     worker has TAKEN the last wake, which is not the same as having folded it, and a
     waiter that stopped there would read a value the fold had not reached yet.
     """
-    if _queue is None:
-        return True
     deadline = time.monotonic() + max(timeout, 0.0)
-    with _progress:
-        while True:
-            if _settled >= _queued:
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return _settled >= _queued
-            _progress.wait(min(remaining, _POLL_SECONDS))
+    if _queue is not None:
+        with _progress:
+            while _settled < _queued:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                _progress.wait(min(remaining, _POLL_SECONDS))
+    # A wake whose cell was cold handed its fold to a background prime, which also writes
+    # into the data home: the barrier covers it too. Looked up rather than imported, so a
+    # process that never primed loads nothing here.
+    primes = sys.modules.get("kiro_crew.crew_log.slot_prime")
+    if primes is not None:
+        return bool(primes.drain(max(deadline - time.monotonic(), 0.0)))
+    return True
 
 
 #: How long :func:`stop_for_tests` waits for the worker to leave its batch. Generous
@@ -997,6 +1021,12 @@ def retire_for_tests() -> "BaseException | None":
         stop_for_tests()
     except TimeoutError as exc:
         return exc
+    # A wake or a baseline may have handed a cold fold to a background prime, which
+    # resolves the data home when it folds: wait it out while the pin still holds, and
+    # forget its state so the next test starts with none. Looked up, not imported.
+    primes = sys.modules.get("kiro_crew.crew_log.slot_prime")
+    if primes is not None:
+        primes.reset_for_tests()
     return None
 
 

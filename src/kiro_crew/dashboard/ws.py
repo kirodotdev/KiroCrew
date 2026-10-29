@@ -27,6 +27,12 @@ from kiro_crew.dashboard.state import (
     _slots_serialization_note,
 )
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.subagent_replay_scope import (
+    UNIT_INDEX,
+    SubagentReplayQueue,
+    live_subagent_ids,
+    requested_slots,
+)
 from kiro_crew.dashboard.warm_task_brief import handle_focus_frame, note_view_closed
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_CAPABILITY, SLOT_PATCH_WS_FLAG
 from kiro_crew.dashboard.ws_event_scope import (
@@ -41,6 +47,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_precap_readings,
     persisted_replay_denial_reason,
     slots_envelope_extras,
+    visible_subagent_slot_keys,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent_persistence import read_panel_records
@@ -103,6 +110,10 @@ async def _status_frame(state: DashboardState) -> dict[str, Any]:
 # 60-100 agents saturates the socket the moment a client reconnects).
 SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 
+#: The one replay request a crew-log-off install makes per subscribe. Its folder
+#: reader has no per-slot index, and no client slot name can be this string.
+_FOLDER_REPLAY = "\x00folders"
+
 SIDE_RESULT_EVENT = "chat.side_result"
 #: A reply landing in a thread on a crewmate chat message (``chat_threads``).
 THREAD_REPLY_EVENT = "chat.thread_reply"
@@ -126,6 +137,42 @@ def _subagent_replay_has_owner(frame: object) -> bool:
         return False
     slot = data.get("slot")
     return isinstance(slot, str) and bool(slot.strip())
+
+
+async def _send_subagent_replay(ws: Any, state: Any, frames: list[dict]) -> None:
+    """Send replay *frames* to *ws* through the same gates the live frames take.
+
+    Per-slot scope gate on the reconnect replay. The broadcast chokepoint covers
+    live events, but this replay writes to the socket directly, so it must apply
+    the same check. Dashboard users pass through ``_ws_client_allowed``
+    unconditionally.
+
+    Ownership is a separate prerequisite: an unresolved parent produces
+    ``slot: ''``. That run remains visible through the global spawn inventory, but
+    there is no chat authorized to adopt it. Filtered before batching so even an
+    older client with an empty-slot fallback never receives the orphan as
+    session-scoped state.
+    """
+    frames = [
+        _f
+        for _f in frames
+        if _subagent_replay_has_owner(_f)
+        and state._ws_client_allowed(ws, str(_f.get("type", "")), _f.get("data", {}))
+    ]
+    try:
+        if len(frames) > SUBAGENT_REPLAY_BATCH_THRESHOLD:
+            # ``subagent_snapshot_batch`` is deliberately absent from every
+            # ws_event_scope table: it is delivery packaging for frames THIS socket
+            # is already cleared for (filtered item-by-item above), never a
+            # broadcast. Routing it through the gate would reject it as an unknown
+            # event and cost the app its whole replay, so keep this send and the
+            # per-item filter together.
+            await ws.send_json({"type": "subagent_snapshot_batch", "data": {"items": frames}})
+        else:
+            for _frame in frames:
+                await ws.send_json(_frame)
+    except Exception:
+        pass
 
 
 def build_persisted_subagent_frame(record: dict, *, redact: Callable[[str], str]) -> dict:
@@ -287,7 +334,7 @@ def backfill_legacy_panel_dismissals(units: Collection[tuple[str, str]]) -> froz
     Blocking. A caller on the event loop must wrap this in :func:`asyncio.to_thread`.
     """
     from kiro_crew.crew_log import emit as crew_log_emit
-    from kiro_crew.crew_log import projection as _projection
+    from kiro_crew.dashboard.subagent_replay_scope import UNIT_ROWS
     from kiro_crew.subagent_persistence import panel_dismissal_recorded
 
     corrected: set[str] = set()
@@ -295,8 +342,10 @@ def backfill_legacy_panel_dismissals(units: Collection[tuple[str, str]]) -> froz
         if not unit_id:
             continue
         try:
-            rows = _projection.fold_session(unit_id, ("subagents",)).projection("subagents")
-            for agent_id, row in (rows.value.get("by_id") or {}).items():
+            # Cached by the unit's bytes and shared with the read below, so an
+            # unchanged unit is not folded again on a reconnect.
+            _owner, by_id = UNIT_ROWS.rows(unit_id)
+            for agent_id, row in by_id.items():
                 if not isinstance(row, dict) or not row.get("outcome"):
                     continue
                 if not panel_dismissal_recorded(str(agent_id)):
@@ -364,8 +413,7 @@ def read_fold_subagent_records(
     Blocking. A caller on the event loop must wrap this in
     :func:`asyncio.to_thread`.
     """
-    from kiro_crew.crew_log import projection as _projection
-    from kiro_crew.crew_log import read as _crew_log_read
+    from kiro_crew.dashboard.subagent_replay_scope import UNIT_ROWS
 
     if keep <= 0:
         return [], 0
@@ -404,23 +452,17 @@ def read_fold_subagent_records(
             # guard admits the records and the old app's runs, task text included,
             # reach the slot's new holder. That function owns all three refusals and
             # answers None for each, so an untrustworthy history skips the unit
-            # instead of lowering the guard. Its fold is incremental and its bundle
-            # is held, so an unchanged log consumes no entries on a later read.
-            recorded = _crew_log_read.recorded_class(unit_id)
-            if recorded is None:
+            # instead of lowering the guard. Both folds are cached by the unit's
+            # bytes (``UNIT_ROWS``), so an unchanged log is not folded again.
+            recorded_app, rows = UNIT_ROWS.rows(unit_id)
+            if recorded_app is None:
                 logger.debug(
                     "crew log: %s's class history is not readable, so its subagent "
                     "rows are skipped rather than published as owned by nobody",
                     unit_id,
                 )
                 continue
-            app = str(recorded.get("app") or "")
-            rows = (
-                _projection.fold_session(unit_id, ("subagents",))
-                .projection("subagents")
-                .value.get("by_id")
-                or {}
-            )
+            app = recorded_app
         except Exception:
             logger.debug("crew log: folding %s for the subagent panel failed", unit_id)
             continue
@@ -994,6 +1036,11 @@ async def _serve_ws(
     # until the 30s staleness window. The local is named for the answer, not the
     # ceiling, because it is not ceiling-only.
     initial_answer_generation = governance_answer_generation()
+    # The slots an app socket may receive subagent cards for, read at each
+    # subscribe: its replay covers these when it names none, and a name outside
+    # them is not kept. A dashboard user's replay follows the slots it names and
+    # focuses instead.
+    _app_replay_slots: list[str] = []
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
         all_slots = state.serialize_slots(
@@ -1352,6 +1399,9 @@ async def _serve_ws(
     # Tracked per connection so a focus change (or blur/disconnect) cancels
     # only this socket's speculation, never another window's.
     _focus_task: "asyncio.Task | None" = None
+    # This socket's durable subagent replays, one at a time (created on the first
+    # ``subscribe_subagents``).
+    _replay_queue: SubagentReplayQueue | None = None
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
@@ -1532,231 +1582,297 @@ async def _serve_ws(
                                     )
                                 except Exception:
                                     pass
-                        # Durable rebuild source. Every frame above comes from
-                        # gateway memory, so a replacement process has none to
-                        # replay and the tab stays empty until something new
-                        # spawns. The CREW LOG answers for the runs this process
-                        # never tracked: it is the record, so a card's outcome,
-                        # duration and cost are a fold of it rather than a second
-                        # store. Ids already collected are excluded, so a live
-                        # frame is never displaced by a folded one, and the folded
-                        # frames join THIS list rather than a parallel send: the
-                        # owner check, the per-socket scope gate and the batch
-                        # packaging below then apply to them on the same terms.
-                        try:
-                            _seen = {
-                                str(_f["data"]["id"])
-                                for _f in _replay
-                                if isinstance(_f.get("data"), dict) and _f["data"].get("id")
-                            }
+                        _seen = {
+                            str(_f["data"]["id"])
+                            for _f in _replay
+                            if isinstance(_f.get("data"), dict) and _f["data"].get("id")
+                        }
+                        await _send_subagent_replay(ws, state, _replay)
 
-                            # Slot ownership is read on the LOOP, twice, and never
-                            # from the worker thread. Once here as a snapshot, so
-                            # the row cap is sized over the records this socket may
-                            # actually see; then again after the thread returns,
-                            # which is the authoritative check. A slot's owner can
-                            # flip while the fold runs -- keys are caller-supplied
-                            # and not app-namespaced, so another app can reclaim
-                            # one -- and a decision taken off-loop would be read
-                            # from state this socket does not describe.
-                            # Ownership and visibility are two INDEPENDENT live
-                            # bounds, and both belong before the cap: a record
-                            # this socket may not see, or whose run another app
-                            # owns, would otherwise spend a slot its own visible
-                            # runs need, and the cut count would be computed over
-                            # records that were never this socket's to receive.
-                            # Taken together on the loop, at one instant.
-                            _owner_now, _visible_now = persisted_precap_readings(
-                                state,
-                                ws_app,
-                                ws.get("_allowed_events", frozenset()),
-                                dashboard_user=bool(ws.get("_is_dashboard_user", False)),
-                            )
+                        async def _durable_replay(_requested: list[str]) -> None:
+                            """Replay the finished runs of the *_requested* slots.
 
-                            # Only the NAMES are taken here. Resolving each one to
-                            # its units reads the store -- a root listing, a stat,
-                            # and on a cold cache a header read per unit -- so it
-                            # belongs in the worker below with the fold, not on the
-                            # loop that is also carrying chat and heartbeats.
-                            _slot_names = list(getattr(state, "_slots", {}))
-
-                            def _admit_folded(_rec: dict) -> bool:
-                                """Both pre-cap bounds, sizing the cap.
-
-                                Withholding is itself the permission decision, so
-                                it audits under the reason it had. The records
-                                that survive are decided again on the loop, and
-                                the two sets are disjoint, so nothing is audited
-                                twice.
-                                """
-                                _reason = persisted_precap_denial_reason(
-                                    _owner_now,
-                                    _visible_now,
-                                    _replay_record_slot(_rec),
-                                    _rec,
+                            Runs on the socket's replay queue, never inline in this
+                            receive loop, so a long fold cannot starve the socket's
+                            heartbeat and only one runs per socket at a time.
+                            """
+                            _replay: list[dict] = []
+                            # Ids live state holds NOW, not only at subscribe: a run
+                            # that finished since then is already drawn from memory,
+                            # and a folded frame must not replace it.
+                            _live_ids = set(_seen) | live_subagent_ids(state)
+                            # Durable rebuild source. Every frame above comes from
+                            # gateway memory, so a replacement process has none to
+                            # replay and the tab stays empty until something new
+                            # spawns. The CREW LOG answers for the runs this process
+                            # never tracked: it is the record, so a card's outcome,
+                            # duration and cost are a fold of it rather than a second
+                            # store. Ids already collected are excluded, so a live
+                            # frame is never displaced by a folded one, and the folded
+                            # frames go through the same owner check, per-socket scope
+                            # gate and batch packaging as the frames above.
+                            try:
+                                # Slot ownership is read on the LOOP, twice, and never
+                                # from the worker thread. Once here as a snapshot, so
+                                # the row cap is sized over the records this socket may
+                                # actually see; then again after the thread returns,
+                                # which is the authoritative check. A slot's owner can
+                                # flip while the fold runs -- keys are caller-supplied
+                                # and not app-namespaced, so another app can reclaim
+                                # one -- and a decision taken off-loop would be read
+                                # from state this socket does not describe.
+                                # Ownership and visibility are two INDEPENDENT live
+                                # bounds, and both belong before the cap: a record
+                                # this socket may not see, or whose run another app
+                                # owns, would otherwise spend a slot its own visible
+                                # runs need, and the cut count would be computed over
+                                # records that were never this socket's to receive.
+                                # Taken together on the loop, at one instant.
+                                _owner_now, _visible_now = persisted_precap_readings(
+                                    state,
+                                    ws_app,
+                                    ws.get("_allowed_events", frozenset()),
+                                    dashboard_user=bool(ws.get("_is_dashboard_user", False)),
                                 )
-                                if _reason:
-                                    _audit_deny(ws_app or "<dashboard>", "subagent_done", _reason)
-                                    return False
-                                return True
 
-                            if crew_log_enabled():
-
-                                def _fold_durable() -> tuple[list[dict], int]:
-                                    """Resolve, correct, then fold -- all off the loop.
-
-                                    A slot's units come from the store's own
-                                    slot-naming headers, NOT from its session key: a
-                                    unit is the ACP session id the log was opened
-                                    under, a slot owns one id at a time, and a
-                                    finished child can sit in any unit the slot has
-                                    run under.
-                                    """
-                                    _pairs = crew_log_panel_units(_slot_names)
-                                    _already = backfill_legacy_panel_dismissals(_pairs)
-                                    return read_fold_subagent_records(
-                                        _pairs,
-                                        keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
-                                        max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
-                                        exclude_ids=set(_seen) | _already,
-                                        admit=_admit_folded,
+                                # Only the NAMES are taken here. Resolving each one to
+                                # its units reads the store -- a root listing, a stat,
+                                # and on a cold cache a header read per unit -- so it
+                                # belongs in the worker below with the fold, not on the
+                                # loop that is also carrying chat and heartbeats.
+                                # Only the slots this socket asked for, and only those
+                                # still open: the units of every OTHER slot are work
+                                # this socket would never be shown.
+                                _slots_now = getattr(state, "_slots", {})
+                                _slot_names = [_s for _s in _requested if _s in _slots_now]
+                                # An app socket names only slots whose subagent cards it may see: its
+                                # frames are gated anyway, but a fold it could never
+                                # see is work this socket must not be able to order.
+                                if not ws.get("_is_dashboard_user", False):
+                                    _slot_names = [
+                                        _s for _s in _slot_names if _s in _app_replay_slots
+                                    ]
+                                # A slot not open yet has nothing to replay now; it
+                                # may be asked for again once it is.
+                                if _replay_queue is not None:
+                                    _replay_queue.forget(
+                                        _s for _s in _requested if _s not in _slots_now
                                     )
 
-                                _folded, _overflow = await asyncio.to_thread(_fold_durable)
-                                # The fold reads every row of every unit it was
-                                # given, so its overflow is the exact count past
-                                # the cap and never a floor.
-                                _saturated = False
-                            else:
-                                # An install that switched the record off has no
-                                # fold to read, and the rebuild is not what it opted
-                                # out of: the run folders still describe the runs
-                                # this process never tracked, on the same bounds and
-                                # through the same gates. Reading them here is what
-                                # keeps the opt-out costing the panel nothing.
-                                _records = await asyncio.to_thread(
-                                    read_panel_records,
-                                    keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
-                                    max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
-                                    exclude_ids=_seen,
-                                    admit=_admit_folded,
-                                )
-                                _folded, _overflow = _records.records, _records.overflow
-                                # The folder scan has its OWN candidate window, and
-                                # a window that filled means admissible runs past it
-                                # were never inspected. Carried because the count
-                                # cannot describe them: a window full of records this
-                                # socket then rejected reports an overflow of zero
-                                # while still having left older eligible runs unseen.
-                                _saturated = _records.overflow_is_lower_bound
-                        except Exception:
-                            logger.debug("Folded subagent replay failed", exc_info=True)
-                            _folded, _overflow, _saturated = [], 0, False
-                        if _overflow or _saturated:
-                            # Said out loud once per rebuild, to the operator
-                            # rather than the client: a cut tail otherwise reads
-                            # as a population that never held those runs. The
-                            # WARNING carries the count and is the whole report:
-                            # a truncation refuses nobody, so it is not a
-                            # permission decision and stays out of the SEL deny
-                            # stream, where an operator has to be able to see the
-                            # ownership refusals. No client reads a count it
-                            # cannot act on, so it stays off the wire too.
-                            # A saturated window reports even at a count of zero,
-                            # because that is the case where the count itself
-                            # cannot see what was left out.
-                            logger.warning(
-                                "subagent replay truncated: %s%d eligible run(s) "
-                                "past the %d cap%s",
-                                "at least " if _saturated else "",
-                                _overflow,
-                                PERSISTED_SUBAGENT_REPLAY_KEEP,
-                                (
-                                    " (scan window saturated, older admissible runs "
-                                    "may be uninspected)"
-                                    if _saturated
-                                    else ""
-                                ),
-                            )
-                        for _rec in _folded:
-                            try:
-                                # The authoritative gate, on the loop, against
-                                # state as it is NOW rather than as the snapshot
-                                # found it. A record the snapshot admitted and
-                                # this rejects had its slot reclaimed mid-scan.
-                                _slot = _replay_record_slot(_rec)
-                                _why = persisted_replay_denial_reason(state, _slot, _rec)
-                                if _why:
-                                    _audit_deny(ws_app or "<dashboard>", "subagent_done", _why)
-                                    continue
-                                # The grant leaves a record too, at the point the
-                                # decision is made and under the same identity its
-                                # refusals use. This replay writes to the socket
-                                # directly, so ``ws_event_allowed`` never sees the
-                                # frame, and a dashboard user short-circuits
-                                # ``_ws_client_allowed`` unconditionally -- the two
-                                # places a grant would otherwise be recorded. Left
-                                # out, the deny reasons above are the only trace the
-                                # check ran at all, so an operator cannot tell a
-                                # rebuild that delivered a run from one that never
-                                # considered it.
-                                #
-                                # Unconditional rather than dashboard-user only,
-                                # because this records THIS check's decision, not
-                                # the per-slot scope gate's below: the two are
-                                # different questions and an app socket legitimately
-                                # produces one record for each. ``api_spawn_list``
-                                # already records its grant unconditionally for this
-                                # same ownership decision, and a surface that
-                                # recorded it on one reader and not the other would
-                                # make the trail depend on which reader asked.
-                                _audit_grant_quietly(ws_app or "<dashboard>", "subagent_done")
-                                _replay.append(build_persisted_subagent_frame(_rec, redact=_r))
+                                def _admit_folded(_rec: dict) -> bool:
+                                    """Both pre-cap bounds, sizing the cap.
+
+                                    Withholding is itself the permission decision, so
+                                    it audits under the reason it had. The records
+                                    that survive are decided again on the loop, and
+                                    the two sets are disjoint, so nothing is audited
+                                    twice.
+                                    """
+                                    # ``_no`` is the refusal reason, empty to admit.
+                                    _no = persisted_precap_denial_reason(
+                                        _owner_now,
+                                        _visible_now,
+                                        _replay_record_slot(_rec),
+                                        _rec,
+                                    )
+                                    if not _no:
+                                        return True
+                                    _audit_deny(ws_app or "<dashboard>", "subagent_done", _no)
+                                    return False
+
+                                if crew_log_enabled():
+
+                                    def _fold_durable() -> tuple[list[dict], int]:
+                                        """Resolve, correct, then fold -- all off the loop.
+
+                                        A slot's units come from the store's own
+                                        slot-naming headers, NOT from its session key: a
+                                        unit is the ACP session id the log was opened
+                                        under, a slot owns one id at a time, and a
+                                        finished child can sit in any unit the slot has
+                                        run under.
+                                        """
+                                        # A unit whose bytes hold no subagent entry is
+                                        # dropped before either fold: it has no row.
+                                        _pairs = UNIT_INDEX.holding_subagents(
+                                            crew_log_panel_units(_slot_names)
+                                        )
+                                        _already = backfill_legacy_panel_dismissals(_pairs)
+                                        return read_fold_subagent_records(
+                                            _pairs,
+                                            keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                            max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+                                            exclude_ids=_live_ids | _already,
+                                            admit=_admit_folded,
+                                        )
+
+                                    _folded, _overflow = await asyncio.to_thread(_fold_durable)
+                                    # The fold reads every row of every unit it was
+                                    # given, so its overflow is the exact count past
+                                    # the cap and never a floor.
+                                    _saturated = False
+                                else:
+                                    # An install that switched the record off has no
+                                    # fold to read, and the rebuild is not what it opted
+                                    # out of: the run folders still describe the runs
+                                    # this process never tracked, on the same bounds and
+                                    # through the same gates. Reading them here is what
+                                    # keeps the opt-out costing the panel nothing.
+                                    _records = await asyncio.to_thread(
+                                        read_panel_records,
+                                        keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                        max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+                                        exclude_ids=_live_ids,
+                                        admit=_admit_folded,
+                                    )
+                                    _folded, _overflow = _records.records, _records.overflow
+                                    # The folder scan has its OWN candidate window, and
+                                    # a window that filled means admissible runs past it
+                                    # were never inspected. Carried because the count
+                                    # cannot describe them: a window full of records this
+                                    # socket then rejected reports an overflow of zero
+                                    # while still having left older eligible runs unseen.
+                                    _saturated = _records.overflow_is_lower_bound
                             except Exception:
-                                pass
-                        # Per-slot scope gate on the reconnect replay. The
-                        # broadcast chokepoint covers live events, but this
-                        # replay writes to the socket directly, so it must
-                        # apply the same check. Dashboard users pass through
-                        # ``_ws_client_allowed`` unconditionally.
-                        #
-                        # Ownership is a separate prerequisite: an unresolved
-                        # parent produces ``slot: ''``. That run remains visible
-                        # through the global spawn inventory, but there is no
-                        # chat authorized to adopt it. Filter before batching so
-                        # even an older client with an empty-slot fallback never
-                        # receives the orphan as session-scoped state.
-                        _replay = [
-                            _f
-                            for _f in _replay
-                            if _subagent_replay_has_owner(_f)
-                            and state._ws_client_allowed(
-                                ws, str(_f.get("type", "")), _f.get("data", {})
-                            )
-                        ]
-                        try:
-                            if len(_replay) > SUBAGENT_REPLAY_BATCH_THRESHOLD:
-                                # ``subagent_snapshot_batch`` is deliberately
-                                # absent from every ws_event_scope table: it is
-                                # delivery packaging for frames THIS socket is
-                                # already cleared for (filtered item-by-item
-                                # above), never a broadcast. Routing it through
-                                # the gate would reject it as an unknown event
-                                # and cost the app its whole replay, so keep
-                                # this send and the per-item filter together.
-                                await ws.send_json(
-                                    {
-                                        "type": "subagent_snapshot_batch",
-                                        "data": {"items": _replay},
-                                    }
+                                logger.debug("Folded subagent replay failed", exc_info=True)
+                                _folded, _overflow, _saturated = [], 0, False
+                                # A failed read is not a replay done: a later focus
+                                # or request may try these slots again.
+                                if _replay_queue is not None:
+                                    _replay_queue.forget(_requested)
+                            if _overflow or _saturated:
+                                # Said out loud once per rebuild, to the operator
+                                # rather than the client: a cut tail otherwise reads
+                                # as a population that never held those runs. The
+                                # WARNING carries the count and is the whole report:
+                                # a truncation refuses nobody, so it is not a
+                                # permission decision and stays out of the SEL deny
+                                # stream, where an operator has to be able to see the
+                                # ownership refusals. No client reads a count it
+                                # cannot act on, so it stays off the wire too.
+                                # A saturated window reports even at a count of zero,
+                                # because that is the case where the count itself
+                                # cannot see what was left out.
+                                logger.warning(
+                                    "subagent replay truncated: %s%d eligible run(s) "
+                                    "past the %d cap%s",
+                                    "at least " if _saturated else "",
+                                    _overflow,
+                                    PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                    (
+                                        " (scan window saturated, older admissible runs "
+                                        "may be uninspected)"
+                                        if _saturated
+                                        else ""
+                                    ),
                                 )
-                            else:
-                                for _frame in _replay:
-                                    await ws.send_json(_frame)
-                        except Exception:
-                            pass
+                            # And again after the fold, for a run that finished while
+                            # it ran.
+                            _live_after = live_subagent_ids(state)
+                            for _rec in _folded:
+                                if str(_rec.get("id") or "") in _live_after:
+                                    continue
+                                try:
+                                    # The authoritative gate, on the loop, against
+                                    # state as it is NOW rather than as the snapshot
+                                    # found it. A record the snapshot admitted and
+                                    # this rejects had its slot reclaimed mid-scan.
+                                    _slot = _replay_record_slot(_rec)
+                                    _why = persisted_replay_denial_reason(state, _slot, _rec)
+                                    if _why:
+                                        _audit_deny(ws_app or "<dashboard>", "subagent_done", _why)
+                                        continue
+                                    # The grant leaves a record too, at the point the
+                                    # decision is made and under the same identity its
+                                    # refusals use. This replay writes to the socket
+                                    # directly, so ``ws_event_allowed`` never sees the
+                                    # frame, and a dashboard user short-circuits
+                                    # ``_ws_client_allowed`` unconditionally -- the two
+                                    # places a grant would otherwise be recorded. Left
+                                    # out, the deny reasons above are the only trace the
+                                    # check ran at all, so an operator cannot tell a
+                                    # rebuild that delivered a run from one that never
+                                    # considered it.
+                                    #
+                                    # Unconditional rather than dashboard-user only,
+                                    # because this records THIS check's decision, not
+                                    # the per-slot scope gate's below: the two are
+                                    # different questions and an app socket legitimately
+                                    # produces one record for each. ``api_spawn_list``
+                                    # already records its grant unconditionally for this
+                                    # same ownership decision, and a surface that
+                                    # recorded it on one reader and not the other would
+                                    # make the trail depend on which reader asked.
+                                    _audit_grant_quietly(ws_app or "<dashboard>", "subagent_done")
+                                    _replay.append(build_persisted_subagent_frame(_rec, redact=_r))
+                                except Exception:
+                                    pass
+                            # An unsubscribe while this ran: the client cleared
+                            # its cards and asked for no more.
+                            if _replay_queue is None or _replay_queue.active:
+                                await _send_subagent_replay(ws, state, _replay)
+
+                        if not ws.get("_is_dashboard_user", False):
+                            # Subagent visibility, which an app can hold without
+                            # seeing the slot's chat (``subagent:user``).
+                            _app_replay_slots = sorted(
+                                visible_subagent_slot_keys(
+                                    state,
+                                    ws_app,
+                                    ws.get("_allowed_events", frozenset()),
+                                    dashboard_user=False,
+                                )
+                            )
+                        if _replay_queue is None:
+
+                            def _replay_admits(_slot: str) -> bool:
+                                """Only an open slot this socket may see is kept.
+
+                                The folder-fallback request names no slot; its
+                                reader applies the same per-record gates.
+                                """
+                                if _slot == _FOLDER_REPLAY:
+                                    return True
+                                if _slot not in getattr(state, "_slots", {}):
+                                    return False
+                                if ws.get("_is_dashboard_user", False):
+                                    return True
+                                if _slot in _app_replay_slots:
+                                    return True
+                                # An open slot this app may not see: a permission
+                                # refusal, so it leaves an SEL record.
+                                _audit_deny(
+                                    ws_app or "<unknown>",
+                                    "subagent_replay",
+                                    "persisted_not_visible",
+                                )
+                                return False
+
+                            _replay_queue = SubagentReplayQueue(
+                                _durable_replay, admit=_replay_admits
+                            )
+                        else:
+                            _replay_queue.reset(_durable_replay)
+                        # The slots the client names; a client that names none
+                        # gets the slots it later focuses (an app socket: the
+                        # slots it was shown on connect). The folder fallback
+                        # has no per-slot index, so it runs once per subscribe.
+                        _scope = requested_slots(data.get("slots"))
+                        _replay_queue.request(
+                            (_scope if _scope is not None else _app_replay_slots)
+                            if crew_log_enabled()
+                            else [_FOLDER_REPLAY]
+                        )
+                    elif msg_type == "subagent_replay":
+                        # A view that starts showing more slots (a split pane, a
+                        # session's children) asks for their finished runs. Each
+                        # slot is replayed once per subscription.
+                        if _replay_queue is not None and crew_log_enabled():
+                            _replay_queue.request(requested_slots(data.get("slots")) or [])
                     elif msg_type == "unsubscribe_subagents":
                         state.unsubscribe_subagents(ws)
+                        if _replay_queue is not None:
+                            _replay_queue.clear()
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
@@ -1772,6 +1888,16 @@ async def _serve_ws(
                         _focus_task = _handle_slot_focused(
                             state, data.get("slot"), _focus_task, owner=owner_request
                         )
+                        # The focused slot is a viewed slot: replay its finished
+                        # runs the first time this subscription sees it.
+                        _focused = data.get("slot")
+                        if (
+                            owner_request
+                            and _replay_queue is not None
+                            and isinstance(_focused, str)
+                            and crew_log_enabled()
+                        ):
+                            _replay_queue.request(requested_slots([_focused]) or [])
                         if owner_request:
                             # The warm brief reads the registry's PREVIOUS row, so
                             # it must run before retention applies this frame.
@@ -1828,6 +1954,8 @@ async def _serve_ws(
         # A prefetch still debouncing for a closed dashboard serves nobody.
         if _focus_task is not None and not _focus_task.done():
             _focus_task.cancel()
+        if _replay_queue is not None:
+            _replay_queue.cancel()
         note_view_closed(state, id(ws))
         note_foreground(state, id(ws), None)
         state.unsubscribe_logs(ws)

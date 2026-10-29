@@ -888,6 +888,11 @@ def test_an_entry_after_the_closer_leaves_its_fold_warm(monkeypatch):
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
     eager._fold_batch(batch, closers)
+    # The drop left the cell cold, so the advance handed its fold to one background
+    # prime rather than folding every unit on the eager worker; wait for that prime.
+    from kiro_crew.crew_log import slot_prime
+
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
 
     warm = {(key[1], key[2]) for key in crew_log._slot_memos}
     assert (slot, "work") in warm, (
@@ -928,6 +933,10 @@ def test_a_later_entry_of_another_type_does_not_hide_a_slot_folds_advance(monkey
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
     eager._fold_batch(batch, closers)
+    # The cell was cold, so its fold went to one background prime.
+    from kiro_crew.crew_log import slot_prime
+
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
 
     warm = {(key[1], key[2]) for key in crew_log._slot_memos}
     assert (slot, "work") in warm, (
@@ -964,6 +973,10 @@ def test_a_closer_in_the_same_batch_as_an_earlier_entry_still_drops_the_slot(mon
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
     eager._fold_batch(batch, closers)
+    # A cold cell's fold goes to one background prime; wait for it.
+    from kiro_crew.crew_log import slot_prime
+
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
 
     warm = {(key[1], key[2]) for key in crew_log._slot_memos}
     assert (slot, "work") not in warm, (
@@ -1033,6 +1046,10 @@ def test_a_workers_last_report_still_reaches_the_conductors_board_when_the_worke
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
     eager._fold_batch(batch, closers)
+    # The board's cell was cold, so its fold went to one background prime.
+    from kiro_crew.crew_log import slot_prime
+
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
 
     warm = {(key[1], key[2]) for key in crew_log._slot_memos}
     assert (conductor_slot, "work") in warm, (
@@ -1412,6 +1429,10 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
     eager._fold_batch(batch, closers)
+    # A cold cell's fold goes to one background prime; wait for it.
+    from kiro_crew.crew_log import slot_prime
+
+    assert slot_prime.drain(timeout=30.0), "the background prime never finished"
 
     # The coalesce is per ``(slot, fold)``, so the bound is one frame PER FOLD that
     # declares the type -- three entries must not produce three frames for any of

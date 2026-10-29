@@ -335,7 +335,14 @@ DETAIL_LINES: Tuple[_LineSpec, ...] = (
 #: of the four (the sandbox stand-down, and Crew handing over its credential)
 #: describe a boundary moving, and the sandbox one fails OPEN by design.
 SECURITY_LINES: Tuple[_LineSpec, ...] = (
-    _LineSpec(NOTE_CREW_SANDBOX_STANDS_DOWN, ("ACP_BACKENDS_INTERNAL_SANDBOX",)),
+    # A union: KAS's default relay route is the kiro-cli process and stands Crew's
+    # sandbox down exactly as kiro-cli does. Its bundle route does not, and a card
+    # cannot show a per-route fact, so the line errs toward naming the boundary
+    # that can move rather than hiding it on the route most KAS sessions take.
+    _LineSpec(
+        NOTE_CREW_SANDBOX_STANDS_DOWN,
+        ("ACP_BACKENDS_INTERNAL_SANDBOX", "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX"),
+    ),
     _LineSpec(NOTE_REFUSES_UNCLASSIFIED_TOOLS, ("ACP_BACKENDS_META_IDENTITY",)),
     _LineSpec(NOTE_HOST_CREDENTIAL_TO_CHILD, ("ACP_BACKENDS_HOST_AUTH_CALLBACK",)),
     _LineSpec(NOTE_POD_HOME_RELOCATED, ("ACP_BACKENDS_POD_HOME_REMAP",)),

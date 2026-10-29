@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any, Callable, Final, Mapping
@@ -60,6 +61,10 @@ from kiro_crew.dashboard_templates.manifest import TemplateManifest
 #: value IS the table of written values -- so a caller asks for it by name through
 #: ``subscribe(manifest, agentic=True)`` rather than through the manifest.
 AGENTIC_FOLD: Final[str] = "agentic"
+
+#: Longest a one-shot read waits for background primes of its cold slot folds, in total.
+#: Past it the fields read as missing, which is what a fold with no value reads as.
+PRIME_WAIT_SECONDS: Final[float] = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +304,30 @@ class DashboardFeed:
         with self._lock:
             self._cells.clear()
         self._folds = frozenset()
+
+    def wait_for_primes(self, timeout: float = PRIME_WAIT_SECONDS) -> None:
+        """Wait, up to *timeout* s in total, for the slot folds that had no baseline.
+
+        For a ONE-SHOT read (subscribe, read, unsubscribe). A slot fold with no warm
+        cell hands no baseline and is folded by one background prime
+        (:mod:`kiro_crew.crew_log.slot_prime`); a long-lived subscriber receives that
+        value as its next event, but a one-shot reader would unsubscribe first and
+        report fields that exist as missing. So it waits here for the prime, which has
+        already published to this subscription when it settles. The fold still runs
+        off this thread and once per cell; waiting costs no CPU.
+        """
+        from kiro_crew.crew_log import slot_prime
+
+        deadline = time.monotonic() + max(timeout, 0.0)
+        for fold in sorted(self._folds):
+            if scope_for(fold) != crew_log_bus.SCOPE_SLOT:
+                continue
+            with self._lock:
+                cell = self._cells.get(fold)
+                seen = cell is not None and cell.seen
+            if seen:
+                continue
+            slot_prime.wait(self.slot, fold, max(deadline - time.monotonic(), 0.0))
 
     def _make_callback(self, fold: str) -> Callable[[Any], None]:
         """The per-fold callback, closed over the fold NAME rather than reading it.
