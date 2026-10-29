@@ -17008,6 +17008,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "なし、自動サイクル、または固定カラーを選択します。",
         "palette": "パレット",
         "select_a_theme_for_the_dashboard": "ダッシュボードのテーマを選択",
+        "enable_theme_experience": "エクスペリエンスを有効にする",
+        "enable_theme_experience_hint": "「色のみ保持」を選択したため、このテーマのサウンド、オーバーレイ、ペルソナはオフです。",
         "sidebar_colors": "サイドバーカラー",
         "terminal": "ターミナル",
         "terminal_font_family": "フォント",

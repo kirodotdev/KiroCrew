@@ -17896,6 +17896,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Нет, автоперебор или фиксированный цвет.",
         "palette": "Палитра",
         "select_a_theme_for_the_dashboard": "Выберите тему для панели управления",
+        "enable_theme_experience": "Включить оформление",
+        "enable_theme_experience_hint": "Вы выбрали «Оставить только цвета», поэтому звуки, оверлеи и персона этой темы выключены.",
         "sidebar_colors": "Цвета боковой панели",
         "terminal": "Терминал",
         "terminal_font_family": "Шрифт",

@@ -38,6 +38,7 @@ import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../.
 
 import { i18nT } from '../../i18n/t'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
+import { ThemeExperienceEnableButton } from './ThemeExperienceEnableButton'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
@@ -97,6 +98,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     installedThemeLoadFailed,
     customThemesLoadError,
     customThemesLoaded,
+    customThemeDataMap,
   } = useTheme()
   // The load-error notice is shown only for a pack that is actually unstyled.
   // `installedThemeLoadFailed` is derived in the provider from the selection,
@@ -885,6 +887,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             </div>
             {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
+          <ThemeExperienceEnableButton colorTheme={colorTheme} customThemeDataMap={customThemeDataMap} />
           {/* The installed-theme catalog failed to load (gateway still booting,
               tunnel error): without this the picker just lacks the installed
               rows and the selected theme renders unstyled with no reason on

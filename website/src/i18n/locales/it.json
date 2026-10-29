@@ -17600,6 +17600,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Nessuno, ciclo automatico oppure scegli un colore fisso.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Seleziona un tema per la dashboard",
+        "enable_theme_experience": "Attiva l'esperienza",
+        "enable_theme_experience_hint": "Hai scelto \"Mantieni solo i colori\", quindi suoni, overlay e persona di questo tema sono disattivati.",
         "sidebar_colors": "Colori della barra laterale",
         "terminal": "Terminale",
         "terminal_font_family": "Carattere",

@@ -17008,6 +17008,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "无、自动轮换，或选择固定颜色。",
         "palette": "调色板",
         "select_a_theme_for_the_dashboard": "为仪表板选择主题",
+        "enable_theme_experience": "启用体验",
+        "enable_theme_experience_hint": "你选择了“仅保留配色”，此主题的音效、叠加层和角色设定已关闭。",
         "sidebar_colors": "侧栏颜色",
         "terminal": "终端",
         "terminal_font_family": "字体",

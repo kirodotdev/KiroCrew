@@ -17600,6 +17600,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "Aucune, rotation automatique, ou couleur fixe.",
         "palette": "Palette",
         "select_a_theme_for_the_dashboard": "Sélectionnez un thème pour le tableau de bord",
+        "enable_theme_experience": "Activer l'expérience",
+        "enable_theme_experience_hint": "Vous avez choisi « Conserver uniquement les couleurs » : les sons, les superpositions et la persona de ce thème sont désactivés.",
         "sidebar_colors": "Couleurs de la barre latérale",
         "terminal": "Terminal",
         "terminal_font_family": "Police",

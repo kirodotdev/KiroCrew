@@ -14,6 +14,7 @@ vi.mock('../hooks/useTheme', () => ({
 }))
 
 import ThemeExperienceLayer from '../components/ThemeExperienceLayer'
+import { clearExperienceDecline } from '../utils/themeConsent'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, __resetThemeDecorSlot } from '../lib/themeDecorLayer'
 
 // The layer reads `instances.activeId` (it unmounts when a remote Crew is active),
@@ -126,11 +127,156 @@ describe('ThemeExperienceLayer', () => {
     expect(fs.some((f) => f.getAttribute('src') === '/api/theme/bikini-bottom/topbar/dark')).toBe(true)
   })
 
-  it('"Keep colors only" reverts the selection', async () => {
+  it('"Keep colors only" keeps the theme and mounts nothing of the experience', async () => {
+    setTheme()
+    const { container } = render(<ThemeExperienceLayer />)
+    await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
+    // The selection stays: the palette is useTheme's, and nothing switches it away.
+    expect(setColorTheme).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+    // No grant is written, so the persona is never sent on the chat wire.
+    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
+    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+  })
+
+  it.each(['button', 'Escape'])('revokes a grant stored while the dialog is open via %s and stays colors-only after reload', async (answer) => {
+    setTheme({ assets: l2Assets({ personaInfo: { sha256: 'sha-abc', chars: 4, text: 'boo!' } }) })
+    const { container, unmount } = render(<ThemeExperienceLayer />)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Another tab grants consent after this tab has already opened its dialog.
+    localStorage.setItem('mc-theme-consent-bikini-bottom', 'sha-abc')
+    if (answer === 'button') {
+      await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
+    } else {
+      await userEvent.keyboard('{Escape}')
+    }
+    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
+    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+    expect(setColorTheme).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+    unmount()
+
+    const { container: reloaded } = render(<ThemeExperienceLayer />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(reloaded)).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+  })
+
+  it('Escape keeps only the colors, like the button', async () => {
     setTheme()
     render(<ThemeExperienceLayer />)
+    await userEvent.keyboard('{Escape}')
+    expect(setColorTheme).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+  })
+
+  it('a stored "Keep colors only" answer suppresses the dialog on the next load', () => {
+    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+    setTheme()
+    const { container } = render(<ThemeExperienceLayer />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+  })
+
+  it.each([
+    ['the persona changes', { personaInfo: { sha256: 'new-sha', chars: 4, text: 'boo!' } }],
+    ['the persona is removed', { hasPersona: false }],
+    ['audio is removed', { hasAudio: false, personaInfo: { sha256: 'sha-abc', chars: 4, text: 'boo!' } }],
+    ['persona and audio are removed', { hasAudio: false, hasPersona: false }],
+  ])('a stored decline holds when %s', async (_label, changed) => {
+    setTheme({ assets: l2Assets({ personaInfo: { sha256: 'sha-abc', chars: 4, text: 'boo!' } }) })
+    const { container, rerender, unmount } = render(<ThemeExperienceLayer />)
     await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
-    expect(setColorTheme).toHaveBeenCalledWith('emerald')
+    const expectColorsOnly = (c: HTMLElement) => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(frames(c)).toHaveLength(0)
+      expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+      expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+      expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
+    }
+    // The pack is re-installed under the same slug while the layer is mounted.
+    setTheme({ assets: l2Assets(changed) })
+    act(() => {
+      rerender(<ThemeExperienceLayer />)
+    })
+    expectColorsOnly(container)
+    unmount()
+    // And on the next load.
+    const { container: reloaded } = render(<ThemeExperienceLayer />)
+    expectColorsOnly(reloaded)
+  })
+
+  it('a decline still holds after a re-install drops audio and persona but keeps overlays', async () => {
+    setTheme({ assets: l2Assets({ hasPersona: false }) })
+    const { container, rerender } = render(<ThemeExperienceLayer />)
+    await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
+    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+    // Same slug, same token, but nothing left that needs consent.
+    setTheme({ assets: l2Assets({ hasAudio: false, hasPersona: false }) })
+    act(() => {
+      rerender(<ThemeExperienceLayer />)
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /mute|unmute/i })).not.toBeInTheDocument()
+  })
+
+  it('a stored decline keeps a no-consent pack colors-only on load; without one it mounts', () => {
+    setTheme({ assets: l2Assets({ hasAudio: false, hasPersona: false }) })
+    const { container: plain, unmount } = render(<ThemeExperienceLayer />)
+    expect(frames(plain).length).toBeGreaterThan(0)
+    unmount()
+
+    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+    const { container } = render(<ThemeExperienceLayer />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+  })
+
+  it('Enable after a decline clears the decline', async () => {
+    setTheme()
+    render(<ThemeExperienceLayer />)
+    // A stored decline suppresses the dialog, so it is written once the dialog is
+    // open (another tab answered "Keep colors only"); Enable here must clear it.
+    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+    await userEvent.click(screen.getByRole('button', { name: /enable experience/i }))
+    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBe('consented-v2')
+    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBeNull()
+  })
+
+  it('clearing a stored decline without a theme switch brings the dialog back, and declining hides it again', async () => {
+    // Settings' "Enable experience" clears the decline while the pack stays
+    // selected, so nothing re-runs the slug-keyed read; the change event must.
+    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+    setTheme()
+    const { container } = render(<ThemeExperienceLayer />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    act(() => clearExperienceDecline('bikini-bottom'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Clearing grants nothing: the user still answers in the dialog.
+    expect(localStorage.getItem('mc-theme-consent-bikini-bottom')).toBeNull()
+    expect(frames(container)).toHaveLength(0)
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(localStorage.getItem('mc-theme-experience-declined-bikini-bottom')).toBe('1')
+
+    act(() => clearExperienceDecline('bikini-bottom'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /keep colors only/i }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(frames(container)).toHaveLength(0)
+  })
+
+  it('ignores a change event for another slug', () => {
+    localStorage.setItem('mc-theme-experience-declined-bikini-bottom', '1')
+    setTheme()
+    render(<ThemeExperienceLayer />)
+    act(() => clearExperienceDecline('other-pack'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('suppresses motion overlays under prefers-reduced-motion (topbar still shown)', () => {

@@ -17304,6 +17304,8 @@
         "none_auto_cycle_or_pick_a_fixed_color": "কোনোটি নয়, স্বয়ংক্রিয়ভাবে বদলাতে থাকুক, বা একটি নির্দিষ্ট রঙ বেছে নিন।",
         "palette": "প্যালেট",
         "select_a_theme_for_the_dashboard": "ড্যাশবোর্ডের জন্য একটি থিম বেছে নিন",
+        "enable_theme_experience": "অভিজ্ঞতা চালু করুন",
+        "enable_theme_experience_hint": "আপনি \"শুধু রং রাখুন\" বেছে নিয়েছেন, তাই এই থিমের সাউন্ড, ওভারলে ও পারসোনা বন্ধ আছে।",
         "sidebar_colors": "সাইডবারের রঙ",
         "terminal": "টার্মিনাল",
         "terminal_font_family": "ফন্ট",
