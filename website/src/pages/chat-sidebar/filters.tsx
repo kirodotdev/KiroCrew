@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, FOLDERS_UNREAD_FIRST_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
@@ -238,6 +238,14 @@ export function useSessionFilterState() {
   const toggleGroupByKind = useCallback(() => {
     setGroupByKind(v => { const next = !v; safeSetItem(GROUP_BY_KIND_LS_KEY, next ? '1' : '0'); return next })
   }, [])
+  // Off by default: folders keep the folder-order mode's sequence. On, folders
+  // holding an unread chat are drawn first (`./unreadFolderFloat`). This browser only.
+  const [foldersUnreadFirst, setFoldersUnreadFirst] = useState(() => {
+    try { return localStorage.getItem(FOLDERS_UNREAD_FIRST_LS_KEY) === '1' } catch { return false }
+  })
+  const toggleFoldersUnreadFirst = useCallback(() => {
+    setFoldersUnreadFirst(v => { const next = !v; safeSetItem(FOLDERS_UNREAD_FIRST_LS_KEY, next ? '1' : '0'); return next })
+  }, [])
   // Chips whose HIDE state is on: their matching rows are dropped from the list.
   // Include chips OR together ("unread or pinned"), but a hide is an AND over
   // the result, so "Unread + hide In progress" reads as unread sessions that are
@@ -355,7 +363,7 @@ export function useSessionFilterState() {
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
-    toggleFoldersShelved, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
+    toggleFoldersShelved, foldersUnreadFirst, toggleFoldersUnreadFirst, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
     hiddenFilters, toggleHideFilter, clearHiddenFilters,
     filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   }
