@@ -247,6 +247,22 @@ function createManagedLane({
   // Bounded by a ceiling timeout so a wedged package manager cannot hang quit.
   const runUpdateCommand = () => runManagedCommand(managed.updateCommand, { timeout: MANAGED_APPLY_TIMEOUT_MS });
 
+  // An update command that exits 0 but leaves the install as it was would
+  // relaunch into the same check and the same apply on every quit. So the
+  // check runs again after an apply: true only when it still offers the version
+  // the apply was for. A re-check that cannot run, finds nothing, or offers
+  // another version is not that loop, and the relaunch goes ahead.
+  const applyChangedNothing = async (appliedVersion) => {
+    if (!appliedVersion || !managed.checkCommand) return false;
+    const { code, stdout, failed } = await runManagedCommand(managed.checkCommand, {
+      timeout: MANAGED_CHECK_TIMEOUT_MS,
+    });
+    if (failed || code !== 0) return false;
+    return stdout.trim().slice(0, MANAGED_VERSION_CAP) === appliedVersion;
+  };
+  const unchangedMessage = (version) =>
+    `the update command finished, but the check still offers ${version}: the install did not change`;
+
   // Fresh-read the auto-download preference; a throwing reader fails toward
   // NOT auto-installing (same direction as the feed path's deferred handler).
   const autoDownloadOn = () => {
@@ -281,6 +297,7 @@ function createManagedLane({
       return;
     }
     event.preventDefault();
+    const appliedVersion = foundVersion;
     (async () => {
       managedInstalling = true;
       emit("installing", { version: foundVersion });
@@ -305,7 +322,12 @@ function createManagedLane({
         return;
       }
       const { code } = await runUpdateCommand();
-      if (code === 0) {
+      if (code === 0 && await applyChangedNothing(appliedVersion)) {
+        // The user asked to quit, so honor that, WITHOUT relaunching into the
+        // same version and the same apply.
+        log.error(`[update] managed deferred install: ${unchangedMessage(appliedVersion)} — quitting without relaunch`);
+        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      } else if (code === 0) {
         app.relaunch();
       } else {
         // The apply failed; the user asked to quit, so honor that and exit
@@ -476,6 +498,7 @@ function createManagedLane({
   }
 
   async function managedInstall() {
+    const appliedVersion = foundVersion;
     managedInstalling = true;
     emit("installing", { version: foundVersion });
     try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
@@ -499,6 +522,14 @@ function createManagedLane({
       return;
     }
     const { code } = await runUpdateCommand();
+    if (code === 0 && await applyChangedNothing(appliedVersion)) {
+      const message = unchangedMessage(appliedVersion);
+      log.error(`[update] managed install: ${message} — not relaunching`);
+      managedInstalling = false;
+      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      emitManagedError("install", new Error(message));
+      return;
+    }
     if (code === 0) {
       log.info("[update] managed install succeeded — relaunching");
       app.relaunch();
