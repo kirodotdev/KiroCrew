@@ -219,6 +219,37 @@ def test_a_resolved_prefix_holding_glob_characters_matches_only_itself(tmp_path,
     )
 
 
+@needs_posix_symlinks
+def test_a_canonical_cache_resolves_a_repeated_glob_once_and_agrees(
+    tmp_path, monkeypatch, symlinked_home
+):
+    """A shared cache resolves each distinct glob once and returns the uncached answer."""
+    import kiro_crew.skills as skills_module
+
+    link_home, real_home = symlinked_home
+    _write_skill(link_home / "skills", "demo")
+    glob = str(link_home / "skills" / "*" / "SKILL.md")
+    seen: list[str] = []
+    real_validate = skills_module.validate_file_path
+
+    def recording_validate(raw: str) -> str | None:
+        seen.append(raw)
+        return real_validate(raw)
+
+    monkeypatch.setattr(skills_module, "validate_file_path", recording_validate)
+
+    uncached = skills_module._with_canonical_globs([glob])
+    seen.clear()
+    cache: dict = {}
+    first = skills_module._with_canonical_globs([glob], None, cache)
+    second = skills_module._with_canonical_globs([glob], None, cache)
+
+    assert first == second == uncached
+    assert uncached == [glob, str(real_home / "skills" / "*" / "SKILL.md")]
+    # The linked prefix is validated once across the two cached calls.
+    assert seen.count(str(link_home / "skills")) == 1
+
+
 def test_loader_roots_are_resolved_once_however_many_mappings(tmp_path, monkeypatch, opened):
     import kiro_crew.skills as skills_module
 
@@ -337,3 +368,29 @@ async def test_agent_scoped_listing_names_what_the_runtime_scope_selects(
     }
     assert runtime == {a: ["demo"] for a in specs}
     assert listed == runtime
+
+
+@needs_posix_symlinks
+def test_the_indexed_matcher_agrees_under_a_symlinked_home(tmp_path, symlinked_home):
+    """A ``~`` mapping matches the resolved row through both index buckets.
+
+    A ``~`` wildcard mapping canonicalises to a glob whose literal prefix is the
+    resolved home, so it lands in the wildcard bucket; an exact ``~`` mapping
+    canonicalises to the resolved file path and lands in the exact set.
+    """
+    from kiro_crew.dashboard.handlers._shared import (
+        _agents_loading_skill_indexed,
+        _build_agent_match_index,
+        _expand_agent_globs,
+    )
+
+    link_home, real_home = symlinked_home
+    _write_skill(link_home / "my-skills", "demo")
+    resolved_skill = real_home / "my-skills" / "demo" / "SKILL.md"
+    parsed = [
+        ("wild", {"resources": ["skill://~/my-skills/*/SKILL.md"]}, tmp_path / "w.json"),
+        ("exact", {"resources": ["skill://~/my-skills/demo/SKILL.md"]}, tmp_path / "e.json"),
+    ]
+    index = _build_agent_match_index(_expand_agent_globs(parsed))
+
+    assert _agents_loading_skill_indexed(resolved_skill, index) == ["wild", "exact"]

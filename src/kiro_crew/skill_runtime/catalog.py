@@ -195,13 +195,39 @@ def _spelled_canonically(pattern: str, project_dir: str | Path | None) -> bool:
         return False
 
 
-def _with_canonical_globs(globs: list[str], project_dir: str | Path | None = None) -> list[str]:
-    """*globs* plus each one's canonical spelling, original order first, no duplicates."""
+def _canonical_spelling(pattern: str, project_dir: str | Path | None) -> str:
+    """*pattern*'s canonical spelling: *pattern* itself when already canonical."""
+    if _spelled_canonically(pattern, project_dir):
+        return pattern
+    return _canonical_glob(pattern, project_dir)
+
+
+def _with_canonical_globs(
+    globs: list[str],
+    project_dir: str | Path | None = None,
+    cache: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
+    """*globs* plus each one's canonical spelling, original order first, no duplicates.
+
+    *cache* memoises each glob's canonical spelling across the calls of one
+    pass. The dashboard annotation calls this once per agent, and many agents
+    name the same skill path, so a shared memo resolves each DISTINCT glob once
+    (one ``realpath`` and at most one pooled sensitive-path check) instead of
+    once per mention. The spelling depends only on ``(glob, project_dir)`` and
+    the filesystem at that moment, so the memo is a single pass's scratch
+    space; omit it for a one-off call.
+    """
     out = list(globs)
+    scope = str(project_dir) if project_dir is not None else ""
     for glob in globs:
-        if _spelled_canonically(glob, project_dir):
-            continue
-        canonical = _canonical_glob(glob, project_dir)
+        if cache is None:
+            canonical = _canonical_spelling(glob, project_dir)
+        else:
+            key = (glob, scope)
+            hit = cache.get(key)
+            if hit is None:
+                hit = cache[key] = _canonical_spelling(glob, project_dir)
+            canonical = hit
         if canonical not in out:
             out.append(canonical)
     return out
