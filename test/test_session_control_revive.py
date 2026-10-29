@@ -137,6 +137,51 @@ def test_revive_does_not_transfer_ownership_to_the_reviver(tmp_path, monkeypatch
     assert state._slots[key]._created_by == "chat-9"
 
 
+@pytest.mark.parametrize("creator_is_reviver", [True, False], ids=["creator", "other-reviver"])
+def test_a_revived_worker_takes_its_creators_posture_only_from_its_creator(
+    tmp_path, monkeypatch, creator_is_reviver
+):
+    """A conductor that brings back its own worker hands it its posture, as create
+    does at birth; a session that merely revives someone else's worker hands none."""
+    state = _make_state(tmp_path)
+    conductor = _slot(state, "chat-1")
+    conductor._trust = True
+    reviver = conductor if creator_is_reviver else _slot(state, "chat-3")
+    reviver._trust = True
+    peer = _slot(state, "chat-2")
+    peer._created_by = conductor.key
+    key = _archive(state, conductor, peer)
+    _lineage(monkeypatch, {key: conductor.key})
+
+    _revive(state, reviver, key)
+
+    revived = state._slots[key]
+    assert revived._trust is creator_is_reviver
+    assert revived._posture_inherited is creator_is_reviver
+
+
+def test_a_revived_crewmate_worker_is_left_to_its_profile(tmp_path, monkeypatch):
+    """A crewmate's own worker takes its Profile Permissions at its first turn, never
+    the conductor's Trust: a grant already on the slot would survive that seed."""
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    state = _make_state(tmp_path)
+    conductor = _slot(state, "chat-1")
+    conductor._trust = True
+    peer = _slot(state, "chat-2")
+    peer.agent = MATE_WORKER_AGENT
+    peer._created_by = conductor.key
+    key = _archive(state, conductor, peer)
+    _lineage(monkeypatch, {key: conductor.key})
+
+    _revive(state, conductor, key)
+
+    revived = state._slots[key]
+    assert revived.agent == MATE_WORKER_AGENT
+    assert revived._trust is False
+    assert revived._posture_inherited is False
+
+
 @pytest.mark.parametrize("known", [True, False], ids=["lineage-names-another", "lineage-unknown"])
 def test_an_uncorroborated_created_by_claim_is_not_stamped_on_the_revived_slot(
     tmp_path, monkeypatch, known

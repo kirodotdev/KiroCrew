@@ -541,6 +541,10 @@ def _read_created_by(r: _Read) -> None:
     # from this file must not become gateway-authored crew-log lineage.
     if r.meta.get("created_by"):
         r.slot._created_by = str(r.meta["created_by"])
+        # A mode a person set on this session lived in memory and did not survive,
+        # so the session follows its creator's next mode change again. A raise
+        # still needs the crew log's creation record (``approval_inheritance``).
+        r.slot._posture_inherited = True
 
 
 def _read_folder_id(r: _Read) -> None:

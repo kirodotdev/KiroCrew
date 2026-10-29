@@ -115,6 +115,7 @@ class _ChatSlot:
         "_trust_card_scoped",
         "_trust_scope",
         "_trust_reads",
+        "_posture_inherited",
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
@@ -484,6 +485,7 @@ class _ChatSlot:
     _trust_card_scoped: bool
     _trust_scope: str
     _trust_reads: bool
+    _posture_inherited: bool
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]

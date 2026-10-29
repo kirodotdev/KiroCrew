@@ -621,6 +621,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_trust": ("value", "False"),
     "_trust_card_scoped": ("value", "False"),
     "_trust_reads": ("value", "False"),
+    "_posture_inherited": ("value", "False"),
     "_trust_scope": ("value", "''"),
     "_trusted_pattern_deadlines": ("value", "{}"),
     "_trusted_patterns": ("value", "set()"),

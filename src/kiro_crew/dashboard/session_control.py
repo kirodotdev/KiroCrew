@@ -404,7 +404,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log.session_tree_projection import projection  # noqa: F401
     from kiro_crew.dashboard import session_managers  # noqa: F401
-    from kiro_crew.dashboard.approval_posture import trust_carries  # noqa: F401
+    from kiro_crew.dashboard.approval_inheritance import inherit_posture  # noqa: F401
     from kiro_crew.dashboard.chat_delivery import sanitize_outbound  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _folder_declared_project  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401

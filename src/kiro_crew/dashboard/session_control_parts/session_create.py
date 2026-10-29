@@ -29,7 +29,7 @@ from kiro_crew.config.sections import (
     worker_session_defaults,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard.approval_posture import trust_carries
+from kiro_crew.dashboard.approval_inheritance import inherit_posture
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import (
     _folder_declared_project,
@@ -1134,8 +1134,9 @@ async def create_session(
             # A trust granted from a Crew Mode conductor's approval card ("Trust
             # this crew member", ``_trust_card_scoped``) covers that crew member
             # only, so the sessions it creates are born asking, on that same card.
-            slot._trust = trust_carries(live_caller)
-            slot._trust_reads = bool(getattr(live_caller, "_trust_reads", False))
+            # Marked inherited, so a later mode change on the creator reaches this
+            # child too (``approval_inheritance``), not only the posture held now.
+            inherit_posture(slot, live_caller)
         inherited_trust = bool(slot._trust)
         inherited_trust_reads = bool(slot._trust_reads)
         # The agent's memory silo, from the bindings already resolved above. Held

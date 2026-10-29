@@ -302,6 +302,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # the decision — ``safety_override().is_scope_active()`` is.
     self._trust_scope = ""
     self._trust_reads = False  # auto-approve read-only bash commands
+    # True while this slot's posture (``_trust`` / ``_trust_reads``) is the one its
+    # creator handed it, at birth or by a later change on the creator
+    # (``approval_inheritance``). A person setting this slot's own mode clears it,
+    # and from then on the creator's changes leave this slot alone.
+    self._posture_inherited = False
     # A crewmate thread took its profile's approval mode (members handler).
     self._member_approval_seeded = False
     self._trusted_patterns = set()  # session-scoped fnmatch globs

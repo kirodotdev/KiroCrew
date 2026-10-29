@@ -666,6 +666,8 @@ async def _on_permission_prompt(
                 )
     if outcome == "approved_trust_reads":
         slot._trust_reads = True
+        # A person chose this slot's mode: its creator's changes stop reaching it.
+        slot._posture_inherited = False
         outcome = "approved"
     if outcome == "approved":
         try:
