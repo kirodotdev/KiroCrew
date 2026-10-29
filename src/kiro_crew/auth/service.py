@@ -24,7 +24,7 @@ from typing import Any
 
 import aiohttp
 
-from kiro_crew.auth.login import builder_id, control_plane, device, portal
+from kiro_crew.auth.login import builder_id, control_plane, device, external_idp, portal
 from kiro_crew.auth.login.endpoints import (
     BUILDER_ID_REGION,
     BUILDER_ID_START_URL,
@@ -104,6 +104,52 @@ class InvalidRegionError(Exception):
     """
 
 
+class InvalidExternalIdpInputError(Exception):
+    """An organization sign-in was begun with a domain or start URL that is malformed.
+
+    Both values travel to the Kiro portal as lookup hints, so they are checked
+    against a strict shape before the URL is built.
+    """
+
+
+# A DNS domain name: dot-joined labels of letters, digits and inner hyphens, ending
+# in an alphabetic TLD. Nothing that could close or extend the query parameter.
+_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+_MAX_START_URL_LEN = 2048
+
+# The control-plane region an organization sign-in resolves its profile in when the
+# user names none (the same default as the IdC flow).
+_EXTERNAL_IDP_DEFAULT_REGION = BUILDER_ID_REGION
+
+# login_option / provider name the dashboard sends for the organization sign-in.
+EXTERNAL_IDP_PROVIDER = "external_idp"
+
+
+def _clean_external_idp_domain(value: str) -> str:
+    """Normalise a work e-mail address or domain to the bare domain, or refuse it."""
+    cleaned = (value or "").strip().lower()
+    if not cleaned:
+        return ""
+    if "@" in cleaned:
+        cleaned = cleaned.rsplit("@", 1)[1]
+    if not _DOMAIN_RE.fullmatch(cleaned):
+        raise InvalidExternalIdpInputError("not a work e-mail domain")
+    return cleaned
+
+
+def _clean_external_idp_start_url(value: str) -> str:
+    """Require an absolute, credential-free HTTPS Kiro start URL, or refuse it."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) > _MAX_START_URL_LEN or any(c.isspace() for c in cleaned):
+        raise InvalidExternalIdpInputError("not a Kiro start URL")
+    try:
+        return external_idp.require_https_url(cleaned, "start URL")
+    except external_idp.ExternalIdpAuthError as err:
+        raise InvalidExternalIdpInputError("not a Kiro start URL") from err
+
+
 # AWS region names: two-letter partition, one or more dash-joined words, numeric
 # suffix (us-east-1, us-gov-west-1, ap-southeast-3). Anchored and character-tight
 # so no URL metacharacter ('/', '@', ':', '.') can survive into the hostname.
@@ -163,7 +209,9 @@ class _PendingLoopbackLogin:
     """
 
     task: asyncio.Task[KasToken]
-    provider: SocialProvider
+    # The social provider the user clicked, or None for the organization
+    # (external IdP) sign-in, which has no device-flow fallback.
+    provider: SocialProvider | None
     expires_at: datetime
 
 
@@ -749,23 +797,48 @@ class KasLoginService:
             result["code"] = "previous_identity_not_removed"
         return result
 
-    async def begin_loopback(self, provider_str: str, *, replaces: str = "") -> dict[str, Any]:
-        """Start a loopback (PKCE) social login; returns the portal URL to open.
+    async def begin_loopback(
+        self,
+        provider_str: str,
+        *,
+        replaces: str = "",
+        external_idp_domain: str = "",
+        external_idp_start_url: str = "",
+        region: str = "",
+    ) -> dict[str, Any]:
+        """Start a loopback (PKCE) login through Kiro's portal; returns the URL to open.
 
-        Only Google/GitHub run through Kiro's portal; Builder ID / IdC stay on the
-        device flow (as in kiro-cli). Binding one of the Cognito-allowlisted ports
-        happens HERE, synchronously, so an all-ports-busy host fails the begin with a
-        coded error the dashboard can turn into an immediate device-flow fallback —
-        rather than a listener that never answers.
+        Google/GitHub run the portal's social sign-in; ``external_idp`` runs the
+        organization sign-in (the portal looks up the org's own OIDC IdP, from the
+        optional work e-mail domain or Kiro start URL, and the code exchange happens
+        at that IdP; see :meth:`_run_external_idp_loopback`). Builder ID / IdC stay
+        on the device flow (as in kiro-cli). The organization sign-in has no device
+        flow at all, so a non-loopback install cannot run it. ``region`` (external
+        IdP only) is the control-plane region the profile is resolved in.
 
-        Raises ValueError for a non-social provider, LoopbackUnavailableError when
-        the transport is not loopback for this install shape or no callback port
-        can be bound, and SignedOutDuringLoginError when a sign-out landed
-        between this call's start and its registration.
+        Binding one of the Cognito-allowlisted ports happens HERE, synchronously, so
+        an all-ports-busy host fails the begin with a coded error the dashboard can
+        turn into an immediate device-flow fallback — rather than a listener that
+        never answers.
+
+        Raises ValueError for any other provider, InvalidExternalIdpInputError or
+        InvalidRegionError for a malformed organization hint, LoopbackUnavailableError
+        when the transport is not loopback for this install shape or no callback port
+        can be bound, and SignedOutDuringLoginError when a sign-out landed between
+        this call's start and its registration.
         """
         epoch = self._epoch  # before the first await; see _register_pending
         signout_gen = await asyncio.to_thread(self._store.signout_generation)
         replaces = _validate_replaces(replaces)
+        if (provider_str or "").strip().lower() == EXTERNAL_IDP_PROVIDER:
+            return await self._begin_external_idp_loopback(
+                replaces=replaces,
+                domain=_clean_external_idp_domain(external_idp_domain),
+                start_url=_clean_external_idp_start_url(external_idp_start_url),
+                region=region,
+                epoch=epoch,
+                signout_gen=signout_gen,
+            )
         provider = _parse_provider(provider_str)
         if select_transport() is not Transport.LOOPBACK:
             raise LoopbackUnavailableError("loopback transport not available on this install")
@@ -796,6 +869,122 @@ class KasLoginService:
         result["auth_url"] = auth_url
         result["port"] = port
         return result
+
+    async def _begin_external_idp_loopback(
+        self,
+        *,
+        replaces: str,
+        domain: str,
+        start_url: str,
+        region: str,
+        epoch: int,
+        signout_gen: str,
+    ) -> dict[str, Any]:
+        """The organization branch of :meth:`begin_loopback` (arguments already clean)."""
+        cleaned_region = (region or "").strip()
+        if cleaned_region and not _REGION_RE.fullmatch(cleaned_region):
+            raise InvalidRegionError(f"not an AWS region name: {cleaned_region[:64]!r}")
+        if select_transport() is not Transport.LOOPBACK:
+            raise LoopbackUnavailableError("loopback transport not available on this install")
+        try:
+            sock, port = await asyncio.to_thread(portal.bind_allowed_port)
+        except portal.PortalAuthError as err:
+            raise LoopbackUnavailableError(str(err)) from err
+        hints = {
+            "external_idp_domain": domain,
+            "external_idp_start_url": start_url,
+            "external_idp_region": cleaned_region,
+        }
+        portal_verifier = portal.generate_code_verifier()
+        state = portal.generate_state()
+        auth_url = portal.build_auth_url(
+            port,
+            state,
+            portal.generate_code_challenge(portal_verifier),
+            signin_methods=EXTERNAL_IDP_PROVIDER,
+            external_idp=hints,
+        )
+        task = asyncio.create_task(
+            self._run_external_idp_loopback(
+                sock, port, state, region=cleaned_region or _EXTERNAL_IDP_DEFAULT_REGION
+            ),
+            name=f"kas-loopback-external-idp-{port}",
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=LOOPBACK_TIMEOUT_SECS)
+        result = await self._register_pending(
+            _PendingLoopbackLogin(task=task, provider=None, expires_at=expires_at),
+            user_code="",
+            verification_uri_complete=auth_url,
+            expires_at=expires_at,
+            replaces=replaces,
+            epoch=epoch,
+            signout_gen=signout_gen,
+        )
+        result["auth_url"] = auth_url
+        result["port"] = port
+        return result
+
+    async def _run_external_idp_loopback(
+        self, sock: Any, port: int, state: str, *, region: str
+    ) -> KasToken:
+        """Serve both legs of the organization sign-in and return its token. Owns the socket.
+
+        Leg one is the portal naming the org's IdP client (issuer, client id,
+        scopes); the listener answers it with a 302 to the IdP's authorization
+        endpoint, read from the issuer's own discovery document, carrying a fresh
+        PKCE pair and a fresh state. Leg two is the IdP's redirect with the code,
+        which is exchanged at the discovered token endpoint (public client, no
+        secret). The profile ARN is then resolved as the IdC path does, with the
+        ``EXTERNAL_IDP`` token type. Like :meth:`_run_loopback` nothing is persisted
+        here.
+        """
+        redirect_uri = f"http://localhost:{port}{portal.IDP_CALLBACK_PATH}"
+        verifier = portal.generate_code_verifier()
+        resolved: dict[str, external_idp.ExternalIdpMetadata] = {}
+
+        async def _handoff(query: Any) -> tuple[str, str]:
+            handoff = external_idp.handoff_from_callback(query)
+            meta = await external_idp.discover(handoff, session=await self._http())
+            resolved["meta"] = meta
+            idp_state = portal.generate_state(32)
+            url = external_idp.build_authorization_url(
+                meta,
+                redirect_uri=redirect_uri,
+                state=idp_state,
+                code_challenge=portal.generate_code_challenge(verifier),
+            )
+            return url, idp_state
+
+        try:
+            callback = await portal.wait_for_callback(
+                sock, port, state, timeout_secs=LOOPBACK_TIMEOUT_SECS, on_idp_handoff=_handoff
+            )
+            session = await self._http()
+            token = await external_idp.exchange_code(
+                resolved["meta"],
+                code=callback["code"],
+                code_verifier=verifier,
+                redirect_uri=redirect_uri,
+                session=session,
+            )
+            token.region = region
+            profiles = await control_plane.list_available_profiles(
+                token.access_token, region=region, session=session, token_type="EXTERNAL_IDP"
+            )
+            if not profiles:
+                raise control_plane.ControlPlaneError(
+                    "the organization sign-in has no available Kiro profiles"
+                )
+            if len(profiles) > 1:
+                logger.info(
+                    "external IdP login has %d profiles; using %r",
+                    len(profiles),
+                    profiles[0].profile_name,
+                )
+            token.profile_arn = profiles[0].arn
+            return token
+        finally:
+            await asyncio.to_thread(sock.close)
 
     async def _run_loopback(
         self,

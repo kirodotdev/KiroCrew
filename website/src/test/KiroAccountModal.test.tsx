@@ -305,7 +305,7 @@ describe('KiroAccountModal', () => {
     })
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
 
-    expect(await screen.findByText('Signed in with Company SSO')).toBeInTheDocument()
+    expect(await screen.findByText('Signed in with Organization identity provider')).toBeInTheDocument()
     expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Show email' })).not.toBeInTheDocument()
     expect(screen.getByText(/Remaining credit balance/)).toBeInTheDocument()
@@ -329,7 +329,7 @@ describe('KiroAccountModal', () => {
 
   // The notice names the provider through the badge's own mapping, so the two
   // can never disagree: a state that ever carries another type names that type
-  // in both places, not "Company SSO" under a different badge.
+  // in both places, not "Organization identity provider" under a different badge.
   it('names the same provider in the notice as in the badge', async () => {
     const usage = parseKiroUsagePayload({
       usage: { available: false, reason: 'account_unproven', account_type: 'IamIdentityCenter' },
@@ -356,15 +356,15 @@ describe('KiroAccountModal', () => {
     expect(usage).toEqual({ accountOnly: true, accountType: 'ExternalIdP' })
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
 
-    expect(await screen.findByText('Signed in with Company SSO')).toBeInTheDocument()
+    expect(await screen.findByText('Signed in with Organization identity provider')).toBeInTheDocument()
     expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
-    const notice = i18nT('components.kiroAccountModal.credit_usage_sign_in_type', { provider: 'Company SSO' })
+    const notice = i18nT('components.kiroAccountModal.credit_usage_sign_in_type', { provider: 'Organization identity provider' })
     expect(screen.getByText(notice)).toBeInTheDocument()
     // The notice names the provider the badge shows and the one cause the
     // gateway can prove: kiro-cli reports no user for this sign-in. It promises
     // nothing about what a fresh sign-in or the account page would show; the
     // Manage account link still stands below it.
-    expect(notice).toContain('this Company SSO sign-in')
+    expect(notice).toContain('this Organization identity provider sign-in')
     expect(notice).toContain('kiro-cli doesn’t report which user is signed in')
     expect(notice).not.toContain('signing in again')
     expect(notice).not.toContain(i18nT('app.manage_account'))
@@ -379,7 +379,7 @@ describe('KiroAccountModal', () => {
   // The gateway always sends the type for this state. A state that arrives
   // without one still names a provider in the notice, so the sentence never
   // reads "this  sign-in".
-  it('names Company SSO in the notice when the state carries no type', async () => {
+  it('names the organization identity provider in the notice when the state carries no type', async () => {
     const usage = parseKiroUsagePayload({ usage: { available: false, reason: 'account_unproven' } })
     expect(usage).toEqual({ accountOnly: true, accountType: undefined })
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
@@ -387,7 +387,7 @@ describe('KiroAccountModal', () => {
     const notice = i18nT('components.kiroAccountModal.credit_usage_sign_in_type', {
       provider: providerLabelFromWire('externalidp'),
     })
-    expect(notice).toContain('this Company SSO sign-in')
+    expect(notice).toContain('this Organization identity provider sign-in')
     expect(await screen.findByText(notice)).toBeInTheDocument()
   })
 

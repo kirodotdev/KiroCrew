@@ -363,8 +363,19 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
       post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
     // Loopback begin answers 409 `loopback_unavailable` when this install shape
     // cannot receive the callback (or every allowlisted port is busy); the gate
-    // treats that as "start the device flow instead", not as a failure.
-    kasLoginBeginLoopback: (provider: string, extra?: { replaces?: string }) =>
+    // treats that as "start the device flow instead", not as a failure -- except
+    // for `external_idp` (the organization sign-in), which has no device flow, so
+    // the same 409 is shown as the reason it cannot start. The `external_idp_*`
+    // fields and `region` are that sign-in's optional organization lookup hints.
+    kasLoginBeginLoopback: (
+      provider: string,
+      extra?: {
+        replaces?: string
+        external_idp_domain?: string
+        external_idp_start_url?: string
+        region?: string
+      },
+    ) =>
       post('/api/kas-login/loopback', { provider, ...(extra ?? {}) }).then(
         j,
       ) as Promise<KasLoginLoopbackSession>,

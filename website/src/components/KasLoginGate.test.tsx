@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import KasLoginGate from './KasLoginGate'
 import { api } from '../api/client'
@@ -478,5 +478,87 @@ describe('KasLoginGate', () => {
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: original })
     }
+  })
+
+  it('offers the organization sign-in only where a loopback sign-in can land', async () => {
+    renderWithProviders(<KasLoginGate />)
+    await screen.findByRole('button', { name: 'Continue with Google' })
+    // Device shape: the organization sign-in has no device flow, so no choice.
+    expect(
+      screen.queryByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('organization sign-in sends a domain hint over the loopback route', async () => {
+    loopbackShape()
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+    )
+    const form = await screen.findByTestId('kas-login-org-form')
+    fireEvent.change(
+      screen.getByLabelText('Work email domain or Kiro start URL (optional)'),
+      { target: { value: 'example.com' } },
+    )
+    fireEvent.submit(form)
+    expect(
+      await screen.findByRole('heading', { name: 'Waiting for your browser' }),
+    ).toBeInTheDocument()
+    expect(kasLoginBeginLoopback).toHaveBeenCalledWith('external_idp', {
+      external_idp_domain: 'example.com',
+    })
+    expect(kasLoginBeginDevice).not.toHaveBeenCalled()
+    // There is no code to switch to for this sign-in.
+    expect(screen.queryByRole('button', { name: 'Use a code instead' })).not.toBeInTheDocument()
+  })
+
+  it('organization sign-in sends a start URL and region when given', async () => {
+    loopbackShape()
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+    )
+    const form = await screen.findByTestId('kas-login-org-form')
+    fireEvent.change(
+      screen.getByLabelText('Work email domain or Kiro start URL (optional)'),
+      { target: { value: ' https://kiro.dev/start/K-ABC ' } },
+    )
+    fireEvent.change(within(form).getByLabelText('AWS Region (optional)'), {
+      target: { value: 'eu-central-1' },
+    })
+    fireEvent.submit(form)
+    await waitFor(() =>
+      expect(kasLoginBeginLoopback).toHaveBeenCalledWith('external_idp', {
+        external_idp_start_url: 'https://kiro.dev/start/K-ABC',
+        region: 'eu-central-1',
+      }),
+    )
+  })
+
+  it('organization sign-in shows a loopback_unavailable answer instead of a device fallback', async () => {
+    loopbackShape()
+    kasLoginBeginLoopback.mockRejectedValueOnce(
+      new ApiError(409, 'Loopback sign-in is not available here.', JSON.stringify({ error: 'x', code: 'loopback_unavailable' })),
+    )
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+    )
+    fireEvent.submit(await screen.findByTestId('kas-login-org-form'))
+    expect(await screen.findByTestId('kas-login-begin-error')).toBeInTheDocument()
+    expect(kasLoginBeginDevice).not.toHaveBeenCalled()
+  })
+
+  it('organization sign-in timeout is a failed sign-in, not a restart on the device flow', async () => {
+    loopbackShape()
+    kasLoginPoll.mockResolvedValue({ status: 'expired', code: 'loopback_timeout' })
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' }),
+    )
+    fireEvent.submit(await screen.findByTestId('kas-login-org-form'))
+    expect(await screen.findByText('Sign-in failed')).toBeInTheDocument()
+    expect(screen.queryByText('The code expired')).not.toBeInTheDocument()
+    expect(kasLoginBeginDevice).not.toHaveBeenCalled()
   })
 })

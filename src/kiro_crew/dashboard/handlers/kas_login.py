@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew.auth.login.builder_id import BuilderIdAuthError
 from kiro_crew.auth.login.device import DeviceAuthError
 from kiro_crew.auth.service import (
+    InvalidExternalIdpInputError,
     InvalidRegionError,
     KasLoginService,
     LoopbackUnavailableError,
@@ -315,11 +316,15 @@ async def _retire_runtimes_after_sign_out(request: web.Request) -> None:
 
 
 async def api_kas_login_begin_loopback(request: web.Request) -> web.Response:
-    """POST /api/kas-login/loopback {provider} — start a loopback (PKCE) sign-in.
+    """POST /api/kas-login/loopback {provider, ...} — start a loopback (PKCE) sign-in.
 
     Returns the portal URL for the dashboard to open plus the polling handle. A
     coded 409 ``loopback_unavailable`` means "start the device flow instead": the
-    install shape does not support loopback or every allowlisted port is busy.
+    install shape does not support loopback or every allowlisted port is busy. For
+    ``provider: external_idp`` (the organization sign-in, which has no device flow)
+    the optional ``external_idp_domain``, ``external_idp_start_url`` and ``region``
+    are the portal's lookup hints, and the same 409 means the sign-in cannot run on
+    this install at all.
     """
     denied = await _require_owner(request, "kas_login_begin_loopback")
     if denied is not None:
@@ -330,12 +335,34 @@ async def api_kas_login_begin_loopback(request: web.Request) -> web.Response:
     body = await _read_json(request)
     provider = str((body or {}).get("provider") or "")
     replaces = str((body or {}).get("replaces") or "")
+    domain = str((body or {}).get("external_idp_domain") or "")
+    start_url = str((body or {}).get("external_idp_start_url") or "")
+    region = str((body or {}).get("region") or "")
     if not provider:
         return web.json_response(
             {"error": "Missing 'provider'.", "code": "invalid_provider"}, status=400
         )
     try:
-        result = await service.begin_loopback(provider, replaces=replaces)
+        result = await service.begin_loopback(
+            provider,
+            replaces=replaces,
+            external_idp_domain=domain,
+            external_idp_start_url=start_url,
+            region=region,
+        )
+    except InvalidExternalIdpInputError:
+        return web.json_response(
+            {
+                "error": "Enter a work e-mail domain or a Kiro start URL (https://...).",
+                "code": "invalid_external_idp",
+            },
+            status=400,
+        )
+    except InvalidRegionError:
+        return web.json_response(
+            {"error": "Not a valid AWS region name.", "code": "invalid_region"},
+            status=400,
+        )
     except UnknownIdentityError:
         return web.json_response(
             {"error": f"Unknown identity: {replaces}", "code": "invalid_identity"},

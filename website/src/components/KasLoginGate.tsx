@@ -7,6 +7,7 @@ import {
   Copy,
   Globe,
   IdCard,
+  KeyRound,
   Link2,
   Loader2,
   RefreshCw,
@@ -85,9 +86,29 @@ function openAuthTab(url: string): void {
   }
 }
 
-// Extra begin-device fields the `idc` provider needs (the company's IAM Identity
-// Center access-portal URL, plus an optional region); other providers send none.
-export type KasLoginExtra = { start_url?: string; region?: string }
+// Extra begin fields: the `idc` provider needs the company's IAM Identity Center
+// access-portal URL (plus an optional region); `external_idp` (the organization
+// sign-in) takes an optional work e-mail domain OR Kiro start URL the portal uses
+// to find the organization, plus the optional region its Kiro profile lives in.
+// Other providers send none.
+export type KasLoginExtra = {
+  start_url?: string
+  region?: string
+  external_idp_domain?: string
+  external_idp_start_url?: string
+}
+
+/** Split the organization lookup field into the hint the portal takes: a value
+ *  that reads as a URL is a Kiro start URL, anything else a work e-mail domain
+ *  (the gateway also accepts a whole e-mail address and keeps its domain). */
+export function organizationLookupExtra(lookup: string, region: string): KasLoginExtra {
+  const value = lookup.trim()
+  const extra: KasLoginExtra = {}
+  if (/^https?:\/\//i.test(value)) extra.external_idp_start_url = value
+  else if (value) extra.external_idp_domain = value
+  if (region.trim()) extra.region = region.trim()
+  return extra
+}
 
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
@@ -206,21 +227,24 @@ function CopyField({ value }: { value: string }) {
 /**
  * One sign-in choice. `primary` renders the accent-filled variant — on the
  * gate only. In card chrome every choice is the outlined, shorter form and the
- * four sit in a two-column grid: the card lives inside a Settings detail whose
+ * choices sit in a two-column grid: the card lives inside a Settings detail whose
  * own primary button is "Use {{name}}", and a second accent-filled button the
  * full width of the panel read as the page's main action rather than as one of
- * four equal ways to sign in.
+ * several equal ways to sign in.
  */
 function ProviderButton({
   icon,
   label,
   primary,
+  wide,
   disabled,
   onClick,
 }: {
   icon: ReactNode
   label: string
   primary?: boolean
+  /** Spans the whole card-chrome grid row, for a label too long for one cell. */
+  wide?: boolean
   disabled?: boolean
   onClick: () => void
 }) {
@@ -232,7 +256,12 @@ function ProviderButton({
     ? 'btn-sweep border-none bg-accent font-semibold text-accent-fg hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)]'
     : 'border border-border bg-transparent font-medium text-text hover:border-border-strong hover:bg-bg-hover'
   return (
-    <button type="button" disabled={disabled} onClick={onClick} className={`${base} ${variant}`}>
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`${base} ${variant}${wide ? ' sm:col-span-full' : ''}`}
+    >
       {icon}
       {label}
     </button>
@@ -242,16 +271,34 @@ function ProviderButton({
 function Chooser({
   busy,
   beginError,
+  organizationAvailable,
   onPick,
 }: {
   busy: boolean
   beginError: string
+  /** The organization (external IdP) sign-in returns only to a loopback
+   *  listener on this machine and has no device flow, so the choice is offered
+   *  only where a loopback sign-in can land. */
+  organizationAvailable: boolean
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
 }) {
   // The company-SSO choice expands an inline form (start URL + region) instead of
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
-  const [ssoOpen, setSsoOpen] = useState(false)
+  const [ssoOpen, setSsoOpenState] = useState(false)
+  // The organization choice expands its own form (optional domain or start URL,
+  // optional region). At most one of the two forms is open.
+  const [orgOpen, setOrgOpenState] = useState(false)
+  const [orgLookup, setOrgLookup] = useState('')
+  const [orgRegion, setOrgRegion] = useState('')
+  const setSsoOpen = (open: boolean) => {
+    setSsoOpenState(open)
+    if (open) setOrgOpenState(false)
+  }
+  const setOrgOpen = (open: boolean) => {
+    setOrgOpenState(open)
+    if (open) setSsoOpenState(false)
+  }
   // Seeded from the last company sign-in submitted on this browser, so a reload
   // or gateway restart does not hand back an empty field.
   const [startUrl, setStartUrl] = useState(() => readCompanySignIn().startUrl)
@@ -372,6 +419,70 @@ function Chooser({
             onClick={() => setSsoOpen(true)}
           />
         )}
+        {organizationAvailable && orgOpen ? (
+          <form
+            className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
+            data-testid="kas-login-org-form"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (busy) return
+              onPick('external_idp', organizationLookupExtra(orgLookup, orgRegion))
+            }}
+          >
+            <label
+              className="block text-[12px] font-medium text-text-strong"
+              htmlFor="kas-org-lookup"
+            >
+              {i18nT('components.kasLogin.org_lookup_label')}
+              <input
+                id="kas-org-lookup"
+                type="text"
+                aria-label={i18nT('components.kasLogin.org_lookup_label')}
+                autoFocus
+                value={orgLookup}
+                onChange={(e) => setOrgLookup(e.target.value)}
+                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted"
+              />
+            </label>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              {i18nT('components.kasLogin.org_helper')}
+            </p>
+            <label
+              className="mt-3 block text-[12px] font-medium text-text-strong"
+              htmlFor="kas-org-region"
+            >
+              {i18nT('components.kasLogin.sso_region_label')}
+              <input
+                id="kas-org-region"
+                type="text"
+                aria-label={i18nT('components.kasLogin.sso_region_label')}
+                value={orgRegion}
+                onChange={(e) => setOrgRegion(e.target.value)}
+                placeholder="us-east-1"
+                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted"
+              />
+            </label>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              {i18nT('components.kasLogin.org_region_hint')}
+            </p>
+            <div className="mt-3 flex items-center gap-2">
+              <Btn type="submit" primary disabled={busy}>
+                {i18nT('components.kasLogin.sso_continue')}
+              </Btn>
+              <Btn type="button" disabled={busy} onClick={() => setOrgOpen(false)}>
+                {i18nT('components.kasLogin.sso_cancel')}
+              </Btn>
+            </div>
+          </form>
+        ) : organizationAvailable ? (
+          <ProviderButton
+            icon={<KeyRound className="lucide-inline" />}
+            label={i18nT('components.kasLogin.continue_with_organization_idp')}
+            wide
+            disabled={busy}
+            onClick={() => setOrgOpen(true)}
+          />
+        ) : null}
       </div>
       {/* The failure appears in place after the click (ErrorNotice is
           role="alert"), with no route change a screen reader would announce.
@@ -385,7 +496,7 @@ function Chooser({
           the agent is offered exactly when nothing would be lost. */}
       <ErrorNotice
         className={chrome.card ? 'mt-3 max-w-lg' : 'mt-4 max-w-md'}
-        askAgent={chrome.card && !ssoOpen}
+        askAgent={chrome.card && !ssoOpen && !orgOpen}
         title={i18nT('components.kasLogin.could_not_start_sign_in')}
         message={beginError || null}
         testId="kas-login-begin-error"
@@ -451,7 +562,9 @@ function LoopbackWaiting({
       </p>
       {/* role="status": the hint appears without a route change; assistive tech
           should hear it once, not be interrupted by it. */}
-      {slow ? (
+      {/* The organization sign-in has no code to switch to, so the hint that
+          promotes one is not shown for it. */}
+      {slow && provider !== 'external_idp' ? (
         <p
           className="mt-4 max-w-md rounded-lg border border-border bg-bg-elevated px-3 py-2 text-[13px] leading-relaxed text-text"
           role="status"
@@ -474,9 +587,11 @@ function LoopbackWaiting({
           <ExternalLink className="lucide-inline" />
           {i18nT('components.kasLogin.loopback_open_again')}
         </Btn>
-        <Btn type="button" disabled={busy} onClick={onUseCode}>
-          {i18nT('components.kasLogin.loopback_use_code')}
-        </Btn>
+        {provider !== 'external_idp' ? (
+          <Btn type="button" disabled={busy} onClick={onUseCode}>
+            {i18nT('components.kasLogin.loopback_use_code')}
+          </Btn>
+        ) : null}
       </div>
       <button
         type="button"
@@ -772,18 +887,19 @@ function KasLoginFlow({
   })
 
   const beginLoopback = useMutation({
-    mutationFn: (provider: KasLoginProvider) =>
-      replaces
-        ? api.kasLoginBeginLoopback(provider, { replaces })
+    mutationFn: ({ provider, extra }: { provider: KasLoginProvider; extra?: KasLoginExtra }) =>
+      replaces || extra
+        ? api.kasLoginBeginLoopback(provider, { ...(extra ?? {}), ...(replaces ? { replaces } : {}) })
         : api.kasLoginBeginLoopback(provider),
-    onSuccess: (s, provider) => {
+    onSuccess: (s, { provider }) => {
       setSession({ kind: 'loopback', provider, ...s })
       openAuthTab(s.auth_url)
     },
     // 409 loopback_unavailable (busy ports, or the gateway decided against it) is
     // not a failure the user can act on: silently take the device path instead.
-    onError: (err, provider) => {
-      if (isLoopbackUnavailable(err)) {
+    // The organization sign-in has no device path, so its 409 stays an error.
+    onError: (err, { provider }) => {
+      if (provider !== 'external_idp' && isLoopbackUnavailable(err)) {
         setFellBack(true)
         beginDevice.mutate({ provider })
       }
@@ -853,6 +969,9 @@ function KasLoginFlow({
   const pollStatus = pollQuery.data?.status
   useEffect(() => {
     if (session?.kind !== 'loopback' || settling) return
+    // No device flow exists for the organization sign-in: its terminal answer is
+    // a problem screen (below), never a restart on another transport.
+    if (session.provider === 'external_idp') return
     if (pollStatus !== 'expired' && pollStatus !== 'error') return
     if (pollCode === 'token_store_failed') return
     const provider = session.provider
@@ -920,7 +1039,7 @@ function KasLoginFlow({
   }
 
   const useCodeInstead = async () => {
-    if (!session) return
+    if (!session || session.provider === 'external_idp') return
     const { provider, login_id: loginId } = session
     setSettling(true)
     setSettleError('')
@@ -1017,10 +1136,15 @@ function KasLoginFlow({
     const loopbackDeadEnd =
       session.kind === 'loopback' &&
       terminal &&
-      (pollQuery.error != null || pollQuery.data?.code === 'token_store_failed')
+      (pollQuery.error != null ||
+        pollQuery.data?.code === 'token_store_failed' ||
+        session.provider === 'external_idp')
     if ((session.kind === 'device' && terminal) || loopbackDeadEnd) {
       const detail = pollQuery.error?.message || pollQuery.data?.error || ''
-      return <SignInProblem expired={effective === 'expired'} detail={detail} onStartOver={reset} />
+      // "The code expired" names the device flow's code; the organization
+      // sign-in has none, so its timeout reads as a failed sign-in.
+      const codeExpired = effective === 'expired' && session.provider !== 'external_idp'
+      return <SignInProblem expired={codeExpired} detail={detail} onStartOver={reset} />
     }
     if (session.kind === 'loopback') {
       return (
@@ -1057,9 +1181,12 @@ function KasLoginFlow({
     <>
       <Chooser
         busy={beginDevice.isPending || beginLoopback.isPending}
+        organizationAvailable={loopbackOk}
         beginError={
           beginDevice.error?.message ??
-          (beginLoopback.error && !isLoopbackUnavailable(beginLoopback.error)
+          (beginLoopback.error &&
+          (beginLoopback.variables?.provider === 'external_idp' ||
+            !isLoopbackUnavailable(beginLoopback.error))
             ? beginLoopback.error.message
             : '')
         }
@@ -1068,10 +1195,16 @@ function KasLoginFlow({
           beginLoopback.reset()
           setFellBack(false)
           setReplaceWarning(false)
-          // Only the two portal-brokered social providers have a loopback flow;
-          // Builder ID / IdC run the SSO-OIDC device flow on every shape (as in kiro-cli).
+          // The portal-brokered providers have a loopback flow: Google and GitHub
+          // (with the device flow as fallback) and the organization sign-in (loopback
+          // only; the chooser offers it only when `loopbackOk`). Builder ID / IdC run
+          // the SSO-OIDC device flow on every shape (as in kiro-cli).
+          if (provider === 'external_idp') {
+            beginLoopback.mutate({ provider, extra })
+            return
+          }
           if (loopbackOk && (provider === 'google' || provider === 'github')) {
-            beginLoopback.mutate(provider)
+            beginLoopback.mutate({ provider })
             return
           }
           beginDevice.mutate({ provider, extra })
