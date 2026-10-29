@@ -22,6 +22,8 @@ from kiro_crew.config.sections_agent_fields import (
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
     KAS_BUNDLE_DEFAULT_URL,
+    WORKER_REPORTS_EVERY_TURN,
+    WORKER_REPORTS_MODES,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
     coerce_refusal_fallback_model,
@@ -1166,6 +1168,23 @@ class AgentConfig:
             "member writes only its OWN panel: the server resolves the publishing "
             "crew from the calling session and takes no crew or session argument, "
             "and a subagent has no panel to write.",
+        ),
+    )
+    worker_reports: str = field(
+        default=WORKER_REPORTS_EVERY_TURN,
+        metadata=_meta(
+            "Worker Reports",
+            "When a crew member's worker session wakes the member's own thread "
+            "with a report. 'every_turn' reports each time a worker ends a turn. "
+            "'milestones' keeps each worker's latest reply and turn count, and "
+            "wakes the member only when the worker has recorded a blocked, "
+            "unblocked, decision or phase entry in its session ledger, or names a "
+            "missing capability, since its last report; the report carries that "
+            "ledger entry. A member's changed scheduled-job results report as "
+            "before. 'off' sends no worker or scheduled-job reports at all, so the "
+            "member checks on its workers itself. Read at each worker turn end, so "
+            "a change applies to the next one.",
+            enum=list(WORKER_REPORTS_MODES),
         ),
     )
     subagent_cost_gb: float = field(

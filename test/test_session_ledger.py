@@ -582,6 +582,31 @@ async def test_route_record_and_get_roundtrip(_open_route):
 
 
 @pytest.mark.asyncio
+async def test_route_record_marks_a_reporting_workers_milestone(_open_route, monkeypatch):
+    from kiro_crew.dashboard import mate_thread_wakes as wakes
+
+    routes = _open_route
+    _unit(slot=sl.ledger_key("chat-r-1"))
+    monkeypatch.setattr(wakes, "worker_reports_mode", lambda: "milestones")
+    worker = SimpleNamespace(key="chat-r-1", _created_by="member-atlas", _lineage_minted=True)
+    thread = SimpleNamespace(
+        key="member-atlas", mode=wakes.members_mod.DM_SLOT_MODE, agent="atlas", executor=""
+    )
+    req = _mk_request(
+        "POST",
+        "/api/session-ledger/record",
+        body={"event": "waiting on CI", "event_kind": "blocked"},
+    )
+    state = req.app["state"]
+    state.get_slot = {s.key: s for s in (worker, thread)}.get
+
+    resp = await routes.api_session_ledger_record(req)
+
+    assert resp.status == 200
+    assert state._mate_milestones == {"chat-r-1": [{"kind": "blocked", "text": "waiting on CI"}]}
+
+
+@pytest.mark.asyncio
 async def test_route_phase_without_event_is_400(_open_route):
     routes = _open_route
     _unit(slot=sl.ledger_key("chat-r-1"))

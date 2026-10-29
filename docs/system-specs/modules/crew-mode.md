@@ -4002,6 +4002,26 @@ the thread's own turn task, so a report is delivered once, never twice; pending
 reports live in memory. While the app is stopping
 (`mate_welcome.app_is_stopping`) no hidden turn starts and reports stay pending.
 
+**`agent.worker_reports`** (`mate_thread_wakes.worker_reports_mode`, read at each
+worker turn end from the config watcher's snapshot, `every_turn` when the read
+fails) picks which turn ends wake the thread. `every_turn`, the default, is the
+behaviour above. `milestones` still records every turn end into the worker's held
+report (latest excerpt, turn count) but wakes the thread only when a milestone is
+pending for that worker since its last delivered report: a session-ledger entry
+it recorded (`POST /api/session-ledger/record`, which calls
+`note_ledger_milestone` after a successful write) whose `event_kind` is
+`blocked`, `unblocked`, `decision` or `phase`, or that sets `phase`; or a reply
+naming a missing capability (`missing_capability`). The ledger handler resolves
+the caller's slot from its verified session key and marks only a worker that
+reports to a crewmate thread (`_mate_milestones`, in memory, at most five
+entries per worker); the turn end that records the report clears the mark, and
+the wake carries each entry as a `worker_report.milestone` line (kind and
+event text, scrubbed, one line, 300 characters). A wake delivers every report
+held for the thread, and a held report that nothing marked waits, without a
+wake, for the next one; the thread's own turn end does not deliver it. A
+crewmate's changed cron results report as before. `off` records no worker
+report and `note_cron_result` reports no cron result.
+
 **The worker's extra kit** (`kiro_crew.mate_worker_kit`, owner-only
 `GET/PUT /api/agents/{name}/worker-kit` and `POST .../worker-kit/preview`,
 handler `dashboard/handlers/member_worker_kit.py`): the owner names ONE
@@ -4601,7 +4621,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a crewmate's conductor is dispatched like any caller's |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template crewmate a file that adds nothing, gives the conductor-bound first crewmate what a default-template crewmate gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a crewmate whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
-| `test/test_mate_thread_wakes.py` | A worker's turn end wakes its crewmate once; no wake for a session the crewmate did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; every top-level turn end reaches the wake path |
+| `test/test_mate_thread_wakes.py` | A worker's turn end wakes its crewmate once; no wake for a session the crewmate did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; every top-level turn end reaches the wake path; `agent.worker_reports`: `every_turn` wakes on a plain turn end, `milestones` holds it and wakes after a ledger milestone (carrying the entry) or a missing-capability reply, `off` never wakes, an unreadable config reads as `every_turn` |
 | `test/test_mate_upgrade_notice.py` | A moved crewmate's notice is posted once and never on a later start, never by a crewmate created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by crewmates the migration moved |
 | `website/src/components/chat/crewmateBubbles.test.ts` | What a crewmate's chat draws (machinery dropped, speech and user-facing rows kept, same array back when nothing is dropped) and the run rule (first/middle/last, single, breaks on a user row and a pending approval but not on a long silence, reads through a resolved approval and an untimestamped streaming row, corners on the left side only); a queued message drawn where it was sent, the requeued twin, undrawn queued rows and injected (cron / app) queued rows dropped; when a send is still awaiting a reply |
 | `website/src/test/ChatPane.crewSteerLandsNow.test.tsx` | A crewmate's responsive Send end to end, including one stable bubble through a queued receipt in either order with its push, a later reply drawn below a queued message and the drain keeping order and node, and the typing bubble from Send until a reply, a refusal or the answering turn's silent end |

@@ -167,3 +167,17 @@ async def test_a_key_the_job_did_not_mint_is_not_its_report(monkeypatch, woken):
     assert not await wakes.note_cron_result(state, _job(member_id="beta"), "cron:hourly", "x")
     await _settle()
     assert woken == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode, reported", [("milestones", True), ("off", False)])
+async def test_worker_reports_mode_decides_a_cron_result_report(monkeypatch, woken, mode, reported):
+    # ``milestones`` thins worker turn ends only; ``off`` silences cron results too.
+    monkeypatch.setattr(mate_worker, "cron_worker_execution", lambda execution, config=None: True)
+    monkeypatch.setattr(wakes, "worker_reports_mode", lambda: mode)
+    state = _State()
+
+    assert await wakes.note_cron_result(state, _job(), "cron:hourly", "3 new threads") is reported
+    await _settle()
+
+    assert len(woken) == (1 if reported else 0)

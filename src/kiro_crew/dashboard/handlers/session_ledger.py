@@ -211,6 +211,15 @@ async def api_session_ledger_record(request: web.Request) -> web.Response:
     # time this answered: the writer was still busy, or it refused an append while
     # this one was in flight. The update is recorded either way and the next one
     # supersedes it, but a 200 that implied otherwise would overstate the write.
+    from kiro_crew.dashboard.mate_thread_wakes import note_ledger_milestone
+
+    note_ledger_milestone(
+        state,
+        sk,
+        event_kind=cleaned.get("event_kind"),
+        event=cleaned.get("event"),
+        phase=cleaned.get("phase"),
+    )
     return web.json_response({"ok": True, "durable": durable, "state": state_record})
 
 

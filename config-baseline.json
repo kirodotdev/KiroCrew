@@ -95,6 +95,7 @@
         "session_manager_chain": false,
         "member_dispatch": true,
         "crew_panel": true,
+        "worker_reports": "every_turn",
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -1456,6 +1457,24 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "agent.worker_reports",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Worker Reports",
+      "help": "When a crew member's worker session wakes the member's own thread with a report. 'every_turn' reports each time a worker ends a turn. 'milestones' keeps each worker's latest reply and turn count, and wakes the member only when the worker has recorded a blocked, unblocked, decision or phase entry in its session ledger, or names a missing capability, since its last report; the report carries that ledger entry. A member's changed scheduled-job results report as before. 'off' sends no worker or scheduled-job reports at all, so the member checks on its workers itself. Read at each worker turn end, so a change applies to the next one.",
+      "hasChildren": false,
+      "enumValues": [
+        "every_turn",
+        "milestones",
+        "off"
+      ],
+      "defaultValue": "every_turn"
     },
     {
       "path": "agent.subagent_cost_gb",

@@ -423,3 +423,157 @@ async def test_a_thread_closed_during_the_page_read_gets_no_wake(dispatched, mon
     await _settle(state)
     assert dispatched == []
     assert list(wakes._pending(state)[mate.key]) == [worker.key]
+
+
+# ── agent.worker_reports ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def reports_mode(monkeypatch):
+    """Set ``agent.worker_reports`` as the wake path reads it, per test."""
+
+    def set_mode(mode: str) -> None:
+        monkeypatch.setattr(wakes, "worker_reports_mode", lambda: mode)
+
+    return set_mode
+
+
+@pytest.mark.asyncio
+async def test_every_turn_wakes_on_a_plain_turn_end_and_marks_no_milestone(
+    dispatched, reports_mode
+):
+    reports_mode("every_turn")
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    marked = wakes.note_ledger_milestone(
+        state, "dashboard:chat-worker-1", event_kind="blocked", event="waiting on CI", phase=None
+    )
+    wakes.note_turn_end(state, worker, "still reading the logs")
+    await _settle(state)
+
+    assert marked is False
+    assert len(dispatched) == 1
+    assert "still reading the logs" in dispatched[0][1]
+    assert "session ledger" not in dispatched[0][1]
+
+
+@pytest.mark.asyncio
+async def test_milestones_holds_a_plain_turn_end_without_a_wake(dispatched, reports_mode):
+    reports_mode("milestones")
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "still reading the logs")
+    wakes.note_turn_end(state, worker, "read half of them")
+    await _settle(state)
+    # The crewmate's own turn end does not deliver a report nothing asked for.
+    wakes.note_turn_end(state, mate, "Noted.")
+    await _settle(state)
+
+    assert dispatched == []
+    held = state._mate_wakes["member-atlas"]["chat-worker-1"]
+    assert held["turns"] == 2 and held["reply"] == "read half of them"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entry, line",
+    [
+        (
+            {"event_kind": "blocked", "event": "waiting on CI", "phase": None},
+            "It recorded a blocked entry in its session ledger: waiting on CI",
+        ),
+        (
+            {"event_kind": "phase", "event": "tests pass", "phase": "review"},
+            "It recorded a phase entry in its session ledger: tests pass (phase: review)",
+        ),
+    ],
+)
+async def test_milestones_wakes_after_a_ledger_milestone_and_carries_it(
+    dispatched, reports_mode, entry, line
+):
+    reports_mode("milestones")
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "still reading the logs")
+    await _settle(state)
+    assert dispatched == []
+
+    assert wakes.note_ledger_milestone(state, "dashboard:chat-worker-1", **entry) is True
+    wakes.note_turn_end(state, worker, "pushed the fix")
+    await _settle(state)
+
+    assert len(dispatched) == 1
+    prompt = dispatched[0][1]
+    assert line in prompt
+    assert "pushed the fix" in prompt and "ended 2 turns since you last heard" in prompt
+    # Delivered: the next plain turn end is held again.
+    wakes.note_turn_end(state, worker, "watching CI")
+    await _settle(state)
+    assert len(dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_milestones_ignores_routine_ledger_entries_and_strangers(dispatched, reports_mode):
+    reports_mode("milestones")
+    mate, worker = _crewmate(), _worker()
+    stranger = _worker(creator="chat-person-tab")
+    stranger.key = "chat-stranger"
+    state = _State(mate, worker, stranger)
+
+    progress = wakes.note_ledger_milestone(
+        state, "chat-worker-1", event_kind="progress", event="half done", phase=None
+    )
+    foreign = wakes.note_ledger_milestone(
+        state, "chat-stranger", event_kind="blocked", event="stuck", phase=None
+    )
+    wakes.note_turn_end(state, worker, "half done")
+    await _settle(state)
+
+    assert (progress, foreign) == (False, False)
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_milestones_wakes_on_a_missing_capability_reply(dispatched, reports_mode):
+    reports_mode("milestones")
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "MISSING CAPABILITY: the jira server\nStopped at step 2.")
+    await _settle(state)
+
+    assert len(dispatched) == 1
+    assert "This worker reports a missing capability: the jira server" in dispatched[0][1]
+
+
+@pytest.mark.asyncio
+async def test_off_never_wakes_the_crewmate(dispatched, reports_mode):
+    reports_mode("off")
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    wakes.note_ledger_milestone(
+        state, "chat-worker-1", event_kind="blocked", event="waiting on CI", phase=None
+    )
+    wakes.note_turn_end(state, worker, "MISSING CAPABILITY: the jira server")
+    wakes.note_turn_end(state, mate, "Noted.")
+    await _settle(state)
+
+    assert dispatched == []
+    assert not getattr(state, "_mate_wakes", {}).get("member-atlas")
+
+
+def test_an_unreadable_config_reads_as_every_turn(monkeypatch):
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def broken():
+        raise OSError("config.json unreadable")
+
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(broken))
+
+    assert wakes.worker_reports_mode() == "every_turn"

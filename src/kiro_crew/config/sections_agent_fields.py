@@ -686,6 +686,14 @@ JAIL_MODE_ON = "on"
 JAIL_MODE_OFF = "off"
 _VALID_JAIL_MODES = (JAIL_MODE_AUTO, JAIL_MODE_ON, JAIL_MODE_OFF)
 
+# Which of a crewmate's worker turn ends wake its thread (``agent.worker_reports``).
+# Shared by the field's enum, the load-time read and the wake path, so a value one
+# of them accepts the others cannot read as the default.
+WORKER_REPORTS_EVERY_TURN = "every_turn"
+WORKER_REPORTS_MILESTONES = "milestones"
+WORKER_REPORTS_OFF = "off"
+WORKER_REPORTS_MODES = (WORKER_REPORTS_EVERY_TURN, WORKER_REPORTS_MILESTONES, WORKER_REPORTS_OFF)
+
 # Standard work-tree roots for ``agent.subagent_cwd_allowed_roots``.  Single
 # source of truth shared by the field default and the fallback in ``from_dict``.
 # Both use the same four roots.  The fallback is the value real configs get:

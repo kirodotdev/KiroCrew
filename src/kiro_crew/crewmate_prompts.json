@@ -91,6 +91,7 @@
     "worker_report.latest": "dashboard/mate_thread_wakes.py:report_prompt, followed by ':' or ', cut short:'. No placeholders.",
     "worker_report.missing_capability": "dashboard/mate_thread_wakes.py:report_prompt, under a report naming a missing capability. {missing} what it named.",
     "worker_report.missing_capability_manual": "dashboard/mate_thread_wakes.py:report_prompt, in place of worker_report.missing_capability while Dynamic capabilities is off (no find_capabilities). {missing} what it named.",
+    "worker_report.milestone": "dashboard/mate_thread_wakes.py:report_prompt, one per ledger entry that woke the crewmate under agent.worker_reports = milestones. {kind} the entry's event kind, {text} its event text (one line, bounded).",
     "worker_report.no_reply": "dashboard/mate_thread_wakes.py:report_prompt. No placeholders.",
     "worker_report.session": "dashboard/mate_thread_wakes.py:report_prompt, one per report. {title}, {key} the worker session, {ended} worker_report.ended_*."
   },
@@ -277,6 +278,7 @@
   "worker_report.latest": "Its latest reply",
   "worker_report.missing_capability": "This worker reports a missing capability: {missing}. Look for it with find_capabilities. When this gateway already runs it, raise the card with request_capabilities now. When only the MCP registry has it, request_capabilities works only on a turn the user sends: tell the user here what the worker lacks, and on their next message raise the card so they can add it to your worker.",
   "worker_report.missing_capability_manual": "This worker reports a missing capability: {missing}. request_capabilities only works on a turn the user sends, so tell the user here what the worker lacks, and on their next message ask for it with request_capabilities.",
+  "worker_report.milestone": "It recorded a {kind} entry in its session ledger: {text}",
   "worker_report.no_reply": "It ended with no reply text.",
   "worker_report.session": "Your worker session \"{title}\" ({key}) {ended}."
 }

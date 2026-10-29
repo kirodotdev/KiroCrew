@@ -382,6 +382,31 @@ class TestCrewPanelLoad:
         assert cfg.agent.crew_panel is False
 
 
+class TestWorkerReportsLoad:
+    """agent.worker_reports: one of three modes, anything else the default."""
+
+    def test_missing_key_reports_every_turn(self) -> None:
+        assert _load_from_dict({}).agent.worker_reports == "every_turn"
+
+    @pytest.mark.parametrize("mode", ["every_turn", "milestones", "off"])
+    def test_each_mode_loads_and_round_trips(self, mode: str) -> None:
+        loaded = _load_from_dict({"agent": {"worker_reports": mode}})
+        assert loaded.agent.worker_reports == mode
+        assert _load_from_dict(loaded.to_dict()).agent.worker_reports == mode
+
+    @pytest.mark.parametrize("bad", ["Milestones", "quiet", "", None, 1, ["off"]])
+    def test_an_unknown_value_reads_as_every_turn(self, bad: object) -> None:
+        assert _load_from_dict({"agent": {"worker_reports": bad}}).agent.worker_reports == (
+            "every_turn"
+        )
+
+    def test_the_builder_holds_without_schema_validation(self) -> None:
+        from kiro_crew.config.loader_builders import _build_agent_config
+
+        assert _build_agent_config({"worker_reports": "quiet"}).worker_reports == "every_turn"
+        assert _build_agent_config({"worker_reports": "off"}).worker_reports == "off"
+
+
 class TestFallbackModelLoad:
     """agent.fallback_model flows through the explicit load() kwargs."""
 

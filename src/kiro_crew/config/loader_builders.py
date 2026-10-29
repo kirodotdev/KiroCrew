@@ -738,6 +738,13 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # default back to true. `_safe_bool` here is the final guard for a real
         # bool.
         crew_panel=section.read("crew_panel", _safe_bool),
+        # An unrecognised value reads as the field default rather than the nearest
+        # mode: the default is the one that drops no worker's report.
+        worker_reports=(
+            _worker_reports
+            if (_worker_reports := section.get("worker_reports")) in _sections.WORKER_REPORTS_MODES
+            else section.default("worker_reports")
+        ),
         subagent_cost_gb=section.read("subagent_cost_gb", _safe_float),
         subagent_cpu_cost_cores=section.read("subagent_cpu_cost_cores", _safe_float),
         subagent_auto_max=section.read(

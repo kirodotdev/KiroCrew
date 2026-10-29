@@ -14,6 +14,10 @@ envelope ``[Worker report]``).
 * **One wake per turn end, deferred while busy**: one pending entry per worker,
   delivered when the thread's own turn task ends, never on a timer, never twice.
   Pending reports live in memory.
+* **``agent.worker_reports`` picks which turn ends wake** (:func:`worker_reports_mode`):
+  every one; only those after a milestone (a ledger entry in
+  :data:`MILESTONE_EVENT_KINDS` or a phase change, :func:`note_ledger_milestone`, or
+  a named missing capability), the others held without a wake; or none.
 
 The same flush delivers a moved crewmate's one upgrade notice first
 (:mod:`kiro_crew.mate_upgrade_notice`). Per-gateway state lives on the dashboard
@@ -29,6 +33,12 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
+from kiro_crew.config.sections import (
+    WORKER_REPORTS_EVERY_TURN,
+    WORKER_REPORTS_MILESTONES,
+    WORKER_REPORTS_MODES,
+    WORKER_REPORTS_OFF,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +52,14 @@ _BEGIN = "<<<worker reply"
 _END = ">>>end of worker reply"
 
 _PREAMBLE = crewmate_prompts.text("wake.preamble")
+
+#: The session-ledger event kinds that wake a crewmate under ``milestones``: the
+#: worker's own word that its state changed, as against routine progress or notes.
+MILESTONE_EVENT_KINDS = frozenset({"blocked", "unblocked", "decision", "phase"})
+#: How much of one ledger entry a report carries, and how many entries one worker
+#: holds between reports (the newest kept).
+_MILESTONE_CHARS = 300
+_MAX_MILESTONES = 5
 
 _GUIDANCE = crewmate_prompts.text("worker_report.guidance")
 
@@ -158,6 +176,96 @@ def reporting_creator(state: Any, slot: Any) -> Any:
     return creator
 
 
+def worker_reports_mode() -> str:
+    """``agent.worker_reports`` as in force now; ``every_turn`` when it cannot be read.
+
+    The watcher's snapshot when the gateway runs one (an attribute read, safe on the
+    loop), else a config load. The fallback is the default because it is the mode
+    that loses no report: a config read that fails must not silence a crewmate's
+    workers.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        mode = (live.snapshot() or KiroCrewConfig.load()).agent.worker_reports
+    except Exception:
+        logger.warning("worker_reports: config read failed - reporting every turn", exc_info=True)
+        return WORKER_REPORTS_EVERY_TURN
+    return mode if mode in WORKER_REPORTS_MODES else WORKER_REPORTS_EVERY_TURN
+
+
+def _milestones(state: Any) -> dict[str, list[dict[str, str]]]:
+    """Each worker's ledger milestones since its last report, keyed by its slot key."""
+    milestones = getattr(state, "_mate_milestones", None)
+    if not isinstance(milestones, dict):
+        milestones = {}
+        state._mate_milestones = milestones
+    return milestones
+
+
+def _one_line(text: str, limit: int) -> str:
+    from kiro_crew.member_goals import scrub_text
+
+    flat = " ".join(scrub_text(text).replace(_END, "").replace(_BEGIN, "").split())
+    return flat[:limit].rstrip()
+
+
+def _slot_for_session(state: Any, session_key: str) -> Any:
+    """The live slot *session_key* (a verified ``X-Session-Key``) runs on, else ``None``."""
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+    from kiro_crew.session_ledger import ledger_key
+
+    slot = state.get_slot(ledger_key(session_key))
+    if slot is not None:
+        return slot
+    for candidate in list(getattr(state, "_slots", {}).values()):
+        try:
+            if effective_session_key(candidate) == session_key:
+                return candidate
+        except Exception:  # noqa: BLE001 - a slot mid-teardown names no session
+            continue
+    return None
+
+
+def note_ledger_milestone(
+    state: Any,
+    session_key: str,
+    *,
+    event_kind: str | None,
+    event: str | None,
+    phase: str | None,
+) -> bool:
+    """Mark a recorded session-ledger entry as a milestone of the worker that wrote it.
+
+    Called after ``POST /api/session-ledger/record`` succeeds. Only under
+    ``milestones``, and only for a worker that reports to a crewmate thread
+    (:func:`reporting_creator`): the mark is what lets that worker's next turn end
+    wake the thread, and it is cleared when that turn end records its report. An
+    entry is a milestone when its event kind is in :data:`MILESTONE_EVENT_KINDS` or
+    it sets a phase. Returns whether a milestone was marked. Never raises.
+    """
+    try:
+        kind = (event_kind or "").strip()
+        text = (event or "").strip()
+        if not text or (kind not in MILESTONE_EVENT_KINDS and not phase):
+            return False
+        if worker_reports_mode() != WORKER_REPORTS_MILESTONES:
+            return False
+        slot = _slot_for_session(state, session_key)
+        if slot is None or reporting_creator(state, slot) is None:
+            return False
+        if phase:
+            text = f"{text} (phase: {phase})"
+        held = _milestones(state).setdefault(slot.key, [])
+        held.append({"kind": kind or "phase", "text": _one_line(text, _MILESTONE_CHARS)})
+        del held[:-_MAX_MILESTONES]
+        return True
+    except Exception:
+        logger.warning("ledger milestone for %s failed", session_key, exc_info=True)
+        return False
+
+
 def page_line(slug: str) -> str:
     """The line that sends a worker report's news to crewmate *slug*'s Dashboard page.
 
@@ -236,6 +344,12 @@ def report_prompt(
                 "worker_report.session", title=report["title"], key=report["key"], ended=ended
             )
         )
+        for milestone in report.get("milestones") or ():
+            lines.append(
+                crewmate_prompts.fill(
+                    "worker_report.milestone", kind=milestone["kind"], text=milestone["text"]
+                )
+            )
         text, cut = _excerpt(report["reply"])
         cut = cut or bool(report.get("cut"))
         if not text:
@@ -355,7 +469,7 @@ async def _flush(state: Any, key: str) -> None:
 
     while True:
         slot = state.get_slot(key)
-        reports = _pending(state).get(key)
+        reports = _due_reports(state, key)
         owed = key in _notices(state) or key in _kept_notices(state)
         if not (reports or owed) or slot is None or not is_crewmate_thread(slot):
             # Nothing to say, or the thread is gone: what is pending stays, and
@@ -452,23 +566,51 @@ def schedule_flush(state: Any, key: str) -> None:
     tasks[key] = task
 
 
-def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str) -> None:
-    """Hold worker *key*'s latest reply for crewmate thread *thread_key* and schedule the wake.
+def _due_reports(state: Any, thread_key: str) -> dict[str, dict[str, Any]] | None:
+    """*thread_key*'s held reports when at least one of them asks for a wake, else ``None``.
+
+    A wake delivers every held report, the ones that did not ask for it too: they
+    are the latest word of the crewmate's other workers.
+    """
+    reports = _pending(state).get(thread_key)
+    if reports and any(report.get("due", True) for report in reports.values()):
+        return reports
+    return None
+
+
+def _record_report(
+    state: Any,
+    thread_key: str,
+    key: str,
+    title: str,
+    reply: str,
+    *,
+    due: bool = True,
+    milestones: list[dict[str, str]] | None = None,
+) -> None:
+    """Hold worker *key*'s latest reply for crewmate thread *thread_key*; schedule a due wake.
 
     One entry per worker, replaced and counted by its later turn ends. The reply
     is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag.
+    A report that is not *due* is held without a wake. A held report that was due
+    stays due, and its *milestones* accumulate (the newest kept), until delivered.
     """
     reports = _pending(state).setdefault(thread_key, {})
     prior = reports.get(key)
     text, cut = _excerpt(reply)
+    held = list(prior.get("milestones") or ()) if prior else []
+    held = (held + list(milestones or ()))[-_MAX_MILESTONES:]
     reports[key] = {
         "key": key,
         "title": title,
         "reply": text,
         "cut": cut,
         "turns": (prior["turns"] + 1) if prior else 1,
+        "due": due or bool(prior and prior.get("due", True)),
+        "milestones": held,
     }
-    schedule_flush(state, thread_key)
+    if reports[key]["due"]:
+        schedule_flush(state, thread_key)
 
 
 def _is_jobs_own_cron_key(job: Any, session_key: str) -> bool:
@@ -490,6 +632,8 @@ async def note_cron_result(state: Any, job: Any, session_key: str, reply_text: s
     try:
         member = getattr(job, "member_id", "") or ""
         if not isinstance(member, str) or not member or not _is_jobs_own_cron_key(job, session_key):
+            return False
+        if await asyncio.to_thread(worker_reports_mode) == WORKER_REPORTS_OFF:
             return False
         from kiro_crew.execution_context import execution_from_record
         from kiro_crew.mate_worker import cron_worker_execution, is_own_worker_execution
@@ -524,23 +668,34 @@ def note_turn_end(state: Any, slot: Any, reply_text: str | None) -> None:
     """Called once at the end of every top-level turn. Never raises.
 
     A worker's turn end records its report for its crewmate and schedules the
-    wake; *reply_text* is ``None`` for a turn that ended before it reached the
-    model, which reports nothing. A crewmate thread's own turn end schedules the
-    delivery of anything still pending for it.
+    wake, as ``agent.worker_reports`` says (:func:`worker_reports_mode`);
+    *reply_text* is ``None`` for a turn that ended before it reached the model,
+    which reports nothing. A crewmate thread's own turn end schedules the
+    delivery of anything still due for it.
     """
     try:
         creator = reporting_creator(state, slot) if reply_text is not None else None
         if creator is not None:
+            mode = worker_reports_mode()
+            milestones = _milestones(state).pop(slot.key, [])
+            if mode == WORKER_REPORTS_OFF:
+                return
+            reply = reply_text if isinstance(reply_text, str) else ""
+            due = mode != WORKER_REPORTS_MILESTONES or bool(
+                milestones or missing_capability(_excerpt(reply)[0])
+            )
             _record_report(
                 state,
                 creator.key,
                 slot.key,
                 slot.display_title,
-                reply_text if isinstance(reply_text, str) else "",
+                reply,
+                due=due,
+                milestones=milestones if mode == WORKER_REPORTS_MILESTONES else None,
             )
         elif is_crewmate_thread(slot):
             if (
-                _pending(state).get(slot.key)
+                _due_reports(state, slot.key)
                 or slot.key in _notices(state)
                 or slot.key in _kept_notices(state)
             ):
