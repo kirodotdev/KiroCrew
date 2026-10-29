@@ -670,6 +670,12 @@ Examples:
         "iam-policy", help="Print the least-privilege IAM policy to apply"
     )
     _cloud_creds_opts(_c_iam)
+    _c_iam.add_argument(
+        "--host-policies",
+        action="store_true",
+        help="Print the second policy that lets the launcher attach this build's "
+        "host policies (only when the edition adds some)",
+    )
     _c_boundary = cloud_sub.add_parser(
         "iam-boundary",
         help="Pre-create the immutable EC2 + Fargate permissions boundaries (admin, one-time)",
@@ -680,6 +686,12 @@ Examples:
         action="store_true",
         help="Also pre-create the opt-in KMS-session instance boundary that "
         "`cloud launch --ssm-kms-key` uses",
+    )
+    _c_boundary.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Upgrade an existing instance boundary that holds the document an earlier "
+        "build created (with --ssm-kms, the KMS-session boundary too)",
     )
     _c_doctor = cloud_sub.add_parser("doctor", help="Check cloud prerequisites + AWS reachability")
     _cloud_creds_opts(_c_doctor)

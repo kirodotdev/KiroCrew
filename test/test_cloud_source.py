@@ -1068,7 +1068,9 @@ class TestEnsureCrewBoundary:
         monkeypatch.setattr(
             source,
             "_verify_boundary_content",
-            lambda arn, name, expected, profile, region: seen.append((arn, name, expected)),
+            lambda arn, name, expected, profile, region, previous=(), upgrade_step="": seen.append(
+                (arn, name, expected)
+            ),
         )
 
         source.ensure_instance_boundary("dev", "us-east-1")
