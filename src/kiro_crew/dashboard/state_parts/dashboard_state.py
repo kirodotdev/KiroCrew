@@ -116,6 +116,7 @@ class DashboardState:
     _chat_reactions_loaded: bool
     _folders_lock: LoopBoundLock
     _folders_generation: int
+    _tags_generation: int
     #: Set lazily by ``push_lineage_patch``: key -> (parent, lineage_pending, crew stamps).
     _lineage_sent: dict[str, tuple[Any, bool, tuple[str, bool]]]
 
@@ -649,6 +650,9 @@ class DashboardState:
         # (the store's only writer) on each confirmed write. See
         # folders_generation() for what the client does with it.
         self._folders_generation = 0
+        # The tag-vocabulary / board-column twin; bumped by every save of
+        # either store. See tags_generation().
+        self._tags_generation = 0
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Malformed tags.json entries dropped at load time, kept verbatim so a
@@ -1161,6 +1165,8 @@ class DashboardState:
     save_chat_reactions = _sidebar_stores.save_chat_reactions
     ensure_chat_reactions_loaded = _sidebar_stores.ensure_chat_reactions_loaded
     folders_generation = _sidebar_stores.folders_generation
+    tags_generation = _sidebar_stores.tags_generation
+    bump_tags_generation = _sidebar_stores.bump_tags_generation
     mutate_folders = _sidebar_stores.mutate_folders
     read_folders = _sidebar_stores.read_folders
     hold_folders = _sidebar_stores.hold_folders

@@ -375,6 +375,7 @@ def _slots_ws_frame(
     folders: object,
     folders_gen: object,
     governance_gen: object,
+    tags_gen: object = None,
     slots_partial: bool = False,
     slots_held_keys: object = (),
     slots_hold_channels: bool = False,
@@ -414,6 +415,10 @@ def _slots_ws_frame(
         # (``social_share_enabled``) follows the ceiling instead of waiting out
         # its stale window. Process-local, like the two counters above.
         "governanceGeneration": governance_gen,
+        # The tag vocabulary / board columns' change signal, the folder
+        # generation's twin: the client invalidates ``['chat-tags']``
+        # and ``['tag-columns']`` when it moves.
+        "tagsGeneration": tags_gen,
     }
     if slots_partial:
         frame["slotsPartial"] = True

@@ -293,6 +293,61 @@ class TestSlotsBroadcastCarriesFolders:
         assert state.folders_generation() == before
         assert state._folders == [{"id": "f1", "name": "Existing", "order": 0}]
 
+    def test_frame_carries_the_tags_generation(self, state: DashboardState) -> None:
+        # the tag vocabulary and board columns change signal rides the
+        # same frame, so an agent's tag write reaches an open tab.
+        state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
+        state._tags_generation = 4
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+
+        frame = json.loads(ws.send_str.call_args[0][0])
+        assert frame["tagsGeneration"] == 4
+
+    def test_every_tag_and_column_save_advances_the_tags_generation(
+        self, state: DashboardState
+    ) -> None:
+        # Bumped in the store writers, not at each handler, so a new tag or
+        # column writer cannot forget it.
+        state._tags = [{"id": "t1", "name": "Bug", "color": "#f00", "order": 0}]
+        state._tag_boards = []
+        before = state.tags_generation()
+
+        state.save_tags()
+        state.save_tags_snapshot([dict(t) for t in state._tags])
+        state.save_tag_boards()
+        state.save_tag_boards_snapshot([])
+
+        assert state.tags_generation() == before + 4
+
+    def test_a_handler_bump_advances_the_tags_generation(self, state: DashboardState) -> None:
+        # An adoption or a grant minted after the vocabulary save commits
+        # outside the store writers, so its handler bumps before it pushes.
+        before = state.tags_generation()
+
+        state.bump_tags_generation()
+
+        assert state.tags_generation() == before + 1
+
+    def test_slot_activity_alone_does_not_advance_the_tags_generation(
+        self, state: DashboardState
+    ) -> None:
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-1"}])  # type: ignore[method-assign]
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-2"}])  # type: ignore[method-assign]
+        state._do_slots_broadcast()
+
+        generations = [
+            json.loads(call[0][0])["tagsGeneration"] for call in ws.send_str.call_args_list
+        ]
+        assert len(generations) == 2
+        assert generations[0] == generations[1]
+
 
 class TestOwnerScopedBroadcast:
     """Owner-only typed broadcast + its delivery count."""
@@ -1318,6 +1373,7 @@ class TestOwnerSourceStatusTransport:
         # frame field must be JSON-serializable — a bare MagicMock return
         # value does not slip through a fake send_json unserialized.
         state.folders_generation.return_value = 7
+        state.tags_generation.return_value = 7
 
         class Request(dict):
             def __init__(self) -> None:

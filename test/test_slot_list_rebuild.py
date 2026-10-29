@@ -217,6 +217,7 @@ class TestConnectSnapshot:
         state.serialize_slots.return_value = [{"key": "chat-1-1", "title": "restored"}]
         state._folders = []
         state.folders_generation.return_value = 0
+        state.tags_generation.return_value = 0
         state.slot_list_rebuilding = rebuilding
         state.slot_list_held_keys.return_value = ["chat-held"]
         state.slot_list_hold_channels.return_value = True

@@ -532,6 +532,7 @@ def _do_slots_broadcast(self: DashboardState) -> None:
             # tree alone is not a change signal.
             "foldersGeneration": self.folders_generation(),
             "governanceGeneration": answer_generation,
+            "tagsGeneration": self.tags_generation(),
             # Read by ``_broadcast`` to skip sockets that already applied
             # the ``slot_patch`` this broadcast was owed for.
             "_legacy_only": legacy_only,
@@ -554,6 +555,7 @@ def _do_slots_broadcast(self: DashboardState) -> None:
                 folders=_safe_folder_tree(getattr(self, "_folders", None)),
                 folders_gen=self.folders_generation(),
                 governance_gen=answer_generation,
+                tags_gen=self.tags_generation(),
                 slots_partial=self.slot_list_rebuilding,
                 slots_held_keys=held_keys,
                 slots_hold_channels=hold_channels,
@@ -962,6 +964,7 @@ def _broadcast(self: DashboardState, note: dict[str, Any]) -> None:
                 folders=note.get("folders"),
                 folders_gen=note.get("foldersGeneration"),
                 governance_gen=note.get("governanceGeneration"),
+                tags_gen=note.get("tagsGeneration"),
                 slots_partial=bool(ws_data["slotsPartial"]),
                 slots_held_keys=ws_data["slotsHeldKeys"],
                 slots_hold_channels=bool(ws_data["slotsHoldChannels"]),

@@ -926,6 +926,9 @@ async def _serve_ws(
             # never receives the tree, so its generation would describe data the
             # app does not have.
             envelope_extras["foldersGeneration"] = state.folders_generation()
+            # The tag vocabulary / board columns' baseline, gated the same way:
+            # an app token is not sent the sidebar's tag stores.
+            envelope_extras["tagsGeneration"] = state.tags_generation()
         if "yolo" in envelope_extras:
             # Handing a socket the live blanket-approval override is a grant
             # of operator security posture, not slot data, and this initial

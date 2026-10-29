@@ -300,6 +300,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, msg_type: 'str', data: 'WsPayload') -> 'None'",
     ),
     "bump_pinned_order_rev": ("function", False, False, "(self) -> 'None'"),
+    "bump_tags_generation": ("function", False, False, "(self) -> 'None'"),
     "cancel_questions_for_slot": ("function", False, False, "(self, slot_key: 'str') -> 'int'"),
     "channel_status": ("function", False, False, "(self) -> 'dict[str, dict[str, Any]]'"),
     "clear_notifications": ("function", True, False, "(self) -> 'None'"),
@@ -721,6 +722,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> \"'Iterator[Callable[[str], None]]'\"",
     ),
+    "tags_generation": ("function", False, False, "(self) -> 'int'"),
     "unack_notification": ("function", True, False, "(self, ts: 'str') -> 'bool'"),
     "unregister_sse": (
         "function",

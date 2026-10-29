@@ -8,7 +8,7 @@ Instance fields of ``DashboardState`` this module reads and writes:
 Writes: ``_chat_pins``, ``_chat_reactions``, ``_cron_folders``, ``_folders``,
 ``_folders_generation``, ``_pinned_order_rev``, ``_pinned_session_order``,
 ``_pinned_session_order_loaded``, ``_pinned_session_order_stored``, ``_tag_boards``,
-``_tags``, ``_tags_authoritative``, ``_unparsed_chat_pin_entries``,
+``_tags``, ``_tags_authoritative``, ``_tags_generation``, ``_unparsed_chat_pin_entries``,
 ``_unparsed_chat_reaction_entries``, ``_unparsed_cron_folder_entries``,
 ``_unparsed_tag_board_entries``, ``_unparsed_tag_entries``.
 Reads only: ``_CHAT_PINS_FILE``, ``_CHAT_REACTIONS_FILE``, ``_CRON_FOLDERS_FILE``,
@@ -574,6 +574,31 @@ def folders_generation(self: DashboardState) -> int:
     return int(getattr(self, "_folders_generation", 0) or 0)
 
 
+def tags_generation(self: DashboardState) -> int:
+    """Monotonic counter for the tag vocabulary and the board columns.
+
+    The tag twin of :func:`folders_generation`, on the same ``slots`` frame.
+    ``['chat-tags']`` and ``['tag-columns']`` carry the app-wide
+    ``staleTime: Infinity``, so a write an agent makes through the dashboard MCP
+    tools stayed invisible to an open tab until a reload. Bumped by
+    every save of either store (the four ``save_tag*`` writers), so a new writer
+    cannot forget it. Read through ``getattr`` for the same ``__new__``-built
+    states as the folder counter.
+    """
+    return int(getattr(self, "_tags_generation", 0) or 0)
+
+
+def bump_tags_generation(self: DashboardState) -> None:
+    """Advance :func:`tags_generation`: the tag vocabulary or a column changed.
+
+    Each store writer calls it after its write, and a handler whose change
+    commits outside those writers (a grant minted after the vocabulary save, an
+    adoption) calls it once that change is committed, before it pushes the
+    frame. A spare bump costs one refetch; a missing one strands the tab.
+    """
+    self._tags_generation = self.tags_generation() + 1
+
+
 async def mutate_folders(
     self: DashboardState,
     mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]],
@@ -834,6 +859,7 @@ def save_tags(self: DashboardState) -> None:
     """
     unparsed = getattr(self, "_unparsed_tag_entries", [])
     self._atomic_write_json(config_dir() / self._TAGS_FILE, [*self._tags, *unparsed])
+    self.bump_tags_generation()
 
 
 def save_tags_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
@@ -853,6 +879,7 @@ def save_tags_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
     """
     unparsed = getattr(self, "_unparsed_tag_entries", [])
     self._atomic_write_json_strict(config_dir() / self._TAGS_FILE, [*snapshot, *unparsed])
+    self.bump_tags_generation()
 
 
 def save_tag_boards(self: DashboardState) -> None:
@@ -867,6 +894,7 @@ def save_tag_boards(self: DashboardState) -> None:
         config_dir() / self._TAG_BOARDS_FILE,
         [*self._tag_boards, *unparsed],
     )
+    self.bump_tags_generation()
 
 
 def save_tag_boards_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
@@ -887,6 +915,7 @@ def save_tag_boards_snapshot(self: DashboardState, snapshot: list[dict]) -> None
     """
     unparsed = getattr(self, "_unparsed_tag_board_entries", [])
     self._atomic_write_json_strict(config_dir() / self._TAG_BOARDS_FILE, [*snapshot, *unparsed])
+    self.bump_tags_generation()
 
 
 def _partition_preserving(

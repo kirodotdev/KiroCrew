@@ -34,6 +34,7 @@ export function useSlotListSync(
 ): SlotListSync {
   const lastGitlabHostsGenRef = useRef<number | null>(null)
   const lastFoldersGenRef = useRef<number | null>(null)
+  const lastTagsGenRef = useRef<number | null>(null)
   const lastGovernanceGenRef = useRef<number | null>(null)
   const lastSlotsRawRef = useRef<string | null>(null)
   const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
@@ -46,6 +47,8 @@ export function useSlotListSync(
       lastGitlabHostsGenRef.current = null
       // Same process-local reasoning for the folder-tree generation.
       lastFoldersGenRef.current = null
+      // …and for the tag-vocabulary / board-column generation.
+      lastTagsGenRef.current = null
       // …and for the governance-ceiling generation.
       lastGovernanceGenRef.current = null
       // Forget the last raw slots frame too, so a reconnect whose first frame
@@ -114,7 +117,7 @@ export function useSlotListSync(
         buffers.flushChunks()
       }
       // Query keys this frame has made stale; flushed once at the end.
-      const staleKeys = new Set<'chat-folders' | 'dashboardConfig'>()
+      const staleKeys = new Set<'chat-folders' | 'dashboardConfig' | 'chat-tags' | 'tag-columns'>()
       const beforeSettle = store.getState().chat
       // Ahead of `sseSlots` so its notification covers them too. Neither
       // reducer reads the slot list, nor does `sseSlots` read either flag.
@@ -206,6 +209,19 @@ export function useSlotListSync(
         lastFoldersGenRef.current = msg.foldersGeneration
         if (prevFoldersGen === null || prevFoldersGen !== msg.foldersGeneration) {
           staleKeys.add('chat-folders')
+        }
+      }
+      // The tag vocabulary and the board columns have the same problem as the
+      // folder tree: `['chat-tags']` / `['tag-columns']` never go stale on their
+      // own, so a write an agent made through the dashboard MCP tools stayed
+      // invisible until a reload. One generation covers both stores;
+      // same first-frame-of-a-connection rule as the folder generation above.
+      if (typeof msg.tagsGeneration === 'number') {
+        const prevTagsGen = lastTagsGenRef.current
+        lastTagsGenRef.current = msg.tagsGeneration
+        if (prevTagsGen === null || prevTagsGen !== msg.tagsGeneration) {
+          staleKeys.add('chat-tags')
+          staleKeys.add('tag-columns')
         }
       }
       // Refresh the cached GitLab-hosts allowlist when it may have changed.

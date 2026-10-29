@@ -518,6 +518,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         state._yolo = True
         state._folders = []
         state.folders_generation.return_value = 1
+        state.tags_generation.return_value = 1
         state._slots = {name: MagicMock() for name in slots}
         state.native_subagent_snapshots.return_value = []
         state.subagents = manager
