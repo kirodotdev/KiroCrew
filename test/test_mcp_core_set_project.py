@@ -16,7 +16,7 @@ Two layers are under test:
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -337,10 +337,12 @@ class _FakeSlot:
 
 
 class _FakeState:
-    """Minimal state: the applier only calls ``push_slots_update``."""
+    """Minimal state: the applier calls ``push_slots_update`` and, on a clear, drops the
+    session's stored cwd."""
 
     def __init__(self):
         self.pushes = 0
+        self.sessions = MagicMock()
 
     def push_slots_update(self) -> None:
         self.pushes += 1

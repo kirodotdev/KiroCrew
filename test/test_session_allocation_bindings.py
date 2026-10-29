@@ -132,6 +132,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "restore_queue": ("function", False, "e233ef2976f2", "facade"),
     "resumable_hint": ("function", False, "1eda252b53bd", "facade"),
     "resumable_sid": ("function", False, "4b576121a346", "facade"),
+    "retract_reservation_cwds": ("function", False, "958babeb61c8", "facade"),
     "runtime_pids": ("function", False, "2468fe0fd6a3", "companions"),
     "seed_conversation": ("function", False, "7b9b418f95e7", "facade"),
     "session_generation": ("function", False, "028659ce42ac", "facade"),

@@ -181,6 +181,9 @@ class SessionRegistryState:
     #: still cold-starting. Reads like the set it replaces.
     starting_pids: PidRefcount = field(default_factory=PidRefcount)
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
+    #: Reservation tokens in flight when their key's cwd was retracted: the
+    #: session each one registers stores no cwd. A token leaves with its reservation.
+    cwd_retracted_reservations: set[object] = field(default_factory=set)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
     subagent_runtimes: dict[str, Any] = field(default_factory=dict)
@@ -512,6 +515,11 @@ class SessionAllocationService:
     def has_allocation_reservation(self, key: str) -> bool:
         """Return whether a folded alias has an allocation/claim in flight."""
         return bool(self._allocation_reservations.get(self._owner._fold_key(key)))
+
+    def retract_reservation_cwds(self, key: str) -> None:
+        """Mark every allocation in flight under *key* so the session it registers stores no cwd."""
+        folded = self._owner._fold_key(key)
+        self.state.cwd_retracted_reservations.update(self._allocation_reservations.get(folded, ()))
 
     def spawn_in_flight(self, key: str) -> str | None:
         """Why a cold start under *key* is a process the ending caller must name, or None.

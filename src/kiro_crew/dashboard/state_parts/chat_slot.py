@@ -165,6 +165,7 @@ class _ChatSlot:
         "_stop_event_id",
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
+        "_pending_reset_clears_cwd",
         "_pending_discard_conversation_key",
         "_pending_discard_from_wake",
         "_pending_model_pick",
@@ -423,6 +424,7 @@ class _ChatSlot:
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
     _pending_reset_history_key: str | None
+    _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
     _pending_model_pick: Any

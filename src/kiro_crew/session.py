@@ -1043,6 +1043,18 @@ class SessionManager:
         cache[agent] = (model, dir_mtime, now)
         return model
 
+    def retract_cwd(self, key: str) -> None:
+        """Forget *key*'s directory after its project was cleared, keeping the conversation.
+
+        Drops the stored cwd, and flags a live session so no later write stores it again.
+        """
+        folded = self._fold_key(key)
+        self._session_map.clear_cwd(folded)
+        self._allocation_boundary().retract_reservation_cwds(folded)
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.cwd_retracted = True
+
     def commit_provider_switch_replay_sid(self, key: str) -> bool:
         """Settle replay, promoting the live ACP SID when one was deferred.
 
@@ -1070,7 +1082,7 @@ class SessionManager:
             folded,
             sid,
             provider=_provider_label(session.provider),
-            cwd=session.provider.cwd,
+            cwd="" if session.cwd_retracted else session.provider.cwd,
         )
         session.provider_switch_replay = False
         return True

@@ -222,6 +222,7 @@ def _remove_reservation_now(self: SessionAllocationService, key: str, token: obj
     # A fence's invalidation lives exactly as long as the reservation it
     # invalidated: the door checks have run by the time the token is removed.
     self.state.invalidated_reservations.discard(token)
+    self.state.cwd_retracted_reservations.discard(token)
     # A start still marked past its spawn door when its reservation goes is
     # one the body refused or that raised, its provider hard-killed by
     # dispatch. While the key's fence is up, the ending caller has not read
@@ -1098,6 +1099,8 @@ async def _get_or_create_impl(
                     agent=session_agent or "",
                 )
                 session.capability_member = preparation.member
+                if _reservation in self.state.cwd_retracted_reservations:
+                    session.cwd_retracted = True
                 # The store this cold start supersedes, captured HERE -- inside
                 # the registration's critical section, before this session is
                 # registered and before its sid is mapped (or its mapping
@@ -1181,7 +1184,7 @@ async def _get_or_create_impl(
                     len(self._sessions),
                 )
 
-                provider_cwd = provider.cwd
+                provider_cwd = "" if session.cwd_retracted else provider.cwd
                 if not is_stateless and self._deps.is_acp_provider(provider):
                     sid = cast(Any, provider).client._session_id
                     if sid and not defer_sid_promotion:

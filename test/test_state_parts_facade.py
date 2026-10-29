@@ -524,6 +524,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_pending_memory_mode": ("value", "None"),
     "_pending_model_pick": ("value", "None"),
     "_pending_release_deferred": ("value", "False"),
+    "_pending_reset_clears_cwd": ("value", "False"),
     "_pending_reset_history_key": ("value", "None"),
     "_pending_rewrite": ("value", "False"),
     "_pending_steers": ("value", "[]"),

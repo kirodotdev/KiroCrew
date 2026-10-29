@@ -340,7 +340,7 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
             # discarded_sid. Do not map the live child's sid back at shutdown.
             if sess.retire_on_identity_change:
                 continue
-            cwd_str = sess.provider.cwd
+            cwd_str = "" if sess.cwd_retracted else sess.provider.cwd
             if isinstance(sess.provider, acp_provider_type):
                 sid = sess.provider.client._session_id
                 # A replay-pending fresh child is not yet the durable
