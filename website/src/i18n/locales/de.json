@@ -20065,6 +20065,7 @@
     "apiTokenRetry": "Wähle „Einstellungen speichern“, um es erneut zu versuchen, oder speichere es selbst unter Einstellungen → Secrets als {{name}}.",
     "apiTokenRename": "Um es stattdessen unter einem anderen Namen zu speichern, ändere den Namen unten unter „Erweitert: Secret-Name“ und wähle dann „Einstellungen speichern“.",
     "apiTokenMoved": "Der Secret-Name hat sich zu {{name}} geändert, nachdem du das Token eingegeben hast, vielleicht in einem anderen Fenster. Wähle erneut „Einstellungen speichern“, um es als {{name}} zu speichern.",
+    "apiTokenConflict": "Ein anderes Profil hat ein anderes Token für {{name}} eingegeben, und der Tresor speichert ein Token pro Name. Gib einem der Profile unter „Erweitert“ einen eigenen Secret-Namen oder gib in beiden dasselbe Token ein und wähle dann erneut „Einstellungen speichern“.",
     "apiTokenHint": "Noch kein Token als {{name}} gespeichert. Erstelle eines unter sprites.dev/account, füge es hier ein und wähle „Einstellungen speichern“; es wird sicher auf diesem Rechner gespeichert und nie wieder angezeigt.",
     "apiTokenListError": "Konnte nicht prüfen, ob ein Token gespeichert ist. Versuche es erneut.",
     "apiTokenPlaceholder": "Sprites-API-Token einfügen",

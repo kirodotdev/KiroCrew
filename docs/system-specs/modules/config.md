@@ -3559,7 +3559,9 @@ duplicate or over-cap profile is dropped with a warning).
   omits the id and launch refuses it as ambiguous) and drops each malformed
   entry individually.
 - `default_profile`: a saved profile id of any provider or `""` (this machine); a whole-section
-  save refuses a default the same save drops.
+  save refuses a default the same save drops, and a `sprites_profiles` or
+  `boxd_profiles` leaf write refuses to drop the profile the saved default names
+  (`unknown_profile`).
 - `stop_on_shutdown`: a boolean, default `true`.
 
 There is no `enabled` field (the opt-in is the per-device preview flag) and no

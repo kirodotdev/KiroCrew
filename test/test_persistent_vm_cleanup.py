@@ -164,7 +164,7 @@ async def test_a_sprite_whose_profile_was_removed_is_still_deleted_when_due(tmp_
         delete_sprite=AsyncMock(),
     )
     with patch("kiro_crew.sprites_session.launch.SpritesClient", return_value=client):
-        row = await environments._create("session", profile)
+        row = await environments._create("session", profile, "session")
         environments.registry.set_deletion(row.session_key, stamp(NOW))
         section.sprites_profiles = []  # the user removes the profile
         assert await environments.sweep_due(now=NOW) == 1
@@ -191,7 +191,7 @@ async def test_a_changed_token_key_never_replaces_the_sessions_sprite(tmp_path, 
         delete_sprite=AsyncMock(),
     )
     with patch("kiro_crew.sprites_session.launch.SpritesClient", return_value=client):
-        row = await environments._create("session", profile)
+        row = await environments._create("session", profile, "session")
         client.create_sprite.reset_mock()
         tokens_read.clear()
         section.sprites_profiles = [{**profile, "token_secret": "OTHER_ORG_TOKEN"}]
@@ -230,7 +230,7 @@ async def test_another_accounts_token_under_the_same_key_never_replaces_or_forge
         exec=AsyncMock(return_value=(0, b"/guest", b"")),
     )
     with patch("kiro_crew.sprites_session.launch.SpritesClient", return_value=client):
-        row = await environments._create("session", profile)
+        row = await environments._create("session", profile, "session")
         assert row.credential_id and "org-a-token" not in json.dumps(
             json.loads(environments.registry.path.read_text())
         )
@@ -275,7 +275,7 @@ async def test_a_token_saved_during_a_lookup_is_not_credited_with_its_answer(tmp
         delete_sprite=AsyncMock(),
     )
     with patch("kiro_crew.sprites_session.launch.SpritesClient", return_value=client):
-        row = await environments._create("session", profile)
+        row = await environments._create("session", profile, "session")
         # B's token is what a shell would now be built from: nothing runs on it.
         with pytest.raises(SessionEnvironmentUnavailable, match="changed after its identity"):
             await environments.prepare("session", "fly")
@@ -353,7 +353,7 @@ async def test_a_token_saved_during_the_sweeps_lookup_never_sends_its_delete(tmp
         delete_sprite=AsyncMock(),
     )
     with patch("kiro_crew.sprites_session.launch.SpritesClient", side_effect=client_for):
-        row = await environments._create("session", profile)
+        row = await environments._create("session", profile, "session")
         environments.registry.set_deletion("session", stamp(NOW))
         client.get_sprite.side_effect = found_while_b_is_saved
         assert await environments.sweep_due(now=NOW) == 0
@@ -414,7 +414,7 @@ async def test_a_token_rotated_in_the_same_account_keeps_the_sprite(tmp_path, mo
         exec=AsyncMock(return_value=(0, b"/guest", b"")),
     )
     with patch("kiro_crew.sprites_session.launch.SpritesClient", return_value=client):
-        row = await environments._create("session", profile)
+        row = await environments._create("session", profile, "session")
         vault["SPRITES_TOKEN"] = "rotated-token"
         prepared = await environments.prepare("session", "fly")
     assert prepared.created is False

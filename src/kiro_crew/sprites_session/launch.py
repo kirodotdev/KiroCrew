@@ -103,9 +103,20 @@ class SpritesSessionEnvironments(PersistentVmEnvironments):
         client, used = await self._client_and_id(profile)
         return await client.get_sprite(name), used
 
-    async def remote_create(self, profile: dict[str, Any], name: str) -> tuple[dict[str, Any], str]:
-        client, used = await self._client_and_id(profile)
-        return await client.create_sprite(name), used
+    async def remote_credential(self, profile: dict[str, Any]) -> str:
+        return (await self._client_and_id(profile))[1]
+
+    async def remote_create(
+        self, profile: dict[str, Any], name: str, *, used: str
+    ) -> dict[str, Any]:
+        client, current = await self._client_and_id(profile)
+        if current != used:
+            # Another token was saved after the row recorded this one.
+            raise SessionEnvironmentUnavailable(
+                f"the Sprites API token changed before sprite {name} was created; "
+                "nothing was created, start the chat again"
+            )
+        return await client.create_sprite(name)
 
     async def remote_delete(
         self, profile: Optional[dict[str, Any]], name: str, *, used: str

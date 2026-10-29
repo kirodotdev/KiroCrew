@@ -160,7 +160,47 @@ async def test_create_cleanup_reads_the_live_machine_before_deleting(environment
     )
     cli.get.side_effect = SessionEnvironmentUnavailable("identity unavailable")
     with pytest.raises(SessionEnvironmentUnavailable, match="create failed"):
-        await env._create(KEY, env.profile("box"))
+        await env._create(KEY, env.profile("box"), KEY)
     cli.get.assert_awaited_once_with(NAME)
     cli.remove.assert_not_awaited()
     assert env.registry.get(KEY).name == NAME
+
+
+class _GatewayKilled(BaseException):
+    """Stands in for a hard stop between the create and the bind."""
+
+
+@pytest.mark.asyncio
+async def test_a_create_cut_short_keeps_its_account_so_a_switch_never_replaces_it(
+    environment, monkeypatch
+):
+    # The machine exists, but the gateway died before its record was bound. The
+    # reservation already names the account, so after a switch the miss under
+    # the new account keeps the row instead of provisioning a replacement.
+    env, cli = environment
+    env.registry.remove(KEY, NAME)
+    cli.create = AsyncMock(return_value={"id": "owned-id"})
+    with monkeypatch.context() as mp:
+        mp.setattr(env, "mint_name", lambda: NAME)
+        mp.setattr(env, "_bind_live", AsyncMock(side_effect=_GatewayKilled()))
+        with pytest.raises(_GatewayKilled):
+            await env._create(KEY, env.profile("box"), KEY)
+    assert env.registry.get(KEY).credential_id == "acct"
+    cli.identity.return_value = "other-acct"
+    cli.get.return_value = None
+    with pytest.raises(SessionEnvironmentUnavailable, match="not visible"):
+        await env.prepare(KEY, "box")
+    assert env.registry.get(KEY).name == NAME
+    cli.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_create_refuses_when_the_account_changed_after_the_reservation(environment):
+    env, cli = environment
+    env.registry.remove(KEY, NAME)
+    cli.identity.side_effect = ["acct", "other-acct"]
+    cli.create = AsyncMock(return_value={"id": "owned-id"})
+    cli.get.return_value = None
+    with pytest.raises(SessionEnvironmentUnavailable, match="changed before machine"):
+        await env._create(KEY, env.profile("box"), KEY)
+    cli.create.assert_not_awaited()

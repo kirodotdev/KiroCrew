@@ -412,13 +412,13 @@ async def test_a_boxd_choice_is_prepared_by_the_boxd_provider(monkeypatch, tmp_p
     )
     seen = []
 
-    async def prepare(self, key, profile_id):
-        seen.append((key, profile_id))
+    async def prepare(self, key, profile_id, *, progress_key=None):
+        seen.append((key, profile_id, progress_key))
         return "prepared"
 
     monkeypatch.setattr(boxd_launch.BoxdSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("dashboard:chat-8") == "prepared"
-    assert seen == [("dashboard:chat-8", "bx-dev")]
+    assert seen == [("dashboard:chat-8", "bx-dev", "dashboard:chat-8")]
 
 
 def test_names_are_validated_before_any_argv_is_built():
@@ -567,6 +567,40 @@ async def test_a_reopen_that_cannot_cancel_the_deletion_says_so(tmp_path, fake, 
     reason = await retention.keep_reopened(["dashboard:chat-16"])
     assert reason and "could not be cancelled" in reason
     assert envs.registry.get("dashboard:chat-16").deletion_due_at
+    assert fake.read()["machines"][name]["delete-after"] == "7d"
+
+
+@sync
+async def test_a_reopen_whose_registry_write_fails_refuses_instead_of_publishing(
+    tmp_path, fake, monkeypatch
+):
+    # A rotated credential makes the reopen record the one that answered. If that
+    # registry write fails, the resume refuses: a tab published with its deadline
+    # still standing would be swept with its files. Only a replacement machine
+    # under the recorded name is "nothing to keep".
+    from kiro_crew.coder import retention
+    from kiro_crew.coder.persistent_vm import SessionResourceRegistry
+
+    envs = _envs(tmp_path, fake)
+    _live_section(monkeypatch, tmp_path, envs, fake)
+    await envs.prepare("dashboard:chat-19", "bx-dev")
+    name = envs.registry.get("dashboard:chat-19").name
+    retention.schedule_archived(["dashboard:chat-19"])
+    await asyncio.gather(*retention._TASKS)
+    looked_up = type(envs).remote_get
+
+    async def rotated(self, profile, name):
+        record, _used = await looked_up(self, profile, name)
+        return record, "rotated-credential"
+
+    monkeypatch.setattr(type(envs), "remote_get", rotated)
+
+    def unreadable(self, session_key, name, credential_id):
+        raise SessionEnvironmentUnavailable("boxd session registry is unreadable")
+
+    monkeypatch.setattr(SessionResourceRegistry, "set_credential_id", unreadable)
+    reason = await retention.keep_reopened(["dashboard:chat-19"])
+    assert reason and "unreadable" in reason
     assert fake.read()["machines"][name]["delete-after"] == "7d"
 
 

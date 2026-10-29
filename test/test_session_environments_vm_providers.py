@@ -188,7 +188,7 @@ async def test_launch_dispatches_by_id_and_refuses_collisions(tmp_path, monkeypa
     prepare = AsyncMock(return_value="prepared")
     monkeypatch.setattr(SpritesSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("session") == "prepared"
-    prepare.assert_awaited_once_with("session", "sprites-id")
+    prepare.assert_awaited_once_with("session", "sprites-id", progress_key="session")
     raw["profiles"][0]["id"] = "sprites-id"
     reread_config()
     with pytest.raises(SessionEnvironmentUnavailable, match="more than one provider"):
@@ -363,6 +363,27 @@ async def test_one_hand_edited_vm_entry_does_not_drop_the_valid_ones(config_file
     saved = _stored(config_file)["session_environments"]
     assert saved[key] == [valid]
     assert saved["default_profile"] == section["default_profile"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ("sprites_profiles", "boxd_profiles"))
+async def test_a_list_leaf_write_never_drops_the_default_profile(config_file, key):
+    """A leaf write of one list (a change card, a direct PATCH) is held to what a
+    whole save checks: it may not remove the profile the saved default names."""
+    section = {**_provider_section(), "default_profile": f"{key.split('_')[0]}-id"}
+    config_file.write_text(json.dumps({**_BASE_CONFIG, "session_environments": section}))
+    before = config_file.read_bytes()
+    async with _api() as client:
+        resp = await _patch(client, f"session_environments.{key}", [])
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert body["code"] == "unknown_profile"
+        assert config_file.read_bytes() == before
+        # Keeping it, or moving the default first, is accepted.
+        assert (await _patch(client, f"session_environments.{key}", section[key])).status == 200
+        assert (await _patch(client, "session_environments.default_profile", "")).status == 200
+        assert (await _patch(client, f"session_environments.{key}", [])).status == 200
+    assert _stored(config_file)["session_environments"][key] == []
 
 
 def test_every_vm_provider_is_wired_to_launch_and_the_move_guard():

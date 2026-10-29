@@ -455,8 +455,11 @@ the deadline clears the stamp: a History resume awaits `retention.keep_reopened`
 before it publishes the tab (`retention.resume_check` for Coder, `reopen_session`
 for a sprite or boxd machine, which identity-checks the live VM first and leaves a
 same-name replacement alone). A cancellation that fails refuses the resume with
-`reopen_retention_failed` (503, retryable), and a resume refused after the
-cancellation archives the still-closed session again. `prepare` runs the check
+`reopen_retention_failed` (503, retryable); so does a reopen whose registry
+write fails (only a replacement VM under the recorded name is left alone and
+not kept). A resume refused after the
+cancellation archives the still-closed session again; a refused revive of a
+session that was never closed archives nothing. `prepare` runs the check
 again and restarts the same workspace. `retention.run_sweeper` (every minute, first pass
 30 s after boot) runs `sweep_due`: a due row is flipped to `deleting` under the
 registry lock (`begin_deletion`, the critical section `cancel_deletion` also
@@ -470,6 +473,8 @@ default), `_shutdown_and_exit` runs `retention.stop_for_shutdown` under
 `SHUTDOWN_STOP_SECS` (8 s, inside the 10 s graceful budget so the hard-exit
 cleanup and audit flush still run before SIGKILL), never raising: it stops every running
 registry-owned workspace except stop-destroys-compute ones and stamps nothing.
+That covers rows whose profile was since removed, so the settings card shows the
+stored switch as it is and keeps an "on" switch usable with no profile left.
 Without one, the worker's orphan timeout (above the link lease, so a restart
 reconnects first) and the Coder deadline, which only the gateway extends, stop
 the guest. Retention deletion needs a running gateway; a stopped workspace keeps
@@ -556,7 +561,10 @@ name; the bridge re-checks that id under the token it loads) on a POSIX
 gateway. boxd uses the gateway's own `boxd auth login`; a one-way fingerprint
 of `boxd auth --json` (account and active org) is recorded per machine, so a
 lookup miss under another account or org is refused, never read as a deletion,
-and so is a miss after which the account read differently than before it:
+and so is a miss after which the account read differently than before it.
+The fingerprint (Sprites: of the token) is saved with the reservation before
+the create, and the create refuses under any other one, so a create cut short
+before its record is bound still names the account its machine lives in.
 `boxd machine exec <m> -- sh -c <cmd>` streams stdin and stdout and returns the
 remote exit code like `coder ssh`, so `BoxdShell` drops into the unchanged
 launch, and the terminal is `boxd machine exec --tty <m>` changing into the
