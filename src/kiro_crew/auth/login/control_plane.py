@@ -106,7 +106,11 @@ def cps_headers(target: str, access_token: str, *, token_type: str = "") -> dict
 
 
 async def list_available_profiles(
-    access_token: str, *, region: str, session: aiohttp.ClientSession
+    access_token: str,
+    *,
+    region: str,
+    session: aiohttp.ClientSession,
+    token_type: str = "",
 ) -> list[KiroProfile]:
     """Return the caller's Kiro profiles from the first control plane that has any.
 
@@ -116,12 +120,14 @@ async def list_available_profiles(
     ControlPlaneError is raised when a host refused and none had profiles, since the
     refusing host may hold the profile and an empty list would wrongly say there is none.
     A transport error is not caught here.
+    *token_type* is passed to :func:`cps_headers` (``EXTERNAL_IDP`` for an
+    External IdP token).
     """
     urls = dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()])
     errors: list[ControlPlaneError] = []
     for url in urls:
         try:
-            profiles = await _list_profiles_at(url, access_token, session)
+            profiles = await _list_profiles_at(url, access_token, session, token_type=token_type)
         except ControlPlaneError as err:
             logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
             errors.append(err)
@@ -134,13 +140,13 @@ async def list_available_profiles(
 
 
 async def _list_profiles_at(
-    url: str, access_token: str, session: aiohttp.ClientSession
+    url: str, access_token: str, session: aiohttp.ClientSession, *, token_type: str = ""
 ) -> list[KiroProfile]:
     """One ``ListAvailableProfiles`` call to the CPS host *url*, first page only.
 
     Raises ControlPlaneError on any non-200 or malformed body.
     """
-    headers = cps_headers(_TARGET, access_token)
+    headers = cps_headers(_TARGET, access_token, token_type=token_type)
     async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
         if resp.status != 200:
             body = await resp.text()
