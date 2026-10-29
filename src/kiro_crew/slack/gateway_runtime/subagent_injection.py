@@ -531,6 +531,10 @@ async def _inject_subagent_into_channel_parent(
                     provider_type=_provider,
                     context_provider=client,
                     resumed=_resumed,
+                    # The completion is the parent's own work coming back,
+                    # not a person's request: it triggers no skill, as on
+                    # the dashboard runner.
+                    skill_trigger_text="",
                 )
             else:
                 msg = announce
@@ -764,6 +768,8 @@ async def _finish_subagent_cron_or_notify(
                     provider_type=_provider,
                     context_provider=client,
                     resumed=_resumed,
+                    # Same rule as above: a completion triggers no skill.
+                    skill_trigger_text="",
                 )
             else:
                 msg = announce
