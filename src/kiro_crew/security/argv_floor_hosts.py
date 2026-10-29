@@ -17,6 +17,7 @@ module imports no other part of the argv floor.
 
 from __future__ import annotations
 
+import contextvars
 import fnmatch
 import ipaddress
 import logging
@@ -428,6 +429,14 @@ def _schedule_hosts_file_warm() -> None:
         # check retries; this check still answers pending (deny).
         with _HOSTS_WARM_LOCK:
             _HOSTS_WARM_IN_FLIGHT = False
+
+
+# Hosts-file verdicts for ONE outer ssh-to-self call, keyed on the exact host;
+# ``argv_floor_ssh._shares_nested_verdicts`` opens it and drops it on return.
+# Outside that scope (``None``) every check reads the file as before.
+_HOSTS_FILE_VERDICTS: "contextvars.ContextVar[dict[str, bool | None] | None]" = (
+    contextvars.ContextVar("_HOSTS_FILE_VERDICTS", default=None)
+)
 
 
 def _hosts_file_verdict(host: str) -> "bool | None":
@@ -999,7 +1008,13 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
             # shape (CI allow pin), and a dotless loopback alias that lives
             # only in DNS search domains is caught at the next decision
             # (documented residual).  Dotted names keep fail-closed.
-            hosts_verdict = _hosts_file_verdict(host)
+            memo = _HOSTS_FILE_VERDICTS.get()
+            if memo is None:
+                hosts_verdict = _hosts_file_verdict(host)
+            elif host in memo:
+                hosts_verdict = memo[host]
+            else:
+                hosts_verdict = memo[host] = _hosts_file_verdict(host)
             if hosts_verdict is not None:
                 return hosts_verdict
             return _resolved_host_verdict(host, fail_closed=False)
