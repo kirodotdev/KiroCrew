@@ -73,6 +73,7 @@ _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.model_switch",
     "kiro_crew.dashboard.session_control_parts.session_titles",
     "kiro_crew.dashboard.session_control_parts.session_messaging",
+    "kiro_crew.dashboard.session_control_parts.crew_filing",
     "kiro_crew.dashboard.session_control_parts.session_create",
     "kiro_crew.dashboard.session_control_parts.session_tree",
     "kiro_crew.dashboard.session_control_parts.session_handoff",
@@ -126,6 +127,11 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         prewarm_enabled_check,
         refresh_manager_chain,
         session_control_enabled,
+    )
+    from kiro_crew.dashboard.session_control_parts.crew_filing import (  # noqa: F401
+        _crew_filing_answer,
+        _frame_parents,
+        _in_turned_on_crew_tree,
     )
     from kiro_crew.dashboard.session_control_parts.delivery_containment import (  # noqa: F401
         _AUDIENCE_CONSTRAINTS,
@@ -193,7 +199,6 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _caller_member_workspace,
         _conducts_for_a_worker,
         _dispatching_crewmate,
-        _frame_parents,
         _hands_off_to_own_worker,
         _inherited_pin_foreign_to_child,
         _model_pin_refusal,

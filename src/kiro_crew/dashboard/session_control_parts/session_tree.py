@@ -31,6 +31,10 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     prewarm_enabled_check,
     session_control_enabled,
 )
+from kiro_crew.dashboard.session_control_parts.crew_filing import (
+    _crew_filing_answer,
+    _in_turned_on_crew_tree,
+)
 from kiro_crew.dashboard.session_control_parts.session_create import _record_spawn
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
@@ -339,8 +343,6 @@ async def fork_session(
     def _stamp(child: Any) -> None:
         nonlocal in_crew_tree
 
-        from kiro_crew import crew_mode
-
         child._created_by = caller_key
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
@@ -356,12 +358,7 @@ async def fork_session(
             child._title_origin = "user"
         # The caller's tree decides filing, not the transcript source's. Clear
         # even an inherited folder before the fork's first save and broadcast.
-        in_crew_tree = crew_mode.slot_in_turned_on_tree(
-            state._slots,
-            caller_key,
-            session_create._frame_parents(state),
-            settled=crew_mode.lineage_is_settled(),
-        )
+        in_crew_tree = _in_turned_on_crew_tree(state, caller_key)
         if in_crew_tree:
             child.folder_id = ""
         elif folder_id:
@@ -422,8 +419,7 @@ async def fork_session(
         "source": source_slot.key,
         "messages": result.messages,
         "folder_id": child.folder_id or None,
-        **({"folder_ignored": "crew_mode"} if folder_id and in_crew_tree else {}),
-        **({"crew_mode": True} if in_crew_tree else {}),
+        **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
     }
 
 

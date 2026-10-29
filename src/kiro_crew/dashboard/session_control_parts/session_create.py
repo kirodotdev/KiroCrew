@@ -55,6 +55,10 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     caller_slot_key,
     session_control_enabled,
 )
+from kiro_crew.dashboard.session_control_parts.crew_filing import (
+    _crew_filing_answer,
+    _in_turned_on_crew_tree,
+)
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
     _refuse_ineligible_creator,
@@ -105,24 +109,6 @@ _STOCK_WORKER_AGENT = WORKER_AGENT_FILENAME.removesuffix(".json")
 # the registration when it is unset, which is only ever before the facade is built, long
 # before any spawn runs. Signature: ``(child_slot, parent_slot, fence_future) -> None``.
 _register_spawn_pending_edge: "Callable[[str, str, asyncio.Future[bool]], None] | None" = None
-
-
-def _frame_parents(state: Any) -> dict[str, Any] | None:
-    """Each live slot's ``parent`` as the slot frame resolves it, or ``None`` on a fault.
-
-    The Crew Mode tree test reads it so an adoption edge and a closed creator's live
-    ancestor count here as they count in the session list. A fault costs only those
-    edges: the test then reads ``_created_by`` alone.
-    """
-    from kiro_crew.dashboard.state import _attach_slot_parents
-
-    try:
-        rows = state._lineage_rows()
-        _attach_slot_parents(rows, getattr(state, "spend_slot_by_session", None))
-    except Exception:
-        logger.debug("slot parents unavailable for the Crew Mode tree test", exc_info=True)
-        return None
-    return {row["key"]: row.get("parent") for row in rows}
 
 
 async def create_session(
@@ -320,14 +306,7 @@ async def create_session(
     # this verb, by the same rule the slot list stamps (``crew_mode``), and the
     # answer says so. The folder still gives the child its declared project
     # directory, so a worker does its work in the folder's repository.
-    from kiro_crew import crew_mode
-
-    in_crew_tree = crew_mode.slot_in_turned_on_tree(
-        state._slots,
-        str(getattr(caller_slot, "key", "") or ""),
-        _frame_parents(state),
-        settled=crew_mode.lineage_is_settled(),
-    )
+    in_crew_tree = _in_turned_on_crew_tree(state, str(getattr(caller_slot, "key", "") or ""))
     folder_ignored = bool(folder_id) and in_crew_tree
     if folder_id:
         folder_snapshot = await state.read_folders(
@@ -1452,11 +1431,7 @@ async def create_session(
         **({"autocompact_pct": pct_override} if pct_override is not None else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
-        # The folder a Crew Mode caller named was dropped (``crew_mode``).
-        **({"folder_ignored": "crew_mode"} if folder_ignored else {}),
-        # The child belongs to a chat that turned Crew Mode on: filed in no folder,
-        # so a caller can say where it is.
-        **({"crew_mode": True} if in_crew_tree else {}),
+        **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
     }
 
 

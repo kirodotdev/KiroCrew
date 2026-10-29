@@ -2398,6 +2398,9 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   the deferred model pick.
 - `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
   `session_rename`, `session_generate_title` and `session_set_color`.
+- `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Crew Mode filing
+  rule `session_create` and `session_fork` share: whether the caller is in a turned-on
+  Crew Mode tree, and the `folder_ignored` / `crew_mode` reply keys.
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,

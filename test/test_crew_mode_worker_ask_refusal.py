@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import crew_mode
+from kiro_crew.dashboard import session_control
 from kiro_crew.dashboard.handlers import ask_question as aq
-from kiro_crew.dashboard.session_control_parts import session_create
 
 CONDUCTOR = "kirocrew-conductor"
 
@@ -50,7 +50,7 @@ def _quiet_audit(_floor_monkeypatch):
         aq, "sel", lambda: SimpleNamespace(log_tool_invocation=lambda **k: None)
     )
     _floor_monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
-    _floor_monkeypatch.setattr(session_create, "_frame_parents", lambda state: None)
+    _floor_monkeypatch.setattr(session_control, "_frame_parents", lambda state: None)
     # The routing is off on this base (the Crew panel part turns it on); the rule
     # is tested as it will run then.
     _floor_monkeypatch.setattr(crew_mode, "APPROVAL_ROUTING_LIVE", True)
@@ -99,7 +99,7 @@ def test_a_released_crew_member_asks_the_person_again(_floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: True)
     _floor_monkeypatch.setattr(crew_mode, "persisted_tree_slots", lambda: frozenset({"w", "r"}))
     _floor_monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
-    _floor_monkeypatch.setattr(session_create, "_frame_parents", lambda s: {"r": None, "w": None})
+    _floor_monkeypatch.setattr(session_control, "_frame_parents", lambda s: {"r": None, "w": None})
     assert _refusal(state, "w") is None
 
 
@@ -119,7 +119,7 @@ def test_an_adopted_crew_member_is_sent_to_its_new_conductor(_floor_monkeypatch)
     # ancestor (``key``), the shape ``_attach_slot_parents`` writes.
     edge = {"slot": "r2", "key": "r2"}
     _floor_monkeypatch.setattr(
-        session_create, "_frame_parents", lambda s: {"r": None, "r2": None, "w": edge}
+        session_control, "_frame_parents", lambda s: {"r": None, "r2": None, "w": edge}
     )
     resp = _refusal(state, "w")
     assert resp is not None and json.loads(resp.text)["conductor_open"] is True
@@ -128,7 +128,7 @@ def test_an_adopted_crew_member_is_sent_to_its_new_conductor(_floor_monkeypatch)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", {"r2"})
     closed_edge = {"slot": "r2", "key": None}
     _floor_monkeypatch.setattr(
-        session_create, "_frame_parents", lambda s: {"r": None, "w": closed_edge}
+        session_control, "_frame_parents", lambda s: {"r": None, "w": closed_edge}
     )
     resp = _refusal(state, "w")
     assert resp is not None and json.loads(resp.text)["conductor_open"] is False

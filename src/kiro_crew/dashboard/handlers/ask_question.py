@@ -201,7 +201,7 @@ def _crew_worker_refusal(state: Any, slot_key: str, session_key: str) -> web.Res
     """
     try:
         from kiro_crew import crew_mode
-        from kiro_crew.dashboard.session_control_parts.session_create import _frame_parents
+        from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
 
         if not crew_mode.APPROVAL_ROUTING_LIVE:
             return None
