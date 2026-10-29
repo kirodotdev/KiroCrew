@@ -1,0 +1,79 @@
+{
+  "fixture": "timing/keepalive-and-backoff",
+  "kind": "timing",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "11.2",
+  "status": "decided",
+  "summary": "Keepalive, timeouts, rebalancing, drain and backoff on the host connection, and retries to the backend.",
+  "provisional": [],
+  "planPosition": [
+    "Renewal retries to an unreachable backend use the same backoff as reconnects. Nothing else states this yet.",
+    "The backoff reset rule."
+  ],
+  "keepalive": {
+    "pingIntervalSeconds": 25,
+    "replaceAfterSilenceSeconds": 60,
+    "loadBalancerIdleSeconds": 300,
+    "taskKeepaliveSeconds": 310
+  },
+  "hello": {
+    "timeoutSeconds": 10,
+    "closeCode": 4408
+  },
+  "rebalancing": {
+    "reconnectAtAgeMinutes": {
+      "min": 15,
+      "max": 30
+    },
+    "closeAfterSeconds": 30,
+    "closeCode": 1012
+  },
+  "drain": {
+    "healthAndNewUpgrades": 503,
+    "closeAfterSeconds": 5,
+    "closeCode": 1012,
+    "rule": "The drain starts when deregistration starts, not on SIGTERM. The deregistration delay is longer than the drain window."
+  },
+  "backoff": {
+    "stepsSeconds": [
+      2,
+      5,
+      15,
+      30,
+      60
+    ],
+    "jitter": "full: wait a random time between 0 and the step",
+    "afterLastStep": "stay at 60",
+    "resetWhen": "a connection reaches ready and stays up 60 seconds"
+  },
+  "classification": [
+    {
+      "error": "authentication failure (4401, or a 401 at the upgrade)",
+      "does": "Renew the lease once with hostTokenRequested, then stop if it fails again."
+    },
+    {
+      "error": "identity in use (IDENTITY_IN_USE, or 4409)",
+      "does": "Wait for the lease to be free."
+    },
+    {
+      "error": "try again later (1013, 4429, 4408, transport errors)",
+      "does": "Retry with backoff."
+    },
+    {
+      "error": "drain or move (1012)",
+      "does": "Reconnect at once."
+    }
+  ],
+  "renewalRetries": {
+    "rule": "Lease and token renewals that can't reach the backend retry with the same steps and full jitter as relay reconnects.",
+    "status": "plan"
+  },
+  "requestTimeouts": {
+    "crewFirstByteSeconds": 50,
+    "relayResponseHeadSeconds": 53,
+    "windowFullSeconds": 30,
+    "wsPausedWatchdogSeconds": 30
+  }
+}

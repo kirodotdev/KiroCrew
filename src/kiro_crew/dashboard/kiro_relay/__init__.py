@@ -4,8 +4,7 @@ The relay terminates a person's connection, verifies their Kiro access token, an
 names the verified person in its own protocol message on the Crew's host connection.
 The Crew's relay client turns each relayed request into an ordinary HTTP request to
 this gateway and stamps that name on it as ``x-kiro-relay-user``. This package is the
-Crew's half of that contract, and it is OFF: the gateway builds its ingress off until
-the relay client, and the setting that turns it on, land together:
+Crew's half of that contract, and it is OFF unless ``tunnel.relay_enabled`` is set:
 
 * :mod:`.caller` -- the relayed caller: its provenance, its remote transport, and the
   owner-or-teammate decision. Pure values, no request access.

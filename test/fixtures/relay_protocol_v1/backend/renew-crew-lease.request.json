@@ -1,0 +1,83 @@
+{
+  "fixture": "backend/renew-crew-lease.request",
+  "kind": "backend-request",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.1",
+  "status": "provisional",
+  "summary": "RenewCrewLease request, at start and then every minute, with the Crew's own credential.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "The wire envelope, HTTP status and timestamp format follow the backend service's protocol, which the backend team sets. The fixture fixes the fields and codes."
+    }
+  ],
+  "planPosition": [
+    "hostTokenRequested is not in the HLD. Without it a Crew whose host token was refused or lost can wait up to about 3.5 minutes for the next one."
+  ],
+  "operation": "RenewCrewLease",
+  "caller": "The Crew, with the owner's Kiro sign-in, a Crew-bound Team API Key, or the JWT-SVID.",
+  "fields": {
+    "crewInstanceId": "Required. The UUID the Crew generated once.",
+    "displayName": "Required. 1 to 128 characters.",
+    "crewVersion": "Required. At most 32 characters.",
+    "protocolVersion": "Required. 1.",
+    "hostKind": "Required. crew.",
+    "relay": "Required. connected, and endpointId once the Crew has one.",
+    "connectedUsers": "Required. Kiro user IDs of the people connected now, unique, possibly empty.",
+    "hostTokenRequested": "Optional, this contract's proposal. True when the Crew holds no usable host token: at start, after a restart, after 4401 or 4403. The backend then issues one at a bounded rate.",
+    "publicKey": "Reserved. Absent or null in version 1."
+  },
+  "examples": [
+    {
+      "name": "first call of a personal Crew",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "displayName": "Work laptop",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": 1,
+        "hostKind": "crew",
+        "relay": {
+          "connected": false
+        },
+        "connectedUsers": [],
+        "hostTokenRequested": true
+      }
+    },
+    {
+      "name": "a later call, connected, the owner on",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "displayName": "Work laptop",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": 1,
+        "hostKind": "crew",
+        "relay": {
+          "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3",
+          "connected": true
+        },
+        "connectedUsers": [
+          "u-0001.example-owner"
+        ]
+      }
+    },
+    {
+      "name": "a team Crew with a teammate on",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "displayName": "Release team Crew",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": 1,
+        "hostKind": "crew",
+        "relay": {
+          "endpointId": "t4nw2q7hzk5rmc3xvbp6ld2fe7",
+          "connected": true
+        },
+        "connectedUsers": [
+          "u-0002.example-teammate"
+        ]
+      }
+    }
+  ]
+}

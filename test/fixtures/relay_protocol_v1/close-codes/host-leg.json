@@ -1,0 +1,81 @@
+{
+  "fixture": "close-codes/host-leg",
+  "kind": "close-code-table",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "6.1",
+  "status": "decided",
+  "summary": "Close codes on the host connection between the Crew and the relay, who sends each one and what the Crew does.",
+  "provisional": [],
+  "planPosition": [
+    "The number 4410 for the Crew's own Remote Control off close, and 4411 reserved for asleep. The HLD gives neither a number.",
+    "1000 from the Crew on the old connection after a move.",
+    "A host token that fails at the upgrade gets the plain 401 with no upgrade. 4401 covers the cases after the upgrade."
+  ],
+  "leg": "host",
+  "codes": [
+    {
+      "code": 4401,
+      "sentBy": "relay",
+      "meaning": "Refused before ready, or a host token in a token frame failed its checks.",
+      "closeReason": "Empty when a token failed. version_unsupported, mode_unsupported or invalid_message when hello was refused.",
+      "crewDoes": "On a token failure, renew the lease once with hostTokenRequested and reconnect with the new token. If that one is refused too, stop and show the reason in Settings. On version_unsupported, stop and say an upgrade is needed."
+    },
+    {
+      "code": 4403,
+      "sentBy": "relay",
+      "meaning": "The newest host token expired with no newer one, which is all the relay can see of a lease that is no longer renewed.",
+      "crewDoes": "Renew the lease with hostTokenRequested, then reconnect with backoff."
+    },
+    {
+      "code": 4408,
+      "sentBy": "relay",
+      "meaning": "No hello within 10 seconds of the upgrade.",
+      "crewDoes": "Reconnect with backoff."
+    },
+    {
+      "code": 4409,
+      "sentBy": "relay",
+      "meaning": "Replaced by a different instance holding a host token at least as new.",
+      "crewDoes": "Stop connecting. Report that another instance holds the Crew. Connect again only after a lease renewal succeeds for this instance."
+    },
+    {
+      "code": 4429,
+      "sentBy": "relay",
+      "meaning": "Rate limited.",
+      "crewDoes": "Reconnect with backoff."
+    },
+    {
+      "code": 1012,
+      "sentBy": "relay",
+      "meaning": "Drain or move. Sent after a reconnect frame's closeInSeconds, or at once.",
+      "crewDoes": "Reconnect at once. Make before break when a reconnect frame came first."
+    },
+    {
+      "code": 1013,
+      "sentBy": "relay",
+      "meaning": "Try again later, which means retry rather than stop.",
+      "crewDoes": "Reconnect with backoff."
+    },
+    {
+      "code": 4410,
+      "sentBy": "crew",
+      "meaning": "Remote Control turned off on the Crew. The Crew calls ReleaseCrewLease and closes with this code.",
+      "relayDoes": "Closes every viewer of the endpoint with 4410 and removes its registry entry."
+    },
+    {
+      "code": 1000,
+      "sentBy": "crew",
+      "meaning": "The old connection after a move, once its streams have finished.",
+      "relayDoes": "Closes any viewer WebSocket still on the old connection with 1012, so it reconnects to the new one."
+    },
+    {
+      "code": 4411,
+      "sentBy": "crew",
+      "status": "reserved",
+      "meaning": "Reserved for asleep, once the doorbell comes. Never sent in version 1."
+    }
+  ],
+  "transportCloses": "Any other close, or a socket that dies with no close frame, is treated like 1013: reconnect with backoff."
+}

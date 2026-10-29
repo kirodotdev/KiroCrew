@@ -1,0 +1,77 @@
+{
+  "fixture": "backend/renew-crew-lease.response",
+  "kind": "backend-response",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.1",
+  "status": "provisional",
+  "summary": "RenewCrewLease answer. hostToken is present only when a new one is issued. renewInSeconds says when to call next.",
+  "provisional": [
+    {
+      "field": "renewInSeconds",
+      "why": "The field name is not fixed by the backend team yet."
+    },
+    {
+      "field": "host names",
+      "why": "Per-stage settings. kiro-relay under on.aws and api.aws was chosen on 10/25 for now, pending the naming review. Beta and gamma start on other names."
+    },
+    {
+      "field": "mint threshold",
+      "why": "Above 60 and below 120 seconds. The backend team sets the exact value. The examples use 90."
+    },
+    {
+      "field": "envelope",
+      "why": "The wire envelope, HTTP status and timestamp format follow the backend service's protocol, which the backend team sets. The fixture fixes the fields and codes."
+    }
+  ],
+  "planPosition": [
+    "The Crew dials hostUrl from the answer. Its own setting is only for tests before the lease client exists."
+  ],
+  "operation": "RenewCrewLease",
+  "fields": {
+    "endpointId": "Always. The endpoint Kiro derives.",
+    "hostUrl": "Always. Where the Crew dials. A per-stage value.",
+    "crewUrl": "Always. The Crew's own URL.",
+    "hostToken": "Only when a new one is issued: on the first call, when hostTokenRequested is set, and when the current one has less than the mint threshold left.",
+    "leaseExpiresAt": "Always. 5 minutes from this call.",
+    "renewInSeconds": "Always. About 60, minus a small random spread."
+  },
+  "examples": [
+    {
+      "name": "first call, with a host token",
+      "at": "2026-11-02T17:00:00Z",
+      "body": {
+        "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3",
+        "hostUrl": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws/",
+        "hostToken": "eyJhbGciOiJFUzI1NiIsInR5cCI6Imtpcm8tcmVsYXktaG9zdCtqd3QiLCJraWQiOiJ0ZXN0LWtleS0yMDI2LTExIn0.eyJpc3MiOiJodHRwczovL2tpcm8tcmVsYXktaXNzdWVyLmludmFsaWQiLCJhdWQiOiJraXJvLXJlbGF5L2hvc3QiLCJzdWIiOiJ1LTAwMDEuZXhhbXBsZS1vd25lciIsImtpbmQiOiJwZXJzb25hbCIsImhvc3QiOiJjcmV3IiwiZXAiOiJrN3FtM3gydnR6cjRoYm42Y3dhcGZlNWRqMyIsInJnbiI6InVzLWVhc3QtMSIsImluc3QiOiIzZjJiOGMxZS03YTRkLTRlOWItOWM2MS0yZDVhOGYwZTRiMTciLCJpYXQiOjE3OTM2Mzg4MDAsIm5iZiI6MTc5MzYzODgwMCwiZXhwIjoxNzkzNjM5MTAwLCJqdGkiOiI2YTFmMGM1Mi0zZThiLTRkMjctOWYxNC1iMGM3ZTJhOWQzNjEifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "leaseExpiresAt": "2026-11-02T17:05:00Z",
+        "renewInSeconds": 57
+      }
+    },
+    {
+      "name": "a renewal with no host token",
+      "at": "2026-11-02T17:00:57Z",
+      "body": {
+        "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3",
+        "hostUrl": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws/",
+        "leaseExpiresAt": "2026-11-02T17:05:57Z",
+        "renewInSeconds": 55
+      }
+    },
+    {
+      "name": "the renewal that finds 75 seconds left on the host token",
+      "at": "2026-11-02T17:03:45Z",
+      "body": {
+        "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3",
+        "hostUrl": "wss://kiro-relay.us-east-1.api.aws/v1/host",
+        "crewUrl": "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws/",
+        "hostToken": "eyJhbGciOiJFUzI1NiIsInR5cCI6Imtpcm8tcmVsYXktaG9zdCtqd3QiLCJraWQiOiJ0ZXN0LWtleS0yMDI2LTExIn0.eyJpc3MiOiJodHRwczovL2tpcm8tcmVsYXktaXNzdWVyLmludmFsaWQiLCJhdWQiOiJraXJvLXJlbGF5L2hvc3QiLCJzdWIiOiJ1LTAwMDEuZXhhbXBsZS1vd25lciIsImtpbmQiOiJwZXJzb25hbCIsImhvc3QiOiJjcmV3IiwiZXAiOiJrN3FtM3gydnR6cjRoYm42Y3dhcGZlNWRqMyIsInJnbiI6InVzLWVhc3QtMSIsImluc3QiOiIzZjJiOGMxZS03YTRkLTRlOWItOWM2MS0yZDVhOGYwZTRiMTciLCJpYXQiOjE3OTM2MzkwMjUsIm5iZiI6MTc5MzYzOTAyNSwiZXhwIjoxNzkzNjM5MzI1LCJqdGkiOiIwZTdkM2I5MS1jMjRhLTRmNTgtYTFiNi05M2Q1ZThmMmMwNDcifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "leaseExpiresAt": "2026-11-02T17:08:45Z",
+        "renewInSeconds": 58
+      }
+    }
+  ]
+}

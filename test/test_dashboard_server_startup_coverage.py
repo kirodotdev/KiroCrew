@@ -838,6 +838,61 @@ class TestStartDashboardWiring:
             _release_process_handles(state)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("relay_enabled", "locked", "expected"),
+        [(True, False, True), (False, False, False), (True, True, False)],
+        ids=["on", "off", "locked"],
+    )
+    async def test_the_relay_ingress_follows_the_relay_switch(
+        self, tmp_path, monkeypatch, relay_enabled, locked, expected
+    ) -> None:
+        """``tunnel.relay_enabled`` builds the app's relay ingress on, never past the lock."""
+        import dataclasses
+
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+        from kiro_crew import edition_locks
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.kiro_relay.ingress import RELAY_INGRESS_APP_KEY
+
+        cfg = KiroCrewConfig()
+        cfg.tunnel = dataclasses.replace(cfg.tunnel, relay_enabled=relay_enabled)
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        if locked:
+            # The enterprise lock on the ``tunnel`` control alone, without the
+            # edition's policy and login boot.
+            monkeypatch.setattr(edition_locks, "local_enable_locked", lambda c: c == "tunnel")
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            srv, "_reserve_dashboard_port", AsyncMock(return_value=_fake_reserved_socket())
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        _neutralise_outside_process_work(monkeypatch)
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        runner, state = await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+        try:
+            assert runner.app[RELAY_INGRESS_APP_KEY].enabled is expected
+        finally:
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+            _release_process_handles(state)
+
+    @pytest.mark.asyncio
     async def test_ipv6_loopback_bind_exports_v6_host_evidence(self, tmp_path, monkeypatch) -> None:
         """A ::1 bind exports ::1 as the callback host, never IPv4 loopback.
 

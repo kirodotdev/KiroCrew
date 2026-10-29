@@ -1,0 +1,59 @@
+{
+  "fixture": "frames/request-chunk",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.1",
+  "status": "decided",
+  "summary": "One piece of a request body, base64 encoded.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "request-chunk",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"request-chunk\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The request's stream id."
+    },
+    "data": {
+      "type": "string",
+      "required": true,
+      "notes": "At most 40 KiB of body bytes before encoding."
+    },
+    "base64": {
+      "type": "boolean",
+      "required": false,
+      "notes": "True when data is base64. The relay always sends base64 in version 1."
+    }
+  },
+  "valid": [
+    {
+      "name": "upload chunk",
+      "message": {
+        "type": "request-chunk",
+        "id": 8,
+        "data": "eyJ0aXRsZSI6Im5vdGVzIn0=",
+        "base64": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing data",
+      "message": {
+        "type": "request-chunk",
+        "id": 8
+      },
+      "expect": "error invalid_message with id 8"
+    }
+  ]
+}

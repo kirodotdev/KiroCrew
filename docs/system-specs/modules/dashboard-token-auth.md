@@ -871,9 +871,11 @@ removes it, and names the verified person in its own protocol message on the
 Crew's host connection. The Crew's relay client, in process, turns each relayed
 request into an HTTP request to this gateway's loopback TCP listener and stamps the
 person as `x-kiro-relay-user`. `dashboard/kiro_relay/` is the Crew's half of that
-contract. The relay client itself is not built yet; this package is the seam it
-calls. All of it is **off**: the gateway builds its `RelayIngress` off, and the
-setting that turns it on arrives with the relay client.
+contract, and `relay_client/` is the relay client that calls it. All of it is behind
+`tunnel.relay_enabled`, **off by default**: off, the gateway builds its
+`RelayIngress` off and starts no relay client. An enterprise build ignores that
+local switch with the rest of the `tunnel` control
+([platform-context § Local switches with no governance key](platform-context.md#local-switches-with-no-governance-key-edition_lockspy)).
 
 **The relay-path header rule.** Crew trusts `x-kiro-relay-user` only on a request
 its own relay client handed over, never on a local, tailnet, tunnel or any other

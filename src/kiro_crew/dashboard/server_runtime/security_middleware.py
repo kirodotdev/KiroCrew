@@ -526,7 +526,8 @@ def build_host_canonical_redirect(
     are redirected (see :func:`should_canonicalize_host`); APIs, WebSockets, and
     sub-resource fetches are untouched. Pass ``canonical_host=""`` (e.g. when not
     local_only) to make the middleware a no-op so reverse-proxy / remote-host
-    deployments are never redirected.
+    deployments are never redirected. Relay-delivered requests are never redirected
+    because their Host is the gateway's loopback address, not the browser's origin.
 
     *holds_every_family* answers, at REDIRECT time, whether this gateway holds
     every loopback family the destination name can resolve to. It gates the same
@@ -557,6 +558,8 @@ def build_host_canonical_redirect(
         request: web.Request,
         handler: object,
     ) -> web.StreamResponse:
+        if published_relay_caller(request) is not None:
+            return await handler(request)  # type: ignore[operator]
         if canonical_host and should_canonicalize_host(
             request.host,
             canonical_host,

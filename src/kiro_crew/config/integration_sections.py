@@ -1064,6 +1064,79 @@ class TunnelConfig:
             restart=True,
         ),
     )
+    relay_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Kiro Relay",
+            "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
+            "the caller named by the relay. Off by default. It connects only when "
+            "Relay Lease Service URL and Relay Lease Credential are set, so the Crew "
+            "can hold a lease; without them it starts a relay client that reports it "
+            "cannot connect. While it is off, Crew starts no "
+            "relay client, strips every x-kiro-relay-* header from every request and "
+            "trusts none of them.",
+            restart=True,
+        ),
+    )
+    relay_region: str = field(
+        default="us-east-1",
+        metadata=_meta(
+            "Relay Region",
+            "The AWS Region of the Kiro relay this Crew dials, for example 'us-east-1'.",
+            restart=True,
+        ),
+    )
+    relay_host_url: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Host URL",
+            "The relay's host dial URL. Empty uses wss://kiro-relay.<region>.api.aws/v1/host. "
+            "Must be wss:// (ws:// only for a loopback test relay).",
+            restart=True,
+        ),
+    )
+    relay_crew_domain: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Crew Domain",
+            "The domain this Crew's relay URL sits under, as https://<endpoint>.<domain>. "
+            "Empty uses kiro-relay.<region>.on.aws.",
+            restart=True,
+        ),
+    )
+    relay_move_grace_seconds: float = field(
+        default=1.0,
+        metadata=_meta(
+            "Relay Move Grace (secs)",
+            "When the relay moves this Crew to a new connection, how long the old one "
+            "stays open with no request in flight before it closes, so a request already "
+            "on its way there is still answered. 0 to 30; never past the relay's own "
+            "move window.",
+            restart=True,
+        ),
+    )
+    relay_lease_url: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Service URL",
+            "The base URL of the lease service this Crew calls RenewCrewLease on, to "
+            "hold its lease and get host tokens. Empty (the default) means no host "
+            "token source, so the relay client cannot connect. Must be https:// "
+            "(http:// only for a loopback port-forward).",
+            restart=True,
+        ),
+    )
+    relay_lease_credential: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Credential",
+            "Where the Crew reads its credential for the lease service: secret://NAME "
+            "for a secret stored under Settings > Secrets, or the absolute path of a "
+            "file holding it. Never the credential itself; it is read for each call "
+            "and never logged.",
+            restart=True,
+        ),
+    )
 
 
 @dataclass

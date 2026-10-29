@@ -1065,11 +1065,16 @@ async def start_dashboard(
         # with, for handlers the middleware bypasses (POST /api/auth/refresh must
         # re-bind a rotated access token to the same verified peer identity).
         app["tailnet_trust"] = _tailnet_trust
-        # The relay client's door into this app (dashboard/kiro_relay). Built off:
-        # the relay client, and the setting that turns this on, arrive together in a
-        # later change. Off, the ingress middleware hands every request on to the
-        # client-sent relay-header strip.
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=False)
+        # The relay client's door into this app (dashboard/kiro_relay). Built off
+        # unless tunnel.relay_enabled is set, and always off in an enterprise build,
+        # which ignores that local switch with the rest of the tunnel control. Either
+        # way the ingress middleware hands every request that is not a verified
+        # handover on to the client-sent relay-header strip.
+        from kiro_crew.edition_locks import local_enable_locked
+
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(
+            enabled=_cfg.tunnel.relay_enabled is True and not local_enable_locked("tunnel")
+        )
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )

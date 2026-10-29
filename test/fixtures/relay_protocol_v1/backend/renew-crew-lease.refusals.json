@@ -1,0 +1,124 @@
+{
+  "fixture": "backend/renew-crew-lease.refusals",
+  "kind": "backend-refusal",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.1",
+  "status": "provisional",
+  "summary": "RenewCrewLease typed refusals and what the Crew does with each.",
+  "provisional": [
+    {
+      "field": "error.code",
+      "why": "Refusal names are not fixed by the backend team yet."
+    },
+    {
+      "field": "envelope",
+      "why": "The wire envelope, HTTP status and timestamp format follow the backend service's protocol, which the backend team sets. The fixture fixes the fields and codes."
+    }
+  ],
+  "planPosition": [
+    "Every name here other than REMOTE_ACCESS_DISABLED and IDENTITY_IN_USE, which the HLD names, and the HTTP statuses."
+  ],
+  "operation": "RenewCrewLease",
+  "refusals": [
+    {
+      "code": "REMOTE_ACCESS_DISABLED",
+      "httpStatus": 403,
+      "when": "The organization does not allow remote access. No token.",
+      "callerDoes": "Stop connecting. Show the reason in Settings. Try again on the next sign-in or setting change, and at most every 15 minutes.",
+      "example": {
+        "error": {
+          "code": "REMOTE_ACCESS_DISABLED",
+          "message": "The organization does not allow remote access. No token."
+        }
+      }
+    },
+    {
+      "code": "IDENTITY_IN_USE",
+      "httpStatus": 409,
+      "when": "A team Crew's lease is held by a different instance and is still live.",
+      "callerDoes": "Don't connect. Wait retryAfterSeconds, the time until a takeover is allowed, then renew. The host shows identity in use.",
+      "example": {
+        "error": {
+          "code": "IDENTITY_IN_USE",
+          "message": "A team Crew's lease is held by a different instance and is still live.",
+          "retryAfterSeconds": 64
+        }
+      }
+    },
+    {
+      "code": "ENDPOINT_MISMATCH",
+      "httpStatus": 400,
+      "when": "relay.endpointId is not the one Kiro derives for this caller and instance.",
+      "callerDoes": "Drop the stored endpointId and renew without it.",
+      "example": {
+        "error": {
+          "code": "ENDPOINT_MISMATCH",
+          "message": "relay.endpointId is not the one Kiro derives for this caller and instance."
+        }
+      }
+    },
+    {
+      "code": "HOSTING_NOT_ALLOWED",
+      "httpStatus": 403,
+      "when": "This sign-in cannot host a personal Crew, for example an API key or an external IdP sign-in.",
+      "callerDoes": "Stop. Settings says why Remote Control is off.",
+      "example": {
+        "error": {
+          "code": "HOSTING_NOT_ALLOWED",
+          "message": "This sign-in cannot host a personal Crew, for example an API key or an external IdP sign-in."
+        }
+      }
+    },
+    {
+      "code": "CREW_IDENTITY_DISABLED",
+      "httpStatus": 403,
+      "when": "The team Crew's Crew Identity is disabled or deleted, or its key was rotated.",
+      "callerDoes": "Stop. Show the reason. The host connection closes when its token expires.",
+      "example": {
+        "error": {
+          "code": "CREW_IDENTITY_DISABLED",
+          "message": "The team Crew's Crew Identity is disabled or deleted, or its key was rotated."
+        }
+      }
+    },
+    {
+      "code": "VERSION_UNSUPPORTED",
+      "httpStatus": 400,
+      "when": "protocolVersion is below the relay's minimum.",
+      "callerDoes": "Stop. Say an upgrade is needed.",
+      "example": {
+        "error": {
+          "code": "VERSION_UNSUPPORTED",
+          "message": "protocolVersion is below the relay's minimum."
+        }
+      }
+    },
+    {
+      "code": "RATE_LIMITED",
+      "httpStatus": 429,
+      "when": "Too many calls for this caller.",
+      "callerDoes": "Retry after retryAfterSeconds, with jitter.",
+      "example": {
+        "error": {
+          "code": "RATE_LIMITED",
+          "message": "Too many calls for this caller.",
+          "retryAfterSeconds": 30
+        }
+      }
+    },
+    {
+      "code": "SIGN_IN_EXPIRED",
+      "httpStatus": 401,
+      "when": "The Crew's own credential was refused.",
+      "callerDoes": "Refresh the sign-in or key. A personal Crew asks the owner to sign in again.",
+      "example": {
+        "error": {
+          "code": "SIGN_IN_EXPIRED",
+          "message": "The Crew's own credential was refused."
+        }
+      }
+    }
+  ]
+}

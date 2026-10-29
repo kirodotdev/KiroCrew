@@ -78,7 +78,7 @@ omit the policy.
 | `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; install hints are inline in `doctor_checks/features.py` (use `CapabilityManager`) | — (slot inert) |
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `memory_files` | adapter | `DefaultMemoryFilesProvider` (memory's markdown source text on local disk) | a non-local `MemoryFiles` for memory's markdown source. `memory_files_for` does not catch a provider error: `PlatformCompositionError` propagates and nothing falls back to local disk. Memory's derived state (the FTS index, the SQLite stores, the FAISS vectors) stays local and does not travel through this seam |
-| `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
+| `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`) instead when `tunnel.relay_enabled` is on (off by default) | internal tunnel supervisor, which the relay client never replaces |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destination from `telemetry.otlp_endpoint`) | RUM/Cognito config + its own OTLP collector |
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
@@ -543,7 +543,7 @@ Runtime code reads only the module constant, never the build variable or a confi
 
 | Control id | Local source ignored | Read site | Setting API |
 |---|---|---|---|
-| `tunnel` | `tunnel.enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks both paths `lockedByPolicy` |
+| `tunnel` | `tunnel.enabled`, `tunnel.relay_enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/server.py::start_dashboard`, which builds the app's `RelayIngress` off there; `platform/bootstrap.py::_public_tunnel_provider` with `relay_client/provider.py::relay_selected`, which never select or import the relay client there; `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks all three paths `lockedByPolicy` |
 | `telemetry.otlp_hosts` | `telemetry.otlp_endpoint` | `metrics/provider.py::_edition_locked_view`, read by `_otlp_destinations` and `otlp_egress_active` before any provider sees the config (an edition provider's own destinations stay) | `GET /api/config/schema` marks the path `lockedByPolicy` |
 | `developer_mode` | `KIROCREW_DEV_MODE` (and the `-dev` home suffix for the update simulator) | `session_environment.py::session_environments_enabled` (remote placement stays off) and `dashboard/routes/system.py` (`POST /api/update/simulate` is not registered) | none; an environment variable has no setting API. The flag's on-loop persistence strictness only raises more, so it is left as is |
 
@@ -996,6 +996,36 @@ Wired sites:
   `setup_tunnel`, so it needs no hook.
   Import direction: `tunnel/` imports
   `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
+  **The relay client in the slot.** `build_default_context` fills the slot through
+  `relay_client/provider.py::public_tunnel_provider`: the no-op
+  `DefaultTunnelProvider` unless `tunnel.relay_enabled` is on and
+  `local_enable_locked("tunnel")` is false, and then `RelayTunnelProvider`, the
+  Kiro relay's host leg (protocol v1). Only the public composition calls it, so a
+  companion that composes its own context keeps its own provider and never gets
+  the relay client. The choice is made once, at composition (the key is
+  `restart=True`), and construction does no I/O. The manager stays edition-neutral
+  and drives it like any provider: `start()` is reached only through
+  `tunnel/setup.py`'s `--no-tunnel` and token-auth gates, and the provider's
+  `ensure_available()` only reports state, because the on-demand link path that
+  calls it passes neither gate. Relayed requests go to the gateway's own loopback
+  TCP listener through `relay_client/ingress.py::LoopbackIngress`, with headers
+  stamped by the dashboard app's `dashboard/kiro_relay/ingress.py::RelayIngress`,
+  which owns the relay-path header rule (the caller in `x-kiro-relay-user` and the
+  per-process handover credential). The gateway publishes that app's ingress to the
+  relay client in `_start_aea_tunnel` only when `tunnel.relay_enabled is True`,
+  before the tunnel starts. With the switch off, it imports no relay client modules;
+  the headless API server builds none, so the relay client does not start there.
+  The client binds the host connection in that ingress once `ready` arrives, with
+  the Crew kind and owner the host token names, and unbinds it when the connection
+  ends. The loopback session keeps no cookies and follows no redirects. The host
+  token comes through `relay_client/token_source.py::HostTokenSource`. When
+  `tunnel.relay_lease_url` names a lease service, the source is the lease client,
+  `relay_client/lease.py::LeaseHostTokenSource`: it calls `RenewCrewLease` on the
+  answer's schedule with the credential `tunnel.relay_lease_credential` points at
+  (`secret://NAME` or a file, never the value), and hands each new host token to
+  the client. With no lease service, the default source refuses, so the client
+  reports why it cannot connect. `relay_client/` imports
+  nothing from `kiro_crew.tunnel`, which keeps the import direction above.
 - `dashboard/server.py` (the gate in `dashboard/server_runtime/tunnel.py`) — tunnel enable-gate
   ORs in `current_context().tunnel.enabled()`. **Dashboard contributor:**
   in `start_dashboard` only, the `/api/sso-login` route binds

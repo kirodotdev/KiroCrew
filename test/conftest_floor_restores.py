@@ -528,6 +528,26 @@ def _restore_hooks_integration_globals():
     hi._lifecycle_dispatcher, hi._route_registry = before
 
 
+# ── the relay client's published dashboard ingress goes back after every test ──
+
+
+@pytest.fixture(autouse=True)
+def _restore_relay_gateway_ingress():
+    """Put ``relay_client.provider._gateway_ingress`` back.
+
+    ``_start_aea_tunnel`` publishes the dashboard app's relay ingress there, and a
+    gateway sets it once at boot, so every test that builds the real dashboard app
+    would otherwise hand the next test its app's ingress. Reached through
+    ``sys.modules`` for the same reason as the hooks floor above.
+    """
+    provider = sys.modules.get("kiro_crew.relay_client.provider")
+    before = getattr(provider, "_gateway_ingress", None) if provider is not None else None
+    yield
+    provider = sys.modules.get("kiro_crew.relay_client.provider")
+    if provider is not None:
+        provider._gateway_ingress = before
+
+
 # ── logger levels go back after every test ──────────────────────────
 
 

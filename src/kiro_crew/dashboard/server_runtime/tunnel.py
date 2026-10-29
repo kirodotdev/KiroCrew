@@ -103,6 +103,13 @@ async def _start_aea_tunnel(
     """Start the tunnel when the config or the active ``TunnelProvider`` enables it."""
     from kiro_crew.edition_locks import local_enable_locked
 
+    if cfg.tunnel.relay_enabled is True and not local_enable_locked("tunnel"):
+        from kiro_crew.dashboard.kiro_relay.ingress import RELAY_INGRESS_APP_KEY
+        from kiro_crew.relay_client.provider import publish_gateway_ingress
+
+        # Import and publish only when selected; non-relay boots load no client.
+        publish_gateway_ingress(app.get(RELAY_INGRESS_APP_KEY))
+
     # An enterprise build ignores the local switch (RFC D3); a tunnel the edition's
     # own provider enables below is not a local source.
     _tunnel_enabled = cfg.tunnel.enabled and not local_enable_locked("tunnel")

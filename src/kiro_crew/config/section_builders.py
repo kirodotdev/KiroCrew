@@ -531,6 +531,15 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         enabled=bool(section.get("enabled")),
         name_mode=str(section.get("name_mode")),
         name_override=str(section.get("name_override")),
+        # Only the JSON boolean ``true`` opens the relay path: a string or a number
+        # left by a hand edit keeps it off rather than reading as truthy.
+        relay_enabled=section.get("relay_enabled") is True,
+        relay_region=str(section.get("relay_region") or section.default("relay_region")),
+        relay_host_url=str(section.get("relay_host_url") or ""),
+        relay_crew_domain=str(section.get("relay_crew_domain") or ""),
+        relay_move_grace_seconds=section.read("relay_move_grace_seconds", _safe_float, 0.0, 30.0),
+        relay_lease_url=str(section.get("relay_lease_url") or ""),
+        relay_lease_credential=str(section.get("relay_lease_credential") or ""),
     )
 
 

@@ -1,0 +1,359 @@
+{
+  "fixture": "frames/ws-upgrade",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.3",
+  "status": "decided",
+  "summary": "A viewer opened a WebSocket. The relay has already completed the handshake with the viewer. The relay client opens the same WebSocket to the Crew's web server.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "ws-upgrade",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"ws-upgrade\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "Stream id, from the same counter as requests."
+    },
+    "path": {
+      "type": "string",
+      "required": true,
+      "notes": "Starts with /."
+    },
+    "query": {
+      "type": "string",
+      "required": true,
+      "notes": "Without the leading ?, or empty."
+    },
+    "protocols": {
+      "type": "string",
+      "required": false,
+      "notes": "The Sec-WebSocket-Protocol value the viewer asked for."
+    },
+    "headers": {
+      "type": "array of [name, value]",
+      "required": false,
+      "notes": "Filtered headers as pairs, at most 64, names at most 256 and values at most 8192 characters. Upgrade, Connection and Sec-WebSocket-* are not included."
+    },
+    "user": {
+      "type": "string",
+      "required": true,
+      "notes": "The verified caller's Kiro user ID."
+    }
+  },
+  "valid": [
+    {
+      "name": "dashboard socket in the WebView",
+      "message": {
+        "type": "ws-upgrade",
+        "id": 9,
+        "path": "/ws",
+        "query": "session=abc",
+        "headers": [
+          [
+            "origin",
+            "https://k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws"
+          ],
+          [
+            "cookie",
+            "kc_session=abc123"
+          ],
+          [
+            "x-forwarded-host",
+            "k7qm3x2vtzr4hbn6cwapfe5dj3.kiro-relay.us-east-1.on.aws"
+          ],
+          [
+            "x-forwarded-proto",
+            "https"
+          ]
+        ],
+        "user": "u-0001.example-owner"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "65 headers",
+      "message": {
+        "type": "ws-upgrade",
+        "id": 9,
+        "path": "/ws",
+        "query": "",
+        "headers": [
+          [
+            "x-h0",
+            "v"
+          ],
+          [
+            "x-h1",
+            "v"
+          ],
+          [
+            "x-h2",
+            "v"
+          ],
+          [
+            "x-h3",
+            "v"
+          ],
+          [
+            "x-h4",
+            "v"
+          ],
+          [
+            "x-h5",
+            "v"
+          ],
+          [
+            "x-h6",
+            "v"
+          ],
+          [
+            "x-h7",
+            "v"
+          ],
+          [
+            "x-h8",
+            "v"
+          ],
+          [
+            "x-h9",
+            "v"
+          ],
+          [
+            "x-h10",
+            "v"
+          ],
+          [
+            "x-h11",
+            "v"
+          ],
+          [
+            "x-h12",
+            "v"
+          ],
+          [
+            "x-h13",
+            "v"
+          ],
+          [
+            "x-h14",
+            "v"
+          ],
+          [
+            "x-h15",
+            "v"
+          ],
+          [
+            "x-h16",
+            "v"
+          ],
+          [
+            "x-h17",
+            "v"
+          ],
+          [
+            "x-h18",
+            "v"
+          ],
+          [
+            "x-h19",
+            "v"
+          ],
+          [
+            "x-h20",
+            "v"
+          ],
+          [
+            "x-h21",
+            "v"
+          ],
+          [
+            "x-h22",
+            "v"
+          ],
+          [
+            "x-h23",
+            "v"
+          ],
+          [
+            "x-h24",
+            "v"
+          ],
+          [
+            "x-h25",
+            "v"
+          ],
+          [
+            "x-h26",
+            "v"
+          ],
+          [
+            "x-h27",
+            "v"
+          ],
+          [
+            "x-h28",
+            "v"
+          ],
+          [
+            "x-h29",
+            "v"
+          ],
+          [
+            "x-h30",
+            "v"
+          ],
+          [
+            "x-h31",
+            "v"
+          ],
+          [
+            "x-h32",
+            "v"
+          ],
+          [
+            "x-h33",
+            "v"
+          ],
+          [
+            "x-h34",
+            "v"
+          ],
+          [
+            "x-h35",
+            "v"
+          ],
+          [
+            "x-h36",
+            "v"
+          ],
+          [
+            "x-h37",
+            "v"
+          ],
+          [
+            "x-h38",
+            "v"
+          ],
+          [
+            "x-h39",
+            "v"
+          ],
+          [
+            "x-h40",
+            "v"
+          ],
+          [
+            "x-h41",
+            "v"
+          ],
+          [
+            "x-h42",
+            "v"
+          ],
+          [
+            "x-h43",
+            "v"
+          ],
+          [
+            "x-h44",
+            "v"
+          ],
+          [
+            "x-h45",
+            "v"
+          ],
+          [
+            "x-h46",
+            "v"
+          ],
+          [
+            "x-h47",
+            "v"
+          ],
+          [
+            "x-h48",
+            "v"
+          ],
+          [
+            "x-h49",
+            "v"
+          ],
+          [
+            "x-h50",
+            "v"
+          ],
+          [
+            "x-h51",
+            "v"
+          ],
+          [
+            "x-h52",
+            "v"
+          ],
+          [
+            "x-h53",
+            "v"
+          ],
+          [
+            "x-h54",
+            "v"
+          ],
+          [
+            "x-h55",
+            "v"
+          ],
+          [
+            "x-h56",
+            "v"
+          ],
+          [
+            "x-h57",
+            "v"
+          ],
+          [
+            "x-h58",
+            "v"
+          ],
+          [
+            "x-h59",
+            "v"
+          ],
+          [
+            "x-h60",
+            "v"
+          ],
+          [
+            "x-h61",
+            "v"
+          ],
+          [
+            "x-h62",
+            "v"
+          ],
+          [
+            "x-h63",
+            "v"
+          ],
+          [
+            "x-h64",
+            "v"
+          ]
+        ],
+        "user": "u-0001.example-owner"
+      },
+      "expect": "never sent. The relay refuses the viewer's upgrade with 431 before it reaches the Crew"
+    }
+  ],
+  "refusal": "When the Crew's web server refuses the upgrade, the relay client sends ws-close with code 4502 and a short reason, and the relay closes the viewer's socket with the same code."
+}

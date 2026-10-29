@@ -1,0 +1,56 @@
+{
+  "fixture": "frames/opaque",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.5",
+  "status": "reserved",
+  "summary": "Reserved for end to end encryption. The relay routes it by id without reading data. Never sent in version 1.",
+  "provisional": [],
+  "planPosition": [
+    "A later version may move this to a binary WebSocket frame, so the relay does not have to parse JSON to route it."
+  ],
+  "frame": "opaque",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"opaque\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The stream id it belongs to."
+    },
+    "data": {
+      "type": "string",
+      "required": true,
+      "notes": "Base64. The relay never parses it."
+    }
+  },
+  "valid": [
+    {
+      "name": "shape only, never sent in version 1",
+      "message": {
+        "type": "opaque",
+        "id": 9,
+        "data": "AAECAwQFBgc="
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "received in version 1",
+      "message": {
+        "type": "opaque",
+        "id": 9,
+        "data": "AAAA"
+      },
+      "expect": "error unsupported_frame, because opaque was not agreed in ready"
+    }
+  ]
+}

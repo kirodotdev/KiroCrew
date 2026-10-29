@@ -72,7 +72,7 @@ from kiro_crew.platform.security_authority import PolicyAuthority, assert_securi
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.platform.interfaces import TelemetryProvider
+    from kiro_crew.platform.interfaces import TelemetryProvider, TunnelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +223,30 @@ def _reset_boot_state() -> None:
         _BOOTED = False
 
 
+def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
+    """The tunnel slot's provider in the public composition.
+
+    The no-op :class:`DefaultTunnelProvider`, unless ``tunnel.relay_enabled`` turns
+    on the Kiro relay client. A companion composes its own context and its own
+    provider, so it never reaches this choice. The relay client is imported only
+    when the setting is on, so a process composing the defaults with the relay off,
+    a short-lived hook among them, never loads it.
+    """
+    tunnel_cfg = getattr(cfg, "tunnel", None)
+    # ``is True``: a stand-in config object answers any attribute truthily.
+    if getattr(tunnel_cfg, "relay_enabled", False) is not True:
+        return DefaultTunnelProvider()
+    from kiro_crew.edition_locks import local_enable_locked
+
+    # An enterprise build ignores local enables for the tunnel (RFC D3), this one too.
+    if local_enable_locked("tunnel"):
+        return DefaultTunnelProvider()
+    from kiro_crew.relay_client.provider import public_tunnel_provider
+
+    provider: "TunnelProvider" = public_tunnel_provider(cfg)
+    return provider
+
+
 def build_default_context(
     cfg: "KiroCrewConfig", *, profile: str = PROFILE_STANDALONE
 ) -> PlatformContext:
@@ -269,7 +293,7 @@ def build_default_context(
         package_manager=DefaultPackageManager(),
         knowledge=DefaultKnowledgeProvider(),
         memory_files=DefaultMemoryFilesProvider(),
-        tunnel=DefaultTunnelProvider(),
+        tunnel=_public_tunnel_provider(cfg),
         telemetry=DefaultTelemetryProvider(),
         dashboard=DefaultDashboardContributor(),
         jail=DefaultJailProvider(),

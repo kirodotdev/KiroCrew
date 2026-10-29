@@ -1,0 +1,65 @@
+{
+  "fixture": "frames/reconnect",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "4.5",
+  "status": "decided",
+  "summary": "Asks the Crew to open a new host connection and move to it, make before break.",
+  "provisional": [],
+  "planPosition": [
+    "closeInSeconds is this contract's field for the HLD's 30 second and 5 second windows."
+  ],
+  "frame": "reconnect",
+  "leg": "host",
+  "direction": "relay-to-host",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"reconnect\"."
+    },
+    "reason": {
+      "type": "string",
+      "required": true,
+      "notes": "\"drain\" when the task is draining, or \"max-age\" for rebalancing at a random age between 15 and 30 minutes."
+    },
+    "closeInSeconds": {
+      "type": "integer",
+      "required": true,
+      "notes": "When the relay closes this connection with 1012 if it is still open. 5 for drain, 30 for max-age."
+    }
+  },
+  "valid": [
+    {
+      "name": "task draining",
+      "message": {
+        "type": "reconnect",
+        "reason": "drain",
+        "closeInSeconds": 5
+      }
+    },
+    {
+      "name": "rebalancing",
+      "message": {
+        "type": "reconnect",
+        "reason": "max-age",
+        "closeInSeconds": 30
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown reason",
+      "message": {
+        "type": "reconnect",
+        "reason": "bored",
+        "closeInSeconds": 30
+      },
+      "expect": "the Crew treats it as max-age"
+    }
+  ],
+  "crewDoes": "Dial a new connection with the same instance's current host token. Once it is ready, stop sending new work to the old one, let the old one finish its streams, then close the old one with 1000."
+}
