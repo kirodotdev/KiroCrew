@@ -36,7 +36,15 @@ concurrency:
 jobs:
   test:
     name: kirocrew-client (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. A fork PR arrives on `pull_request`, which executes here,
+    # so it takes the group too; the fallback is for a fork running its own copy
+    # of this file on `push` or `workflow_dispatch`, where an organization
+    # runner group is unreachable and a job asking for a label no runner there
+    # carries would wait out GitHub's pending limit instead of running. See
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       max-parallel: 4
