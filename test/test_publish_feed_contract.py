@@ -66,6 +66,7 @@ _SUBS = {
     "DMG_SIZE": "222",
     "ARTIFACT_SIZE": "333",
     "FEED_PREFIX": "feed/nightly",
+    "MIN_OS": "22.0.0",
 }
 _CDN_BASE = "https://download.crew.kiro.dev"
 
@@ -115,10 +116,11 @@ def _rendered_feed(run_text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _assert_updater_layout(feed: dict) -> None:
-    assert set(feed.keys()) == {"version", "files", "path", "sha512", "releaseDate"}, (
+def _assert_updater_layout(feed: dict, extra: frozenset[str] = frozenset()) -> None:
+    expected = {"version", "files", "path", "sha512", "releaseDate"} | extra
+    assert set(feed.keys()) == expected, (
         f"feed keys {sorted(feed)} diverge from the electron-updater contract "
-        "(version, files, path, sha512, releaseDate)"
+        f"({', '.join(sorted(expected))})"
     )
     assert feed["version"] == _SUBS["VERSION"], "version must be the raw ${VERSION}, no v-prefix"
     assert isinstance(feed["files"], list) and feed["files"], "files must be a non-empty list"
@@ -137,7 +139,7 @@ def _assert_updater_layout(feed: dict) -> None:
 
 def test_mac_feed_layout_is_electron_updater_metadata() -> None:
     feed = _rendered_feed(_feed_step(MAC_WORKFLOW, "publish")["run"])
-    _assert_updater_layout(feed)
+    _assert_updater_layout(feed, frozenset({"minimumSystemVersion"}))
     urls = [f["url"] for f in feed["files"]]
     # MacUpdater requires a zip entry (findFile(files, "zip", ["pkg","dmg"]))
     # -- the ZIP is what Squirrel.Mac consumes; the DMG stays the human
@@ -940,3 +942,20 @@ def test_installer_rejects_an_unknown_channel_before_hitting_the_cdn() -> None:
         assert (
             channel in src.split("unknown channel", 1)[1][:200]
         ), f"the unknown-channel error must list '{channel}'"
+
+
+def test_mac_feed_declares_the_os_floor_read_from_the_artifact() -> None:
+    """electron-updater declines an update whose feed names a higher OS floor.
+
+    The floor is a STRING Darwin kernel version (semver-compared with
+    ``os.release()``), and it must come from the artifact, computed in the same
+    step before the heredoc, so a build that moves the real floor moves it too.
+    """
+    run = _feed_step(MAC_WORKFLOW, "publish")["run"]
+    feed = _rendered_feed(run)
+    assert feed["minimumSystemVersion"] == _SUBS["MIN_OS"]
+    assert isinstance(feed["minimumSystemVersion"], str)
+    derive = run.index(
+        'MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")'
+    )
+    assert derive < run.index("<<EOF"), "the floor must be derived before the feed is written"

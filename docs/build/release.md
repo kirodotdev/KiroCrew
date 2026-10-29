@@ -369,6 +369,16 @@ feed/<channel>/simple/ + feed/<channel>/simple/kirocrew/     pointer, no-cache
 cli.sh                                                       pointer, no-cache (only root object)
 ```
 
+Every `latest-mac.yml` also carries `minimumSystemVersion`, which electron-builder
+never writes but electron-updater enforces: a client whose `os.release()` is below it
+declines the update instead of installing a build it cannot launch. The publish job
+reads it from the notarized ZIP's own `Contents/Info.plist` (`LSMinimumSystemVersion`,
+which Electron stamps from its deployment target) through
+`scripts/feed_min_system_version.py`, and writes it as the Darwin kernel version the
+updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the real
+floor raises the declared one. The step fails closed when the ZIP names no floor, or
+one with no exact kernel version (a non-`.0` macOS 11+ floor).
+
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
 
