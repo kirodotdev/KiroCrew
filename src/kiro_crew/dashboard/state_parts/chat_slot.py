@@ -325,6 +325,7 @@ class _ChatSlot:
         "_steer_decision_strips",
         "_steer_possibly_delivered",
         "_steer_rpc_in_flight",
+        "_native_steer_in_flight",
         "_steer_retract",
         "_steer_clear",
         "_steer_audience_fences",
@@ -604,6 +605,10 @@ class _ChatSlot:
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
     _steer_rpc_in_flight: set[str]
+    #: Native-card ids with a /question/steer delivery in flight (handlers/slot_question).
+    #: A SEPARATE set, never on the card's pending record, so a steer claim is never
+    #: serialized out through GET .../question or a question_card broadcast.
+    _native_steer_in_flight: set[str]
     _steer_retract: SteerRetract | None
     _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]

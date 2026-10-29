@@ -170,6 +170,13 @@ API-path check for each of these calls:
   polled every 1.5 s while a turn runs and every 10 s when idle.
 - `POST /api/chat/slots/{slot}/question/answer` — answer or decline a blocking card
   (`{ask_id, answers}` or `{ask_id, dismissed: true}`).
+- `POST /api/chat/slots/{slot}/question/steer` — answer a native mid-turn card
+  (`native: true`, a `card_id`, no `ask_id`) by steering the answer into the
+  slot's own running turn (`{card_id, message}`). Replies `{steered: true}` when
+  it landed, or `{unavailable: true}` when no turn is running so the embed hands
+  the answer back to the message box.
+- `POST /api/chat/slots/{slot}/question/dismiss` — retire a native card's
+  `needs_input` status without answering it (`{card_id}`).
 
 File attachments upload to `POST /api/upload/file`, which `/api/chat` does not
 cover: it is a separate, optional grant (see [Attachments](#attachments)).
@@ -199,10 +206,19 @@ into it, the typed answer is put back in the message box, unsent, with a notice.
 A question read that keeps failing for another reason (offline, a server error)
 shows a notice while the poll retries.
 
-The embed shows the blocking cards of the `ask_question` tool only. A kiro-cli
-native question raised mid-turn (`native: true`, no `ask_id`) needs its answer
-steered into the running turn, which the embed cannot do, so it shows only in the
-dashboard.
+The embed shows both the blocking cards of the `ask_question` tool and the
+kiro-cli native question raised mid-turn (`native: true`, a `card_id`, no
+`ask_id`). A blocking card is answered through `/question/answer`; a native card
+is answered by steering the chosen or typed answer into the slot's own running
+turn (`/question/steer`), or retired without answering (`/question/dismiss`).
+Both native routes need the same `permissions.sessionApproval` and reach only
+slots the app owns, exactly like the question read. The answer carries the app's
+own provenance, not the session human's, and the card is retired on delivery, so
+a second steer of the same `card_id` is a `404`. A native answer that is requeued
+(the turn ended as it arrived) drains as plain text, never a run command, so an
+answer like `/clear` is sent as the literal words. When no turn is running the
+steer replies `unavailable` and the typed answer is put back in the message box,
+unsent, rather than dropped.
 
 What the embed does not do today, one line each:
 

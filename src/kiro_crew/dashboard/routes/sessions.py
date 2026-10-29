@@ -74,6 +74,14 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/{slot}/question/answer", slot_question.api_chat_slot_question_answer
     )
+    # The native mid-turn card's two routes: steer its answer into the running
+    # turn (app provenance), and retire its needs_input status.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/steer", slot_question.api_chat_slot_question_steer
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/dismiss", slot_question.api_chat_slot_question_dismiss
+    )
     app.router.add_post(
         "/api/chat/slots/{slot}/elicitation", chat_elicitation.api_chat_slot_elicitation
     )

@@ -579,6 +579,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_possibly_delivered": ("value", "set()"),
     "_steer_retract": ("value", "None"),
     "_steer_rpc_in_flight": ("value", "set()"),
+    "_native_steer_in_flight": ("value", "set()"),
     "_steer_segment_cut": ("value", "None"),
     "_steer_send_ids": ("value", "{}"),
     "_steer_user_origin": ("value", "{}"),

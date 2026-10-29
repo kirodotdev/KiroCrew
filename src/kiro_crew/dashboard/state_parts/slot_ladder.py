@@ -430,6 +430,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # already be in the pipe, and the RPC's own verdict arrives too late to
     # mark an entry the drain may already have run.
     self._steer_rpc_in_flight = set()
+    # Native-card ids with a /question/steer delivery in flight. Off the card
+    # record on purpose, so a steer claim never rides a serialized pending card.
+    self._native_steer_in_flight = set()
     # A pending steer the person is taking back, and the ``_session/steer/clear``
     # written for it whose drop kiro-cli has not reported yet. Both live for one
     # turn at most: the turn's report or its teardown settles them

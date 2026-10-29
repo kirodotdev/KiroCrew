@@ -2394,11 +2394,36 @@ this checkpoint. It applies whether or not a handler carries a check of its own.
 - `POST .../resume` is `HANDLER`, because it opens a persisted transcript that
   usually has no live slot (see below).
 
-The question routes (`GET .../question`, `POST .../question/answer`)
+The question routes (`GET .../question`, `POST .../question/answer`,
+`POST .../question/steer`, `POST .../question/dismiss`)
 deliberately take the `OWNER` default rather than
 `SESSION_GRANT`: the grant never reaches a question in a person's own session.
 Their handlers still require `sessionApproval` from the owner app, through
 `deny_session_approval_caller`, as `/approve` does.
+
+`.../question/steer` and `.../question/dismiss` are the native mid-turn card's
+pair, alongside `.../question/answer` for the blocking card. A native card
+(`native: true`, a `card_id`, no `ask_id`) is raised while its own turn is still
+running and waiting on the answer, so a queued send would sit behind that turn
+and never reach it. `/steer` instead injects the chosen or typed answer INTO the
+running turn (`steer_into_running_turn` with `user_origin=False`), carrying the
+app's own provenance: the row records the app actor (`turnActor='app'`) and its
+display label (`appLabel`), and the human-turn marker stays off. The actor is
+keyed on the authenticated app caller, not on the display label surviving its
+length/control-char bound, so a malformed-label app still routes as an app turn
+rather than a `user` turn eligible for the user-only routing gate. The handler
+reserves the `card_id` synchronously before delivery (on the slot's own in-flight
+set, never on the card record, so a claim never serializes out) and refuses a
+concurrent second submission with `409`. On delivery the card is retired, so a
+second `/steer` of the same `card_id` is a `404`: one steer per card, not an open
+channel. A native answer that must be requeued (the turn ended as it arrived)
+drains with commands OFF — the app user's own text, which may literally be
+`/clear`, is sent as the words, never run as a dashboard command, the same
+treatment a channel steer's requeue gets. When no turn is running `/steer`
+reports `unavailable` so the embed hands the answer back to the message box
+rather than dropping it. `/dismiss` retires a native card's `needs_input` status
+without answering — the per-slot, owner-app form of the owner-only
+`/api/ask-question/dismiss`.
 
 The middleware publishes the slot object it judged on the request
 (`CHECKPOINT_SLOT_KEY`). A handler that awaits before it looks its slot up

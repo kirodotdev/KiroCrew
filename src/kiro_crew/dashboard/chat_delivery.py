@@ -384,6 +384,8 @@ async def steer_into_running_turn(
     admission: dict | None = None,
     decision_strip: dict | None = None,
     attachments: dict | None = None,
+    app_label: str | None = None,
+    app_actor: bool = False,
     delivery_id: str | None = None,
     responsive: bool = False,
     nudge_meta: dict | None = None,
@@ -470,6 +472,26 @@ async def steer_into_running_turn(
     (``AUTOMATION_STEER_META``), so the drained row is a ``nudge`` row too and
     never merges into a person's queued text. Absent for every other caller,
     which keeps their rows unchanged.
+
+    ``app_label`` stamps ``meta.appLabel`` on the persisted row (and on a requeued
+    steer's drained row), the attribution pill an app inject row uses. The
+    app-facing ``/question/steer`` route passes the authenticated app's identity
+    so a native card's answer reads as the app's; a human steer passes None and
+    the row keeps its prior shape. It is display attribution ONLY.
+
+    ``app_actor`` is the separate ROUTING signal: True stamps
+    ``meta.turnActor='app'`` on the row and the requeued entry, so a requeued app
+    answer drains as an app turn, not a ``user`` turn eligible for the user-only
+    routing gate. It is decoupled from ``app_label`` on purpose: an app caller
+    whose display label is malformed or over-long (dropped by the label's
+    length/control-char bound) must still stamp the app ACTOR, or its answer would
+    requeue as ``user``. The caller passes it from the authenticated identity
+    (``bool(request_app)``), never from the label surviving validation. The
+    human-turn marker remains governed by ``user_origin`` (an app steer sets it
+    False). ``app_actor`` also stamps :data:`COMMANDS_OFF_META_KEY` on the
+    requeued entry: an app native-card answer is the app user's own text (it may
+    be "/clear"), so a requeued app steer drains as plain text, never a run
+    command -- the same treatment a channel steer's requeue gets.
     """
     if nudge_meta is not None:
         user_origin = False
@@ -481,6 +503,11 @@ async def steer_into_running_turn(
     send_id = normalize_send_id(send_id)
     quote = quote_meta(attachments)
     attachments = attachment_meta(attachments)
+    # Display attribution for an app-authored steer, kept separate from the
+    # attachment-list reduction above (which allowlists only the file/paste
+    # lists). Coerced to a plain string so a non-str caller cannot stamp a
+    # structured value onto the row; empty becomes None (no stamp).
+    app_label = app_label if isinstance(app_label, str) and app_label else None
     # A take-back's `_session/steer/clear` drops every steer kiro-cli holds when it
     # runs, so this steer is not written until that clear has been answered.
     # circular import: steer_retract imports this module at module level.
@@ -625,12 +652,30 @@ async def steer_into_running_turn(
         slot._turn_user_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
-    if attachments or quote:
+    if attachments or quote or app_label or app_actor:
         # Retained for the REQUEUE with the attachment lists: a steer the turn
         # ended before consuming is drained as a queued row, and that row is
         # rebuilt from this map -- without the quote here it would render its
-        # blockquote as text instead of the card.
-        slot._steer_attachment_meta[message] = {**attachments, **quote}
+        # blockquote as text instead of the card, without appLabel the drained
+        # row would lose the app attribution the delivered row carries, and
+        # without turnActor the drain would read the requeued turn's actor as
+        # ``user`` (``_actor_for_queue_items`` has no kind and no stamp to read),
+        # making an app answer eligible for the user-only routing gate. The actor
+        # is keyed on ``app_actor``, NOT on ``app_label`` surviving its bound: an
+        # app whose label is dropped must still requeue as an app turn.
+        slot._steer_attachment_meta[message] = {
+            **attachments,
+            **quote,
+            **({"appLabel": app_label} if app_label else {}),
+            **({TURN_ACTOR_META_KEY: "app"} if app_actor else {}),
+            # An app native-card answer is the app user's own words -- a chosen
+            # option, or a free-text answer that may literally be "/clear". A
+            # channel steer gets commands-off on requeue for the same reason
+            # (steer_queue.py); an app steer re-enters the queue the same way and
+            # must not have its answer run as a dashboard command on drain. Keyed
+            # on app_actor so a composer steer's requeue meta is unchanged.
+            **({COMMANDS_OFF_META_KEY: True} if app_actor else {}),
+        }
     if user_origin and not channel_origin:
         # The composer's own human asked this to act now. Held for the requeue
         # with the attachment lists rather than in the lockstep origin maps,
@@ -976,6 +1021,17 @@ async def steer_into_running_turn(
         meta.update(attachments)
     if quote:
         meta.update(quote)
+    if app_label:
+        # App-authored steer: the attribution pill an app inject row uses, so a
+        # native card's answer reads as the app's rather than a bare user bubble.
+        # Display only; separate from HUMAN_TURN_META_KEY above (gated on
+        # user_origin).
+        meta["appLabel"] = app_label
+    if app_actor:
+        # The routing actor, keyed on the authenticated identity rather than on
+        # the label surviving its bound: records the app as the row's actor, the
+        # same stamp a requeued app steer carries, so the two delivery paths agree.
+        meta[TURN_ACTOR_META_KEY] = "app"
     # Offered only on a steer still waiting for the turn, typed by the session's
     # own human into the composer, on a harness that can drop it unread. A peer's,
     # a channel's or an automation's steer is not that person's to take back.
