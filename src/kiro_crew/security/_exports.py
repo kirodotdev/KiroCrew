@@ -446,6 +446,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_push_token_redirection",
     "_push_token_shell_read",
     "_python_reads_stdin",
+    "_quoted_assignment_scripts",
     "_realpath_or_none",
     "_rebuild_targets_bounded",
     "_redirect_consumes_next",
