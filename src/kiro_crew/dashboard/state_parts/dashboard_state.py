@@ -449,6 +449,11 @@ class DashboardState:
         # Short reason from the most recent WhatsApp start failure, empty when
         # connected or never attempted. Read by the settings badge.
         self.whatsapp_connect_error: str = ""
+        # True when the most recent WhatsApp state is a failure (a broken link,
+        # a missing SDK, a start exception), False while connected or still
+        # pairing. The settings panel reads this rather than parsing the text
+        # in ``whatsapp_connect_error``.
+        self.whatsapp_connect_failed: bool = False
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

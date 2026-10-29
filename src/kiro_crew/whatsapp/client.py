@@ -49,6 +49,10 @@ STATE_CONNECTED = "connected"
 STATE_LOGGED_OUT = "logged_out"
 STATE_BANNED = "banned"
 STATE_ERROR = "error"
+#: The lifecycle states that mean the link is broken. Every other non-connected
+#: state (``unpaired``, ``pairing``) is a step the operator still has to take,
+#: so its detail is an instruction rather than a failure.
+FAILED_STATES = frozenset({STATE_LOGGED_OUT, STATE_BANNED, STATE_ERROR})
 
 _INTER_CHUNK_DELAY_S = 0.4
 
