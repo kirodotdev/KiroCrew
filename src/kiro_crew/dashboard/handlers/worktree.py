@@ -1,4 +1,4 @@
-"""Git worktree creation for the follow-up card's "Start in new worktree" action.
+"""Git worktree creation for the follow-up card's "Start in a separate copy" action.
 
 One endpoint, ``POST /api/worktree/create``, which creates a sibling worktree of
 an existing local git repository on a new branch. The follow-up card calls it

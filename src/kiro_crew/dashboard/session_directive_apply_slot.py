@@ -604,7 +604,7 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
         return (
             "Follow-up card shown below the composer. Note: this session has no "
             "project directory, so the card offers 'Start in new chat' (a new "
-            "chat with no worktree) instead of 'Start in new worktree', beside "
+            "chat with no worktree) instead of 'Start in a separate copy', beside "
             "'Add to this session'. For isolated git work, suggest the user "
             "scope a git repository first (the composer's Project chip)."
         )
