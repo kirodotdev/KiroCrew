@@ -47,6 +47,8 @@ interface SelectionInfo {
   column?: number
   /** Offset in the preview's text; absent for text the offset space does not hold. */
   startOffset?: number
+  /** See `InlineComment.renderedQuote`. */
+  renderedQuote?: string
   /** Selected inside a code block (see `InlineComment.inCode`). */
   inCode?: boolean
   /** Where in the preview's code blocks (see `InlineComment.codePosition`). */
@@ -328,7 +330,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // while the DOM selection was still live (focus in the input collapses it).
   // A ref, not state: it is read only by the submit handler, and nothing renders
   // from it.
-  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number; inCode?: boolean; codePosition?: number } | null>(null)
+  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number; renderedQuote?: string; inCode?: boolean; codePosition?: number } | null>(null)
   // Whether the annotation box is open — read by the panel's document-level
   // Escape handler so it yields the key to the box instead of closing the panel.
   const composerOpenRef = useRef(false)
@@ -547,13 +549,19 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           const coords = isMarkdown
             ? (resolveSourcePos(range, root, displayContent) ?? findCoords(displayContent, raw) ?? findCoords(displayContent, anchor))
             : (findCoords(content, raw) ?? findCoords(content, anchor))
-          // Compute the rendered-text character offset so repeated occurrences
-          // of the same anchor text can be disambiguated at highlight time.
+          // The offset and the text to find come from `anchorFromRange`, which
+          // reads `Range.toString()`: the space the highlighter searches.
+          // `anchor` stays the text the reader saw, with the tab or newline the
+          // browser puts between table cells, rows and blocks, because that is
+          // what the comment list shows and the agent is sent.
           let startOffset: number | undefined
+          let renderedQuote: string | undefined
           try {
-            startOffset = anchorFromRange(root, range)?.startOffset
-          } catch { /* leave undefined */ }
-          return { anchor, rect, range: range.cloneRange(), line: coords?.line, column: coords?.column, startOffset }
+            const ra = anchorFromRange(root, range)
+            startOffset = ra?.startOffset
+            if (ra && ra.quote !== anchor) renderedQuote = ra.quote
+          } catch { /* leave both undefined */ }
+          return { anchor, rect, range: range.cloneRange(), line: coords?.line, column: coords?.column, startOffset, renderedQuote }
         }
       }
     }
@@ -618,7 +626,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     if (info) {
       if (info.range) applyHighlightMarks(info.range)
       else clearHighlightMarks()
-      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode, codePosition: info.codePosition }
+      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset, renderedQuote: info.renderedQuote, inCode: info.inCode, codePosition: info.codePosition }
     } else {
       // No DOM selection to map — anchor on the text the toolbar captured.
       clearHighlightMarks()
@@ -645,7 +653,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   const handleComposerSubmit = useCallback((comment: string, text: string) => {
     const info = pendingAnchorRef.current ?? { anchor: text }
-    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode, codePosition: info.codePosition }
+    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset, ...(info.renderedQuote ? { renderedQuote: info.renderedQuote } : {}), inCode: info.inCode, codePosition: info.codePosition }
     setComments(prev => [...prev, newComment])
     composerOpenRef.current = false
     composerDraftRef.current = false
@@ -913,10 +921,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           if (r) { ranges.push(r); hits.push({ range: r, comment }) }
           continue
         }
-        const bestIdx = findBestOccurrence(fullText, comment.anchor, comment.startOffset)
+        const quote = comment.renderedQuote || comment.anchor
+        const bestIdx = findBestOccurrence(fullText, quote, comment.startOffset)
         if (bestIdx < 0) continue
         const s = locate(bestIdx)
-        const e = locate(bestIdx + comment.anchor.length)
+        const e = locate(bestIdx + quote.length)
         if (!s || !e) continue
         try {
           const r = document.createRange()
