@@ -111,6 +111,7 @@ from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Sequence
 
 from kiro_crew._sqlite_compat import fts5_available, is_cjk_char, sqlite3
 from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
+from kiro_crew.sqlite_wal import enable_wal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.history_search import SearchNeedle
@@ -326,8 +327,8 @@ class SessionSearchIndex:
             timeout=_CONNECT_TIMEOUT_SECS,
             isolation_level=None,
         )
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        enable_wal(conn, timeout_secs=_BUSY_TIMEOUT_MS / 1000)
         # This store keeps a copy of each session's message text, so a deleted
         # session's content must not survive as readable bytes in a freed page.
         # secure_delete zeroes pages as they are released; drop() truncates the

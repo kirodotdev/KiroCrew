@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +31,7 @@ from typing import Any
 # stub. Only the exception type is bound directly -- an exception class is
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
+from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -299,6 +301,27 @@ def _missing_agent_reason(agent: str, session_key: str) -> str:
         return f'The agent "{agent}" can\'t start: its agent definition is missing.'
 
 
+def _kiro_cli_sandbox_owns_relay() -> bool:
+    """Whether kiro-cli's internal sandbox confines a KAS relay spawn on this host.
+
+    macOS only, while kiro-cli's switch is on: there the relay starts its seatbelt
+    before it spawns the KAS server, and nesting it inside Crew's seatbelt is the
+    EPERM that stops every session before ``initialize``.
+
+    Never on Windows, although ``wrap_argv`` hands the ``kiro`` backend to kiro-cli
+    there. Measured on Windows Server 2022 with kiro-cli 2.35.1 (KAS 0.66.70), with
+    the switch on and with it off: the relay spawned KAS as ``node ...
+    acp-server.js --transport=stdio --auth=acp-callback`` with no ``--sandbox``,
+    and the node process ran as the relay's own user and integrity level, with no
+    AppContainer and no restricted token, the same both ways. kiro-cli's Windows
+    sandbox is a launcher for tool commands that needs an elevated pool
+    registration first; it does not confine the KAS process. Claiming it would
+    audit an unconfined child as ``delegated`` and lift the no-backend refusal an
+    operator may have pinned. Reads the settings file, so call it off the loop.
+    """
+    return sys.platform == "darwin" and sandbox_mod.kiro_internal_sandbox_enabled()
+
+
 class KasHarness(MembershipHarness):
     """The KAS relay host."""
 
@@ -397,7 +420,26 @@ class KasHarness(MembershipHarness):
                 os.path.basename(kas_bin),
                 ctx.agent or "<none>",
             )
-        return SpawnPlan(argv=build_kas_argv(kas_bin, host_auth=host_auth), host_auth=host_auth)
+        # Both relay entries (the launcher and the chat binary) are kiro-cli, so on
+        # macOS with its switch on, kiro-cli's seatbelt confines this process. Read
+        # per spawn, off the loop, like the switch itself. The bundle route above
+        # runs Node with no kiro-cli in the chain and never says so.
+        kiro_cli_sandbox = await asyncio.to_thread(_kiro_cli_sandbox_owns_relay)
+        if kiro_cli_sandbox:
+            # A delegated spawn never passes Crew's launcher, so its seals on the kiro
+            # agents tree, the data-home config leaves and the install tree do not
+            # hold; a workspace overlapping one is refused here, as the Kiro harness
+            # refuses it. Off the loop: it stats both sides.
+            overlap = await asyncio.to_thread(
+                sandbox_mod.delegated_workspace_exposes_sealed_target, ctx.work_dir
+            )
+            if overlap:
+                raise AcpRuntimeError(overlap)
+        return SpawnPlan(
+            argv=build_kas_argv(kas_bin, host_auth=host_auth),
+            host_auth=host_auth,
+            kiro_cli_internal_sandbox=kiro_cli_sandbox,
+        )
 
     def apply_spawn_env(
         self,

@@ -162,6 +162,8 @@ def _remember_seen(names: Iterable[str]) -> None:
 # one thread. A scan that skipped an unreadable or unparseable spec leaves that
 # agent's name out of the snapshot although its file is still there, so its
 # absence is not evidence of a removal (see :func:`refresh_materialized_agents`).
+# ``skipped`` beside it lists the stems of the specs that scan skipped (``None``
+# when the listing failed), so a refresh keeps only what those files declared.
 _SCAN_STATE = threading.local()
 
 
@@ -201,10 +203,15 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
     from kiro_crew.hooks import safe_read_file
 
     _SCAN_STATE.complete = True
+    # Stems of the specs this scan skipped; ``None`` when the listing itself
+    # failed, so any spec may have been skipped.
+    skipped: list[str] = []
+    _SCAN_STATE.skipped = skipped
     try:
         candidates = iter_agent_spec_files(agents_dir)
     except OSError:
         _SCAN_STATE.complete = False
+        _SCAN_STATE.skipped = None
         return frozenset(), {}
     for af in candidates:
         try:
@@ -218,6 +225,7 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
         except (ValueError, OSError):
             # Its agent may be one this scan now leaves out; the scan is partial.
             _SCAN_STATE.complete = False
+            skipped.append(af.stem)
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The
         # filename stem is only trusted AFTER the file parses as an agent config:
@@ -311,6 +319,7 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     try:
         agents_dir = kiro_agents_dir()
         _SCAN_STATE.complete = True
+        _SCAN_STATE.skipped = []
         snapshot, stems = _scan_materialized_index(agents_dir)
         # Crewmate scope (``rfc-mate-owned-agent-config`` §5.3). A crewmate owns a
         # custom-agent file in ``~/.kiro/mates/agents/`` whose ``kiro_agent``
@@ -328,6 +337,7 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         # crewmate name the last snapshot held, so a file it could not read is
         # never removal evidence.
         complete_after_user = bool(getattr(_SCAN_STATE, "complete", True))
+        skipped_user: list[str] | None = getattr(_SCAN_STATE, "skipped", None)
         _SCAN_STATE.complete = True
         mate_names, mate_stems = _scan_materialized_index(mate_agents_dir())
         mate_complete = bool(getattr(_SCAN_STATE, "complete", True))
@@ -368,14 +378,39 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
             kept = _MATERIALIZED_MATE_ONLY - user_names
             snapshot = frozenset(snapshot | kept)
             mate_only = frozenset(mate_only | kept)
+        kept_stems: frozenset[str] = frozenset()
+        if not scan_complete:
+            # The user level keeps what a SKIPPED spec declared last time: that
+            # file is still on disk, and dropping its name would fail every
+            # session bound to it until the next complete refresh. Only those
+            # names stay -- the skipped file's stem, or the name its stem mapped
+            # to -- so a file really removed meanwhile (an app disable, a
+            # delete) still drops out. A failed listing skipped everything.
+            previous_user = _MATERIALIZED_AGENTS - _MATERIALIZED_MATE_ONLY
+            if skipped_user is None:
+                kept_user = previous_user
+                kept_stems = frozenset(_MATERIALIZED_STEMS)
+            else:
+                kept_stems = frozenset(s for s in skipped_user if s in _MATERIALIZED_STEMS)
+                declared = {*skipped_user, *(_MATERIALIZED_STEMS[s] for s in kept_stems)}
+                kept_user = previous_user & declared
+            snapshot = frozenset(snapshot | kept_user)
+            mate_only = frozenset(mate_only - kept_user)
         _MATERIALIZED_AGENTS = snapshot
         _MATERIALIZED_MATE_ONLY = mate_only
         # In place, new entries first: a reader between the two statements sees
         # every current stem (an old value for one just rewritten, never a hole),
-        # and the dict's identity holds across refreshes and boots.
+        # and the dict's identity holds across refreshes and boots. A skipped
+        # spec's mapping is kept, for the reason above.
         _MATERIALIZED_STEMS.update(stems)
-        for stale in [stem for stem in _MATERIALIZED_STEMS if stem not in stems]:
+        for stale in [s for s in _MATERIALIZED_STEMS if s not in stems and s not in kept_stems]:
             del _MATERIALIZED_STEMS[stale]
+        # The scan bounds what it built; the kept mappings come on top, so the
+        # merged map is bounded here too, dropping kept entries before fresh ones.
+        overflow = max(0, len(_MATERIALIZED_STEMS) - _MATERIALIZED_SEEN_MAX)
+        for extra in [s for s in _MATERIALIZED_STEMS if s not in stems][:overflow]:
+            del _MATERIALIZED_STEMS[extra]
+        _report_dropped("kept file-name mapping(s)", overflow)
         # One call per landed snapshot, so its eviction and its report happen
         # once for the whole of what it declares.
         _remember_seen([*snapshot, *stems])
@@ -411,6 +446,17 @@ def _removal_evidence() -> tuple[frozenset[str] | None, frozenset[str], bool]:
             _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
         )
         return names, removed, _MATERIALIZED_COMPLETE
+
+
+def materialized_snapshot_complete() -> bool:
+    """Whether the installed snapshot came from a scan that read every spec.
+
+    A pure in-memory read, safe on the event loop. ``False`` before the first
+    refresh lands, and after one that skipped a spec it could not read: a name
+    missing then may still have its file on disk, so a caller about to fail a
+    turn on that miss rescans once off the loop first (``_turn_admit``).
+    """
+    return _MATERIALIZED_COMPLETE
 
 
 def reset_dangling_default_agent() -> bool:

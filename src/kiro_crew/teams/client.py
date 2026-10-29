@@ -605,6 +605,9 @@ class TeamsClient:
         #: attribute for the same reason ``on_message`` is one: the transport is built
         #: after the client, and a constructor argument would need a cycle.
         self.on_route: Callable[[str, str, str, str], Awaitable[None]] | None = None
+        #: Set by the gateway to retire this channel's process-global registrations
+        #: (its queue drain) when the client closes. Mirrors ``DiscordClient``.
+        self.on_close: Callable[[], None] | None = None
         # Live turn tasks -- prevent GC of in-flight background handlers, and
         # bound how many a burst may start (see _MAX_INFLIGHT_TURNS).
         self._handler_tasks: set[asyncio.Task[None]] = set()
@@ -692,6 +695,13 @@ class TeamsClient:
         pin map.
         """
         self._closed = True
+        # Retire the registrations first, so nothing routes to a dispatcher that is
+        # going away while the turns below unwind.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Teams on_close callback failed", exc_info=True)
         try:
             # Snapshot first: a cancelled handler's done-callback mutates the set.
             handler_tasks = list(self._handler_tasks)

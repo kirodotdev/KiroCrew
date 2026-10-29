@@ -33,6 +33,7 @@ import {
 import { freshnessVerdict, STALE_EXIT, strictFromEnv } from '../../scripts/lib/ui-index-freshness.mjs'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import { Glass } from '../components/Glass'
+import HeaderControl from '../pages/members/HeaderControl'
 import { MemoryModeChip } from '../components/MemoryModeChip'
 import { Btn, IconButton, SendBtn } from '../components/ui'
 import Clickable from '../components/Clickable'
@@ -257,7 +258,7 @@ describe('a marker on a custom component reaches the DOM only if the component f
  * site test above until it is added here with its own rendered test.
  */
 const FORWARDING_PROVEN = [
-  'Btn', 'SendBtn', 'DropdownMenuItem', 'Glass',
+  'Btn', 'SendBtn', 'DropdownMenuItem', 'Glass', 'HeaderControl',
   // Proven ahead of the wave-3 area batches (so none of them edits this file):
   // each forwards unknown props to the element a person activates.
   'IconButton', 'Clickable', 'Link',
@@ -437,6 +438,18 @@ describe('the custom components real markers sit on forward them', () => {
     expect(el?.textContent).toBe('Mode')
     expect(unregisteredMarkers()).toEqual([])
     r.unmount()
+  })
+
+  it('HeaderControl puts the marker on its button, as a Glass chip and as a bare bar icon', () => {
+    for (const inBar of [false, true]) {
+      const r = render(React.createElement(HeaderControl, { inBar, chipClassName: 'chip', barClassName: 'bar', ...uiLocation('members.back') }, 'Roster'))
+      const marked = r.container.querySelectorAll(`[${UI_LOCATION_ATTR}]`)
+      expect(marked).toHaveLength(1)
+      expect(marked[0].tagName).toBe('BUTTON')
+      expect(marked[0].getAttribute(UI_LOCATION_ATTR)).toBe('members.back')
+      expect(unregisteredMarkers()).toEqual([])
+      r.unmount()
+    }
   })
 
   it('the memory-mode chip carries its marker in every mode, on the button it is', () => {

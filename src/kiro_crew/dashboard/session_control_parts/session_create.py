@@ -577,7 +577,7 @@ async def create_session(
     if own_worker:
         backend_reason = worker_kit_backend_refusal(child_backend)
         if backend_reason is not None:
-            raise SessionControlError(backend_reason, code="worker_kit_harness_unsupported")
+            raise SessionControlError(backend_reason, code="capability_harness_unsupported")
     model_reason = _model_pin_refusal(model_name, child_backend) if model_name else None
     if model_reason is None and "model" in inherited_fields:
         model_reason = _inherited_pin_foreign_to_child(

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ChevronRight, Folder, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 import { Btn, Input } from './ui'
 import {
@@ -25,10 +25,33 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
   const [editName, setEditName] = useState(folder.name)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
+  // The collapse toggle replaces the input when the editor closes. Closing
+  // unmounts the focused input, and a browser then drops focus to
+  // `document.body`, so Enter and Escape hand focus back to the toggle the
+  // editor stood in for. A pointer blur moves nothing: the user already chose
+  // where focus goes. The toggle mounts in the same render that closes the
+  // editor, so the move waits a frame for it.
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  // Set by Enter and Escape before they close the editor, so a blur the
+  // browser fires on the unmounting input neither commits again nor commits
+  // the abandoned draft.
+  const closedRef = useRef(false)
+
   const commitRename = () => {
     const trimmed = editName.trim()
     if (trimmed && trimmed !== folder.name) onRename(trimmed)
+  }
+  const closeEditor = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason === 'blur') {
+      if (closedRef.current) return
+      commitRename()
+      setEditing(false)
+      return
+    }
+    closedRef.current = true
+    if (reason === 'enter') commitRename()
     setEditing(false)
+    requestAnimationFrame(() => toggleRef.current?.focus({ preventScroll: true }))
   }
 
   return (
@@ -45,11 +68,12 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                   className="bg-bg rounded px-2 py-0.5 flex-none min-w-[120px]"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
-                  {...ime.bindEnter({ onEnter: commitRename, onEscape: () => setEditing(false), onBlur: commitRename })}
+                  {...ime.bindEnter({ onEnter: () => closeEditor('enter'), onEscape: () => closeEditor('escape'), onBlur: () => closeEditor('blur') })}
                 />
               </>
             ) : (
               <button
+                ref={toggleRef}
                 type="button"
                 onClick={onToggleCollapse}
                 className="flex items-center gap-1.5 bg-transparent border-none cursor-pointer p-0 text-text hover:text-accent transition-colors"
@@ -84,7 +108,7 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                 // or the delete confirmation), so the restore has nothing to add.
                 onCloseAutoFocus={e => e.preventDefault()}
               >
-                <DropdownMenuItem onSelect={() => { setEditName(folder.name); setTimeout(() => setEditing(true), 0) }}>
+                <DropdownMenuItem onSelect={() => { setEditName(folder.name); closedRef.current = false; setTimeout(() => setEditing(true), 0) }}>
                   <Pencil size={13} className="shrink-0" />
                   <span>{i18nT('pages.schedulePage.cronFolders.rename')}</span>
                 </DropdownMenuItem>

@@ -17,6 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tag_grants import (
     has_grant_row,
@@ -486,8 +487,8 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
             tag["color"] = _valid_color(str(body["color"]))
         if "order" in body:
             try:
-                tag["order"] = int(body["order"])
-            except (TypeError, ValueError, OverflowError):
+                tag["order"] = body_int(body["order"])
+            except (TypeError, ValueError):
                 pass
         if "status" in body:
             # Validated strictly-boolean BEFORE the lock (see above).

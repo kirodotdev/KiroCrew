@@ -21,6 +21,7 @@ from aiohttp import web
 from kiro_crew import beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.superseded_defaults import ack_explicit_write
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.core_config_models import (
     _active_provider_and_pin_backend,
@@ -172,9 +173,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"invalid value, must be one of {allowed}", f"{path_key}={value}")
     elif spec["type"] == "int":
         try:
-            value = int(value)
-        # int() raises OverflowError on a non-finite float, which aiohttp's json.loads accepts.
-        except (TypeError, ValueError, OverflowError):
+            value = body_int(value)
+        except (TypeError, ValueError):
             return _deny("must be an integer", f"{path_key}={value}")
         lo, hi = spec.get("min", 0), spec.get("max", 999999)
         if value < lo or value > hi:

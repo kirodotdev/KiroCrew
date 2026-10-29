@@ -158,9 +158,10 @@ def _eager_prune(directory: Path, crew_home_id: str, *, force: bool = False) -> 
     ``kirocrew-skill-view-prune`` thread -- or when one ends inside the spacing
     window a recent spawn opened: a zero-wait end would fail the lock the first
     end holds and leave its own view on disk until the next spawn or boot drain,
-    the very "gateway stop" case this reclaim exists for. Queueing serialises the
-    ends behind one another, and because each end releases its lease before it
-    prunes, the walk that runs after the wait already sees this end's lease gone.
+    the very "gateway stop" case this reclaim exists for. Ends reach here through
+    :func:`_coalesced_end_prune`, so at most one end per target queues here at a
+    time, and because each end releases its lease before it asks, the walk that
+    runs after the wait already sees this end's lease gone.
     Every other gate still holds: the cross-process lock ceiling, the lease scan
     and the time budget. Never raises (the queue timeout is an ``OSError``).
     """
@@ -297,7 +298,83 @@ def _end_projection_off_loop(
     try:
         lease_stack.close()
     finally:
+        _coalesced_end_prune(side_dir, directory, crew_home_id)
+
+
+# Ends whose prune is already covered by one running for the same target. An end
+# releases its lease BEFORE it asks for a prune, so any prune pass that STARTS
+# after that request sees the lease gone and covers it. Without coalescing, a
+# subagent fan-out queues one forced prune per ended projection on the same
+# in-process lock the session starts wait on, each spending its full walk budget,
+# and the starts behind them run out their in-process wait and are refused.
+_END_PRUNE_GUARD = threading.Lock()
+_END_PRUNE_RUNNING: set[tuple[str, str, str]] = set()
+_END_PRUNE_REQUESTED: set[tuple[str, str, str]] = set()
+
+
+def _coalesced_end_prune(side_dir: Path, directory: Path, crew_home_id: str) -> None:
+    """Run the forced end prune, or hand it to the one already running for this target.
+
+    At most one end prune per (side directory, agents directory, home) runs or
+    waits on the alias lock at a time. An end that arrives while one runs records
+    a request and returns. The end that ran the first pass runs it on its own
+    thread, as before; if requests arrived meanwhile, the follow-up passes go to
+    one daemon thread, which repeats while requests keep arriving, so the caller
+    is not held for the length of a wave. Every end is still followed by a prune
+    that started after its lease was released. Never raises.
+    """
+    key = (side_dir.as_posix(), directory.absolute().as_posix(), crew_home_id)
+    with _END_PRUNE_GUARD:
+        if key in _END_PRUNE_RUNNING:
+            _END_PRUNE_REQUESTED.add(key)
+            return
+        _END_PRUNE_RUNNING.add(key)
+    try:
         _eager_prune_in(side_dir, directory, crew_home_id, force=True)
+        if not _end_prune_more_requested(key):
+            return
+        try:
+            threading.Thread(
+                target=_run_requested_end_prunes,
+                args=(key, side_dir, directory, crew_home_id),
+                name="kirocrew-skill-view-prune",
+                daemon=True,
+            ).start()
+            return
+        except RuntimeError:
+            logger.debug("skill projection: follow-up prune thread not started", exc_info=True)
+        _run_requested_end_prunes(key, side_dir, directory, crew_home_id)
+    except BaseException:
+        with _END_PRUNE_GUARD:
+            _END_PRUNE_RUNNING.discard(key)
+            _END_PRUNE_REQUESTED.discard(key)
+        raise
+
+
+def _end_prune_more_requested(key: tuple[str, str, str]) -> bool:
+    """Consume a pending request for *key*, or end its run when there is none."""
+    with _END_PRUNE_GUARD:
+        if key in _END_PRUNE_REQUESTED:
+            _END_PRUNE_REQUESTED.discard(key)
+            return True
+        _END_PRUNE_RUNNING.discard(key)
+        return False
+
+
+def _run_requested_end_prunes(
+    key: tuple[str, str, str], side_dir: Path, directory: Path, crew_home_id: str
+) -> None:
+    """The follow-up passes of one coalesced run, after its first request was consumed."""
+    try:
+        while True:
+            _eager_prune_in(side_dir, directory, crew_home_id, force=True)
+            if not _end_prune_more_requested(key):
+                return
+    except BaseException:
+        with _END_PRUNE_GUARD:
+            _END_PRUNE_RUNNING.discard(key)
+            _END_PRUNE_REQUESTED.discard(key)
+        raise
 
 
 def _sweep_orphan_sidecars(

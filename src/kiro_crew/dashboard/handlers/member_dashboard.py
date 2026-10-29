@@ -1016,6 +1016,9 @@ def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = Non
     feed = DashboardFeed(slot, session, panel_record=record)
     try:
         feed.subscribe(manifest)
+        # One-shot: a cold slot fold arrives from its background prime, not as a
+        # baseline, so wait for it before reading instead of reporting it missing.
+        feed.wait_for_primes()
         agentic: Any = {}
         if any(spec.agentic for spec in manifest.fields.values()):
             agentic = projection.read_slot_projection(slot, "agentic").value

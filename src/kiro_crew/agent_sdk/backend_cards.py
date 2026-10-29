@@ -335,7 +335,14 @@ DETAIL_LINES: Tuple[_LineSpec, ...] = (
 #: of the four (the sandbox stand-down, and Crew handing over its credential)
 #: describe a boundary moving, and the sandbox one fails OPEN by design.
 SECURITY_LINES: Tuple[_LineSpec, ...] = (
-    _LineSpec(NOTE_CREW_SANDBOX_STANDS_DOWN, ("ACP_BACKENDS_INTERNAL_SANDBOX",)),
+    # A union: KAS's default relay route is the kiro-cli process and stands Crew's
+    # sandbox down exactly as kiro-cli does. Its bundle route does not, and a card
+    # cannot show a per-route fact, so the line errs toward naming the boundary
+    # that can move rather than hiding it on the route most KAS sessions take.
+    _LineSpec(
+        NOTE_CREW_SANDBOX_STANDS_DOWN,
+        ("ACP_BACKENDS_INTERNAL_SANDBOX", "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX"),
+    ),
     _LineSpec(NOTE_REFUSES_UNCLASSIFIED_TOOLS, ("ACP_BACKENDS_META_IDENTITY",)),
     _LineSpec(NOTE_HOST_CREDENTIAL_TO_CHILD, ("ACP_BACKENDS_HOST_AUTH_CALLBACK",)),
     _LineSpec(NOTE_POD_HOME_RELOCATED, ("ACP_BACKENDS_POD_HOME_REMAP",)),
@@ -366,6 +373,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "backend, and a non-member refuses the hand-off with an error that names "
         "the backends that can carry it. Nothing runs without its kit, so a card "
         "line would describe a refusal the user meets with its own remedy"
+    ),
+    "ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT": (
+        "which channel carries a crewmate worker's prompt: the context block or the "
+        "wire spec. The worker gets the same prompt either way, so there is nothing "
+        "for a user choosing a harness to weigh"
     ),
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": (
         "which backend's process answers session starts and mode switches one at a "
@@ -453,6 +465,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "non-member refuses such a spec before spawn with an error naming the fix, "
         "so nothing runs wider than it was saved; the card's saved-agent line already "
         "says whether the spec loads at all"
+    ),
+    "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": (
+        "whether a crewmate worker's single-tool switch-offs are honoured. A worker "
+        "with such limits on a non-member is refused before spawn with an error naming "
+        "the fix, so it never runs wider than its crewmate saved; a worker without "
+        "them runs, and the card's saved-agent line already says whether it loads"
     ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
         "which channel carries the agent spec's own servers to the session, read by the "

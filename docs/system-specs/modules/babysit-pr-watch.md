@@ -377,10 +377,13 @@ The reading itself:
   conservative bucket is kept and the reading reports itself `partial` with a note
   naming the unresolved identity. A redundant look costs a turn, a dropped gate
   costs the merge.
-* A duplicate that cannot be ordered by time keeps the more conservative bucket.
-  Saying so is the READING's job rather than the row's: `partial` and its note are
-  what a consumer reads, and a per-row flag none of them opens would be a field
-  the reading cannot back.
+* A duplicate that cannot be ordered by time -- either row carries no start time --
+  keeps the more conservative bucket. Saying so is the READING's job rather than
+  the row's: where the two rows disagree, the reading reports itself `partial`
+  with a note naming each check whose bucket was chosen, and a per-row flag none
+  of the consumers opens would be a field the reading cannot back. Rows that agree
+  need no note, because nothing was chosen. `checks_complete` stays true: every
+  row was read, and what is short is the ordering, not the board.
 * Comments and reviews are carried WITH their bodies, clipped per item and in
   total, newest first, inside a fetch horizon. The bot's own comments are skipped,
   because otherwise the watch is a feedback loop. A remark whose timestamp cannot

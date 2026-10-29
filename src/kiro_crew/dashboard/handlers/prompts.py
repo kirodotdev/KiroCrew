@@ -139,6 +139,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import served_provider_label  # noqa: F401
     from kiro_crew.agent_discovery import session_skill_globs  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
+    from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _capability_manager  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _get_skills  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _read_session_key  # noqa: F401

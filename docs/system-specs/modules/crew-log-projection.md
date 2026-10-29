@@ -1161,6 +1161,19 @@ The read runs on the subscriber's own thread: never the append path and never th
 worker, so a caller on an event loop calls it through `asyncio.to_thread`. A read that
 raises removes the subscription and propagates.
 
+A slot baseline NEVER folds cold. It reads with `read_slot_projection(..., cold=False)`,
+which continues a warm cell or resumes a savepoint as before (O(entries since the
+savepoint)) and raises `SlotFoldNotReady` where it would otherwise stream every unit of
+the slot. The subscriber then gets no baseline -- the same shape as a fold with no
+revision yet -- and `crew_log/slot_prime.py` schedules one background prime for that
+(home, slot, fold): one worker thread, one fold per cell at a time however many
+subscribers and wakes ask, published on the bus as an ordinary `FoldAdvanced` when it
+ends. A subscriber registered before that publish receives it through the hold-and-replay
+above; one registered after reads the now-warm cell. A failed prime is logged; the next
+request retries once, and after two failures in a row the cell waits 60 s before another
+attempt. The eager worker's `_advance` takes the same path, so a cold cell never stalls
+the fold worker either, and `eager.drain` (the shutdown barrier) also waits for primes.
+
 The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
 `slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps
 their disposers so a second install in one process swaps all three instead of doubling
@@ -1654,9 +1667,39 @@ already names:
 <store dir>/projections/<fold>.json
 {"v", "key", "state_version", "watermark",
  "identity": {"unit", "origin", "first_seq"},
- "witness": {"seq", "prefix_sha", "prefix_records"},
+ "witness": {"seq", "prefix_cuts"} or {"seq", "prefix_sha", "prefix_records"},
+             plus optional "resume" and "prefix_extent",
  "state"}
 ```
+
+**What a resume costs.** A unit with a cut counter is written with a `prefix_cuts`
+witness, settled by one small read; a unit without one gets the digest. Every witness
+written now also carries two ADDITIVE keys: `resume`, the byte position
+(segment, offset, seq, cuts) of the record at the savepoint's seq, which the tail read
+seeks to instead of decoding every record below it (`CrewLog.iter_from(resume=)`
+re-checks it against the live file first); and `prefix_extent`
+(`crew_log/prefix_extent.py`): device, inode, size and mtime of the segment the prefix
+ends in, the name, size and mtime of every older segment, and a SHA-256 of the last
+16 KiB of the prefix (and device and inode for every segment). A unit with a cut
+counter is admitted when the count matches and the files are untouched or only appended
+to. A unit without one is admitted on the extent only while EVERY segment is untouched
+(same file, size and mtime); any change, an append included, costs one full re-hash,
+after which the extent is re-taken. When the extent does not hold, a digest witness
+falls back to the full re-hash and a count witness is refused, so a segment rewritten in
+place, truncated or replaced is still caught. A payload written
+before these keys lacks them and is checked as it always was; a build that predates
+them ignores them. A digest-witnessed file is rewritten once, on its first resume,
+with a count witness (unit has a counter) or with an extent (unit has none and the
+file stored a position). The append-tolerant form of the extent, used only beside a cut
+count, does not see an outside edit deep inside the newest segment followed by an
+append; the count still covers every rewrite the store itself makes.
+
+A bundle CACHED in this process (`fold_session(since=)`) carries the same position and
+extent, plus the cut count it was folded under (`SessionProjections.cuts`). While the
+extent holds and the count reads the same, that bundle has custody of its prefix, so
+an advance that earns a savepoint write persists the state it already holds instead of
+folding from disk; the eager warm path then costs the new entries alone. A bundle on a
+unit with no counter keeps the old rule and refolds from disk to earn a write.
 
 The envelope is the projection kernel's (`kiro_crew.projection.checkpoint`), and this
 package supplies the two blocks inside it. The `identity` block holds the facts a
@@ -1904,6 +1947,7 @@ Same store, same kernel envelope, same `prefix_admit`, in a leaf of its own:
 {"v", "key", "state_version", "watermark",
  "identity": {"slot", "units", "marks", "unit", "origin", "first_seq"},
  "witness": {"seq", "prefix_cuts"} or {"seq", "prefix_sha", "prefix_records"},
+             plus optional "resume" and "prefix_extent" (as for a session fold),
  "state"}
 ```
 

@@ -21,6 +21,16 @@ class TestPrepareMirrorMsg:
         result = _prepare_mirror_msg(long_msg)
         assert len(result) <= 500
 
+    def test_a_cut_message_ends_with_an_ellipsis(self):
+        """A shortened echo says so, instead of ending mid-word."""
+        result = _prepare_mirror_msg("word " * 200)
+        assert result.endswith("…")
+        assert len(result) == 500
+
+    def test_a_message_at_the_limit_is_not_marked(self):
+        msg = "x" * 500
+        assert _prepare_mirror_msg(msg) == msg
+
     def test_short_message_unchanged(self):
         """Short messages pass through without modification."""
         msg = "Hello, please investigate this ticket"

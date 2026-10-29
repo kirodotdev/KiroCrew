@@ -767,10 +767,33 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 ]
                 assert len(reported) == 1
 
+    def test_kept_file_name_mappings_stay_within_the_bound(self):
+        # An incomplete scan keeps the mappings of the specs it skipped on top
+        # of the fresh ones it built, so the merged map is bounded where it is
+        # retained: specs that stop parsing while new ones appear never push
+        # it past the count bound.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(Path(td), {"default": {"kiro_agent": "kirocrew"}}, "default", {})
+            p1, p2 = self._patched(config, d)
+            with p1, p2, unittest.mock.patch.object(loader, "_MATERIALIZED_SEEN_MAX", 8):
+                for batch in range(3):
+                    for spec in d.glob("Pkg-*.json"):
+                        spec.write_text("{torn", encoding="utf-8")
+                    for n in range(8):
+                        (d / f"Pkg-{batch}-{n}.json").write_text(
+                            json.dumps({"name": f"agent-{batch}-{n}"}), encoding="utf-8"
+                        )
+                    loader.refresh_materialized_agents()
+                    assert len(loader._MATERIALIZED_STEMS) <= 8
+                # The fresh mappings win over the kept ones.
+                assert all(stem.startswith("Pkg-2-") for stem in loader._MATERIALIZED_STEMS)
+
     def test_a_scan_that_could_not_read_every_spec_is_not_evidence_of_a_removal(self):
         # The default's spec is caught mid-write (or briefly unreadable) during
-        # the owner's fetch. The scan skips it, so its name is missing, but the
-        # file is still there: the default must not be reset on that scan, and
+        # the owner's fetch. The scan skips it and keeps the name it declared
+        # last, since the file is still there: the default must not be reset on that scan, and
         # once the file reads again nothing has changed. A real removal still
         # resets on the next complete scan.
         import kiro_crew.config.loader as loader
@@ -789,7 +812,10 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 good = spec.read_text(encoding="utf-8")
                 spec.write_text('{"name": "capt', encoding="utf-8")  # torn
                 loader.refresh_materialized_agents(heal_default=True)
-                assert "captain" not in loader._MATERIALIZED_AGENTS
+                # The incomplete scan keeps the name the last snapshot had
+                # and still never heals.
+                assert "captain" in loader._MATERIALIZED_AGENTS
+                assert loader._MATERIALIZED_COMPLETE is False
                 assert self._on_disk(config)["default_agent"] == "pkg"
                 spec.write_text(good, encoding="utf-8")
                 loader.refresh_materialized_agents(heal_default=True)

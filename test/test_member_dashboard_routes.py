@@ -338,6 +338,9 @@ async def test_a_live_dashboard_comes_back_with_its_values_filled_in(monkeypatch
             out.seq = 7
             return out
 
+        def wait_for_primes(self):
+            pass
+
         def unsubscribe(self):
             pass
 
@@ -469,6 +472,9 @@ async def test_a_stale_copy_is_still_composed_with_its_values(monkeypatch, tmp_p
             out.fields = {"credits": 2.5}
             out.seq = 9
             return out
+
+        def wait_for_primes(self):
+            pass
 
         def unsubscribe(self):
             pass
@@ -1809,6 +1815,9 @@ class TestThePageIsToldWhenThePersonLastSpoke:
                 out = dashboard_feed.FieldRead()
                 out.fields = {"credits": 1.5}
                 return out
+
+            def wait_for_primes(self):
+                pass
 
             def unsubscribe(self):
                 pass

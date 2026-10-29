@@ -242,6 +242,11 @@ class LivePage:
             # here instead.
             if fold not in self._tree_folds
         ]
+        # A cold slot fold hands no baseline: one background prime folds it and pushes
+        # the value. Wait for it here (off this thread's CPU), so the first paint and a
+        # one-shot snapshot carry the value instead of an empty field and a patch sent
+        # before any frame exists to take it.
+        self._feed.wait_for_primes()
         self._read_trees()
         if unavailable:
             # REPORTED, never raised: one unsubscribable fold must not deny the page the

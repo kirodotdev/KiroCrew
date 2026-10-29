@@ -29,6 +29,7 @@ from kiro_crew.owner_only_files import (
     prepare_owner_only_sqlite,
     write_text_owner_only_in_home,
 )
+from kiro_crew.sqlite_wal import enable_wal
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -147,7 +148,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     under a Python-level lock, guarantees a single connection does the switch
     while no other connection holds a DB lock; later connections find WAL
     already set and skip straight to serving queries. Keyed by DB path so
-    per-test temp DBs each initialize independently.
+    per-test temp DBs each initialize independently. The lock cannot see another
+    process, so the switch itself also retries a lock conflict (``enable_wal``).
     """
     dbp = db_path()
     key = str(dbp)
@@ -157,7 +159,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         if key in _INITIALIZED_DBS and dbp.exists() and dbp.stat().st_size > 0:
             return  # double-checked locking
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            enable_wal(conn, timeout_secs=30.0)
             conn.execute("BEGIN")
             conn.execute("""CREATE TABLE IF NOT EXISTS campaigns (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, question TEXT NOT NULL,

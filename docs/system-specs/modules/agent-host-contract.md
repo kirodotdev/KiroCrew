@@ -112,17 +112,27 @@ session: the source-defined `kirocrew-mate-worker` base (generated, with the
 conductor, into `~/.kiro/mates/agents/`, which kiro-cli does not list) plus that crewmate's
 own additions and the tools it switches off (`mate_worker.worker_session_spec`,
 the one harness-neutral seam; crew-mode.md, "The worker runs on its crewmate's
-backend"). The rows above decide which host can carry that. KAS takes every
-agent over the wire per session, so its projection reads the seam. kiro-cli
-reads `--agent` off disk at spawn, from `~/.kiro/agents/`, so it cannot find
-either mate spec; a crewmate's chat never reaches it, because a stored `kiro`
-member backend reads as KAS. The projecting hosts read their spec off disk
-by agent name (for the two mate specs, from `~/.kiro/mates/agents/`:
-`session_mcp._user_agent_spec`) and report `excludedTools` as a projection gap, so on them the
-crewmate's switched-off tools would come back. `ACP_BACKENDS_MATE_WORKER_KIT`
-(harness-parity.md) names the hosts that carry it, and a worker on any other host
-is refused before spawn rather than run on the bare base. A host joins the set by
-projecting the seam's spec for the worker session, its `excludedTools` withheld.
+backend"). It is carried the way a member chat's saved spec is, so it runs on the
+hosts in `ACP_BACKENDS_MATE_WORKER_KIT` and is refused with the member chat's
+codes elsewhere (harness-parity.md). KAS takes every agent over the wire per
+session, so its projection reads the seam. claude, the one mirrored host in the
+set, builds its `session/new` `mcpServers` array from `session_mcp_projection`,
+which reads the seam for a worker session by its key, so the worker's own servers
+reach it; a
+worker whose base is absent or unreadable is refused there (`WorkerKitUnreadable`),
+as on KAS, rather than run on the control plane alone. Its
+prompt reaches claude in the `[AGENT SYSTEM PROMPT]` block, which reads the same seam
+by the session key (`context_assembly.agent_spec._crewmate_worker_prompt`), so the
+worker's own principles and the crewmate's prompt follow the base there too. The
+crewmate's addition is measured against the on-disk worker base, as KAS's is, so a
+file that repeats that base (one copied from the default template) adds nothing. Only
+the hosts in `ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT`, whose mirrors project no
+spec prompt, get that addition; KAS's block stays the base, as its wire spec carries both. The
+rest of the spec reaches claude only as far as the member path carries it, and the
+columns above say what that is. kiro-cli reads `--agent` off disk at spawn, from
+`~/.kiro/agents/`, so it cannot find the worker spec and is not in the set. A
+stored `kiro` member backend reads as KAS, but a worker can still land on kiro-cli
+when KAS is not selectable on the host; it is refused there before spawn.
 
 ## 2. Session persistence
 

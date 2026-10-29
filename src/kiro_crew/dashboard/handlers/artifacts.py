@@ -261,6 +261,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.artifacts import slug_is_well_formed  # noqa: F401
     from kiro_crew.artifacts import webapp_metadata_from_dict  # noqa: F401
     from kiro_crew.constants import md_link_destination  # noqa: F401
+    from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.chat_folders import archived_session_names_in_folders  # noqa: F401
     from kiro_crew.dashboard.chat_folders import chat_folder_subtree_ids  # noqa: F401
     from kiro_crew.dashboard.chat_folders import generate_emoji_for_name  # noqa: F401

@@ -16,6 +16,7 @@ import shutil
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 import native_skill_projection_helpers
@@ -1128,6 +1129,111 @@ def test_the_per_spawn_eager_prune_skips_rather_than_queues_but_an_end_waits(
     waits.clear()
     projection._eager_prune(agents, _crew_home_id(), force=True)
     assert waits == [None], "an end skipped the lock instead of queueing for it"
+
+
+def test_ends_that_arrive_while_one_prunes_share_its_next_pass(native_tree, monkeypatch):
+    """A subagent fan-out ends dozens of projections together, on the same
+    in-process alias lock that session starts wait on. One forced prune per end
+    would hold that lock long enough for the starts behind it to run out their
+    wait and be refused. Ends that arrive while one end's prune runs return at
+    once and are covered by ONE more pass, not one pass each."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    _home, agents, _project = native_tree
+    calls: list[str] = []
+    entered = threading.Event()
+    gate = threading.Event()
+    follow_up_gate = threading.Event()
+    follow_up_done = threading.Event()
+
+    def recording_prune(directory, crew_home_id, *, force=False):
+        calls.append(threading.current_thread().name)
+        if len(calls) == 1:
+            entered.set()
+            gate.wait(10)
+        elif len(calls) == 2:
+            follow_up_gate.wait(10)
+        _REAL_EAGER_PRUNE(directory, crew_home_id, force=force)
+        if len(calls) == 2:
+            follow_up_done.set()
+
+    monkeypatch.setattr(projection, "_eager_prune", recording_prune)
+    side_dir = projection._projection_side_dir()
+    first = threading.Thread(
+        target=projection._end_projection_off_loop,
+        args=(ExitStack(), side_dir, agents, _crew_home_id()),
+        name="first-end",
+    )
+    first.start()
+    assert entered.wait(10)
+
+    late = [
+        threading.Thread(
+            target=projection._end_projection_off_loop,
+            args=(ExitStack(), side_dir, agents, _crew_home_id()),
+            name=f"late-end-{index}",
+        )
+        for index in range(10)
+    ]
+    for thread in late:
+        thread.start()
+    for thread in late:
+        thread.join(5)
+        assert not thread.is_alive(), "an end queued behind the running prune"
+    gate.set()
+    first.join(10)
+    # The follow-up pass is still held: the end that ran the first pass was
+    # not kept for the passes the later ends asked for.
+    assert not first.is_alive(), "the first end was held for the follow-up pass"
+    follow_up_gate.set()
+    assert follow_up_done.wait(10), "the later ends got no follow-up pass"
+
+    assert calls == ["first-end", "kirocrew-skill-view-prune"], "each end ran a prune pass"
+
+
+def test_an_end_covered_by_a_running_prune_still_loses_its_view(native_tree, monkeypatch, tmp_path):
+    """The coalescing must not drop an end: a view whose lease is released while
+    another end's prune is already past its lease scan is reclaimed by the extra
+    pass that prune makes, not left for the next spawn or boot."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text('{"name":"custom","prompt":"v1"}', encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project)
+    first_alias = _alias_file(agents, first)
+    source.write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
+    second = projection.prepare_native_skill_projection(tmp_path / "other-run")
+    second_alias = _alias_file(agents, second)
+    assert first_alias != second_alias
+    passes: list[bool] = []
+    first_pass_done = threading.Event()
+    second_pass_done = threading.Event()
+    gate = threading.Event()
+
+    def recording_prune(directory, crew_home_id, *, force=False):
+        _REAL_EAGER_PRUNE(directory, crew_home_id, force=force)
+        passes.append(second_alias.exists())
+        if len(passes) == 1:
+            first_pass_done.set()
+            gate.wait(10)
+        else:
+            second_pass_done.set()
+
+    monkeypatch.setattr(projection, "_eager_prune", recording_prune)
+    ender = threading.Thread(target=first.release, name="first-end")
+    ender.start()
+    assert first_pass_done.wait(10)
+    assert not first_alias.exists()
+    assert second_alias.exists(), "the second view went before its projection ended"
+
+    second.release()  # returns at once: the running end owes it one more pass
+    gate.set()
+    ender.join(10)
+    assert not ender.is_alive()
+    assert second_pass_done.wait(10), "the covered end got no follow-up pass"
+
+    assert passes == [True, False]
+    assert not second_alias.exists(), "an end covered by a running prune kept its view"
+    assert not list(projection._projection_lease_dir().iterdir())
 
 
 def test_a_projection_ending_later_prunes_the_home_it_published_into(

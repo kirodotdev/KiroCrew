@@ -69,7 +69,8 @@ OWNERS = (
 
 #: Every name the facade bound at the base the split was cut from, private ones
 #: included: tests and callers import several of them, and a name that silently stops
-#: resolving breaks a caller nobody can see from here.
+#: resolving breaks a caller nobody can see from here. A name an import in the facade
+#: gained since is listed here too, since it is not one of the composition's own.
 BASE_NAMES = frozenset(
     {
         "APPROVAL_INTERACTIVE",
@@ -155,6 +156,7 @@ BASE_NAMES = frozenset(
         "dataclass",
         "describe_grant_lifetime",
         "drain_until_quiet",
+        "drain_when_free",
         "entry_channel",
         "entry_person_origin",
         "handle_channel_agent_command",

@@ -236,6 +236,7 @@ def _record_terminal_directive(turn, kind: str, outcome: DirectiveOutcome, tcid:
     if not turn._terminal_directive_applied:
         turn._terminal_directive_applied = True
         turn._terminal_directive_kind = kind
+        turn._terminal_directive_text = outcome.text
 
 
 def _wt_maybe_cadence(turn) -> None:
