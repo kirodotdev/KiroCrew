@@ -954,13 +954,10 @@ async def cron_remove_all_reply(
             return _cron_unreadable(exc)
     if not jobs:
         return "No cron jobs to remove."
-    # ``job.name`` is free-form user/LLM text reaching a chat reply and the
-    # persisted conversation log; ``job.id`` is a generated UUID and is left as-is.
-    lines = [f"- `{job.id}` — {_redact(job.name)}" for job in jobs]
     # One batch lock/reload/save, offloaded by the service itself, so a chat
     # gateway's loop is never parked on the store lock.
     try:
-        await cron_service.remove_jobs(
+        removed, _ = await cron_service.remove_jobs(
             [job.id for job in jobs],
             actor=caller or source or "system",
             source=source or "messaging",
@@ -969,6 +966,14 @@ async def cron_remove_all_reply(
         return _CRON_BUSY
     except CronStoreUnreadable as exc:
         return _cron_unreadable(exc)
+    # The listing above is cache-only; ``removed`` is what the store re-read
+    # and actually deleted, so only those jobs are reported.
+    gone = set(removed)
+    # ``job.name`` is free-form user/LLM text reaching a chat reply and the
+    # persisted conversation log; ``job.id`` is a generated UUID and is left as-is.
+    lines = [f"- `{job.id}` — {_redact(job.name)}" for job in jobs if job.id in gone]
+    if not lines:
+        return "No cron jobs to remove."
     return f"✅ Removed {len(lines)} cron job(s):\n" + "\n".join(lines)
 
 
