@@ -946,7 +946,11 @@
       "label": "Task Store Journal Mode",
       "help": "SQLite journal mode for tasks.db: 'auto' picks WAL only on a volume DETECTED local, and DELETE both on a detected network filesystem and when detection cannot tell -- WAL needs local shared memory, which SMB/NFS does not provide, so an undecidable volume takes the slower correct mode rather than risking the store. 'wal' or 'delete' force one and skip the detection, so a local disk whose mount table is unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "auto",
+        "wal",
+        "delete"
+      ],
       "defaultValue": "auto",
       "requiresRestart": true
     },
@@ -2082,7 +2086,10 @@
       "label": "DM Session Scope",
       "help": "How direct-message conversations map to sessions. 'per-channel-peer' (default) keeps one session per (channel, user), so the same person on Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one shared session per agent for cross-surface continuity. Takes effect at the next restart: each conversation's generation counter is seeded from the namespace in force at boot, so switching namespaces live could resume a stale session persisted under the other one.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "per-channel-peer",
+        "unified"
+      ],
       "defaultValue": "per-channel-peer",
       "requiresRestart": true
     },
@@ -2125,7 +2132,10 @@
       "label": "DM Queue Mode",
       "help": "How a DM that arrives while a turn is running is handled. 'steer' (default) folds it into the running reply; 'queue' holds it and runs it after the current turn finishes.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "steer",
+        "queue"
+      ],
       "defaultValue": "steer"
     },
     {
@@ -4929,7 +4939,10 @@
       "label": "Default delivery",
       "help": "Where a heartbeat completion with no inline <!-- deliver:... --> tag is routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' (dashboard slot + bell only, no Slack). Per-task deliver tags always override this.",
       "hasChildren": false,
-      "enumValues": null,
+      "enumValues": [
+        "slack",
+        "dashboard"
+      ],
       "defaultValue": "slack"
     },
     {

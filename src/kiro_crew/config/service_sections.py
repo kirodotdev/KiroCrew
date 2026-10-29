@@ -87,6 +87,8 @@ class MessagingConfig:
             "the namespace in force at boot, so switching namespaces live could "
             "resume a stale session persisted under the other one.",
             restart=True,
+            # __post_init__ reads any other value as per-channel-peer.
+            enum=["per-channel-peer", "unified"],
         ),
     )
     idle_reset_minutes: int = field(
@@ -112,6 +114,8 @@ class MessagingConfig:
             "How a DM that arrives while a turn is running is handled. 'steer' "
             "(default) folds it into the running reply; 'queue' holds it and runs "
             "it after the current turn finishes.",
+            # __post_init__ reads any other value as the field default.
+            enum=["steer", "queue"],
         ),
     )
 
@@ -217,6 +221,9 @@ class HeartbeatConfig:
             "routed: 'slack' (Slack DM + dashboard bell, the default) or 'dashboard' "
             "(dashboard slot + bell only, no Slack). Per-task deliver tags always "
             "override this.",
+            # The loader reads any other value as 'slack', so the write gate
+            # refuses it instead of storing what the reader drops.
+            enum=["slack", "dashboard"],
         ),
     )
 

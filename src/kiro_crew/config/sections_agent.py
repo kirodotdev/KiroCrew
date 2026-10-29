@@ -719,6 +719,8 @@ class AgentConfig:
             "one and skip the detection, so a local disk whose mount table is "
             "unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
             restart=True,
+            # The loader lower-cases, then reads any other value as 'auto'.
+            enum=["auto", "wal", "delete"],
         ),
     )
     admit_wait_secs: int = field(
