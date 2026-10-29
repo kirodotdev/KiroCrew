@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react'
-import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from '../composerPromptHistory'
+import { livePromptHistoryCursor, promptHistoryKeyEngages, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from '../composerPromptHistory'
 
 /* The draft's own prompt history: ↑/↓ recall of the prompts this slot sent.
    The explicit undo/redo snapshots live in chat-core
@@ -29,41 +29,36 @@ export function usePromptHistory() {
   }) => {
     const ta = e.currentTarget
     const cur = current
-    // After recall, place the caret where the next arrow press will re-engage
-    // history immediately (↑ → start, ↓ → end). Deferred to next frame so the
-    // controlled textarea has re-rendered with the new value first.
-    const moveCaretAfterRecall = (pos: 'start' | 'end') => {
+    // A recalled prompt leaves the caret at its end, as readline does; the
+    // first-line ↑ gate lets the next ↑ keep walking older from there.
+    // Deferred to next frame so the controlled textarea has re-rendered with
+    // the new value first.
+    const moveCaretToEndAfterRecall = () => {
       requestAnimationFrame(() => {
         const el = inputRef.current
         if (!el) return
-        const p = pos === 'start' ? 0 : el.value.length
+        const p = el.value.length
         el.setSelectionRange(p, p)
       })
     }
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
     const cursor = livePromptHistoryCursor(historyCursorRef.current, cur)
     historyCursorRef.current = cursor
-    if (e.key === 'ArrowUp') {
-      // Only intercept when input is empty OR caret is collapsed at position 0.
-      const atStart = ta.selectionStart === 0 && ta.selectionEnd === 0
-      if (!atStart && cur !== '') return
-      // A held ↑ scrolling up through the user's own draft stops at its start;
-      // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
-      if (e.repeat && !cursor && cur !== '') return
-    } else {
-      if (!cursor) return // not in history mode — let textarea handle
-      // Only intercept when caret is at end (so multi-line edits still navigate within).
-      const atEnd = ta.selectionStart === cur.length && ta.selectionEnd === cur.length
-      if (!atEnd) return
-    }
-    const step = stepPromptHistory(sentMessages, cursor, e.key === 'ArrowUp' ? 'older' : 'newer', cur)
+    const direction = e.key === 'ArrowUp' ? 'older' : 'newer'
+    // A selection is never a history step: the key collapses it natively.
+    if (ta.selectionStart !== ta.selectionEnd) return
+    if (!promptHistoryKeyEngages(direction, cur, ta.selectionStart, cursor !== null)) return
+    // A held ↑ scrolling up through the user's own draft stops at its start;
+    // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
+    if (direction === 'older' && e.repeat && !cursor && cur !== '') return
+    const step = stepPromptHistory(sentMessages, cursor, direction, cur)
     if (!step) return
     historyCursorRef.current = step.cursor
     // ↑ on the oldest entry resolves to the text already shown: consume the
     // key so the caret does not jump, but leave the value alone.
     if (step.cursor === null || step.text !== cur || cursor === null) {
       onChange(step.text)
-      moveCaretAfterRecall(e.key === 'ArrowUp' ? 'start' : 'end')
+      moveCaretToEndAfterRecall()
     }
     e.preventDefault()
   }, [])

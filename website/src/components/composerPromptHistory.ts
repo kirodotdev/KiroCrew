@@ -69,6 +69,27 @@ export function livePromptHistoryCursor(
 }
 
 /**
+ * Whether ↑/↓ at a collapsed caret `at` in `text` is a history step rather
+ * than caret movement, readline's `up-line-or-history` /
+ * `down-line-or-history`. A recall leaves the caret at the end of the
+ * recalled prompt, so while browsing ↑ steps older from anywhere on the first
+ * line and ↓ steps newer from anywhere on the last; on any other line the key
+ * moves the caret. Outside browsing ↓ never recalls, and ↑ recalls only from
+ * an empty composer or with the caret at the very start of the user's own
+ * draft, so a draft is never replaced by a press meant to move the caret.
+ */
+export function promptHistoryKeyEngages(
+  direction: 'older' | 'newer',
+  text: string,
+  at: number,
+  browsing: boolean,
+): boolean {
+  if (direction === 'newer') return browsing && !text.slice(at).includes('\n')
+  if (text === '') return true
+  return browsing ? !text.slice(0, at).includes('\n') : at === 0
+}
+
+/**
  * Index of the cursor's entry in `items`: by id first, then by text and its
  * position among identical entries, then by distance from the newest entry.
  * Returns -1 only for an empty list.

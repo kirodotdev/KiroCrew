@@ -51,7 +51,7 @@ import type { StopTurnOnEscape } from './chat-input/stopKey'
 import { BACKSPACE_KEY, DELETE_KEY } from './domDeleteKeys'
 import type { ComposerControl, ComposerSelection } from './composerControl'
 import type { MentionKeyMods } from './chat-input/props'
-import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
+import { livePromptHistoryCursor, promptHistoryKeyEngages, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
 import {
   isRawPasteChord,
   clipboardFiles,
@@ -747,10 +747,12 @@ function InteractionPlugin({
       COMMAND_PRIORITY_HIGH,
     )
 
-    const moveAfterRecall = (value: string, position: 'start' | 'end') => {
+    // A recalled prompt leaves the caret at its end, as readline does; the
+    // first-line ↑ gate lets the next ↑ keep walking older from there.
+    const moveToEndAfterRecall = (value: string) => {
       requestAnimationFrame(() => {
         editor.update(() => {
-          const offset = position === 'start' ? 0 : value.length
+          const offset = value.length
           const selection = $createRangeSelection()
           $setPointAtOffset(selection.anchor, offset)
           $setPointAtOffset(selection.focus, offset)
@@ -778,17 +780,21 @@ function InteractionPlugin({
       const current = $getRoot().getTextContent()
       const cursor = livePromptHistoryCursor(historyCursorRef.current, current)
       historyCursorRef.current = cursor
-      if (direction === 'up' && current !== '' && selection.start !== 0) return false
+      const historyDirection = direction === 'up' ? 'older' : 'newer'
+      if (!promptHistoryKeyEngages(historyDirection, current, selection.start, cursor !== null)) return false
       // A held ↑ scrolling up through the user's own draft stops at its start;
       // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
       if (direction === 'up' && event.repeat && !cursor && current !== '') return false
-      if (direction === 'down' && selection.end !== current.length) return false
-      const step = stepPromptHistory(sentMessages, cursor, direction === 'up' ? 'older' : 'newer', current)
+      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current)
       if (!step) return false
       event.preventDefault()
       historyCursorRef.current = step.cursor
-      onChange(step.text)
-      moveAfterRecall(step.text, direction === 'up' ? 'start' : 'end')
+      // ↑ on the oldest entry resolves to the text already shown: consume the
+      // key so the caret does not jump, but leave the value alone.
+      if (step.cursor === null || step.text !== current || cursor === null) {
+        onChange(step.text)
+        moveToEndAfterRecall(step.text)
+      }
       return true
     }
     const unregisterArrowUp = editor.registerCommand(
