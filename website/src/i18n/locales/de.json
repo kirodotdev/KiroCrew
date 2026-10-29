@@ -15368,7 +15368,10 @@
         "value": "Wert",
         "vector_memory": "Vektor-Erinnerung",
         "vector_memory_is_initializing_the_embedding_mode": "Die Vektor-Erinnerung wird initialisiert. Das Embedding-Modell (~610 MB) wird automatisch im Hintergrund heruntergeladen, und die Legacy-Erinnerung migriert von selbst — kein Eingreifen erforderlich.",
-        "verifying_model_integrity": "Modellintegrität wird geprüft…"
+        "verifying_model_integrity": "Modellintegrität wird geprüft…",
+        "enable_err_config_unreadable": "Die Vektor-Erinnerung konnte nicht gespeichert werden, weil config.json nicht gelesen werden konnte. Repariere die Datei und versuche es dann erneut.",
+        "enable_err_dim_unreadable": "Die Vektorbreite des Embedding-Modells konnte nicht gelesen werden, daher wurde die Vektor-Erinnerung nicht eingeschaltet. Versuche es erneut oder führe 'kirocrew doctor' aus, wenn es weiter fehlschlägt.",
+        "enable_err_owner_only": "Nur der Besitzer des Dashboards kann die Vektor-Erinnerung einrichten."
       },
       "wakatimeTab": {
         "active_projects": "Bearbeitete Projekte",

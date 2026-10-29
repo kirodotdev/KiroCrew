@@ -15627,7 +15627,10 @@
         "value": "Valore",
         "vector_memory": "Memoria vettoriale",
         "vector_memory_is_initializing_the_embedding_mode": "La memoria vettoriale è in fase di inizializzazione. Il modello di embedding (~610 MB) viene scaricato automaticamente in background e la memoria legacy viene migrata da sé — non serve fare nulla.",
-        "verifying_model_integrity": "Verifica dell’integrità del modello…"
+        "verifying_model_integrity": "Verifica dell’integrità del modello…",
+        "enable_err_config_unreadable": "Non è stato possibile salvare la memoria vettoriale perché config.json non è leggibile. Correggi il file, poi riprova.",
+        "enable_err_dim_unreadable": "Non è stato possibile leggere la larghezza dei vettori del modello di embedding, quindi la memoria vettoriale non è stata attivata. Riprova, o esegui 'kirocrew doctor' se continua a non riuscire.",
+        "enable_err_owner_only": "Solo il proprietario della dashboard può configurare la memoria vettoriale."
       },
       "wakatimeTab": {
         "active_projects": "Progetti su cui hai lavorato",

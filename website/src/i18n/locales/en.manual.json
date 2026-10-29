@@ -7194,7 +7194,10 @@
         "structured_key_value_facts_about_you_confidence": "Structured key-value facts about you. Confidence: how certain the system is (1.0 = you set it, 0.85 = extracted from chat). Source: who wrote it (user_explicit = you, consolidation = auto-extracted).",
         "structured_semantic_key_value_episodic_conversat": "Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background.",
         "unknown_error": "Unknown error",
-        "verifying_model_integrity": "Verifying model integrity…"
+        "verifying_model_integrity": "Verifying model integrity…",
+        "enable_err_config_unreadable": "Vector memory could not be saved because config.json could not be read. Fix the file, then retry.",
+        "enable_err_dim_unreadable": "The embedding model's vector width could not be read, so vector memory was not turned on. Retry, or run 'kirocrew doctor' if it keeps failing.",
+        "enable_err_owner_only": "Only the dashboard owner can set up vector memory."
       },
       "embedModel": {
         "configured_inactive": "Configured: {{model}} · {{dim}}d · not active",

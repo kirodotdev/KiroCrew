@@ -15109,7 +15109,10 @@
         "value": "値",
         "vector_memory": "ベクトルメモリ",
         "vector_memory_is_initializing_the_embedding_mode": "ベクトルメモリが初期化中です。埋め込みモデル（約610MB）はバックグラウンドで自動的にダウンロードされ、レガシーメモリは自動的に移行します — 操作は不要です。",
-        "verifying_model_integrity": "モデルの整合性を確認中…"
+        "verifying_model_integrity": "モデルの整合性を確認中…",
+        "enable_err_config_unreadable": "config.json を読み込めないため、ベクトルメモリを保存できませんでした。ファイルを修正してから、再試行してください。",
+        "enable_err_dim_unreadable": "埋め込みモデルのベクトル幅を読み込めないため、ベクトルメモリを有効にできませんでした。再試行してください。失敗が続く場合は 'kirocrew doctor' を実行してください。",
+        "enable_err_owner_only": "ベクトルメモリを設定できるのはダッシュボードの所有者だけです。"
       },
       "wakatimeTab": {
         "active_projects": "取り組んだプロジェクト",

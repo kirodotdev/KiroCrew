@@ -15627,7 +15627,10 @@
         "value": "Valeur",
         "vector_memory": "Mémoire vectorielle",
         "vector_memory_is_initializing_the_embedding_mode": "La mémoire vectorielle s'initialise. Le modèle d'embedding (~610MB) se télécharge automatiquement en arrière-plan et l'ancienne mémoire est migrée d'elle-même — aucune action requise.",
-        "verifying_model_integrity": "Vérification de l’intégrité du modèle…"
+        "verifying_model_integrity": "Vérification de l’intégrité du modèle…",
+        "enable_err_config_unreadable": "La mémoire vectorielle n'a pas pu être enregistrée, car config.json n'a pas pu être lu. Corrige le fichier, puis réessaie.",
+        "enable_err_dim_unreadable": "La largeur des vecteurs du modèle d'embeddings n'a pas pu être lue, la mémoire vectorielle n'a donc pas été activée. Réessaie, ou lance 'kirocrew doctor' si l'échec se répète.",
+        "enable_err_owner_only": "Seul le propriétaire du tableau de bord peut configurer la mémoire vectorielle."
       },
       "wakatimeTab": {
         "active_projects": "Projets sur lesquels vous avez travaillé",

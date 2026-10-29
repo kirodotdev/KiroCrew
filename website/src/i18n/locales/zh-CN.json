@@ -15109,7 +15109,10 @@
         "value": "值",
         "vector_memory": "向量记忆",
         "vector_memory_is_initializing_the_embedding_mode": "向量记忆正在初始化。嵌入模型（约 610MB）会在后台自动下载，旧版记忆也会自动迁移 — 无需任何操作。",
-        "verifying_model_integrity": "正在校验模型完整性…"
+        "verifying_model_integrity": "正在校验模型完整性…",
+        "enable_err_config_unreadable": "无法读取 config.json，因此无法保存向量记忆。请修复该文件后重试。",
+        "enable_err_dim_unreadable": "无法读取嵌入模型的向量宽度，因此未开启向量记忆。请重试；如果仍然失败，请运行 'kirocrew doctor'。",
+        "enable_err_owner_only": "只有仪表板的所有者才能设置向量记忆。"
       },
       "wakatimeTab": {
         "active_projects": "你参与的项目",

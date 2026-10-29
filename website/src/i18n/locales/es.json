@@ -15627,7 +15627,10 @@
         "value": "Valor",
         "vector_memory": "Memoria vectorial",
         "vector_memory_is_initializing_the_embedding_mode": "La memoria vectorial está inicializándose. El modelo de embeddings (~610MB) se descarga automáticamente en segundo plano y la memoria antigua se migra por sí sola — no hace falta hacer nada.",
-        "verifying_model_integrity": "Verificando la integridad del modelo…"
+        "verifying_model_integrity": "Verificando la integridad del modelo…",
+        "enable_err_config_unreadable": "No se pudo guardar la memoria vectorial porque no se pudo leer config.json. Corrige el archivo y vuelve a intentarlo.",
+        "enable_err_dim_unreadable": "No se pudo leer el ancho de vector del modelo de embeddings, así que la memoria vectorial no se activó. Vuelve a intentarlo, o ejecuta 'kirocrew doctor' si sigue fallando.",
+        "enable_err_owner_only": "Solo el propietario del panel puede configurar la memoria vectorial."
       },
       "wakatimeTab": {
         "active_projects": "Proyectos en los que trabajaste",

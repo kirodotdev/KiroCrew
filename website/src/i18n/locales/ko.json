@@ -15109,7 +15109,10 @@
         "value": "값",
         "vector_memory": "벡터 메모리",
         "vector_memory_is_initializing_the_embedding_mode": "벡터 메모리를 초기화하는 중입니다. 임베딩 모델 (약 610MB)은 백그라운드에서 자동으로 다운로드되고 기존 메모리는 스스로 이전되므로, 따로 할 일은 없습니다.",
-        "verifying_model_integrity": "모델 무결성을 확인하는 중…"
+        "verifying_model_integrity": "모델 무결성을 확인하는 중…",
+        "enable_err_config_unreadable": "config.json을 읽을 수 없어 벡터 메모리를 저장하지 못했습니다. 파일을 수정한 후 다시 시도하세요.",
+        "enable_err_dim_unreadable": "임베딩 모델의 벡터 너비를 읽을 수 없어 벡터 메모리를 켜지 못했습니다. 다시 시도하고, 계속 실패하면 'kirocrew doctor'를 실행하세요.",
+        "enable_err_owner_only": "대시보드 소유자만 벡터 메모리를 설정할 수 있습니다."
       },
       "wakatimeTab": {
         "active_projects": "작업한 프로젝트",
