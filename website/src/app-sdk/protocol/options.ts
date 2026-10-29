@@ -3,6 +3,7 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
@@ -186,6 +187,10 @@ export function deriveFollowUpOptions(
       continue
     }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
+    // A say-nothing reply (a quiet patrol cycle's bare U+200B) is not drawn, so the
+    // question above it is still the newest thing the user reads: its chips stay.
+    // Same rule the transcript and the assistant footer use to skip that row.
+    if (isHiddenInvisibleAssistantRow(m)) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
