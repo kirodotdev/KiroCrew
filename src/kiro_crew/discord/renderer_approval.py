@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
-from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
+from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 
 logger = logging.getLogger("kiro_crew.discord.renderer")
@@ -104,14 +104,19 @@ class DiscordApprovalDecider:
         :meth:`discard_session` must leave it alone. Pass it whenever the prompt
         outlives its own turn -- the window then closes at the decision, at the
         wait's timeout, or at a ``retire``, and nowhere else.
+
+        A reservation another event loop left behind is no reservation at all
+        (:func:`~kiro_crew.messaging.approval.adoptable_reservation`): it is
+        replaced, so the wait blocks on a future this loop can resolve.
         """
         nonce = new_approval_nonce()
         cls._NONCES[key] = nonce
         if detached:
             cls._DETACHED.add(key)
-        reserved = cls._REGISTRY.get(key)
+        loop = asyncio.get_running_loop()
+        reserved = adoptable_reservation(cls._REGISTRY.get(key), loop)
         if reserved is None or reserved.done():
-            cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
+            cls._REGISTRY[key] = loop.create_future()
             cls._UNDELIVERED.discard(key)
         return nonce
 
@@ -193,7 +198,10 @@ class DiscordApprovalDecider:
         # and this wait starting, in which case the reservation holds the user's
         # decision and there is nothing left to await. Minting a fresh future
         # here would discard that decision and deny when the window elapsed.
-        reserved = DiscordApprovalDecider._REGISTRY.get(k)
+        # An entry from another event loop is not adopted: awaiting it raises
+        # instead of deciding, and a verdict on it belongs to an ended turn.
+        loop = asyncio.get_running_loop()
+        reserved = adoptable_reservation(DiscordApprovalDecider._REGISTRY.get(k), loop)
         if reserved is not None and reserved.done():
             if reserved.cancelled() or reserved.exception() is not None:
                 # A torn-down reservation, not a decision. Open a fresh window
@@ -215,9 +223,7 @@ class DiscordApprovalDecider:
                     # turn-end sweep for the life of the process, so the next
                     # request reusing it is swept by nothing.
                     DiscordApprovalDecider._DETACHED.discard(k)
-        fut: "asyncio.Future[bool]" = (
-            reserved if reserved is not None else asyncio.get_running_loop().create_future()
-        )
+        fut: "asyncio.Future[bool]" = reserved if reserved is not None else loop.create_future()
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
             answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
