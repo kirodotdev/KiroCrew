@@ -8,6 +8,7 @@ every name here, so existing references keep working.
 from __future__ import annotations
 
 import logging
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -36,12 +37,64 @@ def _open_owner_only(handler: logging.FileHandler):  # type: ignore[no-untyped-d
     )
 
 
+#: Seconds a failed rollover waits before the next one is tried. Meanwhile records
+#: keep landing in the live file past ``maxBytes``.
+_ROLLOVER_RETRY_SECS = 60.0
+
+
 class _OwnerOnlyRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler whose log files are created ``0600`` (see
-    :func:`_open_owner_only`)."""
+    :func:`_open_owner_only`), and which keeps logging when a rollover fails.
+
+    CPython's ``doRollover`` closes the stream before it renames the files. When a
+    rename raises -- on Windows, ``WinError 32`` while any other process holds the
+    file open -- the stream stays closed, the record is dropped, and every later
+    record reopens the still-oversized file, retries the same rename and is
+    dropped too, each with a ``--- Logging error ---`` traceback. Here a failed
+    rollover reopens the live file in append mode, writes ONE line saying so into
+    it, and waits :data:`_ROLLOVER_RETRY_SECS` before trying again, so records are
+    kept (past the size cap) instead of lost.
+    """
+
+    _rollover_retry_at = 0.0
+    _rollover_failure_reported = False
 
     def _open(self):  # type: ignore[no-untyped-def]
         return _open_owner_only(self)
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:  # noqa: N802 - stdlib name
+        if self._rollover_retry_at and time.monotonic() < self._rollover_retry_at:
+            return False
+        return bool(super().shouldRollover(record))
+
+    def doRollover(self) -> None:  # noqa: N802 - stdlib name
+        try:
+            super().doRollover()
+        except OSError as exc:
+            if self.stream is None:
+                # Raises when the live file cannot be reopened either; the caller's
+                # ``handleError`` then reports this record as before.
+                self.stream = self._open()
+            self._rollover_retry_at = time.monotonic() + _ROLLOVER_RETRY_SECS
+            if not self._rollover_failure_reported:
+                self._rollover_failure_reported = True
+                self._note_rollover_failure(exc)
+            return
+        self._rollover_retry_at = 0.0
+        self._rollover_failure_reported = False
+
+    def _note_rollover_failure(self, exc: OSError) -> None:
+        """Write one line into the live file naming the failed rollover."""
+        line = (
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} WARNING {__name__}: log rollover of "
+            f"{self.baseFilename} failed ({exc!r}); writing past the {self.maxBytes}-byte "
+            f"cap and retrying every {int(_ROLLOVER_RETRY_SECS)}s\n"
+        )
+        try:
+            self.stream.write(line)
+            self.stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass  # the records themselves still go through emit's own error path
 
 
 class _AppendOnlyLogFileHandler(logging.FileHandler):

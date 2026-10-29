@@ -2496,7 +2496,11 @@ the `mcp-*` stdio servers, `kirocrew chat`, short CLI verbs — writes through
 `_AppendOnlyLogFileHandler`, which opens the file for one record, closes it again
 and never rotates. Windows refuses to rename a file while another process holds
 it open, so a child that kept its own handle for its lifetime made every gateway
-rollover fail. A gateway whose boot rotation to `gateway.log.prev` fails logs one
+rollover fail. A size rollover whose rename still fails (`_OwnerOnlyRotatingFileHandler`
+in `cli_log_files.py`) reopens the live file in append mode, writes one line into it
+naming the failure, and tries again only after `_ROLLOVER_RETRY_SECS` (60 s), so
+records keep landing past the 2 MiB cap instead of being dropped. A gateway whose
+boot rotation to `gateway.log.prev` fails logs one
 warning and keeps appending to the previous run's file. A foreground gateway
 whose log file cannot be opened warns and continues with console logging only; a
 detached gateway, whose stdout and stderr point at that file, raises instead. If a
