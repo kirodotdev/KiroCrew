@@ -17,13 +17,19 @@ Instance fields read: ``_active_session_lock``, ``_history``, ``_runs``.
 from __future__ import annotations
 
 import asyncio
+import logging
+from functools import partial
 from typing import TYPE_CHECKING, Any, Coroutine
 
 from kiro_crew.cron_history import CronHistoryStore
-from kiro_crew.cron_service.claims import _manual_run_refused, _RunClaim
+from kiro_crew.cron_service.claims import _manual_run_refused, _resolve_started, _RunClaim
+from kiro_crew.cron_service.store import CronStoreBusy, CronStoreUnreadable
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
+
+#: The cron service's logger: operators filter, and tests ``caplog``, on ``kiro_crew.cron``.
+logger = logging.getLogger("kiro_crew.cron")
 
 
 # ── Active session tracking ──
@@ -148,7 +154,93 @@ def set_timeout_alert(self: CronService, cb: Any) -> None:
     self._timeout_alert = cb
 
 
-def run_job(self: CronService, job_id: str) -> Coroutine[Any, Any, bool]:
+def trigger_run(
+    self: CronService,
+    job_id: str,
+    *,
+    expected_owner: str | None = None,
+    started: asyncio.Future[bool] | None = None,
+) -> asyncio.Task[bool] | None:
+    """Start a run of ``job_id`` now, off schedule, unless one is in flight.
+
+    The one shape of "run this job now" for every on-loop trigger: the
+    manual-run route and ``CronSDK.run_job_async`` both call it, so a change
+    to the guard, the claim or the task tracking lands in one place.
+
+    Returns the dispatched wrapper task, or ``None`` when a run of the job
+    is already in flight. The caller does not wait for the run; the outcome
+    lands in the job's own history.
+
+    Loop-only and await-free from top to bottom, which is what makes the
+    check and the claim atomic: no due-scan tick and no second trigger can
+    interleave between the guard and the claim ``run_job`` takes while its
+    call expression is evaluated. Keep it a plain ``def``; an ``await``
+    anywhere in here reopens that window.
+
+    * ``discard_finished_run`` comes first. A run whose task ended without
+      reaching ``_run_job_isolated``'s finally leaves its claim stored with
+      nothing on that path to release it, and the guard alone would then
+      refuse every run of the job until the reaper sweep meets the
+      finished task.
+    * The guard refuses rather than queues. A second overlapping run would
+      orphan the first task's handle, leaving nothing able to track, cancel
+      or join it.
+    * ``attach_run_task`` on the line after ``create_task``, so ``cancel()``
+      can reach a run still parked in its offloaded store refresh and
+      ``stop()`` can await it at shutdown.
+    * The Schedule page is told a run started, whoever triggered it.
+
+    Ownership and existence checks belong to the caller, before this call.
+    A job absent from the store still gets a claim, which
+    ``_run_claimed_manual`` releases once its refresh does not find the job.
+
+    ``expected_owner`` is for a caller whose ownership check read the
+    cache (the app SDK): it is passed to :meth:`run_job`, which re-checks
+    the job's ``created_by`` against it on the job the run actually
+    resolves from the refreshed store, and does not run a job whose owner
+    differs from it. The dashboard route has no app owner and passes
+    nothing.
+
+    ``started`` is for a caller that must report whether the run really
+    began, not only whether it was claimed (the app SDK). It is resolved
+    ``True`` by the run's own first step, after the store refresh and every
+    check on the resolved job have passed and the run has confirmed it
+    still holds its claim, and ``False`` when the dispatched task ends
+    without the run reaching that step: a job missing from the store, an
+    owner mismatch, a store too busy or too unreadable to re-check the
+    owner, or a
+    ``cancel()`` or ``stop()`` that took the run before its first step. A
+    run that starts and is then refused inside its own body (the fire-time
+    gate of a disabled app) resolves ``True``, because that refusal is recorded in the job's
+    history like any other run outcome. When this returns ``None`` the
+    future is left untouched, so the caller decides how to answer.
+    """
+    self.discard_finished_run(job_id)
+    if self.is_running(job_id):
+        return None
+    if expected_owner is None and started is None:
+        coro = self.run_job(job_id)
+    else:
+        coro = self.run_job(job_id, expected_owner=expected_owner, started=started)
+    task = asyncio.create_task(coro)
+    self.attach_run_task(job_id, task)
+    if started is not None:
+        # Every path that ends the task without spawning a run resolves
+        # the future False here, including a task cancelled before its
+        # body ran, so a caller awaiting it is never left waiting.
+        task.add_done_callback(partial(_resolve_started, started, False))
+    if self._push_refresh:
+        self._push_refresh("crons")
+    return task
+
+
+def run_job(
+    self: CronService,
+    job_id: str,
+    *,
+    expected_owner: str | None = None,
+    started: asyncio.Future[bool] | None = None,
+) -> Coroutine[Any, Any, bool]:
     """Manually trigger a job via _run_job_isolated (records history).
 
     A plain ``def`` that returns the coroutine, on purpose: the claim on the
@@ -167,14 +259,47 @@ def run_job(self: CronService, job_id: str) -> Coroutine[Any, Any, bool]:
     does not hold the job. Every caller awaits or schedules the returned
     coroutine at once (the route wraps it in a task on the same line); one
     that dropped it would leave the job claimed.
+
+    ``expected_owner``, when given, must equal the ``created_by`` of the job
+    the refreshed store resolves; otherwise the claim is released and the
+    run does not start. ``started`` is resolved ``True`` when the run is
+    spawned. See :meth:`trigger_run` for both.
     """
     if job_id in self._claims:
         return _manual_run_refused()
     claim = self._claim_run(job_id, "manual")
-    return self._run_claimed_manual(job_id, claim)
+    return self._run_claimed_manual(job_id, claim, expected_owner, started)
 
 
-async def _run_claimed_manual(self: CronService, job_id: str, claim: _RunClaim) -> bool:
+def _audit_owned_run_refusal(self: CronService, owner: str, job_id: str, reason: str) -> None:
+    """SEL-audit an owner-checked manual run the store refused to start.
+
+    The caller already audited the dispatch as "ok" off its cached check,
+    so the refusal gets its own record under the same operation the SDK
+    uses. Contained: the refusal is already enforced, and an audit outage
+    must not turn it into a raise.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    try:
+        seams.sel.sel().log_api_access(
+            caller=owner,
+            operation="cron_run_job",
+            outcome="denied",
+            resources=job_id,
+            error=reason,
+        )
+    except Exception:
+        logger.warning("SEL audit for a refused manual run failed (job %s)", job_id, exc_info=True)
+
+
+async def _run_claimed_manual(
+    self: CronService,
+    job_id: str,
+    claim: _RunClaim,
+    expected_owner: str | None = None,
+    started: asyncio.Future[bool] | None = None,
+) -> bool:
     """Body of :meth:`run_job`, entered with the claim already taken."""
     # Refresh the store off the loop, then resolve + spawn on the loop.
     #
@@ -193,8 +318,25 @@ async def _run_claimed_manual(self: CronService, job_id: str, claim: _RunClaim) 
     # claim could not observe a delete mid-way regardless. Degrades to the
     # in-memory snapshot under lock contention.
     try:
-        snapshot = await asyncio.to_thread(self._synced_snapshot, True)
-    except BaseException:
+        if expected_owner is None:
+            snapshot = await asyncio.to_thread(self._synced_snapshot, True)
+        else:
+            # The owner re-check below must read the store, not the cache
+            # the caller's own check already used, so a contended lock or
+            # an unreadable store fails the run here (the claim is released
+            # below) instead of degrading to that cache.
+            snapshot = await asyncio.to_thread(self._synced_snapshot, True, strict=True)
+    except BaseException as exc:
+        if expected_owner is not None and isinstance(exc, (CronStoreBusy, CronStoreUnreadable)):
+            # Both strict-refresh failures are refusals of a dispatch the
+            # caller already audited "ok" off its cached check, so each one
+            # gets its own record naming which of the two it was.
+            self._audit_owned_run_refusal(
+                expected_owner,
+                job_id,
+                f"{'store busy' if isinstance(exc, CronStoreBusy) else 'store unreadable'}"
+                ": owner could not be re-checked",
+            )
         # No run will consume the claim: release it unless cancel() already
         # took it (the fence fails) or a newer claim has replaced it. A
         # cancel flag cancel() set goes with the claim.
@@ -211,7 +353,32 @@ async def _run_claimed_manual(self: CronService, job_id: str, claim: _RunClaim) 
     if not job:
         self._runs.release(job_id, claim)
         return False
-    task = asyncio.create_task(self._run_job_isolated(job, claim))
+    if expected_owner is not None and job.created_by != expected_owner:
+        # The caller's ownership check read the cache, which can be up to a
+        # poll interval stale; this is the job the run would actually
+        # execute, read under the store lock. A job id that now names a
+        # job someone else owns is refused here, at the last point before
+        # dispatch, so a stale cache can never start another owner's job.
+        self._runs.release(job_id, claim)
+        logger.warning(
+            "Cron: manual run of %s refused: the store now records owner %r, "
+            "the trigger expected %r",
+            job_id,
+            job.created_by,
+            expected_owner,
+        )
+        self._audit_owned_run_refusal(expected_owner, job_id, "ownership mismatch in store")
+        return False
+    # ``started`` is resolved by the run itself, once its first step has
+    # confirmed it still holds the claim. A task cancelled before that
+    # step (stop() at shutdown, cancel()) runs nothing and writes no
+    # history, so resolving here, at spawn, would report a start that
+    # never happened; trigger_run's done callback answers False instead.
+    if started is None:
+        run = self._run_job_isolated(job, claim)
+    else:
+        run = self._run_job_isolated(job, claim, started)
+    task = asyncio.create_task(run)
     claim.task = task
     try:
         await task
