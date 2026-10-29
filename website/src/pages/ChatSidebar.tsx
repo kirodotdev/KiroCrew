@@ -706,7 +706,7 @@ function ChatSidebar({
 
   const {
     startsAutomaticSection, reorderPinnedByKeyboard,
-  } = usePinnedKeyboardReorder({ searchRanked, pinned, pinnedOrder, slotFolders, reorderPinned })
+  } = usePinnedKeyboardReorder({ searchRanked, isPinned: sidebarRows.isPinned, pinnedOrder, slotFolders, reorderPinned })
   const reorderManualByKeyboard = useManualKeyboardReorder({ searchRanked, drawnOrder, slotFolders, reorderManual })
 
   // A row whose session belongs to another page (a crew member's own DM thread,

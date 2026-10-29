@@ -236,16 +236,17 @@ export function usePinnedOrderAuthority({ orderState, slotsLoaded, tagColumnsSet
 }
 
 /** Where the automatic section starts, and Alt+Arrow pinned reorder. */
-export function usePinnedKeyboardReorder({ searchRanked, pinned, pinnedOrder, slotFolders, reorderPinned }: {
+export function usePinnedKeyboardReorder({ searchRanked, isPinned, pinnedOrder, slotFolders, reorderPinned }: {
   searchRanked: Map<string, number> | null
-  pinned: Set<string>
+  /** The row model's own pin read (rows.ts `isPinned`), so a peer row is never pinned here. */
+  isPinned: (slot: Slot) => boolean
   pinnedOrder: string[]
   slotFolders: Record<string, string>
   reorderPinned: (activeKey: string, overKey: string) => void
 }) {
   const startsAutomaticSection = useCallback((list: readonly Slot[], index: number) => (
-    !searchRanked && index > 0 && pinned.has(list[index - 1].key) && !pinned.has(list[index].key)
-  ), [searchRanked, pinned])
+    !searchRanked && index > 0 && isPinned(list[index - 1]) && !isPinned(list[index])
+  ), [searchRanked, isPinned])
   // Read through a ref, not the dependency array: `slotFolders` and
   // `pinnedOrder` are rebuilt whenever the slot list changes, so a callback
   // closing over them takes a new identity on EVERY slots frame — and this
