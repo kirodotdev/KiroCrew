@@ -869,7 +869,12 @@ class TestTruncatedShellTitleTier:
         # The rebuilt title is the display prefix plus the whole command; the bash
         # tier scans it without the prefix, so a command that fits the ceiling is
         # not refused as too large to scan because of the nine prefix characters.
-        command = "echo " + "a" * (security.MAX_SCANNABLE_COMMAND_CHARS - 5 - 5)
+        # The filler is short words, not one 20 KiB word: the deny rules with a
+        # ``\w+`` run are quadratic on one long word, which took ~14s here and
+        # over 120s on a Windows runner. Only the length is under test.
+        ceiling = security.MAX_SCANNABLE_COMMAND_CHARS
+        command = "echo " + ("a " * ceiling)[: ceiling - 10]
+        assert len(command) == security.MAX_SCANNABLE_COMMAND_CHARS - 5
         assert len("Running: " + command) > security.MAX_SCANNABLE_COMMAND_CHARS
         approved, provider, rows = await _resolve(
             json.dumps({"command": command}), title=self._cut_title(command), is_shell=True
