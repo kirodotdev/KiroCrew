@@ -11733,8 +11733,9 @@
       },
       "transientNotice": {
         "retrying": "接続が不安定です — 再試行中…",
-        "resuming": "接続が不安定です — 再開中…",
+        "resuming": "接続が不安定です — この回答を仕上げています…",
         "restored": "接続が回復しました",
+        "interrupted": "接続が中断されました",
         "give_up": "接続が不安定です — もう一度お試しください。"
       },
       "turnBlock": {

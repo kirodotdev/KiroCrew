@@ -11914,8 +11914,9 @@
       },
       "transientNotice": {
         "retrying": "Verbindung instabil — wird erneut versucht…",
-        "resuming": "Verbindung instabil — wird fortgesetzt…",
+        "resuming": "Verbindung instabil — diese Antwort wird fertiggestellt…",
         "restored": "Verbindung wiederhergestellt",
+        "interrupted": "Verbindung unterbrochen",
         "give_up": "Verbindung instabil — bitte erneut versuchen."
       },
       "turnBlock": {

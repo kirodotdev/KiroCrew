@@ -6883,8 +6883,9 @@
       },
       "transientNotice": {
         "retrying": "Connection unstable — retrying…",
-        "resuming": "Connection unstable — resuming…",
+        "resuming": "Connection unstable — finishing this answer…",
         "restored": "Connection restored",
+        "interrupted": "Connection interrupted",
         "give_up": "Connection unstable — please try again."
       },
       "userMessage": {

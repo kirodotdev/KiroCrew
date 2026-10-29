@@ -12095,8 +12095,9 @@
       },
       "transientNotice": {
         "retrying": "Connexion instable — nouvelle tentative…",
-        "resuming": "Connexion instable — reprise en cours…",
+        "resuming": "Connexion instable — finalisation de cette réponse…",
         "restored": "Connexion rétablie",
+        "interrupted": "Connexion interrompue",
         "give_up": "Connexion instable — veuillez réessayer."
       },
       "turnBlock": {

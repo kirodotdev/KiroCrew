@@ -11733,8 +11733,9 @@
       },
       "transientNotice": {
         "retrying": "连接不稳定，正在重试…",
-        "resuming": "连接不稳定，正在恢复…",
+        "resuming": "连接不稳定，正在完成此回答…",
         "restored": "连接已恢复",
+        "interrupted": "连接已中断",
         "give_up": "连接不稳定，请重试。"
       },
       "turnBlock": {

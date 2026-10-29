@@ -19,6 +19,7 @@ import type { NoticeTone } from './NoticeCard'
 const RETRYING_KEY = 'pages.chat.transientNotice.retrying'
 const RESUMING_KEY = 'pages.chat.transientNotice.resuming'
 const RESTORED_KEY = 'pages.chat.transientNotice.restored'
+const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 const GIVE_UP_KEY = 'pages.chat.transientNotice.give_up'
 
 type Shape = 'retrying' | 'resuming' | 'give_up'
@@ -75,8 +76,9 @@ export type TransientNotice =
   | {
       /**
        * The gateway has ALREADY queued the retry: routine status, drawn as a soft
-       * NoticeCard in the given tone (warn while pending, info once an answer has
-       * arrived below it).
+       * NoticeCard in the given tone (warn while pending; info once the recovery
+       * window has closed, reading "restored" when an answer arrived below it and
+       * the past-tense "interrupted" when it closed without one).
        */
       card: 'notice'
       text: string
@@ -92,30 +94,43 @@ export type TransientNotice =
       text: string
     }
 
+/** How THIS recovery ended, as far as the transcript below the notice shows. */
+type Outcome = 'answered' | 'failed' | 'pending'
+
 /**
- * True once a later row proves the model answered again after this notice —
- * within THIS recovery only. The scan stops at the first row that closes the
- * recovery window without an answer: a `user` row (a new turn; whatever answers
- * it says nothing about this one) or an `error` row that is not itself a pending
- * link of the same ladder (the terminal give-up, or any other ❌ — the recovery
- * failed). A later pending link (`retrying…` after `retrying…`) is the same
- * ladder still driving, so the scan continues through it and every link settles
- * together when the answer finally lands. Other roles (tool, notice…) are
- * transparent.
+ * Scan the rows after this notice, within THIS recovery only.
+ *
+ * - `answered`: an assistant (or live streaming) row proves the model answered
+ *   again.
+ * - `failed`: the window closed without an answer. That is an `error` row that
+ *   is not itself a pending link of the same ladder (the terminal give-up, or
+ *   any other ❌ — the recovery failed), or a `user` row: a new turn began with
+ *   no answer to this one in between, so the recovery was abandoned. Abandoned
+ *   settles like failed on purpose: every gateway path that drops the re-queued
+ *   retry appends a give-up row, so a user row directly after a pending link
+ *   means the person moved on before any answer, and "retrying…" above a later
+ *   conversation would claim a retry is still running. "Interrupted" is true
+ *   either way — it says what happened, not how it ended.
+ * - `pending`: nothing has closed the window yet; the ladder may still be
+ *   driving.
+ *
+ * A later pending link (`retrying…` after `retrying…`) is the same ladder still
+ * driving, so the scan continues through it and every link settles together.
+ * Other roles (tool, notice…) are transparent.
  */
-function answeredAfter(messages: readonly ChatMessage[], index: number): boolean {
+function answeredAfter(messages: readonly ChatMessage[], index: number): Outcome {
   for (let j = index + 1; j < messages.length; j++) {
     const row = messages[j]
     const r = row.role
-    if (r === 'assistant' || r === 'streaming') return true
-    if (r === 'user') return false
+    if (r === 'assistant' || r === 'streaming') return 'answered'
+    if (r === 'user') return 'failed'
     if (r === 'error') {
       const later = shapeOf(row)
       if (later === 'retrying' || later === 'resuming') continue
-      return false
+      return 'failed'
     }
   }
-  return false
+  return 'pending'
 }
 
 /**
@@ -127,10 +142,17 @@ function answeredAfter(messages: readonly ChatMessage[], index: number): boolean
  * turn succeeds, so on its own the row would read "retrying…" in a transcript
  * whose answer already sits below it; when a later assistant row exists WITHIN
  * the same recovery the same card reads "Connection restored" instead. A later
- * ERROR row does not settle it — the ladder may have given up, and claiming a
- * restore then would be false — and it also CLOSES the window: an answer to a
- * later, unrelated turn never flips a failed recovery to "restored" above its
- * own red error. The terminal shape never settles.
+ * ERROR row (or a new user turn) never settles it to "restored" — the ladder may
+ * have given up, and claiming a restore then would be false — and it CLOSES the
+ * window: the card settles to a muted, past-tense "Connection interrupted", so
+ * the row above a red give-up no longer reads as a retry still in progress, and
+ * an answer to a later, unrelated turn never flips it to "restored". The
+ * terminal shape never settles.
+ *
+ * The two pending shapes are distinct gateway states and keep distinct copy:
+ * `retrying` (nothing streamed, the whole turn is re-sent) and `resuming` (a
+ * partial answer is already on screen above the row and the model is asked to
+ * finish it), which is why the `resuming` copy names the answer it is finishing.
  */
 export function resolveTransientNotice(
   m: ChatMessage,
@@ -141,6 +163,8 @@ export function resolveTransientNotice(
   const shape = shapeOf(m)
   if (!shape) return null
   if (shape === 'give_up') return { card: 'error', text: i18nT(GIVE_UP_KEY) }
-  if (answeredAfter(messages, index)) return { card: 'notice', text: i18nT(RESTORED_KEY), tone: 'info' }
+  const outcome = answeredAfter(messages, index)
+  if (outcome === 'answered') return { card: 'notice', text: i18nT(RESTORED_KEY), tone: 'info' }
+  if (outcome === 'failed') return { card: 'notice', text: i18nT(INTERRUPTED_KEY), tone: 'info' }
   return { card: 'notice', text: i18nT(shape === 'resuming' ? RESUMING_KEY : RETRYING_KEY), tone: 'warn' }
 }
