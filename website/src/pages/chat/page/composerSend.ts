@@ -74,6 +74,11 @@ interface ComposerSendOptions {
   pendingSessionsRef: MutableRefObject<SessionRef[]>
   pickedFileTokens: PickedFileTokens
   setPasteBlocks: Dispatch<SetStateAction<PasteBlock[]>>
+  /** The Paste atom's `read` / `install`: the restores below read and write the
+   *  blocks through these, which advance at once, so two refused sends settling
+   *  in one React batch compose. `pasteBlocksRef` lags to the effect. */
+  readPasteBlocks: () => PasteBlock[]
+  installPasteBlocks: (next: PasteBlock[]) => void
   setPendingFiles: Dispatch<SetStateAction<string[]>>
   setPendingSessions: Dispatch<SetStateAction<SessionRef[]>>
   composerRef: RefObject<ComposerHandle>
@@ -124,7 +129,7 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
 export function useComposerSend({
   mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
   setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
-  messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks,
+  messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
   setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
 }: ComposerSendOptions) {
   // Scroll to show Footer when agent starts running (loading indicator appears)
@@ -204,8 +209,14 @@ export function useComposerSend({
     // path above: keep what is there, append the failed payload unless it is
     // already the same text, and re-sequence the carried paste blocks so two
     // blocks cannot claim one `[ Paste #N ]` marker.
+    // On screen, both reads must see a restore that landed earlier in this same
+    // React batch (two refused sends settling together): the blocks come
+    // from the Paste atom's `read()`, and the text from `inputRef`, which the
+    // write below advances along with `setInput`. `pasteBlocksRef` would still
+    // hold the pre-batch list, and the second restore would drop the first's
+    // blocks while its token stayed in the text.
     const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
-    const keepPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
+    const keepPastes = onScreenNow ? readPasteBlocks() : (pasteDrafts.current[slot] ?? [])
     const carried = carryPastes(sent.inlined, sent.pastes, keepPastes)
     const pastesBack = carried.pastes
     // Same merge rule as the create-failure path above, and the separator lives
@@ -220,7 +231,12 @@ export function useComposerSend({
     setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
     saveDrafts()
     if (onScreenNow) {
-      setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
+      setInput(textBack); installPasteBlocks(pastesBack); setPendingSessions(refsBack)
+      // Advance the effect-synced mirrors with their setters, so a second restore
+      // in this batch keeps this one's text and session refs; the next render
+      // and the persistence effect write the same values.
+      inputRef.current = textBack
+      pendingSessionsRef.current = refsBack
     }
     // Aliases come back with the text they describe -- MERGE, never
     // overwrite, so a file picked while the send was in flight keeps its
@@ -557,7 +573,9 @@ export function useComposerSend({
         // pastes), keeping whatever the user staged since the failed send.
         const keepRefs = onScreen ? pendingSessionsRef.current : (uiSlot ? sessionRefDrafts.current[uiSlot] ?? [] : [])
         const restoredRefs = mergeSessionRefs(keepRefs, sentSessionRefs)
-        const keepPastes = onScreen ? pasteBlocksRef.current : (uiSlot ? pasteDrafts.current[uiSlot] ?? [] : [])
+        // `read()`, not `pasteBlocksRef`: a restore earlier in the same React
+        // batch has already installed its blocks there.
+        const keepPastes = onScreen ? readPasteBlocks() : (uiSlot ? pasteDrafts.current[uiSlot] ?? [] : [])
         // Collapsed pastes resolve by `seq`, not id, and a paste made while the
         // composer was empty restarts at #1 — so a naive id-merge can leave two
         // blocks sharing #1, with both markers resolving to one of them and
@@ -576,7 +594,8 @@ export function useComposerSend({
         // The quote: back on the stage when live and free, else in the text.
         const restoredText = messageQuote.recoverInto(mergeCarriedDraft(keepText, carried), sentQuote, onScreen && !!uiSlot && composerMountedRef.current)
         if (onScreen && uiSlot) {
-          setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
+          setInput(restoredText); installPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
+          inputRef.current = restoredText; pendingFilesRef.current = restoredFiles; pendingSessionsRef.current = restoredRefs
           // clearPending() above already consumed the knowledge selection, so a
           // retry would otherwise go out WITHOUT the context the user picked. Slot-
           // gated: selection is per-slot, so re-injecting while the user views another

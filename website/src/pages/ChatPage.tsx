@@ -323,7 +323,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     pendingFiles, setPendingFiles, pendingFilesRef,
     pickedFileTokens, mergeSlotTokens,
     snipFrame, setSnipFrame, snipSlotRef,
-    setPasteBlocks, pasteBlocksRef, pasteSlice,
+    setPasteBlocks, pasteBlocksRef, pasteSlice, readPasteBlocks, installPasteBlocks,
     pendingSessions, setPendingSessions, pendingSessionsRef,
     stageSessionRef, unstageSessionRef, canStageSessionRef,
     chatPaneEl, setChatPaneEl,
@@ -621,7 +621,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useComposerSend({
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
-    messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks,
+    messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
     setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
   })
 
