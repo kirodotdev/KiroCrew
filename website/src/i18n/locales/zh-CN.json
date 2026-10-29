@@ -11959,6 +11959,8 @@
         "content_searching": "正在搜索…",
         "ctx_add_to_chat": "添加到聊天",
         "ctx_download": "下载",
+        "ctx_upload_files": "上传文件…",
+        "drop_to_upload": "拖放到此处，上传到“{{folder}}”",
         "filter_placeholder": "筛选文件…",
         "git_status_failed": "无法读取 Git 状态",
         "mode_content": "内容",
@@ -11970,7 +11972,13 @@
         "search_names": "搜索文件名",
         "tree_mode": "文件列表模式",
         "content_engine_slow": "此主机没有 ripgrep，因此搜索使用了较慢的内置扫描。",
-        "content_one_row_per_file": "每个文件一行"
+        "content_one_row_per_file": "每个文件一行",
+        "upload_exists": "此文件夹中已存在“{{name}}”。重命名你的文件，或删除已有的同名文件，然后重新上传。",
+        "upload_failed": "无法上传 {{name}}",
+        "uploading_name": "正在上传 {{name}}…",
+        "uploading_count_other": "正在上传 {{count}} 个文件…",
+        "uploaded_name": "已将 {{name}} 上传到“{{folder}}”。",
+        "uploaded_count_other": "已将 {{count}} 个文件上传到“{{folder}}”。"
       },
       "filesHome": {
         "no_project_dir": "此聊天未设置项目目录",

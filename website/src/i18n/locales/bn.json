@@ -12143,6 +12143,8 @@
         "content_searching": "খোঁজা হচ্ছে…",
         "ctx_add_to_chat": "চ্যাটে যোগ করুন",
         "ctx_download": "ডাউনলোড",
+        "ctx_upload_files": "ফাইল আপলোড করো…",
+        "drop_to_upload": "{{folder}}-এ আপলোড করতে এখানে ছাড়ো",
         "filter_placeholder": "ফাইল ফিল্টার করুন…",
         "git_status_failed": "Git স্ট্যাটাস পড়া যায়নি",
         "mode_content": "বিষয়বস্তু",
@@ -12154,7 +12156,15 @@
         "search_names": "ফাইলের নাম খুঁজুন",
         "tree_mode": "ফাইল তালিকা মোড",
         "content_engine_slow": "এই হোস্টে ripgrep নেই, তাই অনুসন্ধানটি ধীরগতির অন্তর্নির্মিত স্ক্যানে চালানো হয়েছে।",
-        "content_one_row_per_file": "প্রতি ফাইলে একটি সারি"
+        "content_one_row_per_file": "প্রতি ফাইলে একটি সারি",
+        "upload_exists": "“{{name}}” এই ফোল্ডারে ইতিমধ্যে আছে। তোমার ফাইলের নাম বদলাও বা আগে থেকে থাকা ফাইলটি সরিয়ে দাও, তারপর আবার আপলোড করো।",
+        "upload_failed": "{{name}} আপলোড করা যায়নি",
+        "uploading_name": "{{name}} আপলোড হচ্ছে…",
+        "uploading_count_one": "{{count}}টি ফাইল আপলোড হচ্ছে…",
+        "uploading_count_other": "{{count}}টি ফাইল আপলোড হচ্ছে…",
+        "uploaded_name": "{{name}} {{folder}}-এ আপলোড হয়েছে।",
+        "uploaded_count_one": "{{count}}টি ফাইল {{folder}}-এ আপলোড হয়েছে।",
+        "uploaded_count_other": "{{count}}টি ফাইল {{folder}}-এ আপলোড হয়েছে।"
       },
       "filesHome": {
         "no_project_dir": "এই চ্যাটের জন্য কোনো প্রজেক্ট ডিরেক্টরি সেট করা নেই",

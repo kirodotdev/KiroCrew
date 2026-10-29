@@ -12327,6 +12327,8 @@
         "content_searching": "Buscando…",
         "ctx_add_to_chat": "Añadir al chat",
         "ctx_download": "Descargar",
+        "ctx_upload_files": "Subir archivos…",
+        "drop_to_upload": "Suelta para subir a {{folder}}",
         "filter_placeholder": "Filtrar archivos…",
         "git_status_failed": "No se pudo leer el estado de git",
         "mode_content": "Contenido",
@@ -12338,7 +12340,17 @@
         "search_names": "Buscar nombres de archivo",
         "tree_mode": "Modo de lista de archivos",
         "content_engine_slow": "Este host no tiene ripgrep, por lo que la búsqueda usó el escaneo interno más lento.",
-        "content_one_row_per_file": "una fila por archivo"
+        "content_one_row_per_file": "una fila por archivo",
+        "upload_exists": "“{{name}}” ya existe en esta carpeta. Cambia el nombre de tu archivo o elimina el existente y vuelve a subirlo.",
+        "upload_failed": "No se pudo subir {{name}}",
+        "uploading_name": "Subiendo {{name}}…",
+        "uploading_count_one": "Subiendo {{count}} archivo…",
+        "uploading_count_many": "Subiendo {{count}} archivos…",
+        "uploading_count_other": "Subiendo {{count}} archivos…",
+        "uploaded_name": "Se subió {{name}} a {{folder}}.",
+        "uploaded_count_one": "Se subió {{count}} archivo a {{folder}}.",
+        "uploaded_count_many": "Se subieron {{count}} archivos a {{folder}}.",
+        "uploaded_count_other": "Se subieron {{count}} archivos a {{folder}}."
       },
       "filesHome": {
         "no_project_dir": "Este chat no tiene un directorio de proyecto",

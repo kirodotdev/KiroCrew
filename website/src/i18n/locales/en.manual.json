@@ -5388,6 +5388,8 @@
         "content_searching": "Searching…",
         "ctx_add_to_chat": "Add to chat",
         "ctx_download": "Download",
+        "ctx_upload_files": "Upload files…",
+        "drop_to_upload": "Drop to upload into {{folder}}",
         "filter_placeholder": "Filter files…",
         "git_status_failed": "Couldn't read the git status",
         "mode_content": "Content",
@@ -5399,7 +5401,15 @@
         "search_names": "Search file names",
         "tree_mode": "File list mode",
         "content_engine_slow": "This host has no ripgrep, so the search took the slower built-in scan.",
-        "content_one_row_per_file": "one row per file"
+        "content_one_row_per_file": "one row per file",
+        "upload_exists": "“{{name}}” already exists in this folder. Rename your file, or remove the existing one, then upload again.",
+        "upload_failed": "Couldn't upload {{name}}",
+        "uploading_name": "Uploading {{name}}…",
+        "uploading_count_one": "Uploading {{count}} file…",
+        "uploading_count_other": "Uploading {{count}} files…",
+        "uploaded_name": "Uploaded {{name}} to {{folder}}.",
+        "uploaded_count_one": "Uploaded {{count}} file to {{folder}}.",
+        "uploaded_count_other": "Uploaded {{count}} files to {{folder}}."
       },
       "filesHome": {
         "no_project_dir": "No project directory is set for this chat",

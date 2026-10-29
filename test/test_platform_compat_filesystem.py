@@ -259,6 +259,74 @@ class TestPinDirectory:
         assert (tmp_path / "swapped").is_dir()
 
 
+class TestPinDirectoryLinksOnly:
+    """``pin_directory(links_only=...)`` on the Windows branch, with its two reads stubbed.
+
+    A OneDrive / cloud-files folder is a directory carrying
+    ``FILE_ATTRIBUTE_REPARSE_POINT`` with a tag that is NOT a name surrogate, and
+    no CI host can make one, so the attribute read (``os.fstat``) and the tag read
+    (``win_fd_is_link``) are replaced and the open hands back a plain descriptor.
+    """
+
+    @pytest.fixture
+    def windows_pin(self, tmp_path, monkeypatch):
+        import kiro_crew.platform_compat_links as links
+
+        stand_in = tmp_path / "stand-in"
+        stand_in.write_text("x")
+        opened: list[int] = []
+        state = {
+            "attrs": links._WIN_FILE_ATTRIBUTE_DIRECTORY | links._WIN_FILE_ATTRIBUTE_REPARSE_POINT,
+            "is_link": False,
+        }
+        real_fstat = os.fstat
+
+        def _open(path, **_kwargs):
+            opened.append(os.open(stand_in, os.O_RDONLY))
+            return opened[-1]
+
+        def _fstat(fd, *args, **kwargs):
+            info = real_fstat(fd, *args, **kwargs)
+            if fd not in opened:
+                return info
+            return types.SimpleNamespace(
+                **{
+                    name: getattr(info, name)
+                    for name in dir(info)
+                    if name.startswith("st_") and name != "st_file_attributes"
+                },
+                st_file_attributes=state["attrs"],
+            )
+
+        monkeypatch.setattr(links, "IS_POSIX", False)
+        monkeypatch.setattr(links, "_win_open_without_following", _open)
+        monkeypatch.setattr(links, "win_fd_is_link", lambda _fd: state["is_link"])
+        monkeypatch.setattr(os, "fstat", _fstat)
+        return links, state
+
+    def test_default_refuses_a_cloud_files_directory(self, windows_pin, tmp_path):
+        links, _state = windows_pin
+        with pytest.raises(NotADirectoryError):
+            links.pin_directory(tmp_path / "OneDrive")
+
+    def test_links_only_pins_a_cloud_files_directory(self, windows_pin, tmp_path):
+        links, _state = windows_pin
+        fd = links.pin_directory(tmp_path / "OneDrive", links_only=True)
+        os.close(fd)
+
+    def test_links_only_still_refuses_a_junction(self, windows_pin, tmp_path):
+        links, state = windows_pin
+        state["is_link"] = True
+        with pytest.raises(NotADirectoryError):
+            links.pin_directory(tmp_path / "junction", links_only=True)
+
+    def test_links_only_still_refuses_a_file(self, windows_pin, tmp_path):
+        links, state = windows_pin
+        state["attrs"] = links._WIN_FILE_ATTRIBUTE_REPARSE_POINT
+        with pytest.raises(NotADirectoryError):
+            links.pin_directory(tmp_path / "placeholder.txt", links_only=True)
+
+
 # ---------------------------------------------------------------------------
 # POSIX-branch coverage for the new platform_compat helpers. The
 # tests below deliberately exercise the ``if IS_POSIX:`` / Linux ``/proc`` paths

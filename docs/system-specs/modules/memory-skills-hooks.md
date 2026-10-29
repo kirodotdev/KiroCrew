@@ -5484,6 +5484,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     to `atomic_write`, so it must land for all three surfaces at once rather than
     by reverting one of them to an in-place write that a mid-write failure or a full
     disk would turn into data loss.
+    Directory upload (`/api/directory-upload`) is not one of these surfaces: it is
+    create-only, so it never replaces a file. It creates the file through
+    `pinned_fs.write_new_file_pinned` (an `O_EXCL` create under the pinned
+    directory, with an identity-checked rollback), and an existing name answers
+    409 `name_collision`. The bytes are written under the final name, so a reader
+    can see a partially written file while the upload runs, and a failed write
+    removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an

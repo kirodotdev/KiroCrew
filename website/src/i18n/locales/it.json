@@ -12327,6 +12327,8 @@
         "content_searching": "Ricerca in corso…",
         "ctx_add_to_chat": "Aggiungi alla chat",
         "ctx_download": "Scarica",
+        "ctx_upload_files": "Carica file…",
+        "drop_to_upload": "Rilascia per caricare in {{folder}}",
         "filter_placeholder": "Filtra file…",
         "git_status_failed": "Impossibile leggere lo stato di git",
         "mode_content": "Contenuto",
@@ -12338,7 +12340,17 @@
         "search_names": "Cerca nei nomi dei file",
         "tree_mode": "Modalità elenco file",
         "content_engine_slow": "Questo host non ha ripgrep, quindi la ricerca ha usato la scansione interna più lenta.",
-        "content_one_row_per_file": "una riga per file"
+        "content_one_row_per_file": "una riga per file",
+        "upload_exists": "«{{name}}» esiste già in questa cartella. Rinomina il tuo file o rimuovi quello esistente, quindi caricalo di nuovo.",
+        "upload_failed": "Impossibile caricare {{name}}",
+        "uploading_name": "Caricamento di {{name}}…",
+        "uploading_count_one": "Caricamento di {{count}} file…",
+        "uploading_count_many": "Caricamento di {{count}} file…",
+        "uploading_count_other": "Caricamento di {{count}} file…",
+        "uploaded_name": "{{name}} caricato in {{folder}}.",
+        "uploaded_count_one": "{{count}} file caricato in {{folder}}.",
+        "uploaded_count_many": "{{count}} file caricati in {{folder}}.",
+        "uploaded_count_other": "{{count}} file caricati in {{folder}}."
       },
       "filesHome": {
         "no_project_dir": "Nessuna directory di progetto impostata per questa chat",

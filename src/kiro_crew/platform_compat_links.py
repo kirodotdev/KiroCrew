@@ -225,7 +225,7 @@ _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
 
-def pin_directory(path: str | os.PathLike) -> int:
+def pin_directory(path: str | os.PathLike, *, links_only: bool = False) -> int:
     """Open *path* as a directory and return a descriptor that PINS it.
 
     For code that must let a child process write to ``<dir>/<name>`` by path:
@@ -250,6 +250,11 @@ def pin_directory(path: str | os.PathLike) -> int:
     point raises ``NotADirectoryError``; a POSIX symlink fails with whichever
     of ``ENOTDIR`` / ``ELOOP`` the kernel reports for ``O_DIRECTORY |
     O_NOFOLLOW``. Release with ``os.close``.
+
+    ``links_only`` narrows the Windows reparse refusal to a reparse point that
+    stands for another name (:func:`win_fd_is_link`), so a cloud-files or dedup
+    directory is pinned as the directory it is. POSIX is unaffected: a link is
+    the only thing ``O_NOFOLLOW`` refuses there.
     """
     if IS_POSIX:
         return os.open(os.fspath(path), pinned_dir_flags())
@@ -257,7 +262,9 @@ def pin_directory(path: str | os.PathLike) -> int:
     fd = _win_open_without_following(path)
     try:
         attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
-        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or _win_reparse_refused(
+            fd, attrs, links_only=links_only
+        ):
             raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
     except BaseException:
         os.close(fd)

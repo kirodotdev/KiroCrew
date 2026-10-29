@@ -11959,6 +11959,8 @@
         "content_searching": "検索中…",
         "ctx_add_to_chat": "チャットに追加",
         "ctx_download": "ダウンロード",
+        "ctx_upload_files": "ファイルをアップロード…",
+        "drop_to_upload": "ここにドロップすると「{{folder}}」にアップロードします",
         "filter_placeholder": "ファイルを絞り込む…",
         "git_status_failed": "Git の状態を読み取れませんでした",
         "mode_content": "内容",
@@ -11970,7 +11972,13 @@
         "search_names": "ファイル名を検索",
         "tree_mode": "ファイル一覧モード",
         "content_engine_slow": "このホストには ripgrep がないため、検索は低速な内蔵スキャンで実行されました。",
-        "content_one_row_per_file": "1 ファイルにつき 1 行"
+        "content_one_row_per_file": "1 ファイルにつき 1 行",
+        "upload_exists": "「{{name}}」はこのフォルダーに既に存在します。アップロードするファイルの名前を変更するか、既存のファイルを削除してから、もう一度アップロードしてください。",
+        "upload_failed": "{{name}} をアップロードできませんでした",
+        "uploading_name": "{{name}} をアップロードしています…",
+        "uploading_count_other": "{{count}} 個のファイルをアップロードしています…",
+        "uploaded_name": "{{name}} を「{{folder}}」にアップロードしました。",
+        "uploaded_count_other": "{{count}} 個のファイルを「{{folder}}」にアップロードしました。"
       },
       "filesHome": {
         "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",

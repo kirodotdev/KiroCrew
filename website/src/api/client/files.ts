@@ -2,7 +2,7 @@
  * Files and projects on the gateway host: worktree creation, recent
  * projects, directory, drive and file browsing, project git status/log/tree,
  * named workspaces, reveal/open, the file picker, diff, fuzzy search, path
- * completion, composer uploads and screenshots.
+ * completion, composer and Files-panel uploads and screenshots.
  */
 
 import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
@@ -195,6 +195,35 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
         checkSessionExpired(res)
         return res
       }),
+    /**
+     * Upload one OS file into an existing workspace directory (Files panel
+     * drag-and-drop / "Upload files…" row menu).
+     *
+     * Sibling of `uploadFiles` above: that one always lands in the fixed
+     * chat-attachment scratch directory; this one targets whatever directory
+     * the caller resolved (a drop target row, or the tree root). One request
+     * per file — the caller loops for multiple files — so a name collision is
+     * reported per file rather than for a whole batch at once. Returns a
+     * discriminated result rather than throwing, so a `name_collision` (409)
+     * reads as data the caller can report instead of an exception to catch.
+     */
+    uploadToDirectory: async (
+      dir: string, file: File,
+    ): Promise<
+      { ok: true; path: string; name: string } | { ok: false; status: number; code?: string; error: string }
+    > => {
+      const fd = new FormData()
+      fd.append('file', file)
+      const q = new URLSearchParams({ dir })
+      const res = await fetch(`/api/directory-upload?${q}`, { method: 'POST', body: fd })
+      checkSessionExpired(res)
+      let body: { path?: string; name?: string; error?: string; code?: string }
+      try { body = await res.json() } catch { body = {} }
+      if (!res.ok) {
+        return { ok: false, status: res.status, code: body.code, error: body.error || res.statusText }
+      }
+      return { ok: true, path: body.path ?? '', name: body.name ?? file.name }
+    },
     screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
   }
 

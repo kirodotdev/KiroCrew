@@ -389,7 +389,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 34
+    assert len({id(h) for h in served}) == 35
     inner = [getattr(h, "__wrapped__", h) for h in served]
     assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
     assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
@@ -404,7 +404,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         "api_project_git_status",
     ]
     reexports = _package_reexports()
-    assert len(reexports) == 36
+    assert len(reexports) == 37
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 

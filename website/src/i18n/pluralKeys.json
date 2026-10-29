@@ -297,6 +297,8 @@
   "pages.membersPage.goals_heartbeat_per_day",
   "appSdk.newMessagesDivider.new_messages",
   "pages.chatPage.jump_to_new",
+  "pages.chat.fileBrowserRail.uploading_count",
+  "pages.chat.fileBrowserRail.uploaded_count",
   "pages.contextBreakdown.list_count",
   "pages.contextBreakdown.media_documents",
   "pages.contextBreakdown.media_images",
