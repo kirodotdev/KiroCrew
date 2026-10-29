@@ -209,7 +209,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
  * injection. */
 export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   artifact, slug, previewStyle, comments, onSelect, onOpenThread, scrollToCommentId, activeId, unreadRootIds,
-  heightStyle,
+  heightStyle, relayWheel = false,
 }: {
   artifact: Artifact
   slug: string
@@ -224,6 +224,11 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   unreadRootIds?: Set<string>
   /** Override the iframe height (side-panel fit). */
   heightStyle?: React.CSSProperties
+  /** Report the frame's horizontal wheel runs its own content does not scroll
+   *  to a host page's trackpad swipe (`relayWheel` in lib/widgetSrcdoc). The
+   *  frame relays only once that host arms it, so a page with no swipe is
+   *  unchanged. Set by the side panel, whose swipe can close it over the frame. */
+  relayWheel?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const { theme, colorTheme, themeVersion } = useTheme()
@@ -299,9 +304,10 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
         includeHeightReporter: true, linkBridge: frame.linkBridge,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
         pageScripts: frame.pageScripts,
+        relayWheel,
       })
       : null,
-    [artifact.content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
+    [artifact.content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts, relayWheel],
   )
   // One shared hook rather than this effect in four components: the previous
   // document survives both an in-flight and a failed re-mint, and `failed`
@@ -477,6 +483,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
               onIframeLoad?.()
             }}
             sandbox={frame.sandbox}
+            // The mark a listening host arms by (hooks/useTrackpadSwipe): only
+            // a frame whose document carries the relay is ever told anything.
+            data-wheel-relay={relayWheel ? '' : undefined}
             // NO clipboard-write delegation here, deliberately. These frames host
             // agent-generated HTML whose scripts run on load, so a delegated
             // permission would let one overwrite the user's clipboard with no Copy

@@ -720,6 +720,9 @@ export function MembersPageSidePanel({
                       data-testid="member-side-panel"
                       data-placement={beside ? 'docked' : 'overlay'}
                       data-sliding={panelSlides && !isMobile ? 'true' : undefined}
+                      // A native Browser view cannot follow a slide that only
+                      // moves the panel: hidden (kept) until it docks.
+                      data-native-overlay={panelSlides && !isMobile ? '' : undefined}
                     >
                       <motion.div
                         // Always attached: a motion element binds its ref once, at

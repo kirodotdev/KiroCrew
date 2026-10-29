@@ -4,6 +4,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { useMeasuredHeight } from '../../hooks/useMeasuredHeight'
+import { afterSlide, forgetAfterSlide, slideHeld } from '../../utils/panelSlide'
 
 /* The composer's height: the content-driven autosize (measured on an
    off-screen twin), the persisted drag-to-resize preference, and the strips
@@ -462,17 +463,21 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     if (!el || typeof ResizeObserver === 'undefined') return
     let lastWidth = el.clientWidth
     let frame = 0
+    const remeasure = () => {
+      if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, true)
+    }
     const ro = new ResizeObserver(() => {
       const width = el.clientWidth
       if (width === lastWidth) return
       lastWidth = width
       cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(() => {
-        if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, true)
-      })
+      // A side panel sliding resizes the composer on every frame, and each new
+      // width is a fresh twin measurement: measure once when it rests.
+      if (slideHeld()) { afterSlide(remeasure); return }
+      frame = requestAnimationFrame(remeasure)
     })
     ro.observe(el)
-    return () => { ro.disconnect(); cancelAnimationFrame(frame) }
+    return () => { ro.disconnect(); cancelAnimationFrame(frame); forgetAfterSlide(remeasure) }
     // `textareaParked` re-arms the observer on the way back from the sr-only box,
     // where the 1px width must not be the baseline the next change is judged from.
   }, [manualHeight, prefillHint, textareaParked, inputRef, dragging])

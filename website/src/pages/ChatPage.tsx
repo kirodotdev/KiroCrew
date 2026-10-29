@@ -17,6 +17,7 @@ import { useComposerStaging, useStagedFolderRefs } from './chat/page/composerSta
 import { useFileMentionActions } from './chat/page/composerFileMentions'
 import { useChatEventBridges, useColdFileTabHydration } from './chat/page/eventBridges'
 import { useChatPageEnvironment, usePageFlags } from './chat/page/pageEnvironment'
+import { useChatPanelTrackpadSwipe } from './chat/page/chatTrackpadSwipe'
 import { useActiveSlotState } from './chat/page/activeSlotState'
 import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMainComposerHandoff, useComposerVoiceHost } from './chat/page/composerHost'
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices } from './chat/page/sessionPicks'
@@ -949,6 +950,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
     sidebarAutoHidden, toggleAct,
   })
+  // Desktop: a two-finger trackpad swipe drags the right side panel.
+  const panelTrackpad = useChatPanelTrackpadSwipe({
+    isMobile, embedded, activitySlot, activityOpen, searchOpen: search.isOpen, sidePanelDock, toggleAct, dispatch, activeSlot: activeSlot ?? null,
+  })
   // "Open Sidebar Sessions in a Session Tab" (Settings > Chat > Sessions). A
   // sidebar row's click, Enter/Space and source chip all call `onSelectSlot`
   // after their `switchSlot`, so one handler covers each; the flyout below is
@@ -1187,7 +1192,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
         activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
         sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized} panelReserve={panelReserve}
-        pinSummary={sidePanelPinSummary}
+        pinSummary={sidePanelPinSummary} trackpad={panelTrackpad}
       />
     </ChatPageFrame>
   )

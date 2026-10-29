@@ -153,6 +153,7 @@ describe('pages/chat/page owners', () => {
       'useTranscriptJumps',
       'useTranscriptRendering',
       'useSessionsDrawer',
+      'useChatPanelTrackpadSwipe',
       'usePanelLayout',
       'useComposerAboveBand',
       'useSessionControlChips',

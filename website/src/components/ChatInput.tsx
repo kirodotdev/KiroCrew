@@ -81,6 +81,7 @@ import { usePromptOptimizer } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { ComposerAttach } from '../chat-core/composer/Attach'
+import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
 
 /* The chat composer. This module is its only import path: the default export
    is the memoized component every host renders, and the named exports below
@@ -846,9 +847,11 @@ function ChatInput({
     measure()
     // The column changes with the window and the panes beside it.
     if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(measure)
+    // A side panel sliding resizes the column on every frame: measure once when
+    // it rests (utils/panelSlide), not on every frame.
+    const ro = new ResizeObserver(() => { if (slideHeld()) afterSlide(measure); else measure() })
     ro.observe(wrap)
-    return () => ro.disconnect()
+    return () => { ro.disconnect(); forgetAfterSlide(measure) }
   }, [inlineToolbarWhileFits, value, showGhost, composerCollapsed])
   // Every status line the box draws above or below the text is a strip too:
   // the send-held notice while an upload is in flight, and the voice bar's
@@ -881,6 +884,7 @@ function ChatInput({
   // first measure and under a pinned manual height (the drag sets the inner
   // box's height itself), when the sizer is simply `auto`.
   const [box, setBox] = useState<{ height: number; animate: boolean } | null>(null)
+  const lastBoxRef = useRef<{ height: number; animate: boolean } | null>(null)
   const shapeFlipRef = useRef(false)
   const prevInlineRef = useRef(inlineToolbar)
   const [shapeAnimating, setShapeAnimating] = useState(false)
@@ -898,8 +902,15 @@ function ChatInput({
     const wrap = wrapperRef.current
     if (!wrap) return
     const measure = () => {
-      setBox({ height: Math.round(wrap.getBoundingClientRect().height), animate: shapeFlipRef.current })
+      const height = Math.round(wrap.getBoundingClientRect().height)
+      const animate = shapeFlipRef.current
+      // A width-only resize (a side panel sliding fires one every frame) keeps
+      // the same box: no new object, so the composer does not re-render.
+      const last = lastBoxRef.current
       shapeFlipRef.current = false
+      if (last && last.height === height && last.animate === animate) return
+      lastBoxRef.current = { height, animate }
+      setBox(lastBoxRef.current)
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return

@@ -335,6 +335,9 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           activeId={layer.activeCommentId}
           unreadRootIds={layer.unreadRootIds}
           heightStyle={BODY_HEIGHT_STYLE}
+          // Inside a side panel a trackpad swipe over the frame may close the
+          // panel; the frame relays only when that page's swipe arms it.
+          relayWheel={!!embedded}
         />
       ) : (
         <ArtifactBodyNative

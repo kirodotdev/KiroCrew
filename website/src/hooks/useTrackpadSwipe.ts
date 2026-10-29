@@ -57,6 +57,7 @@ import { useEffect, useRef, type RefObject } from 'react'
 import { WHEEL_LINE_PX } from './useWheelToHorizontal'
 import { hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
 import { subscribeScrollTouch } from '../lib/scrollTouch'
+import { isModalLayer } from './modalLayer'
 
 export type TrackpadSwipeDir = 'left' | 'right'
 
@@ -74,6 +75,16 @@ export const swipeTiming = { idleMs: SWIPE_GESTURE_IDLE_MS }
  * is a lift-off, so a slow or slowing finger keeps following 1:1.
  */
 export const MOMENTUM_DECAY_EVENTS = 3
+/** A held run ends when this many steps in a row each grow by HELD_RISE_RATIO:
+ *  momentum only decays, so that is new fingers. Two, so one spike does not. */
+export const HELD_RISE_RATIO = 1.3
+export const HELD_RISE_STEPS = 2
+/** The creeping tail: after a step of at least SLOW_TAIL_MIN_PEAK_PX, steps no
+ *  bigger than SLOW_TAIL_PX, MOMENTUM_DECAY_EVENTS in a row. The floor is
+ *  absolute on purpose: a slow drag's own steps are a few px and uneven, and a
+ *  rule against the run's peak read a slow drag as its own tail. */
+export const SLOW_TAIL_MIN_PEAK_PX = 16
+export const SLOW_TAIL_PX = 4
 /** With the fingers known down, the longest pause, ms, that still keeps the
  *  drag. Past it the drag ends as a gap anyway, so a lost `end` cannot hold a
  *  panel half-open. */
@@ -166,6 +177,22 @@ export function createTrackpadSwipeReader(
   let lastAbs = 0
   /** The last non-zero signed delta: a tail never changes direction. */
   let lastDx = 0
+  /** The run's largest applied step, and how many tiny steps in a row since:
+   *  the evidence of a creeping tail. */
+  let peakAbs = 0
+  let tinyRun = 0
+  /** While held: the last signed delta, the last size, and how many steps in
+   *  a row grew by `HELD_RISE_RATIO` -- the evidence a held run is over. */
+  let heldLastDx = 0
+  let heldPrevAbs = 0
+  let heldRises = 0
+  /** Hold the rest of the run, remembering where its deltas stood. */
+  const hold = () => {
+    owner = 'held'
+    heldLastDx = lastDx
+    heldPrevAbs = lastAbs
+    heldRises = 0
+  }
   /** Shrinking deltas held back while they may be the tail: applied as soon as
    *  the streak stops looking like one, dropped once it is recognised. */
   let pendX = 0
@@ -209,6 +236,22 @@ export function createTrackpadSwipeReader(
       lastAt = s.at
       const dx = px(s.dx, s.mode)
       const dy = px(s.dy, s.mode)
+      // A held run (a recognised tail, a lift, a drag the page committed) is
+      // over as soon as its events stop looking like its momentum, even with no
+      // gap: macOS sends momentum for up to a second, and a new swipe inside it
+      // was swallowed until it died out. Momentum never turns back and only
+      // decays, so a turn back, or two steps in a row each growing by
+      // HELD_RISE_RATIO, are new fingers: this event decides a new run.
+      if (owner === 'held' && dx !== 0 && !s.ctrl) {
+        const a = Math.abs(dx)
+        if (heldLastDx !== 0 && (dx > 0) !== (heldLastDx > 0)) owner = null
+        else {
+          heldRises = heldPrevAbs > 0 && a >= HELD_RISE_RATIO * heldPrevAbs ? heldRises + 1 : 0
+          heldPrevAbs = a
+          heldLastDx = dx
+          if (heldRises >= HELD_RISE_STEPS) owner = null
+        }
+      }
       if (owner === null) {
         if (s.ctrl) { owner = 'other'; runNo += 1; return out }
         if (dx === 0 && dy === 0) return out
@@ -221,6 +264,8 @@ export function createTrackpadSwipeReader(
         ratios = []
         lastAbs = 0
         lastDx = 0
+        peakAbs = 0
+        tinyRun = 0
         pendX = 0
         pendY = 0
         if (owner === 'drag') out.start = dir
@@ -236,6 +281,56 @@ export function createTrackpadSwipeReader(
       // A turn back is the fingers, however it shrinks: it scores no ratio, so
       // the streak resets and what was held back is applied before it.
       const flipped = dx !== 0 && lastDx !== 0 && (dx > 0) !== (lastDx > 0)
+      // The shell reports the fingers down (the desktop app's finger phases):
+      // what arrives is the fingers, whatever its shape, so no tail is
+      // inferred from it. The real lift-off ends the drag, and a lost `end`
+      // still does at the hold cap (FINGER_HOLD_MAX_MS of quiet, above).
+      if (fingersDown()) {
+        if (a > peakAbs) peakAbs = a
+        tinyRun = 0
+        ratios = []
+        lastAbs = a
+        if (dx !== 0) lastDx = dx
+        sumX += pendX + dx
+        sumY += pendY + dy
+        pendX = 0
+        pendY = 0
+        out.move = sumX
+        return out
+      }
+      // The other shape of a tail: after a run that moved for real, a string of
+      // tiny steps. macOS momentum after a light lift does not decay smoothly
+      // enough for the ratio test below (it creeps 2px, 2px, 1px, 0, 1px...),
+      // and a browser followed it 1:1 for a third of a second before the gap
+      // ended it: the panel visibly slowed to a crawl, then jumped. Three tiny
+      // steps in a row are held back like a tail; a bigger step applies them.
+      // Only once the run had moved fast (a step of SLOW_TAIL_MIN_PEAK_PX), so a
+      // drag that was slow all along follows every pixel, however uneven.
+      const tiny = dx !== 0 && !flipped && peakAbs >= SLOW_TAIL_MIN_PEAK_PX
+        && a <= SLOW_TAIL_PX
+      if (tiny) {
+        tinyRun += 1
+        pendX += dx
+        pendY += dy
+        lastAbs = a
+        lastDx = dx
+        if (tinyRun >= MOMENTUM_DECAY_EVENTS) {
+          // Fingers off: decide here; what was held back is the tail.
+          pendX = 0
+          pendY = 0
+          finish(s.at)
+          hold()
+          out.end = true
+        }
+        return out
+      }
+      // A zero step says nothing about the fingers: inside a streak it is held
+      // with it, neither applying the streak nor breaking it.
+      if (dx === 0 && tinyRun > 0) {
+        pendY += dy
+        return out
+      }
+      tinyRun = 0
       const r = lastAbs > 0 && !flipped ? a / lastAbs : 0
       lastAbs = a
       if (dx !== 0) lastDx = dx
@@ -253,7 +348,7 @@ export function createTrackpadSwipeReader(
             pendX = 0
             pendY = 0
             finish(s.at)
-            owner = 'held'
+            hold()
             out.end = true
           }
           return out
@@ -264,6 +359,7 @@ export function createTrackpadSwipeReader(
         ratios = []
       }
       // The fingers: apply what was held back, then this delta.
+      if (a > peakAbs) peakAbs = a
       sumX += pendX + dx
       sumY += pendY + dy
       pendX = 0
@@ -278,8 +374,16 @@ export function createTrackpadSwipeReader(
     lift(): boolean {
       if (owner !== 'drag') return false
       finish()
-      owner = 'held'
+      hold()
       return true
+    },
+    /** The page committed the drag mid-run (rule C): the rest of this run is
+     *  held, as a recognised tail is, and ends the same ways. */
+    commit(): void {
+      if (owner !== 'drag') return
+      pendX = 0
+      pendY = 0
+      hold()
     },
     /** The fingers landed again (the shell's `begin`): a held tail is over, so
      *  the next event decides a new run. Returns whether one was held. */
@@ -329,6 +433,37 @@ export function canScrollX(from: EventTarget | null | readonly EventTarget[], dx
   return false
 }
 
+/** Whether `el` is on screen within `container`: no element on the way up to
+ *  it is hidden (`display: none`, `hidden`, or `aria-hidden="true"`, the way a
+ *  side panel keeps its other tabs' bodies mounted). For a frame's relayed
+ *  wheels: only the frame the person is looking at may drive the panel. */
+export function shownWithin(el: Element, container: Element): boolean {
+  if (!container.contains(el)) return false
+  for (let n: Element | null = el; n && n !== container; n = n.parentElement) {
+    if ((n as HTMLElement).hidden || n.getAttribute('aria-hidden') === 'true') return false
+    if ((n as HTMLElement).style?.display === 'none') return false
+  }
+  return true
+}
+
+/** Whether an element on the way from the event's target up to (not past)
+ *  `root` is a modal layer: `role="dialog"` / `"alertdialog"`, `aria-modal`, or
+ *  an open `<dialog>` (`isModalLayer`, the test the phone drawer walks up
+ *  with too), so the next dialog needs no attribute of its own. */
+export function inModalLayer(from: EventTarget | null | readonly EventTarget[], root: Element | null): boolean {
+  const chain: Element[] = []
+  if (Array.isArray(from)) {
+    for (const n of from as readonly EventTarget[]) if (n instanceof Element) chain.push(n)
+  } else {
+    for (let n = from instanceof Element ? from : null; n; n = n.parentElement) chain.push(n)
+  }
+  for (const n of chain) {
+    if (n === root) break
+    if (isModalLayer(n)) return true
+  }
+  return false
+}
+
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
@@ -344,8 +479,9 @@ export interface TrackpadSwipeOptions {
   onDragStart: (dir: TrackpadSwipeDir) => void
   /** The drag's summed `deltaX`, px (positive is the fingers moving left), at
    *  `at` on the event clock. Only the fingers' own deltas arrive here: a
-   *  momentum tail never does. */
-  onDragMove: (sumX: number, at: number) => void
+   *  momentum tail never does. Return `true` when the page committed on this
+   *  move: the rest of the run is then held (no further moves, no end). */
+  onDragMove: (sumX: number, at: number) => void | boolean
   /** The fingers are off. `momentum`: the tail was recognised, so they left
    *  with the speed of the last moves. `gap`: no event for the idle window, so
    *  they had stopped before they left. `lift`: the desktop shell reported the
@@ -454,7 +590,12 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
         live = prefersReducedMotion() ? 'reduced' : 'drag'
         if (live === 'drag') optsRef.current.onDragStart(v.start)
       }
-      if (v.move !== undefined && live === 'drag') optsRef.current.onDragMove(v.move, s.at)
+      if (v.move !== undefined && live === 'drag' && optsRef.current.onDragMove(v.move, s.at) === true) {
+        // The page committed on this move: the rest of the run is held, and a
+        // turn back or a new burst starts a new run at once.
+        reader.commit()
+        live = null
+      }
       if (v.end && live) endLive('momentum', s.at)
       if (v.consume) {
         seq += 1
@@ -469,7 +610,10 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // The composed path, so a scroller inside a shadow root (a code block
       // rendered by a web component) is seen, not just its host.
       const path = typeof e.composedPath === 'function' ? e.composedPath() : []
-      const owned = e.deltaX !== 0 && canScrollX(path.length ? path : e.target, e.deltaX, root)
+      // A run that starts inside a modal layer is the layer's: the page behind
+      // it must not move (a swipe over the What's New dialog opened the panel).
+      const owned = inModalLayer(path.length ? path : e.target, root)
+        || (e.deltaX !== 0 && canScrollX(path.length ? path : e.target, e.deltaX, root))
       // The event's own time, not the time it is handled: wheels queued behind a
       // slow frame arrive in a burst, and handling time would read that frame
       // as a gap in the fingers and end the drag under them.

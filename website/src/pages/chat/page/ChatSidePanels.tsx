@@ -1,7 +1,8 @@
 import type { MotionValue } from 'motion-dom'
-import type { MutableRefObject } from 'react'
+import { useEffect, useRef, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
+import type { ChatPanelTrackpadSwipe } from './chatTrackpadSwipe'
 import type { ChatPin } from '../../../api/pins'
 import type { ChatNavigationData } from '../../../hooks/useChatNavigation'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
@@ -68,6 +69,16 @@ interface ChatSidePanelsProps {
   panelMaximized: boolean
   panelReserve: number | undefined
   pinSummary: boolean
+  trackpad: ChatPanelTrackpadSwipe
+}
+
+/** No tween: a target's own `transition` outranks the element's. */
+const INSTANT = { duration: 0 }
+/** The column during a trackpad drag: its width is the spacer's (the panel is
+ *  out of flow), and it leaves at once, already at the width it closed to. */
+const DESK_SLIDE_MOTION = {
+  animate: { width: 'auto', height: '100%', opacity: 1, transition: INSTANT },
+  exit: { opacity: 1, transition: INSTANT },
 }
 
 /**
@@ -78,8 +89,14 @@ export default function ChatSidePanels({
   handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
   selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin,
   handleUnpinById, jumpToSearchResult, activeSlotTitle, activitySlot, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized, panelReserve,
-  pinSummary,
+  pinSummary, trackpad,
 }: ChatSidePanelsProps) {
+  const { deskSlide, deskSpacerW, deskPanelWrapRef } = trackpad
+  // The render that hands a settled drag back to the column must not run the
+  // column's width reveal: the column already stands at the panel's width.
+  const wasDeskSliding = useRef(false)
+  const instantPlacement = deskSlide || wasDeskSliding.current
+  useEffect(() => { wasDeskSliding.current = deskSlide })
   // A narrow desktop window where the panel fills the chat column needs no mark:
   // it squeezes the transcript to zero width, which the on-screen backstop sees
   // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
@@ -189,20 +206,37 @@ export default function ChatSidePanels({
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && (
+          {(shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) || deskSlide) && (
             <motion.div
               key="side-panel"
-              initial={sidePanelDockAnim.initial}
-              animate={sidePanelDockAnim.animate}
-              exit={sidePanelDockAnim.exit}
+              ref={deskPanelWrapRef}
+              // A trackpad drag (useChatPanelTrackpadSwipe): the column is a
+              // window onto the panel as wide as its visible part, the panel
+              // pinned at its left edge, so the panel's edge and the chat's
+              // follow the fingers. Swaps in and out with no reveal of its own.
+              initial={deskSlide ? false : sidePanelDockAnim.initial}
+              animate={deskSlide ? DESK_SLIDE_MOTION.animate : instantPlacement ? { ...sidePanelDockAnim.animate, transition: INSTANT } : sidePanelDockAnim.animate}
+              exit={deskSlide ? DESK_SLIDE_MOTION.exit : sidePanelDockAnim.exit}
               transition={SIDE_PANEL_DOCK_TRANSITION}
-              className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
-              style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+              className={deskSlide
+                // While it slides the panel keeps its size and only moves: its own
+                // layer (`will-change`) and containment let the browser move it
+                // without repainting or re-laying out its content each frame.
+                ? 'h-full relative overflow-hidden flex [&>:first-child]:absolute [&>:first-child]:inset-y-0 [&>:first-child]:left-0 [&>:first-child]:will-change-transform [&>:first-child]:[contain:layout_paint]'
+                : sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
+              style={!deskSlide && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+              data-testid="side-panel-column"
+              data-sliding={deskSlide ? 'true' : undefined}
+              // A native Browser view (useNativeBrowser) is a layer over the
+              // panel's last reported rect, and a slide moves the panel without
+              // resizing it: hide the view (it is kept, not destroyed) for the
+              // whole drag and settle; docking shows it at the new rect.
+              data-native-overlay={deskSlide ? '' : undefined}
             >
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
-                panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
+                panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !deskSlide}
                 onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
                 onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
@@ -218,6 +252,8 @@ export default function ChatSidePanels({
                 fillWidth={panelFillWidth}
                 extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
               />
+              {/* After the panel, so the panel keeps its place and never remounts. */}
+              {deskSlide && <motion.div data-testid="side-panel-swipe-spacer" className="h-full shrink-0" style={{ width: deskSpacerW }} />}
             </motion.div>
           )}
         </AnimatePresence>,
