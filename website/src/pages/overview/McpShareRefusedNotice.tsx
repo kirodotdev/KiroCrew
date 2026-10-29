@@ -8,7 +8,6 @@
  * page.
  */
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
@@ -79,28 +78,29 @@ export default function McpShareRefusedNotice({
   const names = refusedShares(status)
   if (names.length === 0) return null
   const review = i18nT('pages.overview.mcpTab.share_refused_review')
+  // A refused share is a launch the gateway rejected, so it is an error surface:
+  // the hand-off is on unless the host page holds staged edits it would drop.
   return (
-    <div
-      role="status"
-      data-testid="mcp-share-refused"
-      className={`p-3 rounded border border-[var(--warn)] bg-warn/20 text-[13px] ${className}`}
-    >
-      <div className="text-[var(--warn)]">
-        <AlertTriangle className="lucide-inline" />{' '}
-        {i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: names.join(', ') })}
-      </div>
-      <div className="mt-1 text-muted">
-        {i18nT('pages.overview.mcpTab.share_refused_restart')}{' '}
-        {stagedChanges ? (
-          <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline" target="_blank" rel="noopener noreferrer">
-            {review}
-          </Link>
-        ) : (
-          <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline">
-            {review}
-          </Link>
-        )}
-      </div>
-    </div>
+    <ErrorNotice
+      className={className}
+      message={i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: names.join(', ') })}
+      askAgent={!stagedChanges}
+      actionPlacement="below"
+      testId="mcp-share-refused"
+      footer={
+        <span className="text-muted">
+          {i18nT('pages.overview.mcpTab.share_refused_restart')}{' '}
+          {stagedChanges ? (
+            <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline" target="_blank" rel="noopener noreferrer">
+              {review}
+            </Link>
+          ) : (
+            <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline">
+              {review}
+            </Link>
+          )}
+        </span>
+      }
+    />
   )
 }

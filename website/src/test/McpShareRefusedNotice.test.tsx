@@ -118,6 +118,25 @@ describe('McpShareRefusedNotice', () => {
     expect(screen.getByRole('link', { name: 'Review in MCP Management' })).not.toHaveAttribute('target')
   })
 
+  it('renders the refusal as an error notice with the agent hand-off', async () => {
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice />)
+    const notice = await screen.findByTestId('mcp-share-refused', undefined, WAIT)
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('offers no agent hand-off while the page holds staged edits', async () => {
+    mockApi.mcpGatewayStatus.mockResolvedValue(
+      status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
+    )
+    mount(<McpShareRefusedNotice stagedChanges />)
+    await screen.findByTestId('mcp-share-refused', undefined, WAIT)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
   it('uses the singular form for one server', async () => {
     mockApi.mcpGatewayStatus.mockResolvedValue(
       status({ share_refused: { 'alpha-mcp': 'added_outside_dashboard' } }),
