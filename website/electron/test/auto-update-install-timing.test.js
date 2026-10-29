@@ -534,3 +534,138 @@ test("disarm removes the session-end listener from the window it was registered 
   emit("update-not-available");
   assert.ok(!hasWindowOnce("session-end"), "the listener on the original window must be removed, not leaked");
 });
+
+// TEMPORAL contract, quit half. Squirrel.Mac stages the update INSIDE
+// quitAndInstall() (about 40s for a real build), and ShipIt is armed only when
+// `before-quit-for-update` fires. A quit that lands in between -- a second Cmd+Q,
+// Dock or tray Quit, a window close, a logout -- kills the stage, and the app
+// reopens on the OLD version with no error. Neither install path still listens
+// for before-quit at that point, so the lane must hold those quits itself.
+
+/** An app whose before-quit listeners are real, so a quit can be fired and observed. */
+function makeQuitApp() {
+  const listeners = [];
+  const app = {
+    isPackaged: true,
+    getVersion: () => "1.0.0",
+    quits: 0,
+    exits: 0,
+    on: (ev, fn) => { if (ev === "before-quit") listeners.push({ fn, once: false }); },
+    once: (ev, fn) => { if (ev === "before-quit") listeners.push({ fn, once: true }); },
+    removeListener: (ev, fn) => {
+      if (ev !== "before-quit") return;
+      const i = listeners.findIndex((l) => l.fn === fn);
+      if (i >= 0) listeners.splice(i, 1);
+    },
+    exit: () => { app.exits += 1; },
+    quit: () => { app.quits += 1; fireQuit(); },
+  };
+  /** Fire before-quit the way Electron does. Returns whether the quit was prevented. */
+  function fireQuit() {
+    let prevented = false;
+    const event = { preventDefault: () => { prevented = true; } };
+    const snapshot = listeners.slice();
+    for (const l of snapshot) {
+      if (l.once) listeners.splice(listeners.indexOf(l), 1);
+    }
+    for (const l of snapshot) l.fn(event);
+    return prevented;
+  }
+  return { app, fireQuit, listenerCount: () => listeners.length };
+}
+
+function makeQuitDeps({ osPlatform = "darwin" } = {}) {
+  const base = makeDeps();
+  const quit = makeQuitApp();
+  const failed = { count: 0 };
+  base.deps.app = quit.app;
+  base.deps.osPlatform = osPlatform;
+  base.deps.onInstallFailed = () => { failed.count += 1; };
+  return { ...base, ...quit, failed };
+}
+
+async function until(predicate) {
+  for (let i = 0; i < 200 && !predicate(); i += 1) await new Promise((r) => setImmediate(r));
+  assert.ok(predicate(), "condition never became true");
+}
+
+test("TEMPORAL: a quit while Squirrel stages a manual install is held, not obeyed", async () => {
+  const { deps, calls, emit, fireQuit } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await u.install();
+  assert.strictEqual(calls.quitAndInstall.length, 1);
+
+  assert.strictEqual(fireQuit(), true, "a quit before the installer takes over kills the stage -- it must be held");
+  assert.strictEqual(fireQuit(), true, "a second quit in the same window must be held too");
+  const notices = calls.notifications.filter((n) => n.title === "Finishing the update");
+  assert.strictEqual(notices.length, 1, "say once why the app did not quit");
+});
+
+test("TEMPORAL: once the installer takes over, quits are no longer held", async () => {
+  const { deps, emit, fireQuit, fireNative } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await u.install();
+
+  fireNative("before-quit-for-update");
+  assert.strictEqual(fireQuit(), false, "the installer's own quit follows before-quit-for-update and must go through");
+});
+
+test("TEMPORAL: an installer failure after a held quit releases the hold and replays the quit", async () => {
+  const { deps, emit, fireQuit, failed, app } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await u.install();
+
+  assert.strictEqual(fireQuit(), true);
+  emit("error", new Error("Code signature at URL did not pass validation"));
+  assert.strictEqual(failed.count, 1, "a manual install failure still restores the gateway");
+  assert.strictEqual(app.quits, 1, "the quit the user asked for while staging must be honored, not swallowed");
+});
+
+test("TEMPORAL: an installer failure with no held quit keeps the app open and stops holding", async () => {
+  const { deps, emit, fireQuit, app } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await u.install();
+
+  emit("error", new Error("Code signature at URL did not pass validation"));
+  assert.strictEqual(app.quits, 0, "nobody asked to quit");
+  assert.strictEqual(fireQuit(), false, "after the failure a quit must go through again");
+});
+
+test("TEMPORAL: a second Cmd+Q during the quit-time install's staging is held", async () => {
+  const { deps, calls, emit, fireQuit } = makeQuitDeps();
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+
+  assert.strictEqual(fireQuit(), true, "the first quit is held to run the install");
+  await until(() => calls.quitAndInstall.length === 1);
+  assert.strictEqual(fireQuit(), true, "a second quit while Squirrel stages would leave the old version");
+});
+
+test("TEMPORAL: a wedged installer does not leave an app that can never quit", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, emit, fireQuit, app } = makeQuitDeps();
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await u.install();
+
+    assert.strictEqual(fireQuit(), true);
+    mock.timers.tick(10 * 60 * 1000);
+    assert.strictEqual(app.quits, 1, "after the bound the held quit is replayed");
+    assert.strictEqual(fireQuit(), false, "and quits are no longer held");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("off darwin the installer's own quit is never held", async () => {
+  const { deps, emit, fireQuit } = makeQuitDeps({ osPlatform: "win32" });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await u.install();
+  assert.strictEqual(fireQuit(), false, "NSIS and AppImage quit the app themselves to install");
+});
