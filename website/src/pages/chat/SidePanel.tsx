@@ -49,6 +49,8 @@ import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, ty
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
+import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 
 // The panel's parts live in sibling owners that never import this module:
 // `SidePanelAddMenu.tsx` (the + menu's catalog and gates), `SidePanelTabChip.tsx`
@@ -309,13 +311,16 @@ export default function SidePanel({
   // disabled server-side, and never list the pinned views (Changes / Files /
   // Artifacts, and Summary while Pin Summary holds it) — those are always
   // present in the strip.
+  // The Crew Mode preview, subscribed so a flip redraws the strip and the + menu.
+  // Off, a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
+  const crewModePreview = useCrewMode()
   // A Crew Mode root or one of its workers: its panel offers Workers, and the
   // tab is put on its strip whenever the session is shown (a fresh browser, a
   // reload, a reopened browser tab), without taking focus. Closing it holds
   // until the next visit; the + menu brings it back at any time.
   const crewMode = useAppSelector(st => {
     const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
-    return !!(row?.crew_mode_root || row?.crew_root)
+    return crewModeRoot(row) || !!crewRootOf(row)
   })
   useEffect(() => { if (crewMode && slot) offerPanelView(slot, 'workers') }, [crewMode, slot])
   const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hiddenViews, crewMode })
@@ -376,15 +381,15 @@ export default function SidePanel({
     return leaving?.onBeforeLeave ?? null
   }, [])
   const visibleTabs = useMemo(() => {
-    const shown = hiddenViews || terminalsPending
-      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
+    const shown = hiddenViews || terminalsPending || !crewModePreview
+      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal') && (crewModePreview || t.kind !== 'workers'))
       : tabs
     if (!viewTitles) return shown
     return shown.map(t => {
       const title = Object.prototype.hasOwnProperty.call(viewTitles, t.kind) ? viewTitles[t.kind as ViewKind] : undefined
       return title && title !== t.title ? { ...t, title } : t
     })
-  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles])
+  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles, crewModePreview])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
     if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId

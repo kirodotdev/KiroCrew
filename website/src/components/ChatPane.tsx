@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { crewApprovalDecidableHere, runsCrewMode } from '../lib/crewMode'
+import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, gatewayLocksCrewMode, runsCrewMode } from '../lib/crewMode'
 import CrewApprovalCards from './crew/CrewApprovalCards'
 import { CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
 import { useCrewRoot } from './crew/useCrewRoot'
@@ -208,7 +208,7 @@ export default function ChatPane({
   // its approval is decided only on the conductor's card (no band here), and a
   // closed conductor turns its composer off. A pane holding the conductor keeps
   // its approval cards (edge review R3 G3, Z1).
-  const paneCrewRoot = paneSlot?.crew_root || ''
+  const paneCrewRoot = crewRootOf(paneSlot)
   const { rootClosed: paneCrewRootClosedRaw } = useCrewRoot(paneCrewRoot)
   const paneCrewRootClosed = !!paneCrewRoot && paneCrewRootClosedRaw
   const noSend = useCallback(() => {}, [])
@@ -302,6 +302,9 @@ export default function ChatPane({
     () => splitPaneMessages(allMessages),
     [allMessages],
   )
+  // Whether the person has sent this chat a message: the gateway refuses to move
+  // a Crew Mode chat off its conductor from then on.
+  const paneHasUserMessage = useMemo(() => paneMessages.some(m => m.role === 'user'), [paneMessages])
   // A crewmate's chat draws only what the crewmate says (see the `crewmate`
   // prop). Filtered HERE, above the list, so the run positions the assistant
   // rows compute from their neighbours see the drawn list, and so the pinned
@@ -1072,7 +1075,7 @@ export default function ChatPane({
             shape as ChatPage's inputAreaRef). */}
         {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
         <div ref={inputAreaRef} className="relative z-10 dock-inert">
-        {paneSlot?.crew_mode_root && <CrewApprovalCards root={slotKey} />}
+        {crewModeRoot(paneSlot) && <CrewApprovalCards root={slotKey} />}
         {paneCrewRoot && (
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
             waitingForApproval={!!paneSlot?.pending_approval} />
@@ -1157,7 +1160,10 @@ export default function ChatPane({
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
-          onAgentClick={!agentLocked && !runsCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
+          // A Crew Mode chat with a message offers no switch, preview on or off: the
+          // gateway keeps it on its conductor (`crew_mode_locked`).
+          onAgentClick={!agentLocked && !runsCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent)
+            && !(paneHasUserMessage && gatewayLocksCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent)) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}

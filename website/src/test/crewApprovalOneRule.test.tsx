@@ -13,6 +13,7 @@ import { buildCommandCenter, crewWaitingApprovals, type CommandCenterSources } f
 import AttentionCard from '../pages/chat/command-center/AttentionCard'
 import type { ChatSlot } from '../types'
 import { createTestStore } from './helpers'
+import { crewModePreviewOn } from './crewModePreview'
 
 const slot = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({ key, messages: 0, running: false, ...extra })
 const waiting = {
@@ -87,3 +88,6 @@ describe('the one rule: a worker approval is decided only on the conductor card'
     expect(screen.getByRole('link', { name: /Open the approval card/ })).toHaveAttribute('href', '/chat?sid=root')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

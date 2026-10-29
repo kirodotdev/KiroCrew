@@ -10,7 +10,33 @@
  *  it arrives with the agent catalog (`GET /api/agents/catalog`, read by
  *  `useAgents`), which records them here. Until a catalog lands, and on a gateway
  *  whose catalog carries no Crew Mode fields, no template is a conductor.
+ *
+ *  Crew Mode is a feature preview (`PREVIEW_CREW_MODE`, default off).
+ *  `crewModeEnabled()` is the one read of it: every helper here consults it, and
+ *  every surface that reads a row's Crew Mode stamps reads them through
+ *  `crewModeRoot` / `crewRootOf`. Off, this module answers as it does for a
+ *  gateway without Crew Mode, and the stamps read as absent.
  */
+import { PREVIEW_CREW_MODE, readPreviewFlag } from '../utils/previewFlags'
+
+/** Whether the Crew Mode preview is on for this device. The one read of the flag:
+ *  `useCrewMode` subscribes to the same key for a re-render. */
+export function crewModeEnabled(): boolean {
+  return readPreviewFlag(PREVIEW_CREW_MODE)
+}
+
+/** Whether `row` is a Crew Mode root, read through the flag: the server's
+ *  `crew_mode_root` stamp, or `false` while the preview is off. */
+export function crewModeRoot(row: { crew_mode_root?: boolean } | null | undefined): boolean {
+  return !!row?.crew_mode_root && crewModeEnabled()
+}
+
+/** The Crew Mode root `row` is a crew member of, read through the flag: the
+ *  server's `crew_root` stamp, or `''` while the preview is off, so a crew member
+ *  lists, opens and alerts as an ordinary chat. */
+export function crewRootOf(row: { crew_root?: string | null } | null | undefined): string {
+  return (row?.crew_root && crewModeEnabled()) ? row.crew_root : ''
+}
 
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
 export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-conductor'
@@ -55,7 +81,7 @@ export function setCrewModeCatalog(
  *  Crew Mode, where every read that would narrow the person's view to Crew Mode's
  *  rules is left as it is today. */
 export function gatewayRunsCrewMode(): boolean {
-  return gatewayHasCrewMode
+  return gatewayHasCrewMode && crewModeEnabled()
 }
 
 /** Back to the state before any catalog landed. For tests, and for nothing else. */
@@ -72,7 +98,7 @@ export function crewModeAgent(): string {
 
 /** Whether `name` is one of the gateway's conductors. */
 export function isConductorAgent(name: string | null | undefined): boolean {
-  return !!name && conductors.has(name)
+  return !!name && conductors.has(name) && crewModeEnabled()
 }
 
 /** Whether a session on `agent` in namespace `kind` runs a conductor TEMPLATE. A
@@ -85,6 +111,15 @@ export function runsConductor(agent: string | null | undefined, kind: string | n
  *  conductor, or on the agent its `stamp` names (a custom conductor the config no
  *  longer names, until the gateway moves the chat onto the configured one). */
 export function runsCrewMode(agent: string | null | undefined, kind: string | null | undefined, stamp?: string | null): boolean {
+  return crewModeEnabled() && gatewayLocksCrewMode(agent, kind, stamp)
+}
+
+/** Whether the GATEWAY treats a session on `agent` in namespace `kind` as Crew
+ *  Mode, whatever this device's preview flag says: the gateway does not read the
+ *  flag, and refuses any agent switch of such a chat once it has a message
+ *  (`409 crew_mode_locked`). Read only to keep a switch the gateway would refuse
+ *  from being offered; every other Crew Mode read goes through `runsCrewMode`. */
+export function gatewayLocksCrewMode(agent: string | null | undefined, kind: string | null | undefined, stamp?: string | null): boolean {
   if (kind === 'member' || !agent) return false
   return conductors.has(agent) || (!!stamp && stamp === agent)
 }
@@ -132,7 +167,7 @@ export type CrewApprovalSurface = typeof CREW_APPROVAL_SURFACES[number]
 export function crewApprovalDecidableHere(
   slot: { crew_root?: string | null } | null | undefined, surface: CrewApprovalSurface,
 ): boolean {
-  if (!slot?.crew_root) return true
+  if (!crewRootOf(slot)) return true
   return surface === 'conductor_card'
 }
 
@@ -144,7 +179,8 @@ export function crewApprovalDecidableHere(
  *  own approval or question must still reach the person. `rootsOnly` keeps just
  *  the roots, for the session filter's Crew Mode chip. */
 export function crewModeView<T extends { key?: string; crew_root?: string; crew_mode_root?: boolean }>(rows: T[], rootsOnly = false): T[] {
-  if (rootsOnly) return rows.filter(r => !!r.crew_mode_root)
+  if (rootsOnly) return rows.filter(r => crewModeRoot(r))
+  if (!crewModeEnabled()) return rows
   const listed = new Set<string>()
   for (const r of rows) if (r.key) listed.add(r.key)
   return rows.filter(r => !underListedRoot(r, key => listed.has(key)))
@@ -152,7 +188,8 @@ export function crewModeView<T extends { key?: string; crew_root?: string; crew_
 
 /** A worker whose root is a row of the list: the one row `crewModeView` drops. */
 function underListedRoot(row: { crew_root?: string }, listed: (key: string) => boolean): boolean {
-  return !!row.crew_root && listed(row.crew_root)
+  const root = crewRootOf(row)
+  return !!root && listed(root)
 }
 
 /** Whether opening `row` in the main pane hides the sessions list on a narrow
@@ -170,7 +207,7 @@ export function openingHidesSessionList(row: { crew_root?: string } | null | und
  *  from its Crew panel or by the person. A crew member opened on purpose stays
  *  open; only the page's own pick skips it. */
 export function autoOpenRows<T extends { crew_root?: string }>(rows: T[]): T[] {
-  return rows.filter(s => !s.crew_root)
+  return rows.filter(s => !crewRootOf(s))
 }
 
 /** The agent the keyboard cycle lands on from `current`, `step` places along
@@ -182,8 +219,9 @@ export function autoOpenRows<T extends { crew_root?: string }>(rows: T[]): T[] {
 export function agentCycleTarget<T extends { name: string; selection_kind?: string }>(
   agents: T[], current: string, currentKind: string | undefined, step: 1 | -1, crewStamp?: string,
 ): string | null {
-  // A Crew Mode chat (every conductor, stamp included) has no picker to mirror.
-  if (runsCrewMode(current, currentKind, crewStamp)) return null
+  // A Crew Mode chat (every conductor, stamp included) has no picker to mirror,
+  // and the gateway refuses to move it whatever the preview flag says.
+  if (gatewayLocksCrewMode(current, currentKind, crewStamp)) return null
   const rows = agents.filter(a => a.selection_kind === 'member' || !isConductorAgent(a.name))
   if (rows.length === 0) return null
   const idx = rows.findIndex(a => a.name === current)

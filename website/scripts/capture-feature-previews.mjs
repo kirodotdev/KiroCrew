@@ -12,7 +12,8 @@
  * localStorage, the theme is set through the pod's own `PUT /api/config/theme`,
  * and the page is driven with Playwright. Every capture today is a PNG still;
  * the dialog also renders GIFs (`kind: 'gif'`), and the last one — the create
- * menu opening on "New Crew Mode chat" — went with Crew Mode. Recording one
+ * menu opening on "New Crew Mode chat" — went with the retired slot mode of that
+ * name (today's Crew Mode shoots a still of its composer switch). Recording one
  * again means `recordVideo` + a palette-quantised ffmpeg pass (12 fps, 800 px
  * wide), the recipe the browser-recording skill documents.
  *
@@ -86,6 +87,28 @@ for (const theme of ['light', 'dark']) {
     await page.goto(`${base}/webhooks`, { waitUntil: 'load' })
     await settle(page)
     await shoot(page, path.join(out, `webhooks-page-${theme}.png`))
+    await ctx.close()
+  }
+  // Crew Mode: the switch in a new chat's composer is the flag's door. The pod
+  // opens on a new chat, so the switch is on screen without a click.
+  {
+    const { ctx, page } = await session(browser, theme, ['mc-preview-crew-mode'])
+    // Mark first run done, the write the first-run chapters make on finishing,
+    // so an unseeded pod shows the chat and not first-run setup drawn over it.
+    const done = await page.evaluate(async (mode) => (await fetch('/api/config/theme', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, onboarded: true, import_onboarded: true, privacy_acked: true }),
+    })).status, theme)
+    if (done !== 200) throw new Error(`first-run PUT ${done}`)
+    await page.goto(`${base}/`, { waitUntil: 'load' })
+    await settle(page)
+    const chip = page.getByTestId('crew-mode-chip')
+    await chip.waitFor({ state: 'visible', timeout: 20_000 })
+    // A pod older than the latest release offers the update over the chat.
+    const later = page.getByRole('button', { name: 'Remind me tomorrow' })
+    if (await later.isVisible().catch(() => false)) await later.click()
+    await settle(page)
+    await shoot(page, path.join(out, `crew-mode-composer-${theme}.png`))
     await ctx.close()
   }
 }

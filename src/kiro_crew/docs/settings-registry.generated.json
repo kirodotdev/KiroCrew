@@ -1066,6 +1066,13 @@
       "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
+      "id": "developer.crew-mode",
+      "label": "Crew Mode",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.crew-mode",
+      "description": "Adds a Crew Mode switch to a new chat's composer. In Crew Mode the chat hands each task to a crew member chat of its own and reports back to you; the side panel's Crew tab lists them. While this is off, a chat already in Crew Mode stays an ordinary chat on its agent, and its crew members are listed as ordinary chats."
+    },
+    {
       "id": "developer.decisions-jev",
       "label": "Decisions (Jev)",
       "tab": "developer",

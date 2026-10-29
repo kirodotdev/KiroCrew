@@ -11,6 +11,7 @@ import { createTestStore } from '../../../test/helpers'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
 import { useCrewModeSwitch } from './crewModeSwitch'
+import { crewModePreviewOn } from '../../../test/crewModePreview'
 
 const plain = (key: string, agent = 'default'): ChatSlot => ({ key, agent, agent_kind: 'template', memory_mode: 'persistent', origin: 'user' } as unknown as ChatSlot)
 
@@ -64,3 +65,6 @@ describe('useCrewModeSwitch pending switches', () => {
     expect(hook.result.current.crewModeSwitching).toBeNull()
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

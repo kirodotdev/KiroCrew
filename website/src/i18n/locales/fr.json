@@ -13984,7 +13984,10 @@
         "intro": {
           "webhooks_summary": "Un autre système (CI, bot de revue, pipeline de déploiement) peut lancer ton agent à ta place en envoyant un message avec un jeton d’accès que tu crées sur la page Webhooks.",
           "webhooks_where": "Une fois activé, le lien « Ouvrir Webhooks » apparaît sur cette carte dans les Réglages ; c’est de là que s’ouvre la nouvelle page Webhooks. Elle n’apparaît pas dans la barre latérale tant qu’elle n’est pas terminée. Le désactiver ne fait que masquer la page à nouveau ; les jetons que tu as créés sont conservés.",
-          "webhooks_media_page": "La page Webhooks : la liste des jetons à gauche, la configuration « Laisser un système externe réveiller ton agent » à droite."
+          "webhooks_media_page": "La page Webhooks : la liste des jetons à gauche, la configuration « Laisser un système externe réveiller ton agent » à droite.",
+          "crew_mode_summary": "Crew Mode fait d'un chat un chef d'orchestre : il confie chaque tâche à un chat de membre d'équipage qui lui est propre et rend compte dans ce chat.",
+          "crew_mode_where": "Une fois activé, l'interrupteur Crew Mode apparaît dans la zone de saisie d'un nouveau chat. Un chat en Crew Mode liste son équipage dans l'onglet Crew du panneau latéral. Le désactiver masque à nouveau l'interrupteur ; aucun chat n'est fermé ni modifié.",
+          "crew_mode_media_composer": "Un nouveau chat avec l'interrupteur Crew Mode dans sa zone de saisie."
         },
         "decisions": "Décisions (Jev)",
         "decisions_desc": "Un petit modèle rapide prend des décisions rapides pour {{productName}}, par exemple quelle compétence convient à ton message. Choisis le modèle ci-dessous. S'il est lent ou ne répond pas, la règle intégrée décide à sa place, donc ta réponse n'est jamais retardée.",
@@ -14097,7 +14100,9 @@
         "decisions_runtime_error": "Impossible de démarrer le modèle.",
         "decisions_runtime_retry": "Réessayer",
         "folder_conductor": "Conducteur du dossier",
-        "folder_conductor_desc": "Remonte en haut du dossier le chat qui a lancé les autres chats de ce dossier : une barre de couleur sur son bord gauche et une petite étiquette conductor à côté du nom de l'agent. Cela change l'ordre de la liste des sessions, donc la liste reste telle quelle jusqu'à ce que tu l'actives. L'entrée de chat du menu du dossier est toujours là."
+        "folder_conductor_desc": "Remonte en haut du dossier le chat qui a lancé les autres chats de ce dossier : une barre de couleur sur son bord gauche et une petite étiquette conductor à côté du nom de l'agent. Cela change l'ordre de la liste des sessions, donc la liste reste telle quelle jusqu'à ce que tu l'actives. L'entrée de chat du menu du dossier est toujours là.",
+        "crew_mode": "Crew Mode",
+        "crew_mode_desc": "Ajoute un interrupteur Crew Mode à la zone de saisie d'un nouveau chat. En Crew Mode, le chat confie chaque tâche à un chat de membre d'équipage qui lui est propre et vous en rend compte ; l'onglet Crew du panneau latéral les liste. Tant que c'est désactivé, un chat déjà en Crew Mode reste un chat ordinaire sur son agent, et ses membres d'équipage sont listés comme des chats ordinaires."
       },
       "kasBundleCard": {
         "toggle_label": "Exécuter KAS avec le moteur de {{productName}}",

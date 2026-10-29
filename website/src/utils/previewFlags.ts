@@ -148,6 +148,24 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
+ * Crew Mode: the composer switch that runs a chat on a conductor, and every
+ * dashboard mark that goes with it (the welcome, the Crew panel tab, the crew
+ * card in the Sessions list, the Crew Mode filter, the crew member breadcrumb).
+ *
+ * Read it through `crewModeEnabled()` in `lib/crewMode.ts` (or `useCrewMode`
+ * for a re-render), never as a bare flag: that one read is what every Crew Mode
+ * surface consults.
+ *
+ * Default OFF, and OFF is the dashboard as it was before Crew Mode's UI: no
+ * switch, no conductor hidden from the agent picker, and every session -- a crew
+ * member included -- listed and alerting as an ordinary chat. The backend is
+ * unchanged either way; without the UI nothing turns Crew Mode on. A chat that
+ * is already in Crew Mode stays an ordinary chat on its conductor agent while
+ * the flag is off, and its crew members are ordinary rows of the list.
+ */
+export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

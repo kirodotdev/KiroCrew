@@ -12,6 +12,7 @@
  * needs who sent it, not a slot key, so the view drops the line and names the
  * sender instead ("From conductor").
  */
+import { crewRootOf } from './crewMode'
 
 const SEED_RE = /^\[sent by session ([\w.:-]+) via session_(?:send|create|broadcast)\]\n\n/
 
@@ -44,8 +45,8 @@ export type SeedSender = 'conductor' | 'worker' | 'session'
 /** Who a delivered message is from, by role: the root of the worker *slotKey*,
  *  another worker of that root, or any other session. */
 export function seedSender(rows: readonly SeedRow[], sender: string, slotKey: string | undefined): SeedSender {
-  const root = rows.find(row => row.key === slotKey)?.crew_root || ''
+  const root = crewRootOf(rows.find(row => row.key === slotKey))
   if (root && sender === root) return 'conductor'
-  if (root && rows.find(row => row.key === sender)?.crew_root === root) return 'worker'
+  if (root && crewRootOf(rows.find(row => row.key === sender)) === root) return 'worker'
   return 'session'
 }

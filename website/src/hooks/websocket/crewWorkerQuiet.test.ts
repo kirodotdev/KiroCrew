@@ -36,7 +36,7 @@ describe('Crew Mode workers stay quiet for the person', () => {
 
   it('a finished worker turn raises no turn-done chime or toast; a paused or errored one still does', () => {
     const src = read('turnCompletion.ts')
-    expect(src).toContain('const crewWorkerQuiet = !!soundSlot?.crew_root && !completionNeedsInput && !turnErrored')
+    expect(src).toContain('const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored')
     expect(src).toMatch(/&& !muteSuppresses && !crewWorkerQuiet/)
   })
 })

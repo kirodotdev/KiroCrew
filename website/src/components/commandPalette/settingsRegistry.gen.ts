@@ -1855,6 +1855,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.crew-mode",
+    "label": "Crew Mode",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
+    "description": "Adds a Crew Mode switch to a new chat's composer. In Crew Mode the chat hands each task to a crew member chat of its own and reports back to you; the side panel's Crew tab lists them. While this is off, a chat already in Crew Mode stays an ordinary chat on its agent, and its crew members are listed as ordinary chats.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.decisions-jev",
     "label": "Decisions (Jev)",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",

@@ -21,7 +21,7 @@ import { useActiveSlotState } from './chat/page/activeSlotState'
 import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMainComposerHandoff, useComposerVoiceHost } from './chat/page/composerHost'
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices } from './chat/page/sessionPicks'
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
-import { runsCrewMode } from '../lib/crewMode'
+import { crewRootOf, gatewayLocksCrewMode, runsCrewMode } from '../lib/crewMode'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
 import { useTranscriptScrollRefs, useTranscriptPaging } from './chat/page/transcriptPaging'
@@ -668,8 +668,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
-  const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentSlot?.crew_root || '')
-  const crewRootClosed = !!currentSlot?.crew_root && crewRootClosedRaw
+  const currentCrewRoot = crewRootOf(currentSlot)
+  const { rootClosed: crewRootClosedRaw } = useCrewRoot(currentCrewRoot)
+  const crewRootClosed = !!currentCrewRoot && crewRootClosedRaw
   // From the chip press to the first message the transcript shows the Crew Mode
   // welcome without a break: a slot reload in that window (the switch's own reads,
   // or a re-fetch of the same empty chat, `slotLoading`) and a slot record that has
@@ -1162,9 +1163,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // across the memory chip arriving beside it.
               crewModeOffered={crewModeEligible && !crewModeChosen && !slotLoading && showComposerMemoryChip} turnOnCrewMode={turnOnCrewMode}
               agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
+              // With the preview off too: the gateway keeps a Crew Mode chat that has a
+              // message on its conductor (`crew_mode_locked`), so no switch is offered.
+              agentSwitchLocked={hasUserMessage && gatewayLocksCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent)}
               turnOffCrewMode={turnOffCrewMode} crewModeSwitching={crewModeSwitching}
-              steerWorker={currentSlot?.crew_root ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
-              steerWorkerRoot={currentSlot?.crew_root || ''}
+              steerWorker={currentCrewRoot && currentSlot ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
+              steerWorkerRoot={currentCrewRoot}
             />
           </div>
           </SearchHighlightContext.Provider>

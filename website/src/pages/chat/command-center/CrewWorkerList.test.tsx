@@ -12,6 +12,7 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelVi
 import { switchSlot } from '../../../store/chatSlice'
 import { ApiError } from '../../../api/apiError'
 import CrewWorkerList, { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
+import { crewModePreviewOn } from '../../../test/crewModePreview'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -237,3 +238,6 @@ describe('CrewWorkerList (design B)', () => {
     expect(api.crewWorkers).not.toHaveBeenCalled()
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

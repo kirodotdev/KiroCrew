@@ -13984,7 +13984,10 @@
         "intro": {
           "webhooks_summary": "Outro sistema (CI, um bot de revisão, uma pipeline de deploy) pode iniciar seu agente por você enviando uma mensagem com um token de acesso que você cria na página Webhooks.",
           "webhooks_where": "Quando isto estiver ligado, o link “Abrir Webhooks” aparece neste cartão em Configurações; é dali que a nova página Webhooks abre. Ela fica fora da barra lateral até estar pronta. Desligar só esconde a página de novo; os tokens que você criou são mantidos.",
-          "webhooks_media_page": "A página Webhooks: lista de tokens à esquerda e, à direita, a configuração “Deixe um sistema externo acordar seu agente”."
+          "webhooks_media_page": "A página Webhooks: lista de tokens à esquerda e, à direita, a configuração “Deixe um sistema externo acordar seu agente”.",
+          "crew_mode_summary": "O Crew Mode transforma um chat em regente: ele entrega cada tarefa a um chat de membro da equipe próprio e informa neste chat.",
+          "crew_mode_where": "Depois de ligado, o interruptor de Crew Mode aparece na caixa de mensagem de um novo chat. Um chat em Crew Mode lista sua equipe na aba Crew do painel lateral. Desligar oculta o interruptor de novo; nenhum chat é fechado ou alterado.",
+          "crew_mode_media_composer": "Um novo chat com o interruptor de Crew Mode na caixa de mensagem."
         },
         "decisions": "Decisões (Jev)",
         "decisions_desc": "Um modelo pequeno e rápido toma decisões rápidas pelo {{productName}}, como qual das tuas habilidades se ajusta à tua mensagem. Escolhe o modelo abaixo. Se for lento ou não responder, decide a regra integrada, por isso a tua resposta nunca fica à espera.",
@@ -14097,7 +14100,9 @@
         "decisions_runtime_error": "Não foi possível iniciar o modelo.",
         "decisions_runtime_retry": "Tentar de novo",
         "folder_conductor": "Conductor da pasta",
-        "folder_conductor_desc": "Leva para o topo da pasta o chat que iniciou os outros chats dessa pasta: uma barra de destaque na borda esquerda e uma pequena etiqueta conductor ao lado do nome do agente. Isso muda a ordem da lista de sessões, por isso a lista fica como está até você ativar. O item de chat no menu da pasta está sempre lá."
+        "folder_conductor_desc": "Leva para o topo da pasta o chat que iniciou os outros chats dessa pasta: uma barra de destaque na borda esquerda e uma pequena etiqueta conductor ao lado do nome do agente. Isso muda a ordem da lista de sessões, por isso a lista fica como está até você ativar. O item de chat no menu da pasta está sempre lá.",
+        "crew_mode": "Crew Mode",
+        "crew_mode_desc": "Adiciona um interruptor de Crew Mode à caixa de mensagem de um novo chat. No Crew Mode, o chat entrega cada tarefa a um chat de membro da equipe próprio e informa você; a aba Crew do painel lateral os lista. Enquanto estiver desligado, um chat que já está em Crew Mode continua como um chat comum no seu agente, e seus membros aparecem como chats comuns."
       },
       "kasBundleCard": {
         "toggle_label": "Executar o KAS no mecanismo próprio do {{productName}}",

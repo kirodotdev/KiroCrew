@@ -120,6 +120,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
+import { crewModePreviewOn } from './crewModePreview'
 
 type TestSlot = Record<string, unknown>
 
@@ -1442,3 +1443,6 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

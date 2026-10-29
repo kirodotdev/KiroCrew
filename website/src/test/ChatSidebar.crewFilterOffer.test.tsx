@@ -64,6 +64,8 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
+import { crewModePreviewOn } from './crewModePreview'
+import { PREVIEW_CREW_MODE } from '../utils/previewFlags'
 
 const CREW_ONLY = 'mc-session-crew-only'
 
@@ -199,3 +201,44 @@ describe('the Crew Mode filter offer', () => {
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
   })
 })
+
+describe('with the Crew Mode preview off', () => {
+  // The file turns the preview on for every test; these turn it off again.
+  beforeEach(() => localStorage.removeItem(PREVIEW_CREW_MODE))
+
+  it('lists a crew member as an ordinary row and draws no crew card', async () => {
+    renderSidebar(WITH_CREW_MEMBER)
+    await waitFor(() => expect(screen.queryByText('the crew member')).not.toBeNull())
+    expect(screen.queryByText('the crew chat')).not.toBeNull()
+    expect(screen.queryByTestId('crew-eyebrow')).toBeNull()
+    expect(screen.queryByTestId('crew-ghost-badge')).toBeNull()
+  })
+
+  it('offers no Crew Mode filter, and a stored one narrows nothing', async () => {
+    localStorage.setItem(CREW_ONLY, '1')
+    renderSidebar(WITH_ROOT)
+    await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
+    expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
+    await openFilterMenu()
+    expect(crewRow()).toBeUndefined()
+    expect(screen.queryByTestId('filter-crew-hint')).toBeNull()
+    // The stored value is kept, so turning the preview on brings the filter back.
+    expect(localStorage.getItem(CREW_ONLY)).toBe('1')
+  })
+
+  it('a stored paused Crew Mode filter holds no pause: another filter narrows, the stored value stays', async () => {
+    localStorage.setItem(CREW_ONLY, '2')
+    renderSidebar(WITH_ROOT)
+    await waitFor(() => expect(screen.queryByText('plain b')).not.toBeNull())
+    await openFilterMenu()
+    fireEvent.click(screen.getAllByRole('menuitem').find(el => el.textContent?.startsWith('In progress'))!)
+    // Not joined to a pause: stored on, and the idle row drops out of the list.
+    await waitFor(() => expect(localStorage.getItem('mc-session-running-only')).toBe('1'))
+    await waitFor(() => expect(screen.queryByText('plain b')).toBeNull())
+    expect(screen.queryByText('plain a')).not.toBeNull()
+    expect(localStorage.getItem(CREW_ONLY)).toBe('2')
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

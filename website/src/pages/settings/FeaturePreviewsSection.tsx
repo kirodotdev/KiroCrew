@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -99,6 +99,22 @@ function webhooksIntro(): FeaturePreviewIntro {
   }
 }
 
+/** Crew Mode: the composer switch on a new chat, the flag's door. */
+function crewModeIntro(): FeaturePreviewIntro {
+  return {
+    summary: i18nT('pages.developer.featurePreviewsTab.intro.crew_mode_summary'),
+    whereToFind: i18nT('pages.developer.featurePreviewsTab.intro.crew_mode_where'),
+    media: [
+      {
+        kind: 'image',
+        light: `${MEDIA_BASE}/crew-mode-composer-light.png`,
+        dark: `${MEDIA_BASE}/crew-mode-composer-dark.png`,
+        caption: i18nT('pages.developer.featurePreviewsTab.intro.crew_mode_media_composer'),
+      },
+    ],
+  }
+}
+
 /**
  * `data-setting-key` anchor on the section wrapper, for
  * `?highlight=key:<this>` — what the old `/developer?tab=feature-previews`
@@ -118,6 +134,7 @@ export function FeaturePreviewsSection() {
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -198,6 +215,29 @@ export function FeaturePreviewsSection() {
               <ArrowRight size={13} className="lucide-inline" />
             </button>
           )}
+        </div>
+      </SettingsCard>
+      {/* Crew Mode: the composer switch that runs a chat on a conductor, and
+          every mark that goes with it (`lib/crewMode.ts` reads this one flag).
+
+          NO ingress button: turning it on puts the switch in a new chat's
+          composer, and a link here would only open a chat. Off, a chat already
+          in Crew Mode stays an ordinary chat on its agent, so the switch hides
+          nothing a person has. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.crew_mode')}
+          description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
+          checked={crewMode}
+          onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
+        />
+        <div className="flex flex-wrap items-center gap-x-4 pt-1">
+          <FeaturePreviewIntroButton
+            title={i18nT('pages.developer.featurePreviewsTab.crew_mode')}
+            intro={crewModeIntro()}
+            checked={crewMode}
+            onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
+          />
         </div>
       </SettingsCard>
       {/* A chat dispatched to another MACHINE over the instances tunnel.

@@ -13758,7 +13758,10 @@
         "intro": {
           "webhooks_summary": "Ein anderes System – CI, ein Review-Bot, eine Deploy-Pipeline – kann deinen Agenten für dich starten, indem es eine Nachricht mit einem Zugriffstoken sendet, das du auf der Webhooks-Seite erstellst.",
           "webhooks_where": "Sobald das an ist, erscheint auf dieser Karte in den Einstellungen der Link „Webhooks öffnen“; dort öffnest du die neue Webhooks-Seite. In der Seitenleiste erscheint sie erst, wenn sie fertig ist. Ausschalten blendet die Seite nur wieder aus; erstellte Token bleiben erhalten.",
-          "webhooks_media_page": "Die Webhooks-Seite: links die Token-Liste, rechts die Einrichtung „Ein externes System soll deinen Agenten wecken“."
+          "webhooks_media_page": "Die Webhooks-Seite: links die Token-Liste, rechts die Einrichtung „Ein externes System soll deinen Agenten wecken“.",
+          "crew_mode_summary": "Crew Mode macht einen Chat zum Dirigenten: Er gibt jede Aufgabe an einen eigenen Chat eines Crew-Mitglieds ab und berichtet in diesem Chat.",
+          "crew_mode_where": "Wenn dies an ist, erscheint der Schalter für Crew Mode im Eingabefeld eines neuen Chats. Ein Chat im Crew Mode listet seine Crew im Crew-Tab der Seitenleiste. Ausschalten blendet den Schalter wieder aus; kein Chat wird geschlossen oder geändert.",
+          "crew_mode_media_composer": "Ein neuer Chat mit dem Schalter für Crew Mode im Eingabefeld."
         },
         "decisions": "Entscheidungen (Jev)",
         "decisions_desc": "Ein kleines, schnelles Modell trifft für {{productName}} kurze Entscheidungen, etwa welcher deiner Skills zu deiner Nachricht passt. Wähle das Modell unten. Ist es zu langsam oder antwortet nicht, entscheidet die eingebaute Regel, sodass deine Antwort nie aufgehalten wird.",
@@ -13871,7 +13874,9 @@
         "decisions_runtime_error": "Das Modell konnte nicht gestartet werden.",
         "decisions_runtime_retry": "Erneut versuchen",
         "folder_conductor": "Ordner-Conductor",
-        "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da."
+        "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da.",
+        "crew_mode": "Crew Mode",
+        "crew_mode_desc": "Fügt dem Eingabefeld eines neuen Chats einen Schalter für Crew Mode hinzu. Im Crew Mode gibt der Chat jede Aufgabe an einen eigenen Chat eines Crew-Mitglieds ab und berichtet dir; der Crew-Tab der Seitenleiste listet sie auf. Solange dies aus ist, bleibt ein Chat, der schon im Crew Mode ist, ein normaler Chat mit seinem Agenten, und seine Crew-Mitglieder erscheinen als normale Chats."
       },
       "kasBundleCard": {
         "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",

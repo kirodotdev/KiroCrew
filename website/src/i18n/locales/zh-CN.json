@@ -13532,7 +13532,10 @@
         "intro": {
           "webhooks_summary": "让另一个系统替你启动代理——CI、评审机器人、部署流水线——只需用你在 Webhooks 页面创建的访问令牌发送一条消息。",
           "webhooks_where": "开启后，这张卡片在“设置”里会出现“打开 Webhooks”链接，新的 Webhooks 页面从那里进入；页面完成之前不会出现在侧边栏里。关闭后只是重新隐藏这个页面；你创建的 token 会保留。",
-          "webhooks_media_page": "Webhooks 页面：左侧是 token 列表，右侧是“让外部系统唤醒你的代理”的设置。"
+          "webhooks_media_page": "Webhooks 页面：左侧是 token 列表，右侧是“让外部系统唤醒你的代理”的设置。",
+          "crew_mode_summary": "Crew Mode 让一个对话成为调度者：它把每个任务交给自己的一个团队成员对话，并在这个对话里汇报结果。",
+          "crew_mode_where": "开启后，新对话的输入框里会出现 Crew Mode 开关。Crew Mode 对话会在侧边栏的 Crew 标签页列出它的团队。关闭后开关会再次隐藏；不会关闭或改动任何对话。",
+          "crew_mode_media_composer": "一个新对话，输入框里有 Crew Mode 开关。"
         },
         "decisions": "决策（Jev）",
         "decisions_desc": "一个小而快的模型替 {{productName}} 做快速判断，比如哪个技能适合你的消息。在下方选择模型。模型太慢或没有回应时，改用内置规则判断，不会拖慢你的回复。",
@@ -13645,7 +13648,9 @@
         "decisions_runtime_error": "无法启动模型。",
         "decisions_runtime_retry": "重试",
         "folder_conductor": "文件夹调度者",
-        "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。"
+        "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。",
+        "crew_mode": "Crew Mode",
+        "crew_mode_desc": "在新对话的输入框里加一个 Crew Mode 开关。在 Crew Mode 下，对话把每个任务交给自己的一个团队成员对话来做，再向你汇报；侧边栏的 Crew 标签页会列出它们。关闭时，已经在 Crew Mode 的对话会作为它所用智能体上的普通对话保留，它的团队成员也作为普通对话列出。"
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",

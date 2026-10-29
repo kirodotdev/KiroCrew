@@ -53,6 +53,7 @@ import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -304,7 +305,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.
-  const crewRoot = !!s.crew_mode_root && !s.peer_id
+  const crewRoot = useCrewMode() && !!s.crew_mode_root && !s.peer_id
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,

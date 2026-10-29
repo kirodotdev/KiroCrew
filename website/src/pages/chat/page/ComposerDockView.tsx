@@ -3,7 +3,7 @@ import { useId, useState, type RefObject, type Dispatch, type SetStateAction, ty
 import { OverlayPortal } from '../../../components/overlayRoot'
 import { Undo2 } from 'lucide-react'
 import { CrewModeComposerChip, CrewModeMarkSource } from '../../../components/crew/CrewModeMarks'
-import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere } from '../../../lib/crewMode'
+import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot } from '../../../lib/crewMode'
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
 import { CrewWorkerComposerGate } from '../../../components/crew/CrewWorkerComposerGate'
 import { useCrewRoot } from '../../../components/crew/useCrewRoot'
@@ -269,6 +269,10 @@ interface ComposerDockViewProps {
   /** A conductor session (Crew Mode): the composer offers no agent picker, since
    *  the conductor is chosen by Crew Mode itself. Workspace and model stay. */
   agentPickerHidden?: boolean
+  /** The gateway refuses any agent switch of this chat (a Crew Mode chat with a
+   *  message, `crew_mode_locked`) while the Crew Mode preview is off on this
+   *  device: no agent picker, and no Crew Mode mark either. */
+  agentSwitchLocked?: boolean
   /** The main pane holds a Crew Mode worker: the composer is that worker's steer
    *  composer. It looks like the conductor's normal composer; a running turn
    *  takes the text as a steer rather than queueing it. The worker's title. */
@@ -299,7 +303,7 @@ export default function ComposerDockView({
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
-  composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -522,7 +526,7 @@ export default function ComposerDockView({
               <span role="status" className="sr-only" data-testid="memory-switch-status">{memorySwitching ? i18nT('components.welcomeView.switching_memory_mode') : ''}</span>
               {/* A Crew Mode conductor's workers' tool approvals, the one thing it
                   cannot answer, stacked above its composer. */}
-              {currentSlot?.crew_mode_root && activeSlot && <CrewApprovalCards root={activeSlot} />}
+              {crewModeRoot(currentSlot) && activeSlot && <CrewApprovalCards root={activeSlot} />}
               {/* A crew member's composer is the conductor's normal composer: no
                   frame, header or hint. What it does differs only in delivery: a
                   send is a person steer, and a running turn takes it as a steer. */}
@@ -648,7 +652,7 @@ export default function ComposerDockView({
               // A crew member's footer is the conductor's: the Crew Mode mark (never
               // a switch there) in place of the agent picker and its label.
               agentBadge={agentPickerHidden || steerWorker !== undefined ? <CrewModeComposerChip onTurnOff={steerWorker !== undefined ? undefined : turnOffCrewMode} /> : undefined}
-              onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden && steerWorker === undefined ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
+              onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden && !agentSwitchLocked && steerWorker === undefined ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
                 modelPickerReturnsFocusRef.current = !!composerHadFocus
                 anchorModelBtn(rect, trigger); setModelDropdown(!modelDropdown)

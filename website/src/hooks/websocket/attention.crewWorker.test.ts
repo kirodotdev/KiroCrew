@@ -3,6 +3,8 @@ import { store } from '../../store'
 import { sseSlots } from '../../store/dashboardSlice'
 import type { ChatSlot } from '../../types'
 import { isCrewWorkerSlot } from './attention'
+import { crewModePreviewOn } from '../../test/crewModePreview'
+import { PREVIEW_CREW_MODE } from '../../utils/previewFlags'
 
 const row = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot =>
   ({ key, title: key, messages: 1, running: false, ...extra }) as ChatSlot
@@ -31,4 +33,13 @@ describe('isCrewWorkerSlot', () => {
     expect(isCrewWorkerSlot('nope')).toBe(false)
     expect(isCrewWorkerSlot('')).toBe(false)
   })
+
+  it('with the Crew Mode preview off, lets a crew member alert like any chat', () => {
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+    store.dispatch(sseSlots([row('root', { crew_mode_root: true }), row('w1', { crew_root: 'root' })]))
+    expect(isCrewWorkerSlot('w1')).toBe(false)
+  })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

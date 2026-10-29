@@ -11,6 +11,7 @@ import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
 import { isMemberThreadSlot } from '../unreadOnAttention'
+import { crewRootOf } from '../../lib/crewMode'
 import { slotLastTsOf } from '../../store/slotLastTs'
 import type { SocketConnection } from './connection'
 import { appPathname } from '@/lib/basePath'
@@ -26,7 +27,7 @@ import { bindSubagentReplaySender } from '../../lib/subagentReplayScope'
 export function isCrewWorkerSlot(slot: string): boolean {
   if (!slot) return false
   const slots = store.getState().dashboard.slots
-  const root = slots.find(s => s.key === slot)?.crew_root
+  const root = crewRootOf(slots.find(s => s.key === slot))
   return !!root && slots.some(s => s.key === root)
 }
 

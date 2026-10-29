@@ -9050,7 +9050,10 @@
         "intro": {
           "webhooks_summary": "Another system can start your agent for you — CI, a review bot, a deploy pipeline — by sending a message with an access token you create on the Webhooks page.",
           "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
-          "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right."
+          "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right.",
+          "crew_mode_summary": "Crew Mode turns a chat into a conductor: it hands each task to a crew member chat of its own and reports back in this chat.",
+          "crew_mode_where": "Once this is on, the Crew Mode switch appears in a new chat's composer. A Crew Mode chat lists its crew in the side panel's Crew tab. Turning it off hides the switch again; no chat is closed or changed.",
+          "crew_mode_media_composer": "A new chat with the Crew Mode switch in its composer."
         },
         "decisions": "Decisions (Jev)",
         "decisions_desc": "A small, fast model makes quick calls for {{productName}}, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up.",
@@ -9160,7 +9163,9 @@
         "decisions_runtime_error": "The model could not be started.",
         "decisions_runtime_retry": "Try again",
         "folder_conductor": "Folder conductor",
-        "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
+        "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there.",
+        "crew_mode": "Crew Mode",
+        "crew_mode_desc": "Adds a Crew Mode switch to a new chat's composer. In Crew Mode the chat hands each task to a crew member chat of its own and reports back to you; the side panel's Crew tab lists them. While this is off, a chat already in Crew Mode stays an ordinary chat on its agent, and its crew members are listed as ordinary chats."
       },
       "kasBundleCard": {
         "toggle_label": "Run KAS on {{productName}}'s own engine",

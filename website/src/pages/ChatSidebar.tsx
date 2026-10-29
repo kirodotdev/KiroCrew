@@ -3,7 +3,7 @@ import { LayoutGroup, AnimatePresence } from 'framer-motion'
 import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { useCrewMode, usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
 import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -135,7 +135,9 @@ function ChatSidebar({
   // show (`crewModeView`): they never reach a lane, the Broadcast dialog or any
   // other reader of this collection. The server keeps them in the slot frame
   // (`?crew=all`), so the one filter is here, at the sidebar's door.
-  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp])
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewModeView reads
+  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp, crewMode])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the

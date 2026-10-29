@@ -4653,6 +4653,26 @@ members** are the rows stamped `crew_root: <root key>`, the root carries
 and the live slot frame carries them all) and leaves crew members out of the
 person's lists on the client.
 
+**The dashboard's Crew Mode is a feature preview, default off**
+(`PREVIEW_CREW_MODE` in `website/src/utils/previewFlags.ts`, the **Crew Mode** card
+in Settings > Developer > Feature Previews). `crewModeEnabled()` in
+`website/src/lib/crewMode.ts` is the one read of it, and `useCrewMode()` subscribes
+to the same key for a component or memo that must redraw on a flip. Every rule in
+this section and in [Crew Mode](#crew-mode)'s client half reads through it:
+
+| Preview | What the client does |
+|---|---|
+| on | Everything below, unchanged |
+| off | `gatewayRunsCrewMode()`, `isConductorAgent()` and `runsCrewMode()` answer `false`, as for a gateway without Crew Mode: no composer switch, no welcome, and the agent picker and chords list every conductor. `gatewayLocksCrewMode()` is the one ungated read: a chat the gateway treats as Crew Mode that has a user message offers no agent picker (main pane or Split View pane, and no Crew Mode mark), and `agentCycleTarget` answers `null` on a conductor chat, since the gateway refuses every such switch (`409 crew_mode_locked`). A Crew tab restored from storage is withheld from the side panel strip, its stored state kept. `crewModeRoot(row)` and `crewRootOf(row)`, the only reads of the two stamps, answer `false` and `''`: no crew card, eyebrow, filter row (a stored filter is set aside, not cleared), Crew tab, breadcrumb or approval card; `crewModeView` hands the rows back unchanged, so a crew member is an ordinary row; its approval and finished turn alert like any chat's (`isCrewWorkerSlot`, `crewWorkerQuiet`); and its approval is decided where it is shown |
+
+A chat already in Crew Mode, read with the preview off, is an ordinary chat on its
+conductor agent: its transcript, composer and agent label as for any chat, and its
+crew members are rows of the list. Once it has a message it offers no agent switch,
+since the gateway keeps it on its conductor. Nothing is hidden or unreachable. The gateway
+does not read the flag: the Crew Mode lock (`409 crew_mode_locked`), the unfiled
+crew members and the stamps all stay, so turning the preview back on shows the same
+Crew Mode chat.
+
 | Rule | Where |
 |---|---|
 | The one client filter is `crewModeView(rows, rootsOnly?)`: drop every `crew_root` row whose root is a row of the same list; `rootsOnly` keeps the roots alone. A crew member whose root is closed keeps its row -- no Crew panel lists it, the server keeps its stamp, and its own approval or question must still reach the person -- so the sidebar, All Dashboards and the Command Bar's Needs You show it and its approval as any chat's. `selectPersonSlots` is the memoized store read of it. The `crew_root` drop went live with the Crew panel (the side panel's Crew tab), which lists a root's crew members; the part before wired every person-facing list through this one function with the drop inert, so no list ever lost a row it could not reach elsewhere | `website/src/lib/crewMode.ts`, `website/src/store/personSlots.ts` |

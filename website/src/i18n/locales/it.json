@@ -13984,7 +13984,10 @@
         "intro": {
           "webhooks_summary": "Un altro sistema (CI, un bot di revisione, una pipeline di deploy) può avviare il tuo agente per te inviando un messaggio con un token di accesso che crei nella pagina Webhooks.",
           "webhooks_where": "Una volta attivo, su questa scheda nelle Impostazioni compare il link «Apri Webhooks», da cui si apre la nuova pagina Webhooks; non compare nella barra laterale finché non è finita. Disattivarlo nasconde di nuovo la pagina e nulla più; i token che hai creato restano.",
-          "webhooks_media_page": "La pagina Webhooks: a sinistra l’elenco dei token, a destra la configurazione «Lascia che un sistema esterno svegli il tuo agente»."
+          "webhooks_media_page": "La pagina Webhooks: a sinistra l’elenco dei token, a destra la configurazione «Lascia che un sistema esterno svegli il tuo agente».",
+          "crew_mode_summary": "Crew Mode trasforma una chat in un direttore: affida ogni attività a una propria chat di membro della crew e riferisce in questa chat.",
+          "crew_mode_where": "Una volta attivato, l'interruttore Crew Mode compare nella casella di testo di una nuova chat. Una chat in Crew Mode elenca la sua crew nella scheda Crew del pannello laterale. Disattivarlo nasconde di nuovo l'interruttore; nessuna chat viene chiusa o modificata.",
+          "crew_mode_media_composer": "Una nuova chat con l'interruttore Crew Mode nella casella di testo."
         },
         "decisions": "Decisioni (Jev)",
         "decisions_desc": "Un modello piccolo e veloce prende decisioni rapide per {{productName}}, ad esempio quale skill si adatta al tuo messaggio. Scegli il modello qui sotto. Se è lento o non risponde, decide la regola integrata, così la tua risposta non viene mai rallentata.",
@@ -14097,7 +14100,9 @@
         "decisions_runtime_error": "Impossibile avviare il modello.",
         "decisions_runtime_retry": "Riprova",
         "folder_conductor": "Conductor della cartella",
-        "folder_conductor_desc": "Porta in cima alla cartella la chat che ha avviato le altre chat di quella cartella: una barra colorata sul bordo sinistro e una piccola etichetta conductor accanto al nome dell'agente. Questo cambia l'ordine dell'elenco delle sessioni, quindi l'elenco resta com'è finché non la attivi. La voce di chat nel menu della cartella c'è sempre."
+        "folder_conductor_desc": "Porta in cima alla cartella la chat che ha avviato le altre chat di quella cartella: una barra colorata sul bordo sinistro e una piccola etichetta conductor accanto al nome dell'agente. Questo cambia l'ordine dell'elenco delle sessioni, quindi l'elenco resta com'è finché non la attivi. La voce di chat nel menu della cartella c'è sempre.",
+        "crew_mode": "Crew Mode",
+        "crew_mode_desc": "Aggiunge un interruttore Crew Mode alla casella di testo di una nuova chat. In Crew Mode la chat affida ogni attività a una propria chat di membro della crew e ti riferisce; la scheda Crew del pannello laterale le elenca. Finché è disattivato, una chat già in Crew Mode resta una chat normale sul suo agente e i suoi membri sono elencati come chat normali."
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",

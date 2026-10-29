@@ -9,6 +9,7 @@ import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
 import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
@@ -91,11 +92,14 @@ function withPause(active: Set<SessionFilterKey>, paused: boolean): StatusFilter
 /** Read the stored values into one state. A filter stored '2' is on and paused.
  *  A MIX of '1' and '2' reads as not paused and is rewritten to '1' once: only a
  *  build that paused filters one at a time could store that, and the menu row
- *  has one state to offer, not a partial one. */
-function readStoredStatusFilters(): StatusFilterState {
+ *  has one state to offer, not a partial one. With the Crew Mode preview off
+ *  the Crew Mode filter is not read at all (its stored value is left as is), so
+ *  it neither narrows the list nor holds a pause, and no setter writes it. */
+function readStoredStatusFilters(crewMode: boolean): StatusFilterState {
   const active = new Set<SessionFilterKey>()
   let pausedCount = 0
   for (const filterDef of SESSION_FILTERS) {
+    if (filterDef.key === 'crew' && !crewMode) continue
     const stored = localStorage.getItem(filterDef.storageKey)
     if (stored === FILTER_STORED_ON) active.add(filterDef.key)
     else if (stored === FILTER_STORED_PAUSED) { active.add(filterDef.key); pausedCount += 1 }
@@ -109,7 +113,16 @@ function readStoredStatusFilters(): StatusFilterState {
 
 /** The status chips, folder hides, tag selection and shelved flag, each persisted. */
 export function useSessionFilterState() {
-  const [statusFilters, setStatusFilters] = useState<StatusFilterState>(readStoredStatusFilters)
+  // The Crew Mode preview decides whether the stored Crew Mode filter is read
+  // (see readStoredStatusFilters); flipping it re-reads the stored state.
+  const crewMode = useCrewMode()
+  const [statusFilters, setStatusFilters] = useState<StatusFilterState>(() => readStoredStatusFilters(crewMode))
+  const readCrewModeRef = useRef(crewMode)
+  useEffect(() => {
+    if (readCrewModeRef.current === crewMode) return
+    readCrewModeRef.current = crewMode
+    setStatusFilters(readStoredStatusFilters(crewMode))
+  }, [crewMode])
   const activeFilters = statusFilters.active
   const filtersPaused = statusFilters.paused
   // Which folders are excluded from the flat lane, chosen from the filter

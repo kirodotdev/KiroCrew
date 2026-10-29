@@ -12,6 +12,7 @@ import { openPanelView } from '../../../hooks/usePanelTabs'
 import { CrewStatusDot } from '../../../components/crew/CrewModeMarks'
 import { CREW_GROUP_LABEL_KEY, crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, groupCrewWorkers, liveCrewWorkers, mergeCrewWorkers, orderUnderDispatcher } from '../../../lib/crewWorkers'
 import CrewTimeline from './CrewTimeline'
+import { crewModeRoot, crewRootOf } from '../../../lib/crewMode'
 
 /** The status labels, keyed by the wire value `GET .../crew-workers` sends. */
 export const CREW_WORKER_STATUS_KEY: Record<CrewWorker['status'], string> = {
@@ -262,7 +263,7 @@ function CrewWorkerCard({ worker, current, from, onOpen }: { worker: CrewWorker;
 export function CrewWorkersTab({ slot, active }: { slot: string | null; active: boolean }) {
   const { t } = useTranslation()
   const row = useAppSelector(s => (slot ? s.dashboard.slots.find(item => item.key === slot) : undefined))
-  const root = row?.crew_mode_root ? row.key : row?.crew_root || ''
+  const root = crewModeRoot(row) && row ? row.key : crewRootOf(row)
   if (!root) return <p className="p-3 text-sm text-muted" data-testid="crew-workers-none">{t('commandCenter.workers_not_crew')}</p>
   return <CrewWorkerList root={root} viewing={slot} active={active} />
 }

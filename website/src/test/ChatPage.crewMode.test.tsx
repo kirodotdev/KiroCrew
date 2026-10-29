@@ -95,6 +95,8 @@ import { openCrewSession } from '../pages/chat/command-center/CrewWorkerList'
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
+import { crewModePreviewOn } from './crewModePreview'
+import { PREVIEW_CREW_MODE } from '../utils/previewFlags'
 
 type Slot = {
   messages: Msg[]; mode?: string; agent?: string; agentKind?: string; origin?: string; memoryMode?: string; slotKeys?: string[]
@@ -631,3 +633,41 @@ describe('Crew Mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
   })
 })
+
+describe('ChatPage with the Crew Mode preview off', () => {
+  // The gateway still runs Crew Mode; the device has the preview off.
+  beforeEach(() => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+  })
+  afterEach(() => { localStorage.clear(); setCrewModeCatalog(undefined, undefined) })
+
+  it('offers no Crew Mode chip and no Crew Mode welcome on a new chat', async () => {
+    await renderWith({ messages: [] })
+    expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
+    expect(screen.queryByTestId('crew-mode-welcome')).toBeNull()
+  })
+
+  it('shows a chat already in Crew Mode with no Crew Mode mark and no agent switch, since the gateway keeps it on its conductor', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    // The gateway refuses every switch of it (`crew_mode_locked`), so none is offered.
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('still offers the agent picker on a conductor chat with no message yet', async () => {
+    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template' })
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+  })
+
+  it('opens a crew member as an ordinary chat: no breadcrumb, no steer composer', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
+    expect(screen.queryByTestId('crew-worker-header')).toBeNull()
+    expect(screen.queryByTestId('crew-steer-composer')).toBeNull()
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()
