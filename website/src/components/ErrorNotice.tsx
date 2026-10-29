@@ -136,6 +136,7 @@ export default function ErrorNotice({
   messageTooltip,
   testId,
   showIcon = true,
+  announce = true,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -281,6 +282,15 @@ export default function ErrorNotice({
    * off changes nothing for assistive tech; `role="alert"` stays. On by default.
    */
   showIcon?: boolean
+  /**
+   * Off for a notice whose text a SHARED live region already announces — the
+   * floating agent-switch toast carries the same string, so a second assertive
+   * region reads the failure out twice. `showIcon` is the visual half of this
+   * and says `role="alert"` stays; this is the half that drops it. Only legal
+   * where the notice is never the sole surface: the in-place copy stays
+   * readable, it just no longer interrupts. On by default.
+   */
+  announce?: boolean
 } & ErrorNoticeNoHandoff) {
   // Subscribes to language switches: a parent compiled by the React Compiler
   // caches this element while its props are unchanged, so without its own
@@ -299,7 +309,7 @@ export default function ErrorNotice({
   if (variant === 'inline') {
     return (
       <span
-        role="alert"
+        role={announce ? 'alert' : undefined}
         className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
@@ -362,7 +372,7 @@ export default function ErrorNotice({
 
   return (
     <div
-      role="alert"
+      role={announce ? 'alert' : undefined}
       className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
       id={id}
       data-testid={testId}

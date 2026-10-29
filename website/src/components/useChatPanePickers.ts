@@ -4,6 +4,8 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { useModelsDegraded } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
+import { setAgentSwitchNotice } from '../store/chatSlice'
+import { clearSlotWriteFailure, reportSlotWriteFailure } from './slotWriteFailure'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -17,7 +19,6 @@ import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useAppSelector, type AppDispatch, type RootState } from '../store'
-import { setAgentSwitchNotice } from '../store/chatSlice'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -201,21 +202,18 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
   // not persist — the shared toast is transient feedback, not the error surface.
   const [switchError, setSwitchError] = useState('')
   const switchAgent = useCallback(async (name: string, kind?: 'member' | 'template') => {
-    dispatch(setAgentSwitchNotice(null))
-    setSwitchError('')
+    clearSlotWriteFailure(dispatch, setSwitchError)
     try {
       // Same protocol as switchModel below (#4523): the pane must not depend
       // on the coalesced slots rebroadcast to see its own pick.
       // performAgentSlotSwitch mirrors exactly what the response names.
       await performAgentSlotSwitch(slotKey, name, dispatch, kind)
     } catch (e) {
-      const notice = agentSwitchFailureNotice(e, name)
-      dispatch(setAgentSwitchNotice(notice))
-      setSwitchError(notice.message)
+      reportSlotWriteFailure(agentSwitchFailureNotice(e, name), dispatch, setSwitchError)
     }
   }, [dispatch, slotKey])
   const switchModel = useCallback(async (name: string) => {
-    setSwitchError('')
+    clearSlotWriteFailure(dispatch, setSwitchError)
     try {
       // A staged slider pick or a legacy pair level is carried; an effort
       // write already on the wire is waited for, not re-sent, and its
@@ -272,9 +270,7 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       // Same failure surface as switchAgent above: the shared notice toast,
       // plus the in-pane notice (the toast alone would be the only report of
       // a write that did not persist).
-      const notice = agentSwitchErrorNotice(e)
-      dispatch(setAgentSwitchNotice(notice))
-      setSwitchError(notice.message)
+      reportSlotWriteFailure(agentSwitchErrorNotice(e), dispatch, setSwitchError)
       // Keep the rejected backend value available in developer diagnostics.
       // eslint-disable-next-line no-console
       console.error('[ChatPane] switchModel failed', e)
