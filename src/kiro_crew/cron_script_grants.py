@@ -302,7 +302,7 @@ def _grant_epochs_guard() -> Any:
     lock_path = _grant_epochs_path().with_name(".grant_epochs.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _GRANT_EPOCHS_LOCK:
-        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
         try:
             platform_compat.acquire_lock(fd, exclusive=True)
             try:

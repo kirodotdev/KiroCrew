@@ -839,7 +839,7 @@ def _update_map(
         raise AckPathRefused(f"refusing to write through a link at {ACK_FILE_NAME}")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / (path.name + ".lock")
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait_for_lock):
             document, readable = _read_ack_document_status()

@@ -951,11 +951,11 @@ def _coerce_int(value: object) -> object:
 
 def _write_locked(path: Path, payload: str) -> None:
     from kiro_crew.atomic_write import atomic_write
-    from kiro_crew.platform_compat import file_lock
+    from kiro_crew.platform_compat import file_lock, open_create_or_existing
 
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".lock")
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             atomic_write(path, payload, restrict_to_owner=True)

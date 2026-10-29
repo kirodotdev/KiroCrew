@@ -677,7 +677,7 @@ def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
     """
     lock_path = p.parent / (p.name + ".lock")
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait):
             yield

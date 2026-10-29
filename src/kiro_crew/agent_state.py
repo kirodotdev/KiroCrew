@@ -99,13 +99,13 @@ def _locked() -> Iterator[None]:
         # Lazy: platform_compat pulls in executors, and this module's
         # near-leaf import contract is what keeps it out of the
         # agent <-> config.loader cycle.
-        from kiro_crew.platform_compat import file_lock
+        from kiro_crew.platform_compat import file_lock, open_create_or_existing
 
         lock_path = _state_path().with_suffix(".json.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(
+        fd = open_create_or_existing(
             lock_path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
             0o600,
         )
         try:

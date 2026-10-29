@@ -205,7 +205,7 @@ def _commit_credential_and_config(cp: Path, serialized: str, token: str) -> None
     from kiro_crew.secrets.migrate import _env_lock_path
 
     lock_path = _env_lock_path(ep)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
             raise OSError(

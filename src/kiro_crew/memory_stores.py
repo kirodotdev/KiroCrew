@@ -881,7 +881,9 @@ def _open_namespace_lock(directory: Path, path: Path, *, read_only_ok: bool) -> 
         platform_compat.make_owner_only_dir(directory)
         if path.resolve() != path:
             raise UnknownMemoryStore("memory store namespace lock is redirected")
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = platform_compat.open_create_or_existing(
+            path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
     except OSError as exc:
         if not (read_only_ok and is_lock_write_refusal(exc)):
             raise

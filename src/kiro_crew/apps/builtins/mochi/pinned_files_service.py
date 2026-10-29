@@ -219,7 +219,9 @@ def pins_mutation(file_path: str) -> Iterator[None]:
     replaced.
     """
     lock_path = Path(file_path).with_name(Path(file_path).name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield

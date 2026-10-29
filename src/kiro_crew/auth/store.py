@@ -246,7 +246,9 @@ class TokenStore:
         (``save`` and ``delete`` do), never the other way round.
         """
         try:
-            fd = os.open(str(self.signout_lock_path()), os.O_RDWR | os.O_CREAT, 0o600)
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            fd = open_create_or_existing(str(self.signout_lock_path()), os.O_RDWR, 0o600)
         except OSError as err:
             raise TokenStoreError("could not take the sign-out lock") from err
         try:
@@ -272,7 +274,9 @@ class TokenStore:
         rather than proceeding unserialized); lock failures are ``TokenStoreError``.
         """
         try:
-            fd = os.open(str(self.lock_path(identity)), os.O_RDWR | os.O_CREAT, 0o600)
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            fd = open_create_or_existing(str(self.lock_path(identity)), os.O_RDWR, 0o600)
         except OSError as err:
             raise TokenStoreError(f"could not take the refresh lock for {identity}") from err
         try:

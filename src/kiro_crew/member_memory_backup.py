@@ -92,8 +92,8 @@ def _open_store_use_lock(db_path: Path) -> int:
     lock_path = out / _STORE_USE_LOCK
     if lock_path.resolve() != lock_path.absolute():
         raise ValueError("Member memory use lock is redirected")
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(lock_path, flags, 0o600)
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = platform_compat.open_create_or_existing(lock_path, flags, 0o600)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:

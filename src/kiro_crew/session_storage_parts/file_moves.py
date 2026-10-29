@@ -64,7 +64,7 @@ def _mutation_lock() -> Iterator[None]:
     """
     lock_path = trash_root().parent / MUTATION_LOCK_NAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, required=True):
             yield
