@@ -40,6 +40,7 @@ import secrets
 import sys as _sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
+from urllib.parse import unquote
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.security.redaction_switch import bare_secret_pass_enabled, credential_pass_bypassed
@@ -52,6 +53,8 @@ from .redaction_entropy import (  # noqa: F401
     _DARWIN_USER_TEMP_DIR_RE,
     _DOCUMENT_LINK_RE,
     _IN_DIAGRAM_SCAN,
+    _MERMAID_PAKO_SOURCE_CAP,
+    _MERMAID_PAKO_VIEW_CAP,
     _PLANTUML_RATIO_CAP,
     _PLANTUML_SOURCE_CAP,
     _RUN_PIECE_RES,
@@ -62,6 +65,7 @@ from .redaction_entropy import (  # noqa: F401
     _decode_b64_chunk,
     _is_code_literal,
     _looks_like_secret_key,
+    _mermaid_pako_views,
     _plantuml_source,
     _text_contains_bare_secret,
 )
@@ -84,14 +88,90 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
         _IN_DIAGRAM_SCAN.set(previous)
 
 
+_PAKO_CHECK_SCHEME_RE = re.compile(r"https?://", re.IGNORECASE)
+_PAKO_CHECK_FRAGMENT_RE = re.compile(r"(https?://[^\s)\"'>/?#]+)#")
+_PAKO_CHECK_DECODE_ROUNDS = 3
+
+
+def _pako_check_variant(view: str) -> str | None:
+    """Return *view* as the URL pass should see it, or ``None`` if still encoded.
+
+    Only the pako verdict judges this text; it is never emitted. The URL pass
+    matches a lowercase scheme and a path or query after the host, so the
+    variant decodes percent-escapes to a fixpoint, lowercases each scheme and
+    scans a fragment right after the host as a query.
+    """
+    for _ in range(_PAKO_CHECK_DECODE_ROUNDS):
+        decoded = unquote(view)
+        if decoded == view:
+            break
+        view = decoded
+    else:
+        if unquote(view) != view:
+            return None
+    view = _PAKO_CHECK_SCHEME_RE.sub(lambda m: m.group().lower(), view)
+    return _PAKO_CHECK_FRAGMENT_RE.sub(r"\1?", view)
+
+
+def _pako_view_unchanged(
+    view: str, compose: Callable[[str], tuple[str, list[str], list[str]]]
+) -> bool:
+    if compose(view)[0] != view:
+        return False
+    variant = _pako_check_variant(view)
+    return variant is not None and (variant == view or compose(variant)[0] == variant)
+
+
+def _mermaid_pako_verdict(payload: str, limit: int, view_limit: int) -> tuple[bool, int, int]:
+    """Keep one state only after bounded composed-redaction scans of its textual views.
+
+    Returns the verdict with the decoded bytes and the distinct views it spent
+    from the two budgets the caller's top-level links share.
+    """
+    if view_limit <= 0:
+        return False, 0, 0
+    views, spent = _mermaid_pako_views(payload, min(limit, _MERMAID_PAKO_SOURCE_CAP))
+    if views is None:
+        return False, spent, 0
+    # Each distinct view costs one composed pass and an identical one is judged
+    # once. A state that needs more views than are left fails closed and spends
+    # the rest, so the links after it fail closed too, as the byte budget does.
+    views = tuple(dict.fromkeys(views))
+    if len(views) > view_limit:
+        return False, spent, view_limit + 1
+
+    # Each view is judged by the composed URL-and-credential pass `redact`
+    # applies, so a URL in the diagram is percent-decoded like any other URL.
+    # Imported here: `pass_compose` imports this module.
+    from kiro_crew.security.pass_compose import compose
+
+    # A link decoded from a diagram is ordinary text, never another exemption.
+    # This matches PlantUML's established no-nested-decoding rule and keeps the
+    # validation cost bounded by this call's decoded-byte and view budgets.
+    diagram_token = _IN_DIAGRAM_SCAN.set(True)
+    try:
+        return all(_pako_view_unchanged(view, compose) for view in views), spent, len(views)
+    finally:
+        _IN_DIAGRAM_SCAN.reset(diagram_token)
+
+
 def _document_link_spans(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
+    """Return validated document-link spans that hold no decoded credential."""
     spans = []
-    budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
+    nested = _IN_DIAGRAM_SCAN.get()
+    plantuml_budget = 0 if nested else _PLANTUML_SOURCE_CAP
+    pako_budget = 0 if nested else _MERMAID_PAKO_SOURCE_CAP
+    # One view budget for every top-level pako link here: the per-state cap
+    # alone would let many links multiply the composed passes.
+    pako_views = 0 if nested else _MERMAID_PAKO_VIEW_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
-            kept, spent = _plantuml_verdict(m["diagram"], budget)
-            budget -= spent
+            kept, spent = _plantuml_verdict(m["diagram"], plantuml_budget)
+            plantuml_budget -= spent
+        elif m["pako"]:
+            kept, spent, viewed = _mermaid_pako_verdict(m["pako"], pako_budget, pako_views)
+            pako_budget -= spent
+            pako_views -= viewed
         else:
             kept = not any(
                 len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
@@ -1430,8 +1510,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GOOGLE_USER,
         _HEX_ONLY_RE,
         _HOST_ID_EXEMPT_OVERLAP,
+        _MERMAID_PAKO_PARTIAL_RE,
+        _MERMAID_PAKO_PAYLOAD,
+        _MERMAID_PAKO_PAYLOAD_CAP,
+        _MERMAID_PAKO_PAYLOAD_CHUNK_RE,
+        _MERMAID_PAKO_URL_PREFIX,
         _PLANTUML_ALPHABET,
         _PLANTUML_DIAGRAM,
+        _PLANTUML_PAYLOAD_CAP,
+        _PLANTUML_ROUTE,
         _PRINTABLE_BYTES,
         _ROUTED_COMMIT_PIECE_MIN,
         _ROUTED_COMMIT_RE,
@@ -1446,6 +1533,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _decodes_to_printable_text,
         _has_all_three_char_classes,
         _lowercase_run_exceeds,
+        _reject_duplicate_json_keys,
+        _reject_json_constant,
         _shannon_entropy,
         _steps_up,
         _vowel_ratio,
