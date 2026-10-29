@@ -172,7 +172,9 @@
     "worker_dispatched_by": "{{name}} থেকে",
     "crew_approval_waiting": "টুলের সিদ্ধান্তের অপেক্ষায় দলের সদস্য: {{count}}",
     "crew_approval_on_card": "{{name}}-এর অনুমোদন কার্ডে সিদ্ধান্ত নিন।",
-    "open_approval_card": "অনুমোদন কার্ড খুলুন"
+    "open_approval_card": "অনুমোদন কার্ড খুলুন",
+    "dispatch_hint": "দল কাজ শুরু করেছে। অনুসরণ করতে ডান দিকের প্যানেলে দল ট্যাবটি খুলুন।",
+    "dispatch_hint_open": "দল ট্যাব খুলুন"
   },
   "terminalTab": {
     "rename": "নাম বদলাও",

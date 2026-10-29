@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import chunk_generation, open_construct_at_end
+from kiro_crew.dashboard.crew_dispatch_notice import is_crew_dispatch_hint
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -78,7 +79,14 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
             # A `card` row is a change card / guide offer the
             # tool group's own call put into the conversation, so
             # the scan reads past it like the tool rows around it.
-            elif m.get("role") not in ("tool", "permission", "chunk", "card"):
+            # A Crew Mode dispatch hint is put in by the group's
+            # own session_create call the same way.
+            elif m.get("role") not in (
+                "tool",
+                "permission",
+                "chunk",
+                "card",
+            ) and not is_crew_dispatch_hint(m):
                 break
         # The same inference for the log. A tool that produced no
         # output sent no result frame, so its call is still open here;

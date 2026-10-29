@@ -181,7 +181,9 @@
     "worker_dispatched_by": "De {{name}}",
     "crew_approval_waiting": "Membres de l’équipe en attente d’une décision sur un outil : {{count}}",
     "crew_approval_on_card": "Décide sur la carte d'approbation de {{name}}.",
-    "open_approval_card": "Ouvrir la carte d'approbation"
+    "open_approval_card": "Ouvrir la carte d'approbation",
+    "dispatch_hint": "L'équipe a commencé à travailler. Ouvre l'onglet Équipe dans le panneau de droite pour la suivre.",
+    "dispatch_hint_open": "Ouvrir l'onglet Équipe"
   },
   "terminalTab": {
     "rename": "Renommer",

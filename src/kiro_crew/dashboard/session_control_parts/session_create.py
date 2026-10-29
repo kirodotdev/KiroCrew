@@ -55,6 +55,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     caller_slot_key,
     session_control_enabled,
 )
+from kiro_crew.dashboard.session_control_parts.crew_dispatch_hint import note_crew_dispatch
 from kiro_crew.dashboard.session_control_parts.crew_filing import (
     _crew_filing_answer,
     _in_turned_on_crew_tree,
@@ -1425,6 +1426,8 @@ async def create_session(
             "lineage_recorded": "true" if lineage_recorded else "false",
         },
     )
+    # The person watching a Crew Mode conductor learns where its worker is listed.
+    await note_crew_dispatch(state, state.get_slot(caller_key), in_crew_tree=in_crew_tree)
     return {
         "ok": True,
         "target": slot.key,

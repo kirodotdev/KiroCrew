@@ -10,6 +10,7 @@ import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
+import { openCrewTab } from './chat/page/crewDispatchHint'
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
 import { useChatPageResourcesController } from './chat/useChatPageResourcesController'
 import { useComposerDraftLifecycle, useComposerDraftStores, useStagedDraftPersistence } from './chat/page/composerDrafts'
@@ -463,6 +464,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (parsed.kind === 'single') dispatch(selectSubagent(parsed.agentId))
     dispatch(openActivityToTab('subagents'))
   }, [dispatch])
+
+  // A Crew Mode dispatch hint's button: the side panel opens on the Crew tab,
+  // where the workers this conductor started are listed.
+  const closeSearch = search.close
+  const handleCrewWorkersOpen = useCallback(
+    () => openCrewTab(activeSlot, dispatch, closeSearch),
+    [activeSlot, dispatch, closeSearch],
+  )
 
   // `filteredSlots`, not `slots`: a surface this page cannot render would chip to a
   // destination the switch clears. That narrowing IS the shared builder's rule
@@ -933,7 +942,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useTranscriptRendering({
     embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
     activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-    handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress,
+    handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, handleCrewWorkersOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress,
     approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
     handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,

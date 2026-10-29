@@ -190,7 +190,9 @@
     "worker_dispatched_by": "От {{name}}",
     "crew_approval_waiting": "Участники команды ждут решения по инструменту: {{count}}",
     "crew_approval_on_card": "Реши на карточке одобрения в {{name}}.",
-    "open_approval_card": "Открыть карточку одобрения"
+    "open_approval_card": "Открыть карточку одобрения",
+    "dispatch_hint": "Команда начала работу. Открой вкладку «Команда» на правой панели, чтобы следить за ней.",
+    "dispatch_hint_open": "Открыть вкладку «Команда»"
   },
   "terminalTab": {
     "rename": "Переименовать",

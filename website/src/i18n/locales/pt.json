@@ -181,7 +181,9 @@
     "worker_dispatched_by": "De {{name}}",
     "crew_approval_waiting": "Membros da equipe aguardando uma decisão de ferramenta: {{count}}",
     "crew_approval_on_card": "Decida no cartão de aprovação em {{name}}.",
-    "open_approval_card": "Abrir o cartão de aprovação"
+    "open_approval_card": "Abrir o cartão de aprovação",
+    "dispatch_hint": "A equipe começou a trabalhar. Abra a aba Equipe no painel à direita para acompanhar.",
+    "dispatch_hint_open": "Abrir aba Equipe"
   },
   "terminalTab": {
     "rename": "Renomear",

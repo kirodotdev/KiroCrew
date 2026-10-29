@@ -163,7 +163,9 @@
     "worker_dispatched_by": "{{name}}에서",
     "crew_approval_waiting": "도구 결정을 기다리는 크루원: {{count}}",
     "crew_approval_on_card": "{{name}}의 승인 카드에서 결정하세요.",
-    "open_approval_card": "승인 카드 열기"
+    "open_approval_card": "승인 카드 열기",
+    "dispatch_hint": "크루가 작업을 시작했습니다. 오른쪽 패널의 크루 탭을 열어 진행 상황을 확인하세요.",
+    "dispatch_hint_open": "크루 탭 열기"
   },
   "terminalTab": {
     "rename": "이름 변경",

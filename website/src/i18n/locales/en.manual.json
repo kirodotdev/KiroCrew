@@ -172,7 +172,9 @@
     "worker_dispatched_by": "From {{name}}",
     "crew_approval_waiting": "Crew members waiting for a tool decision: {{count}}",
     "crew_approval_on_card": "Decide it on the approval card in {{name}}.",
-    "open_approval_card": "Open the approval card"
+    "open_approval_card": "Open the approval card",
+    "dispatch_hint": "Crew started work. Open the Crew tab in the right-side panel to follow it.",
+    "dispatch_hint_open": "Open Crew tab"
   },
   "terminalTab": {
     "rename": "Rename",

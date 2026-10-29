@@ -163,7 +163,9 @@
     "worker_dispatched_by": "{{name}} から",
     "crew_approval_waiting": "ツールの判断を待つクルーメンバー: {{count}}",
     "crew_approval_on_card": "{{name}} の承認カードで判断してください。",
-    "open_approval_card": "承認カードを開く"
+    "open_approval_card": "承認カードを開く",
+    "dispatch_hint": "クルーが作業を始めました。右側パネルの「クルー」タブを開いて確認できます。",
+    "dispatch_hint_open": "クルータブを開く"
   },
   "terminalTab": {
     "rename": "名前を変更",

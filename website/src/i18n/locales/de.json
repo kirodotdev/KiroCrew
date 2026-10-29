@@ -172,7 +172,9 @@
     "worker_dispatched_by": "Von {{name}}",
     "crew_approval_waiting": "Crew-Mitglieder, die auf eine Tool-Entscheidung warten: {{count}}",
     "crew_approval_on_card": "Entscheide auf der Freigabekarte in {{name}}.",
-    "open_approval_card": "Freigabekarte öffnen"
+    "open_approval_card": "Freigabekarte öffnen",
+    "dispatch_hint": "Die Crew hat mit der Arbeit begonnen. Öffne den Tab „Crew“ im rechten Seitenbereich, um sie zu verfolgen.",
+    "dispatch_hint_open": "Tab „Crew“ öffnen"
   },
   "terminalTab": {
     "rename": "Umbenennen",

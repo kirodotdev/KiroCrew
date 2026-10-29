@@ -17,6 +17,7 @@ import { isDiffToolMessage } from './toolDiff'
 import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
+import { isCrewDispatchHint } from './CrewDispatchHintCard'
 import { i18nT } from '../../i18n/t'
 
 // A workflow_run launch renders as its own always-visible inline card
@@ -76,9 +77,12 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * into the steps pane hides the record of what they did behind a toggle.
  * card: a change card or guide offer — only the user can confirm it, so
  * it is never folded away with the tool steps that proposed it.
+ * crew dispatch hint: it tells the person where a crew member their conductor
+ * just started is listed, so folding it with the dispatch defeats it.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
+  isCrewDispatchHint(it.msg) ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 

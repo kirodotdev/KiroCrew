@@ -181,7 +181,9 @@
     "worker_dispatched_by": "Da {{name}}",
     "crew_approval_waiting": "Membri della squadra in attesa di una decisione su uno strumento: {{count}}",
     "crew_approval_on_card": "Decidi sulla scheda di approvazione in {{name}}.",
-    "open_approval_card": "Apri la scheda di approvazione"
+    "open_approval_card": "Apri la scheda di approvazione",
+    "dispatch_hint": "La squadra ha iniziato a lavorare. Apri la scheda Squadra nel pannello a destra per seguirla.",
+    "dispatch_hint_open": "Apri la scheda Squadra"
   },
   "terminalTab": {
     "rename": "Rinomina",

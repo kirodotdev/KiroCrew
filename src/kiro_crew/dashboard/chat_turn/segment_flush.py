@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_utils import (
     tool_calls_are_read_only_preparation,
     with_bounded_redaction_records,
 )
+from kiro_crew.dashboard.crew_dispatch_notice import is_crew_dispatch_hint
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import chat_message_note, row_mid
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
@@ -719,6 +720,7 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
 
 #: Window rows a tool group puts between a segment's chunk rows: the call row,
 #: the approval card a gated call appends, and a change card or guide offer.
+#: A Crew Mode dispatch hint (``is_crew_dispatch_hint``) is kept the same way.
 _TOOL_GROUP_ROLES = frozenset({"tool", "permission", "card"})
 
 
@@ -791,7 +793,12 @@ def _flush_segment(
     segment_start = len(slot.messages)
     for i in range(len(slot.messages) - 1, -1, -1):
         role = slot.messages[i].get("role", "")
-        if role == "chunk" or role in _TOOL_GROUP_ROLES or _is_stop_event(slot.messages[i]):
+        if (
+            role == "chunk"
+            or role in _TOOL_GROUP_ROLES
+            or is_crew_dispatch_hint(slot.messages[i])
+            or _is_stop_event(slot.messages[i])
+        ):
             segment_start = i
         else:
             break
@@ -801,7 +808,10 @@ def _flush_segment(
     # Keep the tool-group rows of this segment in place; drop its chunk rows
     # and pull its stop_events aside (re-landed after the finalized message).
     kept_tool_rows = [
-        m for m in tail if m.get("role", "") in _TOOL_GROUP_ROLES and not _is_stop_event(m)
+        m
+        for m in tail
+        if (m.get("role", "") in _TOOL_GROUP_ROLES or is_crew_dispatch_hint(m))
+        and not _is_stop_event(m)
     ]
     slot.messages = head + kept_tool_rows
     # The window rewrite above is only half the release: append put each chunk

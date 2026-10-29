@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_utils import (
     build_recovery_requeue,
     is_synthetic_payload_item,
 )
+from kiro_crew.dashboard.crew_dispatch_notice import is_crew_dispatch_hint
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
 from kiro_crew.llm_helpers import acp_error_is_throttle
@@ -902,7 +903,7 @@ def _tool_rows_settled(slot: Any) -> bool:
         if role == "tool":
             if not (m.get("meta") or {}).get("done"):
                 return False
-        elif role not in ("permission", "card"):
+        elif role not in ("permission", "card") and not is_crew_dispatch_hint(m):
             return True
     return True
 

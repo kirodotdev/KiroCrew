@@ -163,7 +163,9 @@
     "worker_dispatched_by": "来自 {{name}}",
     "crew_approval_waiting": "等待工具决定的团队成员：{{count}}",
     "crew_approval_on_card": "请在 {{name}} 的审批卡片上决定。",
-    "open_approval_card": "打开审批卡片"
+    "open_approval_card": "打开审批卡片",
+    "dispatch_hint": "团队已开始工作。打开右侧面板的“团队”标签查看进度。",
+    "dispatch_hint_open": "打开团队标签"
   },
   "terminalTab": {
     "rename": "重命名",

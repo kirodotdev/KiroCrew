@@ -44,6 +44,7 @@ import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAge
 import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
+import CrewDispatchHintCard, { isCrewDispatchHint } from './CrewDispatchHintCard'
 import { resolveTransientNotice } from './transientNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
@@ -118,6 +119,9 @@ export interface TranscriptRendererOptions {
   onFolderOpen?: (path: string) => void
   /** "Show in side panel" on a sub-agent completion card. Same #3300 blocker. */
   onOpenSubagentPanel?: (parsed: ParsedSubagentCompletion) => void
+  /** Open the side panel on the Crew tab, from a Crew Mode dispatch hint.
+   *  Same #3300 blocker: a pane draws the hint's text without the button. */
+  onOpenCrewWorkers?: () => void
   /** Expanded-state map for tool rows, held ABOVE the row: a virtualised or
    *  remounted transcript unmounts the row and would otherwise forget it. */
   toolDisclosure?: Record<string, boolean>
@@ -387,6 +391,14 @@ export function createTranscriptRenderers(
       roles: ['notice'],
       match: m => m.meta?.kind === 'warm_task_brief_claim',
       render: () => null,
+    },
+    {
+      // Refines the SDK's plain `notice`: the gateway's Crew Mode dispatch hint,
+      // localized, with the button that opens the Crew tab.
+      id: 'crew_dispatch_hint',
+      roles: ['notice'],
+      match: isCrewDispatchHint,
+      render: (_m, ctx) => ctx.row(<CrewDispatchHintCard key={ctx.key} onOpen={o.onOpenCrewWorkers} />),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──
     {

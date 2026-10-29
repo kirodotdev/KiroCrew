@@ -181,7 +181,9 @@
     "worker_dispatched_by": "De {{name}}",
     "crew_approval_waiting": "Miembros del equipo esperando una decisión sobre una herramienta: {{count}}",
     "crew_approval_on_card": "Decídelo en la tarjeta de aprobación de {{name}}.",
-    "open_approval_card": "Abrir la tarjeta de aprobación"
+    "open_approval_card": "Abrir la tarjeta de aprobación",
+    "dispatch_hint": "El equipo empezó a trabajar. Abre la pestaña Equipo en el panel derecho para seguirlo.",
+    "dispatch_hint_open": "Abrir pestaña Equipo"
   },
   "terminalTab": {
     "rename": "Renombrar",

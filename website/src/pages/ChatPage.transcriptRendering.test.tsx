@@ -22,6 +22,7 @@ import type { DisplayItem, TurnItem } from './chat/types'
 import type { ChatMessage } from '../types'
 import { useTranscriptRendering } from './chat/page/transcriptRendering'
 import { UserMessage, AssistantMessage } from './chat'
+import CrewDispatchHintCard from './chat/CrewDispatchHintCard'
 
 type Props = Parameters<typeof useTranscriptRendering>[0]
 
@@ -38,7 +39,7 @@ function props(over: Partial<Props> = {}): Props {
     slotRunning: false, toolDisclosure: {}, setToolDisclosureFor: fn(), slotState: 'idle' as Props['slotState'], activityOpen: false,
     slotHasMore: false, slotOldestIndex: 0, cursorIsForActiveSlot: true, loadingOlder: false, chatConfig: loadChatConfig(),
     activeSlotRemoteBound: false, automationId: undefined, setAutomationOpen: fn(), handleArtifactOpen: vi.fn(async () => undefined),
-    handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
+    handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), handleCrewWorkersOpen: fn(), sessionTitles: new Map(),
     handleFork: vi.fn(async () => undefined), highlightTs: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), approve: vi.fn(async () => undefined), dismissApproval: fn(),
     revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
@@ -228,4 +229,26 @@ describe('renderFarmItem', () => {
     expect(single.props.className).toBe('px-4 mx-auto w-full py-1 empty:hidden')
     expect(farmPassRef.current).toBe(false)
   })
+})
+
+describe('Crew Mode dispatch hint', () => {
+  const hint = msg('notice', 'Crew started work.', 'h1', { kind: 'crew_dispatch_hint' })
+
+  it('hands the page\'s open-Crew-tab callback to the hint card', () => {
+    const { result, p } = render()
+    const card = findByType(result.current.renderMessage(0, hint), CrewDispatchHintCard)!
+    expect(card).not.toBeNull()
+    ;(card.props.onOpen as () => void)()
+    expect(p.handleCrewWorkersOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([['embedded', { embedded: true }], ['popout', { popout: true }]] as const)(
+    'offers no button in a %s chat, which has no side panel to open',
+    (_name, over) => {
+      const { result } = render(over)
+      const card = findByType(result.current.renderMessage(0, hint), CrewDispatchHintCard)!
+      expect(card).not.toBeNull()
+      expect(card.props.onOpen).toBeUndefined()
+    },
+  )
 })
