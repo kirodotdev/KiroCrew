@@ -77,6 +77,7 @@ from kiro_crew.messaging.queue_drain import (
     register_drain,
     tag_entry,
 )
+from kiro_crew.messaging.split import close_open_fence
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -428,6 +429,19 @@ async def _post_stop_notice(orch: Any, channel: str, text: str, ts: str | None) 
         return ""
 
 
+def _without_leading_mention(text: str, is_mention: bool) -> str:
+    """*text* past its leading bot ``<@BOTID>`` mention, or *text* itself.
+
+    An app_mention event always starts with ``<@BOTID> ...``, so this slices past
+    the first ``>`` and the whitespace after it.
+    """
+    if is_mention and text.startswith("<@"):
+        end = text.find(">")
+        if end != -1:
+            return text[end + 1 :].lstrip()
+    return text
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -619,11 +633,7 @@ async def _route_message(
     # closes. Skipping the interceptor for unauthorized senders also preserves
     # their existing ephemeral-rejection UX unchanged.
     if _user_authorized:
-        _intercept_clean = text
-        if is_mention and text.startswith("<@"):
-            _end = text.find(">")
-            if _end != -1:
-                _intercept_clean = text[_end + 1 :].lstrip()
+        _intercept_clean = _without_leading_mention(text, is_mention)
         # Interceptor-specific dedup: Slack re-delivers the same event on ack
         # timeout, and this seam runs BEFORE the main _route_message dedup (which
         # must stay after the activation check). Without a guard here a redirecting
@@ -896,7 +906,13 @@ async def _route_message(
         # Image paths are inlined by ACP; opaque paths remain available to agent tools.
         if attachment_paths:
             paths_text = "\n".join(attachment_paths)
-            text = f"{text}\n{paths_text}" if text else paths_text
+            # Same layout as append_attachment_context: a fence the user left
+            # open ends before the paths, so they stay references. The fence is
+            # judged on the text after the leading bot mention, which is what
+            # the agent receives once the mention is stripped below.
+            body = _without_leading_mention(text, is_mention)
+            closed = text[: len(text) - len(body)] + close_open_fence(body)
+            text = f"{closed}\n{paths_text}" if text else paths_text
 
         # Inject text file contents
         if text_blocks:
@@ -928,12 +944,7 @@ async def _route_message(
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
 
     # Strip the leading bot @mention so the LLM sees clean text.
-    # app_mention events always start with "<@BOTID> ..." — just slice past the first ">".
-    clean_text = text
-    if is_mention and text.startswith("<@"):
-        end = text.find(">")
-        if end != -1:
-            clean_text = text[end + 1 :].lstrip()
+    clean_text = _without_leading_mention(text, is_mention)
     if not clean_text:
         _cleanup_attachment_temps()
         return

@@ -410,16 +410,24 @@ def _current_turn_carries_image_ref(message: str) -> bool:
     the text) and a dashboard turn that simply types a path both carry the image
     as a bare path INSIDE the message, and ``build_prompt_blocks`` inlines it as
     a real image block for the CURRENT turn. So read the builder's own scanner on
-    the builder's own haystack -- ``_PATH_RE`` over the raw message, image
-    suffixes only -- rather than re-deriving the grammar here; a match means the
-    rejection may be of the image the user just sent, and the recovery declines.
+    the builder's own haystack -- ``_PATH_RE`` over the message with each user
+    segment's literal text masked (``mask_user_literal_text``), skipping a match
+    that touches a masked span -- rather than re-deriving the grammar here. A
+    path written in code is text the builder attaches nothing from, so it is not
+    proof here either; a match means the rejection may be of the image the user
+    just sent, and the recovery declines.
 
     Imported inside the function on purpose: ``kiro_crew.image_refs`` documents a
     load-bearing import rule, and this is the shape its other consumers use.
     """
-    from kiro_crew.image_refs import _PATH_RE
+    from kiro_crew.image_refs import _MASKED, _PATH_RE, mask_user_literal_text
 
-    return bool(_PATH_RE.search(message or ""))
+    text = message or ""
+    try:
+        scan = mask_user_literal_text(text)
+    except Exception:  # pragma: no cover - same fallback as the builder's scan
+        scan = text
+    return any(_MASKED not in match.group(1) for match in _PATH_RE.finditer(scan))
 
 
 def _session_stop_generation_for(sessions: Any, session_key: str) -> int:

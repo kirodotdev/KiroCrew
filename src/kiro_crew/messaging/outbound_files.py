@@ -696,6 +696,15 @@ def _literal_image_marker(text: str, offset: int, fenced: list[tuple[int, int]])
     return _MarkerReader(text, fenced).literal(offset)
 
 
+def is_code_indent(line_head: str) -> bool:
+    """Whether *line_head*, the start of a line, indents it as code (four columns).
+
+    Four columns depend on at most the first four characters, since every
+    character expands to at least one column.
+    """
+    return line_head[:4].expandtabs(4).startswith("    ")
+
+
 class _MarkerReader:
     """Whether a marker in one text is literal, in O(log n) per marker after one linear pass.
 
@@ -731,7 +740,12 @@ class _MarkerReader:
         i = bisect.bisect_right(self._fenced_starts, offset) - 1
         return i >= 0 and offset < self._fenced_ends[i]
 
-    def literal(self, offset: int) -> bool:
+    def literal(self, offset: int, *, first_line_indent_is_code: bool = True) -> bool:
+        """Whether the marker at *offset* is literal text.
+
+        ``first_line_indent_is_code=False`` reads an indent on the text's first
+        line as prose; an escape, a fence or inline code still makes it literal.
+        """
         text = self._text
         backslashes = 0
         while offset - backslashes > 0 and text[offset - backslashes - 1] == "\\":
@@ -740,9 +754,11 @@ class _MarkerReader:
             return True
         i = bisect.bisect_left(self._newlines, offset)
         line_start = self._newlines[i - 1] + 1 if i else 0
-        # Four columns of indent depend on at most the first four characters,
-        # since every character expands to at least one column.
-        if text[line_start : min(offset, line_start + 4)].expandtabs(4).startswith("    "):
+        # Slice at most four characters: the indent depends on no more, and a
+        # whole-line slice per marker would re-read a long line once per marker.
+        if (first_line_indent_is_code or line_start > 0) and is_code_indent(
+            text[line_start : min(offset, line_start + 4)]
+        ):
             return True
         bounds = self.block_bounds(offset)
         mask = self._masks.get(bounds)
