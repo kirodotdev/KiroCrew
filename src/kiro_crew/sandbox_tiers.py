@@ -115,12 +115,11 @@ def _install_root_targets_cached(package_dir: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(spellings))
 
 
-@functools.lru_cache(maxsize=1)
-def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
-    """Both spellings of the desktop app's staged KAS engine root, or empty."""
-    if not bundled_kas_dir:
+def _bundled_root_spellings(bundled_dir: str) -> tuple[str, ...]:
+    """Lexical and canonical spellings of a directory the desktop shell exported, or empty."""
+    if not bundled_dir:
         return ()
-    lexical = os.path.normpath(os.path.abspath(bundled_kas_dir))
+    lexical = os.path.normpath(os.path.abspath(bundled_dir))
     spellings = [lexical]
     try:
         spellings.append(os.path.realpath(lexical))
@@ -129,9 +128,22 @@ def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(spellings))
 
 
+@functools.lru_cache(maxsize=1)
+def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
+    """Both spellings of the desktop app's staged KAS engine root, or empty."""
+    return _bundled_root_spellings(bundled_kas_dir)
+
+
+@functools.lru_cache(maxsize=1)
+def _bundled_kiro_cli_targets_cached(bundled_kiro_dir: str) -> tuple[str, ...]:
+    """Both spellings of the desktop app's bundled kiro-cli directory, or empty."""
+    return _bundled_root_spellings(bundled_kiro_dir)
+
+
 def _resolved_install_root_targets() -> list[str]:
     """The running gateway's packaged install tree, sealed read-only for every
-    sandboxed child -- plus the desktop app's staged KAS engine root, when there is one.
+    sandboxed child -- plus the desktop app's staged KAS engine root and bundled kiro-cli
+    directory, when there are any.
 
     Every write that changes the install tree changes what the gateway executes on its
     next start, with the gateway's identity. The legitimate writer is the updater, which
@@ -148,13 +160,23 @@ def _resolved_install_root_targets() -> list[str]:
     home's own ``engines/kas`` is where ``kirocrew kas install`` writes), so no
     legitimate writer is fenced.
 
-    Computed once per process: neither location moves under a running gateway, and
+    The bundled kiro-cli directory (:data:`kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV`,
+    ``backend-dist/kiro-cli`` beside the package directory) is the same class again:
+    the shell runs its ``kiro-cli-chat --version`` at every gateway start and the
+    gateway spawns it, outside any sandbox, for every relay session. It is not inside
+    the package directory, so that seal does not reach it on any layout. The shell
+    exports the variable only when the build shipped the payload, and it also sets
+    ``KIRO_NO_AUTO_UPDATE=1``, so kiro-cli never rewrites its own tree; the app's own
+    update replaces the bundle from outside every sandbox.
+
+    Computed once per process: no location moves under a running gateway, and
     caching keeps the ``realpath`` calls off every later spawn. Never raises.
     """
     # Read here rather than imported at module scope: every module-level name of this
-    # module is served through the ``sandbox`` facade, and the env name is the
-    # ``constants`` module's to export, not this one's.
+    # module is served through the ``sandbox`` facade, and each env name is its
+    # defining module's to export, not this one's.
     from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
+    from kiro_crew.kiro_cli_bundle import BUNDLED_KIRO_DIR_ENV
 
     targets: list[str] = []
     try:
@@ -163,6 +185,12 @@ def _resolved_install_root_targets() -> list[str]:
         pass
     try:
         targets.extend(_bundled_kas_targets_cached(os.environ.get(BUNDLED_KAS_DIR_ENV, "").strip()))
+    except Exception:
+        pass
+    try:
+        targets.extend(
+            _bundled_kiro_cli_targets_cached(os.environ.get(BUNDLED_KIRO_DIR_ENV, "").strip())
+        )
     except Exception:
         pass
     return list(dict.fromkeys(targets))
