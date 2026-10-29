@@ -920,9 +920,31 @@ def _alias_selected(
     catalog walk already resolved those links, and a project tree is never
     resolved before consent.
     """
+    roots = (*(os.path.abspath(root) for root in loader_roots), *real_roots)
+    candidates = _alias_candidates(only, heads, canonicals, roots)
+    if not candidates:
+        return []
+    taken = {id(entry) for entry in selected}
+    # A confined project row is never resolved: its path may be a swapped
+    # link or junction, and project paths stay lexical.
+    return [
+        entry
+        for entry in entries
+        if id(entry) not in taken
+        and entry.project_root is None
+        and _alias_hit(Path(entry[1]), candidates)
+    ]
+
+
+def _alias_candidates(
+    only: list[str],
+    heads: dict[str, str | None],
+    canonicals: dict[str, str],
+    roots: tuple[str, ...],
+) -> list[tuple[Path, list[str]]]:
+    """``(prefix, globs)`` for each ``<prefix>/*/SKILL.md`` mapping inside *roots*."""
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
-    roots = (*(os.path.abspath(root) for root in loader_roots), *real_roots)
     candidates: list[tuple[Path, list[str]]] = []
     for pattern in only:
         parts, literal = _literal_split(pattern)
@@ -932,29 +954,44 @@ def _alias_selected(
         for prefix in dict.fromkeys([str(Path(*parts[:literal])), heads[pattern]]):
             if prefix and sk._within_any(os.path.abspath(prefix), roots):
                 candidates.append((Path(prefix), globs))
-    if not candidates:
-        return []
-    taken = {id(entry) for entry in selected}
-    found: list[_ScopedSkillEntry] = []
-    for entry in entries:
-        if id(entry) in taken or entry.project_root is not None:
-            # A confined project row is never resolved: its path may be a
-            # swapped link or junction, and project paths stay lexical.
+    return candidates
+
+
+def _alias_hit(path: Path, candidates: list[tuple[Path, list[str]]]) -> bool:
+    """True when ``<prefix>/<leaf>/SKILL.md`` matches and resolves to *path*'s target."""
+    target: str | None = None
+    for base, globs in candidates:
+        alias = base / path.parent.name / "SKILL.md"
+        if not any(fnmatch.fnmatch(str(alias), g) for g in globs):
             continue
-        path = Path(entry[1])
-        target: str | None = None
-        for base, globs in candidates:
-            alias = base / path.parent.name / "SKILL.md"
-            if not any(fnmatch.fnmatch(str(alias), g) for g in globs):
-                continue
-            if not os.path.lexists(alias):
-                continue
-            if target is None:
-                target = os.path.normcase(os.path.realpath(path))
-            if os.path.normcase(os.path.realpath(alias)) == target:
-                found.append(entry)
-                break
-    return found
+        if not os.path.lexists(alias):
+            continue
+        if target is None:
+            target = os.path.normcase(os.path.realpath(path))
+        if os.path.normcase(os.path.realpath(alias)) == target:
+            return True
+    return False
+
+
+def _alias_matches(path: Path, globs: list[str], loader_roots: list[Path]) -> bool:
+    """The :func:`_alias_selected` rule for one operator-owned path outside the catalog.
+
+    Readers that match a listed path against already-expanded globs call this so a
+    skill listed under its flat link still matches ``<app>/*/SKILL.md``. Both
+    *path* and the prefix must sit inside *loader_roots*, spelled or resolved.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    roots = (
+        *(os.path.abspath(root) for root in loader_roots),
+        *(real for root in loader_roots if (real := sk.validate_file_path(str(root)))),
+    )
+    if not sk._within_any(os.path.abspath(path), roots):
+        # A path outside the roots (a project row) is never resolved.
+        return False
+    heads: dict[str, str | None] = dict.fromkeys(globs)
+    candidates = _alias_candidates(globs, heads, {g: g for g in globs}, roots)
+    return bool(candidates) and _alias_hit(path, candidates)
 
 
 def _scoped_entries(

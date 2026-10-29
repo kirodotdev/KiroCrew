@@ -150,7 +150,7 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
         for g in (_expand_resource_uri(res, agent_path),)
         if g
     ]
-    return _matches_any(str(skill_md), _with_canonical_globs(globs))
+    return bool(_agents_loading_skill(skill_md, [("", _with_canonical_globs(globs))]))
 
 
 def _expand_agent_globs(
@@ -191,10 +191,20 @@ def _agents_loading_skill(
     """Return names of agents whose pre-expanded globs match *skill_md*.
 
     Uses the runtime scope match, so a row listed under a symlinked ``$HOME``
-    also matches a glob written against the resolved home path.
+    also matches a glob written against the resolved home path, and an app
+    skill listed under its flat link matches its app's ``<app>/*/SKILL.md``.
     """
+    # Imported here: every module-level name of this family is served by the
+    # ``_shared`` facade, and these two are not part of that surface.
+    from kiro_crew.skill_runtime.catalog import _alias_matches
+    from kiro_crew.skills import skills_dir
+
     target = str(skill_md)
-    return [name for name, globs in expanded_agents if _matches_any(target, globs)]
+    return [
+        name
+        for name, globs in expanded_agents
+        if _matches_any(target, globs) or _alias_matches(skill_md, globs, [skills_dir()])
+    ]
 
 
 # The parsed-agents snapshot lives in ``agent_discovery.parsed_agent_specs``
