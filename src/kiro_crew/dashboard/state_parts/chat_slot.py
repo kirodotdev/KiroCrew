@@ -196,6 +196,7 @@ class _ChatSlot:
         "tags_revision",
         "_pending_subagent_failures",
         "_pending_synthesis",
+        "_synthesis_armers",
         "_synthesis_inflight",
         "_synthesis_recheck",
         "_synthesis_rechecks",
@@ -535,6 +536,7 @@ class _ChatSlot:
     # Initialised by state_parts/slot_ladder.py.
     _pending_subagent_failures: list[str]
     _pending_synthesis: bool
+    _synthesis_armers: set[str]
     _synthesis_inflight: bool
     _synthesis_recheck: asyncio.TimerHandle | None
     _synthesis_rechecks: int

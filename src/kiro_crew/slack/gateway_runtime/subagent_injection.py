@@ -72,6 +72,22 @@ def _injection_slot_busy(slot: Any) -> bool:
     return bool(slot.running) or (task is not None and not task.done())
 
 
+def _skip_inline_collected(slot: Any, child_id: str) -> None:
+    """Forget *child_id*'s inline collection and withdraw only its own arm.
+
+    The blocking spawn tool already returned this result, so this child's arm
+    has nothing left to summarize. The synthesis is dropped only when no other
+    child armed it: a background run that finished alongside the wave still
+    owes the parent its turn. An inline-collected child can only have armed on
+    the busy path, at entry, before the blocking tool's collection landed.
+    """
+    slot._subagents_inline_collected.discard(child_id)
+    if child_id in slot._synthesis_armers:
+        slot._synthesis_armers.discard(child_id)
+        if not slot._synthesis_armers:
+            slot._pending_synthesis = False
+
+
 # Max attempts, the first one included, to inject a subagent result into a
 # parent session.
 _MAX_INJECT_ATTEMPTS = 2
@@ -185,7 +201,6 @@ async def _route_subagent_to_tab(
             _mgr = self.subagent_mgr
             _arm_synthesis = (
                 _mgr is not None
-                and not _injection_slot._pending_synthesis
                 and not _flush_only
                 and info.id not in _injection_slot._subagents_inline_collected
                 and _mgr.running_agents_for(parent_key) == []
@@ -194,7 +209,14 @@ async def _route_subagent_to_tab(
         except Exception:
             _arm_synthesis = False  # error → don't arm (fail safe)
         if _arm_synthesis:
+            # Every qualifying completion joins the armers, so an
+            # inline-collected skip of one cannot cancel the synthesis
+            # another still needs. A fresh arm starts a new set: ids left
+            # from a synthesis that already ran or was dropped do not count.
+            if not _injection_slot._pending_synthesis:
+                _injection_slot._synthesis_armers.clear()
             _injection_slot._pending_synthesis = True
+            _injection_slot._synthesis_armers.add(info.id)
 
         # ── Skip injection for blocking-tool-collected results ──
         # spawn_sub_agents (blocking MCP tool) already delivered
@@ -211,11 +233,7 @@ async def _route_subagent_to_tab(
         # running) we must wait first, then re-check — see the
         # second check after the busy-wait below.
         if info.id in _injection_slot._subagents_inline_collected:
-            _injection_slot._subagents_inline_collected.discard(info.id)
-            # Disarm synthesis — the blocking tool already delivered
-            # all results and the model synthesized inline.
-            if not _injection_slot._subagents_inline_collected:
-                _injection_slot._pending_synthesis = False
+            _skip_inline_collected(_injection_slot, info.id)
             logger.info(
                 "Subagent %s: skipping injection (already collected inline by spawn_sub_agents)",
                 info.id,
@@ -258,9 +276,7 @@ async def _route_subagent_to_tab(
                     # blocking tool already handled this result, don't
                     # queue it for a later redundant turn.
                     if info.id in _injection_slot._subagents_inline_collected:
-                        _injection_slot._subagents_inline_collected.discard(info.id)
-                        if not _injection_slot._subagents_inline_collected:
-                            _injection_slot._pending_synthesis = False
+                        _skip_inline_collected(_injection_slot, info.id)
                         logger.info(
                             "Subagent %s: skipping queue " "(already collected inline)",
                             info.id,
@@ -308,9 +324,7 @@ async def _route_subagent_to_tab(
             # blocking tool's mark-collected POST has now landed,
             # since the tool returns before its owning turn ends).
             if info.id in _injection_slot._subagents_inline_collected:
-                _injection_slot._subagents_inline_collected.discard(info.id)
-                if not _injection_slot._subagents_inline_collected:
-                    _injection_slot._pending_synthesis = False
+                _skip_inline_collected(_injection_slot, info.id)
                 logger.info(
                     "Subagent %s: skipping injection after wait "
                     "(already collected inline by spawn_sub_agents)",

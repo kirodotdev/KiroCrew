@@ -2785,11 +2785,17 @@ recommend next actions), instead of leaving the last visible message as a
 per-sub-agent completion note. Dashboard chat only.
 
 - **Arm** — in `_subagent_done`, IN MEMORY ONLY and with no await, cheapest
-  check first: not already armed, not a flush-only record, not an id the
-  blocking tool collected inline, `running_agents_for(parent_key) == []`, and no
+  check first: not a flush-only record, not an id the blocking tool collected
+  inline, `running_agents_for(parent_key) == []`, and no
   `has_in_memory_pending_work_for(parent_key, exclude_id=info.id)` (a spawn in
   the dispatch window, another child whose report still waits on its teardown,
-  a live follow-up watcher) — then set `slot._pending_synthesis = True`. The arm
+  a live follow-up watcher) — then set `slot._pending_synthesis = True` and add
+  the child's id to `slot._synthesis_armers`. An already-armed slot still adds
+  the id; an arm on an unarmed slot clears the set first, so ids from a
+  synthesis that already ran or was dropped do not count. An inline-collected
+  skip (`_skip_inline_collected`) removes only its own id and disarms when the
+  set is then empty, so a wave member the blocking tool returned cannot cancel
+  a synthesis a background child armed. The arm
   sits on the delivery path, so it never waits on the task store's writer, and
   with no await the tab cannot close nor a sibling register under it. A child
   only the store holds is the fire gate's to see. A probe that raises leaves

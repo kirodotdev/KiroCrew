@@ -592,6 +592,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_subagents_inline_collected": ("value", "set()"),
     "_summary_in_flight": ("value", "False"),
     "_summary_turn_mark": ("value", "0"),
+    "_synthesis_armers": ("value", "set()"),
     "_synthesis_completion_turns": ("value", "0"),
     "_synthesis_inflight": ("value", "False"),
     "_synthesis_recheck": ("value", "None"),

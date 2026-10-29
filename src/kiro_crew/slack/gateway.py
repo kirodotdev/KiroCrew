@@ -556,6 +556,7 @@ from kiro_crew.slack.gateway_runtime.service_boot import (
 from kiro_crew.slack.gateway_runtime.subagent_injection import (
     _MAX_INJECT_ATTEMPTS,
     _injection_slot_busy,
+    _skip_inline_collected,
 )
 from kiro_crew.slack.gateway_runtime.subagent_report import (
     SUBAGENT_DIGEST_CHUNK_SIZE,

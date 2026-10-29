@@ -58,6 +58,7 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     slot._pending_synthesis = True
+    slot._synthesis_armers = {"a1"}
     slot._subagents_inline_collected = {"a1"}
     info = make_info()
 
@@ -84,6 +85,53 @@ async def test_a_partial_inline_collection_keeps_synthesis_armed(done: _Done) ->
 
     assert slot._subagents_inline_collected == {"a2"}
     assert slot._pending_synthesis is True
+
+
+@pytest.mark.asyncio
+async def test_an_inline_skip_keeps_a_synthesis_another_child_armed(done: _Done) -> None:
+    slot = done.tab("main")
+    slot._pending_synthesis = True
+    slot._synthesis_armers = {"b1"}
+    slot._subagents_inline_collected = {"a1"}
+
+    await done.done(make_info())
+
+    assert slot._subagents_inline_collected == set()
+    assert slot._pending_synthesis is True
+    assert slot._synthesis_armers == {"b1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "order", [("a1", "b1"), ("b1", "a1")], ids=["wave-first", "background-first"]
+)
+async def test_a_background_completion_keeps_its_arm_when_an_inline_sibling_also_armed(
+    done: _Done, order: tuple[str, str]
+) -> None:
+    slot = done.tab("main")
+    slot.running = True
+    current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    slot.task = current
+    infos = {child: make_info(child) for child in order}
+
+    # Both arm at entry and wait behind the running turn, in either order; the
+    # blocking tool's collection of a1 lands during that wait.
+    deliveries = []
+    for count, child in enumerate(order, start=1):
+        deliveries.append(asyncio.ensure_future(done.on_done(infos[child])))
+        await _until(
+            lambda n=count: slot._subagent_deliveries_inflight == n,
+            f"{child} waiting behind the turn",
+        )
+    assert slot._synthesis_armers == {"a1", "b1"}
+    slot._subagents_inline_collected.add("a1")
+    current.set_result(None)
+    await asyncio.wait_for(asyncio.gather(*deliveries), _LOST_RUN_SECS)
+
+    assert infos["a1"]._report_delivered is True
+    assert len(slot.queued) == 1
+    assert slot._pending_synthesis is True
+    assert slot._synthesis_armers == {"b1"}
 
 
 @pytest.mark.asyncio
