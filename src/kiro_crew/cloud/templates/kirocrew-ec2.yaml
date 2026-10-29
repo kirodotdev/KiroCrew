@@ -155,6 +155,17 @@ Parameters:
       for Session Manager encryption. When set, the role may use exactly this
       key, and only to decrypt Session Manager data for this instance; pass the kirocrew-ec2-kms-boundary ARN as
       PermissionsBoundaryArn. Empty = no KMS grant.
+  ExtraManagedPolicyArns:
+    Type: String
+    Default: ""
+    # Mirrors cloud/host_policy.py _POLICY_ARN_RE and MAX_MANAGED_POLICIES: up to
+    # eight comma-separated IAM policy ARNs, no wildcard, no comma in a name.
+    AllowedPattern: "^$|^arn:aws:iam::(aws|[0-9]{12}):policy/[A-Za-z0-9+=.@_/-]{1,512}(,arn:aws:iam::(aws|[0-9]{12}):policy/[A-Za-z0-9+=.@_/-]{1,512}){0,7}$"
+    Description: >-
+      Managed policies the edition attaches to the instance role beside Session
+      Manager's (the cloud_instance_policy seam). The launcher fills it; the
+      permissions boundary still caps whatever they grant. Empty = Session
+      Manager's policy only.
 
 # The AMI is resolved at deploy time from the public SSM Parameter Store alias —
 # never a hardcoded per-region AMI id. Latest Amazon Linux 2023 for the arch.
@@ -173,6 +184,7 @@ Conditions:
   WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
   HasCustomAmi: !Not [!Equals [!Ref CustomAmiId, ""]]
   HasSsmKmsKey: !Not [!Equals [!Ref SsmKmsKeyArn, ""]]
+  HasExtraManagedPolicies: !Not [!Equals [!Ref ExtraManagedPolicyArns, ""]]
 
 Resources:
   # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
@@ -204,8 +216,12 @@ Resources:
           - Effect: Allow
             Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      ManagedPolicyArns: !If
+        - HasExtraManagedPolicies
+        - !Split
+          - ","
+          - !Sub "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore,${ExtraManagedPolicyArns}"
+        - - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       # Read-only access to just this launch's source object (when S3-sourced).
       # ARN derived from the deterministic launcher path, NOT SourceBucket/
       # SourceKey params (see the boundary statement above for why).

@@ -643,6 +643,43 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     expect(await screen.findByRole('button', { name: /Copied/ })).toBeInTheDocument()
   })
 
+  it('names the second policy when the edition attaches host policies', async () => {
+    // The main policy has no room for the host-policy grant, so a user who copies
+    // only it would launch into a denied attach; the gateway's notice says so.
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    vi.mocked(api.cloudIamPolicy).mockResolvedValue({
+      policy: '{"Version":"2012-10-17"}',
+      host_policies: '{"Version":"2012-10-17","Statement":[]}',
+      host_policies_notice: 'apply a second policy: kirocrew cloud iam-policy --host-policies',
+    })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
+    // Status beside the button, not an error: the copy succeeded.
+    const notice = await screen.findByText(/iam-policy --host-policies/)
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice.closest('[role="alert"]')).toBeNull()
+  })
+
+  it('shows a second policy the gateway could not build as an error', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    vi.mocked(api.cloudIamPolicy).mockResolvedValue({
+      policy: '{"Version":"2012-10-17"}',
+      host_policies_error: "the edition's instance-role policy is invalid",
+    })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
+    expect(await screen.findByText(/instance-role policy is invalid/)).toBeInTheDocument()
+  })
+
   it('surfaces a failure to fetch the IAM policy rather than silently copying nothing', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(list([]))
     vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })

@@ -117,6 +117,23 @@ def boundary_policy_document(account: str = "*") -> dict[str, Any]:
     immutable across every region the operator launches in. ``account="*"`` yields
     the fully-wildcard form used only for display/tests; the real create path
     passes the resolved 12-digit account id.
+
+    An edition's ``cloud_instance_policy`` statements (see
+    :mod:`kiro_crew.cloud.host_policy`) are appended after the two built-in ones.
+    With none, the document is exactly :func:`base_boundary_policy_document`.
+    """
+    from kiro_crew.cloud import host_policy
+
+    doc = base_boundary_policy_document(account)
+    doc["Statement"].extend(host_policy.boundary_statements())
+    return doc
+
+
+def base_boundary_policy_document(account: str = "*") -> dict[str, Any]:
+    """The instance boundary with no edition statements: SSM core + the source read.
+
+    Every account that launched before an edition added statements holds this
+    document, which is why :func:`previous_boundary_documents` names it.
     """
     return {
         "Version": "2012-10-17",
@@ -144,6 +161,19 @@ def boundary_policy_document(account: str = "*") -> dict[str, Any]:
 def boundary_policy_json(account: str = "*") -> str:
     """The boundary document as compact JSON (what ``iam create-policy`` receives)."""
     return json.dumps(boundary_policy_document(account))
+
+
+def previous_boundary_documents(account: str = "*") -> list[dict[str, Any]]:
+    """Earlier contents of the instance boundary that an admin may upgrade in place.
+
+    Only the document this launcher itself would have created before the edition
+    added statements, and only when it differs from today's. ``kirocrew cloud
+    iam-boundary --upgrade`` re-versions a boundary whose content is exactly one of
+    these and refuses anything else, so a boundary someone edited by hand is never
+    overwritten.
+    """
+    base = base_boundary_policy_document(account)
+    return [base] if base != boundary_policy_document(account) else []
 
 
 #: The OPT-IN instance boundary for orgs that pin a KMS key for Session Manager
@@ -182,7 +212,20 @@ def kms_boundary_policy_document(account: str = "*") -> dict[str, Any]:
     template, which names the one key ARN passed at launch and pins the target to
     the stack's own instance.
     """
-    doc = boundary_policy_document(account)
+    return _with_session_kms(boundary_policy_document(account))
+
+
+def previous_kms_boundary_documents(account: str = "*") -> list[dict[str, Any]]:
+    """Earlier contents of the KMS-session boundary an admin may upgrade in place.
+
+    The same rule as :func:`previous_boundary_documents`, for the opt-in boundary.
+    """
+    base = _with_session_kms(base_boundary_policy_document(account))
+    return [base] if base != kms_boundary_policy_document(account) else []
+
+
+def _with_session_kms(doc: dict[str, Any]) -> dict[str, Any]:
+    """*doc* with Session Manager's KMS decrypt appended (see the KMS boundary)."""
     doc["Statement"].append(
         {
             "Sid": "SsmSessionKms",
@@ -316,6 +359,51 @@ def crew_exec_boundary_policy_json() -> str:
 # mutation/delete statement is scoped to it so the policy can't touch unrelated
 # stacks. Kept as a local constant to avoid importing the ec2 module here.
 STACK_PREFIX = "kirocrew-"
+
+
+def host_policy_document() -> dict[str, Any] | None:
+    """The launcher-policy addendum for an edition's host policies, or ``None``.
+
+    A SECOND customer-managed policy, applied beside :func:`policy_document`, that
+    lets the launcher attach (and on teardown detach) exactly the edition's
+    ``cloud_instance_policy`` ARNs. ``None`` when the edition adds none, so a
+    build without them needs one policy, as before.
+
+    Separate for two reasons. The main policy is within a few dozen characters of
+    IAM's 6,144-character cap, so it has no room for another statement. And the
+    grant must reach only roles the boundary caps, which the main attach
+    statement does not limit itself to: here the resource is the role path ALONE
+    (never ``LEGACY_ROLE_ARN``, whose root-path roles may predate the boundary)
+    and the role must carry the ``kirocrew:managed`` tag, which only a
+    boundary-gated ``CreateRole`` by the launcher applies. A policy attached to a
+    role without the boundary would run uncapped. The account is ``*`` so one
+    printed document works in any account, like the main policy.
+    """
+    from kiro_crew.cloud import host_policy
+
+    arns = host_policy.managed_policy_arns("*")
+    if not arns:
+        return None
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "IamAttachHostPoliciesForInstance",
+                "Effect": "Allow",
+                "Action": ["iam:AttachRolePolicy", "iam:DetachRolePolicy"],
+                "Resource": INSTANCE_ROLE_ARN,
+                # Tag-gated like IamPutRolePolicyAndTagRoleOnManaged: a role at
+                # this path that someone created out-of-band, without our
+                # boundary, does not carry the tag, so it cannot be given these
+                # policies. Ours is tagged at CreateRole, before CloudFormation
+                # attaches managed policies.
+                "Condition": {
+                    "ArnEquals": {"iam:PolicyARN": arns},
+                    "StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"},
+                },
+            }
+        ],
+    }
 
 
 def policy_document() -> dict[str, Any]:
@@ -718,6 +806,8 @@ def policy_document() -> dict[str, Any]:
             # the launcher policy could AttachRolePolicy AdministratorAccess onto
             # a kirocrew-ec2-* role and pass it to EC2 — a full escalation. The
             # allowlist is a hard cap: no other managed policy can be attached.
+            # An edition's host policies are granted by host_policy_document, a
+            # separate addendum, never here.
             "Sid": "IamAttachManagedPolicyForInstance",
             "Effect": "Allow",
             "Action": [
