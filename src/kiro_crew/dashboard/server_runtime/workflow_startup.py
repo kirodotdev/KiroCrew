@@ -71,7 +71,12 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                         "came back incomplete, say that plainly and state what is "
                         "still unknown."
                     )
-                    started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
+                    started = slot.enqueue_or_run_prompt(
+                        prompt,
+                        _run_chat,
+                        state,
+                        workflow_run_id=run_id,
+                    )
                     state.push_slots_update()
                     logger.info(
                         "workflow %s result -> chat slot %s: agent turn %s",

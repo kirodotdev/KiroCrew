@@ -930,6 +930,7 @@ class AcpEvent:
     kind: str  # text_chunk, tool_call, permission_request, complete
     text: str = ""
     tool_call_id: str = ""
+    launched_workflow_run_id: str = ""
     title: str = ""
     #: The backend's OWN ``title`` for a tool_call / tool_call_update frame,
     #: untouched. ``title`` above is the DISPLAY label ``select_tool_title``

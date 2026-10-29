@@ -342,6 +342,7 @@ async def _fire(
     tool_identity: str = "",
     mcp_server: str = "",
     tool_call_id: str | None = None,
+    launched_workflow_run_id: str | None = None,
 ) -> list[str]:
     """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
 
@@ -394,6 +395,8 @@ async def _fire(
             # session that spawned a subagent, and a hook reading it as
             # such would take every dashboard turn for a subagent's.
             session_key=session_key,
+            workflow_run_id=getattr(turn, "_workflow_run_id", "") or None,
+            launched_workflow_run_id=launched_workflow_run_id,
             tool_call_id=tool_call_id,
             turn_id=turn._recovery_turn_id,
             hook_continuation_count=hook_continuation_count,

@@ -44,6 +44,7 @@ non-chat entry points, and events without a tool or workflow scope.
 | `turn_id` | One prompt execution; shared across that turn's applicable hooks and prompt metadata. |
 | `tool_call_id` | Native identity of one logical tool call, shared by its start/result notifications. |
 | `workflow_run_id` | One workflow execution, when applicable. |
+| `launched_workflow_run_id` | Workflow execution explicitly created by this tool call; distinct from any enclosing run. |
 | `agent_id` | One workflow agent call; interpret together with `workflow_run_id`. |
 | `acp_session_id` | ACP execution session, which can be reused across multiple calls or turns. |
 | `subagent_id` | Spawned subagent identity, distinct from a workflow agent call. |
@@ -54,9 +55,7 @@ Timestamps describe ordering and duration; they are not an execution identity.
 
 ## Required joins for complete correlation
 
-The following table defines the target for complete coverage, not a claim that
-every surface below is already implemented. Existing propagation and remaining
-gaps are described separately below.
+The following table defines the structured joins required for complete coverage.
 
 | Relationship | Required structured bridge |
 |---|---|
@@ -64,8 +63,8 @@ gaps are described separately below.
 | ACP prompt to native notifications | Native ACP session and exact prompt context; tool lifecycle records retain their native `tool_call_id`. |
 | Workflow agent to ACP prompt | Identical `workflow_run_id`, `agent_id`, and `turn_id` in the workflow execution context and prompt metadata. |
 | Workflow agent to ACP session | Binding of run + agent invocation to native `acp_session_id`, with an unambiguous corresponding turn. |
-| Chat/tool to launched workflow | Workflow run ID plus explicit initiating session, turn, and native launch tool-call ID when a tool launched it. |
-| Workflow to completion chat turn | Completed workflow run ID explicitly associated with the new completion turn ID. |
+| Chat/tool to launched workflow | The `workflow_run` MCP result carries `launched_workflow_run_id` in namespaced `structuredContent`; its ACP result hook carries that ID beside the native `tool_call_id`, own `session_key`, `turn_id`, and ACP session. |
+| Workflow to completion chat turn | The completion turn carries the completed `workflow_run_id` in hook payloads and ACP prompt metadata, alongside its newly minted `turn_id`. |
 | Child invocation to parent invocation | Explicit parent invocation or turn identity; a parent session alone is insufficient. |
 
 An API/UI-launched workflow has that origin and no invented chat parent.
@@ -109,6 +108,12 @@ workflow, agent, and ACP-session identities. Start and result are distinct event
 with their own event IDs, joined through the execution and tool-call identities,
 not through matching tool names or arguments.
 
+The `workflow_run` tool returns its run identity as MCP `structuredContent`
+under `kirocrew.launched_workflow_run_id`. The ACP result parser reads only that
+explicit field from the adapter's structured `rawOutput`; it does not parse the
+human-readable response. The PostToolUse hook keeps any enclosing
+`workflow_run_id` separate from the newly launched run ID.
+
 Workflow agents forward call-local `workflow_run_id`, `agent_id`, `turn_id`, and
 `parent_session_key`. Named and pooled sessions report `agent_session_bound`
 after obtaining their ACP session ID and before sending the prompt. Consumers
@@ -140,22 +145,10 @@ Presence of identities is not a guarantee of hook delivery or tool completion.
 If an execution is interrupted before a result hook, a consumer must not invent
 a successful result. Workflow journals expose terminal outcomes separately.
 
-This contract does not yet provide an explicit initiating-turn relationship on
-every workflow launch or a workflow run ID on every completion-injection hook.
-Do not infer those missing relationships from temporal proximity or session
-reuse. Those producer surfaces need explicit propagation before an external tap
-and hook consumer can claim complete chat-to-workflow linkage by structured IDs
-alone. The remaining producer work is:
-
-- Carry the initiating session/turn and launch tool-call identity into the
-  workflow execution record.
-- Carry the completed workflow run identity into the completion-injection turn
-  context and its hooks.
-- Audit parent invocation relationships and terminal identity coverage against
-  the required-joins table, including cancellation and rejection.
-
-The names and payload placement of additional relationship fields still need
-implementation and tests; they are not existing optional guarantees.
+Parent invocation relationships and terminal identity coverage still need a
+separate audit against the required-joins table, including cancellation and
+rejection. Consumers must continue to represent unsupported relationships as
+unresolved rather than infer them from timestamps or session reuse.
 
 For the hook payload details, see
 [memory, skills, and hooks](../system-specs/modules/memory-skills-hooks.md).

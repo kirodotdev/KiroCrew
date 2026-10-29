@@ -814,6 +814,7 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
+    _workflow_run_id: str = "",
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -845,6 +846,7 @@ async def _run_chat(
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,
         _turn_actor=_turn_actor,
+        _workflow_run_id=_workflow_run_id,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
         _on_irreversibly_consumed=_on_irreversibly_consumed,
@@ -909,6 +911,11 @@ async def _run_chat(
                     telemetry_context={
                         "turn_id": turn._recovery_turn_id,
                         "session_key": session_key,
+                        **(
+                            {"workflow_run_id": turn._workflow_run_id}
+                            if turn._workflow_run_id
+                            else {}
+                        ),
                     },
                 )
             else:

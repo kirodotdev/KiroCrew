@@ -353,7 +353,10 @@ def _run_stdio_dispatch_loop(
     def _tool_response(text: str) -> dict[str, Any]:
         """Frame a tool result, flagging ``Error:`` prose when opted in."""
         flagged = error_prefix_is_error and text.startswith("Error:")
-        return build_tool_response(text, is_error=flagged)
+        return build_tool_response(
+            text,
+            is_error=flagged,
+        )
 
     def _run_tool(
         req_id: Any,

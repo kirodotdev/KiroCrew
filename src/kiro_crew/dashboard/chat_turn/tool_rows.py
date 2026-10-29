@@ -484,6 +484,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             event.tool_input,
             tool_call_id=event.tool_call_id,
             session_key=session_key,
+            workflow_run_id=getattr(turn, "_workflow_run_id", "") or None,
             turn_id=turn._recovery_turn_id,
         )
     # Mirror tool call to linked Slack stream. Fenced like the reply

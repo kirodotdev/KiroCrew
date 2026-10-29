@@ -405,6 +405,10 @@ async def _maybe_fire_post_tool_hooks(self: AcpClient, tool_result_event: "AcpEv
             turn_id=identity.get("turn_id"),
             session_key=identity.get("session_key"),
             parent_session_key=identity.get("parent_session_key"),
+            launched_workflow_run_id=getattr(
+                tool_result_event, "launched_workflow_run_id", ""
+            )
+            or None,
         )
     except Exception:
         logger.warning("ACP-layer PostToolUse hook failed", exc_info=True)

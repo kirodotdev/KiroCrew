@@ -716,6 +716,7 @@ class ScriptHookStore:
         event_id: str | None = None,
         tool_call_id: str | None = None,
         workflow_run_id: str | None = None,
+        launched_workflow_run_id: str | None = None,
         agent_id: str | None = None,
         acp_session_id: str | None = None,
         turn_id: str | None = None,
@@ -818,6 +819,8 @@ class ScriptHookStore:
             hook_event["tool_call_id"] = tool_call_id
         if workflow_run_id:
             hook_event["workflow_run_id"] = workflow_run_id
+        if launched_workflow_run_id:
+            hook_event["launched_workflow_run_id"] = launched_workflow_run_id
         if agent_id:
             hook_event["agent_id"] = agent_id
         if acp_session_id:
