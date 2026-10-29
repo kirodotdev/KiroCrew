@@ -21,8 +21,6 @@ scale-F18 deletes markers whose PR merged before the harness.
 | `test_listing_budget.py::test_reconcile_runs_off_the_request` | scale-F9 | the index runs its full stat reconcile inline on the request that trips it (item 2.20) |
 | `test_listing_budget.py::test_index_build_fills_has_messages` | scale-F9 | the listing index leaves `has_messages` unfilled, so the listing asks per row (item 2.10) |
 | `test_listing_budget.py::test_first_listing_after_warm_reads_no_transcripts` | scale-F10 | main has no boot warm of the listing; the first listing pays the cold read (item 2.10) |
-| `test_process_tree_budget.py::test_a_full_tree_walk_spawns_nothing` | scale-F8 | main forks pgrep for every leaf whose children file is empty |
-| `test_process_tree_budget.py::test_a_vanished_pid_is_a_leaf_without_pgrep` | scale-F8 | a pid with no /proc entry still falls through to pgrep |
 | `test_push_budget.py::test_warm_flush_builds_no_slot_links` | scale-F7 | main rebuilds every slot's links on every flush |
 | `test_push_budget.py::test_diff_tab_frames_stay_under_2kb` | scale-F13 | main sends every capable tab the full slot list per flush |
 | `test_push_budget.py::test_mixed_audience_serializes_each_row_once` | scale-F13 | a diff tab plus a legacy tab serialize every row twice per flush (item 2.15) |
