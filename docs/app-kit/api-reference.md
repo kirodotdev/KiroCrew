@@ -582,6 +582,8 @@ not linger:
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
 ```
 
+When nothing is on offer, every call returns the same shared empty array, so identity comparison works for that case; non-empty results are fresh arrays. Treat it as read-only and copy it before mutating.
+
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
 
