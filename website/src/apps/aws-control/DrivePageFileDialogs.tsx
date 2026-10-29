@@ -12,7 +12,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 // apps through the vendor stub, and a host-namespaced cache client is not part
 // of that contract.
 import { useAppQuery, useAppQueryKey } from '../../app-sdk/appQuery'
-import { Download, FolderClosed, FileText, X } from 'lucide-react'
+import { Download, FolderClosed, FolderPlus, FileText, X } from 'lucide-react'
 import { Btn, Input, ContentSkeleton, IconButton } from '../../components/ui'
 import { detectFileType } from '../../components/FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from '../../components/ContentRenderer'
@@ -341,7 +341,7 @@ export function PreviewDialog({
  * keyboard behaviour (focus in, Tab ring, Escape, focus restore) comes from the
  * shared hook, exactly as `AddFromArtifactsDialog`, the Library picker.
  */
-export function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, onMove, onClose }: {
+export function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, onMove, onClose, onNewFolder }: {
   fileKey: string
   /** The folder the file lives in ('' = top level). */
   currentPath: string
@@ -354,6 +354,12 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
   askAgent: boolean
   onMove: (folder: string) => void
   onClose: () => void
+  /**
+   * The empty state's way forward: close the picker and open the page's own
+   * New folder field. Omitted where that field cannot appear (search hides
+   * it), and the empty state then keeps only its sentence.
+   */
+  onNewFolder?: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   // `restoreFocus: false`: at mount the previously focused element is a menu
@@ -402,9 +408,17 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
           </IconButton>
         </div>
         {options.length === 0 ? (
-          <p className="text-[13px] text-muted" data-testid="move-no-folders">
-            {i18nT('apps.awsControl.console.move_no_folders')}
-          </p>
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-[13px] text-muted" data-testid="move-no-folders">
+              {i18nT('apps.awsControl.console.move_no_folders')}
+            </p>
+            {onNewFolder && (
+              <Btn onClick={onNewFolder} data-testid="move-new-folder">
+                <FolderPlus size={13} />
+                {i18nT('apps.awsControl.console.folder_new')}
+              </Btn>
+            )}
+          </div>
         ) : (
           <div className="flex max-h-72 flex-col gap-1 overflow-y-auto" data-testid="move-options">
             {options.map((o) => (
@@ -424,13 +438,18 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
         )}
         {pending && (
           <p className="mt-2 text-[12px] text-muted" data-testid="move-pending">
-            {i18nT('apps.awsControl.console.move_moving')}
+            {i18nT('apps.awsControl.console.move_moving_picker')}
           </p>
         )}
+        {/* `below`: the picker is `max-w-sm`, so a hand-off in its own column
+            beside the sentence split it a few words per line. The scoped label
+            says which problem the hand-off is about. */}
         <AwsErrorNotice
           error={error?.error}
           message={error?.message}
           askAgent={askAgent}
+          askAgentLabel={i18nT('apps.awsControl.console.move_ask_agent')}
+          actionPlacement="below"
           className="mt-2"
           testId="move-error"
         />

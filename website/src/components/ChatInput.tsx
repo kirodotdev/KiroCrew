@@ -47,6 +47,7 @@ import { hasListLine } from './composerListIndent'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -520,6 +521,10 @@ function ChatInput({
   const bindProjectPress = usePressActivation()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef, isTouchInput: () => touchInput })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
+  // The More menu's Sketch item opens a dialog. The dialog hands focus to the
+  // composer itself on close (`returnFocusRef`), so only the menu half of the
+  // hand-off is used here: defer the open, and skip the trigger restore.
+  const moreMenuLayer = useMenuOpensDialog()
   // Client-side `accept` is a UX hint only (input-validation guidance: server enforces type via
   // magic bytes, size, and malware scanning — never trust the extension/MIME here).
   const openPicker = (imageOnly: boolean) => {
@@ -1581,7 +1586,7 @@ function ChatInput({
                     <MoreHorizontal size={17} />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent side="top" align="start" className="w-[260px] p-2">
+                <DropdownMenuContent side="top" align="start" className="w-[260px] p-2" onCloseAutoFocus={moreMenuLayer.onCloseAutoFocus}>
                   {onUploadFiles && (
                     /* `disabled={uploading}`: Sketch attaches through the same
                        `onUploadFiles` handler, and the in-flight flag is a single
@@ -1591,17 +1596,12 @@ function ChatInput({
                        Disabling the item while uploading prevents that. */
                     <DropdownMenuItem
                       disabled={uploading}
-                      /* Deferred one macrotask, which is this repo's established
-                         remedy for opening a dialog from a menu item (see
-                         `useDrivePageFiles.ts`'s `openShare`/`openMove`): Radix dispatches
-                         item select with `flushSync`, so a dialog opened inline
-                         mounts in a commit where the menu is STILL trapping focus.
-                         The dialog focuses itself, the menu's trap yanks focus back,
-                         and the menu then unmounts -- stranding focus on `body`. In
-                         happy-dom the same fight shows up as an unbounded
-                         blur/focus recursion. Past the close commit there is only
-                         one trap. */
-                      onSelect={() => { setTimeout(() => setSketchOpen(true), 0) }}
+                      /* `openLayer` defers the open one macrotask and skips the
+                         menu's trigger restore; the ordering is documented on
+                         `useMenuOpensDialog`. Opened inline, the dialog mounts
+                         while the menu is STILL trapping focus, and in happy-dom
+                         that fight shows up as an unbounded blur/focus recursion. */
+                      onSelect={() => moreMenuLayer.openLayer(() => setSketchOpen(true))}
                       className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer text-left"
                     >
                       <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline" />
