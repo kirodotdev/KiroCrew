@@ -557,7 +557,12 @@ def _url_payload_command(n: int) -> str:
 #: ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
 #: the mediated-secret request directory (``secret-request-policy``), denied to the
 #: agent file tools as a whole. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_802
+#:
+#: Raised again, from 32,802, for the canonical cross-device goal drafts. The
+#: seven-line increment adds hidden-leaf declarations to the security package that
+#: keep the executable draft text outside agent sandboxes. No rule, matcher or floor
+#: moved.
+_PACKAGE_LINE_BUDGET = 32_809
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

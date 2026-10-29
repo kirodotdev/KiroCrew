@@ -130,6 +130,7 @@ DECLARED_SITES = frozenset(
         ("frontend.py", "_point_static_dist_at"),
         ("frontend.py", "_sweep_staged_locked"),
         ("frontend.py", "ensure_dev_dist_symlink"),
+        ("goal_drafts.py", "GoalDraftStore._read_unlocked"),
         ("history_projection.py", "SessionMetadataProjection.delete_session"),
         ("history_threads.py", "_write_thread_sidecar"),
         ("hooks.py", "_screen_windows_links"),
