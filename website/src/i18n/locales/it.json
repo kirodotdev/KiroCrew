@@ -18115,7 +18115,9 @@
         "serengeti_label": "Pozza d'acqua",
         "serengeti_desc": "Savana del Serengeti con giraffe, facoceri ed elefanti",
         "ghost_label": "Dimora di Kiro",
-        "ghost_desc": "Fantasmi Kiro con cappelli, occhiali e mantelli"
+        "ghost_desc": "Fantasmi Kiro con cappelli, occhiali e mantelli",
+        "hanoi_label": "Hanoi",
+        "hanoi_desc": "Quartiere Vecchio sul lago Hoàn Kiếm"
       },
       "ghostScene": {
         "friendly_hauntings_only": "solo apparizioni amichevoli",
@@ -18171,6 +18173,30 @@
         "resting": "a riposo",
         "wizard_tower_scene": "Scena della torre del mago",
         "wizard_tower_spell_text": "Testo dell'incantesimo della torre del mago"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "Quartiere antico di Hanoi",
+        "hoan_kiem_lakeside": "Sul lago Hoàn Kiếm",
+        "at_the_cafe": "{{n}}/{{total}} al caffè",
+        "coding_at_the_cafe": "a programmare al caffè",
+        "egg_coffee_break": "pausa caffè all'uovo",
+        "hanoi_old_quarter_animation": "animazione del Quartiere antico di Hanoi",
+        "hanoi_old_quarter_text_overlay": "sovrapposizione testo del Quartiere antico di Hanoi",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "Già rilasciato?",
+        "chat_deploy_reply": "Sto compilando!",
+        "chat_coffee_ask": "Caffè all'uovo?",
+        "chat_coffee_reply": "Una tazza, grazie!",
+        "chat_review_ask": "La PR va bene?",
+        "chat_review_reply": "Mi sembra ok!",
+        "chat_bug_ask": "Bug risolto?",
+        "chat_bug_reply": "Tutto fatto!",
+        "chat_tea_ask": "Tè freddo?",
+        "chat_tea_reply": "Due bicchieri!",
+        "chat_latency_ask": "Latenza alta?",
+        "chat_latency_reply": "Sto scalando!"
       }
     },
     "schedulePage": {

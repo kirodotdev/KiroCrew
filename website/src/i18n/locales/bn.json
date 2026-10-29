@@ -17656,7 +17656,9 @@
         "serengeti_label": "জলাশয়",
         "serengeti_desc": "জিরাফ, ওয়ার্টহগ আর হাতির সেরেঙ্গেটি সাভানা",
         "ghost_label": "Kiro ভূতুড়ে ডেরা",
-        "ghost_desc": "টুপি, চশমা আর কেপ পরা Kiro ভূত"
+        "ghost_desc": "টুপি, চশমা আর কেপ পরা Kiro ভূত",
+        "hanoi_label": "হ্যানয়",
+        "hanoi_desc": "হোয়ান কিয়েম হ্রদের পাশে পুরোনো শহর"
       },
       "ghostScene": {
         "friendly_hauntings_only": "শুধু বন্ধুত্বপূর্ণ ভূতুড়েপনা",
@@ -17712,6 +17714,30 @@
         "resting": "বিশ্রামে",
         "wizard_tower_scene": "জাদুকরের টাওয়ার দৃশ্য",
         "wizard_tower_spell_text": "জাদুকরের টাওয়ারের মন্ত্র টেক্সট"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "হ্যানয় পুরনো শহর",
+        "hoan_kiem_lakeside": "হোয়ান কিয়েম হ্রদের ধারে",
+        "at_the_cafe": "{{n}}/{{total}} ক্যাফেতে",
+        "coding_at_the_cafe": "ক্যাফেতে কোডিং",
+        "egg_coffee_break": "এগ-কফি বিরতি",
+        "hanoi_old_quarter_animation": "হ্যানয় পুরনো শহরের অ্যানিমেশন",
+        "hanoi_old_quarter_text_overlay": "হ্যানয় পুরনো শহরের টেক্সট ওভারলে",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "ডিপ্লয় হয়েছে?",
+        "chat_deploy_reply": "বিল্ড চলছে!",
+        "chat_coffee_ask": "ডিম কফি?",
+        "chat_coffee_reply": "এক কাপ, প্লিজ!",
+        "chat_review_ask": "পিআর ঠিক আছে?",
+        "chat_review_reply": "দেখতে ভালো!",
+        "chat_bug_ask": "বাগ ঠিক হয়েছে?",
+        "chat_bug_reply": "সব শেষ!",
+        "chat_tea_ask": "আইস টি?",
+        "chat_tea_reply": "দুই গ্লাস!",
+        "chat_latency_ask": "ল্যাটেন্সি বেশি?",
+        "chat_latency_reply": "স্কেল করছি!"
       }
     },
     "schedulePage": {

@@ -8,9 +8,10 @@ import UnderwaterLabScene from './UnderwaterLabScene'
 import MissionControlScene from './mission-control/MissionControlScene'
 import WateringHoleScene from './WateringHoleScene'
 import GhostScene from './GhostScene'
+import HanoiScene from './HanoiScene'
 
 export const SCENE_COMPONENTS: Record<SceneKey, React.ComponentType<{ agents: AgentSource[]; visible?: boolean }>> = {
   office: OfficeScene, panda: PandaOfficeScene, neural: NeuralConstellationScene, wizard: WizardTowerScene,
   underwater: UnderwaterLabScene, mission: MissionControlScene,
-  serengeti: WateringHoleScene, ghost: GhostScene,
+  serengeti: WateringHoleScene, ghost: GhostScene, hanoi: HanoiScene,
 }
