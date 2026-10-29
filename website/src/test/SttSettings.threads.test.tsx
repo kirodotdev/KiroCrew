@@ -88,7 +88,7 @@ describe('decode thread picker', () => {
 
   it('stays behind the Fine-tuning disclosure', async () => {
     mountPanel()
-    await waitFor(() => expect(screen.getByRole('combobox', { name: /model/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('table', { name: /model/i })).toBeTruthy())
     expect(screen.queryByRole('combobox', { name: /decode threads/i })).toBeNull()
   })
 
