@@ -259,6 +259,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,
+        read_bytes_with_retry,
     )
     from kiro_crew.config.loader import (  # noqa: F401
         config_dir,

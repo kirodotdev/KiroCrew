@@ -34,7 +34,7 @@ from kiro_crew.apps.manifest import (
     contained_in_screened_root,
     screen_app_path,
 )
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import (
     publish_materialized_agents,
     schedule_materialized_agents_refresh,
@@ -647,7 +647,7 @@ _FRAMEWORK_OWNED_AGENT_KEYS = frozenset(
 def _read_agent_config(path: Path) -> dict[str, Any] | None:
     """The agent JSON currently on disk, or None when there is nothing usable."""
     try:
-        data = loads_user_json(path.read_text(encoding="utf-8"))
+        data = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None

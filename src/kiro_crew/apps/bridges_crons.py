@@ -26,7 +26,7 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.manifest import AppManifest
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.cron import (
     CronPendingMismatch,
     CronStoreBusy,
@@ -145,7 +145,7 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         # A manifest that exists but cannot be read (for example one left torn by
         # an interrupted write) is logged at WARNING and treated as no crons, so
