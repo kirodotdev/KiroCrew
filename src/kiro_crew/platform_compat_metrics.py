@@ -593,27 +593,11 @@ def count_open_fds() -> int | None:
         return None
 
 
-def proc_rss_bytes_for_pid(pid: int) -> int | None:
-    """Resident set size (bytes) of an ARBITRARY *pid*, or None if unavailable.
-
-    Unlike :func:`proc_rss_bytes` (self only), this measures another process so
-    the watchdog can sum a spawned agent's whole tree. Linux reads
-    ``/proc/<pid>/statm``; Windows opens the PID and calls
-    ``GetProcessMemoryInfo``; macOS has no ctypes-only per-pid path, so it
-    returns None and the caller keeps its ``ps`` route.
-    """
-
-    if sys.platform == "linux":
-        try:
-            fields = Path(f"/proc/{pid}/statm").read_text().split()
-            # statm resident pages * page size.
-            return int(fields[1]) * os.sysconf("SC_PAGE_SIZE")
-        except (OSError, ValueError, IndexError):
-            return None
+def _windows_memory_counters_for_pid(pid: int) -> "_ProcessMemoryCounters | None":
+    """``PROCESS_MEMORY_COUNTERS`` for another PID, or None when unreadable."""
     if not IS_WINDOWS:
         return None
     try:
-
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
         psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -633,7 +617,80 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
             counters = _ProcessMemoryCounters()
             counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
             if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
-                return int(counters.WorkingSetSize)
+                return counters
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def proc_rss_bytes_for_pid(pid: int) -> int | None:
+    """Resident set size (bytes) of an ARBITRARY *pid*, or None if unavailable.
+
+    Unlike :func:`proc_rss_bytes` (self only), this measures another process so
+    the watchdog can sum a spawned agent's whole tree. Linux reads
+    ``/proc/<pid>/statm``; Windows opens the PID and calls
+    ``GetProcessMemoryInfo``; macOS has no ctypes-only per-pid path, so it
+    returns None and the caller keeps its ``ps`` route.
+    """
+
+    if sys.platform == "linux":
+        try:
+            fields = Path(f"/proc/{pid}/statm").read_text().split()
+            # statm resident pages * page size.
+            return int(fields[1]) * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError):
+            return None
+    if not IS_WINDOWS:
+        return None
+    counters = _windows_memory_counters_for_pid(pid)
+    return None if counters is None else int(counters.WorkingSetSize)
+
+
+def proc_private_bytes_for_pid(pid: int) -> int | None:
+    """Private bytes (commit charge) of an ARBITRARY *pid*, or None.
+
+    Windows only. ``PagefileUsage`` is the allocation the process committed --
+    the figure a Windows host runs out of first, while its working set stays
+    small because the leaked pages are never resident. Linux and macOS return
+    None; callers keep their own route.
+    """
+    if not IS_WINDOWS:
+        return None
+    counters = _windows_memory_counters_for_pid(pid)
+    return None if counters is None else int(counters.PagefileUsage)
+
+
+def proc_handle_count_for_pid(pid: int) -> int | None:
+    """Kernel handle count of an ARBITRARY *pid*, or None when unavailable.
+
+    Windows only. A process leaking one file handle and one semaphore per
+    directory entry reads small in every memory metric; this is the reading
+    that makes that visible. Linux/macOS return None.
+    """
+    if not IS_WINDOWS:
+        return None
+    if type(pid) is not int or pid <= 1:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.GetProcessHandleCount.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetProcessHandleCount.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            count = wintypes.DWORD()
+            if kernel32.GetProcessHandleCount(handle, ctypes.byref(count)):
+                return int(count.value)
             return None
         finally:
             kernel32.CloseHandle(handle)
@@ -886,6 +943,49 @@ def proc_subtree_sample(
     return SubtreeSample(rss_total, total_jiffies, procs, matched, pss_total)
 
 
+def _windows_tree_readings(pid: int, reader: Callable[[int], int | None]) -> list[int] | None:
+    """*reader* over the root and its lineage-validated descendants, or None off Windows.
+
+    One walk for every tree reading. Each member is read while the walk still
+    holds its handle: Windows cannot hand an open process's PID to a new
+    process, so a descendant that exits mid-walk cannot be replaced by an
+    unrelated process before *reader* reopens it by PID. An unanchorable root
+    (or a recycled PID whose handle identity disagrees) degrades to the root
+    alone, exactly as the RSS tree always has; a failed enumeration measures the
+    root alone rather than an unvalidated tree. Unreadable members are left out.
+    """
+    if not IS_WINDOWS:
+        return None
+    if type(pid) is not int or pid <= 1:
+        return None
+    members = [pid]
+    root_handle = _open_process_termination_handle(pid)
+    if root_handle is None:
+        return [value for value in map(reader, members) if value is not None]
+    descendants: dict[int, int] = {}
+    try:
+        identity = _windows_process_handle_identity(root_handle)
+        if identity is not None and identity[0] == pid:
+            try:
+                descendants = descendant_termination_handles(pid, root_handle=root_handle)
+            except Exception:
+                descendants = {}
+            members.extend(descendants)
+        return [value for value in map(reader, members) if value is not None]
+    finally:
+        for handle in descendants.values():
+            close_process_handle(handle)
+        close_process_handle(root_handle)
+
+
+def _windows_tree_sum_mb(pid: int, reader: Callable[[int], int | None]) -> float | None:
+    """Sum *reader* over a validated tree, in MiB; None when nothing was read."""
+    readings = _windows_tree_readings(pid, reader)
+    if not readings:
+        return None
+    return sum(readings) / (1024 * 1024)
+
+
 def proc_rss_tree_mb_for_pid(pid: int) -> float | None:
     """Sum RSS (MiB) of *pid* and its LINEAGE-VALIDATED Windows descendants.
 
@@ -904,41 +1004,28 @@ def proc_rss_tree_mb_for_pid(pid: int) -> float | None:
     Returns None if even the root's RSS is unavailable, matching the "unknown,
     do not judge" contract the RSS staleness probe relies on.
     """
+    return _windows_tree_sum_mb(pid, proc_rss_bytes_for_pid)
 
-    if not IS_WINDOWS:
-        return None
-    if type(pid) is not int or pid <= 1:
-        return None
-    root_handle = _open_process_termination_handle(pid)
-    if root_handle is None:
-        # Cannot even anchor the root — fall back to the single-process read so a
-        # readable self still yields a number rather than a spurious None.
-        rss = proc_rss_bytes_for_pid(pid)
-        return None if rss is None else rss / (1024 * 1024)
-    descendants: dict[int, int] = {}
-    try:
-        identity = _windows_process_handle_identity(root_handle)
-        if identity is None or identity[0] != pid:
-            rss = proc_rss_bytes_for_pid(pid)
-            return None if rss is None else rss / (1024 * 1024)
-        try:
-            descendants = descendant_termination_handles(pid, root_handle=root_handle)
-        except Exception:
-            # Enumeration failed (transient snapshot race): measure the root
-            # alone rather than an unvalidated tree.
-            descendants = {}
-        total_bytes = 0
-        found = False
-        for member in (pid, *descendants):
-            member_rss = proc_rss_bytes_for_pid(member)
-            if member_rss is not None:
-                total_bytes += member_rss
-                found = True
-        return total_bytes / (1024 * 1024) if found else None
-    finally:
-        for handle in descendants.values():
-            close_process_handle(handle)
-        close_process_handle(root_handle)
+
+def proc_private_tree_mb_for_pid(pid: int) -> float | None:
+    """Sum private bytes (MiB) of *pid* and its validated Windows descendants.
+
+    The reading that catches a committed-but-not-resident leak, whose working
+    set stays small. Windows-only; same walk and "unknown, do not judge"
+    contract as :func:`proc_rss_tree_mb_for_pid`.
+    """
+    return _windows_tree_sum_mb(pid, proc_private_bytes_for_pid)
+
+
+def proc_handle_tree_max_for_pid(pid: int) -> int | None:
+    """Largest handle count in *pid*'s validated Windows tree, or None.
+
+    A MAX rather than a sum: handles belong to one process, and the figure this
+    answers is "is a single process leaking handles", which a sum over
+    co-tenants would blur. Windows-only.
+    """
+    readings = _windows_tree_readings(pid, proc_handle_count_for_pid)
+    return max(readings) if readings else None
 
 
 def proc_cpu_seconds() -> float:
