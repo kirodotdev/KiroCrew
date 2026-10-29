@@ -130,6 +130,20 @@ export function finishedCrewWorkers(workers: CrewWorker[]): CrewWorker[] {
   return workers.filter(w => crewWorkerGroup(w) === CREW_FINISHED_GROUP)
 }
 
+/** Fold text for the worker search: NFKC (full-width forms match their ASCII
+ *  twins), then case-insensitive. CJK has no case and is left as typed. */
+function foldForSearch(text: string): string {
+  return text.normalize('NFKC').toLocaleLowerCase()
+}
+
+/** The workers whose title or task line (`summary`) holds `query`, live and
+ *  finished alike, in their given order. A blank query matches every worker. */
+export function searchCrewWorkers(workers: CrewWorker[], query: string): CrewWorker[] {
+  const q = foldForSearch(query.trim())
+  if (!q) return workers
+  return workers.filter(w => foldForSearch(`${w.title}\n${w.summary || ''}`).includes(q))
+}
+
 /** A worker's dispatcher when that is not the root: a sub-conductor's key, or "". */
 export function crewSubDispatcher(worker: CrewWorker, root: string): string {
   const by = worker.dispatched_by || ''

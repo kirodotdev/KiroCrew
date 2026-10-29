@@ -11,8 +11,8 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelVi
 
 import { switchSlot } from '../../../store/chatSlice'
 import { ApiError } from '../../../api/apiError'
-import CrewWorkerList, { CREW_FINISHED_OPEN_KEY, CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
-import { finishedCrewWorkers } from '../../../lib/crewWorkers'
+import CrewWorkerList, { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewWorkersTab, crewWorkerQueryKey, reopenCrewSession } from './CrewWorkerList'
+import { finishedCrewWorkers, searchCrewWorkers } from '../../../lib/crewWorkers'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -321,5 +321,137 @@ describe('CrewWorkerList (design B)', () => {
     renderWith(<CrewWorkersTab slot="plain" active />, [{ key: 'plain' }])
     expect(screen.getByTestId('crew-workers-none')).toBeInTheDocument()
     expect(api.crewWorkers).not.toHaveBeenCalled()
+  })
+})
+
+describe('CrewWorkerList search', () => {
+  afterEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear() })
+
+  const SEARCH = { ...WORKERS, workers: [...WORKERS.workers, { ...W('w-zh', '修复登录页面', 'idle', 'done'), summary: '已合并' }] }
+  const shown = () => screen.queryAllByTestId('crew-worker-row').map(r => r.getAttribute('data-worker'))
+  const type = (text: string) => fireEvent.change(screen.getByRole('textbox', { name: 'Search the crew' }), { target: { value: text } })
+
+  it('filters cards by title as the person types, case-insensitive', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('worker a')
+    expect(shown()).toEqual(['w-work'])
+    expect(screen.getAllByTestId('crew-worker-group').map(g => g.getAttribute('data-group'))).toEqual(['working'])
+  })
+
+  it('matches the task line too', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('WELCOME note')
+    expect(shown()).toEqual(['w-work'])
+  })
+
+  it('matches CJK titles, finished ones included', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('登录')
+    expect(shown()).toEqual(['w-zh'])
+    type('已合并')
+    expect(shown()).toEqual(['w-zh'])
+  })
+
+  it('shows finished matches while the Done group is folded, under a plain heading', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+    type('Worker')
+    expect(shown()).toEqual(expect.arrayContaining(['w-done', 'w-gone', 'w-work']))
+    expect(screen.queryByTestId('crew-finished-toggle')).toBeNull()
+    const done = document.querySelector('[data-group="done"]') as HTMLElement
+    expect(within(done).getByRole('heading')).toHaveTextContent('Done · 2')
+    // The search leaves the person's fold choice alone.
+    expect(localStorage.getItem(CREW_FINISHED_OPEN_KEY)).toBe('0')
+  })
+
+  it('clearing the search folds Done back as it was', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByTestId('crew-finished-toggle')
+    type('Worker D')
+    expect(shown()).toEqual(['w-done'])
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+    expect(screen.getByRole('textbox', { name: 'Search the crew' })).toHaveValue('')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Worker D')).toBeNull()
+    // An open Done stays open after a search too.
+    fireEvent.click(screen.getByTestId('crew-finished-toggle'))
+    type('Worker A')
+    type('')
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Worker D')).toBeInTheDocument()
+  })
+
+  it('says so when nothing matches', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('  no such task ')
+    expect(shown()).toEqual([])
+    expect(screen.getByTestId('crew-search-empty')).toHaveTextContent('No crew member matches “no such task”.')
+    expect(screen.queryByText('No crew yet.')).toBeNull()
+  })
+
+  it('Esc clears the search and restores the list', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('Worker C')
+    expect(shown()).toEqual(['w-wait'])
+    const box = screen.getByRole('textbox', { name: 'Search the crew' })
+    fireEvent.keyDown(box, { key: 'Escape' })
+    expect(box).toHaveValue('')
+    expect(shown()).toHaveLength(4)
+    expect(screen.getByTestId('crew-finished-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('keeps the query when opening a match remounts the list', async () => {
+    api.crewWorkers.mockResolvedValue(SEARCH)
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    type('Worker D')
+    fireEvent.click(screen.getByRole('button', { name: /Worker D/ }))
+    cleanup()
+    renderWith(<CrewWorkerList root="root-1" viewing="w-done" active />)
+    expect(await screen.findByRole('textbox', { name: 'Search the crew' })).toHaveValue('Worker D')
+    await waitFor(() => expect(shown()).toEqual(['w-done']))
+    // Clearing forgets it.
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search the crew' }), { key: 'Escape' })
+    expect(sessionStorage.getItem(crewWorkerQueryKey('root-1'))).toBe('')
+  })
+
+  it('says nothing matches only once the list is read, not while it is pending or failed', async () => {
+    sessionStorage.setItem(crewWorkerQueryKey('root-1'), 'Worker D')
+    const live = { key: 'w-live', title: 'Live one', crew_root: 'root-1', running: true }
+    const slots = Array.from({ length: CREW_WORKER_SEARCH_MIN }, (_, i) => ({ ...live, key: `w-live-${i}` }))
+    api.crewWorkers.mockReturnValue(new Promise(() => {}))
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
+    expect(screen.getByRole('textbox', { name: 'Search the crew' })).toHaveValue('Worker D')
+    expect(screen.queryByTestId('crew-search-empty')).toBeNull()
+    cleanup()
+    api.crewWorkers.mockRejectedValue(new Error('boom'))
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />, slots)
+    expect(await screen.findByText(/Could not load the crew list/)).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-search-empty')).toBeNull()
+  })
+
+  it('has no search box under the minimum crew size', async () => {
+    api.crewWorkers.mockResolvedValue({ ...WORKERS, workers: WORKERS.workers.slice(0, CREW_WORKER_SEARCH_MIN - 1) })
+    renderWith(<CrewWorkerList root="root-1" viewing="root-1" active />)
+    await screen.findByText('Worker B')
+    expect(screen.queryByTestId('crew-search')).toBeNull()
+  })
+
+  it('searchCrewWorkers folds case and full-width forms; a blank query matches all', () => {
+    const rows = SEARCH.workers as never as Parameters<typeof searchCrewWorkers>[0]
+    expect(searchCrewWorkers(rows, 'ＷＯＲＫＥＲ Ｅ').map(w => w.key)).toEqual(['w-gone'])
+    expect(searchCrewWorkers(rows, '   ')).toBe(rows)
   })
 })
