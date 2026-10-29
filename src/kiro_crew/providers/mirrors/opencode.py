@@ -249,8 +249,9 @@ def place_single_binary_array(
 ) -> list[dict[str, Any]]:
     """The ``mcpServers`` array for a single-binary harness, both halves of it.
 
-    Shared by opencode and goose, which differ only in HOW a per-tool restriction is
-    honoured, never in how the array is placed. *unhonoured* is the set of narrowed
+    Shared by opencode, goose, DeepSeek, Copilot and Antigravity, which differ only
+    in HOW a per-tool restriction is honoured, never in how the array is placed.
+    *unhonoured* is the set of narrowed
     servers whose restriction this session cannot put in force; they are withheld
     whole, which is the only faithful action left for them. Crew's identity-bound
     servers are withheld from the spec-described half for the reason

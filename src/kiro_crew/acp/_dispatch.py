@@ -68,6 +68,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     RefusalInfo,
 )
 from kiro_crew.acp_backends import (  # noqa: F401
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
@@ -725,6 +726,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         NamedTuple,
         cast,
     )
+
+    from kiro_crew.acp_backends import ACP_BACKEND_ANTIGRAVITY  # noqa: F401,F811
 
 
 def _token_count(value: Any) -> int | float | None:

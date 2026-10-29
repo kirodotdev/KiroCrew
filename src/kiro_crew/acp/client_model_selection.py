@@ -36,6 +36,7 @@ from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpProcessDied
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
@@ -270,8 +271,9 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     The shape walk is delegated to
     :func:`kiro_crew.acp.session_handle.parse_advertised_models` so this
     snapshot stays directly comparable with the pooled-runtime probe.
-    This path keeps its dict-only ``models`` gate and its
-    non-empty assignment guard — both are call-site policy, not parsing.
+    The ``configOptions`` fold can replace a conflicting ``models`` object for a
+    host whose model select is canonical. The non-empty assignment guard remains
+    call-site policy, not parsing.
 
     Also records ``currentModelId`` for ``_track_metadata``'s context
     window lookup.
@@ -281,11 +283,16 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     from kiro_crew.acp.session_handle import models_from_config_options
 
     models = session_resp.get("models")
-    if not isinstance(models, dict):
+    if (
+        not isinstance(models, dict)
+        or self.backend in ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL
+    ):
         # Adapters that omit `models` still advertise via configOptions. One
         # authoring, shared with the shared-runtime driver's own capture.
-        models = models_from_config_options(session_resp, self.backend)
-        if models is None:
+        select_models = models_from_config_options(session_resp, self.backend)
+        if select_models is not None:
+            models = select_models
+        elif not isinstance(models, dict):
             return
     current_model_id = models.get("currentModelId")
     if isinstance(current_model_id, str) and current_model_id:

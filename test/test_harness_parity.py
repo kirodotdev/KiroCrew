@@ -31,6 +31,7 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.harness import KasHarness, KiroHarness
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -66,6 +67,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_FAMILY,
@@ -854,6 +856,8 @@ def test_model_switch_channel_is_opt_in() -> None:
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
+    assert ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL <= ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+    assert ACP_BACKEND_ANTIGRAVITY in ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL
     source = "\n".join(
         (
             inspect.getsource(acp_client.AcpClient.set_model),
@@ -973,7 +977,15 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
 #: harness. Declared rather than discovered so a DELETED splice fails the test below
 #: -- codex is absent because this PR moved its seam onto the harness, and kiro-cli
 #: has none (``--agent`` carries its servers).
-_MCP_SEAM_HOOKS = ["claude", "copilot", "deepseek", "goose", "opencode", "pi"]
+_MCP_SEAM_HOOKS = [
+    "antigravity",
+    "claude",
+    "copilot",
+    "deepseek",
+    "goose",
+    "opencode",
+    "pi",
+]
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:

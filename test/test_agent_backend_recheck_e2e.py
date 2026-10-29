@@ -170,6 +170,12 @@ class TestRecheckOverHttp:
 
         bindir = _bin_dir(tmp_path)
         monkeypatch.setenv("PATH", str(bindir))
+        # The resolver deliberately also searches mise and Kiro Crew's augmented
+        # PATH. Pin those ambient rungs off so a host-installed ``dsh`` cannot turn
+        # this test's real missing -> installed sequence into installed -> installed.
+        monkeypatch.delenv("DSH_BIN", raising=False)
+        monkeypatch.setattr(acp_client, "augmented_path", lambda path: path)
+        monkeypatch.setattr(acp_client, "_mise_which", lambda _name: None)
         # A clean process cache: nothing has resolved this harness yet.
         monkeypatch.setattr(acp_client, "_self_served_bin_caches", {})
 
@@ -235,6 +241,9 @@ class TestRecheckOverHttp:
 
         bindir = _bin_dir(tmp_path)
         monkeypatch.setenv("PATH", str(bindir))
+        monkeypatch.delenv("DSH_BIN", raising=False)
+        monkeypatch.setattr(acp_client, "augmented_path", lambda path: path)
+        monkeypatch.setattr(acp_client, "_mise_which", lambda _name: None)
         monkeypatch.setattr(acp_client, "_self_served_bin_caches", {})
 
         client = await _client(owner_middleware)

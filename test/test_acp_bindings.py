@@ -104,6 +104,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "has_unfinished_turn": ("function", False, "a6632a57e602", "acp"),
     "is_acp_runtime_backend": ("property", False, "a6632a57e602", "acp"),
     "is_alive": ("function", False, "a6632a57e602", "acp"),
+    "is_antigravity_backend": ("property", False, "a6632a57e602", "acp"),
     "is_claude_backend": ("property", False, "a6632a57e602", "acp"),
     "is_codex_backend": ("property", False, "a6632a57e602", "acp"),
     "is_copilot_backend": ("property", False, "a6632a57e602", "acp"),

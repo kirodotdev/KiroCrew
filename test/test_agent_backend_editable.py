@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 import pytest
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -192,6 +193,7 @@ def test_baseline_ships_every_known_backend():
     assert baseline == sorted(
         [
             ACP_BACKEND_KIRO,
+            ACP_BACKEND_ANTIGRAVITY,
             ACP_BACKEND_CLAUDE,
             ACP_BACKEND_KAS,
             ACP_BACKEND_CODEX,

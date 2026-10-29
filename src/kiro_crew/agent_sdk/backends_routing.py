@@ -24,6 +24,7 @@ from enum import Enum
 from typing import FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -275,7 +276,12 @@ ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 #: approves some calls inside the harness without asking, so a PreToolUse hook
 #: would be skipped on exactly those calls until Crew makes them ask.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
-    {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+    }
 )
 
 
@@ -394,6 +400,7 @@ ACP_BACKEND_ROUTING: dict = {
     # that switch as an ACP v1 session config option (``allow_all``) on every
     # session/new and session/load -- Codex's mechanism, applied the same way.
     ACP_BACKEND_COPILOT: Routing.SESSION_CONFIG,
+    ACP_BACKEND_ANTIGRAVITY: Routing.SESSION_CONFIG,
 }
 
 
@@ -419,6 +426,7 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
     # the session's directory run without asking, which is the same residual Codex
     # has and the same OS credential mask compensates for.
     ACP_BACKEND_COPILOT: ("allow_all", "off"),
+    ACP_BACKEND_ANTIGRAVITY: ("mode", "default"),
 }
 
 
@@ -532,6 +540,10 @@ ACP_BACKEND_GATE_READBACK: dict = {
 #: ``allow_all`` write at session start (``ACP_BACKEND_PERMISSION_CONFIG``) is the
 #: other half: it is what undoes a value a restored session was left in.
 ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST: dict = {
+    # Antigravity's /plan and /usage are read-only session commands. /logout
+    # clears the operator's credential, so a command-shaped prompt from a channel
+    # or subagent must not reach it.
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"plan", "usage"}),
     ACP_BACKEND_COPILOT: frozenset(
         {
             "compact",
@@ -563,6 +575,7 @@ ACP_BACKEND_FORBIDDEN_MODES: dict = {
     ACP_BACKEND_COPILOT: frozenset(
         {"https://agentclientprotocol.com/protocol/session-modes#autopilot"}
     ),
+    ACP_BACKEND_ANTIGRAVITY: frozenset({"auto_edit", "yolo"}),
 }
 
 

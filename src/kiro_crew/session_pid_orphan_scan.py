@@ -245,6 +245,7 @@ def _env_value(pid: int, key: str, proc_root: Path | None = None) -> bytes | Non
 
 _BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
     {
+        "agy_acp_server",
         "bash",
         "claude",
         "codex",

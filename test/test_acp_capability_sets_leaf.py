@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -218,6 +219,9 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # catalog, which nothing can spell from a stored bare model name.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
         {
+            # Antigravity's live session/new result is the accepted vocabulary:
+            # there is no separate catalog endpoint to spell its model ids from.
+            ACP_BACKEND_ANTIGRAVITY,
             ACP_BACKEND_CLAUDE,
             ACP_BACKEND_CODEX,
             ACP_BACKEND_OPENCODE,

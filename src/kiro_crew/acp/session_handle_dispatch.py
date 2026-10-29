@@ -1105,6 +1105,7 @@ async def _dispatch_events(
                         identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                         cache_scope=ssid,
                         cache_overflow=self._tool_call_cache_overflow_for_wire(),
+                        backend=self._runtime.acp_backend,
                     )
                     self._release_settled_tool_call(upd, ssid)
                 tcid = str(upd.get("toolCallId") or "")

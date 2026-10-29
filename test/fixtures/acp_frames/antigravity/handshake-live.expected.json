@@ -1,0 +1,183 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "antigravity": {
+          "systemPrompt": {
+            "append": true
+          },
+          "tier": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": true,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.4.4",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "gemini-3.8-flash",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Gemini 3.8 Flash",
+            "value": "gemini-3.8-flash"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "id": "thinking_level",
+        "name": "Thinking Level",
+        "options": [
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Default permission prompt flow",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approve file edit tools",
+            "name": "Auto Edit",
+            "value": "auto_edit"
+          },
+          {
+            "description": "Auto-approve all tools",
+            "name": "YOLO",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "auto_edit",
+        "yolo"
+      ]
+    },
+    "session_id": "antigravity-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "gemini-3.8-flash",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Gemini 3.8 Flash",
+            "value": "gemini-3.8-flash"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "id": "thinking_level",
+        "name": "Thinking Level",
+        "options": [
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Default permission prompt flow",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approve file edit tools",
+            "name": "Auto Edit",
+            "value": "auto_edit"
+          },
+          {
+            "description": "Auto-approve all tools",
+            "name": "YOLO",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "auto_edit",
+        "yolo"
+      ]
+    }
+  }
+]

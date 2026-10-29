@@ -114,6 +114,7 @@ def _build_tool_call_event(
     tool_kind_cache: dict[str, str] | None = None,
     cache_overflow: set[str] | None = None,
     identity_unreadable_cache: dict[str, bool] | None = None,
+    backend: str = "",
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -284,7 +285,7 @@ def _build_tool_call_event(
     # here for a frame the gate refused, the value is bounded at construction
     # (``harness_tool_name``), and the handle releases the row at the terminal.
     if tool_call_id and harness_tool_name_cache is not None:
-        harness_tool_name_cache[_ck] = harness_tool_name(update)
+        harness_tool_name_cache[_ck] = harness_tool_name(update, backend=backend)
     # A frame that PRESENTED an identity half the bound refused is recorded as
     # such (a bool, never the half), so the permission request that follows is
     # refused rather than judged under the empty name the caches above hold.
@@ -535,6 +536,7 @@ def parse_session_update(
     tool_kind_cache: dict[str, str] | None = None,
     cache_overflow: set[str] | None = None,
     identity_unreadable_cache: dict[str, bool] | None = None,
+    backend: str = "",
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -585,6 +587,7 @@ def parse_session_update(
                 tool_kind_cache=tool_kind_cache,
                 cache_overflow=cache_overflow,
                 identity_unreadable_cache=identity_unreadable_cache,
+                backend=backend,
             )
         )
         return events

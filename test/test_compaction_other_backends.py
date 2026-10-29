@@ -50,6 +50,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
@@ -262,8 +263,9 @@ class TestEveryKnownBackendIsClassified:
     """
 
     #: Known backends deliberately outside all three compaction sets, each with why.
-    #: Empty: every known backend is classified.
-    UNCLASSIFIED: frozenset = frozenset()
+    #: Antigravity 1.4.4 has no verified manual-compaction command or status frame;
+    #: declining is safer than claiming Crew can compact it.
+    UNCLASSIFIED: frozenset = frozenset({ACP_BACKEND_ANTIGRAVITY})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (

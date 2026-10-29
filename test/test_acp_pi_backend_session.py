@@ -21,6 +21,7 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -248,7 +249,13 @@ class TestTheEffortControlIsReachableOnThisHarness:
     def test_the_advertised_option_answers_for_this_harness(self) -> None:
         """Written out per harness, so a silently granted authority names its own."""
         assert ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION == frozenset(
-            {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+            {
+                ACP_BACKEND_ANTIGRAVITY,
+                ACP_BACKEND_DEEPSEEK,
+                ACP_BACKEND_GOOSE,
+                ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_PI,
+            }
         )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION

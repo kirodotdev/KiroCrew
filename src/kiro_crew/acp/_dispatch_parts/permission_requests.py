@@ -847,7 +847,11 @@ def build_permission_event(
     # stated stands in for it, qualified so it is read through that backend's table.
     if not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
         _harness_tool_id = qualified_harness_tool_id(
-            harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
+            harness_backend,
+            harness_tool_name_cache.get(_ck, ""),
+            harness_mcp_servers,
+            tool_kind=tool_kind,
+            mcp_server=_cached_server or "",
         )
     # claude-agent-acp states no tool name on the permission request itself, so
     # the kiro-cli built-in a claude read tool stands for comes only from the name

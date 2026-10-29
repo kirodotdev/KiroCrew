@@ -575,7 +575,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # getattr for the same reason as _tool_call_unclassified.
             _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
             if _harness_names is not None:
-                _harness_name = harness_tool_name(update)
+                _harness_name = harness_tool_name(update, backend=self.backend)
                 # dsh forwards the provider's tool-call id verbatim, and its
                 # permission frame names only that id. Two calls under one id
                 # in a turn leave the name unknown, so neither is read as the

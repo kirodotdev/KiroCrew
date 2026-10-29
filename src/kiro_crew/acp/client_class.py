@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import pinned_fs
+from kiro_crew.acp import client_antigravity as _client_antigravity
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
 from kiro_crew.acp import client_copilot as _client_copilot
@@ -56,6 +57,7 @@ from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
@@ -812,6 +814,7 @@ class AcpClient:
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
     _discard_copilot_mcp_config = _client_mcp_array._discard_copilot_mcp_config
+    _antigravity_session_mcp_servers = _client_mcp_array._antigravity_session_mcp_servers
     _goose_session_mcp_servers = _client_mcp_array._goose_session_mcp_servers
     _invalidate_session_mcp_projection = _client_mcp_array._invalidate_session_mcp_projection
     _prepare_session_mcp = _client_mcp_array._prepare_session_mcp
@@ -873,6 +876,10 @@ class AcpClient:
     @property
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
+
+    @property
+    def _is_antigravity(self) -> bool:
+        return self.backend == ACP_BACKEND_ANTIGRAVITY
 
     @property
     def _is_opencode(self) -> bool:
@@ -1322,6 +1329,9 @@ class AcpClient:
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
     _note_goose_version = _client_permissions._note_goose_version
     _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
+    _refuse_unverified_antigravity_version = (
+        _client_antigravity._refuse_unverified_antigravity_version
+    )
     _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
     _tripwire_session_config = _client_permissions._tripwire_session_config
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets

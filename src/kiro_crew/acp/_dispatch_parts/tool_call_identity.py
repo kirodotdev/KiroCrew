@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN
+from kiro_crew.acp_backends import ACP_BACKEND_ANTIGRAVITY
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 
 _ACP_SHELL_KIND = "execute"
@@ -208,15 +209,17 @@ def _permission_tool_id(params: dict[str, Any]) -> str:
     return _harness_identifier(tool_id)
 
 
-def harness_tool_name(update: dict[str, Any]) -> str:
+def harness_tool_name(update: dict[str, Any], *, backend: str = "") -> str:
     """The tool's own name as a ``tool_call`` frame states it, or "".
 
     goose writes it in ``_meta.goose.toolCall.toolName`` and claude-agent-acp in
     ``_meta.claudeCode.toolName``; opencode writes it as the first frame's
-    ``title`` (``bash``), where later updates carry the command. Read from that
-    first frame only, and only as an identifier: a title with whitespace or any
-    other prose character is not a name and yields "". Which backend's table the
-    name is looked up in is decided by the permission event's caller
+    ``title`` (``bash``), where later updates carry the command. On *backend*
+    Antigravity, a native non-execution tool name is wrapped as ``Run <name>?``;
+    that spelling is unwrapped only there. Read from the first frame only, and
+    only as an identifier: a title with whitespace or any other prose character
+    is not a name and yields "". Which backend's table the name is looked up in
+    is decided by the permission event's caller
     (:func:`kiro_crew.acp.harness_tool_names.qualified_harness_tool_id`), so the
     title of a backend with no table is never read as a name.
     """
@@ -231,6 +234,13 @@ def harness_tool_name(update: dict[str, Any]) -> str:
         name = claude.get("toolName") or ""
     if name is None:
         name = update.get("title")
+        if (
+            backend == ACP_BACKEND_ANTIGRAVITY
+            and isinstance(name, str)
+            and name.startswith("Run ")
+            and name.endswith("?")
+        ):
+            name = name[4:-1]
     # Bounded by MAX_HARNESS_TOOL_NAME_LEN, not KAS's 128: an opencode MCP title
     # fuses an operator-chosen server name with the tool's, and one dropped here
     # leaves a deny hook matching the title alone.
@@ -340,6 +350,14 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # carries no ``kind`` -- so this pair is the only thing on the wire that says
         # "this is a command".
         builtin_shell=("developer", "shell"),
+    ),
+    # Google Antigravity states an MCP call in the tool frame's ``_meta.mcp``
+    # object. Both halves are harness-authored; eager MCP tools carry the same
+    # pair, so an identity does not depend on the dispatch-envelope spelling.
+    _MetaIdentityChannel(
+        key="mcp",
+        server_field="server",
+        tool_field="tool",
     ),
 )
 

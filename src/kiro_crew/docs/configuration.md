@@ -136,6 +136,7 @@ provider.
 | `goose` | goose | Uses goose's native ACP server. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
+| `antigravity` | Google Antigravity | Runs the standalone ACP Registry runtime (`agy_acp_server` plus `localharness_external`). Signs in with its own Google/API-key configuration and runs in `default` permission mode; `auto_edit` and `yolo` are refused. |
 
 Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
 and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a
@@ -549,15 +550,15 @@ For an SSO profile its tooltip gives the `aws sso login --profile <name>` comman
 run.
 
 The profile is set on the agent's harness process itself, not only on the commands
-the agent runs: kiro-cli, KAS, Claude Code, Codex, OpenCode, Pi and Goose all start
-with it. A harness that signs its own model calls through the AWS credential chain
+the agent runs: kiro-cli, KAS, Claude Code, Codex, OpenCode, Pi, Goose, DeepSeek,
+Copilot and Antigravity all start with it. A harness that signs its own model calls through the AWS credential chain
 signs them with the bound profile too. Claude Code set up for Amazon Bedrock
 (`CLAUDE_CODE_USE_BEDROCK=1`) is one, and the bound account then needs access to the
 Bedrock model. Under the `strict` and `cc` sandbox modes `~/.aws` is hidden from
 the agent (`cc` keeps a read-only `~/.aws/config`), so there a profile that needs
 `~/.aws/credentials` or the SSO cache does not resolve for the harness either.
 kiro-cli and KAS sign in with Kiro's own login, and Codex,
-OpenCode, Pi and Goose call whichever provider their own configuration names. Kiro
+OpenCode, Pi, Goose, DeepSeek, Copilot and Antigravity call whichever provider their own configuration names. Kiro
 Crew does not check whether any of them also reads `AWS_PROFILE` for its model calls.
 
 A profile name must be 1 to 128 letters, digits, `_`, `.`, `+` or `-`, and must not

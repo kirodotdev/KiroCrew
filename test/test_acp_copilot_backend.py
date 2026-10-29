@@ -146,8 +146,11 @@ def test_the_allowlist_never_admits_a_permission_command() -> None:
     }
 
 
-@pytest.mark.parametrize("backend", sorted(acp_backends.ACP_BACKENDS_KNOWN - {COPILOT}))
-def test_a_backend_without_a_row_is_never_refused(backend: str) -> None:
+@pytest.mark.parametrize(
+    "backend",
+    sorted(acp_backends.ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST)),
+)
+def test_a_backend_without_a_prompt_allowlist_row_is_never_refused(backend: str) -> None:
     assert prompt_command_issue(backend, ["/yolo"]) == ""
 
 

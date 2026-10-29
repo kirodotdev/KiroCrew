@@ -512,6 +512,9 @@ def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
     from kiro_crew.secrets import SecretVault
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    # The assertions below are about what this rig adds and clears, so start from a
+    # parent that is known not to carry an ambient provider key.
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     root = agent_scratch.scratch_root()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     (config_dir() / "config.json").write_text(
