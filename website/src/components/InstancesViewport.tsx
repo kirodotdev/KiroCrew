@@ -56,6 +56,14 @@ import {
   CURSOR_AWAY_WATCH_TYPE,
   watchCursorAwayNative,
 } from '../lib/cursorAway'
+import {
+  SCROLL_TOUCH_CANCEL_TYPE,
+  SCROLL_TOUCH_ID_MAX,
+  SCROLL_TOUCH_PHASE_TYPE,
+  SCROLL_TOUCH_VERSION,
+  SCROLL_TOUCH_WATCH_TYPE,
+  subscribeScrollTouchNative,
+} from '../lib/scrollTouch'
 import { NATIVE_NOTIFY_TYPE, parseNativeNotifyEnvelope, postRelayedNativeNotification } from '../lib/nativeNotify'
 import {
   PANE_CLIPBOARD_IMAGE_TYPE, PANE_CLIPBOARD_RESULT_TYPE, PANE_CLIPBOARD_VERSION, parsePaneClipboardImageRequest,
@@ -242,6 +250,36 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // A pane switch (or unmount) orphans the outgoing pane's watch: its reveal is
   // no longer on screen, and nothing should keep polling for it.
   useEffect(() => stopPaneCursorWatch, [activeId, stopPaneCursorWatch])
+  // Panes that asked for the trackpad's finger phases (mc-scroll-touch-watch),
+  // by pane id, with the watch id and the exact origin to answer. A pane has no
+  // preload, so this frame listens on the bridge for it and forwards each phase
+  // to the ACTIVE pane only: the fingers are on the pane on screen.
+  const paneScrollTouchRef = useRef<Map<string, { watchId: string; origin: string }>>(new Map())
+  const scrollTouchStopRef = useRef<(() => void) | null>(null)
+  // One bridge subscription while any pane is listening, none otherwise.
+  const syncScrollTouch = useCallback(() => {
+    const want = paneScrollTouchRef.current.size > 0
+    if (want && !scrollTouchStopRef.current) {
+      scrollTouchStopRef.current = subscribeScrollTouchNative(phase => {
+        const paneId = activeIdRef.current
+        const watch = paneId ? paneScrollTouchRef.current.get(paneId) : undefined
+        const frame = paneId ? iframeRefs.current.get(paneId)?.contentWindow : undefined
+        if (!watch || !frame) return
+        try {
+          frame.postMessage({ type: SCROLL_TOUCH_PHASE_TYPE, v: SCROLL_TOUCH_VERSION, id: watch.watchId, phase }, watch.origin)
+        } catch {
+          /* frame mid-navigation: its reader falls back to the gap */
+        }
+      })
+    } else if (!want && scrollTouchStopRef.current) {
+      scrollTouchStopRef.current()
+      scrollTouchStopRef.current = null
+    }
+  }, [])
+  useEffect(() => () => {
+    scrollTouchStopRef.current?.()
+    scrollTouchStopRef.current = null
+  }, [])
   const refreshingRef = useRef<Set<string>>(new Set())
   const lastRefreshRef = useRef<Map<string, number>>(new Map())
   // Reactive (mc-auth-expired) re-mints answered per pane since its last Retry
@@ -695,6 +733,27 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const watchId = (data as { id?: unknown }).id
         const live = paneCursorWatchRef.current
         if (live && live.paneId === id && live.watchId === watchId) stopPaneCursorWatch()
+      } else if (data.type === SCROLL_TOUCH_WATCH_TYPE) {
+        // A pane's swipe reader wants the real finger-down / finger-up. The
+        // origin already named this pane (resolveTunnelOrigin above); the frame
+        // check pins the request to that pane's own iframe, and the answers go
+        // back to exactly this origin. Any pane may ask, so one that becomes
+        // active later is already listening; only the active one is answered.
+        const watchId = (data as { id?: unknown }).id
+        if (typeof watchId !== 'string' || !watchId || watchId.length > SCROLL_TOUCH_ID_MAX) return
+        if (data.v !== SCROLL_TOUCH_VERSION) return
+        const frame = iframeRefs.current.get(id)?.contentWindow
+        if (!frame || e.source !== frame) return
+        paneScrollTouchRef.current.set(id, { watchId, origin: e.origin })
+        syncScrollTouch()
+      } else if (data.type === SCROLL_TOUCH_CANCEL_TYPE) {
+        const watchId = (data as { id?: unknown }).id
+        const live = paneScrollTouchRef.current.get(id)
+        if (!live || live.watchId !== watchId) return
+        const frame = iframeRefs.current.get(id)?.contentWindow
+        if (!frame || e.source !== frame) return
+        paneScrollTouchRef.current.delete(id)
+        syncScrollTouch()
       } else if (data.type === PANE_CLIPBOARD_IMAGE_TYPE) {
         // A pane wants an image on the clipboard. Its own async Clipboard API is
         // refused (this document's header scopes the clipboard to this origin,
@@ -813,7 +872,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [dispatch, refreshToken, canRefreshNow, currentPortToId, stopPaneCursorWatch, adoptChainedCrew])
+  }, [dispatch, refreshToken, canRefreshNow, currentPortToId, stopPaneCursorWatch, adoptChainedCrew, syncScrollTouch])
 
   // Proactive refresh: when an embedded token passes REFRESH_AT_ELAPSED_FRAC of
   // its TTL, re-mint and reload that iframe ahead of the cap. Skips the active

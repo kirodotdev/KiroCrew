@@ -185,6 +185,7 @@
       "gateway-auth-hint.js",
       "blocking-prompt.js",
       "splash-history.js",
+      "scroll-touch.js",
       "swipe-history.js",
       "hide-to-tray.js",
       "html-fullscreen.js",

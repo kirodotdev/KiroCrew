@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import {
   createTrackpadSwipeReader, isClearSwipe, SWIPE_GESTURE_IDLE_MS, swipeTiming, useTrackpadSwipe, canScrollX,
-  relayedWheelTime, FRAME_WHEEL_MAX_AGE_MS,
+  relayedWheelTime, FRAME_WHEEL_MAX_AGE_MS, FINGER_HOLD_MAX_MS,
   type TrackpadSwipeDir, type WheelSample, type WheelVerdict,
 } from './useTrackpadSwipe'
 
@@ -281,6 +281,177 @@ describe('useTrackpadSwipe: the quiet check after a run', () => {
     expect(wheel(25, 5, scrollAt + 16)).toBe(false)
     expect(onDragStart).toHaveBeenCalledTimes(1)
     expect(onDragEnd).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('createTrackpadSwipeReader with the finger phases', () => {
+  it('fingers down: a pause past the gap keeps the drag, and the lift ends it', () => {
+    let down = true
+    const reader = createTrackpadSwipeReader(yes, () => down)
+    const first = run(20, 0, 3, 0).map((s) => reader.feed(s))
+    expect(first[0].start).toBe('left')
+    // 300ms with the fingers resting on the pad, then they move on.
+    const later = reader.feed({ dx: 20, dy: 0, mode: 0, ctrl: false, owned: false, at: 32 + 300 })
+    expect(later.endPrev).toBeUndefined()
+    expect(later.start).toBeUndefined()
+    expect(later.move).toBe(80)
+    down = false
+    expect(reader.lift()).toBe(true)
+    // The rest of the run is the tail: held, never moving the drag.
+    const tailV = tail(20, 4, 332).map((s) => reader.feed(s))
+    expect(tailV.every((v) => v.consume && v.move === undefined && !v.start)).toBe(true)
+    expect(reader.lift()).toBe(false)
+  })
+
+  it('a lift keeps what was held back as a possible tail: it was the fingers', () => {
+    const reader = createTrackpadSwipeReader(yes, () => true)
+    for (const s of run(20, 0, 3, 0)) reader.feed(s)
+    // Two shrinking steps: held back, they might be a tail.
+    reader.feed({ dx: 16, dy: 0, mode: 0, ctrl: false, owned: false, at: 48 })
+    reader.feed({ dx: 12.8, dy: 0, mode: 0, ctrl: false, owned: false, at: 64 })
+    expect(reader.lift()).toBe(true)
+    expect(reader.takeFlush()).toBeCloseTo(88.8)
+  })
+
+  it('fingers down still ends the drag past the hold cap', () => {
+    const reader = createTrackpadSwipeReader(yes, () => true)
+    for (const s of run(20, 0, 3, 0)) reader.feed(s)
+    const v = reader.feed({ dx: 20, dy: 0, mode: 0, ctrl: false, owned: false, at: 32 + FINGER_HOLD_MAX_MS + 1 })
+    expect(v.endPrev).toBe(true)
+    expect(v.start).toBe('left')
+  })
+
+  it('a new touch drops a held tail, so the next event decides a new run', () => {
+    const reader = createTrackpadSwipeReader(yes, () => true)
+    for (const s of run(20, 0, 3, 0)) reader.feed(s)
+    reader.lift()
+    expect(reader.dropHeld()).toBe(true)
+    expect(reader.dropHeld()).toBe(false)
+    expect(reader.feed({ dx: -15, dy: 0, mode: 0, ctrl: false, owned: false, at: 60 }).start).toBe('right')
+  })
+
+  it('without the phases (a browser), the same pause ends the drag as before', () => {
+    const reader = createTrackpadSwipeReader(yes)
+    for (const s of run(20, 0, 3, 0)) reader.feed(s)
+    const v = reader.feed({ dx: 20, dy: 0, mode: 0, ctrl: false, owned: false, at: 32 + 300 })
+    expect(v.endPrev).toBe(true)
+  })
+})
+
+describe('useTrackpadSwipe: the shell\'s finger phases', () => {
+  type Bridge = { emit: ((p: unknown) => void) | null; stops: number }
+  function installBridge(): Bridge {
+    const bridge: Bridge = { emit: null, stops: 0 }
+    ;(window as Window & { electronAPI?: unknown }).electronAPI = {
+      onScrollTouch: (cb: (p: unknown) => void) => {
+        bridge.emit = cb
+        return () => { bridge.stops += 1; bridge.emit = null }
+      },
+    }
+    return bridge
+  }
+  afterEach(() => {
+    vi.useRealTimers()
+    delete (window as Window & { electronAPI?: unknown }).electronAPI
+    document.documentElement.style.overscrollBehaviorX = ''
+    document.body.replaceChildren()
+  })
+
+  function mount() {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const onDragStart = vi.fn()
+    const onDragMove = vi.fn()
+    const onDragEnd = vi.fn()
+    const hook = renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants: () => true, onDragStart, onDragMove, onDragEnd, onSwipe: () => {},
+    }))
+    /** One wheel now, on the (fake) event clock. */
+    const wheel = (dx: number) => {
+      const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: 0, bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'timeStamp', { value: performance.now() })
+      root.dispatchEvent(ev)
+      return ev.defaultPrevented
+    }
+    /** `n` wheels 16ms apart. */
+    const swipe = (dx: number, n: number) => {
+      for (let i = 0; i < n; i++) { wheel(dx); vi.advanceTimersByTime(16) }
+    }
+    return { hook, wheel, swipe, onDragStart, onDragMove, onDragEnd }
+  }
+
+  it('releases on the real lift-off, not on a pause, with the lift time', () => {
+    const bridge = installBridge()
+    const { swipe, wheel, onDragStart, onDragMove, onDragEnd } = mount()
+    bridge.emit!('begin')
+    swipe(20, 4)
+    expect(onDragStart).toHaveBeenCalledWith('left')
+    // The fingers rest for 400ms: far past the gap, still one drag.
+    vi.advanceTimersByTime(400)
+    vi.advanceTimersToNextFrame()
+    expect(onDragEnd).not.toHaveBeenCalled()
+    swipe(20, 2)
+    const liftAt = performance.now()
+    bridge.emit!('end')
+    // The release waits one frame for wheels queued ahead of the message.
+    expect(onDragEnd).not.toHaveBeenCalled()
+    vi.advanceTimersToNextFrame()
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+    expect(onDragEnd).toHaveBeenCalledWith('lift', liftAt)
+    expect(onDragMove).toHaveBeenLastCalledWith(120, expect.any(Number))
+    // The momentum tail after the lift is still the page's, and moves nothing.
+    const moves = onDragMove.mock.calls.length
+    expect(wheel(18)).toBe(true)
+    expect(wheel(14)).toBe(true)
+    expect(onDragMove.mock.calls.length).toBe(moves)
+    expect(onDragStart).toHaveBeenCalledTimes(1)
+    // New fingers during the tail: a new drag at once.
+    bridge.emit!('begin')
+    expect(document.documentElement.style.overscrollBehaviorX).toBe('')
+    wheel(-20)
+    expect(onDragStart).toHaveBeenCalledTimes(2)
+    expect(onDragStart).toHaveBeenLastCalledWith('right')
+  })
+
+  it('a lost end still releases at the hold cap', () => {
+    const bridge = installBridge()
+    const { swipe, onDragEnd } = mount()
+    bridge.emit!('begin')
+    swipe(20, 4)
+    vi.advanceTimersByTime(FINGER_HOLD_MAX_MS + 50)
+    vi.advanceTimersToNextFrame()
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+    expect(onDragEnd.mock.calls[0][0]).toBe('gap')
+  })
+
+  it('a begin that lands while a lift waits for its frame settles the old drag first', () => {
+    const bridge = installBridge()
+    const { swipe, wheel, onDragStart, onDragEnd } = mount()
+    bridge.emit!('begin')
+    swipe(20, 4)
+    bridge.emit!('end')
+    bridge.emit!('begin')
+    expect(onDragEnd).toHaveBeenCalledWith('lift', expect.any(Number))
+    // The new touch is not swallowed as the old drag's tail.
+    wheel(20)
+    expect(onDragStart).toHaveBeenCalledTimes(2)
+  })
+
+  it('unsubscribes on unmount', () => {
+    const bridge = installBridge()
+    const { hook } = mount()
+    hook.unmount()
+    expect(bridge.stops).toBe(1)
+  })
+
+  it('without the bridge (a browser), the gap still ends the drag', () => {
+    const { swipe, onDragEnd } = mount()
+    swipe(20, 4)
+    vi.advanceTimersByTime(swipeTiming.idleMs)
+    vi.advanceTimersToNextFrame()
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+    expect(onDragEnd.mock.calls[0][0]).toBe('gap')
   })
 })
 

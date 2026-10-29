@@ -140,6 +140,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("history:step", handler);
     return () => ipcRenderer.removeListener("history:step", handler);
   },
+  // The trackpad's real finger-down ("begin") and finger-up ("end"), which
+  // main.js reads off Chromium's gesture-scroll events (see scroll-touch.js).
+  // macOS only; the page's swipe reader uses it to release a drag on the real
+  // lift-off. Anything but the two words is dropped here.
+  onScrollTouch: (cb) => {
+    const handler = (_e, phase) => {
+      if (phase === "begin" || phase === "end") cb(phase);
+    };
+    ipcRenderer.on("scroll-touch", handler);
+    return () => ipcRenderer.removeListener("scroll-touch", handler);
+  },
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.

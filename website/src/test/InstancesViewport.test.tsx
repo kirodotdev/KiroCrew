@@ -804,6 +804,121 @@ describe('InstancesViewport', () => {
     })
   })
 
+  describe('trackpad finger phases for a pane (mc-scroll-touch-watch)', () => {
+    // A remote crew's pane reads its own wheels, but the real finger-down /
+    // finger-up comes only from the shell's preload, which a cross-origin pane
+    // does not have. The host listens for it and forwards each phase to the pane
+    // on screen, at that pane's exact origin.
+    function installBridge() {
+      const bridge = { subs: 0, stops: 0, emit: null as ((phase: unknown) => void) | null }
+      ;(window as Window & { electronAPI?: unknown }).electronAPI = {
+        onScrollTouch: (cb: (phase: unknown) => void) => {
+          bridge.subs += 1
+          bridge.emit = cb
+          return () => { bridge.stops += 1; bridge.emit = null }
+        },
+      }
+      return bridge
+    }
+    afterEach(() => { delete (window as Window & { electronAPI?: unknown }).electronAPI })
+
+    const frameFor = (port: number) =>
+      [...document.querySelectorAll('iframe')].find(f => f.src.includes(`:${port}`)) as HTMLIFrameElement
+    const send = (data: unknown, port: number, source: Window | null) =>
+      act(async () => {
+        window.dispatchEvent(new MessageEvent('message', {
+          data, origin: `http://127.0.0.1:${port}`, source,
+        }))
+      })
+    async function renderTwoPanes() {
+      mockConnectedCd1()
+      const store = createTestStore({
+        instances: {
+          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok2' } },
+          activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
+        },
+      })
+      const view = renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() => expect(frameFor(7778)).toBeDefined())
+      await waitFor(() => expect(frameFor(7779)).toBeDefined())
+      const fakeWindow = (el: HTMLIFrameElement) => {
+        const w = { postMessage: vi.fn() } as unknown as Window
+        Object.defineProperty(el, 'contentWindow', { configurable: true, get: () => w })
+        return w
+      }
+      const w1 = fakeWindow(frameFor(7778))
+      const w2 = fakeWindow(frameFor(7779))
+      return { store, view, w1, w2, post1: vi.mocked(w1.postMessage), post2: vi.mocked(w2.postMessage) }
+    }
+    const watch = (id: string) => ({ type: 'mc-scroll-touch-watch', v: 1, id })
+    const phases = (post: ReturnType<typeof vi.fn>) =>
+      post.mock.calls.filter(([d]) => (d as { type?: string }).type === 'mc-scroll-touch')
+
+    it('forwards each phase to the active pane only, at its own origin', async () => {
+      const bridge = installBridge()
+      const { store, w1, w2, post1, post2 } = await renderTwoPanes()
+
+      await send(watch('t-1'), 7778, w1)
+      await send(watch('t-2'), 7779, w2)
+      // One bridge subscription however many panes listen.
+      expect(bridge.subs).toBe(1)
+
+      act(() => { bridge.emit!('begin') })
+      expect(post1).toHaveBeenLastCalledWith(
+        { type: 'mc-scroll-touch', v: 1, id: 't-1', phase: 'begin' }, 'http://127.0.0.1:7778',
+      )
+      expect(phases(post2)).toHaveLength(0)
+
+      // The pane on screen changes: the phases follow it.
+      await act(async () => { store.dispatch(setActiveId('cd-2')) })
+      act(() => { bridge.emit!('end') })
+      expect(post2).toHaveBeenLastCalledWith(
+        { type: 'mc-scroll-touch', v: 1, id: 't-2', phase: 'end' }, 'http://127.0.0.1:7779',
+      )
+      expect(phases(post1)).toHaveLength(1)
+      for (const call of [...post1.mock.calls, ...post2.mock.calls]) expect(call[1]).not.toBe('*')
+    })
+
+    it('ignores a request from the wrong frame, a bad id or an unknown version', async () => {
+      const bridge = installBridge()
+      const { w1, w2 } = await renderTwoPanes()
+      // cd-1's origin, but the message came from another frame's window.
+      await send(watch('t-spoof'), 7778, w2)
+      await send({ ...watch('t-v2'), v: 2 }, 7778, w1)
+      await send({ type: 'mc-scroll-touch-watch', v: 1, id: 'x'.repeat(65) }, 7778, w1)
+      await send({ type: 'mc-scroll-touch-watch', v: 1, id: 7 }, 7778, w1)
+      expect(bridge.subs).toBe(0)
+    })
+
+    it("drops the bridge on the last pane's cancel, and only for its own watch", async () => {
+      const bridge = installBridge()
+      const { w1, w2, post1 } = await renderTwoPanes()
+      await send(watch('t-1'), 7778, w1)
+      await send({ type: 'mc-scroll-touch-cancel', v: 1, id: 'other' }, 7778, w1)
+      // Another frame cannot cancel cd-1's watch.
+      await send({ type: 'mc-scroll-touch-cancel', v: 1, id: 't-1' }, 7778, w2)
+      expect(bridge.stops).toBe(0)
+      await send({ type: 'mc-scroll-touch-cancel', v: 1, id: 't-1' }, 7778, w1)
+      expect(bridge.stops).toBe(1)
+      expect(bridge.emit).toBeNull()
+      expect(phases(post1)).toHaveLength(0)
+    })
+
+    it('releases the bridge on unmount', async () => {
+      const bridge = installBridge()
+      const { view, w1 } = await renderTwoPanes()
+      await send(watch('t-1'), 7778, w1)
+      view.unmount()
+      expect(bridge.stops).toBe(1)
+    })
+
+    it('stays silent without a native bridge', async () => {
+      const { w1, post1 } = await renderTwoPanes()
+      await send(watch('t-1'), 7778, w1)
+      expect(phases(post1)).toHaveLength(0)
+    })
+  })
+
   describe('image copy for a pane (mc-clipboard-image, #14854)', () => {
     // The pane's own async Clipboard API is refused by this document's
     // `clipboard-write=(self)` header, and an image has no execCommand path, so
