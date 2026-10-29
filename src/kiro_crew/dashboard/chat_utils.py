@@ -49,7 +49,7 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: English fallback below, read verbatim by non-dashboard consumers (channel
 #: mirrors, SSE, an older frontend); the dashboard ignores it and renders
 #: localized copy keyed on this token instead
-#: (``website/src/pages/chat/transientNotice.ts``). A structured token rather
+#: (``website/src/pages/chat/gatewayNotice.ts``). A structured token rather
 #: than prose-matching so the wording can change on either side without the
 #: other silently falling back to raw English -- the drift class
 #: ``test_recovery_marker_parity.py`` exists for. Both sides are still

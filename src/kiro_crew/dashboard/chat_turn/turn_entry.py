@@ -103,6 +103,8 @@ def _stop_pressed(turn) -> bool:
 
 async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     """Open the turn: its identity, provenance, consume veto, allowances and clocks."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _current_message = turn._current_message
     _directive_channel_origin = turn._directive_channel_origin
     _directive_self_wake = turn._directive_self_wake
@@ -221,6 +223,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
             "This chat ran on a remote crew and is read-only now. Open the "
             "crew's own session to keep going.",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY),
         )
         # The one exit with no tail: an archive's queue must never drain here.
         turn_exit.handed_off = True

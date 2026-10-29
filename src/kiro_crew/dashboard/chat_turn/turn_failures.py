@@ -188,6 +188,8 @@ _POISON_CANARY_TIMEOUT_SECS = 30.0
 
 async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     """Any other ACP error: the error card and the turn's failure record."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _directive_loop_gen = turn._directive_loop_gen
     _directive_loop_id = turn._directive_loop_id
     _directive_self_wake = turn._directive_self_wake
@@ -365,7 +367,10 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
             "messages are kept; the model rebuilds its working "
             "context from them)…",
             "msg msg-err",
-            meta={"kind": TRANSIENT_RETRY_KIND},
+            meta={
+                "kind": TRANSIENT_RETRY_KIND,
+                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CONVERSATION_REJECTED_RESTARTING),
+            },
         )
         # The verbatim requeue carries the retry identity forward via
         # _queue_recovery itself (one mechanism for every recovery

@@ -258,6 +258,8 @@ def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: b
     next send. With *notice*, the slot gets one notice row per
     task so the user can see why its queued cards are not running.
     """
+    from kiro_crew.dashboard import gateway_notice as gn
+
     task = getattr(state, "memory_startup_task", None)
     if task is None or task.done():
         return
@@ -277,7 +279,12 @@ def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: b
     noticed = parked.get(slot.key, False)
     parked[slot.key] = noticed or notice
     if notice and not noticed:
-        slot.append("notice", MEMORY_PREPARATION_PARKED_TEXT, "msg msg-info")
+        slot.append(
+            "notice",
+            MEMORY_PREPARATION_PARKED_TEXT,
+            "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_MEMORY_PREPARING),
+        )
         state.push_slots_update()
 
 
@@ -512,6 +519,8 @@ async def _start_next_queued_turn(
     also zeroes the batch's completion-turn count; the drain itself reads no
     store.
     """
+
+    from kiro_crew.dashboard import gateway_notice as gn
 
     # Nothing starts while the process is going away. The successor would write
     # its own in-flight marker before the session gate refuses it, and that marker
@@ -763,6 +772,7 @@ async def _start_next_queued_turn(
             "error",
             "⟳ Session reset — processing next message with conversation history",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_RESET_CONTINUING),
         )
         slot._stopping = False
 

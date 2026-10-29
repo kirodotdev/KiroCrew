@@ -3410,7 +3410,7 @@ filtered away. No "N quiet patrols" divider is drawn in their place. Rows the
 user must see or act on stay: `user`, `error` — except the PENDING links of the
 gateway's transient-5xx ladder (`meta.notice` of `transient_retrying` /
 `transient_resuming`, `isPendingTransientNotice` in
-`pages/chat/transientNotice.ts`), which are runtime notices in all but role:
+`pages/chat/gatewayNotice.ts`), which are runtime notices in all but role:
 the turn is already re-queued, and on a patroller they otherwise stack one
 "Connection restored" card per retried wake with nothing of the crewmate's
 between them; the terminal `transient_give_up` keeps drawing because the person

@@ -39,7 +39,7 @@ import { replyShowsFooter } from '../pages/chat/replyFooter'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
-import { resolveTransientNotice } from '../pages/chat/transientNotice'
+import { resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { ToolDetails } from '../pages/chat/ToolDetails'
@@ -752,10 +752,10 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // The shared ErrorCard, deliberately without `onContinue`: omitting the
     // handler selects its settled (non-continuable) shape, and the app-sdk
     // surface has no turn to resume, so it must never grow the affordance.
-    // Same transient-notice split as transcriptRenderers: a pending gateway
+    // Same gateway-notice split as transcriptRenderers: a pending gateway
     // retry is a soft localized NoticeCard, not a red error.
     render: (m, ctx) => {
-      const transient = resolveTransientNotice(m, ctx.messages, ctx.index)
+      const transient = resolveGatewayNotice(m, ctx.messages, ctx.index)
       if (transient?.card === 'notice') {
         return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
       }
@@ -771,7 +771,13 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'notice',
     roles: ['notice'],
-    render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+    // A gateway notice row (empty response, model fallback) draws localized
+    // copy keyed on its token; any other notice keeps its own text.
+    render: (m, ctx) => {
+      const notice = resolveGatewayNotice(m, ctx.messages, ctx.index)
+      if (notice?.card === 'notice') return ctx.row(<NoticeCard content={notice.text} tone={notice.tone} />)
+      return ctx.row(<NoticeCard content={m.content} />)
+    },
   },
   {
     // Grouped and lifecycle-only roles have no row of their own: a thinking or

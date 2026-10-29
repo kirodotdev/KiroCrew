@@ -18,7 +18,12 @@ from kiro_crew.dashboard.chat_utils import (
     STEER_POSSIBLY_DELIVERED_NOTE,
     slack_mirror_is_paused,
 )
-from kiro_crew.dashboard.recovery_replays import ReplayRevocation, cancel_notice, replays_of
+from kiro_crew.dashboard.recovery_replays import (
+    ReplayRevocation,
+    cancel_notice,
+    cancel_notice_meta,
+    replays_of,
+)
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
 
@@ -713,6 +718,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             "notice",
             cancel_notice(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
             "msg msg-info",
+            meta=cancel_notice_meta(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
         )
         logger.info(
             "Aborting refusal replay for %s — a correction was queued while "

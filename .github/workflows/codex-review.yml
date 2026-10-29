@@ -1132,7 +1132,8 @@ jobs:
             #     an-async-test-respects-the-on-loop-lock, a-stopwatch-is-not-a-
             #     barrier,
             #     a-bound-bounds-every-field-it-retains, keep-modules-small,
-            #     an-operator-facing-string-states-what-was-measured, and the
+            #     an-operator-facing-string-states-what-was-measured,
+            #     a-gateway-status-row-carries-a-notice-token, and the
             #     website UI rules other than frontend-security --
             #     availability/hygiene classes with bounded harm.
             #   - fenced by the vocabulary above, not by name:

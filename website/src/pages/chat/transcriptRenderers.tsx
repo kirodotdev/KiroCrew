@@ -44,7 +44,7 @@ import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAge
 import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
-import { resolveTransientNotice } from './transientNotice'
+import { resolveGatewayNotice } from './gatewayNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -667,11 +667,11 @@ export function createTranscriptRenderers(
       id: 'error',
       roles: ['error'],
       render: (m, ctx) => {
-        // A transient-5xx notice the gateway is already retrying against is
-        // routine status, not a failure: localized copy on a soft NoticeCard.
-        // Only its terminal shape ("please try again") stays a red ErrorCard,
-        // with the same localized text.
-        const transient = resolveTransientNotice(m, ctx.messages, ctx.index)
+        // A gateway status row draws localized copy keyed on its notice token.
+        // A transient-5xx retry the gateway is already running is routine
+        // status, not a failure: a soft NoticeCard. Every other family keeps the
+        // red ErrorCard, with the localized text.
+        const transient = resolveGatewayNotice(m, ctx.messages, ctx.index)
         if (transient?.card === 'notice') {
           return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
         }
@@ -713,6 +713,7 @@ export function createTranscriptRenderers(
         return ctx.row(
           <ErrorCard
             content={transient ? transient.text : m.content}
+            resumeContent={transient?.card === 'error' ? transient.resumeText : undefined}
             meta={m.meta}
             // A rejection the backend says no retry can fix never offers Continue,
             // even when this row is the newest and the turn was interrupted:
