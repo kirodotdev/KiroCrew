@@ -167,6 +167,14 @@ repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
+A Crew Mode root (a root chat running a conductor) is eligible on the same
+rules as a mate thread, with one stricter trigger: only an explicit page hide
+(`hidden: true`) starts its away episode, because a split-view pane can stay
+visible while another pane holds focus. A pane or sidebar switch, a socket loss
+and a restart never do. Its workers and other chats are not eligible. Its prompt names
+the conductor as the writer and asks which work items finished, which wait on
+the owner, and which still run.
+
 A qualifying return writes a hidden durable fingerprint claim, then posts a
 short fixed mate opener ("Welcome back, let me catch you up on where we
 are."), picked by the script of the user's request. It starts

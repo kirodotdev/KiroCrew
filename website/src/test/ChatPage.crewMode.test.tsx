@@ -79,7 +79,7 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: () => {} }))
+vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: () => {}, endSplitPaneFocus: () => {} }))
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

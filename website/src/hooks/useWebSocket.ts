@@ -90,7 +90,7 @@ export { DASHBOARD_FIELDS_FRAME, subscribeDashboardFields } from './websocket/da
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
-export { emitSlotFocused } from './websocket/attention'
+export { emitSlotFocused, endSplitPaneFocus } from './websocket/attention'
 // The revision ledger is module state, so it has one home and is reached through
 // this facade like every other owner binding.
 // The crew-log panel's cache key and frame applier, reached through this facade

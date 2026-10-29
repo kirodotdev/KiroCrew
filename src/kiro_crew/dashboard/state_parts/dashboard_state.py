@@ -573,6 +573,8 @@ class DashboardState:
         # away fallback live in the transcript.
         self._warm_task_brief_last_seen: dict[str, float] = {}
         self._warm_task_brief_not_before: dict[str, float] = {}
+        # Per owner view, the thread its explicit page hide left (Crew Mode gate).
+        self._warm_task_brief_hidden_left: dict[int, str] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
         self._warm_task_brief_model_active: set[str] = set()
         # Threads whose in-flight model call was dropped by a real cancel.
