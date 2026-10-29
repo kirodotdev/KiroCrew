@@ -916,10 +916,9 @@ def documents_for_member(
                             f"Essential source {path}: too many documents"
                         )
                 return
-            if inclusion != "always":
-                raise MemberEssentialContextError(
-                    f"Essential source {path}: unknown steering inclusion {inclusion!r}"
-                )
+            # Any other value, absent or misspelled, reads as ``always``: the
+            # documented steering contract, and what the non-member reader
+            # (``folder_steering._SKIPPED_INCLUSIONS``) already does.
         seen.add(Path(os.path.abspath(path)))
         documents.append((str(path), body))
         if len(documents) > _MAX_DOCUMENTS:
@@ -1230,10 +1229,7 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
             inclusion = fields.get("inclusion", "always").strip().casefold()
             if inclusion in {"manual", "auto", "filematch"}:
                 continue
-            if inclusion != "always":
-                raise MemberEssentialContextError(
-                    f"Essential source {path}: unknown inclusion {inclusion!r}"
-                )
+            # Any other value reads as ``always``, as in ``documents_for_member``.
         documents[str(path)] = body
     return documents
 

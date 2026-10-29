@@ -1674,6 +1674,11 @@ effective request. Other conditional guides remain guarded discovery pointers.
 Auto relevance and file paths first discovered through tools remain agent-driven:
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
+A steering document whose `inclusion` is absent or is not `manual`, `fileMatch`
+or `auto` reads as `always`, in the snapshot and in the projected KAS document
+reader alike. That is the documented steering contract and what the non-member
+folder-steering reader does, so an installer's unknown value never refuses the
+member session.
 A project override of a template takes precedence over its global copy. A
 relative `file://` prompt uses the project root when its template comes from the
 project's agents directory, and the user home when it comes from the global

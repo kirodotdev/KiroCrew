@@ -7,8 +7,9 @@ autouse fixture that closes the ``SkillsLoader`` ``env`` builds. ``_write_templa
 builds the member's essential envelope, and ``_declare_steering_glob_only`` declares only
 the steering glob with the workspace opted out of the implicit scan. ``test_member_essential_context.py``,
 ``test_member_essential_context_resource_admission.py``,
-``test_member_essential_context_inherit_opt_out.py`` and
-``test_member_essential_context_left_out_sources.py`` bind the fixtures by name;
+``test_member_essential_context_inherit_opt_out.py``,
+``test_member_essential_context_left_out_sources.py`` and
+``test_member_essential_context_unknown_inclusion.py`` bind the fixtures by name;
 ``env`` stays importable from ``test_member_essential_context`` for the modules that
 import it from there.
 """
