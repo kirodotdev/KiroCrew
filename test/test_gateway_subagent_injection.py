@@ -290,6 +290,7 @@ async def test_each_channel_attempt_builds_the_parent_turn_from_its_session(
         "provider_type": done.orch._cfg.agent.provider,
         "context_provider": done.client,
         "resumed": False,
+        "skill_trigger_text": "",
     }
     assert ("stream", f"built:{args[0]}") in done.calls
     assert info._report_delivered is True
