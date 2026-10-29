@@ -18,7 +18,8 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
 ``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
+``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_teardown_root_dead``,
+``_teardown_survivors``, ``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
@@ -1139,12 +1140,16 @@ async def _kill_failed_start_escapees(self: AcpRuntime, escapees: dict[int, Chil
             await asyncio.sleep(0.05)
     except Exception:
         self._process_tree_confirmed_dead = False
+        # Inconclusive: no later kill may read the tree as confirmed.
+        self._teardown_root_dead = False
         logger.warning(
             "AcpRuntime: could not reap the descendants of a failed start", exc_info=True
         )
         return
     if survivors:
         self._process_tree_confirmed_dead = False
+        # Left for a later kill to re-check, with the kill's own survivors.
+        self._teardown_survivors.update({pid: escapees[pid] for pid in survivors})
         logger.warning(
             "AcpRuntime: %d descendant PID(s) of a failed start survived SIGKILL; "
             "left tracked for the orphan sweep: %s",
