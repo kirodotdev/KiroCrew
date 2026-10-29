@@ -16,18 +16,18 @@ import type { SocketConnection } from './connection'
 import { appPathname } from '@/lib/basePath'
 import { bindSubagentReplaySender } from '../../lib/subagentReplayScope'
 
-/** Whether *slot* is a Crew Mode worker whose conductor is a live slot. Its tool
- *  approvals are then shown on that conductor's approval card, so they raise no
- *  note, chime, banner or badge of their own; the permission row in the worker's
- *  transcript stays. A worker whose conductor is closed has no card to show them
- *  (it is a row of the person's lists again, `crewModeView`'s rule), so it alerts
- *  like any chat. Shared by the approval-frame owner and the chat-stream owner
- *  (both may import this module). */
-export function isCrewWorkerSlot(slot: string): boolean {
-  if (!slot) return false
+/** The conductor of *slot* when *slot* is a Crew Mode crew member whose conductor
+ *  is a live slot, else ''. Its tool approvals are decided on that conductor's
+ *  approval card, so their alerts (chime, unread mark, bell note, banner, OS
+ *  toast) still fire but point at the conductor, under the crew member's name.
+ *  A crew member whose conductor is closed has no card to show them (it is a row
+ *  of the person's lists again, `crewModeView`'s rule), so it alerts like any
+ *  chat. Rule: docs/decisions/2026-10-29-crew-member-approvals-notify.md. */
+export function crewWorkerRoot(slot: string): string {
+  if (!slot) return ''
   const slots = store.getState().dashboard.slots
   const root = slots.find(s => s.key === slot)?.crew_root
-  return !!root && slots.some(s => s.key === root)
+  return root && slots.some(s => s.key === root) ? root : ''
 }
 
 /** True when this window is rendering the active slot's transcript: the chat

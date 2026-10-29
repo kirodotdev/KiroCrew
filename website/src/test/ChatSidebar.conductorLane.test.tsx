@@ -285,6 +285,26 @@ describe('chat sidebar — conductor lane', () => {
     expect(container.querySelector('[data-testid="crew-parent-hint"]')).toBeNull()
   })
 
+  it("a running conductor's row still says a crew member waits on an approval", () => {
+    // A running turn (or an armed patrol) claims the row's status line and hides
+    // the crew summary; the crew member's own row is not in the list. The wait
+    // must outrank the work, as the row's own approval does.
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: true, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, pending_approval: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+    ]
+    const { container } = renderSidebar(slots, [], null, {}, [], slots)
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(within(card).getByTestId('crew-root-approval')).toHaveTextContent('Approval needed · 1')
+    // No approval waiting: the running line comes back.
+    const { container: idle } = renderSidebar(slots.map(s => ({ ...s, pending_approval: false })), [], null, {}, [], slots.map(s => ({ ...s, pending_approval: false })))
+    expect(within(idle.querySelector('[data-crew-root="true"]') as HTMLElement).queryByTestId('crew-root-approval')).toBeNull()
+    // A question the conductor itself owes the person keeps the line.
+    const asking = slots.map(s => s.key === 'k-root' ? { ...s, needs_input: true } : s)
+    const { container: owed } = renderSidebar(asking, [], null, {}, [], asking)
+    expect(within(owed.querySelector('[data-crew-root="true"]') as HTMLElement).queryByTestId('crew-root-approval')).toBeNull()
+  })
+
   it("folds the workers summary into the row's one status line, in place of its last message", async () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true, last_message: 'Dispatched two workers' },

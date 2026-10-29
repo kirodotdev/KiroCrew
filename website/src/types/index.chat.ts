@@ -618,6 +618,10 @@ export interface Notification {
    *  the same value, so one event shows one banner. Absent on client-made notes. */
   tag?: string
   slot?: string; session_key?: string; slack_link?: string
+  /** A Crew Mode crew member's approval: the key of the crew member that waits.
+   *  `slot` then names its conductor, whose approval card is the only place it is
+   *  decided, so the note offers no Approve or Reject of its own. Client-made. */
+  crew_member?: string
   /** Transcript identity used to resume a closed slot; the slot name alone may name no history. */
   history_key?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps

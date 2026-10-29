@@ -234,8 +234,9 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           </div>
         )}
 
-        {/* Kind-specific actions */}
-        {n.kind === 'approval' && (
+        {/* Kind-specific actions. A crew member's approval is decided on its
+            conductor's approval card only: "Go to chat" above opens it. */}
+        {n.kind === 'approval' && !n.crew_member && (
           <div className="flex gap-3 mt-4">
             <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'approve'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Approve failed', e) } }}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
             <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'reject'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Reject failed', e) } }}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>

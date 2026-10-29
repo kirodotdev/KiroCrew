@@ -52,6 +52,7 @@ import { CrewEyebrow, CrewWorkerStack } from '../../components/crew/CrewModeMark
 import { KiroGhostMark } from '../../components/KiroGhostMark'
 import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
+import { crewWaitingApprovals } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
 
@@ -126,6 +127,9 @@ const ROW_ICON_PX = 10
  *  title line's live dot lights only when one of these wins the row's state
  *  resolver, so the dot and the secondary line always name the same state. */
 const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents', 'snapshot_live_work'])
+/** The row states that are a decision the session itself owes the person: a crew
+ *  member's waiting approval never takes the line from one of them. */
+const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
 
 /** A slot's running-status line. Every phase resolves through toolStatusLabel:
  *  the fixed phases (`thinking`/`streaming`) carry no copy in the store and map
@@ -424,6 +428,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // slot's runs change.
   const { statusDetail, automation, queuedForSlot, queuedReason, wfCount, wfName: wfRawName, wfPhase: wfRawPhase } =
     useAppSelector(st => selectRowLive(st, localSlotKey), shallowEqual)
+  // A Crew Mode root's crew members waiting on a tool approval. The server keeps
+  // each one's `pending_approval` on its own row, which the person's list leaves
+  // out, so the root's row carries the wait.
+  const crewWaiting = useAppSelector(st => crewRoot ? crewWaitingApprovals(st.dashboard.slots)[s.key] ?? 0 : 0)
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
@@ -730,7 +738,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // being a ternary; here it has to be explicit.
     //
     // The tail is `last_message`, and the `unread` dot rides on it (below).
-    const rowStateEntry = ([
+    const ownStateEntry = ([
       {
         // Pending approval outranks running (mirrors the Board's inferLane,
         // which returns its approval lane before the running check), so an owed
@@ -1010,6 +1018,24 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         ),
       },
     ] as const).find(entry => entry.when)
+    // A crew member's tool approval, on its conductor's row (the person's list
+    // leaves the crew member's own row out). With nothing else on the line, the
+    // crew summary below says "Approval needed · N" beside the ghosts. A state
+    // that is work or status (a running turn, an armed patrol) yields to the
+    // wait, as it does to the row's own approval; a decision the conductor
+    // itself owes the person keeps the line.
+    const crewApprovalEntry = {
+      key: 'crew_approval',
+      build: () => (
+        <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-approval">
+          <ShieldCheck size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+          <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{i18nT('components.crewMode.summary_approval', { n: crewWaiting })}</span>
+        </div>
+      ),
+    }
+    const rowStateEntry = crewWaiting > 0 && ownStateEntry && !OWED_ROW_STATE_KEYS.has(ownStateEntry.key)
+      ? crewApprovalEntry
+      : ownStateEntry
     const rowState = rowStateEntry?.build() ?? null
     // The title-line live dot reads the WINNING branch of the resolver above, so
     // it can never disagree with the secondary line: it lights exactly when that

@@ -506,8 +506,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                   : null
                 // Inline actions: approval approve/reject, plus generic
                 // actions that render only with a safe dashboard-internal url
-                // (never executable content).
-                const isApproval = n.kind === 'approval' && !n.acked
+                // (never executable content). A crew member's approval is
+                // decided on its conductor's approval card only, so its note
+                // offers no Approve or Reject; opening it leads to that card.
+                const isApproval = n.kind === 'approval' && !n.acked && !n.crew_member
                 // A persisted row is untrusted: a truthy non-string body must
                 // not reach the renderer, its raw fallback, or the flattener.
                 const bodyText = typeof n.body === 'string' ? n.body : ''
