@@ -12,9 +12,9 @@ onto ``kiro_crew.subagent``'s globals by ``bind_component_globals``, so the name
 unqualified are that module's, imported here for typing only; the ``_record_crew_log_*``
 ones run on this module's own globals and import what they use inside their bodies.
 
-The manager fields this module uses. Writes: none. Reads: ``_on_done``, ``_sessions``,
-``_teardown_cancelled_ids``, ``_safe_announce``, ``_forget_pending_start``,
-``arm_report_in_flight``, ``consume_report_hold``.
+The manager fields this module uses. Writes: none. Reads: ``_announce_owners``, ``_on_done``,
+``_sessions``, ``_teardown_cancelled_ids``, ``_safe_announce``, ``_forget_pending_start``,
+``arm_report_in_flight``, ``consume_report_hold``, ``notify_injection_failed``.
 """
 
 from __future__ import annotations
@@ -65,10 +65,31 @@ async def _safe_announce_impl(self: _GateMixin, info: SubagentInfo) -> None:
     # only records never arm (guarded inside the arm itself): they skip the
     # consumer's accounting block entirely.
     self._manager.arm_report_in_flight(info)
+    # Scheduled announces were owned when they were created; an approval
+    # path awaits this coroutine inside its own task, which owns it here.
+    current = asyncio.current_task()
+    if current is not None and current not in self._manager._announce_owners:
+        self._own_announce_task(current, info)
     try:
         await self._manager._on_done(info)
     except Exception as exc:
         logger.error("Subagent announce failed for %s (%s)", info.id, type(exc).__name__)
+        # The callback never accepted this terminal fact. Retain it as the
+        # parent's next-turn failure notice, the same fallback a timed-out
+        # terminal report takes, so the rejection is not silently lost and
+        # the parent's stop fence keeps holding until that notice lands.
+        retained = self._manager.notify_injection_failed(
+            info, reason="completion delivery failed before acceptance"
+        )
+        if retained is not None:
+            try:
+                await asyncio.shield(retained)
+            except Exception:
+                logger.debug(
+                    "Subagent %s rejection fallback could not be retained",
+                    info.id,
+                    exc_info=True,
+                )
     finally:
         # Structural release, mirroring ``_report_terminal``'s: whether the
         # consumer landed the contribution (idempotent no-op), the announce
@@ -277,7 +298,7 @@ def _announce_rejection_impl(self: _GateMixin, info: SubagentInfo) -> SubagentIn
             # at its flip site composes with no effect.
             self._manager.arm_report_in_flight(info)
             _announce_task = asyncio.ensure_future(self._manager._safe_announce(info))
-            self._hold_announce_task(f"reject-{info.id}", _announce_task)
+            self._hold_announce_task(f"reject-{info.id}", _announce_task, owner=info)
             # Strand-guard mirroring ``_spawn_terminal_report``'s: an
             # announce task cancelled before its first run never reaches
             # ``_safe_announce``'s structural release. Idempotent no-op on

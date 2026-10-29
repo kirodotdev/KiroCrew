@@ -106,6 +106,7 @@ from kiro_crew.subagent_persistence_tombstones import (
     result_is_whole,
     retry_owed_tombstones,
     settle_delivered_batch,
+    tombstone_persists,
     write_finished_result,
     write_tombstone,
 )
@@ -950,6 +951,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _owed_retry_lock,
         _owed_tombstones,
         _owed_tombstones_lock,
+        _persisting_tombstone_state,
         _retry_owed_tombstones_locked,
         _SettleableDelivery,
         _write_tombstone_file,

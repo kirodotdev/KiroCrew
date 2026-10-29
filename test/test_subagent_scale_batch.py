@@ -279,10 +279,13 @@ class TestBatchIdentity:
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         announced: list[SubagentInfo] = []
         registered: list[bool] = []
+        fenced: list[bool] = []
 
         async def _on_done(info):  # type: ignore[no-untyped-def]
             announced.append(info)
             registered.append(f"reject-{info.id}" in mgr._tasks)
+            # The parent's stop fence sees the delivery while it is in flight.
+            fenced.append(mgr.terminal_delivery_inflight_for("dashboard:chat-1"))
 
         mgr._on_done = _on_done
         mgr._queue = [
@@ -302,6 +305,7 @@ class TestBatchIdentity:
             task="waited too long",
             done=True,
             error="cwd does not exist or is not a directory",
+            parent_session_key="dashboard:chat-1",
         )
         mgr.spawn = lambda **kw: rejected
 
@@ -314,6 +318,9 @@ class TestBatchIdentity:
         assert [i.id for i in announced] == ["q-reject"], "a rejection at drain time was dropped"
         assert registered == [True]  # held in _tasks while in flight, so shutdown can cancel it
         assert "reject-q-reject" not in mgr._tasks, "a finished announce stayed registered"
+        assert fenced == [True], "the parent's stop fence missed an in-flight rejection"
+        assert mgr._announce_owners == {}, "a finished announce kept its stop-fence owner"
+        assert mgr.terminal_delivery_inflight_for("dashboard:chat-1") is False
 
     def test_a_drained_batch_rejection_is_not_double_announced(self):
         """`_announce_rejection` announces batch members ITSELF, from inside spawn.
@@ -346,8 +353,9 @@ class TestBatchIdentity:
         )
 
         mgr._drain_queue()
+        assert "reject-q-batch" not in mgr._tasks
         assert (
-            "reject-q-batch" not in mgr._tasks
+            not mgr._report_tasks
         ), "the drain announced a batch rejection that spawn already announced"
 
     def test_a_drained_success_is_not_announced_twice(self):

@@ -1113,6 +1113,12 @@ async def _close_slot(
         # thing that can persist its tail — as an OPEN-key write, which is the
         # single difference from the archival save this exit declines.
         drained = await _persist_handover_tail(state, name, slot)
+        # The original slot has no consumer after this handoff. Preserve the
+        # queue rows already written into its tail, but retire every producer
+        # once that tail committed; each completion keeps its manager fence
+        # until its discard callback proves durable settlement.
+        if drained.rows_committed:
+            slot.queue_retire_all()
         # The key belongs to the replacement now, and so does every KEY-SCOPED
         # marker sitting on it. Hand the restricted flag over before letting go:
         # the discard below the save is the only thing that would have cleared the
@@ -1166,10 +1172,13 @@ async def _close_slot(
             # was only lock contention with the recreate instead of treating one as
             # permanent, and reports the row count when it is not.
             #
-            # Its answer needs no branch HERE — unlike the pre-save exit above, this
-            # arm already ends in `SlotCloseError`, so a lost tail is reported to the
-            # caller either way. The drain only decides whether the rows survived.
-            await _persist_handover_tail(state, name, slot)
+            # Its answer needs no REPORT branch here — unlike the pre-save exit above,
+            # this arm already ends in `SlotCloseError`, so a lost tail is reported to
+            # the caller either way. The drain decides whether the rows survived, and
+            # with them whether the queued producers may retire.
+            drained = await _persist_handover_tail(state, name, slot)
+            if drained.rows_committed:
+                slot.queue_retire_all()
             # Whichever way that went, the key-scoped restricted marker has to describe
         # whoever holds `name` when this frame ends — the restored original, or the
         # replacement that kept the key. This arm never reaches the discard below
@@ -1222,6 +1231,10 @@ async def _close_slot(
         state.push_slots_update()
         raise SlotCloseError("failed to save history", code="history_save_failed")
     else:
+        # The archival write is the close commit point. Keep its queue rows on
+        # the retired slot so a late flush cannot erase the archived work, but
+        # retire their producers before releasing the remaining resources.
+        slot.queue_retire_all()
         # Through the shared postcondition rather than a bare discard: on the
         # ordinary close the key is gone and this drops the marker, and a recreate
         # that landed during the save gets the marker re-derived from ITSELF instead
@@ -1494,6 +1507,8 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # held notes live nowhere but this popped object. The drain flushes them
             # into the window and writes the whole tail as an OPEN-key save.
             drained = await _persist_handover_tail(state, name, removed)
+            if drained.rows_committed:
+                removed.queue_retire_all()
             # Hand the KEY-SCOPED restricted marker to the replacement on the way
             # out: this exit skips the discard below the save, which is the only
             # thing that would otherwise have cleared the original's.
@@ -1552,9 +1567,12 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 # false here (the replacement's tab is the one on screen), so
                 # persisting it would put a lie on a transcript a live slot may hold.
                 # The ``failed`` report is what carries the outcome instead — which
-                # is also why the drain's answer needs no branch here, unlike at the
-                # pre-save exit above: this key reaches ``failed`` regardless.
-                await _persist_handover_tail(state, name, removed)
+                # is also why the drain's answer needs no report branch here, unlike
+                # at the pre-save exit above: this key reaches ``failed`` regardless.
+                # It still gates retiring the queued producers.
+                drained = await _persist_handover_tail(state, name, removed)
+                if drained.rows_committed:
+                    removed.queue_retire_all()
             # Either way the key-scoped restricted marker must describe whoever holds
             # `name` now — the restored original, or the replacement that kept it.
             # This arm never reaches the discard below, so it settles it here.
@@ -1578,6 +1596,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             failed.append(name)
             continue
         else:
+            removed.queue_retire_all()
             # Through the shared postcondition rather than a bare discard, for the
             # same reason as the single-tab close: an archive that succeeded onto a
             # key a recreate has since taken must leave the marker describing the

@@ -23,11 +23,7 @@ from kiro_crew.dashboard.chat_utils import (
     parse_workflow_command,
 )
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
-from kiro_crew.dashboard.state import (
-    HOOK_CONTINUATION_RECOVERY_PREFIX,
-    MONITOR_WAKE_PREFIX,
-    SUBAGENT_SYNTHESIS_PREFIX,
-)
+from kiro_crew.dashboard.state import HOOK_CONTINUATION_RECOVERY_PREFIX, MONITOR_WAKE_PREFIX
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
 from kiro_crew.security import redact
 
@@ -414,14 +410,6 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         slot._hook_continuation_depth += 1
     else:
         slot._hook_continuation_depth = 0
-    # Runner-authored continuations are orchestration, not user input, and the
-    # post-fan-out synthesis prompt is one too: never mirror either to linked
-    # surfaces (Slack/Telegram) as if the user typed it — only the assistant reply
-    # is delivered. A recovery that replays the user's own message is NOT covered,
-    # because that text is the user's; the queue entry distinguishes the two so a
-    # user who types a marker verbatim still counts as ordinary user speech.
-    _is_synthetic = _synthetic_payload or message.startswith(SUBAGENT_SYNTHESIS_PREFIX)
-    turn._is_synthetic = _is_synthetic
 
     # ── Slash commands: detect early, before session acquisition ──
     # Every command branch keys on ``first_word``: _run_chat's harness forward

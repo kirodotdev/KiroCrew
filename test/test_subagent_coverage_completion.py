@@ -771,8 +771,9 @@ class TestRecordLostSubmission:
         mgr = _manager(on_done=_on_done)
         with patch.object(sa, "sel"):
             mgr.record_lost_submission("w1", 3, "POST timed out", parent_session_key="dash:1")
+        assert mgr.terminal_delivery_inflight_for("dash:1") is True
         # flake-ok: awaits the manager's in-memory announce tasks, which end without outside help; moved verbatim
-        await asyncio.gather(*mgr._tasks.values())
+        await asyncio.gather(*list(mgr._announce_owners))
         assert mgr._batch_submitted["w1"][0] == 1
         assert announced and announced[0].batch_id == "w1"
         assert announced[0].done is True
@@ -1051,8 +1052,76 @@ class TestAnnounceRejection:
         info = _info(done=True, error="rejected", batch_id="w1")
         mgr._announce_rejection(info)
         # flake-ok: awaits the manager's in-memory announce tasks, which end without outside help; moved verbatim
-        await asyncio.gather(*mgr._tasks.values())
+        await asyncio.gather(*list(mgr._announce_owners))
         assert announced == [info]
+
+    @pytest.mark.asyncio
+    async def test_rejected_completion_owns_the_stop_fence_until_accepted(self) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _on_done(_info: SubagentInfo) -> None:
+            entered.set()
+            await release.wait()
+
+        mgr = _manager(on_done=_on_done)
+        info = _info(
+            "rejected",
+            parent_session_key="dash:1",
+            done=True,
+            error="spawn rejected",
+            batch_id="wave",
+        )
+
+        mgr._announce_rejection(info)
+        await asyncio.wait_for(entered.wait(), timeout=_ANNOUNCE_WAIT_SECS)
+
+        assert mgr.running_agents_for("dash:1") == []
+        assert mgr.terminal_delivery_inflight_for("dash:1") is True
+        assert [owner.id for owner in mgr._announce_owners.values()] == ["rejected"]
+
+        release.set()
+        await asyncio.gather(*list(mgr._announce_owners))
+        assert mgr.terminal_delivery_inflight_for("dash:1") is False
+        assert mgr._announce_owners == {}
+
+    @pytest.mark.asyncio
+    async def test_failed_rejection_holds_fence_until_retry_notice_is_retained(
+        self, monkeypatch
+    ) -> None:
+        retained = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _on_event(kind: str, _info: SubagentInfo, _extra: dict) -> None:
+            assert kind == "subagent_injection_failed"
+            retained.set()
+            await release.wait()
+
+        mgr = _manager(
+            on_done=AsyncMock(side_effect=RuntimeError("route refused")),
+            on_event=_on_event,
+        )
+        info = _info(
+            "rejected",
+            parent_session_key="dash:1",
+            done=True,
+            error="spawn rejected",
+            batch_id="wave",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_utils.dashboard_slot_key",
+            lambda _key: "slot-1",
+        )
+
+        mgr._announce_rejection(info)
+        task = next(iter(mgr._announce_owners))
+        await asyncio.wait_for(retained.wait(), timeout=_ANNOUNCE_WAIT_SECS)
+        assert mgr.terminal_delivery_inflight_for("dash:1") is True
+
+        release.set()
+        await task
+        assert mgr.terminal_delivery_inflight_for("dash:1") is False
+        assert mgr._on_done.await_count == 1
 
     @pytest.mark.asyncio
     async def test_finished_batch_rejection_announce_leaves_task_registry(self) -> None:

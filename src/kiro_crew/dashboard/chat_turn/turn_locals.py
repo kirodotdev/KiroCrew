@@ -88,6 +88,8 @@ class _ChatTurn:
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None"
+    _on_discarded: "Callable[[], None] | None"
+    _on_lifecycle_recovery_retained: "Callable[[], None] | None"
     monitor_completion: "MonitorCompletionHook | None"
     _current_message: "dict | None"
 
@@ -125,8 +127,12 @@ class _ChatTurn:
     _deferred_cut_text: "str"
     _deferred_options_expiry: "bool"
     _dir_consumed_out: "dict[str, str]"
+    _discard_transferred: "bool"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
+    _drained_pending_context: "list[dict[str, Any]]"
+    _drained_prev_turn_cancelled: "bool"
+    _drained_subagent_failures: "list[str]"
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
@@ -323,6 +329,8 @@ class _ChatTurn:
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
         _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None",
+        _on_discarded: "Callable[[], None] | None",
+        _on_lifecycle_recovery_retained: "Callable[[], None] | None",
         monitor_completion: "MonitorCompletionHook | None",
         _current_message: "dict | None",
     ) -> None:
@@ -352,6 +360,8 @@ class _ChatTurn:
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
         self._on_irreversibly_consumed = _on_irreversibly_consumed
+        self._on_discarded = _on_discarded
+        self._on_lifecycle_recovery_retained = _on_lifecycle_recovery_retained
         self.monitor_completion = monitor_completion
         self._current_message = _current_message
         # No admission reservation until the context-builder branch opens one.

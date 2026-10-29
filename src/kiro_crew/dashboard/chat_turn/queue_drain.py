@@ -18,6 +18,7 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    LIFECYCLE_RECOVERY_KIND,
     MCP_APP_MESSAGE_KIND,
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -28,6 +29,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     is_system_injection_item,
+    releases_past_subagent_hold,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 from kiro_crew.dashboard.recovery_replays import replays_of
@@ -446,6 +448,26 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
                 task.add_done_callback(tasks.discard)
         except Exception:
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
+
+
+def _next_drain_is_completion_retry(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether the entry an automatic hand-off would start next is a failed completion's retry.
+
+    Read the way :func:`_start_next_queued_turn` picks, without taking anything:
+    a person's waiting send first, which is never a retry; then, while live
+    children hold user messages, the first entry the hold releases; else the
+    head. A ``lifecycle_recovery`` row there is a completion whose turn already
+    failed before the model consumed it.
+    """
+    from kiro_crew.dashboard import responsive_chat
+
+    if responsive_chat.first_priority_id(slot):
+        return False
+    if subagents_hold_user_messages(state, effective_session_key(slot)):
+        entry = next((item for item in slot._queue if releases_past_subagent_hold(item)), None)
+    else:
+        entry = slot._queue[0] if slot._queue else None
+    return entry is not None and entry.get("kind") == LIFECYCLE_RECOVERY_KIND
 
 
 async def _start_next_queued_turn(
@@ -901,7 +923,12 @@ async def _start_next_queued_turn(
     _revalidated_ids = [
         item["id"]
         for item in consumed
-        if item.get("kind") not in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND)
+        if item.get("kind")
+        not in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        )
     ]
     if _revalidated_ids:
         audit_queued_allow(slot, _revalidated_ids)
@@ -1073,6 +1100,9 @@ async def _start_next_queued_turn(
     _irreversible_delivery_callbacks = [
         callback for item in consumed if callable(callback := item.get("_on_irreversibly_consumed"))
     ]
+    _discard_callbacks = [
+        callback for item in consumed if callable(callback := item.get("_on_discarded"))
+    ]
 
     def _note_consumed(consumed: bool = True) -> None:
         # False is a RETRACTION: the runner re-queued this exact announce verbatim
@@ -1086,6 +1116,10 @@ async def _start_next_queued_turn(
             result = callback()
             if inspect.isawaitable(result):
                 await result
+
+    def _note_discarded() -> None:
+        for callback in _discard_callbacks:
+            callback()
 
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
@@ -1165,11 +1199,31 @@ async def _start_next_queued_turn(
                 if isinstance(_loop_id, str) and _loop_id:
                     _run_kwargs["_directive_loop_id"] = _loop_id
                 break
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        _run_chat(state, slot, next_msg, **_run_kwargs),
-    )
+    if _discard_callbacks:
+        _run_kwargs["_on_discarded"] = _note_discarded
+
+    # The popped queue row has transferred its lifecycle callbacks. Keep a
+    # pre-entry owner until _run_chat begins; from that point its finally block
+    # owns recovery or explicit discard.
+    _runner_entered: list[None] = []
+
+    async def _run_owned_queued_turn() -> None:
+        _runner_entered.append(None)
+        await _run_chat(state, slot, next_msg, **_run_kwargs)
+
+    try:
+        task = spawn_guarded_turn(state, slot, _run_owned_queued_turn())
+    except BaseException:
+        _note_discarded()
+        raise
+
+    if _discard_callbacks:
+
+        def _discard_if_runner_never_entered(_task: "asyncio.Task[Any]") -> None:
+            if not _runner_entered:
+                _note_discarded()
+
+        task.add_done_callback(_discard_if_runner_never_entered)
     slot.task = task
     if _settleable:
         # Open the retention clock on the result files this row promises — but

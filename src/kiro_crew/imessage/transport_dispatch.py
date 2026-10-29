@@ -114,6 +114,9 @@ class IMessageDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        # Set by maybe_start_imessage after construction. Needed when a channel turn
+        # has no attached dashboard state.
+        self.subagent_manager: Any = None
         self.client: "IMessageClient | None" = None
         # Set by maybe_start_imessage after construction (the client<->transport
         # construction cycle forbids doing it here); the config applier pushes

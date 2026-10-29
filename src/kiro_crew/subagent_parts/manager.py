@@ -280,6 +280,10 @@ class SubagentManager:
         self._followup_watcher_infos: dict[str, SubagentInfo] = {}
         # task -> the agent whose terminal report it is delivering
         self._report_owners: dict[asyncio.Task, SubagentInfo] = {}  # type: ignore[type-arg]
+        # scheduled ``_safe_announce`` task -> the rejected or synthetic record
+        # it delivers. Those records never get a report task, so this is how the
+        # parent's stop fence sees their delivery (``_own_announce_task``).
+        self._announce_owners: dict[asyncio.Task, SubagentInfo] = {}  # type: ignore[type-arg]
         # Whether the last queued listing was partial, so the bridge logs the
         # transition into one once rather than per request.
         self._queued_listing_partial = False
@@ -298,6 +302,12 @@ class SubagentManager:
             ],
         ] = {}
         self._retained_claim_retry_handle: asyncio.TimerHandle | None = None
+        # Parent session -> terminal agent id -> accepted completion count. The
+        # report task owns delivery only until ``_on_done`` returns; dashboard
+        # handoff can outlive that task and even its materialized slot. Keep the
+        # transferred ownership on the manager so slot-less channel stop checks
+        # still fail closed until consumption or durable discard settlement.
+        self._retained_completion_owners: dict[str, dict[str, int]] = {}
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
@@ -998,6 +1008,10 @@ class SubagentManager:
     _sessions_under = _terminal_surface._sessions_under
     _retain_process_handles = _terminal_surface._retain_process_handles
     notify_injection_failed = _terminal_surface.notify_injection_failed
+    retain_completion_delivery = _terminal_surface.retain_completion_delivery
+    release_completion_delivery = _terminal_surface.release_completion_delivery
+    release_completion_deliveries_for = _terminal_surface.release_completion_deliveries_for
+    terminal_delivery_inflight_for = _terminal_surface.terminal_delivery_inflight_for
     batch_members_pending = _terminal_surface.batch_members_pending
     batch_reports_in_flight = _terminal_surface.batch_reports_in_flight
     arm_report_in_flight = _terminal_surface.arm_report_in_flight

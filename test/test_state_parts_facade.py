@@ -273,6 +273,13 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "False) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
+    "queue_discard_all": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
+    "queue_discard_by_ids": (
+        "function",
+        False,
+        False,
+        "(self, queue_ids: 'set[str]') -> 'list[dict[str, Any]]'",
+    ),
     "queue_edit_by_id": (
         "function",
         False,
@@ -287,13 +294,16 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, index: 'int', content: 'str', kind: 'str' = '', payload: 'str' = '', "
         "meta: 'dict | None' = None, on_consumed: 'Callable[[bool], None] | None' = "
         "None, on_irreversibly_consumed: 'Callable[[], Awaitable[None] | None] | "
-        "None' = None, directive_user_origin: 'bool' = False, "
+        "None' = None, on_discarded: 'Callable[[], None] | None' = None, "
+        "directive_user_origin: 'bool' = False, "
         "directive_channel_origin: 'bool' = False) -> 'str'",
     ),
     "queue_persist_pending": ("property", False, False, "(self) -> 'bool'"),
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
+    "queue_pop_many": ("function", False, False, "(self, count: 'int') -> 'list[dict[str, Any]]'"),
     "queue_promote_by_id": ("function", False, False, "(self, queue_id: 'str') -> 'bool'"),
     "queue_remove_by_id": ("function", False, False, "(self, queue_id: 'str') -> 'str | None'"),
+    "queue_retire_all": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "reasoning_effort": ("property", False, False, "(self) -> 'str'"),
     "record_model_withheld": (
         "function",

@@ -855,11 +855,11 @@ class TestDiscardQueuedWork:
         r._discard_queued_work(slot)  # failing to discard must not break teardown
         assert slot._pending_synthesis is False
 
-    def test_a_sequence_that_refuses_to_clear_does_not_stop_the_rest(self):
-        angry = mock.Mock()
-        angry.clear.side_effect = RuntimeError("nope")
-        slot = SimpleNamespace(_queue=angry, _pending_steers=["steer"])
+    def test_a_queue_that_refuses_to_discard_does_not_stop_the_rest(self):
+        refusing = mock.Mock(side_effect=RuntimeError("nope"))
+        slot = SimpleNamespace(queue_discard_all=refusing, _pending_steers=["steer"])
         r._discard_queued_work(slot)
+        refusing.assert_called_once_with()
         assert slot._pending_steers == []
 
 
