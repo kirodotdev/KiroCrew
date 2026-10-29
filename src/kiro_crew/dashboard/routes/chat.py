@@ -178,6 +178,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/threads/{mid}/reply", chat_threads.api_chat_thread_reply)
     app.router.add_get("/api/chat/side/tools", handlers.api_side_tools)
     app.router.add_get("/api/chat/slots/{slot}/side", handlers.api_side_state)
+    # Promote an ephemeral (incognito/temporary) slot to persistent — forks
+    # the whole transcript into a new persistent slot, leaving the original
+    # untouched. Dashboard-only, human-initiated; no MCP/CLI surface — see
+    # chat_fork.api_chat_slot_promote.
+    app.router.add_post("/api/chat/slots/{slot}/promote", chat.api_chat_slot_promote)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/stop", handlers.api_side_stop)

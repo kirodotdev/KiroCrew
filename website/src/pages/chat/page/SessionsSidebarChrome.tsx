@@ -104,6 +104,8 @@ interface SessionsSidebarChromeProps {
   flyoutNew: () => void
   mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
   topbarSessionsToggle: JSX.Element
+  onPromote: () => void
+  promoting: boolean
 }
 
 /**
@@ -115,7 +117,7 @@ export default function SessionsSidebarChrome({
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
   winW, closeSidebar, containerH, drawerDragging, drawerMounted, drawerPanelRef, drawerScrim, drawerScrimRef, drawerX, expandFrom, expandSidebar, flyout, flyoutEligible, flyoutSurfaceRef,
-  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle,
+  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting,
 }: SessionsSidebarChromeProps) {
   return (
     <>
@@ -336,6 +338,8 @@ export default function SessionsSidebarChrome({
         activeIsSplitAnchor={activeIsSplitAnchor}
         enterSplit={enterSplit}
         mobileNewSessionItem={mobileNewSessionItem}
+        onPromote={onPromote}
+        promoting={promoting}
         dispatch={dispatch}
       />
 

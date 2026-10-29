@@ -1266,7 +1266,7 @@ export { clearSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotA
 export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
 export { wireTurnIdentity } from './chat/runState'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'
-export { PENDING_OPEN_LEASE_MS, captureForkOrigin, clearHistorySessions, createSlot, deleteHistorySession, fetchHistory, forkMayOpen, forkSlot, listForkedSlot, resumeFromHistory, resumeStillOpening, type ForkOrigin } from './chat/lifecycle'
+export { PENDING_OPEN_LEASE_MS, captureForkOrigin, clearHistorySessions, createSlot, deleteHistorySession, fetchHistory, forkMayOpen, forkSlot, listForkedSlot, promoteSlot, resumeFromHistory, resumeStillOpening, type ForkOrigin } from './chat/lifecycle'
 export { openCreatedSlot } from './chat/openCreatedSlot'
 
 export default withRefreshRevision(chatSlice.reducer)

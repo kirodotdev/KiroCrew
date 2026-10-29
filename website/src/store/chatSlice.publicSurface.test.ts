@@ -65,6 +65,7 @@ const THUNKS: Record<string, string> = {
   forkSlot: 'chat/forkSlot',
   loadOlderMessages: 'chat/loadOlder',
   loadOlderSlotMessages: 'chat/loadOlderSlot',
+  promoteSlot: 'chat/promoteSlot',
   refreshSlot: 'chat/refreshSlot',
   requestStop: 'chat/requestStop',
   reconcileGoneSubagent: 'chat/reconcileGoneSubagent',

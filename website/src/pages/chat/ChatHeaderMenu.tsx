@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MessageSquarePlus, Plug } from 'lucide-react'
+import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Save } from 'lucide-react'
 
 import { api } from '../../api/client'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
@@ -24,7 +24,7 @@ import McpToolsPanel from './McpToolsPanel'
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
  *  servers submenu and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, memoryMode, onPromote, promoting }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
@@ -39,6 +39,12 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
    *  session's folder. It lives in this menu, not beside it, because the phone
    *  bar's centre cell holds two controls (AUTOSDE `max-two-buttons-per-row`). */
   newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void }
+  /** Slot's memory_mode; gates the "Keep this chat" item to incognito/temporary. */
+  memoryMode?: string
+  /** Promotes the ephemeral slot to persistent (confirmation dialog owned by the caller). */
+  onPromote?: () => void
+  /** A keep is in flight; the item is disabled so a double click makes one copy. */
+  promoting?: boolean
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -121,7 +127,17 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
           omitPopout={omitPopout}
           // MCP servers: stateful (lazy fetch gated on the sub's open state), so
           // it stays here as an info slot rather than a generic capability.
+          // "Keep this chat" is likewise threaded in as an info slot rather
+          // than a peer button in the title row: a header row holds at most
+          // two peer action controls (max-two-buttons-per-row), and rename +
+          // regenerate-title already claim both, so a third entry point goes
+          // into this existing overflow menu instead of the row.
           infoSlots={[
+            (memoryMode === 'incognito' || memoryMode === 'temporary') && onPromote && (
+              <DropdownMenuItem key="promote" disabled={promoting} onSelect={() => { onPromote() }}>
+                <Save size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.keep_this_chat')}
+              </DropdownMenuItem>
+            ),
             <DropdownMenuSub key="mcp" onOpenChange={setMcpOpen}>
               <DropdownMenuSubTrigger>
                 <Plug size={13} className="shrink-0 text-muted" />

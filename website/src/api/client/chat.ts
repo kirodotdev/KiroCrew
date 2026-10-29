@@ -214,6 +214,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
     sideTools: () => fetch('/api/chat/side/tools').then(j) as Promise<{ read_only_tools: boolean; claude_adapter_outdated: boolean; claude_adapter_min_version: string; claude_adapter_update_command: string; config_unavailable: boolean }>,
     sideState: (slot: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/side').then(j) as Promise<SideSnapshot>,
+    // No body: promotion always copies the WHOLE transcript with no prompt/mode
+    // override (see chat_fork.api_chat_slot_promote), so there is nothing to narrow.
+    promoteChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/promote', {}).then(j),
     sideOpen: async (slot: string) => {
       await waitForSideClose(slot)
       return post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>

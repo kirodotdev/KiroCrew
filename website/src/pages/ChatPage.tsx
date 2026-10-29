@@ -11,6 +11,7 @@ import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
+import { usePromoteSlot } from './chat/usePromoteSlot'
 import { useChatPageResourcesController } from './chat/useChatPageResourcesController'
 import { useComposerDraftLifecycle, useComposerDraftStores, useStagedDraftPersistence } from './chat/page/composerDrafts'
 import { useComposerStaging, useStagedFolderRefs } from './chat/page/composerStaging'
@@ -955,6 +956,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     sidebarOpen, flyout, memorySwitch: { store: boundStore, composerSlotRef, inputRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDrafts, setActionError, composerMountedRef, lockRef: memorySwitchingRef },
   })
 
+  // "Keep this chat" on an incognito/temporary session (human-initiated only).
+  const { promote, promoting, promoteConfirmDialog } = usePromoteSlot({
+    activeSlot, memoryMode: currentSlot?.memory_mode, dispatch, showActionError,
+  })
   // The band ChatInput renders above the composer, and the session-control chips.
   const composerAbove = useComposerAboveBand({
     langGen,
@@ -1006,7 +1011,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         drawerX={drawerX} expandFrom={expandFrom} expandSidebar={expandSidebar} flyout={flyout} flyoutEligible={flyoutEligible} flyoutSurfaceRef={flyoutSurfaceRef} flyoutTriggerRef={flyoutTriggerRef}
         openSidebar={openSidebar} revealSourceLink={revealSourceLink} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen} flyoutSwitch={flyoutSwitch} flyoutNew={flyoutNew}
         mobileNewSessionItem={mobileNewSessionItem} topbarSessionsToggle={topbarSessionsToggle}
+        onPromote={promote} promoting={promoting}
       />
+      {promoteConfirmDialog}
       <ComposerDraftSync store={composerDraft} inputRef={inputRef} onCommit={onComposerDraftCommit} />
 
       {/* Chat pane */}
@@ -1068,6 +1075,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               setEditingTitleSlot={setEditingTitleSlot} setSidebarPinned={setSidebarPinned} sidebarAutoHidden={sidebarAutoHidden} sidebarPinned={sidebarPinned} sidePanelDock={sidePanelDock}
               splitAnchorForActive={splitAnchorForActive} toggleAct={toggleAct} openSidebar={openSidebar} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen}
               sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle} popOutTip={popOutTip} activityTip={activityTip}
+              onPromote={promote} promoting={promoting}
             />
             <ChatDropOverlay active={dragOver} />
             {/* A failed reactions GET must not read as "no reactions": without
