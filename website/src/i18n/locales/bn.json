@@ -9341,7 +9341,8 @@
       "retry": "আবার চেষ্টা করুন",
       "save_failed": "সেভ ব্যর্থ হয়েছে",
       "star_as_artifact": "আর্টিফ্যাক্ট হিসেবে স্টার দাও",
-      "starred_as_click_to_remove": "\"{{name}}\" নামে স্টার দেওয়া — সরাতে ক্লিক করো"
+      "starred_as_click_to_remove": "\"{{name}}\" নামে স্টার দেওয়া — সরাতে ক্লিক করো",
+      "runtime_unavailable": "স্টাইলিং স্ক্রিপ্ট পড়া যায়নি, তাই নতুন ট্যাবে খুলুন ও ডাউনলোড এই উইজেটটি স্টাইল ছাড়া দেখাতে পারে।"
     },
     "widgetPlaceholder": {
       "generating": "তৈরি হচ্ছে…"
@@ -11157,7 +11158,8 @@
       "activity_failed_to_load": "কার্যকলাপ লোড করা যায়নি",
       "sync_status_unavailable": "সিঙ্ক অবস্থা অনুপলব্ধ",
       "more": "আরও",
-      "more_actions": "আরও অ্যাকশন"
+      "more_actions": "আরও অ্যাকশন",
+      "runtime_unavailable": "স্টাইলিং স্ক্রিপ্ট পড়া যায়নি, তাই ডাউনলোড করা ফাইলটি স্টাইল ছাড়া খুলতে পারে।"
     },
     "artifactPopoutFrame": {
       "artifact": "আর্টিফ্যাক্ট",

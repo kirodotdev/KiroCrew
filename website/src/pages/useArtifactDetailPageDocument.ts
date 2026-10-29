@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTheme } from '../hooks/useTheme'
 import { useAppDispatch } from '../store'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
+import { tailwindRuntimeQuery } from '../lib/tailwindRuntimeInline'
 import { artifactFrame } from '../lib/artifactFrame'
 import { api } from '../api/client'
 import { useConfirm } from '../components/ConfirmDialog'
@@ -273,17 +274,27 @@ export function useArtifactDetailPageDocument({
   const contentWidthStyle = usesIframe ? undefined : mdPreviewStyle
   // A downloaded report keeps the CSP it opens with (lib/artifactFrame.ts).
   const { offlineScripts, pageScripts } = artifactFrame(artifact)
+  // The download carries the runtime inside it (lib/tailwindRuntimeInline.ts):
+  // a saved file cannot reach the dashboard, and a proxy in front of it refuses
+  // the file's cookieless request. Until the read lands, the link stays.
+  const runtime = useQuery({ ...tailwindRuntimeQuery, enabled: usesIframe })
+  // Download waits for the read to settle, so an early click cannot save the
+  // linked document; a failed read settles and leaves the link in the file.
+  const exportPending = usesIframe && runtime.isPending
+  const exportRuntimeFailed = usesIframe && runtime.isError
   const exportSrcdoc = useMemo(
     () => artifact?.content && usesIframe
-      ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme, offlineScripts, pageScripts })
+      ? buildSrcdoc({
+        html: artifact.content, themeVars, mode: theme, offlineScripts, pageScripts, inlineRuntime: runtime.data,
+      })
       : null,
-    [artifact?.content, themeVars, theme, usesIframe, offlineScripts, pageScripts],
+    [artifact?.content, themeVars, theme, usesIframe, offlineScripts, pageScripts, runtime.data],
   )
 
   return {
     iframeScrollTarget, setIframeScrollTarget, previewRef, bodyRef, iframeBodyRef, detailQuery, versionsQuery,
     eventsQuery, versions, effectiveVersion, isCurrent, versionQuery, artifact, editable, dirty, usesIframe,
-    contentWidthStyle, exportSrcdoc,
+    contentWidthStyle, exportSrcdoc, exportPending, exportRuntimeFailed,
   }
 }
 

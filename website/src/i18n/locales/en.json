@@ -5815,7 +5815,8 @@
       "download_as_html": "Download as HTML",
       "open_in_new_tab": "Open in new tab",
       "retry": "Retry",
-      "save_failed": "save failed"
+      "save_failed": "save failed",
+      "runtime_unavailable": "Couldn't read the styling script, so Open in new tab and Download may show this widget unstyled."
     },
     "widgetPlaceholder": {
       "generating": "generating…"
@@ -6491,7 +6492,8 @@
       "view_remote": "View remote",
       "your_current_edits_are_saved_as_a_version_first": "Your current edits are saved as a version first, so nothing is lost.",
       "more": "More",
-      "more_actions": "More actions"
+      "more_actions": "More actions",
+      "runtime_unavailable": "Couldn't read the styling script, so the downloaded file may open unstyled."
     },
     "artifactPopoutFrame": {
       "return": "Return",

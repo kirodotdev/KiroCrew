@@ -31,7 +31,7 @@ import type { Artifact } from '../types'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { errMessage } from '../utils/thunkError'
-import ErrorNotice from '../components/ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import type {
   ArtifactDetailPageStateRead, ArtifactDetailPageDocumentRead,
 } from './useArtifactDetailPageDocument'
@@ -277,7 +277,7 @@ export function ArtifactDetailPageHeader({
     setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
   } = stateRead
-  const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
+  const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe, exportPending, exportRuntimeFailed } = documentRead
   const {
     addTag, removeTag, pinning, togglePin, changingKind, changeKind, titleButtonRef, startRenaming,
     commitRename, startEditing, endEditing, cancelEditing, handleSave, handleSnapshotLive,
@@ -656,10 +656,29 @@ export function ArtifactDetailPageHeader({
                   {showPublish && <Check size={13} className="ml-auto shrink-0 text-accent" aria-hidden="true" />}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onSelect={downloadAsHtml}>
+              <DropdownMenuItem disabled={exportPending} onSelect={downloadAsHtml}>
                 <Download size={13} className="shrink-0 text-muted" aria-hidden="true" />
                 <span>{i18nT('pages.artifactDetailPage.download')}</span>
               </DropdownMenuItem>
+              {/* Download still works after a failed read, with the link, which
+                  a saved file cannot reach: say so beside it. The hand-off is a
+                  sibling menu item so Radix gives it a focus stop. */}
+              {exportRuntimeFailed && (
+                <>
+                  <ErrorNotice
+                    id="artifact-download-runtime-error"
+                    variant="inline"
+                    testId="artifact-download-runtime-error"
+                    className="max-w-[16rem] px-2 py-1.5"
+                    message={i18nT('pages.artifactDetailPage.runtime_unavailable')}
+                  />
+                  <ErrorNoticeMenuItem
+                    Item={DropdownMenuItem}
+                    message={i18nT('pages.artifactDetailPage.runtime_unavailable')}
+                    describedBy="artifact-download-runtime-error"
+                  />
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </span>
