@@ -69,6 +69,32 @@ class TestSlackLink:
             assert data["thread_ts"] == "ts123"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "code"),
+        [(b"not json", "invalid_json"), (b'["C123"]', "body_not_object")],
+    )
+    async def test_link_rejects_a_bad_body_with_coded_400(
+        self, tmp_path, monkeypatch, payload, code
+    ):
+        """A malformed or non-object body is a coded 400 and links nothing."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        state.slack_client = MagicMock()
+        state.slack_client.post_message = AsyncMock(return_value="ts123")
+        state.sessions.set_slack_link = MagicMock()
+        async with TestClient(TestServer(_make_slack_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/slack-link",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == code
+        assert state.slack_client.post_message.await_count == 0
+        state.sessions.set_slack_link.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_link_to_existing_thread_no_new_post(self, tmp_path, monkeypatch):
         """challenge-redirect auto-link: link to an existing thread_ts.
 

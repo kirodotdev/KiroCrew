@@ -506,7 +506,10 @@ async def api_theme_config(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "config.theme.write")
     if denied is not None:
         return denied
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
 
