@@ -10,7 +10,8 @@
   "provisional": [],
   "planPosition": [
     "Renewal retries to an unreachable backend use the same backoff as reconnects. Nothing else states this yet.",
-    "The backoff reset rule."
+    "The backoff reset rule.",
+    "The drain's client window, 80 seconds, for the HLD's about 80 seconds."
   ],
   "keepalive": {
     "pingIntervalSeconds": 25,
@@ -31,10 +32,18 @@
     "closeCode": 1012
   },
   "drain": {
-    "healthAndNewUpgrades": 503,
+    "healthCheck": 503,
+    "newHostUpgrade": {
+      "status": 503,
+      "reason": "relay_unavailable"
+    },
+    "newViewerUpgrade": {
+      "acceptedThenClosed": 1012
+    },
     "closeAfterSeconds": 5,
+    "clientWindowSeconds": 80,
     "closeCode": 1012,
-    "rule": "The drain starts when deregistration starts, not on SIGTERM. The deregistration delay is longer than the drain window."
+    "rule": "The drain starts when deregistration starts, not on SIGTERM. A bad token still gets the plain 401 before any of these answers. Every host has closeAfterSeconds to move, and a host connection that hasn't moved closes then, as does every viewer WebSocket on the task's front door. Open HTTP requests, on the front door or on a host connection that has moved, get clientWindowSeconds from the start of the drain, and then anything still open closes. The deregistration delay is longer than the client window."
   },
   "backoff": {
     "stepsSeconds": [

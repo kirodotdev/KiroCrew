@@ -29,6 +29,7 @@ from kiro_crew.relay_client.protocol import (
     CLOSE_GOING_AWAY,
     CLOSE_HANDSHAKE_SECONDS,
     CREW_FIRST_BYTE_SECONDS,
+    DRAIN_BACKSTOP_SECONDS,
     ERR_CREW_UNREACHABLE,
     ERR_INVALID_MESSAGE,
     ERR_MESSAGE_TOO_LARGE,
@@ -101,6 +102,8 @@ class RelayTimings:
     dial: float = DIAL_TIMEOUT_SECONDS
     close_handshake: float = CLOSE_HANDSHAKE_SECONDS
     move_grace: float = MOVE_QUIET_GRACE_SECONDS
+    #: The longest an old connection drains before the client closes it itself.
+    drain_backstop: float = DRAIN_BACKSTOP_SECONDS
 
 
 Stream = Union[HttpStream, WsStream]
@@ -244,21 +247,27 @@ class HostConnection:
         if ws is not None and not ws.closed:
             await self._close_ws(ws, code, reason)
 
-    async def drain_and_close(self, within: float, *, quiet: float = 0.0) -> None:
-        """Let open HTTP requests finish, then close with 1000; at most *within* seconds.
+    async def drain_and_close(self, *, quiet: float = 0.0) -> None:
+        """Let open HTTP requests finish, then close with 1000.
 
         Once none is in flight, the connection stays open until no new request has
         arrived for *quiet* seconds, and serves any that does: the relay may have
         written one here just before it stopped routing to this connection, and it
-        travels apart from the new connection's ``ready``. *within* bounds the whole
-        drain, grace included.
+        travels apart from the new connection's ``ready``.
+
+        A ``reconnect``'s ``closeInSeconds`` is only the time to get the new
+        connection ready; it does not bound this drain. A request that outlives it
+        keeps going here until the relay closes the connection with 1012, which
+        ends the drain (contract section 4.5). The drain's only deadline of its own
+        is ``drain_backstop``, which the relay always beats, and the grace never
+        runs past it.
 
         WebSockets do not finish on their own, so the close ends them; the relay
         then closes each viewer's socket with 1012 and the viewer reconnects to
         the new connection.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(within, 0.0)
+        deadline = loop.time() + max(self._timings.drain_backstop, 0.0)
         quiet = quiet if math.isfinite(quiet) and quiet > 0 else 0.0
         while True:
             if self._ended.is_set():
@@ -272,7 +281,7 @@ class HostConnection:
                     if loop.time() < deadline:
                         continue
                     logger.info(
-                        "relay move: open requests outlived the move window; closing anyway"
+                        "relay move: open requests outlived the drain backstop; closing anyway"
                     )
                     break
                 continue

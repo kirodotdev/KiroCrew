@@ -31,6 +31,7 @@ from kiro_crew.dashboard.relay_headers import is_relay_header
 from kiro_crew.relay_client import connection as connection_module
 from kiro_crew.relay_client.client import STATE_CONNECTED
 from kiro_crew.relay_client.connection import HostConnection, RelayTimings
+from kiro_crew.relay_client.protocol import DRAIN_BACKSTOP_SECONDS
 from kiro_crew.relay_client.streams import HttpStream
 from kiro_crew.relay_client.token_source import HostCredential
 from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
@@ -589,11 +590,111 @@ async def test_make_before_break_on_reconnect() -> None:
             await stop(client, ingress)
 
 
-async def test_a_request_that_reaches_the_old_connection_after_a_move_is_answered() -> None:
-    # A grace far past the move window, so only the relay's closeInSeconds can end
-    # the drain: the old connection closing at all proves the window bounds it.
+class _Clock:
+    """The client's monotonic clock, moved on by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def test_a_request_past_a_drains_close_in_seconds_is_answered_on_the_old_connection() -> None:
+    # A drain gives the Crew 5 seconds to move. That bounds only the wait for the
+    # new connection: a request still running on the old one past it is answered
+    # there, and only then does the old one close with 1000.
+    clock = _Clock()
     async with FakeRelay() as relay, FakeCrew() as crew:
-        client, _, ingress = make_client(relay, crew, timings=RelayTimings(move_grace=3600.0))
+        client, _, ingress = make_client(
+            relay, crew, monotonic=clock, timings=RelayTimings(move_grace=0.05)
+        )
+        await client.start()
+        try:
+            old = await relay.next_leg()
+            await old.handshake()
+            await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            old_conn = _connection(client)
+            head = valid_message("frames/request", path="/slow", query="", headers={})
+            await old.send(head)
+            await old.send({"type": "request-end", "id": head["id"]})
+            await async_wait_until(lambda: crew.seen)
+
+            drain = valid_message("frames/reconnect", 0)
+            assert (drain["reason"], drain["closeInSeconds"]) == ("drain", 5)
+            await old.send(drain)
+            new = await relay.next_leg()
+            # The request is still running when the 5 seconds to move are over.
+            clock.now += drain["closeInSeconds"] + 1
+            await new.handshake()
+            await async_wait_until(
+                lambda: client._draining is old_conn or old_conn.closed_by_client
+            )
+            for _ in range(20):
+                await asyncio.sleep(0)  # let the drain take its first step
+            assert not old_conn.closed_by_client
+            assert not old.closed.is_set()
+
+            crew.release.set()
+            response, body = await old.read_response(head["id"])
+            assert response["status"] == 200 and body == b"finished"
+            assert await old.wait_closed() == 1000
+            assert not new.closed.is_set()
+            assert relay.dials == 2
+            assert client.delays == []
+            assert client.state == STATE_CONNECTED
+        finally:
+            crew.release.set()
+            await stop(client, ingress)
+
+
+async def test_a_relay_1012_on_the_draining_connection_ends_it_without_a_redial() -> None:
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(relay, crew)
+        await client.start()
+        try:
+            old = await relay.next_leg()
+            await old.handshake()
+            await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            old_conn = _connection(client)
+            head = valid_message("frames/request", path="/slow", query="", headers={})
+            await old.send(head)
+            await old.send({"type": "request-end", "id": head["id"]})
+            await async_wait_until(lambda: crew.seen)
+
+            await old.send(valid_message("frames/reconnect", 1))
+            new = await relay.next_leg()
+            await new.handshake()
+            await async_wait_until(lambda: client._draining is old_conn)
+            # The relay ends the moved connection's window with its request open.
+            await old.close(1012)
+            await async_wait_until(lambda: client._draining is None)
+            await async_wait_until(lambda: not client._background)
+            assert old_conn.stream_count == 0
+            assert relay.dials == 2
+            assert client.delays == []
+            assert client.state == STATE_CONNECTED
+            assert client.relay_connected()
+            assert not new.closed.is_set()
+        finally:
+            crew.release.set()
+            await stop(client, ingress)
+
+
+async def test_the_drain_backstop_is_past_every_window_the_relay_closes_in() -> None:
+    timing = fixture("timing/keepalive-and-backoff")
+    assert DRAIN_BACKSTOP_SECONDS > timing["drain"]["clientWindowSeconds"]
+    assert DRAIN_BACKSTOP_SECONDS > timing["rebalancing"]["closeAfterSeconds"]
+    assert RelayTimings().drain_backstop == DRAIN_BACKSTOP_SECONDS
+
+
+async def test_a_request_that_reaches_the_old_connection_after_a_move_is_answered() -> None:
+    # A grace far past the drain backstop, so only the backstop can end the drain:
+    # the old connection closing at all proves the backstop caps the grace.
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(
+            relay, crew, timings=RelayTimings(move_grace=3600.0, drain_backstop=2.0)
+        )
         await client.start()
         try:
             old = await relay.next_leg()
@@ -665,7 +766,7 @@ async def test_a_request_admitted_as_the_grace_runs_out_is_not_cut(monkeypatch) 
         return await real_first_set(*events, timeout=timeout)
 
     monkeypatch.setattr(connection_module, "_first_set", racing)
-    draining = asyncio.ensure_future(conn.drain_and_close(30.0, quiet=0.05))
+    draining = asyncio.ensure_future(conn.drain_and_close(quiet=0.05))
     try:
         # The drain waits for the admitted request instead of closing under it.
         await until_parked(conn.http_streams_idle)

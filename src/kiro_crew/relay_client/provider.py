@@ -37,8 +37,8 @@ from kiro_crew.relay_client.lease import (
 )
 from kiro_crew.relay_client.protocol import (
     CREW_HOST_RE,
+    MOVE_QUIET_GRACE_MAX_SECONDS,
     MOVE_QUIET_GRACE_SECONDS,
-    MOVE_WINDOW_MAX_SECONDS,
     WS_MESSAGE_MAX_BYTES,
     host_url_problem,
     is_loopback_host,
@@ -99,7 +99,7 @@ class RelaySettings:
                 getattr(tunnel, "relay_move_grace_seconds", MOVE_QUIET_GRACE_SECONDS),
                 MOVE_QUIET_GRACE_SECONDS,
                 0.0,
-                float(MOVE_WINDOW_MAX_SECONDS),
+                MOVE_QUIET_GRACE_MAX_SECONDS,
             ),
             lease_url=_setting_text(tunnel, "relay_lease_url"),
             lease_credential=_setting_text(tunnel, "relay_lease_credential"),

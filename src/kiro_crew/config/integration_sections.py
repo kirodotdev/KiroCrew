@@ -1110,8 +1110,7 @@ class TunnelConfig:
             "Relay Move Grace (secs)",
             "When the relay moves this Crew to a new connection, how long the old one "
             "stays open with no request in flight before it closes, so a request already "
-            "on its way there is still answered. 0 to 30; never past the relay's own "
-            "move window.",
+            "on its way there is still answered. 0 to 30.",
             restart=True,
         ),
     )

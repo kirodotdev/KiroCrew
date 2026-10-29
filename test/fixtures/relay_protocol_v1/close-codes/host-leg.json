@@ -49,7 +49,7 @@
     {
       "code": 1012,
       "sentBy": "relay",
-      "meaning": "Drain or move. Sent after a reconnect frame's closeInSeconds, or at once.",
+      "meaning": "Drain or move. Sent when a reconnect frame's closeInSeconds runs out before the connection moved, when a moved connection is still open as its window ends, or at once.",
       "crewDoes": "Reconnect at once. Make before break when a reconnect frame came first."
     },
     {

@@ -374,9 +374,13 @@ class RelayClient:
         a background drain. Returns ``None`` when the new one did not get ready
         within the relay's window; the old one then ends with the relay's 1012,
         which redials at once.
+
+        The window (``closeInSeconds``) bounds only the wait for the new connection.
+        The old one keeps its HTTP requests until they finish, then closes with
+        1000, or until the relay closes it with 1012, which ends the drain without a
+        redial: the new connection already serves the endpoint.
         """
         window = old.move_close_in
-        started = self._monotonic()
         credential = self._credential or old.credential
         new = self._connection(credential)
         new_run: "asyncio.Future[ConnectionEnd]" = asyncio.ensure_future(new.run())
@@ -396,16 +400,13 @@ class RelayClient:
         if self._draining is not None:
             await self._draining.close(1000)
         self._draining = old
-        remaining = window - (self._monotonic() - started)
-        self._spawn(self._drain(old, old_run, remaining))
+        self._spawn(self._drain(old, old_run))
         await self._now_connected(new)
         return new, new_run
 
-    async def _drain(
-        self, old: HostConnection, old_run: "asyncio.Future[ConnectionEnd]", within: float
-    ) -> None:
+    async def _drain(self, old: HostConnection, old_run: "asyncio.Future[ConnectionEnd]") -> None:
         try:
-            await old.drain_and_close(within, quiet=self._timings.move_grace)
+            await old.drain_and_close(quiet=self._timings.move_grace)
             await asyncio.gather(old_run, return_exceptions=True)
         finally:
             self._live.discard(old)

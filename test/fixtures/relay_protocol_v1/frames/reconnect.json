@@ -29,7 +29,7 @@
     "closeInSeconds": {
       "type": "integer",
       "required": true,
-      "notes": "When the relay closes this connection with 1012 if it is still open. 5 for drain, 30 for max-age."
+      "notes": "How long the Crew has to move: the relay closes this connection with 1012 if it hasn't moved by then. 5 for drain, 30 for max-age. A connection that has moved is closed with 1012 if it is still open 30 seconds after a max-age reconnect, or when a drain's 80 second client window ends."
     }
   },
   "valid": [
@@ -61,5 +61,5 @@
       "expect": "the Crew treats it as max-age"
     }
   ],
-  "crewDoes": "Dial a new connection with the same instance's current host token. Once it is ready, stop sending new work to the old one, let the old one finish its streams, then close the old one with 1000."
+  "crewDoes": "Dial a new connection with the same instance's current host token. Once it is ready, stop sending new work to the old one, let the old one's HTTP requests finish, then close the old one with 1000. Don't close the old one when closeInSeconds runs out: the relay closes it with 1012 if it is still open when its window ends."
 }
