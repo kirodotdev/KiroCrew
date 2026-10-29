@@ -814,6 +814,7 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
+    _workflow_run_id: str = "",
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -845,6 +846,7 @@ async def _run_chat(
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,
         _turn_actor=_turn_actor,
+        _workflow_run_id=_workflow_run_id,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
         _on_irreversibly_consumed=_on_irreversibly_consumed,
@@ -893,7 +895,31 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
-        event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
+        if is_slash:
+            event_stream = client.stream_command(message)
+        else:
+            # Inspect the concrete provider type before reading the attribute:
+            # loose AsyncMock providers manufacture callable children for any
+            # missing name, which is not an advertised metadata capability.
+            stream_with_metadata = getattr(type(client), "stream_with_metadata", None)
+            if callable(stream_with_metadata):
+                # The hook lifecycle and this ACP prompt describe the same
+                # dashboard turn. Reuse its server-minted identity and own
+                # session key; do not retain either on the reusable provider.
+                event_stream = client.stream_with_metadata(
+                    full_message,
+                    telemetry_context={
+                        "turn_id": turn._recovery_turn_id,
+                        "session_key": session_key,
+                        **(
+                            {"workflow_run_id": turn._workflow_run_id}
+                            if turn._workflow_run_id
+                            else {}
+                        ),
+                    },
+                )
+            else:
+                event_stream = client.stream(full_message)
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS

@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
+from typing import Mapping as _Mapping
 
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
 from kiro_crew.acp.client import (
@@ -625,7 +626,12 @@ class AcpSessionProvider(LLMProvider):
         return resolve_prompt_timeout_for_deadline(deadline)
 
     async def stream(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        allow_image: bool = True,
+        telemetry_context: _Mapping[str, str] | None = None,
     ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
         # Re-establish this session's gateway claim before the turn can call a
@@ -658,6 +664,8 @@ class AcpSessionProvider(LLMProvider):
             await self._end_shared_turn(claim)
             raise
         send = self._handle.prompt
+        if telemetry_context is not None:
+            send = functools.partial(send, telemetry_context=telemetry_context)
         if not allow_image:
             send = functools.partial(send, allow_image=False)
         if timeout is not None:
@@ -1564,7 +1572,12 @@ class AcpSessionProvider(LLMProvider):
     # ── Streaming (AcpClient-compatible method name) ──
 
     def stream_events(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        allow_image: bool = True,
+        telemetry_context: _Mapping[str, str] | None = None,
     ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield events. AcpClient-compatible name for stream().
 
@@ -1574,9 +1587,12 @@ class AcpSessionProvider(LLMProvider):
         AcpRuntimeError, not an AcpError) escape chat_runner's handlers on a
         runtime death at prompt start -> unhandled crash instead of retry/login.
         """
-        if timeout is None:
-            return self.stream(message, allow_image=allow_image)
-        return self.stream(message, timeout=timeout, allow_image=allow_image)
+        kwargs: dict[str, Any] = {"allow_image": allow_image}
+        if telemetry_context is not None:
+            kwargs["telemetry_context"] = telemetry_context
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return self.stream(message, **kwargs)
 
     @property
     def resumed(self) -> bool:

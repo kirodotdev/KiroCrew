@@ -713,7 +713,13 @@ class ScriptHookStore:
         extra_hooks_cwd: str | None = None,
         extra_hooks_tool_names: Sequence[str] | None = None,
         tool_match_names: Sequence[str] | None = None,
+        event_id: str | None = None,
+        tool_call_id: str | None = None,
+        workflow_run_id: str | None = None,
+        launched_workflow_run_id: str | None = None,
+        agent_id: str | None = None,
         acp_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -746,6 +752,11 @@ class ScriptHookStore:
         helpers) leave them as ``None`` — a hook may read a present
         ``parent_session_key`` as "this event came from a subagent".
 
+        ``event_id`` identifies this firing for downstream deduplication. A
+        caller-supplied id is preserved; otherwise one is generated for this
+        fire. Tool, workflow, agent, ACP-session, and turn ids are added only
+        when the caller supplies them.
+
         ``session_key`` is the firing session's OWN key (``dashboard:<slot>``,
         a channel session key, …), emitted as ``session_key`` whenever the caller
         knows it, on top-level and subagent events alike. It is the field for
@@ -767,7 +778,11 @@ class ScriptHookStore:
         """
         results = []
         # Build base hook event (Kiro CLI format)
-        hook_event: dict = {"hook_event_name": event, "cwd": os.getcwd()}
+        hook_event: dict = {
+            "event_id": event_id if event_id is not None else uuid.uuid4().hex,
+            "hook_event_name": event,
+            "cwd": os.getcwd(),
+        }
         if event == HOOK_EVENT_USER_PROMPT_SUBMIT and context:
             hook_event["prompt"] = context
         elif event == HOOK_EVENT_STOP:
@@ -800,6 +815,18 @@ class ScriptHookStore:
             hook_event["agent_role"] = agent_role
         if session_key:
             hook_event["session_key"] = session_key
+        if tool_call_id:
+            hook_event["tool_call_id"] = tool_call_id
+        if workflow_run_id:
+            hook_event["workflow_run_id"] = workflow_run_id
+        if launched_workflow_run_id:
+            hook_event["launched_workflow_run_id"] = launched_workflow_run_id
+        if agent_id:
+            hook_event["agent_id"] = agent_id
+        if acp_session_id:
+            hook_event["acp_session_id"] = acp_session_id
+        if turn_id:
+            hook_event["turn_id"] = turn_id
 
         extra_ids = {id(h) for h in extra_hooks}
         # The extra hooks' own payload: their workspace as ``cwd``, and on a tool

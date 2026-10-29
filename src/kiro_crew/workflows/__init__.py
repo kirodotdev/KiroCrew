@@ -201,6 +201,7 @@ EVENT_TYPES = (
     "run_finished",
     "run_failed",
     "run_cancelled",
+    "agent_session_bound",
 )
 
 

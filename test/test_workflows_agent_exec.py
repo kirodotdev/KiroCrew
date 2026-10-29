@@ -30,6 +30,7 @@ pytestmark = pytest.mark.asyncio
 class FakeProvider:
     def __init__(self, key: str) -> None:
         self.key = key
+        self.session_id = f"acp-session:{key}"
 
 
 class FakeSessions:
@@ -234,3 +235,75 @@ async def test_identity_is_published_before_each_agent_turn(monkeypatch, opts):
     assert await agent("second", opts) == "done"
     assert [event for event, _ in events] == ["publish", "stream", "publish", "stream"]
     assert sessions.released == [key for key, _ in sessions.created]
+
+
+async def test_workflow_identity_binds_acp_session_before_each_prompt(monkeypatch):
+    from kiro_crew.messaging import identity
+    from kiro_crew.workflows.runner import WorkflowRunner
+
+    sessions = FakeSessions()
+    event_types = []
+    streamed_contexts = []
+
+    async def publish(_sessions, _key):
+        return None
+
+    async def allow_spawn(**_kwargs):
+        return None
+
+    async def stream(provider, message, **kwargs):
+        context = kwargs.get("telemetry_context")
+        streamed_contexts.append(context)
+        assert provider.session_id
+        assert event_types[-1] == "agent_session_bound"
+        return message
+
+    monkeypatch.setattr(identity, "publish_turn_identity", publish)
+    monkeypatch.setattr(agent_exec, "vet_step_spawn", allow_spawn)
+    monkeypatch.setattr(agent_exec, "stream_and_collect", stream)
+
+    run_id = "wf_identity"
+    parent_session_key = "chat:root"
+    agent = build_agent_fn(sessions, run_id=run_id, session_key=parent_session_key)
+    runner = WorkflowRunner(agent_fn=agent, audit=lambda *a, **k: None)
+
+    def event_sink(event):
+        event_types.append(event.type)
+
+    script = (
+        'META = {"name": "identity"}\n'
+        "async def workflow(ctx):\n"
+        "    first = await ctx.agent('first')\n"
+        "    second = await ctx.agent('second')\n"
+        "    return [first, second]\n"
+    )
+
+    result = await runner.run(
+        script,
+        run_id=run_id,
+        now="2026-10-26T00:00:00Z",
+        session_key=parent_session_key,
+        on_event=event_sink,
+    )
+
+    assert result.ok, result.error
+    assert streamed_contexts == [
+        {
+            "workflow_run_id": run_id,
+            "agent_id": "a0",
+            "parent_session_key": parent_session_key,
+            "turn_id": f"{run_id}:a0",
+        },
+        {
+            "workflow_run_id": run_id,
+            "agent_id": "a1",
+            "parent_session_key": parent_session_key,
+            "turn_id": f"{run_id}:a1",
+        },
+    ]
+    bound_events = [event for event in result.events if event.type == "agent_session_bound"]
+    assert [event.data for event in bound_events] == [
+        {"agent_id": "a0", "acp_session_id": f"acp-session:{sessions.created[0][0]}"},
+        {"agent_id": "a1", "acp_session_id": f"acp-session:{sessions.created[1][0]}"},
+    ]
+    assert event_types.count("agent_session_bound") == 2

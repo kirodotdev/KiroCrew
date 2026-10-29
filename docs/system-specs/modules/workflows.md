@@ -370,7 +370,7 @@ Envelope (exactly these five keys, pinned by
 off-contract event fails loudly instead of shipping. `from_json` defaults a missing
 `data` to `{}`.
 
-`EVENT_TYPES` is an ordered tuple of 11 values; `events.REQUIRED_DATA_KEYS` covers
+`EVENT_TYPES` is an ordered tuple of 12 values; `events.REQUIRED_DATA_KEYS` covers
 exactly that set (pinned by
 `test_workflows_events.py::test_required_keys_cover_exactly_event_types`).
 `validate_event` rejects an unknown type or a missing required key; **extra keys
@@ -389,12 +389,15 @@ are allowed** so a journal stays forward-compatible.
 | `run_finished` | `result`, `duration_s` | terminal. `result` is the script's return value; `duration_s` is host `time.monotonic()` elapsed |
 | `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec` |
 | `run_cancelled` | `reason` | terminal |
+| `agent_session_bound` | `agent_id`, `acp_session_id` | emitted for a workflow agent call when its ACP provider exposes the current session ID; appended after the existing event vocabulary |
 
 **Ordering invariants**, asserted by `test_workflows_runner.py` and
 `test_workflows_authoring_eval.py` (G2): `run_started` is always first, exactly one
 terminal event is always last, and `seq` is contiguous from 0. For the canonical
 happy path the stream is `run_started, phase_started, log, agent_started,
-agent_finished, run_finished`.
+agent_finished, run_finished`. An ACP-backed agent call adds
+`agent_session_bound` between `agent_started` and `agent_finished`; a generic
+injected agent or provider without an ACP session ID omits that binding event.
 
 `where` maps to a cause:
 
@@ -1180,6 +1183,23 @@ lease. Both adapters release every successfully acquired named lease in a
 `finally` block with `cleanup=False`, on success, exception and cancellation.
 A failed or cancelled acquisition must not release a lease held by another
 caller. A later call on that same name reuses the retained history.
+
+For each live `ctx.agent()` call, `_RunContext.agent` places a per-send
+`telemetry_context` mapping in its executor opts with `workflow_run_id`, that
+call's `agent_id`, the root `parent_session_key`, and a deterministic per-agent
+`turn_id` (`{run_id}:{agent_id}`). Its separate `on_session_bound(acp_session_id)`
+callback emits the additive `agent_session_bound` event when the provider has an
+ACP session ID. The callback is not part of the identity-string mapping. Both
+fields are excluded from the replay fingerprint, so telemetry cannot change
+which saved result belongs to a deterministic workflow call.
+
+The adapters pass the mapping to `stream_and_collect` for that prompt only. On a
+reused pooled worker, `WorkerPool.send` uses the optional
+`send_message_with_metadata` capability implemented only by
+`_WorkflowSessionWorker`; neither the map nor callback is retained on a worker or
+session. With no metadata, the pool keeps calling the existing
+`send_message(prompt, timeout=...)` contract, including for generic consumers
+such as knowledge workers.
 
 Pool init failure is caught and falls back to `build_agent_fn`, so pooling can
 never break a run start. The runner's `on_complete` hook fires on every exit path

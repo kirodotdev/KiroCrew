@@ -31,7 +31,7 @@ import asyncio
 import logging
 import time
 from contextlib import aclosing
-from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Mapping
 
 from kiro_crew.acp import pi_steer_turn
 from kiro_crew.acp._dispatch import (
@@ -821,6 +821,7 @@ async def stream_events(
     timeout: float | None = None,
     *,
     allow_image: bool = True,
+    telemetry_context: Mapping[str, str] | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete).
 
@@ -831,11 +832,22 @@ async def stream_events(
     self._cancelled = False
     self._turn_done.clear()
     await self.ensure_ready()
-    req_id = await self._send_prompt(message, allow_image=allow_image)
+    if telemetry_context is None:
+        req_id = await self._send_prompt(message, allow_image=allow_image)
+    else:
+        req_id = await self._send_prompt(
+            message, allow_image=allow_image, telemetry_context=telemetry_context
+        )
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
-    async with aclosing(self._dispatch_prompt_events(req_id, timeout)) as events:
+    if telemetry_context is None:
+        prompt_events = self._dispatch_prompt_events(req_id, timeout)
+    else:
+        prompt_events = self._dispatch_prompt_events(
+            req_id, timeout, telemetry_context=telemetry_context
+        )
+    async with aclosing(prompt_events) as events:
         async for event in events:
             yield event
 
@@ -1414,7 +1426,13 @@ async def _dispatch_events(
 # ── Private Helpers ──
 
 
-async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = True) -> int:
+async def _send_prompt(
+    self: AcpClient,
+    message: str,
+    *,
+    allow_image: bool = True,
+    telemetry_context: Mapping[str, str] | None = None,
+) -> int:
     await self._settle_orphan_steers()
     # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
     # cannot drift.
@@ -1449,14 +1467,21 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
             # waits on the turn ending before it raises.
             self._turn_done.set()
             raise AcpError(issue, transient=False, user_worded=True)
+    params: dict[str, Any] = {
+        "sessionId": self._session_id,
+        # Offloaded: see the note in session_handle_turn.prompt -- image
+        # reads and base64 encoding must not block the event loop.
+        "prompt": blocks,
+    }
+    first_word = message.strip().split(None, 1)
+    is_compact_prompt = bool(first_word and first_word[0] == "/compact")
+    if telemetry_context and not is_compact_prompt:
+        # This namespace carries identity strings only; prompt and tool content
+        # remain in their ACP fields and are never copied into metadata.
+        params["_meta"] = {"kirocrew": dict(telemetry_context)}
     return await self._send_request(
         METHOD_PROMPT,
-        {
-            "sessionId": self._session_id,
-            # Offloaded: see the note in session_handle_turn.prompt -- image
-            # reads and base64 encoding must not block the event loop.
-            "prompt": blocks,
-        },
+        params,
     )
 
 

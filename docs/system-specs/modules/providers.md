@@ -64,6 +64,14 @@ adapted backend meets, KAS included, as a worked example. The transport itself (
 config isolation) is [acp-client.md](acp-client.md); this file owns the
 *interface*.
 
+`LLMProvider.stream()` remains the generic, metadata-free interface. ACP callers
+that need prompt correlation use the ACP-only `AcpProvider.stream_with_metadata()`
+with an optional `Mapping[str, str]` of identity strings. `stream_and_collect()`
+selects that method only when a context is supplied and the provider implements it;
+otherwise it preserves the existing `stream()` call shape. Context is reused on
+safe transient retries. The ACP runtime adapter forwards it to the session handle,
+which places it under `params._meta.kirocrew` only for ordinary prompt requests.
+
 **One provider, by invariant:** `AcpProvider` is the only provider the factory
 builds, and `agent.provider` stays `enum=["acp"]`. There is no Bedrock or
 standalone provider and no multi-provider dispatch factory, because a second

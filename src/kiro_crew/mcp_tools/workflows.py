@@ -33,6 +33,19 @@ from kiro_crew.validation import (
 )
 
 
+class _StructuredWorkflowToolResult(str):
+    """Keep MCP identity metadata attached while the shared tool path handles text."""
+
+    structured_content: dict[str, Any]
+
+    def __new__(
+        cls, text: str, structured_content: dict[str, Any]
+    ) -> "_StructuredWorkflowToolResult":
+        result = super().__new__(cls, text)
+        result.structured_content = structured_content
+        return result
+
+
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the workflows tools."""
     return [
@@ -204,7 +217,12 @@ def _redact_obj(obj: Any) -> Any:
 
 
 def _wf_return(
-    tool: str, text: str, *, outcome: str = "success", session_key: str | None = None
+    tool: str,
+    text: str,
+    *,
+    outcome: str = "success",
+    session_key: str | None = None,
+    launched_workflow_run_id: str | None = None,
 ) -> str:
     safe, _ = redact_exfiltration_urls(text)
     safe, _ = redact_credentials(safe)
@@ -214,7 +232,18 @@ def _wf_return(
         tool_name=tool,
         outcome=outcome,
     )
+    if launched_workflow_run_id:
+        return _StructuredWorkflowToolResult(
+            safe,
+            {"kirocrew": {"launched_workflow_run_id": launched_workflow_run_id}},
+        )
     return safe
+
+
+def _workflow_launch_id(result: dict[str, Any]) -> str | None:
+    run_id = result.get("run_id")
+    normalized = run_id.strip() if isinstance(run_id, str) else ""
+    return normalized if 0 < len(normalized) <= 256 else None
 
 
 def workflow_author(name: str, args: dict[str, Any]) -> str:
@@ -272,6 +301,14 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         )
         if d.get("error"):
             return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
+        run_id = _workflow_launch_id(d)
+        if run_id is None:
+            return _wf_return(
+                "workflow_run",
+                "Workflow request was accepted, but the service returned no run ID; "
+                "the launch cannot be correlated.",
+                outcome="error",
+            )
         # A task-plan definition runs SYNCHRONOUSLY behind this call
         # (`start_workflow_definition` awaits `execute_plan`), so by the time the
         # response arrives the plan has already finished or the POST timed out
@@ -280,13 +317,14 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         blocking = bool(d.get("task_id"))
         return _wf_return(
             "workflow_run",
-            f"Started saved workflow `/workflow {workflow_ref}` as `{d.get('run_id')}` "
+            f"Started saved workflow `/workflow {workflow_ref}` as `{run_id}` "
             f"from revision {d.get('revision')}. "
             + (
                 "It ran to completion behind this call; read the outcome with " "`workflow_status`."
                 if blocking
                 else "Its result will be injected here on completion."
             ),
+            launched_workflow_run_id=run_id,
         )
     if not source and intent:
         # Author-in-run (M6.7): returns a run_id INSTANTLY — the script is
@@ -296,23 +334,41 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         d = mcp_core._post("/api/workflows/run_intent", wf_body, session_key=session_key)
         if d.get("error"):
             return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
+        run_id = _workflow_launch_id(d)
+        if run_id is None:
+            return _wf_return(
+                "workflow_run",
+                "Workflow request was accepted, but the service returned no run ID; "
+                "the launch cannot be correlated.",
+                outcome="error",
+            )
         return _wf_return(
             "workflow_run",
-            f"Started workflow run `{d.get('run_id')}`. It is authoring the workflow "
+            f"Started workflow run `{run_id}`. It is authoring the workflow "
             "from your request now (watch the Authoring phase in the Workflows tab / "
             "chat activity), then runs in the background. Its result will be injected "
-            f"here on completion — or check progress with workflow_status('{d.get('run_id')}').",
+            f"here on completion — or check progress with workflow_status('{run_id}').",
+            launched_workflow_run_id=run_id,
         )
     wf_body["source"] = source
     d = mcp_core._post("/api/workflows/run", wf_body, session_key=session_key)
     if d.get("error"):
         return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
+    run_id = _workflow_launch_id(d)
+    if run_id is None:
+        return _wf_return(
+            "workflow_run",
+            "Workflow request was accepted, but the service returned no run ID; "
+            "the launch cannot be correlated.",
+            outcome="error",
+        )
     return _wf_return(
         "workflow_run",
-        f"Started workflow run `{d.get('run_id')}` (name: {d.get('name') or '—'}). "
+        f"Started workflow run `{run_id}` (name: {d.get('name') or '—'}). "
         "It runs in the background — monitor with workflow_status, and its result "
         "will be injected here on completion. You can keep working; check back with "
-        f"workflow_status('{d.get('run_id')}').",
+        f"workflow_status('{run_id}').",
+        launched_workflow_run_id=run_id,
     )
 
 

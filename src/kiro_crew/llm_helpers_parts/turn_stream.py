@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
+from collections.abc import Mapping as _Mapping
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
@@ -121,6 +123,7 @@ async def stream_and_collect(
     fallback_models: Sequence[str] = (),
     allow_image: bool = True,
     undelivered_watch_key: str = "",
+    telemetry_context: _Mapping[str, str] | None = None,
 ) -> str:
     """Stream a message through an LLM provider and collect the full response.
 
@@ -203,6 +206,8 @@ async def stream_and_collect(
             harness never delivered
             (:class:`kiro_crew.undelivered_call_watch.UndeliveredCallWatch`).
             Empty watches nothing.
+        telemetry_context: Identity strings for this prompt, forwarded only to
+            providers that explicitly expose ``stream_with_metadata``.
 
     Returns:
         The complete response text.
@@ -263,11 +268,19 @@ async def stream_and_collect(
         # baseline an attempt that was billed and then failed is invisible.
         attempt_stats_before = _billing_stats(provider)
         try:
-            events = (
-                provider.stream(message)
-                if allow_image
-                else provider.stream(message, allow_image=False)
-            )
+            stream_with_metadata = getattr(provider, "stream_with_metadata", None)
+            if telemetry_context is not None and callable(stream_with_metadata):
+                events = stream_with_metadata(
+                    message,
+                    telemetry_context=telemetry_context,
+                    allow_image=allow_image,
+                )
+            else:
+                events = (
+                    provider.stream(message)
+                    if allow_image
+                    else provider.stream(message, allow_image=False)
+                )
             async for event in events:
                 if _undelivered_watch is not None:
                     # A dispatched worker's report the harness never delivered.
@@ -338,10 +351,33 @@ async def stream_and_collect(
                         tool_kind=event.tool_kind,
                         outcome="auto_approved",
                     )
+                    hook_identity: dict[str, str] = {}
+                    for key in (
+                        "workflow_run_id",
+                        "agent_id",
+                        "acp_session_id",
+                        "turn_id",
+                        "parent_session_key",
+                    ):
+                        value = (
+                            telemetry_context.get(key) if telemetry_context is not None else None
+                        )
+                        if isinstance(value, str) and value:
+                            hook_identity[key] = value
+                    own_session_key = session_key or (
+                        telemetry_context.get("session_key")
+                        if telemetry_context is not None
+                        else ""
+                    )
+                    if own_session_key:
+                        hook_identity["session_key"] = own_session_key
+                    if event.tool_call_id:
+                        hook_identity["tool_call_id"] = event.tool_call_id
                     await fire_tool_hooks(
                         get_global_hook_store(),
                         event.title,
                         event.tool_input,
+                        **hook_identity,
                     )
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")

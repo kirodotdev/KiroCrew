@@ -413,6 +413,14 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
 
 
+def _queued_workflow_run_id(item: dict) -> str:
+    meta = item.get("meta")
+    if not isinstance(meta, dict):
+        return ""
+    run_id = meta.get("workflow_run_id")
+    return run_id if isinstance(run_id, str) else ""
+
+
 def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> None:
     """Record the person's queued steers into a Crew Mode worker as they are delivered.
 
@@ -637,7 +645,8 @@ async def _start_next_queued_turn(
             slot,
             merge_enabled=merge
             and not required_queue_id
-            and not any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue),
+            and not any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue)
+            and not any(_queued_workflow_run_id(item) for item in slot._queue),
         )
     if next_msg is None:
         return False
@@ -1112,6 +1121,16 @@ async def _start_next_queued_turn(
     _queue_actor = _actor_for_queue_items(consumed)
     if _queue_actor:
         _run_kwargs["_turn_actor"] = _queue_actor
+    workflow_run_ids = {
+        run_id for item in consumed if (run_id := _queued_workflow_run_id(item))
+    }
+    if len(workflow_run_ids) == 1:
+        _run_kwargs["_workflow_run_id"] = next(iter(workflow_run_ids))
+    elif len(workflow_run_ids) > 1:
+        logger.error(
+            "workflow completion queue batch contained multiple run IDs; "
+            "not assigning an ambiguous turn identity"
+        )
     # Provenance this process did not establish. A restored entry has no actor by
     # construction (`sanitize_restored_queue` drops the stamp with the directive
     # flags), and an absent actor reads as `user` below -- so without this the one

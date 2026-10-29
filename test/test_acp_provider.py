@@ -205,6 +205,27 @@ class TestStreamTimeoutForwarding:
         assert [event.kind for event in events] == ["complete"]
         provider._client.stream_events.assert_called_once_with("long run", timeout=21660.0)
 
+
+class TestStreamWithMetadata:
+    @pytest.mark.asyncio
+    async def test_provider_stream_with_metadata_forwards_identity_context(self):
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+        provider._client.stream_events = MagicMock(
+            return_value=_async_iter([AcpEvent(kind="complete", stop_reason="end_turn")])
+        )
+        telemetry_context = {"turn_id": "turn-9", "workflow_run_id": "workflow-4"}
+
+        events = await _drain(
+            provider.stream_with_metadata(
+                "question", telemetry_context=telemetry_context, allow_image=False
+            )
+        )
+
+        assert [event.kind for event in events] == ["complete"]
+        provider._client.stream_events.assert_called_once_with(
+            "question", allow_image=False, telemetry_context=telemetry_context
+        )
+
     @pytest.mark.asyncio
     async def test_runtime_backed_client_forwards_timeout_to_handle_prompt(self):
         handle = AcpSessionHandle("s1", asyncio.Queue(), MagicMock())

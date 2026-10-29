@@ -7,6 +7,7 @@ import json
 import time
 from collections import deque
 from contextlib import aclosing
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +15,7 @@ from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F4
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
 
 from kiro_crew.acp.client import AcpClient, AcpError, AcpProcessDied
-from kiro_crew.acp.types import ACP_BACKEND_OPENCODE, AcpPromptStats
+from kiro_crew.acp.types import ACP_BACKEND_OPENCODE, AcpPromptStats, JsonRpcMessage
 
 # ── Phase 1: stop_reason and turn_done tests ──
 
@@ -56,6 +57,213 @@ class TestStopReasonPopulated:
         assert len(events) == 1
         assert events[0].kind == EVENT_COMPLETE
         assert events[0].stop_reason == expected
+
+
+@pytest.mark.asyncio
+async def test_stream_events_adds_namespaced_identity_metadata():
+    """A prompt carries identity metadata separately from prompt content."""
+    from kiro_crew.acp.types import METHOD_PROMPT, JsonRpcMessage
+
+    client = AcpClient()
+    client._session_id = "acp-session-7"
+    client.ensure_ready = AsyncMock()
+    sent = []
+
+    async def send_request(method, params, **kwargs):
+        sent.append((method, params))
+        return 1
+
+    async def read_message(timeout=20.0):
+        return JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
+
+    client._send_request = send_request
+    client._read_message = read_message
+
+    telemetry_context = {
+        "turn_id": "turn-9",
+        "workflow_run_id": "workflow-4",
+        "agent_id": "agent-2",
+        "session_key": "dashboard:slot-1",
+        "parent_session_key": "dashboard:slot-parent",
+    }
+    async for _ in client.stream_events(
+        "prompt body must stay out of metadata",
+        telemetry_context=telemetry_context,
+    ):
+        pass
+
+    assert len(sent) == 1
+    method, params = sent[0]
+    assert method == METHOD_PROMPT
+    assert params["_meta"]["kirocrew"] == telemetry_context
+    assert "prompt" not in params["_meta"]["kirocrew"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_prompt_steer_inherits_only_active_turn_identity():
+    client = AcpClient(acp_backend=ACP_BACKEND_OPENCODE)
+    client._session_id = "acp-session-7"
+    client._process = MagicMock(returncode=None)
+    client.ensure_ready = AsyncMock()
+    telemetry_context = {
+        "turn_id": "turn-9",
+        "workflow_run_id": "workflow-4",
+        "agent_id": "agent-2",
+        "session_key": "dashboard:slot-1",
+        "parent_session_key": "dashboard:slot-parent",
+    }
+    requests = []
+    messages = asyncio.Queue()
+    read_started = asyncio.Event()
+    second_read_started = asyncio.Event()
+    read_count = 0
+
+    async def send_request(method, params, **kwargs):
+        request_id = len(requests) + 1
+        callback = kwargs.get("on_id")
+        if callback is not None:
+            callback(request_id)
+        requests.append((method, params))
+        return request_id
+
+    async def read_message(timeout=20.0):
+        nonlocal read_count
+        read_count += 1
+        read_started.set()
+        if read_count >= 3:
+            second_read_started.set()
+        return await messages.get()
+
+    client._send_request = send_request
+    client._read_message = read_message
+
+    async def consume():
+        async for _ in client.stream_events("primary", telemetry_context=telemetry_context):
+            pass
+
+    async def consume_unannotated():
+        async for _ in client.stream_events("unannotated"):
+            pass
+
+    stream_task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(read_started.wait(), timeout=30.0)
+        assert await client.steer("follow-up") is True
+        assert requests[0][0] == "session/prompt"
+        assert requests[1][0] == "session/prompt"
+        assert requests[1][1]["_meta"]["kirocrew"] == telemetry_context
+        messages.put_nowait(JsonRpcMessage(id=2, result={"stopReason": "end_turn"}))
+        messages.put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
+        await asyncio.wait_for(stream_task, timeout=30.0)
+        assert client._steer_turn is None
+
+        stream_task = asyncio.create_task(consume_unannotated())
+        await asyncio.wait_for(second_read_started.wait(), timeout=30.0)
+        assert await client.steer("without context") is True
+        assert "_meta" not in requests[3][1]
+        messages.put_nowait(JsonRpcMessage(id=4, result={"stopReason": "end_turn"}))
+        messages.put_nowait(JsonRpcMessage(id=3, result={"stopReason": "end_turn"}))
+        await asyncio.wait_for(stream_task, timeout=30.0)
+    finally:
+        if not stream_task.done():
+            stream_task.cancel()
+            await asyncio.gather(stream_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_prompt_steer_cancel_cleans_registered_id():
+    client = AcpClient(acp_backend=ACP_BACKEND_OPENCODE)
+    client._session_id = "acp-session-7"
+    client._process = MagicMock(returncode=None)
+    client._turn_done.clear()
+    telemetry_context = {"turn_id": "turn-9"}
+    turn = SimpleNamespace(
+        closed=False,
+        steers={},
+        answers={},
+        accepted=set(),
+        telemetry_context=telemetry_context,
+    )
+    client._steer_turn = turn
+    sent = []
+
+    async def cancel_during_write(method, params, **kwargs):
+        callback = kwargs["on_id"]
+        callback(17)
+        sent.append((method, params))
+        raise asyncio.CancelledError()
+
+    client._send_request = cancel_during_write
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.steer("follow-up")
+
+    assert sent[0][1]["_meta"]["kirocrew"] == telemetry_context
+    assert turn.steers == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_prompt_releases_active_identity_context():
+    client = AcpClient(acp_backend=ACP_BACKEND_OPENCODE)
+    client._session_id = "acp-session-7"
+    client.ensure_ready = AsyncMock()
+    telemetry_context = {"turn_id": "turn-9", "workflow_run_id": "workflow-4"}
+    read_started = asyncio.Event()
+    messages = asyncio.Queue()
+
+    async def send_request(method, params, **kwargs):
+        return 1
+
+    async def read_message(timeout=20.0):
+        read_started.set()
+        return await messages.get()
+
+    client._send_request = send_request
+    client._read_message = read_message
+
+    async def consume():
+        async for _ in client.stream_events("primary", telemetry_context=telemetry_context):
+            pass
+
+    stream_task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(read_started.wait(), timeout=30.0)
+        assert client._steer_turn.telemetry_context == telemetry_context
+        stream_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(stream_task, timeout=30.0)
+        assert client._steer_turn is None
+    finally:
+        if not stream_task.done():
+            stream_task.cancel()
+            await asyncio.gather(stream_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stream_events_keeps_compact_prompt_metadata_free():
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    client = AcpClient()
+    client._session_id = "acp-session-7"
+    client.ensure_ready = AsyncMock()
+    sent = []
+
+    async def send_request(method, params, **kwargs):
+        sent.append((method, params))
+        return 1
+
+    async def read_message(timeout=20.0):
+        return JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
+
+    client._send_request = send_request
+    client._read_message = read_message
+    context = {"turn_id": "turn-9"}
+
+    async for _ in client.stream_events("/compact", telemetry_context=context):
+        pass
+
+    assert sent
+    assert "_meta" not in sent[0][1]
 
 
 class TestWaitTurnDone:

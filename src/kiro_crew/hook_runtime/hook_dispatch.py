@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
@@ -21,6 +21,16 @@ if TYPE_CHECKING:
         logger,
         webhooks,
     )
+
+
+class _HookIdentityFields(TypedDict, total=False):
+    event_id: str
+    tool_call_id: str
+    workflow_run_id: str
+    agent_id: str
+    acp_session_id: str
+    turn_id: str
+    session_key: str
 
 
 def set_global_hook_store(store: ScriptHookStore) -> None:
@@ -75,6 +85,14 @@ async def fire_tool_hooks(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    *,
+    event_id: str | None = None,
+    tool_call_id: str | None = None,
+    workflow_run_id: str | None = None,
+    agent_id: str | None = None,
+    acp_session_id: str | None = None,
+    turn_id: str | None = None,
+    session_key: str | None = None,
 ) -> None:
     """Fire PreToolUse hooks for an EVENT_TOOL_CALL event.
 
@@ -91,6 +109,9 @@ async def fire_tool_hooks(
     tool calls to the specific agent/session that fired them. Callers in
     parent contexts (dashboard chat, generic LLM helpers) leave them as
     ``None``; subagent and taskrunner callers pass real values.
+
+    Optional event, tool, workflow, agent, ACP-session, turn, and own-session
+    identities are keyword-only and forwarded without changing their meaning.
     """
     if hook_store is None:
         return
@@ -103,6 +124,21 @@ async def fire_tool_hooks(
             tool_input = json.loads(event_tool_input)
         except Exception:
             pass
+    identity_fields: _HookIdentityFields = {}
+    if event_id is not None:
+        identity_fields["event_id"] = event_id
+    if tool_call_id is not None:
+        identity_fields["tool_call_id"] = tool_call_id
+    if workflow_run_id is not None:
+        identity_fields["workflow_run_id"] = workflow_run_id
+    if agent_id is not None:
+        identity_fields["agent_id"] = agent_id
+    if acp_session_id is not None:
+        identity_fields["acp_session_id"] = acp_session_id
+    if turn_id is not None:
+        identity_fields["turn_id"] = turn_id
+    if session_key is not None:
+        identity_fields["session_key"] = session_key
     try:
         await hook_store.fire(
             HOOK_EVENT_PRE_TOOL_USE,
@@ -111,6 +147,7 @@ async def fire_tool_hooks(
             subagent_id=subagent_id,
             parent_session_key=parent_session_key,
             agent_role=agent_role,
+            **identity_fields,
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)

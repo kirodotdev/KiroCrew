@@ -106,7 +106,11 @@ class McpTextContent:
 
 
 def build_tool_response(
-    text: str, max_len: int = MAX_RESPONSE_LEN, *, is_error: bool = False
+    text: str,
+    max_len: int = MAX_RESPONSE_LEN,
+    *,
+    is_error: bool = False,
+    structured_content: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a validated, sanitized MCP tools/call response.
 
@@ -116,13 +120,19 @@ def build_tool_response(
     This is the single exit point for all tool responses — ensures every
     response conforms to the MCP TextContent schema and is sanitized.
     ``is_error`` adds the MCP ``isError`` flag so a client can tell a refusal
-    from an answer without pattern-matching the prose.
+    from an answer without pattern-matching the prose. Optional
+    ``structured_content`` is returned as MCP ``structuredContent``.
     """
+    result_metadata = getattr(text, "structured_content", None)
+    if structured_content is None and isinstance(text, str) and isinstance(result_metadata, dict):
+        structured_content = result_metadata
     text = sanitize_response(text, max_len)
     content = McpTextContent(type="text", text=text)
     frame: dict[str, Any] = {"content": [content.to_dict()]}
     if is_error:
         frame["isError"] = True
+    if structured_content is not None:
+        frame["structuredContent"] = structured_content
     return frame
 
 

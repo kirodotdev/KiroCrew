@@ -26,7 +26,7 @@ import logging
 import time
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection, Mapping
 
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import pi_steer_turn, transport_framing
@@ -104,6 +104,7 @@ class _ConcurrentSteerTurn:
     answers: dict[int, tuple[JsonRpcMessage, bool]] = field(default_factory=dict)
     accepted: set[int] = field(default_factory=set)
     closed: bool = False
+    telemetry_context: dict[str, str] | None = None
 
 
 # Named by the path callers import it from, as it was before the split.
@@ -804,10 +805,16 @@ async def _steer_via_concurrent_prompt(self: AcpClient, text: str) -> bool:
         sent.append(rid)
         steers[rid] = wrapped
 
+    params: dict[str, Any] = {
+        "sessionId": self._session_id,
+        "prompt": [{"type": "text", "text": text}],
+    }
+    if turn.telemetry_context:
+        params["_meta"] = {"kirocrew": dict(turn.telemetry_context)}
     try:
         await self._send_request(
             METHOD_PROMPT,
-            {"sessionId": self._session_id, "prompt": [{"type": "text", "text": text}]},
+            params,
             on_id=_register,
         )
     except BaseException:
@@ -896,6 +903,8 @@ async def _dispatch_prompt_events(
     self: AcpClient,
     req_id: int,
     timeout: float,
+    *,
+    telemetry_context: Mapping[str, str] | None = None,
 ) -> AsyncGenerator[AcpEvent, None]:
     """:meth:`_dispatch_events` for a prompt turn, plus the steers sent into it.
 
@@ -911,7 +920,9 @@ async def _dispatch_prompt_events(
     cancels and drains them under the lock before the next prompt.
     """
     self._turn_permission_denied = False
-    turn = _ConcurrentSteerTurn()
+    turn = _ConcurrentSteerTurn(
+        telemetry_context=dict(telemetry_context) if telemetry_context else None
+    )
     self._steer_turn = turn
     pi_steer_turn.open_turn(self, req_id)
     try:

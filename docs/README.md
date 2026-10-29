@@ -8,6 +8,9 @@ docs live in [`../website/docs/`](../website/docs/README.md).
 New here? Start with [guides/install.md](guides/install.md), then
 [architecture/overview.md](architecture/overview.md).
 
+For execution identities available to external hook consumers, see
+[the hook correlation contract](guides/hook-correlation-contract.md).
+
 ## Where things live
 
 | Directory | What it is for |

@@ -39,6 +39,32 @@ from kiro_crew.security.credential_sources import tool_output_fingerprints
 logger = logging.getLogger("kiro_crew.acp._dispatch")
 
 
+def _launched_workflow_run_id(raw_output: Any, depth: int = 0) -> str:
+    """Read the explicit KiroCrew launch identity from MCP structured content."""
+    if not isinstance(raw_output, dict) or depth > 4:
+        return ""
+    structured = raw_output.get("structuredContent")
+    if isinstance(structured, dict):
+        kirocrew = structured.get("kirocrew")
+        if isinstance(kirocrew, dict):
+            run_id = kirocrew.get("launched_workflow_run_id")
+            if isinstance(run_id, str) and 0 < len(run_id) <= 256:
+                return run_id
+    result = raw_output.get("result")
+    if isinstance(result, dict):
+        run_id = _launched_workflow_run_id(result, depth + 1)
+        if run_id:
+            return run_id
+    items = raw_output.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                run_id = _launched_workflow_run_id(item.get("Json"), depth + 1)
+                if run_id:
+                    return run_id
+    return ""
+
+
 def _mcp_content_text(payload: dict[str, Any]) -> str | None:
     """Return the text of an MCP tool-result envelope, or None if not one.
 
@@ -322,6 +348,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
     tool_use_id = update.get("toolCallId", "")
     if not tool_use_id:
         return None
+    launched_workflow_run_id = _launched_workflow_run_id(update.get("rawOutput"))
     # A terminal status is useful even when output parsing finds no text: it
     # closes the observed round-trip without claiming a result body. A
     # non-terminal status leaves the clock running for the real completion.
@@ -403,6 +430,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
         return AcpEvent(
             kind=EVENT_TOOL_RESULT,
             tool_call_id=tool_use_id,
+            launched_workflow_run_id=launched_workflow_run_id,
             tool_final=tool_status == "completed",
             tool_status=tool_status,
         )
@@ -435,6 +463,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
     return AcpEvent(
         kind=EVENT_TOOL_RESULT,
         tool_call_id=tool_use_id,
+        launched_workflow_run_id=launched_workflow_run_id,
         tool_output=final_output,
         tool_output_digest=tool_output_digest,
         tool_output_bytes=tool_output_bytes,

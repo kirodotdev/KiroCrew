@@ -725,6 +725,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                         tool_name=validated_tool,
                         tool_input=_parsed_input,
                         tool_id=event.harness_tool_id,
+                        tool_call_id=event.tool_call_id,
                         tool_identity=event.tool_name,
                         mcp_server=event.mcp_server_name,
                     )
@@ -819,6 +820,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 tool_name=validated_tool,
                 tool_input=_parsed_input,
                 tool_id=event.harness_tool_id,
+                tool_call_id=event.tool_call_id,
                 tool_identity=event.tool_name,
                 mcp_server=event.mcp_server_name,
             )
@@ -1225,6 +1227,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     tool_name=validated_tool,
                     tool_input=_parsed_input,
                     tool_id=event.harness_tool_id,
+                    tool_call_id=event.tool_call_id,
                     tool_identity=event.tool_name,
                     mcp_server=event.mcp_server_name,
                 )

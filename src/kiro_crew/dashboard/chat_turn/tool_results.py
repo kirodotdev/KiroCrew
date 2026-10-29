@@ -922,9 +922,14 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 HOOK_EVENT_POST_TOOL_USE,
                 tool_name=_tool_name,
                 tool_response={"output": _redacted_out_bounded},
+                tool_call_id=event.tool_call_id,
                 tool_id=(_post_identity.tool_id or None) if _post_identity else None,
                 tool_identity=_post_identity.tool_identity if _post_identity else "",
                 mcp_server=_post_identity.mcp_server if _post_identity else "",
+                launched_workflow_run_id=getattr(
+                    event, "launched_workflow_run_id", ""
+                )
+                or None,
             )
         except Exception:
             logger.debug("PostToolUse hook error", exc_info=True)

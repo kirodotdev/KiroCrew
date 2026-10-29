@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Callable, Optional, Protocol
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,9 @@ class WorkerPool:
         prompt: str,
         timeout: Optional[float] = None,
         reset: bool = True,
+        *,
+        telemetry_context: Optional[Mapping[str, str]] = None,
+        on_session_bound: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Acquire a worker, (reset it if reused), run the task, release it.
 
@@ -294,6 +298,15 @@ class WorkerPool:
                 await worker.reset()
                 # reset() respawns the process under a new PID — re-shield it.
                 self._sync_protection(worker)
+            if telemetry_context is not None or on_session_bound is not None:
+                send_with_metadata = getattr(worker, "send_message_with_metadata", None)
+                if callable(send_with_metadata):
+                    return await send_with_metadata(
+                        prompt,
+                        timeout=timeout,
+                        telemetry_context=telemetry_context,
+                        on_session_bound=on_session_bound,
+                    )
             return await worker.send_message(prompt, timeout=timeout)
         except BaseException:
             healthy = False

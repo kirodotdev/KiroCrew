@@ -80,6 +80,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.client")
 
 
+def _hook_identity_fields(self: AcpClient, tool_call_id: str | None) -> dict[str, str]:
+    """Identity fields for a tool hook, sourced from the active prompt only."""
+    fields: dict[str, str] = {}
+    turn = getattr(self, "_steer_turn", None)
+    context = getattr(turn, "telemetry_context", None)
+    if isinstance(context, dict):
+        for key in ("workflow_run_id", "agent_id", "turn_id", "parent_session_key"):
+            value = context.get(key)
+            if isinstance(value, str) and value:
+                fields[key] = value
+    if tool_call_id:
+        fields["tool_call_id"] = tool_call_id
+    if self._session_key:
+        fields["session_key"] = self._session_key
+    if self._session_id:
+        fields["acp_session_id"] = self._session_id
+    return fields
+
+
 # Cap the structured-tool-params cache so a stream of ToolCall notifications with
 # no matching request_permission can't grow it without bound (the entries are
 # popped on the permission event and wholesale-cleared per prompt; this is just a
@@ -323,6 +342,7 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
             tool_event.title or "unknown",
             _redacted_input,
             agent_role=self._agent or None,
+            **_hook_identity_fields(self, tool_event.tool_call_id),
         )
     except Exception:
         logger.warning("ACP-layer PreToolUse hook failed", exc_info=True)
@@ -372,11 +392,23 @@ async def _maybe_fire_post_tool_hooks(self: AcpClient, tool_result_event: "AcpEv
         # deliberate: redact the FULL output first so secrets anywhere are scrubbed,
         # only THEN truncate — truncating first could leave a secret past char 2000.
         _redacted_output = _redacted_output[:2000]
+        identity = _hook_identity_fields(self, tool_result_event.tool_call_id)
         await hook_store.fire(
             HOOK_EVENT_POST_TOOL_USE,
             tool_name=tool_name,
             tool_response={"output": _redacted_output},
             agent_role=self._agent or None,
+            tool_call_id=identity.get("tool_call_id"),
+            workflow_run_id=identity.get("workflow_run_id"),
+            agent_id=identity.get("agent_id"),
+            acp_session_id=identity.get("acp_session_id"),
+            turn_id=identity.get("turn_id"),
+            session_key=identity.get("session_key"),
+            parent_session_key=identity.get("parent_session_key"),
+            launched_workflow_run_id=getattr(
+                tool_result_event, "launched_workflow_run_id", ""
+            )
+            or None,
         )
     except Exception:
         logger.warning("ACP-layer PostToolUse hook failed", exc_info=True)
