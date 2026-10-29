@@ -1701,6 +1701,7 @@ class TestMacosMemoryProbe:
             sub.os,
             "sysconf",
             lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),  # 16 KiB pages
+            raising=False,
         )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 200000)
         expected = round(200000 * 16384 / (1024**3), 2)
@@ -1718,7 +1719,10 @@ class TestMacosMemoryProbe:
 
         real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
-            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+            sub.os,
+            "sysconf",
+            lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
         )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: pages)
         assert sub._macos_available_memory_gb() == -1.0
@@ -1733,7 +1737,7 @@ class TestMacosMemoryProbe:
                 raise ValueError("SC_PAGE_SIZE unavailable")
             return real_sysconf(n)
 
-        monkeypatch.setattr(sub.os, "sysconf", _boom)
+        monkeypatch.setattr(sub.os, "sysconf", _boom, raising=False)
         assert sub._macos_available_memory_gb() == -1.0
 
     def test_nonpositive_page_size_fails_open(self, monkeypatch) -> None:
@@ -1741,7 +1745,10 @@ class TestMacosMemoryProbe:
 
         real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
-            sub.os, "sysconf", lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+            sub.os,
+            "sysconf",
+            lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
         )
         # _macos_vm_reclaimable_pages must not even be consulted
         monkeypatch.setattr(
