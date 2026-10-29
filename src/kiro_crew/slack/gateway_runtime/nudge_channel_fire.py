@@ -194,9 +194,14 @@ async def _fire_slack_inner_nudge(
         _fired_generation = loop.config_generation
         msg_body = await compose_nudge_body(_fired_message, _fired_sentinel, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # Skill triggers read the loop's own message: the cycle header and the
+        # ledger snapshot are Kiro Crew's words, so "patrol budget" in the
+        # header must not load a skill the loop never asked for.
+        trigger_text: str | None = _fired_message
     else:
         tagged = wake_message
         _fired_generation = loop.config_generation
+        trigger_text = None
     # Fail closed: an unattended turn MUST run under the HookManager
     # PreToolUse governance gate (mirrors cron's default approval path).
     # Without ctx_builder there are no hooks to enforce the gate — skip.
@@ -248,6 +253,7 @@ async def _fire_slack_inner_nudge(
             provider_type=_provider,
             context_provider=client,
             resumed=_resumed,
+            skill_trigger_text=trigger_text,
         )
         _completion_hook = self._monitor_completion_hook(loop)
         if wake_message is not None and _completion_hook is None:
