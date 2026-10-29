@@ -1133,6 +1133,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.jump-to-the-bottom-when-you-send",
+    "label": "Jump to the bottom when you send",
+    "labelKey": "pages.settings.chatPanel.scroll_on_send",
+    "hint": "When off, sending a message leaves the transcript where it is.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.keep-side-panel-open",
     "label": "Keep Side Panel Open",
     "labelKey": "pages.settings.chatPanel.side_panel_always_open",

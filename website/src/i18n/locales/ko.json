@@ -16417,6 +16417,8 @@
         "display_time_on_each_message": "각 메시지에 시각 표시",
         "double_click_to_edit": "두 번 클릭해서 내 메시지 편집",
         "double_click_to_edit_desc": "꺼져 있으면 메시지를 두 번 클릭할 때 일반 텍스트처럼 단어가 선택됩니다.",
+        "scroll_on_send": "보낼 때 맨 아래로 이동",
+        "scroll_on_send_desc": "끄면 메시지를 보내도 대화 위치가 그대로 유지됩니다.",
         "copy_on_select": "선택 시 복사",
         "copy_on_select_desc": "대화에서 마우스로 텍스트를 선택하는 즉시 클립보드에 복사합니다. 인용, 이에 대해 질문, 복사 줄은 그대로 열립니다.",
         "display_usage_percentage_next_to_the_context_pro": "컨텍스트 진행 표시줄 옆에 사용률 %를 표시합니다",

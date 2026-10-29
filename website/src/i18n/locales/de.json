@@ -16700,6 +16700,8 @@
         "display_time_on_each_message": "Uhrzeit bei jeder Nachricht anzeigen",
         "double_click_to_edit": "Doppelklick zum Bearbeiten deiner Nachrichten",
         "double_click_to_edit_desc": "Wenn aus, markiert ein Doppelklick auf deine Nachricht ein Wort wie in jedem Text.",
+        "scroll_on_send": "Beim Senden nach unten springen",
+        "scroll_on_send_desc": "Wenn aus, bleibt der Verlauf beim Senden einer Nachricht an seiner Stelle.",
         "copy_on_select": "Beim Markieren kopieren",
         "copy_on_select_desc": "Kopiert Text in die Zwischenablage, sobald du ihn im Gespräch mit der Maus markierst. Die Leiste mit Zitieren, Hierzu fragen und Kopieren öffnet sich weiterhin.",
         "display_usage_percentage_next_to_the_context_pro": "Verbrauchsprozentsatz neben dem Kontext-Fortschrittsbalken anzeigen",

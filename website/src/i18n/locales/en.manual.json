@@ -7891,6 +7891,8 @@
         "default_auto": "Default (auto)",
         "double_click_to_edit": "Double-click to edit your messages",
         "double_click_to_edit_desc": "When off, a double-click on your message selects a word as in any text.",
+        "scroll_on_send": "Jump to the bottom when you send",
+        "scroll_on_send_desc": "When off, sending a message leaves the transcript where it is.",
         "sidebar_click_opens_tab": "Open Sidebar Sessions in a Session Tab",
         "sidebar_click_opens_tab_desc": "A click opens the session in its own session tab instead of replacing the active tab's session.",
         "copy_on_select": "Copy on select",

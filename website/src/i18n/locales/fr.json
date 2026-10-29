@@ -16983,6 +16983,8 @@
         "display_time_on_each_message": "Afficher l'heure sur chaque message",
         "double_click_to_edit": "Double-clic pour modifier tes messages",
         "double_click_to_edit_desc": "Si désactivé, un double-clic sur ton message sélectionne un mot comme dans tout texte.",
+        "scroll_on_send": "Aller en bas à l’envoi",
+        "scroll_on_send_desc": "Si désactivé, l’envoi d’un message laisse la conversation à sa place.",
         "copy_on_select": "Copier à la sélection",
         "copy_on_select_desc": "Copie le texte dans le presse-papiers dès que tu le sélectionnes à la souris dans la conversation. La barre Citer, Demander à ce sujet et Copier s’ouvre toujours.",
         "display_usage_percentage_next_to_the_context_pro": "Afficher le pourcentage d'utilisation à côté de la barre de progression du contexte",

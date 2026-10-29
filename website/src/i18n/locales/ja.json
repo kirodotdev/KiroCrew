@@ -16417,6 +16417,8 @@
         "display_time_on_each_message": "各メッセージに時刻を表示",
         "double_click_to_edit": "ダブルクリックで自分のメッセージを編集",
         "double_click_to_edit_desc": "オフの場合、メッセージをダブルクリックすると通常のテキストと同様に単語が選択されます。",
+        "scroll_on_send": "送信時に一番下へ移動",
+        "scroll_on_send_desc": "オフにすると、メッセージを送信してもトランスクリプトの位置は変わりません。",
         "copy_on_select": "選択時にコピー",
         "copy_on_select_desc": "会話内のテキストをマウスで選択するとすぐにクリップボードへコピーします。「引用」「これについて質問」「コピー」の行は引き続き開きます。",
         "display_usage_percentage_next_to_the_context_pro": "コンテキストプログレスバーの横に使用率 %を表示",

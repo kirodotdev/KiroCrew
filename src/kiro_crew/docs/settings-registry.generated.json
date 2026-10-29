@@ -629,6 +629,13 @@
       "hint": "Expand history sidebar by default"
     },
     {
+      "id": "chat.jump-to-the-bottom-when-you-send",
+      "label": "Jump to the bottom when you send",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.jump-to-the-bottom-when-you-send",
+      "hint": "When off, sending a message leaves the transcript where it is."
+    },
+    {
       "id": "chat.keep-side-panel-open",
       "label": "Keep Side Panel Open",
       "tab": "chat",

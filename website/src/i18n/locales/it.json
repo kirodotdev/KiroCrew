@@ -16983,6 +16983,8 @@
         "display_time_on_each_message": "Mostra l'ora su ogni messaggio",
         "double_click_to_edit": "Doppio clic per modificare i tuoi messaggi",
         "double_click_to_edit_desc": "Se disattivato, un doppio clic sul tuo messaggio seleziona una parola come in qualsiasi testo.",
+        "scroll_on_send": "Vai in fondo all’invio",
+        "scroll_on_send_desc": "Se disattivato, l’invio di un messaggio lascia la conversazione dove si trova.",
         "copy_on_select": "Copia alla selezione",
         "copy_on_select_desc": "Copia il testo negli appunti non appena lo selezioni con il mouse nella conversazione. La barra con Cita, Chiedi di questo e Copia si apre comunque.",
         "display_usage_percentage_next_to_the_context_pro": "Mostra la percentuale di utilizzo accanto alla barra di avanzamento del contesto",
