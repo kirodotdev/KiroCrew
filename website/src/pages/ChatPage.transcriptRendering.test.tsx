@@ -22,6 +22,7 @@ import type { DisplayItem, TurnItem } from './chat/types'
 import type { ChatMessage } from '../types'
 import { useTranscriptRendering } from './chat/page/transcriptRendering'
 import { UserMessage, AssistantMessage } from './chat'
+import ForkPointMarker from './chat/ForkPointMarker'
 
 type Props = Parameters<typeof useTranscriptRendering>[0]
 
@@ -220,5 +221,42 @@ describe('renderFarmItem', () => {
     const single = el(result.current.renderFarmItem(3))
     expect(single.props.className).toBe('px-4 mx-auto w-full py-1 empty:hidden')
     expect(farmPassRef.current).toBe(false)
+  })
+})
+
+describe('fork-point marker', () => {
+  const point = msg('assistant', 'answer', 'r2', { mid: 'm-reply' })
+  const other = msg('user', 'later', 'r3', { mid: 'm-later' })
+  const parent = { key: 'slot-a', title: 'Parent', messages: 2, running: false }
+  const child = {
+    key: 'slot-b', title: 'The fork', messages: 1, running: false,
+    forked_from: 'dashboard:slot-a', fork_point_mid: 'm-reply', fork_point_ts: 'r2', fork_direction: 'head' as const,
+  }
+
+  it('draws under the row the fork was cut after, opening the child through the page', () => {
+    const { result, p } = render({ filteredSlots: [parent, child] as never, messages: [point, other], messagesRef: { current: [point, other] } })
+    const marker = findByType(result.current.renderMessage(0, point), ForkPointMarker)
+    expect(marker).not.toBeNull()
+    expect((marker!.props.forks as { key: string }[]).map(f => f.key)).toEqual(['slot-b'])
+    expect(marker!.props.onOpen).toBe(p.selectSessionTab)
+    expect(findByType(result.current.renderMessage(1, other), ForkPointMarker)).toBeNull()
+  })
+
+  it('draws nothing for a fork made before the point was recorded', () => {
+    const legacy = { key: 'slot-b', title: 'Old fork', messages: 1, running: false, forked_from: 'dashboard:slot-a' }
+    const { result } = render({ filteredSlots: [parent, legacy] as never, messages: [point], messagesRef: { current: [point] } })
+    expect(findByType(result.current.renderMessage(0, point), ForkPointMarker)).toBeNull()
+  })
+
+  it('keeps the row renderer when a slot-list frame changes nothing about the forks', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const first = props({ filteredSlots: [parent, child] as never, messages: [point], messagesRef: { current: [point] } })
+    const hook = renderHook((q: Props) => useTranscriptRendering(q), { wrapper, initialProps: first })
+    const before = hook.result.current.renderMessage
+    hook.rerender({ ...first, filteredSlots: [{ ...parent, running: true }, { ...child, messages: 4 }] as never })
+    expect(hook.result.current.renderMessage).toBe(before)
+    hook.rerender({ ...first, filteredSlots: [parent, { ...child, title: 'Renamed fork' }] as never })
+    expect(hook.result.current.renderMessage).not.toBe(before)
   })
 })
