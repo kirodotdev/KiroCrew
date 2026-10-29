@@ -37,6 +37,14 @@ from kiro_crew.trust_patterns import (
     exact_trust_pattern,
 )
 
+
+def _card_outcomes(slot) -> list:
+    """How each approval card the slot shows was resolved, in order."""
+    return [
+        json.loads(m["cls"]).get("resolved") for m in slot.messages if m.get("role") == "permission"
+    ]
+
+
 # ── _run_chat: auto-approve rungs ─────────────────────────────────────────
 
 
