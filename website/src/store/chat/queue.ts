@@ -75,14 +75,29 @@ export function hydrateQueuedBubbles(
   const live = preserveLiveQueue ? list.filter(m => m.role === 'queued' && !pinned(m)) : []
   const base = list.filter((m) => m.role !== 'queued' || pinned(m))
   const liveIds = new Set([...live, ...base.filter(m => m.role === 'queued')].map(m => m.meta?.queueId))
-  for (const { content, queueId, ts, kind, appLabel, quote, ...attachments } of queue ?? []) {
-    if (liveIds.has(queueId)) continue
+  for (const { content, queueId, ts, kind, appLabel, quote, held, rowWritten, ...attachments } of queue ?? []) {
+    if (liveIds.has(queueId)) {
+      // A crewmate row kept in place still takes the server's held state: the
+      // restart that held it happened after the row was drawn.
+      // A card a first pane hydrate kept from a live frame (`live`) takes it too.
+      // Always as a NEW row, even one already held: an accepted Send now
+      // latches on the row object it saw (`useQueuedMessageActions`), and a
+      // fresh held row is how that latch learns the gateway handed the card
+      // back after a restart.
+      if (held) {
+        for (const rows of [base, live]) {
+          const at = rows.findIndex(m => m.role === 'queued' && m.meta?.queueId === queueId)
+          if (at >= 0) rows[at] = { ...rows[at], meta: { ...rows[at].meta, held: true, ...(rowWritten ? { rowWritten: true } : {}) } }
+        }
+      }
+      continue
+    }
     // The lists ride the row's meta under the same keys a user row carries
     // them, so a cancel on THIS tab restores a spaced path exactly even
     // though the send happened on another tab or before a reload. The paste
     // blocks ride the same way, so the card draws the `[ Paste #N ]` token
     // the sent bubble draws, not the expanded wire text.
-    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content) } })
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...(held ? { held: true } : {}), ...(rowWritten ? { rowWritten: true } : {}), ...attachments, ...queueEntryPastes(content) } })
   }
   for (const row of live) appendCorrelatedQueue(base, row)
   return base

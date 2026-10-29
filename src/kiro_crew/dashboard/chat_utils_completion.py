@@ -335,7 +335,7 @@ async def chat_done_payload(
         continuing = bool(
             continuing
             or (
-                slot.queue_depth
+                slot.queue_ready_depth
                 and not queue_held
                 and not slot._last_turn_auth_required
                 and not teardown_hold_active(state, slot)

@@ -1259,9 +1259,11 @@ class TestNoteEndpoint:
         assert queued.index("flush_deferred_notes") < queued.index("_dequeue_next")
         # ...but guarded, so a queued item carrying a structural origin tag (a
         # cron notification, a runner-injected recovery prompt) is not fed the
-        # note; _finish_queue_cycle delivers it after that turn instead.
-        assert 'slot._queue[0].get("kind")' in queued
-        assert queued.index('slot._queue[0].get("kind")') < queued.index("flush_deferred_notes")
+        # note; _finish_queue_cycle delivers it after that turn instead. The
+        # guard reads the entry the drain would start, which passes a held
+        # (restored) card at the head by.
+        assert 'next_entry.get("kind")' in queued
+        assert queued.index('next_entry.get("kind")') < queued.index("flush_deferred_notes")
 
     def test_every_queue_drain_seam_flushes_before_starting_the_successor(self):
         """A NEW successor-dispatch path that skips the flush must turn this red.

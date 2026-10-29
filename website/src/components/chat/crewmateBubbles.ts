@@ -196,7 +196,9 @@ export function awaitingCrewmateReply(all: ChatMessage[], sendId: string | undef
     const m = all[i]
     if ((m.role === 'user' || m.role === 'queued') && m.meta?.sendId === sendId) break
   }
-  if (i < 0 || all[i].meta?.deliveryUnconfirmed) return false
+  // A held row (restored after a restart) waits for the person, not the
+  // crewmate: nothing will send it, so no typing bubble either.
+  if (i < 0 || all[i].meta?.deliveryUnconfirmed || all[i].meta?.held === true) return false
   for (let j = i + 1; j < all.length; j += 1) {
     const m = all[j]
     if (isPendingTransientNotice(m)) continue

@@ -19,7 +19,7 @@ describe('inferLane exhaustiveness and exclusivity', () => {
         const slot: LaneSlotFields = {}
         FIELDS.forEach((f, i) => {
           if (!(mask & (1 << i))) return
-          slot[f as Exclude<keyof LaneSlotFields, 'queue_depth'>] = true
+          slot[f as Exclude<keyof LaneSlotFields, 'queue_depth' | 'queue_held_depth'>] = true
         })
         const lane = inferLane(slot, { subagentAwaiting })
         expect(keys, `mask ${mask}`).toContain(lane)

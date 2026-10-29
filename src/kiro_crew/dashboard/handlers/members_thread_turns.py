@@ -87,7 +87,7 @@ def _turn_busy(state: DashboardState, slot: Any, key: str) -> bool:
 
 def _work_pending(slot: Any) -> bool:
     """Queued messages or unconsumed steers: work the runner starts on its own."""
-    return bool(slot.queue_depth) or bool(getattr(slot, "_pending_steers", None))
+    return bool(slot.queue_ready_depth) or bool(getattr(slot, "_pending_steers", None))
 
 
 def _queue_pending(name: str) -> web.Response:

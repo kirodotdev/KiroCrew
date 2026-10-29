@@ -132,3 +132,24 @@ class TestResponseParity:
         assert body["has_more"] is False
         assert body["queue"] == [{"id": "q1", "content": "queued text"}]
         assert [m["content"] for m in body["messages"]] == ["m0", "m1"]
+
+    @pytest.mark.asyncio
+    async def test_a_boot_accepted_restored_send_is_not_shown_held(self, state: Any) -> None:
+        """The boot drain accepted it, so the snapshot keeps that and the card is not held."""
+        from kiro_crew.dashboard.slot_queue_repository import (
+            BOOT_ACCEPTED_KEY,
+            RESTORED_QUEUE_KEY,
+        )
+
+        slot = _slot_with_messages(state, "chat-1", 1)
+        slot._queue.append(
+            {"id": "q1", "content": "accepted", RESTORED_QUEUE_KEY: True, BOOT_ACCEPTED_KEY: True}
+        )
+        slot._queue.append({"id": "q2", "content": "restored", RESTORED_QUEUE_KEY: True})
+        async with TestClient(TestServer(_make_app(state))) as client:
+            body = await (await client.get("/api/chat/slots/chat-1")).json()
+
+        accepted, restored = body["queue"]
+        assert "held" not in (accepted.get("meta") or {})
+        assert BOOT_ACCEPTED_KEY not in accepted
+        assert restored["meta"]["held"] is True

@@ -18,6 +18,8 @@ if TYPE_CHECKING:
         _FLUSH_SNAPSHOT_RETRIES,
         _TRANSIENT_ROLES,
         _UNOWED_WINDOW_ROLES,
+        BOOT_ACCEPTED_KEY,
+        RESTORED_QUEUE_KEY,
         SLOT_DETAIL_MAX_LIMIT,
         DashboardState,
         OversizedRecord,
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
         effective_session_key,
         folder_principal,
         history_corpus_unreadable,
+        is_held_queue_entry,
         logger,
         parse_cls_meta,
         queue_entry_view,
@@ -1296,6 +1299,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # the loop keeps editing the live one; the view helper does the redaction.
     # The two origin stamps ride along because the view reads them to decide
     # whether an entry is shown as typed (`queue_entry_is_user_origin`).
+    # circular import: responsive_chat reaches the chat handlers at module level.
+    from kiro_crew.dashboard import responsive_chat
+
     queue_snapshot = [
         {
             "id": q["id"],
@@ -1304,6 +1310,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             "meta": dict(q.get("meta") or {}),
             "_directive_user_origin": q.get("_directive_user_origin", False),
             "_directive_channel_origin": q.get("_directive_channel_origin", False),
+            # Read by the view to mark a held card (`is_held_queue_entry`).
+            RESTORED_QUEUE_KEY: bool(q.get(RESTORED_QUEUE_KEY)),
+            # A send the boot drain accepted is not held (never emitted itself).
+            BOOT_ACCEPTED_KEY: bool(q.get(BOOT_ACCEPTED_KEY)),
+            # Decided here, on the loop, against the live transcript.
+            "_row_written": is_held_queue_entry(q) and responsive_chat.row_already_written(slot, q),
         }
         for q in slot._queue
     ]
@@ -1397,7 +1409,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         )
         tail = json.dumps(
             {
-                "queue": [queue_entry_view(q) for q in queue_snapshot],
+                "queue": [
+                    queue_entry_view(q, row_written=q["_row_written"]) for q in queue_snapshot
+                ],
                 "total": total,
                 **page_fields,
                 # Seeds the context meter on open. Turn-scoped WS frames alone

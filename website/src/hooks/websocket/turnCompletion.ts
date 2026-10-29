@@ -20,6 +20,7 @@ import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, isSlotOnScreen } from './attention'
 import { takeIdleRowRefresh } from './idleRowRefresh'
 import { crewRootOf } from '../../lib/crewMode'
+import { readyQueueDepth } from '../../pages/chat/sessionLane'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
 import type { FrameData } from './frames'
 
@@ -69,7 +70,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
           workflowActive
           || selectSidebarSubagentCounts(soundState)[data.slot]
           || soundSlot?.subagents_running
-          || (soundSlot?.queue_depth ?? 0) > 0
+          || (soundSlot ? readyQueueDepth(soundSlot) : 0) > 0
           || selectSidebarAutomationRunningKeys(soundState).includes(dashboardAutomationSlotKey(data.slot))
         )
         questionPending = !!soundState.chat.pendingQuestions?.[data.slot]

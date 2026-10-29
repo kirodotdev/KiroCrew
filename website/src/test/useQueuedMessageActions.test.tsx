@@ -383,6 +383,22 @@ describe('useQueuedMessageActions — in-flight latch (#5891 item 2)', () => {
     await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
   })
 
+  it('keeps an accepted Send now latched, and releases it when a restart hands the card back held', async () => {
+    // Accepted behind a running turn: the card stays queued and stays latched
+    // until its turn starts. A restart before then re-hydrates the SAME id as a
+    // held card (a new row object); nothing will dispatch it, so the controls return.
+    apiMocks.interruptSlot.mockResolvedValue({ ok: true, outcome: 'interrupted' })
+    const rows = [queued('q1', 'run the tests')]
+    const { get, setQueue } = renderActions({ rows })
+    await act(async () => { get().onInterrupt('q1') })
+    await act(async () => { setQueue([...rows]) })
+    expect(get().pendingIds.has('q1')).toBe(true)
+
+    const rehydrated = { ...rows[0], meta: { ...rows[0].meta, held: true } } as ChatMessage
+    await act(async () => { setQueue([rehydrated]) })
+    await waitFor(() => expect(get().pendingIds.has('q1')).toBe(false))
+  })
+
   it('releases an interrupt immediately on rejection so the user can retry', async () => {
     // Nothing was promoted and the card is the same card, so holding it would
     // strand a control over an entry that is still queued.

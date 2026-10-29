@@ -164,20 +164,32 @@ export function useQueuedMessageActions({
   // Releasing on the response would re-enable the button inside that gap, and
   // the next click would interrupt the very turn the first click just promoted.
   // So a successful interrupt stays latched until its row is gone.
-  const [heldUntilRetired, setHeldUntilRetired] = useState<ReadonlySet<string>>(() => new Set())
-  const queuedIdSet = useMemo(
-    () => new Set(allQueued.map(queueIdOf).filter((id): id is string => !!id)),
-    [allQueued],
-  )
+  //
+  // Each id maps to the row it was latched on. A gateway restart before the
+  // card ran hands the entry back HELD under the same id, and nothing will
+  // dispatch it: a re-hydrated row (a different object) that reads held is
+  // therefore retired too, or its controls would stay disabled for good.
+  const [heldUntilRetired, setHeldUntilRetired] = useState<ReadonlyMap<string, ChatMessage | undefined>>(() => new Map())
+  const queuedById = useMemo(() => {
+    const byId = new Map<string, ChatMessage>()
+    for (const m of allQueued) {
+      const id = queueIdOf(m)
+      if (id) byId.set(id, m)
+    }
+    return byId
+  }, [allQueued])
   useEffect(() => {
     // Residual, deliberately: if that frame never arrives the control stays
     // disabled. That is the safe direction - it withholds a click that would
     // interrupt a turn the user did not aim at - and it clears on the next
     // hydration of the slot, which rebuilds the queued rows from the server.
-    const gone = [...heldUntilRetired].filter(id => !queuedIdSet.has(id))
+    const gone = [...heldUntilRetired].filter(([id, latched]) => {
+      const row = queuedById.get(id)
+      return !row || (row !== latched && row.meta?.held === true)
+    }).map(([id]) => id)
     if (!gone.length) return
     setHeldUntilRetired(prev => {
-      const next = new Set(prev)
+      const next = new Map(prev)
       for (const id of gone) next.delete(id)
       return next
     })
@@ -187,7 +199,7 @@ export function useQueuedMessageActions({
       for (const id of gone) next.delete(id)
       return next
     })
-  }, [queuedIdSet, heldUntilRetired])
+  }, [queuedById, heldUntilRetired])
 
   // No mounted-ref guard around the releases below, deliberately. React 18.3
   // dropped the setState-after-unmount warning, so a request that outlives its
@@ -276,7 +288,11 @@ export function useQueuedMessageActions({
     api.interruptSlot(slot, queueId).then(
       // Accepted: the entry is being promoted, so stay latched until the row is
       // gone rather than until this response landed.
-      () => setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId))),
+      () => setHeldUntilRetired(prev => {
+        if (prev.has(queueId)) return prev
+        const row = allQueuedRef.current.find(m => queueIdOf(m) === queueId)
+        return new Map(prev).set(queueId, row)
+      }),
       // Rejected: nothing was promoted and the card is still the same card, so
       // release at once and let the user try again.
       () => markPending(queueId, false),
