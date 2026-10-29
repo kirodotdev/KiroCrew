@@ -67,6 +67,7 @@ __all__ = [
     "is_auth_failure_output",
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
+    "kas_engine_verdict",
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
     "provider_error_client",
@@ -585,18 +586,33 @@ def kas_engine_unsupported_reason() -> str | None:
 
     Blocking: one bounded spawn. Never raises.
     """
+    return kas_engine_verdict()[1]
+
+
+def kas_engine_verdict() -> tuple[bool | None, str | None]:
+    """``(offers_kas, reason)`` from the pinned kiro-cli's ``acp --help``.
+
+    ``offers_kas`` is ``True`` only for help text that RAN and names the engine,
+    ``False`` with the gap as *reason* for help text that ran without it, and
+    ``None`` for every unknown (no pinned binary, a failed spawn). The one probe
+    behind :func:`kas_engine_unsupported_reason`, read by the gateway's KAS floor,
+    which acts on a Kiro CLI pick only on ``True``.
+
+    Blocking: one bounded spawn. Never raises.
+    """
     from kiro_crew import kiro_cli
 
     try:
         binary, _unpinned = kiro_cli.pin_kiro_cli()
     except Exception:  # noqa: BLE001 - an unanswerable probe is unknown, not an error
-        return None
+        return None, None
     if binary is None:
-        return None
+        return None, None
     help_text = kiro_cli.kas_relay_help(binary)
     if help_text is None:
-        return None
-    return kas_engine_gap(help_text)
+        return None, None
+    gap = kas_engine_gap(help_text)
+    return gap is None, gap
 
 
 def claude_components_resolve() -> tuple[bool, bool]:

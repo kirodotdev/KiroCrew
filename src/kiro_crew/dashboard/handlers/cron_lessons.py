@@ -164,15 +164,28 @@ def _load_workspace_lessons(state: DashboardState, workspace: str) -> list[Lesso
 
 
 async def _prepare_member_lesson_store(store: str) -> web.Response | None:
-    """Prepare V2 before synchronous lesson readers can borrow a handle."""
+    """Prepare a named store before synchronous lesson readers can borrow a handle.
+
+    Every named store is prepared, V1 included: ``get_memory_for`` attaches only a
+    handle some caller already opened, so after a restart an unprepared V1 store
+    would lend a ``None`` handle and the route would list the empty JSONL tier
+    instead of the lessons in its ``memory.db``. Every other reader (chat,
+    subagent, workflow, consolidation, task runner) prepares first, and so does
+    this route.
+
+    Only V2 refuses with 503 when it cannot be opened. ``ensure_store`` answers
+    ``None`` for a V1 store it could not prepare (it logs why), which keeps that
+    store's markdown/keyword fallback.
+    """
     # The member database is opened through the shim, so its errors are the shim's
     # classes; the stdlib ``sqlite3.Error`` would let them escape as a 500.
     from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_stores import memory_store_version
 
     try:
-        if store and await asyncio.to_thread(memory_store_version, store) == 2:
-            if await ContextBuilder.ensure_store(store) is None:
+        if store:
+            prepared = await ContextBuilder.ensure_store(store)
+            if prepared is None and await asyncio.to_thread(memory_store_version, store) == 2:
                 raise ValueError("Member memory database is unavailable")
     except (ValueError, OSError, sqlite3.Error) as exc:
         return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)

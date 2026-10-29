@@ -15,6 +15,7 @@ from pathlib import Path
 
 from docs_lint import (
     _HARNESS_INVARIANT_DOC,
+    CHECK_ANCHOR_EXISTS,
     CHECK_COUPLING_COMPLETENESS,
     CHECK_DEAD_IDENTIFIER,
     CHECK_FENCED_PATH,
@@ -552,6 +553,34 @@ def _self_test() -> int:
             "# Ok\n\nName it `MyOwnWidget` in your app.\n", encoding="utf-8"
         )
 
+    def plant_dead_self_anchor(root: Path) -> str:
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n## Real section\n\nSee [it](#gone-section).\n", encoding="utf-8"
+        )
+        return "#gone-section"
+
+    def plant_dead_cross_file_anchor(root: Path) -> str:
+        (root / "docs" / "other.md").write_text("# Other\n\n## Here\n", encoding="utf-8")
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Other](other.md)\n", encoding="utf-8"
+        )
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nSee [there](other.md#here-discord).\n", encoding="utf-8"
+        )
+        return "other.md#here-discord"
+
+    def allow_live_anchors(root: Path) -> None:
+        # The slug rule's three easy misses: a code span and a slash keep both
+        # spaces (`--`), a repeated heading takes `-1`, and an explicit id anchors
+        # a bullet.
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n### `reconfigure(cfg)` / `apply_limits(cfg)` — live\n\n"
+            "## Notes\n\n## Notes\n\n"
+            '- <a id="a-bullet"></a>**A bullet**\n\n'
+            "[a](#reconfigurecfg--apply_limitscfg--live) [b](#notes-1) [c](#a-bullet)\n",
+            encoding="utf-8",
+        )
+
     def baseline_probe() -> None:
         """A recorded triple passes; the same triple unrecorded fails."""
         nonlocal failures
@@ -678,6 +707,11 @@ def _self_test() -> int:
         "documentation placeholder identifier",
         CHECK_DEAD_IDENTIFIER,
         allow_placeholder_identifier,
+    )
+    fact_probe("dead in-page anchor", CHECK_ANCHOR_EXISTS, plant_dead_self_anchor)
+    fact_probe("dead cross-file anchor", CHECK_ANCHOR_EXISTS, plant_dead_cross_file_anchor)
+    fact_immunity_probe(
+        "live heading slugs and explicit ids", CHECK_ANCHOR_EXISTS, allow_live_anchors
     )
     baseline_probe()
 

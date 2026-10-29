@@ -92,6 +92,9 @@ if TYPE_CHECKING:
         warn_unreadable_tracked_channels,
     )
 
+    # The facade's KAS floor task (``process_entry._start_kas_cli_floor``); read only.
+    _KAS_CLI_FLOOR_TASK: asyncio.Task[None] | None
+
 
 async def _auto_open_dashboard(self: GatewayOrchestrator, dashboard_url: str) -> None:
     """Open the dashboard in the operator's browser, best effort.
@@ -665,6 +668,11 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+    if self.dashboard_state and not self._test_mode:
+        # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
+        from kiro_crew import kiro_on_kas_notice
+
+        kiro_on_kas_notice.schedule(self.dashboard_state, _KAS_CLI_FLOOR_TASK)
 
 
 async def _init_api_server(self: GatewayOrchestrator) -> None:

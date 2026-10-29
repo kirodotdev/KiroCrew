@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _is_slack_ts,
         _sel,
         _send_to_channel_target,
+        body_not_object_error,
         build_options_blocks,
         dashboard_slot_key,
         format_overflow,
@@ -296,6 +297,9 @@ async def api_delete_message(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     channel = body.get("channel", "").strip()
     ts = body.get("ts", "").strip()
     if not channel or not ts:
@@ -346,6 +350,9 @@ async def api_update_message(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     channel = body.get("channel", "")
     if not isinstance(channel, str):
         return web.json_response(
@@ -516,6 +523,9 @@ async def _read_send_message(
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     text = body.get("text", "").strip()
     if not text:
         return web.json_response({"error": "text required"}, status=400)

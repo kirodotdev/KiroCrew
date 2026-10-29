@@ -205,6 +205,13 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # Both mediated-secret routes (the capability claim and the request) admit through
+    # ``_admit``. A mediated request carries the agent's own body, headers and query, so
+    # it gets the 1 MiB cap the MCP stub refuses past before sending, read before decode.
+    "handlers/mediated_secrets.py::_admit": (
+        "mediated_request_capability.MAX_REQUEST_PAYLOAD_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # The UI-preference backup stores values up to MAX_VALUE_BYTES (64 KB) and a
     # document up to MAX_TOTAL_BYTES, so the shared 64 KB default -- exactly one
     # legal value, with no room for the JSON envelope -- would 413 a patch the
@@ -348,6 +355,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # prompts, or injected context/note content stay uncapped.
     "chat_api/chat_send.py::_api_chat_send": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/slot_create.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # A hub's decision on a remote work item: one string, capped by the store.
+    "handlers/remote_work_item.py::api_chat_slot_work_item_patch": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/continue_turn.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),

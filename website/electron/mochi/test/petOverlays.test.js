@@ -171,11 +171,12 @@ function stubElectronForOpen() {
       this.visible = false;
       this.showInactiveCalls = 0;
       this.focusableCalls = [];
+      this.ignoreCalls = [];
       created.push(this);
     }
     setFocusable(v) { this.focusableCalls.push(v); }
     setAcceptFirstMouse() {}
-    setIgnoreMouseEvents() {}
+    setIgnoreMouseEvents(...args) { this.ignoreCalls.push(args); }
     setVisibleOnAllWorkspaces() {}
     // #3125 started calling setContentProtection to keep the overlay out of
     // screen captures, but this double was not taught the method, so every
@@ -207,15 +208,22 @@ function stubElectronForOpen() {
   // RELEASED on teardown is the contract behind #4673, and an `on() {}` stub
   // cannot see a leak.
   const displayListeners = [];
+  // IPC handlers are recorded so a test can drive the click-through paths that
+  // only run from the renderer's messages (menu close, drag end, legacy setter).
+  const ipcHandlers = new Map();
   return {
     created,
     displays,
     displayListeners,
+    ipcHandlers,
     DISPLAY,
     electron: {
       app: { on() {}, setActivationPolicy() {}, dock: { show() {} } },
       BrowserWindow: FakeWindow,
-      ipcMain: { on() {}, handle() {} },
+      ipcMain: {
+        on(channel, fn) { ipcHandlers.set(channel, fn); },
+        handle() {},
+      },
       shell: { openExternal() {}, showItemInFolder() {} },
       screen: {
         getPrimaryDisplay: () => DISPLAY,
@@ -292,6 +300,92 @@ for (const [platform, expected] of [["win32", []], ["darwin", [false]], ["linux"
     }
   });
 }
+
+// #23345: on Windows, `forward: true` re-posts every mouse move to the
+// full-display overlay, its Chromium sets the cursor for the transparent page,
+// and that fights the dashboard window on the same UI thread (the cursor
+// flickers over text and buttons). Mochi hit-tests from the main process, so on
+// Windows the click-through state must not forward. macOS and Linux keep it.
+const CLICK_THROUGH = {
+  win32: [true],
+  darwin: [true, { forward: true }],
+  linux: [true, { forward: true }],
+};
+
+for (const [platform, clickThrough] of Object.entries(CLICK_THROUGH)) {
+  test(`the pet overlay's click-through calls on ${platform}`, async (t) => {
+    const orig = process.platform;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    t.after(() => Object.defineProperty(process, "platform", { value: orig, configurable: true }));
+    const { mod, created, displays, ipcHandlers } = loadPetOverlays();
+    // A second display, so the paths that act on NON-active overlays (menu
+    // close, transfer) have one to act on.
+    displays.push({
+      id: 2,
+      bounds: { x: 1440, y: 0, width: 1440, height: 900 },
+      workArea: { x: 1440, y: 0, width: 1440, height: 900 },
+    });
+    t.after(() => displays.splice(1));
+    const send = (channel, ...args) => ipcHandlers.get(channel)({ sender: { id: -1 } }, ...args);
+    try {
+      mod.openPetWindow("http://localhost:6777", "tok");
+      assert.strictEqual(created.length, 2);
+      const [first, second] = created;
+
+      // Created click-through.
+      for (const win of created) assert.deepStrictEqual(win.ignoreCalls, [clickThrough]);
+
+      // Menu open makes every overlay interactive; close returns the NON-active
+      // one to click-through (the active one is left to the hit poll).
+      send("mochi-pet:menu-open");
+      send("mochi-pet:menu-close");
+      assert.deepStrictEqual(first.ignoreCalls.at(-1), [false]);
+      assert.deepStrictEqual(second.ignoreCalls.at(-1), clickThrough);
+
+      // Drag start makes every overlay interactive; drag end restores
+      // click-through on ALL of them.
+      send("mochi-pet:drag-start", 0, 0);
+      for (const win of created) assert.deepStrictEqual(win.ignoreCalls.at(-1), [false]);
+      send("mochi-pet:drag-end");
+      for (const win of created) assert.deepStrictEqual(win.ignoreCalls.at(-1), clickThrough);
+
+      // Legacy direct setter on the active overlay: both directions.
+      send("mochi-pet:ignore-mouse", false);
+      assert.deepStrictEqual(first.ignoreCalls.at(-1), [false]);
+      send("mochi-pet:ignore-mouse", true);
+      assert.deepStrictEqual(first.ignoreCalls.at(-1), clickThrough);
+
+      // Transfer: the overlay that loses the pet goes back to click-through.
+      first.ignoreCalls.length = 0;
+      assert.strictEqual(await mod.transferPetToDisplayById(2, 10, 10), true);
+      assert.deepStrictEqual(first.ignoreCalls, [clickThrough]);
+
+      // Every click-through call on every overlay used this platform's form.
+      for (const win of created) {
+        for (const call of win.ignoreCalls) {
+          if (call[0] === true) assert.deepStrictEqual(call, clickThrough);
+        }
+      }
+    } finally {
+      mod.closePetWindow();
+    }
+  });
+}
+
+// The hit poll and every other click-through site must go through the one
+// platform-aware helper, so a new call site cannot bring `forward` back on
+// Windows. The poll runs on a timer against the live cursor, so this pins it
+// at the source rather than by driving it.
+test("every click-through call in petOverlays.js goes through setClickThrough", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "petOverlays.js"), "utf8");
+  const direct = src.match(/\.setIgnoreMouseEvents\(\s*true\b[^)]*\)/g) || [];
+  // Exactly the two inside the helper itself.
+  assert.deepStrictEqual(direct, [
+    ".setIgnoreMouseEvents(true)",
+    ".setIgnoreMouseEvents(true, { forward: true })",
+  ]);
+  assert.match(src, /if \(shouldIgnore\) setClickThrough\(win\);/, "hit poll uses the helper");
+});
 
 // ── Display-listener lifecycle (#4673) ─────────────────────────────────────
 // openPetWindow watches the display arrangement so the overlay set can follow

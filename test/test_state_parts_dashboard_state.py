@@ -747,6 +747,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "wire_session_bind_listener": ("function", False, False, "(self) -> 'None'"),
     "wire_session_compact_callback": ("function", False, False, "(self) -> 'None'"),
     "wire_session_recycle_callback": ("function", False, False, "(self) -> 'None'"),
+    "wire_session_release_listener": ("function", False, False, "(self) -> 'None'"),
     "wire_session_unbind_listener": ("function", False, False, "(self) -> 'None'"),
     "withdraw_agent_ask": (
         "function",

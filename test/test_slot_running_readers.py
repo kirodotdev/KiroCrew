@@ -182,17 +182,26 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
                 ("chat_turn/queue_drain.py", "_drain_parked_queues"),
+                # An injector starts an idle slot's queued head only on a slot no
+                # dispatch has reserved.
+                ("chat_turn/queue_drain.py", "idle_slot_admits_drain"),
                 # The hand-off for a dispatch that never ran a turn's tail: that
                 # task has ended, so this reads a send's reservation.
                 ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
+                # A native-card answer steers into the turn only when one runs;
+                # on a reserved-but-not-executing slot slot.running is still
+                # true, so this reads the reservation like the routes above. No
+                # running turn -> it reports unavailable and the embed hands the
+                # answer back.
+                ("handlers/slot_question.py", "api_chat_slot_question_steer"),
                 ("handlers/members_thread_turns.py", "api_member_fresh_start"),
                 ("handlers/members_thread.py", "api_member_thread"),
                 ("handlers/members_roster.py", "api_members"),
-                # The session-side delivery entry point: idle gets a row and a
-                # turn, a reserved slot gets the queue or a steer.
+                # The session-side delivery entry point: idle queues and drains,
+                # a reserved slot gets the queue or a steer.
                 ("session_deliver.py", "deliver"),
                 # A peer's steer needs a running turn to cut into.
                 ("session_deliver.py", "_deliver_peer"),
@@ -208,6 +217,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control_parts/session_messaging.py", "send_to_target"),
                 # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
                 ("session_control_parts/model_switch.py", "set_model_target"),
+                # A pick waiting for a channel turn's end is left to the slot's
+                # own dashboard turn from the moment a send reserves the slot.
+                ("session_control_parts/model_switch.py", "land_model_pick_after_channel_turn"),
+                ("state_parts/session_events.py", "wire_session_release_listener"),
                 ("openai_compat.py", "api_completions"),
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
@@ -281,6 +294,5 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
-        ("session_deliver.py", "deliver"),
         ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

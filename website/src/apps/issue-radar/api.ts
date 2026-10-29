@@ -5,8 +5,8 @@
 // file-explorer that run as a separate child process).
 import { i18nT } from '../../i18n/t'
 import {
-  accountQuery, AssigneesConflictError, DEFAULT_REPO_SETTINGS, gitlabGroupError, parseErrorBody,
-  repoBody, repoQuery, SettingsConflictError,
+  accountQuery, AssigneesConflictError, DEFAULT_REPO_SETTINGS, gitlabGroupError,
+  parseErrorBody, repoBody, repoQuery, SettingsConflictError,
 } from './apiTypes'
 import type {
   AccountScope, ApplyLabelsResponse, BulkApplyResponse, BulkPrAction, BulkPrResponse,
@@ -70,8 +70,8 @@ function langHint(aiLanguage: string): Record<string, string> {
 // request names its repo; `apiCrewTypes.ts` holds the crew records, phase
 // classifications and event kinds that mirror the backend crew store.
 export {
-  GitLabGroupError, AssigneesConflictError, DEFAULT_REPO_SETTINGS, SettingsConflictError,
-  accountQuery, repoQuery, repoBody,
+  GitLabGroupError, AssigneesConflictError, DEFAULT_REPO_SETTINGS,
+  SettingsConflictError, accountQuery, repoQuery, repoBody,
 } from './apiTypes'
 export type {
   ConnectResponse, Issue, IssuesResponse, PullRequest, PullsResponse, GitLabGroup,
@@ -954,10 +954,17 @@ export const issueRadarApi = {
    * like `/issues`. The backend route lands in a SEPARATE PR (M1), so callers
    * must treat a 404/500/empty answer as "no dependency data yet" and render a
    * designed empty state rather than an error — see GraphView / DepsSection. */
-  deps: async (ref: RepoRef): Promise<DepsResponse> => {
+  deps: async (ref: RepoRef, opts?: { refresh?: boolean }): Promise<DepsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
+    // `refresh=1` is the synchronous rebuild: the route fetches now and answers
+    // the fetch's own outcome, so a failure reaches the caller instead of being
+    // swallowed behind a cached 200 (the user-initiated Refresh/Retry path).
+    if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/deps?${q.toString()}`, { credentials: 'same-origin' })
-    if (!r.ok) throw new Error(await parseErrorBody(r))
+    // Same coded-error envelope as /gitlab-groups: `code` is the route's own
+    // classification (`deps_auth_required`, `deps_fetch_failed`,
+    // `deps_issue_scope_unavailable`, or '' when the body carried none).
+    if (!r.ok) throw await gitlabGroupError(r)
     return r.json()
   },
 }

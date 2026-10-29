@@ -72,6 +72,18 @@ html:root .liquid-glass.crew-chip:not(:focus-visible) {
   outline-color: color-mix(in srgb, var(--aim) 70%, var(--border)) !important;
 }
 
+/* Busy (a reply is running): unavailable, not pressed. The accent leaves the
+   fill and the border, and the chip dims (the component adds opacity-60). */
+html:root .liquid-glass.crew-chip[aria-disabled="true"] {
+  --crew-chip-mix: 8%;
+  --glass-edge: var(--border);
+  border-color: var(--border);
+}
+
+html:root .liquid-glass.crew-chip[aria-disabled="true"]:not(:focus-visible) {
+  outline-color: var(--border) !important;
+}
+
 html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):hover {
   --crew-chip-mix: 28%;
   border-color: var(--aim);

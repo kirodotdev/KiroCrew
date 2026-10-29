@@ -33,7 +33,9 @@ from kiro_crew.cli_server_peer import (
     _owner_verified_secret_urlopen,
 )
 from kiro_crew.cli_server_stop import (
+    _config_dir_owner,
     _pid_exited,
+    _refuse_desktop_supervised,
     _refuse_if_lock_held,
     _refuse_lock_holder,
     _refuse_service_alias,
@@ -614,28 +616,6 @@ def _wait_gateway_ready(
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
-def _config_dir_owner() -> tuple[int, bool] | None:
-    """The live ``gateway.lock`` holder as ``(pid, from_desktop_bundle)``, or ``None``.
-
-    Best effort, for wording only: a free lock and any probe failure both return
-    ``None``. ``from_desktop_bundle`` reads the same ``backend-dist`` path
-    component :func:`platform_compat.is_bundled_interpreter` reads for this
-    process, in the holder's executable path where the host reports one (Linux,
-    macOS) and in its command line otherwise (the only source Windows has).
-    """
-    try:
-        holder = lock_holder(config_dir())
-    except (LockProbeError, OSError):
-        return None
-    if holder.pid is None or not holder.alive:
-        return None
-    where = platform_compat.process_executable_path(
-        holder.pid
-    ) or platform_compat.process_command_line(holder.pid)
-    segments = (where or "").replace("\\", "/").split("/")
-    return holder.pid, platform_compat.BUNDLED_BACKEND_DIST_DIRNAME in segments[:-1]
-
-
 def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> str:
     """What ``restart`` prints when the replacement gateway exited at once.
 
@@ -924,6 +904,12 @@ def _restart(cli_port: int | None = None) -> None:
         # process on the port and spawn a detached replacement beside it.
         if _refuse_service_alias("gateway_restart", port):
             sys.exit(1)
+
+    # The desktop app is another manager: it starts its gateway again when the
+    # gateway goes away, so a restart from here would race it. With --port it
+    # applies only when this home's gateway is the one on that port.
+    if _refuse_desktop_supervised("gateway_restart", port, explicit_port=cli_port is not None):
+        sys.exit(1)
 
     # No service active — bounce the foreground gateway and detach a fresh one.
     # Reuse _stop() for the SIGTERM path so behavior stays in sync if _stop

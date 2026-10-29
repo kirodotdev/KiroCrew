@@ -292,3 +292,70 @@ describe('idle appends: a complete message lands while nothing runs', () => {
     expect(t.state.scrollTop).toBe(parked)
   })
 })
+
+describe('idle tail regrow: a catch-up lands as a bigger tail row, not a new one', () => {
+  // A reconnect catch-up in a background pane often adds no row at all: the
+  // reply that was streaming when the socket dropped is replaced by its full
+  // text, so the row count stays the same and the TAIL row grows -- by more
+  // than half a viewport when most of the reply arrived offline. No row is
+  // appended, so the append path never runs; only the height commit sees it.
+  // The reader was pinned at the end before the drop and touched nothing, so
+  // they are still on our last write and the gap is content's to close.
+  const GROWTH = 400 // > clientHeight / 2 (700 / 2)
+
+  /** A height commit where every row keeps its height except the tail. */
+  function landTailRegrow(t: ReturnType<typeof mountIdleAtBottom>, rows = 60) {
+    t.state.scrollHeight += GROWTH
+    act(() => {
+      for (let i = 0; i < rows - 1; i++) t.view.result.current.measureRef(i)(mkRowNode(95))
+      t.view.result.current.measureRef(rows - 1)(mkRowNode(95 + GROWTH))
+    })
+    act(() => { vi.advanceTimersByTime(400) })
+  }
+
+  it('the same tail row regrows: a still reader is carried to the new bottom', () => {
+    const t = mountIdleAtBottom('tail-regrow')
+    landHeightCommit(t.view)
+    t.writes.length = 0
+    const before = t.bottom()
+    landTailRegrow(t)
+    expect(t.bottom()).toBe(before + GROWTH)
+    expect(t.state.scrollTop).toBe(t.bottom())
+    expect(t.writes).toContain(t.bottom())
+  })
+
+  it('the tail row is REPLACED by a new key at the same count: still carried', () => {
+    // The catch-up swaps the streaming bubble for the persisted message, which
+    // carries a different key. Same row count, new tail identity, taller row.
+    const t = mountIdleAtBottom('tail-replace')
+    landHeightCommit(t.view)
+    t.writes.length = 0
+    act(() => {
+      t.view.rerender({
+        items: [...mkItems(59), { id: 'caught-up-reply' }],
+        sessionId: 'carry-tail-replace',
+        getKey,
+        externalScrollerRef: t.ref,
+        followOutput: true,
+        runActive: false,
+      })
+    })
+    landTailRegrow(t)
+    expect(t.state.scrollTop).toBe(t.bottom())
+    expect(t.writes).toContain(t.bottom())
+  })
+
+  it('a reader who scrolled up before the catch-up is left where they are', () => {
+    const t = mountIdleAtBottom('tail-regrow-away')
+    landHeightCommit(t.view)
+    const parked = t.bottom() - 500
+    act(() => { t.el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })) })
+    t.state.scrollTop = parked
+    act(() => { t.el.dispatchEvent(new Event('scroll')) })
+    act(() => { vi.advanceTimersByTime(300) })
+    t.writes.length = 0
+    landTailRegrow(t)
+    expect(t.state.scrollTop).toBe(parked)
+    expect(t.writes.filter((w) => w > parked)).toEqual([])
+  })
+})

@@ -1,10 +1,12 @@
 /**
- * Notification sound system. Synthesizes tones via Web Audio API (no audio files).
+ * Notification sound system. Built-in and custom tone sounds are synthesized
+ * with the Web Audio API; uploaded sound files are played from IndexedDB.
  * Settings persist in localStorage under 'mc-notification-sound'.
  */
 import { useEffect } from 'react'
 import { MC_NOTIFICATION_EVENT, MC_SOUND_SETTINGS_CHANGED_EVENT, type McNotificationDetail } from './notificationEvent'
 import { safeSetItem } from '../utils/safeStorage'
+import { CUSTOM_FILE_LIMITS, SOUND_FILE_KEY_RE, getSoundFile } from './customSoundFiles'
 
 export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop', 'pulse'] as const
 export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
@@ -22,13 +24,33 @@ export interface ToneStep { freq: number; start: number; dur: number; gain: numb
  *  `customSoundId(name)`, so a custom name can never collide with a built-in id. */
 export type CustomTones = Record<string, ToneStep[]>
 export type CustomSoundId = `custom:${string}`
-/** Anything a category can be set to: a built-in, 'none', or a custom sound. */
-export type SoundChoice = SoundPreset | CustomSoundId
+
+/** What is remembered about an uploaded sound file. The bytes themselves live
+ *  in this browser's IndexedDB (`customSoundFiles.ts`), never in localStorage
+ *  and never on the gateway; this record is what makes the sound pickable.
+ *  `CustomFileMeta` is what checking a picked file yields; a saved record also
+ *  carries the IndexedDB `key` its bytes were written under. */
+export interface CustomFileMeta { bytes: number; seconds: number }
+export interface StoredFileMeta extends CustomFileMeta { key: string }
+export type CustomFiles = Record<string, StoredFileMeta>
+export type FileSoundId = `file:${string}`
+
+/** Anything a category can be set to: a built-in, 'none', a custom tone sound
+ *  or an uploaded sound file. */
+export type SoundChoice = SoundPreset | CustomSoundId | FileSoundId
 
 const CUSTOM_PREFIX = 'custom:'
 export const customSoundId = (name: string): CustomSoundId => `${CUSTOM_PREFIX}${name}`
 export const customSoundName = (id: string): string | null =>
   id.startsWith(CUSTOM_PREFIX) ? id.slice(CUSTOM_PREFIX.length) : null
+
+const FILE_PREFIX = 'file:'
+export const fileSoundId = (name: string): FileSoundId => `${FILE_PREFIX}${name}`
+export const fileSoundName = (id: string): string | null =>
+  id.startsWith(FILE_PREFIX) ? id.slice(FILE_PREFIX.length) : null
+
+/** The user-given name behind a custom tone or file choice, else null. */
+export const userSoundName = (id: string): string | null => customSoundName(id) ?? fileSoundName(id)
 
 /** Bounds a custom sound must meet. Applied when one is added AND on every load,
  *  because the stored value can be edited by hand or restored from a backup
@@ -46,15 +68,20 @@ export const CUSTOM_TONE_LIMITS = {
   maxLength: 5,
 } as const
 
+/** Bounds an uploaded sound file must meet (defined beside the file store),
+ *  checked on add and on every load. They count toward the same
+ *  `CUSTOM_TONE_LIMITS.maxSounds` as tone sounds. */
+export { CUSTOM_FILE_LIMITS }
+
 /** Letters and digits of any script, plus space, dash and underscore. */
 const CUSTOM_NAME_RE = /^[\p{L}\p{N} _-]+$/u
 const RESERVED_NAMES = new Set<string>(['none', 'default', ...SOUND_PRESETS])
 
-/** Problem codes a custom sound fails on: `name`, `name_taken`, `count`,
- *  `freq`, `start`, `dur`, `gain`, `too_many`. Empty means valid. */
-export function validateCustomTone(name: string, tones: unknown, existing: Record<string, unknown> = {}): string[] {
+/** Name and limit problems shared by tone sounds and sound files. `existing`
+ *  holds every saved custom sound of BOTH kinds, so a name is unique across
+ *  them and the limit counts them together. */
+function nameProblems(name: string, existing: Record<string, unknown>, problems: Set<string>): void {
   const L = CUSTOM_TONE_LIMITS
-  const problems = new Set<string>()
   if (typeof name !== 'string' || name !== name.trim() || name.length === 0
       || name.length > L.maxNameLength || !CUSTOM_NAME_RE.test(name)) {
     problems.add('name')
@@ -63,6 +90,14 @@ export function validateCustomTone(name: string, tones: unknown, existing: Recor
     problems.add('name_taken')
   }
   if (Object.keys(existing).length >= L.maxSounds) problems.add('too_many')
+}
+
+/** Problem codes a custom sound fails on: `name`, `name_taken`, `count`,
+ *  `freq`, `start`, `dur`, `gain`, `too_many`. Empty means valid. */
+export function validateCustomTone(name: string, tones: unknown, existing: Record<string, unknown> = {}): string[] {
+  const L = CUSTOM_TONE_LIMITS
+  const problems = new Set<string>()
+  nameProblems(name, existing, problems)
   if (!Array.isArray(tones) || tones.length === 0 || tones.length > L.maxTones) {
     problems.add('count')
     return [...problems]
@@ -95,6 +130,42 @@ function loadCustomTones(raw: unknown): CustomTones {
   return out
 }
 
+/** Problem codes a sound file's record fails on: the name codes of
+ *  `validateCustomTone`, plus `file_size` and `file_length`. Empty means valid.
+ *  `existing` holds every saved custom sound of both kinds. */
+export function validateCustomFile(name: string, meta: unknown, existing: Record<string, unknown> = {}): string[] {
+  const F = CUSTOM_FILE_LIMITS
+  const problems = new Set<string>()
+  nameProblems(name, existing, problems)
+  const m = (meta && typeof meta === 'object' ? meta : {}) as Record<string, unknown>
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  if (!num(m.bytes) || m.bytes <= 0 || m.bytes > F.maxBytes) problems.add('file_size')
+  if (!num(m.seconds) || m.seconds <= 0 || m.seconds > F.maxSeconds) problems.add('file_length')
+  return [...problems]
+}
+
+/** Loaded after the tone sounds, against them, so the limit and the name
+ *  rule hold across both kinds. A record must also carry a well-formed
+ *  IndexedDB key: one without has no bytes it could play. */
+function loadCustomFiles(raw: unknown, tones: CustomTones): CustomFiles {
+  const out: CustomFiles = Object.create(null) as CustomFiles
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [name, meta] of Object.entries(raw as Record<string, unknown>)) {
+    const key = (meta as { key?: unknown } | null)?.key
+    if (typeof key !== 'string' || !SOUND_FILE_KEY_RE.test(key)) continue
+    if (validateCustomFile(name, meta, { ...tones, ...out }).length === 0) {
+      const { bytes, seconds } = meta as CustomFileMeta
+      out[name] = { bytes, seconds, key }
+    }
+  }
+  return out
+}
+
+/** Every saved custom sound of both kinds, keyed by name: what a new name is
+ *  checked against and what the shared limit counts. */
+export const allCustomSounds = (s: Pick<SoundSettings, 'customTones' | 'customFiles'>): Record<string, unknown> =>
+  Object.assign(Object.create(null) as Record<string, unknown>, s.customTones, s.customFiles)
+
 export interface SoundSettings {
   enabled: boolean
   volume: number // 0..1
@@ -102,6 +173,9 @@ export interface SoundSettings {
   perCategory: Partial<Record<SoundCategory, SoundChoice>>
   /** User-defined sounds by name. Built-ins are never stored here. */
   customTones?: CustomTones
+  /** Uploaded sound files by name: size and length only, the bytes are in
+   *  IndexedDB. */
+  customFiles?: CustomFiles
 }
 
 const STORAGE_KEY = 'mc-notification-sound'
@@ -121,13 +195,16 @@ export function loadSoundSettings(): SoundSettings {
     if (!raw) return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }
     const parsed = JSON.parse(raw) as Partial<SoundSettings>
     const customTones = loadCustomTones(parsed.customTones)
+    const customFiles = loadCustomFiles(parsed.customFiles, customTones)
     const perCategory: Partial<Record<SoundCategory, SoundChoice>> = { ...DEFAULTS.perCategory }
     for (const [k, v] of Object.entries(parsed.perCategory || {})) {
       if (!VALID_CATEGORIES.has(k) || typeof v !== 'string') continue
       const custom = customSoundName(v)
+      const file = fileSoundName(v)
       // A custom choice counts only while its sound still exists; otherwise the
       // category falls back as if it had never been set.
-      if (VALID_PRESETS.has(v) || (custom !== null && Object.hasOwn(customTones, custom))) {
+      if (VALID_PRESETS.has(v) || (custom !== null && Object.hasOwn(customTones, custom))
+          || (file !== null && Object.hasOwn(customFiles, file))) {
         perCategory[k as SoundCategory] = v as SoundChoice
       }
     }
@@ -137,6 +214,7 @@ export function loadSoundSettings(): SoundSettings {
       perCategory,
     }
     if (Object.keys(customTones).length > 0) out.customTones = customTones
+    if (Object.keys(customFiles).length > 0) out.customFiles = customFiles
     return out
   } catch {
     return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }
@@ -234,7 +312,7 @@ function scheduleEnvelope(gain: AudioParam, start: number, duration: number, pea
 
 /** The steps and output trim a choice plays, or null when it plays nothing (a
  *  custom sound that no longer exists). */
-function resolveTones(preset: Exclude<SoundChoice, 'none'>, customTones?: CustomTones): { steps: ToneStep[]; outputGain: number } | null {
+function resolveTones(preset: Exclude<SoundChoice, 'none' | FileSoundId>, customTones?: CustomTones): { steps: ToneStep[]; outputGain: number } | null {
   const custom = customSoundName(preset)
   if (custom === null) {
     const builtin = preset as Exclude<SoundPreset, 'none'>
@@ -252,10 +330,26 @@ function resolveTones(preset: Exclude<SoundChoice, 'none'>, customTones?: Custom
 }
 
 /** `customTones` names the custom sounds a custom choice is looked up in;
- *  omitted, they are read from the stored settings. */
-export function playPreset(preset: SoundChoice, volume: number, customTones?: CustomTones): void {
+ *  omitted, they are read from the stored settings. `ifFileMissing` is played
+ *  instead of a file choice whose bytes are not in this browser (a settings
+ *  backup restores the record without them), so a notification is never
+ *  silenced by a sound that cannot play; omitted, such a choice plays nothing. */
+export function playPreset(preset: SoundChoice, volume: number, customTones?: CustomTones, ifFileMissing?: SoundChoice): void {
   if (preset === 'none' || volume <= 0) return
-  const tones = resolveTones(preset, customTones)
+  const file = fileSoundName(preset)
+  if (file !== null) {
+    // A file choice is looked up in the stored settings, like an omitted
+    // `customTones`: its record names the key its bytes are under.
+    const settings = loadSoundSettings()
+    const meta = settings.customFiles && Object.hasOwn(settings.customFiles, file) ? settings.customFiles[file] : null
+    // A fallback that is itself a file choice is not followed, so this never loops.
+    const fallback = ifFileMissing !== undefined && fileSoundName(ifFileMissing) === null ? ifFileMissing : undefined
+    const playFallback = () => { if (fallback !== undefined) playPreset(fallback, volume, customTones) }
+    if (meta) playStoredSoundFile(meta.key, volume, playFallback)
+    else playFallback()
+    return
+  }
+  const tones = resolveTones(preset as Exclude<SoundChoice, 'none' | FileSoundId>, customTones)
   if (!tones) return
   // Backoff guard: once MAX_CLOSED_RECOVERIES consecutive 'closed' hits occur,
   // stop trying entirely. Without this, getCtx() keeps allocating fresh
@@ -308,15 +402,20 @@ export function playPreset(preset: SoundChoice, volume: number, customTones?: Cu
  *
  * The element is released as soon as it finishes or fails, so a long session does
  * not accumulate one per cue. Callers debounce per crew and state, so this needs
- * no queue of its own.
+ * no queue of its own. `onRelease` runs exactly once, when the element is
+ * released or when nothing could be played at all — the moment a caller can
+ * free what backs `url` (a `blob:` URL).
  */
-export function playSoundFile(url: string, volume: number): void {
-  if (!url || volume <= 0) return
-  if (typeof Audio === 'undefined') return
+export function playSoundFile(url: string, volume: number, onRelease?: () => void): void {
+  if (!url || volume <= 0 || typeof Audio === 'undefined') {
+    onRelease?.()
+    return
+  }
   let el: HTMLAudioElement
   try {
     el = new Audio(url)
   } catch {
+    onRelease?.()
     return
   }
   // The stored volume is a 0..1 setting, but it arrives from localStorage and
@@ -328,16 +427,51 @@ export function playSoundFile(url: string, volume: number): void {
   // still buffering — the case a refused `play()` leaves behind. Assigning to
   // `src` would release the same resource and is a dynamic media-source
   // assignment, which is a shape worth not writing when it buys nothing.
+  let released = false
   const release = () => {
+    if (released) return
+    released = true
     el.onended = null
     el.onerror = null
     el.pause()
+    onRelease?.()
   }
   el.onended = release
   el.onerror = release
   // `play()` rejects on the autoplay policy and on a decode failure alike; both
   // are silence, and neither is an error the user can act on.
   void el.play().catch(release)
+}
+
+/**
+ * Play one of the user's uploaded sound files, read from this browser's
+ * IndexedDB under the record's `key` and played from a `blob:` URL. A file
+ * whose bytes are not stored (another tab deleted it, storage was cleared, a
+ * backup restored only its record) calls `onMissing`, which plays the
+ * caller's fallback; without one it plays nothing. A file that is stored but
+ * cannot be played plays nothing, like any other unplayable file.
+ *
+ * The URL is revoked when the element is released, and in any case shortly
+ * after the longest a sound file may play: a platform pause that fires
+ * neither `ended` nor `error` (audio focus lost, a media-session interruption)
+ * would otherwise pin the bytes until the page unloads.
+ */
+export function playStoredSoundFile(key: string, volume: number, onMissing?: () => void): void {
+  if (volume <= 0) return
+  void getSoundFile(key).then(blob => {
+    if (!blob) { onMissing?.(); return }
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return
+    const url = URL.createObjectURL(blob)
+    let revoked = false
+    const revoke = () => {
+      if (revoked) return
+      revoked = true
+      clearTimeout(backstop)
+      URL.revokeObjectURL(url)
+    }
+    const backstop = setTimeout(revoke, (CUSTOM_FILE_LIMITS.maxSeconds + 5) * 1000)
+    playSoundFile(url, volume, revoke)
+  })
 }
 
 /**
@@ -394,6 +528,18 @@ export function presetForKind(kind: string | undefined, settings: SoundSettings)
   return fallback
 }
 
+/**
+ * What `kind` plays when its file choices cannot: the same resolution with
+ * every file choice treated as unset, the rule a load applies to a choice
+ * whose sound is gone. File choices only, so it never resolves to a file.
+ */
+export function missingFileFallback(kind: string | undefined, settings: SoundSettings): SoundChoice {
+  const perCategory = Object.fromEntries(
+    Object.entries(settings.perCategory).filter(([, v]) => v === undefined || fileSoundName(v) === null),
+  ) as SoundSettings['perCategory']
+  return presetForKind(kind, { ...settings, perCategory })
+}
+
 /** Installs a window listener that plays sounds on notification SSE events. */
 export function useNotificationSound(): void {
   useEffect(() => {
@@ -426,7 +572,7 @@ export function useNotificationSound(): void {
       const preset = presetForKind(kind, current)
       if (preset === 'none' || current.volume <= 0) return
       lastPlayedAt = now
-      playPreset(preset, current.volume, current.customTones ?? {})
+      playPreset(preset, current.volume, current.customTones ?? {}, missingFileFallback(kind, current))
     }
     window.addEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, onSettingsChanged)
     window.addEventListener('storage', onStorage)

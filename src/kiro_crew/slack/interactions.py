@@ -873,14 +873,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_context import ViewHandler  # noqa: F401
     from kiro_crew.slack.interactions_context import _probe_tracked_channel_scope  # noqa: F401
     from kiro_crew.slack.interactions_context import ack_button  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _FENCE_MARKER_NEUTRALIZED  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _FENCE_MARKER_RE  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _FENCE_WORD_JOIN  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _extend_fence_span_left  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _fence_fold  # noqa: F401
+    from kiro_crew.slack.interactions_modals import _PRIVATE_METADATA_CAP  # noqa: F401
+    from kiro_crew.slack.interactions_modals import _SHORTCUT_MAX_FILES  # noqa: F401
+    from kiro_crew.slack.interactions_modals import _fit_private_metadata  # noqa: F401
     from kiro_crew.slack.interactions_modals import _handle_config_submission  # noqa: F401
     from kiro_crew.slack.interactions_modals import _handle_voice_config_submission  # noqa: F401
-    from kiro_crew.slack.interactions_modals import _neutralize_fence_markers  # noqa: F401
     from kiro_crew.slack.interactions_settings import _refresh_channels_modal  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PAYLOAD_CAP  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PREFIX  # noqa: F401
@@ -916,4 +913,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.outbound import options_answered  # noqa: F401
     from kiro_crew.slack.outbound import remember_options_several  # noqa: F401
     from kiro_crew.slack.outbound import take_options_several  # noqa: F401
+    from kiro_crew.slack.format import ForwardedMessage  # noqa: F401
+    from kiro_crew.slack.format import _FENCE_MARKER_NEUTRALIZED  # noqa: F401
+    from kiro_crew.slack.format import _FENCE_MARKER_RE  # noqa: F401
+    from kiro_crew.slack.format import _FENCE_WORD_JOIN  # noqa: F401
+    from kiro_crew.slack.format import _extend_fence_span_left  # noqa: F401
+    from kiro_crew.slack.format import _fence_fold  # noqa: F401
+    from kiro_crew.slack.format import _neutralize_fence_markers  # noqa: F401
+    from kiro_crew.slack.format import assemble_forward_message  # noqa: F401
+    from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
+    from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
+    from kiro_crew.slack.handler import _SLACK_SECTION_TEXT_LIMIT  # noqa: F401
 # isort: on

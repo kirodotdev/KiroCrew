@@ -1,7 +1,9 @@
-"""Dashboard access to a remote session's workspace over ``coder ssh``: read-only
-``--browse``, a separate ``--write`` that refuses a stale ``expected``, the
-browse mode's read-only ``stats`` (:func:`session_health`), and an interactive
-shell. None autostarts a stopped workspace; requests go on stdin.
+"""Dashboard access to a remote session's workspace over ``coder ssh``, ``boxd
+machine exec`` or the Sprites exec API: read-only ``--browse``, a separate
+``--write`` that refuses a stale ``expected``, the browse mode's read-only
+``stats`` (:func:`session_health`), and an interactive shell. Browsing never
+autostarts a stopped workspace (a terminal may wake a sprite or a boxd machine);
+requests go on stdin.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from kiro_crew.coder.remote_worker import (
     run_collect,
 )
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
+from kiro_crew.session_environments import browse as vm_browse
 
 #: The guest caps a read at 256 KB of text; JSON escaping can roughly double it.
 _BROWSE_OUTPUT_MAX = 2 * 1024 * 1024
@@ -47,12 +50,19 @@ class WorkdirChanged(LookupError):
 
 @dataclass(frozen=True)
 class _Target:
-    shell: CoderShell
+    #: A ``CoderShell``, ``BoxdShell`` or ``SpritesShell``.
+    shell: Any
     workdir: str
     binding_id: str
+    #: A sprite or boxd machine that is not on compute, resolved with
+    #: ``wake=False``: the caller reports it stopped instead of exec'ing into it.
+    stopped: bool = False
 
 
-async def _resolve(session_key: str) -> _Target:
+async def _resolve(session_key: str, *, wake: bool = True) -> _Target:
+    """The session's workspace target. ``wake=False`` is for a passive probe:
+    a sprite or boxd machine that is not running comes back ``stopped`` and
+    must not be exec'd, since an exec would wake it (Coder never autostarts)."""
     from kiro_crew.coder.registry import WorkspaceBindingRegistry
     from kiro_crew.coder.session_launch import (
         CoderSessionEnvironments,
@@ -65,14 +75,22 @@ async def _resolve(session_key: str) -> _Target:
 
     home = await asyncio.to_thread(data_home)
     choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")
-    resolved = await asyncio.to_thread(choices.resolve, session_key)
+    resolved = await asyncio.to_thread(choices.resolve_choice, session_key)
     if resolved is None:
         raise NotRemote(session_key)
-    profile_id, owner = resolved
+    profile_id, owner, recorded_provider = resolved
     config = live.snapshot()
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    from kiro_crew.coder.session_launch import PROVIDER_ID
+    from kiro_crew.session_environments.routing import chosen_provider
+
+    kind = chosen_provider(section, profile_id, recorded_provider) or PROVIDER_ID
+    if kind != PROVIDER_ID:
+        return await vm_browse._resolve_persistent(
+            kind, section, home, owner, profile_id, wake=wake
+        )
     # Resolved once, off the loop: the PATH search can stall on a slow mount.
     coder_bin = await asyncio.to_thread(resolve_coder_bin)
     provider = CoderSessionEnvironments(section, home, coder_bin=coder_bin)
@@ -119,6 +137,9 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
     payload = json.dumps(request).encode("utf-8")
 
     async def once() -> bytes:
+        if not isinstance(target.shell, (CoderShell, *vm_browse._command_shell_types())):
+            # A shell with no dial command (a sprite's exec API) runs it itself.
+            return await asyncio.wait_for(target.shell.run(command, payload), _BROWSE_TIMEOUT)
         return await run_collect(
             target.shell.argv(command),
             payload,
@@ -213,8 +234,10 @@ async def session_health(session_key: str) -> dict[str, Any]:
     Never starts compute: a stopped workspace reports ``state: stopped`` and no
     metrics, rather than being woken to be measured.
     """
-    target = await _resolve(session_key)
+    target = await _resolve(session_key, wake=False)
     base: dict[str, Any] = {"workspace": target.shell.workspace, "workdir": target.workdir}
+    if target.stopped:
+        return {**base, "state": "stopped"}
     request = {"op": "stats", "path": "."}
     try:
         # Guest files that predate ``stats`` are reinstalled by _ask itself.
@@ -263,7 +286,9 @@ def summarize_unsaved(status_output: str) -> str | None:
 
 async def unsaved_work(session_key: str) -> str | None:
     """Unsaved work in a running workspace; None when stopped or unreachable (never woken)."""
-    target = await _resolve(session_key)
+    target = await _resolve(session_key, wake=False)
+    if target.stopped:
+        return None
     try:
         result = await _ask(target, "browse", {"op": "git_status", "path": "."})
     except (WorkspaceNotRunning, SessionEnvironmentUnavailable):
@@ -274,7 +299,13 @@ async def unsaved_work(session_key: str) -> str | None:
 
 
 async def remote_terminal_argv(session_key: str) -> list[str]:
-    """argv for a login shell in the workspace (the template sets its directory)."""
+    """argv for a login shell in the workspace (the template sets its directory).
+
+    Opening one is an explicit request, so a sprite or a boxd machine may wake.
+    """
     target = await _resolve(session_key)
+    argv = vm_browse.vm_terminal_argv(target)
+    if argv is not None:
+        return argv
     # Coder never autostarts a stopped workspace here.
     return list(target.shell.interactive_argv())

@@ -16,7 +16,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createTestStore } from './helpers'
+import { createTestStore, expectWheelToScrollRow } from './helpers'
 import type { RootState } from '../store'
 
 const mockNavigate = vi.fn()
@@ -401,9 +401,7 @@ describe('EmbedTabStrip — selection and scrolling', () => {
   it('turns vertical wheel movement into horizontal scrolling', () => {
     seed(['chat-1', 'chat-2'], 0)
     wrap(makeStore())
-    const strip = layOut(screen.getAllByRole('tab'))
-    fireEvent.wheel(strip, { deltaY: 120 })
-    expect(strip.scrollLeft).toBe(120)
+    expectWheelToScrollRow(stripOf(screen.getAllByRole('tab')))
   })
 })
 

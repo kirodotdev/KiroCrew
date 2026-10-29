@@ -828,6 +828,18 @@ def _final_key_read(key_path: Path) -> tuple[bytes | None, bool]:
 
 _SECRET: bytes | None = None
 _SECRET_LOCK = threading.Lock()
+#: The memoized secret when it is an ephemeral fallback, else ``None``. Compared by
+#: identity with :data:`_SECRET` (set together under the lock by ``_memoize_locked``),
+#: so it always describes the exact bytes the memo holds.
+_EPHEMERAL_SECRET: bytes | None = None
+
+
+def _memoize_locked(outcome: "list[str]") -> None:
+    """Load the secret into the memo and record whether it is ephemeral."""
+    global _SECRET, _EPHEMERAL_SECRET
+    secret = _load_or_create_secret(outcome)
+    _EPHEMERAL_SECRET = secret if "ephemeral" in outcome else None
+    _SECRET = secret
 
 
 def load_boot_secret() -> str:
@@ -849,12 +861,11 @@ def load_boot_secret() -> str:
     for every other caller: only the boot, which can still refuse to bind, acts
     on the answer.
     """
-    global _SECRET
+    outcome: list[str] = []
     with _SECRET_LOCK:
         if _SECRET is not None:
             return "already-loaded"
-        outcome: list[str] = []
-        _SECRET = _load_or_create_secret(outcome)
+        _memoize_locked(outcome)
     if "short" in outcome:
         return "short"
     return "ephemeral" if "ephemeral" in outcome else "loaded"
@@ -868,9 +879,28 @@ def _get_secret() -> bytes:
     module docstring. Memoized under a lock so the key is loaded exactly
     once even under concurrent first use.
     """
-    global _SECRET
     if _SECRET is None:
         with _SECRET_LOCK:
             if _SECRET is None:
-                _SECRET = _load_or_create_secret()
-    return _SECRET
+                _memoize_locked([])
+    return _SECRET  # type: ignore[return-value]
+
+
+def get_persisted_secret() -> bytes:
+    """Return the signing secret only when it is the persisted ``token_signing.key``.
+
+    For anything signed to outlive this process (a durable policy file): an
+    ephemeral fallback key exists only in this process's memory, so a signature
+    made with it would never verify anywhere else and could not be repaired by
+    fixing the file later. Raises ``RuntimeError`` instead of returning it.
+    """
+    with _SECRET_LOCK:
+        if _SECRET is None:
+            _memoize_locked([])
+        secret, ephemeral = _SECRET, _EPHEMERAL_SECRET
+    if secret is None or secret is ephemeral:
+        raise RuntimeError(
+            "the dashboard token-signing key (token_signing.key) could not be read or "
+            "persisted, so this process only has a temporary key"
+        )
+    return secret

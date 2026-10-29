@@ -1377,13 +1377,16 @@ _SELECT_ONLY_SESSION_RESP = {
 def test_steer_advertisement_matches_the_steer_table(backend):
     """H6: the handle advertises steer iff the host is in a steer table.
 
-    User steer reads ``ACP_BACKENDS_STEER`` or ``ACP_BACKENDS_STEERING_REQUEST``;
-    a deny notice reads ``ACP_BACKENDS_STEER`` alone.
+    User steer reads ``ACP_BACKENDS_STEER`` or ``ACP_BACKENDS_STEERING_REQUEST``
+    (the latter with the handshake's ``_meta.steering.supported``); a deny notice reads ``ACP_BACKENDS_STEER`` alone.
 
     Ran for every known backend, which is the point: this answer was a literal
     ``True`` for years and was honest only while ``AcpRuntime`` served one host.
     """
     handle = _handle_for(backend)
+    # A ``_session/steering`` member steers only once its handshake advertised it.
+    assert handle.supports_steer is (backend in ACP_BACKENDS_STEER)
+    handle._runtime.initialize_result = {"_meta": {"steering": {"supported": True}}}
     assert handle.supports_steer is (
         backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
     )

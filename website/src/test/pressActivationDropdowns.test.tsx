@@ -203,6 +203,62 @@ describe('context-usage readout', () => {
   })
 })
 
+describe('context-usage readout derives the percentage from used / window', () => {
+  const autoCompactThreshold = {
+    autoCompactQuery: { isLoading: false, isError: false },
+    autoCompact: null,
+    autoCompactError: '',
+    setAutoCompactError: () => {},
+    pushAutoCompact: () => {},
+  } as unknown as Parameters<typeof ContextUsageControl>[0]['autoCompactThreshold']
+
+  function Meter(props: Partial<Parameters<typeof ContextUsageControl>[0]>) {
+    const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
+    return (
+      <ContextUsageControl
+        contextPct={0}
+        shelfCompact={false}
+        showContextPct
+        ctxPopoverOpen={ctxPopoverOpen}
+        setCtxPopoverOpen={setCtxPopoverOpen}
+        ctxWrapRef={ctxWrapRef}
+        autoCompactThreshold={autoCompactThreshold}
+        {...props}
+      />
+    )
+  }
+  // The ContextBar's accessible name is the tooltip "Context: N%", so the
+  // rendered percentage is observable without opening the popover.
+  const barPct = () => screen.getByLabelText(/^Context: \d+%$/).getAttribute('aria-label')
+
+  it('reads ~60% after a switch: 120k used kept, window now the new model 200k', async () => {
+    // Switch state: the store dropped the stale pct and kept used=120k with no
+    // window, so the caller sets derivePctFromUsed. The window resolves to the
+    // new model's 200k. Pairing the OLD 12% with 200k would read 12%; the
+    // control must derive 120k / 200k = 60%.
+    render(<Meter contextPct={12} contextUsedTokens={120_000} contextWindowTokens={200_000} derivePctFromUsed />)
+    await flush()
+    expect(barPct()).toBe('Context: 60%')
+  })
+
+  it('a normal frame renders the reported pct even when it differs from used/window', async () => {
+    // Not a switch (derivePctFromUsed is false): the backend's own percentage
+    // is shown exactly as on main, even when it is not simply used / window
+    // (overhead counted, or a percentage backfilled against tokens). 88k/200k
+    // would be 44%, but the reported 50% must render.
+    render(<Meter contextPct={50} contextUsedTokens={88_000} contextWindowTokens={200_000} />)
+    await flush()
+    expect(barPct()).toBe('Context: 50%')
+  })
+
+  it('a percentage-only reading (no used) renders the given percentage', async () => {
+    // No `used` to derive from: fall back to the percentage as given.
+    render(<Meter contextPct={45} contextWindowTokens={0} derivePctFromUsed />)
+    await flush()
+    expect(barPct()).toBe('Context: 45%')
+  })
+})
+
 describe('composer + menu trigger', () => {
   const trigger = () => screen.getByRole('button', { name: /add files/i })
   const renderPlus = () => renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} onUploadFiles={vi.fn()} />)

@@ -51,12 +51,15 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_SETTING_CHANGE,
     KIND_TEMPLATE_UPDATE,
     KIND_TRUST_APP,
+    KIND_WORKFLOW_SAVE,
+    KIND_WORKFLOW_UPDATE,
     LIST_OP_ADD,
     RISK_CODE_EXEC,
     RISK_NORMAL,
     RISK_TIGHTEN,
     RISK_WIDEN,
     _fail,
+    workflow_save_slug,
 )
 from kiro_crew.config.sections import (
     DEFAULT_MODEL,
@@ -913,6 +916,80 @@ def build_preview(
         elif remove:
             out["risk"] = RISK_TIGHTEN
         out["apply"] = [_folder_steering_step(p["folder"], new)]
+    elif kind == KIND_WORKFLOW_SAVE:
+        slug = workflow_save_slug(p)
+        if snapshot.get("slug_taken"):
+            # The library would save it under a suffixed slug, so the command the
+            # card shows would start the workflow already saved under that name.
+            raise _fail("slug_taken", f"'/workflow {slug}' is already a saved workflow")
+        out["title"] = f"Save workflow “{_short(p['name'], 80)}” to the library"
+        out["changes"] = [{"field": "name", "label": "Name", "after": _display(p["name"])}]
+        if p["description"]:
+            out["changes"].append(
+                {
+                    "field": "description",
+                    "label": "Description",
+                    "after": _display(p["description"]),
+                }
+            )
+        out["changes"].append(
+            {"field": "workflow_command", "label": "Command", "after": f"/workflow {slug}"}
+        )
+        out["changes"].append(
+            {"field": "workflow_source", "label": "Script", "after": _display(p["source"])}
+        )
+        # A saved workflow is a script anyone can start by name, so the card says it
+        # runs code whatever the script does.
+        out["risk"] = RISK_CODE_EXEC
+        out["apply"] = [step("POST", "/api/workflows/definitions", _workflow_save_body(p))]
+    elif kind == KIND_WORKFLOW_UPDATE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", f"no saved workflow '{p['workflow']}'")
+        if snapshot.get("format") != "python":
+            raise _fail("not_python", "only a Python workflow can be revised from a card")
+        changed = {k: p[k] for k in ("name", "description") if k in p and p[k] != snapshot.get(k)}
+        diff = str(context.get("diff") or "")
+        # Any difference in the script is a change, even one no diff line shows.
+        source_changed = bool(context.get("source_changed")) or bool(diff)
+        if not source_changed and not changed:
+            raise _fail("no_change", "the saved workflow already reads like that")
+        label = str(snapshot.get("name") or p["workflow"])
+        revision = int(snapshot.get("revision") or 0)
+        out["title"] = f"Save a new revision of workflow “{_short(label, 80)}”"
+        out["changes"] = [
+            {
+                "field": "workflow_command",
+                "label": "Command",
+                "after": f"/workflow {snapshot.get('slug') or p['workflow']}",
+            },
+            {"label": "Revision", "before": revision, "after": revision + 1},
+        ]
+        for key, value in changed.items():
+            out["changes"].append(
+                {
+                    "field": key,
+                    "label": key.capitalize(),
+                    "before": _display(str(snapshot.get(key) or "")),
+                    "after": _display(value),
+                }
+            )
+        if diff:
+            out["changes"].append(
+                {"field": "workflow_diff", "label": "Changes to the script", "after": diff}
+            )
+        if source_changed:
+            # The whole new script whenever it differs, so a change the diff could
+            # not show is still in front of the owner: under Details next to a
+            # diff, in the open without one.
+            row = {"field": "workflow_source", "label": "Script", "after": _display(p["source"])}
+            if diff:
+                row["detail"] = True
+            out["changes"].append(row)
+        out["risk"] = RISK_CODE_EXEC
+        body = {"source": p["source"], "expected_revision": revision, **changed}
+        out["apply"] = [
+            step("PATCH", f"/api/workflows/definitions/{_q(str(snapshot['id']))}", body)
+        ]
     else:  # KIND_DENIED_COMMAND
         if p["action"] == "add":
             if snapshot.get("exists"):
@@ -979,9 +1056,27 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         # The yes only starts a wake; the page it leads to goes back with
         # ``dashboard_rollback``, a version like any other.
         KIND_CREWMATE_DASHBOARD_PAGE,
+        # The library has no delete, and a revision is never taken back: an earlier
+        # revision stays in the definition's history.
+        KIND_WORKFLOW_SAVE,
+        KIND_WORKFLOW_UPDATE,
     ):
         return True
     return kind == KIND_DENIED_COMMAND and params.get("action") == "add"
+
+
+def _workflow_save_body(p: dict[str, Any]) -> dict[str, Any]:
+    """The Workflows tab's own save body for a ``workflow.save`` card."""
+    # The card shows ``/workflow <slug>``, asked for or derived from the name; the
+    # save refuses a used slug rather than suffixing it, so the command the owner
+    # approved is the one saved.
+    return {
+        "source": p["source"],
+        "name": p["name"],
+        "description": p["description"],
+        "slug": workflow_save_slug(p),
+        "exact_slug": True,
+    }
 
 
 def _folder_steering_step(folder: str, steering_dirs: list[str]) -> dict[str, Any]:

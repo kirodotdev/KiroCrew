@@ -16,8 +16,9 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _app_owned_cron_refusal,
     _caller_is_ownership_fenced,
     _channel_link_of,
+    _conductor_fenced,
     _cron_caller,
-    _member_bypass,
+    _dispatch_bypass,
     _member_caller,
     _outside_reach,
     _sel_off_loop,
@@ -765,10 +766,12 @@ def refuse_caller_identity(
     # (default true = today's behaviour) is on. Turn that ceiling off and the
     # member falls back under the switch. The member's reach stays bounded by
     # the ownership check below, which restricts it to slots it created itself.
+    # The Conductor in the owner's own tab bypasses on the same terms
+    # (`_conductor_bypass`), and is fenced the same way while it does.
     if (
         not skip_enabled_check
         and not session_control_enabled()
-        and not _member_bypass(state, caller_key)
+        and not _dispatch_bypass(state, caller_key)
     ):
         raise deny(
             "session control is disabled in config (agent.session_control)",
@@ -945,6 +948,11 @@ def _not_creator_reason(
         return "this session can only control sessions it created itself"
     elif _member_caller(state, caller_key):
         return "a crew member can only control worker sessions it created itself"
+    elif _conductor_fenced(state, caller_key):
+        return (
+            "with agent.session_control off, the Conductor can only control worker "
+            "sessions it created itself"
+        )
     else:
         return "an agent-created session can only control sessions it created itself"
 

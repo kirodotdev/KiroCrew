@@ -77,10 +77,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         api_artifact_resolve_comment,
     )
     from kiro_crew.dashboard.handlers.artifacts_parts.artifact_folders import (  # noqa: F401
+        _ARTIFACT_FOLDER_ICON_INFLIGHT,
+        _ARTIFACT_FOLDER_ICON_NEXT,
         _ARTIFACT_FOLDER_ICON_TASKS,
+        _cancel_artifact_folder_icon_tasks,
         _serialize_folder,
         _set_pinned_and_reload,
         _spawn_artifact_folder_icon_task,
+        _start_artifact_folder_icon_task,
         _withdraw_subtree_publications,
         api_artifact_folder_create,
         api_artifact_folder_delete,

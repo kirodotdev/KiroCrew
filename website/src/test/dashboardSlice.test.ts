@@ -22,7 +22,7 @@ import reducer, {
 } from '../store/dashboardSlice'
 import type { StatusData, ChatSlot } from '../types'
 import { sharedItem } from './unreadStorageTestUtils'
-import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread } from '../store/dashboard/unread'
+import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread, relayedUnreadKeys } from '../store/dashboard/unread'
 
 vi.mock('../api/client', () => ({
   api: { chatSlots: vi.fn(), chatMode: vi.fn() },
@@ -750,6 +750,24 @@ describe('dashboardSlice', () => {
       const byMode: ChatSlot = { key: 'legacy-2', title: 'L', messages: 0, running: false, mode: 'orchestrator' }
       const state = buildState([bySurface, byMode], ['legacy-1', 'legacy-2'])
       expect(selectUnreadByMode('')(state)).toBe(2)
+    })
+
+    it('leaves a Crew Mode crew member out of the badge and the relayed count, keeping its unread entry', () => {
+      // A crew member is no row of the person's lists (its root's Crew panel
+      // lists it), so its finished turn must not count an unread session the
+      // Sessions list never shows. The entry stays for the Crew panel.
+      const root: ChatSlot = { key: 'root', title: 'R', messages: 1, running: false, mode: '', crew_mode_root: true }
+      const member: ChatSlot = { key: 'w1', title: 'W', messages: 1, running: false, mode: '', crew_root: 'root' }
+      const plain: ChatSlot = { key: 'chat-1', title: 'C', messages: 1, running: false, mode: '' }
+      const state = buildState([root, member, plain], ['w1', 'chat-1'])
+      expect(selectUnreadByMode('')(state)).toBe(1)
+      expect(relayedUnreadKeys(state.dashboard)).toEqual(['chat-1'])
+      expect(state.dashboard.unreadSlots).toEqual(['w1', 'chat-1'])
+      // Its root closed, the crew member is a row of the list again, so it counts.
+      const orphan: ChatSlot = { key: 'w2', title: 'W2', messages: 1, running: false, mode: '', crew_root: 'gone-root' }
+      const closed = buildState([plain, orphan], ['w2', 'chat-1'])
+      expect(selectUnreadByMode('')(closed)).toBe(2)
+      expect(relayedUnreadKeys(closed.dashboard)).toEqual(['w2', 'chat-1'])
     })
 
     it('keeps an unheld orphan in the chat badge but leaves a held orphan out', () => {

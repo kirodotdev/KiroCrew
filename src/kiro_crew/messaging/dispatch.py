@@ -463,6 +463,7 @@ class ChannelTurns:
         decider: Any = None,
         prepare: Callable[[Any, str], Awaitable[str]] | None = None,
         monitor: MonitorWake | None = None,
+        skill_trigger_text: str | None = None,
     ) -> TurnOutcome:
         """Answer *text* from *asker*, rendering into *renderer*.
 
@@ -472,6 +473,8 @@ class ChannelTurns:
         when ``asker.can_prompt``. *prepare(provider, text)* runs once per attempt,
         after the session exists, and returns the prompt to build from; it must be
         idempotent, and an empty answer ends the turn EMPTY with nothing recorded.
+        *skill_trigger_text*, when given, is what skill triggers match instead of
+        *text*: a turn Kiro Crew generated names the words its sender wrote.
 
         Every classified ending returns a :class:`TurnOutcome`. Once the turn body
         is entered only ``CancelledError`` propagates, after the turn is finalized --
@@ -510,6 +513,7 @@ class ChannelTurns:
             ),
             prepare=prepare,
             monitor=monitor,
+            skill_trigger_text=skill_trigger_text,
         )
 
     def _opens_crew_log(self, asker: Asker) -> bool:
@@ -620,6 +624,7 @@ class ChannelTurns:
         is_muted: Callable[[], bool] | None = None,
         quiet: bool = False,
         monitor: MonitorWake | None = None,
+        skill_trigger_text: str | None = None,
     ) -> TurnOutcome:
         """Run one turn from fully resolved inputs; :meth:`answer` resolves them.
 
@@ -627,7 +632,8 @@ class ChannelTurns:
         that pipeline always ran it; it never ends the turn. *is_muted* replaces
         the mute read with :func:`drive_turn`'s :func:`conversation_is_muted`.
         *quiet* silences the tool-less refusal without touching the record, which
-        is all ``ChannelTurn.unprompted`` ever meant.
+        is all ``ChannelTurn.unprompted`` ever meant. *skill_trigger_text* is
+        handed to ``build_message`` unchanged.
         """
         channel = self.channel
         sessions = self._sessions
@@ -995,6 +1001,7 @@ class ChannelTurns:
                     runtime_source=channel,
                     context_provider=provider,
                     user_display_name=asker.display_name,
+                    skill_trigger_text=skill_trigger_text,
                 )
                 tool_gate = build_tool_gate(ctx_builder, session_key=session_key, agent=agent)
                 if Drift.GENERIC_DENY_REASON in drift:
@@ -1465,6 +1472,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         bind=turn.bind_provider,
         is_muted=lambda: conversation_is_muted(sessions, turn),
         quiet=turn.unprompted,
+        skill_trigger_text=turn.skill_trigger_text,
     )
 
 

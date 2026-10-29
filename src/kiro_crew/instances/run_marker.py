@@ -767,10 +767,12 @@ def _marker_lock(port: int) -> Iterator[bool]:
     fd: int | None = None
     guard = None
     try:
-        # O_RDWR | O_CREAT, never O_TRUNC: truncating before the lock is held lets
+        # Create-or-open, never O_TRUNC: truncating before the lock is held lets
         # a contender observe the file empty mid-section (GH-9248), which is why
         # platform_compat.open_lock_file exists and why this mirrors it.
-        fd = os.open(os.fspath(marker_lock_path(port)), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = platform_compat.open_create_or_existing(
+            os.fspath(marker_lock_path(port)), os.O_RDWR, 0o600
+        )
         guard = platform_compat.file_lock(fd, exclusive=True, timeout=_MARKER_LOCK_TIMEOUT_SECS)
         guard.__enter__()
     except (OSError, ValueError, RuntimeError):

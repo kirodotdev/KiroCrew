@@ -576,7 +576,8 @@ describe('crew editor — opening', () => {
     // Unfolded, the card ends its Advanced settings with a second Create too.
     expect(within(sheet).getAllByRole('button', { name: 'Create mate' })).toHaveLength(2)
     expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(within(sheet).getByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(within(sheet).getByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
+    expect(within(sheet).queryByRole('combobox', { name: 'Built from' })).toBeNull()
   })
 })
 

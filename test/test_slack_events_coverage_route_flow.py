@@ -341,6 +341,9 @@ class TestRouteMessageAttachments:
 
     @pytest.mark.asyncio
     async def test_forwarded_attachment_text_is_recovered(self):
+        # A note-less forward's third-party body is recovered from the share
+        # attachment AND quarantined in the untrusted-content fence (XPIA
+        # guard). It must NOT be routed as bare text as if the owner wrote it.
         orch = _make_orch()
         event = _event(
             text="This message contains interactive elements.",
@@ -350,7 +353,11 @@ class TestRouteMessageAttachments:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, event, ev.SeenCache())
                 await _drain(orch)
-        assert hm.await_args[0][3] == "the real body"
+        routed = hm.await_args[0][3]
+        assert "the real body" in routed
+        assert "UNTRUSTED FORWARDED CONTENT BEGIN" in routed
+        assert "UNTRUSTED FORWARDED CONTENT END" in routed
+        assert routed != "the real body"
 
 
 class TestRouteMessageTransportPath:

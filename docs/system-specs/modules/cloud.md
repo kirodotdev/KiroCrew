@@ -72,6 +72,7 @@ claim that a hostile in-process agent is fully contained.
 | `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
+| `host_policy.py` | Reads and validates the edition's `cloud_instance_policy` seam (managed policies for the EC2 instance role, plus the boundary statements they need). The one reader for the boundary document, the second launcher policy (`iam.host_policy_document`) and the template's `ExtraManagedPolicyArns`; see Security model. |
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `open_port_forward()` directly spawns the streaming `aws ssm start-session` child because `run_aws` captures output, and calls `aws.assert_human_action()` before doing so; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | Device-code / social sign-in on the box over SSM -- `kiro-cli`'s, or Crew's own vault's on the KAS bundle route (every remote script asks the box which, see `login_vault.py`) -- plus `cancel_device_login` — which stops a login this crew started and removes the files holding its code, WITHOUT dropping the box's session, because a cancelled attempt must not sign the crew in later and must not take an older valid session with it — and `logout` — the account switch. `login` short-circuits on an existing session, so `logout` is what makes a different Kiro account reachable without a hand-run SSM command. It kills any still-polling background `kiro-cli login` **and** any live `kiro-cli acp` runtime **before** signing out (otherwise the login re-authenticates the old account, and an ACP runtime keeps serving the old account's in-memory credential until its next 401), removes the login log/PID/FIFO (they hold the previous device-code URL + code, which must never be re-shown as a fresh prompt), and confirms the result with `is_logged_in` rather than the exit code — `kiro-cli logout` exits non-zero when there was no session to drop, which is still the requested state. That confirmation fails CLOSED: it requires a positive signed-out sentinel (`__NOAUTH__`), so an SSM timeout or transport error — where the session may still be active — reports failure rather than a false "signed out". The same fail-closed applies to the cleanup command itself: if that SSM invocation doesn't return `Success`, the kills it was meant to do can't be trusted and logout reports failure without probing. The CLI warns the operator that in-flight chats/cron sessions are stopped (their runtimes are killed). |
 | `login_vault.py` | The on-box half of the sign-in when Crew's own vault owns the credential. The local `kirocrew cloud` command cannot read the instance's `config.json`, so **the box decides**: every remote script (`login.py`'s check / whoami / login / logout / callback / cancel) splices in `route_prelude()`, which resolves the box's `kirocrew` and runs its `kirocrew kas route`; only the exact answer `kas-bundle` (`agent.acp_backend == "kas"` AND `agent.kas_bundle` on, the positive shape `kiro_prerequisite_service._kas_bundle_route` uses) takes the vault branch -- an empty answer (a box whose Kiro Crew predates the verb, or no `kirocrew` at all) and every other answer take the kiro-cli branch, whose `kiro-cli` invocations are the ones the scripts always ran. Before either branch, `require_sign_in_program()` refuses readably in two cases. First, when the probe RAN and could not decide -- `kas route` exited `ROUTE_UNKNOWN_EXIT` (1: unreadable config, or a crash) -- it echoes `__KIROCREW_ROUTE_UNKNOWN__`, the probe's output and the remedy, and touches NEITHER program whether or not kiro-cli is installed: a box whose config just broke may be on the bundle route, and `kiro-cli logout` there would report a sign-out while the vault credential stays usable. Argparse's 2 (a `kirocrew` too old for the verb) and the shell's 127 (no `kirocrew`) are NOT that case: they are "no route answer" and keep the kiro-cli branch. Second, when the box has NEITHER program: the route was not `kas-bundle` (the probe's exit code, its stdout and its stderr are kept apart in `$KC_ROUTE_RC` / `$KC_ROUTE_OUT` / `$KC_ROUTE_ERR`; only stdout is compared, since the config loader warns on stderr while the verb still answers `kas-bundle`) and `kiro-cli` did not resolve. It echoes `__KIROCREW_NO_SIGNIN_PROGRAM__`, the probe's output (the `kas route` error for an unreadable config, or the shell's "not found" for a missing `kirocrew`) and the remedy, so the operator never reads `kiro-cli: command not found` for what is a bundle-route box whose config broke; the local side reads either sentinel as UNKNOWN (`_auth_probe` None, `remote_identity` None, `logout` False) and as the prompt's error, never as signed out and never as a reason to start a flow. On the vault branch the scripts drive `kirocrew kas whoami [--format json]`, `kirocrew kas login [--provider idc --start-url U --region R]` (one background launch for every target: the verb prompts for nothing, so the kiro-cli IdC pty driver has no counterpart) and `kirocrew kas logout` ([kas-auth.md](kas-auth.md) § Sign-in from a shell); their output is read by the SAME capture loop, `parse_login_output` and `parse_whoami_output`, because the verbs print kiro-cli's vocabulary (`https://…user_code=…`, `code: XXXX-XXXX`, the `accountType`/`startUrl` document) and use its exit codes. The device-login script echoes `__KIROCREW_VAULT_ROUTE__` on that branch so `start_device_login` never degrades a failed vault sign-in into the kiro-cli social-callback flow (there is no kiro-cli on that box); the callback script itself refuses with `__KIROCREW_VAULT_NO_CALLBACK__`. Cancel and replace `pkill` both command-line patterns (`kiro-cli login`, `kirocrew kas login`) and confirm the stop only when both are gone. The vault logout kills no engine process: the vault is part of the gateway's identity fingerprint and its pre-turn identity-change check retires the agent processes on the next turn. Nothing crosses SSM but the prompt the user must open; the device code and the token stay between the box's `kirocrew` and the issuer. |
@@ -676,6 +677,57 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
     `sts:GetCallerIdentity` share `CloudFormationAndResourceDiscovery` (same
     Effect, `*`, no Condition, so one statement grants exactly what two would),
     which keeps the policy under the 6,144-char cap.
+  - **Edition host policies (the `cloud_instance_policy` seam).** An
+    organization can require a host agent (monitoring, inventory, patching) on
+    every EC2 instance, with its permissions in a managed policy that exists in
+    each account. The public build adds nothing. An edition returns a
+    `CloudInstancePolicy` with `managed_policy_arns` (full policy ARNs,
+    `{account}` for the launch account) and `boundary_statements` (`Allow`
+    statements for the ceiling). Three places read it, all through
+    `cloud/host_policy.py`, so they cannot disagree: the instance boundary
+    document appends the statements (the KMS boundary inherits them, with its
+    own statement last), a second launcher policy (`iam.host_policy_document`,
+    printed by `kirocrew cloud iam-policy --host-policies` and returned as
+    `host_policies` by `GET /api/cloud/iam-policy`) lets the launcher attach the
+    ARNs, and the template's `ExtraManagedPolicyArns` parameter attaches them
+    beside Session Manager's policy. The grant is a separate policy because the
+    main one is within a few dozen characters of IAM's 6,144-character cap, and
+    because it must reach only roles the boundary caps: its resource is the
+    role path alone (the main attach statement also covers `LEGACY_ROLE_ARN`,
+    whose root-path roles may predate the boundary) and it requires the
+    `kirocrew:managed` tag, which only the launcher's boundary-gated
+    `CreateRole` applies, so a role created out-of-band at that path cannot be
+    given an edition policy, which would run uncapped.
+    `host_policy.instance_policy` refuses a descriptor with a `Deny`,
+    `NotAction`/`NotResource`, an action without a spelled-out service prefix
+    (`*`, `*:*`, `?am:...`), any `iam:` or `sts:` action, a reserved or repeated
+    Sid, a wildcard or comma in an ARN, a policy path over 512 characters, more
+    than eight ARNs or more than sixteen statements; a refused descriptor fails
+    the launch (dry run included) rather than launching with part of it. A seam
+    read that raises is refused the same way by every reader (an empty read
+    would launch without the required policies, and would make the upgrade
+    call an out-of-date boundary current); a composition failure still
+    propagates as itself. With an empty
+    descriptor the boundary, the launcher policy and the deploy argv are
+    unchanged, and there is no second policy.
+  - **Moving an existing account to the widened boundary.** The boundary stays
+    create-once for the launcher: it still has no `iam:CreatePolicyVersion`. A
+    launch that finds the exact document this launcher created before the
+    edition statements existed (`iam.previous_boundary_documents`,
+    `previous_kms_boundary_documents`) is refused with
+    `kirocrew cloud iam-boundary --upgrade` named (`--upgrade --ssm-kms` for
+    the KMS boundary, whose upgrade needs that flag). That admin step
+    (`source.upgrade_boundary`, refused in an agent session) re-versions the
+    boundary only when it holds that earlier document, sets the new version as
+    default, audits it, and reads it back through the launch's own verify; a
+    current boundary is left alone, and a hand-edited one is refused unchanged.
+    The operator also applies the second policy from
+    `kirocrew cloud iam-policy --host-policies` so the launcher may attach the
+    new policies; a launch denied that attach says so. A crew launched before
+    is not changed: resuming it (`kirocrew cloud launch`) does not redeploy its
+    stack, so it gets the host policies only when it is destroyed and launched
+    again, or when an admin attaches them to its `kirocrew-ec2-<tag>` role by
+    hand (the upgraded boundary is what lets them take effect).
   - **Who needs which KMS grant in an encrypted session.** Two principals touch
     the key. The operator credential that runs the interactive
     `aws ssm start-session` (directly, or through `kirocrew cloud connect`, which

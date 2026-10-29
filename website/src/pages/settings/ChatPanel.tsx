@@ -922,6 +922,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               Default off: the gesture takes the double-click that otherwise
               selects a word in the bubble (#7908). */}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.double_click_to_edit')} hint={i18nT('pages.settings.chatPanel.double_click_to_edit_desc')} checked={chatCfg.doubleClickToEdit} onChange={v => setChat('doubleClickToEdit', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.scroll_on_send')} hint={i18nT('pages.settings.chatPanel.scroll_on_send_desc')} checked={chatCfg.scrollOnSend} onChange={v => setChat('scrollOnSend', v)} />
           {/* This device only (its own key, not the backed-up chat config): it
               acts on this browser's clipboard. Default off, since it
               overwrites the clipboard on every drag. */}

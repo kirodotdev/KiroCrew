@@ -148,7 +148,9 @@ describe('CrewmateSwitcher open list', () => {
     setup()
     const list = await open()
     const search = screen.getByTestId('crewmate-switcher-search')
-    expect(search).toHaveAccessibleName('Find a mate')
+    // Same words as the roster column's search over the same roster (#24448).
+    expect(search).toHaveAccessibleName('Search mates…')
+    expect(search).toHaveAttribute('placeholder', 'Search mates…')
 
     fireEvent.change(search, { target: { value: 'radar' } })
     // Matches the display name AND the agent template ("radar-template").

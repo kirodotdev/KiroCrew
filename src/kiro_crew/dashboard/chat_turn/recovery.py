@@ -135,13 +135,15 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
     spend its stand-down budget, or a human turn that happened to be starved on a
     slot that also carries a loop would stop one the human never drove.
 
-    This does not ask whose failure the death was, so a shared runtime dying
-    during a session start advances the streak of every loop on that process.
-    Asking requires the runtime the allocation was attempting, and nothing in
-    scope at a start failure names it: the provider does not exist yet -- that is
-    what failed -- and the exception carrying the tag carries no runtime identity.
-    Closing it belongs at the raise sites, which would have to carry that
-    identity.
+    Only a start that TIMED OUT or whose reply was dropped as oversize carries the
+    tag: the ``session/new`` and ``session/load`` arms in ``acp/runtime`` and the
+    dedicated client's awaited-request timeout set it, and nothing else does. A
+    shared runtime dying during a session start takes neither arm -- ``_mark_dead``
+    fails the pending request with an untagged ``AcpRuntimeDead``, and the
+    ``AcpProcessDied`` the provider translates it to is untagged too -- so a death
+    is charged to no loop's streak: not the loop whose start it interrupted, and
+    not a sibling loop on the same process. There is nothing to attribute, because
+    the tag that would be attributed is absent.
 
     The tag is read with ``getattr`` because the two ACP exception families carry
     it independently and share no base -- which is also why this is a helper

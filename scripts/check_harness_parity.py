@@ -468,6 +468,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD": "off the wire: engine file watcher",
     "ACP_BACKENDS_MEMBER_TOOL_LIMITS": "off the wire: saved agent file field",
     "ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY": "off the wire: spec resolution",
+    "ACP_BACKENDS_SPEC_FILE_GRANTS": "off the wire: whether a start on an unowned spec is refused",
     "ACP_BACKENDS_MEMBER_PANEL": "Crew-side: panel MCP tools",
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": "Crew-side: Crew runs the spec hooks",
     "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",

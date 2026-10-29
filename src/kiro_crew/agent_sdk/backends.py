@@ -208,6 +208,9 @@ with no row here.
    * - ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``
      - pre-session registry query (whether a per-template MCP addition reaches a
        session of a template Crew does not own)
+   * - ``ACP_BACKENDS_SPEC_FILE_GRANTS``
+     - pre-session registry query (whether a start on a crew-bound spec Crew does
+       not own is refused while the file's grants exceed the ceiling)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
@@ -273,6 +276,7 @@ seam). Both already existed; neither gained a member here.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import FrozenSet, Set
 
 logger = logging.getLogger(__name__)
@@ -362,6 +366,20 @@ STORED_BACKEND_KIRO = "kiro"
 # The harness an install runs when ``agent.acp_backend`` holds no choice (absent
 # or ``""``) and KAS is selectable.
 DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
+
+# The harness an explicit Kiro CLI choice runs on once this host's kiro-cli is known
+# to offer its v3 (KAS) engine. kiro-cli serves ``acp`` on v3 by default and is
+# retiring v2, and a bare ``kiro-cli acp`` on v3 reads none of what Crew writes for
+# the v2 harness (the per-spawn skill-view aliases, the ``cli.json`` effort overlay,
+# the re-filtered agent specs). So :func:`resolve_selected_backend` hands the pick
+# to Crew's KAS path, which drives that engine with KAS's launch, projection,
+# permissions and compaction -- but only after the gateway's ``acp --help`` probe
+# has CONFIRMED v3 (:func:`confirm_kiro_cli_offers_kas`) and while KAS is
+# selectable. Without that evidence (another process, an unknown verdict, the
+# bundle route, a policy that denies KAS) the pick keeps the v2 launch. The stored
+# value is never rewritten: ``config.json`` still says ``"kiro"`` until the user
+# saves KAS (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+KIRO_SELECTION_BACKEND = ACP_BACKEND_KAS
 
 # Membership gate for the ``acp_backend`` kwarg. An unrecognized value would
 # otherwise fall through every ``_is_<backend>`` check and silently spawn
@@ -575,6 +593,26 @@ _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 # recompute subtracts it again rather than restoring what the host cannot run.
 _host_unservable: dict[str, str] = {}
 
+# Whether THIS process has positive evidence that the host's kiro-cli offers its v3
+# (KAS) engine: set by the gateway's KAS floor when ``acp --help`` ran and names the
+# engine. The one condition under which a Kiro CLI pick runs on
+# :data:`KIRO_SELECTION_BACKEND`; an unknown verdict leaves it unset.
+_kiro_cli_offers_kas: bool = False
+
+# Whether :func:`ensure_kiro_cli_kas_verdict` has already run its one bounded probe
+# in THIS process. The probe spawns ``kiro-cli acp --help`` once; a process that
+# never got the gateway floor's verdict (the CLI, an eval run, a peer server) uses
+# it to establish the same evidence before its first spawn, and a gap or unknown
+# verdict is remembered here so it is not re-probed on every later config load.
+_kiro_cli_kas_probed: bool = False
+
+# Serialises :func:`ensure_kiro_cli_kas_verdict`. The CLI entries that call it are
+# single-threaded (one call before the first spawn), but a peer server or an app
+# could reach it from more than one thread; the lock makes the read-probe-set
+# sequence atomic so the bounded spawn runs exactly once and the two module flags
+# are never written by two threads at the same moment.
+_kiro_cli_kas_probe_lock = threading.Lock()
+
 
 def register_selectable_backend(backend: str) -> None:
     """Make *backend* selectable in ``agent.acp_backend``.
@@ -695,6 +733,92 @@ def mark_backend_unservable(backend: str, reason: str) -> None:
     _selectable.discard(backend)
 
 
+def confirm_kiro_cli_offers_kas() -> None:
+    """Record that this host's kiro-cli offers its v3 (KAS) engine.
+
+    Called by the gateway's KAS floor only on a probe that RAN and names the
+    engine. From then on a Kiro CLI pick resolves to :data:`KIRO_SELECTION_BACKEND`
+    while KAS is selectable.
+    """
+    global _kiro_cli_offers_kas
+    _kiro_cli_offers_kas = True
+
+
+def kiro_cli_offers_kas() -> bool:
+    """Whether :func:`confirm_kiro_cli_offers_kas` ran in this process."""
+    return _kiro_cli_offers_kas
+
+
+def ensure_kiro_cli_kas_verdict() -> None:
+    """Establish this process's Kiro-CLI-offers-v3 evidence, probing once if needed.
+
+    The gateway's KAS floor records that evidence at boot
+    (:func:`confirm_kiro_cli_offers_kas`); a process that never runs the floor --
+    ``kirocrew chat``, an eval run, a peer server -- otherwise reads a stored Kiro
+    CLI pick (``agent.acp_backend: "kiro"``) as the v2 kiro-cli launch even where
+    kiro-cli already serves a bare ``acp`` on its v3 (KAS) engine, and once kiro-cli
+    serves v3 by default that bare launch is driven as v2. So such a process reaches
+    the same verdict the gateway does.
+
+    Probes ONLY when the stored ``agent.acp_backend`` is the Kiro CLI pick and the
+    bundle route is off: two cheap document reads
+    (:func:`acp_backend_stored_as_kiro`, :func:`acp_backend_bundle_route`, no spawn)
+    gate it, so a default / ``kas`` / ``claude`` / ``codex`` backend -- a user who
+    never asked -- pays nothing and keeps its unchanged start, and a bundle-route
+    pick stays on kiro-cli exactly as the gateway floor keeps it (KAS there is
+    Crew's bundled engine, which kiro-cli's own v3 support says nothing about). On a
+    Kiro CLI pick it runs the same one bounded ``acp --help`` probe the floor uses
+    (:func:`kas_engine_verdict`) and, on POSITIVE evidence only, records it -- the
+    identical promotion rule: a gap, an unknown (no pinned kiro-cli, a failed spawn)
+    or an unselectable KAS leaves the pick on the v2 launch. Call it before the
+    process builds its provider factory, so the config load that follows reads the
+    stored pick as KAS (:func:`kiro_cli_pick_backend`).
+
+    Idempotent and probe-once: it does nothing once evidence is already recorded
+    (the gateway floor ran, or a prior call probed), and it spawns at most once per
+    process even when the verdict was a gap or unknown. The read-probe-set sequence
+    is under :data:`_kiro_cli_kas_probe_lock`, so two threads reaching it at once
+    still probe exactly once and never race the module flags. Blocking (one bounded
+    spawn) on its first call in a process whose pick is Kiro CLI; never raises.
+    """
+    global _kiro_cli_kas_probed
+    if _kiro_cli_offers_kas or _kiro_cli_kas_probed:
+        return
+    with _kiro_cli_kas_probe_lock:
+        # Re-read inside the lock: another thread may have probed while this one
+        # waited, so the first winner's verdict stands and no second spawn runs.
+        if _kiro_cli_offers_kas or _kiro_cli_kas_probed:
+            return
+        try:
+            from kiro_crew.config.loader_document import (
+                acp_backend_bundle_route,
+                acp_backend_stored_as_kiro,
+            )
+
+            if not acp_backend_stored_as_kiro() or acp_backend_bundle_route():
+                # Not a Kiro CLI pick, or the bundle route (where the pick stays on
+                # kiro-cli, matching the gateway floor): nothing to promote. Do NOT
+                # spend a spawn or mark the process probed, so a later load for a
+                # different config (a peer server re-reading) can re-check cheaply.
+                return
+        except Exception:  # noqa: BLE001 - an unreadable document reads as no pick
+            return
+        _kiro_cli_kas_probed = True
+        if KIRO_SELECTION_BACKEND not in selectable_backends():
+            # KAS is not selectable here (a policy denies it, or this host was
+            # marked unable to serve it), so the pick keeps the v2 launch
+            # regardless of the probe -- do not spend the spawn.
+            return
+        try:
+            from kiro_crew.agent_sdk import kas_engine_verdict
+
+            offers_kas, _reason = kas_engine_verdict()
+        except Exception:  # noqa: BLE001 - an unanswerable probe keeps the pick on v2
+            return
+        if offers_kas:
+            confirm_kiro_cli_offers_kas()
+
+
 def host_unservable_reason(backend: str) -> str | None:
     """Why this host cannot serve *backend*, or ``None`` when nothing was recorded."""
     return _host_unservable.get(backend)
@@ -782,6 +906,11 @@ def resolve_selected_backend(value: object) -> str:
     :func:`backend_from_stored` first, which turns "no choice" (absent or ``""``)
     into ``None`` and the stored ``"kiro"`` into :data:`ACP_BACKEND_KIRO`.
 
+    :data:`ACP_BACKEND_KIRO` resolves to itself here. Moving a stored Kiro CLI pick
+    onto KAS happens once, at config load (:func:`kiro_cli_pick_backend`, called by
+    ``_read_backend_choice``), so a value this gate already answered -- the floor a
+    degraded member backend took, say -- is never moved again by a later call.
+
     Only ``None`` (no choice) selects :data:`DEFAULT_ACP_BACKEND`, and only
     while it is selectable; otherwise it takes the floor, silently. An
     explicit value that is unselectable or unrecognized — a backend this build did
@@ -812,6 +941,24 @@ def resolve_selected_backend(value: object) -> str:
         ", ".join(repr(b) for b in selectable_stored_backend_values()),
     )
     return GOVERNANCE_FLOOR_BACKEND
+
+
+def kiro_cli_pick_backend() -> str:
+    """The runtime id a STORED Kiro CLI pick in ``agent.acp_backend`` loads as.
+
+    A Kiro CLI pick launches a bare ``kiro-cli acp``, which kiro-cli now serves on
+    its v3 (KAS) engine by default, and only Crew's KAS path drives that engine. The
+    pick moves there only on positive evidence (:func:`confirm_kiro_cli_offers_kas`)
+    and while KAS is selectable; otherwise it keeps the v2 launch. See
+    :data:`KIRO_SELECTION_BACKEND`.
+
+    Called only where the stored value is read (``_read_backend_choice``), never
+    from :func:`resolve_selected_backend`: an already-resolved Kiro CLI id may be
+    a degraded value's floor (harness-parity H3), not a pick.
+    """
+    if _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends():
+        return KIRO_SELECTION_BACKEND
+    return ACP_BACKEND_KIRO
 
 
 # ── Capability membership (harness-parity H6, H7) ──
@@ -886,6 +1033,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
+    ACP_BACKENDS_SPEC_FILE_GRANTS,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,

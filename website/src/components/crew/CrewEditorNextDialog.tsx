@@ -8,28 +8,28 @@
  * The header shows the mate's identity; the X close button is rendered by
  * DialogContent itself.
  */
-import { Loader2, Terminal, Globe, ChevronRight, Lock } from 'lucide-react'
+import { Loader2, ChevronRight, Wrench, Plug, BookOpen, ScrollText, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
 } from '../ui/dialog'
 import { Btn, SendBtn } from '../ui'
 import { i18nT } from '../../i18n/t'
 import SimpleSelect from '../SimpleSelect'
-import { toolMeta, toolCategoryLabel, TOOL_CATEGORY_ORDER, type ToolCategory } from './toolMeta'
+import { toolMeta } from './toolMeta'
 import CrewAvatar from '../CrewAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
 import CrewAvatarButton from './CrewAvatarButton'
 import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
-import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, memberMemoryState } from '../../pages/KiroCrewAgentsPage'
+import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, memberMemoryState } from './crewFields'
 import ErrorNotice from '../ErrorNotice'
-import { useConfirm } from '../ConfirmDialog'
+import { useDialogConfirm } from './useDialogConfirm'
 import { effortLabel } from '../../lib/effort'
-import { crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityRow, type CapabilityPreview } from '../../api/crewCapabilities'
+import { crewCapabilitiesApi, crewCapabilitiesKey, capabilityKey, type CapabilityRow, type CapabilityPreview, type CapabilityDraft } from '../../api/crewCapabilities'
 import CrewApprovalsEditor from './CrewApprovalsEditor'
 import WorkerKitPane from './WorkerKitPane'
-import { templateDisplayName, useBuiltFromName } from './builtFromName'
+import { templateDisplayName, mateAbilitiesLabel } from './builtFromName'
 import { skillLabel } from './workerKitLabels'
 import { crewDisplayName } from '../AgentSelector'
 import CrewWakeSection from '../CrewWakeSection'
@@ -40,259 +40,13 @@ import MemoryBackupsCard from '../../pages/overview/MemoryBackupsCard'
 import MemoryRetiredCard from '../../pages/overview/MemoryRetiredCard'
 import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
+import { apiErrorCode } from '../../api/apiError'
 import { type CrewEditorController } from './useCrewEditor'
 import CrewEditorNextRail from './CrewEditorNextRail'
 import { uiLocation } from '../../uiLocations/uiLocation'
 
-export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'advanced' | 'danger'
-type BuiltFromTab = 'details' | 'tools' | 'mcp' | 'skills'
+export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
-
-/** Rows the template actually declares for a section (present ones only). */
-function presentRows(rows: CapabilityRow[], section: CapabilityRow['section']): CapabilityRow[] {
-  return rows.filter(r => r.section === section && r.present)
-}
-
-/** Read-only Tools inspector: grouped by category, with read-only / can-modify
- *  and auto-approve badges, a count, and a text filter. Display-only. */
-function ToolsTab({
-  rows, autoApproved, filter, onFilter,
-}: {
-  rows: CapabilityRow[]
-  autoApproved: Set<string>
-  filter: string
-  onFilter: (v: string) => void
-}) {
-  const q = filter.trim().toLowerCase()
-  const matches = rows.filter(r => {
-    if (!q) return true
-    const m = toolMeta(r.id)
-    return r.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q) || m.description.toLowerCase().includes(q)
-  })
-
-  // Bucket by category in the fixed display order.
-  const byCategory = new Map<ToolCategory, CapabilityRow[]>()
-  for (const r of matches) {
-    const cat = toolMeta(r.id).category
-    const list = byCategory.get(cat) ?? []
-    list.push(r)
-    byCategory.set(cat, list)
-  }
-
-  return (
-    <div className="flex flex-col gap-4" data-testid="next-builtfrom-tools">
-      <div className="flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <span className="text-[11px] uppercase tracking-wide text-muted">{rows.length} {i18nT('components.crew.crewEditorNextDialog.tools')}</span>
-        <input
-          type="text"
-          value={filter}
-          onChange={e => onFilter(e.target.value)}
-          placeholder={i18nT("crewEditorNext.filter_tools")}
-          aria-label={i18nT("crewEditorNext.filter_tools_aria")}
-          className="w-full rounded-md border border-border bg-bg px-2.5 py-1 text-[12.5px] text-text focus-ring sm:w-48"
-        />
-      </div>
-
-      {matches.length === 0 && (
-        <div className="text-[12px] text-muted">{i18nT('components.crew.crewEditorNextDialog.no_tools_match', { filter })}</div>
-      )}
-
-      {TOOL_CATEGORY_ORDER.map(cat => {
-        const list = byCategory.get(cat)
-        if (!list || list.length === 0) return null
-        return (
-          <div key={cat} className="flex flex-col gap-1.5">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-strong">
-              {toolCategoryLabel(cat)}
-            </div>
-            {list.map(r => {
-              const m = toolMeta(r.id)
-              const auto = autoApproved.has(r.id)
-              return (
-                <div
-                  key={`${r.section}:${r.id}`}
-                  className="flex items-start justify-between gap-3 rounded-md border border-border bg-bg-accent px-3 py-2"
-                >
-                  <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-[12.5px] text-text">{m.label}</span>
-                    {m.description && <span className="truncate text-[11px] text-muted">{m.description}</span>}
-                    <span className="mt-0.5 font-mono text-[10.5px] text-muted-strong">{r.id}</span>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    {m.readOnly === true && (
-                      <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-ok">{i18nT('components.crew.crewEditorNextDialog.read_only')}</span>
-                    )}
-                    {m.readOnly === false && (
-                      <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-warn">{i18nT('components.crew.crewEditorNextDialog.can_modify_run')}</span>
-                    )}
-                    {auto && (
-                      <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{i18nT('components.crew.crewEditorNextDialog.runs_without_asking')}</span>
-                    )}
-                    {r.state !== 'inherited' && (
-                      <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">
-                        {r.state === 'local' ? i18nT('crewEditorNext.state_added_short') : i18nT('crewEditorNext.state_removed_short')}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-/** Read-only MCP Servers inspector. Each row resolves the real invocation
- *  (binary + its distinguishing args, not a bare "+N arg") so otherwise-identical
- *  rows read differently; transport is a glyph; the "managed by template" fact is
- *  hoisted to a single header when every server shares it. A row expands on click
- *  to reveal the full invocation, env/header NAMES (values already redacted by the
- *  backend) and transport specifics. Display-only; never exposes a secret. */
-function parseTransport(value: unknown) {
-  const t = (value && typeof value === 'object' && !Array.isArray(value))
-    ? value as Record<string, unknown>
-    : {}
-  const isHttp = typeof t.url === 'string'
-  const command = typeof t.command === 'string' ? t.command : ''
-  const url = typeof t.url === 'string' ? t.url : ''
-  const args = Array.isArray(t.args) ? t.args.filter((a): a is string => typeof a === 'string') : []
-  const env = (t.env && typeof t.env === 'object' && !Array.isArray(t.env)) ? t.env as Record<string, unknown> : {}
-  const headers = (t.headers && typeof t.headers === 'object' && !Array.isArray(t.headers)) ? t.headers as Record<string, unknown> : {}
-  const disabled = t.disabled === true
-  return { isHttp, command, url, args, env, headers, disabled }
-}
-
-/** One row of the MCP list: a compact summary that expands to full detail. */
-function McpServerRow({ row, showManagedBadge }: { row: CapabilityRow; showManagedBadge: boolean }) {
-  const [open, setOpen] = useState(false)
-  const { isHttp, command, url, args, env, headers, disabled } = parseTransport(row.value)
-
-  // Compact summary line: binary + its args (stdio) or URL host (HTTP).
-  let summary = '—'
-  if (isHttp) {
-    try { summary = url ? new URL(url).host : '—' } catch { summary = url || '—' }
-  } else if (command) {
-    summary = [command.split('/').pop() || command, ...args].join(' ')
-  }
-
-  const Icon = isHttp ? Globe : Terminal
-  const envNames = Object.keys(env)
-  const headerNames = Object.keys(headers)
-  const detailId = `mcp-detail-${row.id}`
-
-  return (
-    <div
-      className={[
-        'rounded-md border border-border bg-bg-accent',
-        disabled ? 'opacity-60' : '',
-      ].join(' ')}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        aria-controls={detailId}
-        data-testid={`next-mcp-row-${row.id}`}
-        className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2 text-left focus-ring hover:bg-bg-hover"
-      >
-        <div className="flex min-w-0 items-start gap-2.5">
-          <ChevronRight
-            size={14}
-            className={['lucide-inline mt-0.5 shrink-0 text-muted transition-transform', open ? 'rotate-90' : ''].join(' ')}
-            aria-hidden
-          />
-          <Icon
-            size={14}
-            className="lucide-inline mt-0.5 shrink-0 text-muted"
-            aria-label={isHttp ? i18nT('components.crew.crewEditorNextDialog.transport_http') : i18nT('components.crew.crewEditorNextDialog.transport_stdio')}
-          />
-          <div className="flex min-w-0 flex-col">
-            <span className="truncate text-[12.5px] text-text">{row.label || row.id}</span>
-            <span className="truncate font-mono text-[11px] text-muted">{summary}</span>
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          {disabled && <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-warn">{i18nT('components.crew.crewEditorNextDialog.off')}</span>}
-          {showManagedBadge && row.managed && <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{i18nT('components.crew.crewEditorNextDialog.managed')}</span>}
-          {row.shared_reference && <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{i18nT('components.crew.crewEditorNextDialog.shared')}</span>}
-          {row.state !== 'inherited' && (
-            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{row.state === 'local' ? i18nT('crewEditorNext.state_added_short') : i18nT('crewEditorNext.state_removed_short')}</span>
-          )}
-        </div>
-      </button>
-
-      {open && (
-        <dl
-          id={detailId}
-          className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-t border-border px-3 py-2.5 text-[11.5px]"
-          data-testid={`next-mcp-detail-${row.id}`}
-        >
-          <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.server_id')}</dt>
-          <dd className="m-0 break-all font-mono text-text">{row.id}</dd>
-
-          <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.transport')}</dt>
-          <dd className="m-0 text-text">{isHttp ? i18nT('components.crew.crewEditorNextDialog.transport_http_value') : i18nT('components.crew.crewEditorNextDialog.transport_stdio_value')}</dd>
-
-          {isHttp ? (
-            <>
-              <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.url')}</dt>
-              <dd className="m-0 break-all font-mono text-text">{url || '—'}</dd>
-              {headerNames.length > 0 && (
-                <>
-                  <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.headers')}</dt>
-                  <dd className="m-0 font-mono text-text">{headerNames.join(', ')}</dd>
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.command')}</dt>
-              <dd className="m-0 break-all font-mono text-text">{command || '—'}</dd>
-              <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.args')}</dt>
-              <dd className="m-0 break-all font-mono text-text">{args.length ? args.join(' ') : '—'}</dd>
-              {envNames.length > 0 && (
-                <>
-                  <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.env')}</dt>
-                  <dd className="m-0 font-mono text-text">{envNames.join(', ')}</dd>
-                </>
-              )}
-            </>
-          )}
-
-          <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.state')}</dt>
-          <dd className="m-0 text-text">
-            {row.state === 'inherited' ? i18nT('crewEditorNext.state_from_template') : row.state === 'local' ? i18nT('crewEditorNext.state_added') : i18nT('crewEditorNext.state_removed')}
-            {disabled && <span className="text-muted"> · {i18nT('crewEditorNext.state_disabled_word')}</span>}
-          </dd>
-        </dl>
-      )}
-    </div>
-  )
-}
-
-function McpServersTab({ rows }: { rows: CapabilityRow[] }) {
-  if (rows.length === 0) {
-    return <div className="text-[12px] text-muted" data-testid="next-builtfrom-mcp">{i18nT('components.crew.crewEditorNextDialog.this_template_declares_no_mcp_servers')}</div>
-  }
-
-  // Hoist "managed by template" to a single header line when ALL servers share it,
-  // instead of repeating an identical badge on every row.
-  const allManaged = rows.every(r => r.managed)
-
-  return (
-    <div className="flex flex-col gap-1.5" data-testid="next-builtfrom-mcp">
-      <div className="mb-1 flex items-center justify-between gap-3">
-        <span className="text-[11px] uppercase tracking-wide text-muted">{rows.length} {i18nT('components.crew.crewEditorNextDialog.servers')}</span>
-        {allManaged && <span className="text-[11px] text-muted">{i18nT('components.crew.crewEditorNextDialog.all_managed_by_template')}</span>}
-      </div>
-      {rows.map(r => (
-        <McpServerRow key={`${r.section}:${r.id}`} row={r} showManagedBadge={!allManaged} />
-      ))}
-    </div>
-  )
-}
 
 /** Split a skill id into owner/namespace + skill name, and de-slugify the name
  *  into a readable Title Case label (hyphens/underscores → spaces). An id with no
@@ -309,110 +63,179 @@ function parseSkillId(id: string): { owner: string | null; name: string; display
   return { owner, name, display: display || name }
 }
 
-/** One skill row: readable Title-Case name + muted owner, expands to show the
- *  raw id, owner, state and shared-reference. Display-only; no description/path
- *  is available from the capability payload (would need backend work). */
-function SkillRow({ row, showTemplateBadge }: { row: CapabilityRow; showTemplateBadge: boolean }) {
-  const [open, setOpen] = useState(false)
-  const { owner, display } = parseSkillId(row.id)
-  const detailId = `skill-detail-${row.id}`
+/** The label a capability row shows in a band. */
+function bandRowLabel(row: CapabilityRow): string {
+  if (row.section === 'skills') {
+    return row.label || (row.id.includes('://') ? skillLabel(row.id) : parseSkillId(row.id).display)
+  }
+  if (row.section === 'tools') return row.label || toolMeta(row.id).label
+  if (row.section === 'prompt') return i18nT('crewEditorNext.band_directions')
+  return row.label || row.id
+}
+
+/** A row's secondary line — a tool's description, an MCP server's host/command,
+ *  or nothing. Keeps the primary label scannable while giving context. */
+function bandRowSecondary(row: CapabilityRow): string {
+  if (row.section === 'tools') return toolMeta(row.id).description
+  if (row.section === 'mcpServers') {
+    const v = row.value
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const t = v as Record<string, unknown>
+      if (typeof t.url === 'string') { try { return new URL(t.url).host } catch { return t.url } }
+      if (typeof t.command === 'string') return t.command.split('/').pop() || t.command
+    }
+  }
+  return ''
+}
+
+/** The capability kinds a band shows, in order: heading, icon, and whether the
+ *  group starts collapsed (Tools is the long one, so it does). Behaviour
+ *  directions is the one prompt slot an add fills; it leads, as it shapes how
+ *  the worker uses everything below it. */
+const BAND_KINDS: {
+  section: CapabilityRow['section']
+  heading: () => string
+  Icon: LucideIcon
+  collapsed: boolean
+}[] = [
+  { section: 'prompt', heading: () => i18nT('crewEditorNext.band_directions'), Icon: ScrollText, collapsed: false },
+  { section: 'tools', heading: () => i18nT('crewEditorNext.tab_tools'), Icon: Wrench, collapsed: true },
+  { section: 'mcpServers', heading: () => i18nT('crewEditorNext.stat_mcp_servers'), Icon: Plug, collapsed: false },
+  { section: 'skills', heading: () => i18nT('crewEditorNext.tab_skills'), Icon: BookOpen, collapsed: false },
+]
+
+/** One collapsible kind group (Tools / MCP servers / Skills) inside a band. */
+function BandKindGroup({
+  testId, section, heading, Icon, startCollapsed, items, onRemove, removeBusy,
+}: {
+  testId: string
+  section: CapabilityRow['section']
+  heading: string
+  Icon: LucideIcon
+  startCollapsed: boolean
+  items: CapabilityRow[]
+  onRemove?: (row: CapabilityRow) => void
+  removeBusy?: string | null
+}) {
+  const [open, setOpen] = useState(!startCollapsed)
+  const bodyId = `band-${testId}-${section}`
   return (
-    <div className="rounded-md border border-border bg-bg-accent">
+    <div className="overflow-hidden rounded-md border border-border">
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
-        aria-controls={detailId}
-        data-testid={`next-skill-row-${row.id}`}
-        className="flex w-full items-start justify-between gap-3 rounded-md px-3 py-2 text-left focus-ring hover:bg-bg-hover"
+        aria-controls={bodyId}
+        data-testid={`next-band-${testId}-group-${section}`}
+        className="flex w-full items-center gap-2 bg-bg-accent px-2.5 py-1.5 text-left focus-ring hover:bg-bg-hover"
       >
-        <div className="flex min-w-0 items-start gap-2.5">
-          <ChevronRight
-            size={14}
-            className={['lucide-inline mt-0.5 shrink-0 text-muted transition-transform', open ? 'rotate-90' : ''].join(' ')}
-            aria-hidden
-          />
-          <div className="flex min-w-0 flex-col">
-            {/* A resource URI with no label (a pattern) is named as the kit preview names it. */}
-            <span className="truncate text-[12.5px] text-text">{row.label || (row.id.includes('://') ? skillLabel(row.id) : display)}</span>
-            {owner && <span className="truncate font-mono text-[11px] text-muted">{owner}</span>}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          {row.shared_reference && <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{i18nT('components.crew.crewEditorNextDialog.shared')}</span>}
-          {showTemplateBadge && row.state === 'inherited' && (
-            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{i18nT('crewEditorNext.state_from_template')}</span>
-          )}
-          {row.state !== 'inherited' && (
-            <span className="rounded px-1.5 py-0.5 text-[10px] text-muted">{row.state === 'local' ? i18nT('crewEditorNext.state_added_short') : i18nT('crewEditorNext.state_removed_short')}</span>
-          )}
-        </div>
+        <ChevronRight size={13} className={`lucide-inline shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        <Icon size={13} className="lucide-inline shrink-0 text-muted" aria-hidden="true" />
+        <span className="text-[12px] font-medium text-text">{heading}</span>
+        <span className="text-[11px] text-muted">{items.length}</span>
       </button>
-
       {open && (
-        <dl
-          id={detailId}
-          className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-t border-border px-3 py-2.5 text-[11.5px]"
-          data-testid={`next-skill-detail-${row.id}`}
-        >
-          <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.skill_id')}</dt>
-          <dd className="m-0 break-all font-mono text-text">{row.id}</dd>
-          {owner && (
-            <>
-              <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.owner')}</dt>
-              <dd className="m-0 font-mono text-text">{owner}</dd>
-            </>
-          )}
-          <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.state')}</dt>
-          <dd className="m-0 text-text">
-            {row.state === 'inherited' ? i18nT('crewEditorNext.state_from_template') : row.state === 'local' ? i18nT('crewEditorNext.state_added') : i18nT('crewEditorNext.state_removed')}
-          </dd>
-          <dt className="text-muted">{i18nT('components.crew.crewEditorNextDialog.shared_reference')}</dt>
-          <dd className="m-0 text-text">{row.shared_reference ? i18nT('components.crew.crewEditorNextDialog.shared_yes') : i18nT('components.crew.crewEditorNextDialog.shared_no')}</dd>
-        </dl>
+        <ul id={bodyId} className="m-0 flex list-none flex-col divide-y divide-border border-t border-border p-0">
+          {items.map(r => {
+            const busy = removeBusy === capabilityKey(r)
+            const secondary = bandRowSecondary(r)
+            return (
+              <li
+                key={`${r.section}:${r.id}`}
+                className="flex min-w-0 items-center justify-between gap-3 px-2.5 py-1 pl-[2.1rem]"
+                data-testid={`next-band-${testId}-row`}
+              >
+                {r.section === 'prompt' ? (
+                  // The directions text itself: read-only, scrollable when long.
+                  <p
+                    className="m-0 max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap py-0.5 text-[12px] text-text"
+                    data-testid={`next-band-${testId}-directions`}
+                  >
+                    {typeof r.value === 'string' ? r.value : ''}
+                  </p>
+                ) : (
+                  <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-text" title={r.id}>{bandRowLabel(r)}</span>
+                    {secondary && <span className="min-w-0 flex-1 truncate text-[11px] text-muted">{secondary}</span>}
+                  </div>
+                )}
+                {/* Only a row naming a stored editor row is removable: a
+                    selector derived from a server, or a skill the editor does
+                    not store, has nothing a remove could drop. */}
+                {onRemove && r.remove && (
+                  <button
+                    type="button"
+                    onClick={() => onRemove(r)}
+                    disabled={busy}
+                    data-testid={`next-band-remove-${r.section}-${r.id}`}
+                    className="shrink-0 rounded px-2 py-0.5 text-[11px] text-danger-text hover:bg-danger-subtle focus-ring disabled:opacity-50"
+                  >
+                    {busy ? i18nT('crewEditorNext.band_removing') : i18nT('crewEditorNext.band_remove')}
+                  </button>
+                )}
+              </li>
+            )
+          })}
+        </ul>
       )}
     </div>
   )
 }
 
-/** Read-only Skills inspector: de-slugified name + owner, a count + filter, the
- *  universal "from template" fact hoisted to a header, and per-skill expand. */
-function SkillsTab({ rows, filter, onFilter }: { rows: CapabilityRow[]; filter: string; onFilter: (v: string) => void }) {
-  if (rows.length === 0) {
-    return <div className="text-[12px] text-muted" data-testid="next-builtfrom-skills">{i18nT('components.crew.crewEditorNextDialog.this_template_declares_no_skills')}</div>
-  }
-  const q = filter.trim().toLowerCase()
-  const matches = rows.filter(r => {
-    if (!q) return true
-    const { owner, display } = parseSkillId(r.id)
-    return r.id.toLowerCase().includes(q) || display.toLowerCase().includes(q) || (owner?.toLowerCase().includes(q) ?? false)
-  })
-  // Hoist "from template" to a header when every skill is inherited.
-  const allInherited = rows.every(r => r.state === 'inherited')
-
+/**
+ * One band of the read-only capabilities view: a heading and, under it, the
+ * crewmate's tools / MCP servers / skills as collapsible kind groups. Each group
+ * shows a count so the whole band scans at a glance; rows are compact (name +
+ * inline description). `onRemove` adds a per-row Remove control (the "Added"
+ * band). Approvals and the rest are configured elsewhere.
+ */
+function CapabilityBand({
+  testId, heading, note, rows, onRemove, removeBusy, emptyText, hideWhenEmpty,
+}: {
+  testId: string
+  heading: string
+  note: string
+  rows: CapabilityRow[]
+  onRemove?: (row: CapabilityRow) => void
+  removeBusy?: string | null
+  emptyText?: string
+  hideWhenEmpty?: boolean
+}) {
+  const kinds = BAND_KINDS
+    .map(k => ({ ...k, items: rows.filter(r => r.section === k.section) }))
+    .filter(k => k.items.length > 0)
+  // A "comes with" band that is empty (the mate's file carries everything, so
+  // nothing comes only from the base) renders nothing rather than a dead "None"
+  // box, which reads as broken. The "Added" band keeps its empty state (its
+  // emptyText tells the owner how to add).
+  if (hideWhenEmpty && kinds.length === 0) return null
   return (
-    <div className="flex flex-col gap-1.5" data-testid="next-builtfrom-skills">
-      <div className="mb-1 flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <span className="text-[11px] uppercase tracking-wide text-muted">{rows.length} {i18nT('components.crew.crewEditorNextDialog.skills')}</span>
-        <div className="flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-          {allInherited && <span className="text-[11px] text-muted">{i18nT('components.crew.crewEditorNextDialog.all_from_template')}</span>}
-          <input
-            type="text"
-            value={filter}
-            onChange={e => onFilter(e.target.value)}
-            placeholder={i18nT("crewEditorNext.filter_skills")}
-            aria-label={i18nT("crewEditorNext.filter_skills_aria")}
-            className="w-full rounded-md border border-border bg-bg px-2.5 py-1 text-[12.5px] text-text focus-ring sm:w-44"
-          />
-        </div>
+    <section className="flex flex-col gap-2 rounded-md border border-border bg-bg-elevated p-3" data-testid={`next-band-${testId}`}>
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-strong">{heading}</span>
+        <span className="text-[11px] text-muted">{note}</span>
       </div>
-      {matches.length === 0 && <div className="text-[12px] text-muted">{i18nT('components.crew.crewEditorNextDialog.no_skills_match', { filter })}</div>}
-      {matches.map(r => (
-        <SkillRow key={`${r.section}:${r.id}`} row={r} showTemplateBadge={!allInherited} />
-      ))}
-    </div>
+      {kinds.length === 0 ? (
+        <span className="text-[12px] text-muted" data-testid={`next-band-${testId}-empty`}>{emptyText ?? i18nT('crewEditorNext.band_none')}</span>
+      ) : (
+        kinds.map(kind => (
+          <BandKindGroup
+            key={kind.section}
+            testId={testId}
+            section={kind.section}
+            heading={kind.heading()}
+            Icon={kind.Icon}
+            startCollapsed={kind.collapsed}
+            items={kind.items}
+            onRemove={onRemove}
+            removeBusy={removeBusy}
+          />
+        ))
+      )}
+    </section>
   )
 }
+
 
 export default function CrewEditorNextDialog({
   ctl,
@@ -440,8 +263,10 @@ export default function CrewEditorNextDialog({
     landedFor.current = ctl.editing
     if (initialSection) setSection(initialSection)
   }, [ctl.open, ctl.editing, initialSection])
-  // Which Built From sub-tab is showing.
-  const [builtFromTab, setBuiltFromTab] = useState<BuiltFromTab>('details')
+  // The capability row currently being removed (its capabilityKey), and any
+  // failure. Removal is the one editable action in the capabilities view.
+  const [removeBusy, setRemoveBusy] = useState<string | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
   // Which Memory sub-tab is showing.
   const [memoryTab, setMemoryTab] = useState<MemoryTab>('profile')
   // Approvals draft state is OWNED HERE, not inside CrewApprovalsEditor, so an
@@ -457,11 +282,6 @@ export default function CrewEditorNextDialog({
     setApprovalsPending({})
     setApprovalsPreview(null)
   }, [ctl.editing])
-  // Free-text filter for the Tools tab.
-  const [toolFilter, setToolFilter] = useState('')
-  // Free-text filter for the Skills tab.
-  const [skillFilter, setSkillFilter] = useState('')
-
   // Read-only capability view of the agent template this crewmate is built on.
   // Same source the classic Capabilities pane reads; here it is display-only.
   const capsQuery = useQuery({
@@ -471,15 +291,60 @@ export default function CrewEditorNextDialog({
     retry: false,
   })
   // A crewmate that owns its config file is bound to that file, not to a
-  // template: its "Built from" names the template its worker kit was copied
-  // from, and the General switcher (which would repoint the binding away from
-  // the file) gives way to Advanced > Re-copy from template.
+  // template: its capabilities view shows what it can do (comes-with plus
+  // added), and the General switcher (which would repoint the binding away from
+  // the file) gives way to Advanced > Add abilities.
   const ownsFile = capsQuery.data?.mode === 'mate'
   // A crewmate that owns its file: its file holds only additions, so Built
   // From's summary AND its lists read what its worker carries, one set.
   const builtFromRows = (ownsFile ? capsQuery.data?.worker?.rows : null) ?? capsQuery.data?.rows ?? []
-  const { name: builtFromName, error: builtFromError } = useBuiltFromName({ member: ctl.editing, kiroAgent: ctl.kiroAgent, ownsFile, enabled: ctl.open })
-  const { confirm, confirmDialog } = useConfirm()
+  // A mate owns its file and is labelled generically; any other binding is named
+  // by its shared template. There is no per-template provenance to read.
+  const builtFromName = ownsFile ? mateAbilitiesLabel() : templateDisplayName(ctl.kiroAgent)
+  const { confirm, confirmDialog } = useDialogConfirm()
+  const queryClient = useQueryClient()
+
+  // Remove one added capability row from the crewmate's file: confirm first,
+  // naming the ability and how to add it back, then preview a single
+  // `remove` op and save it. Cancelling sends nothing. Added rows are the only
+  // editable thing here; comes-with (inherited) rows never offer a remove.
+  // Removal uses the displayed revision; a stale view requires a fresh confirm.
+  const removeCapability = async (row: CapabilityRow) => {
+    const revision = capsQuery.data?.revision
+    if (!row.remove || !revision) return
+    const ok = await confirm({
+      title: i18nT('crewEditorNext.band_remove_confirm_title', { name: bandRowLabel(row) }),
+      body: i18nT('crewEditorNext.band_remove_confirm_body'),
+      confirmLabel: i18nT('crewEditorNext.band_remove'),
+    })
+    if (!ok) return
+    const key = capabilityKey(row)
+    setRemoveBusy(key)
+    setRemoveError(null)
+    try {
+      const draft: CapabilityDraft = {
+        revision,
+        enroll: false,
+        // The stored row the server names, which can differ from what the
+        // band displays (a non-catalog skill is stored under `resources`).
+        operations: [{ section: row.remove.section, id: row.remove.id, action: 'remove' }],
+        accept_parent: [],
+        accept_members: [],
+      }
+      const previewed = await crewCapabilitiesApi.preview(ctl.editing, draft)
+      await crewCapabilitiesApi.save(ctl.editing, { ...draft, preview_token: previewed.preview_token })
+      await queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(ctl.editing) })
+    } catch (e) {
+      if (apiErrorCode(e) === 'stale_revision') {
+        await queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(ctl.editing) })
+        setRemoveError(i18nT('crewEditorNext.band_remove_stale'))
+        return
+      }
+      setRemoveError(e instanceof Error ? e.message : i18nT('crewEditorNext.load_error'))
+    } finally {
+      setRemoveBusy(null)
+    }
+  }
 
   // The section a host sees: what the rail shows, which falls back to General
   // when the remembered section is absent from this crewmate's rail (only the
@@ -561,7 +426,6 @@ export default function CrewEditorNextDialog({
           title: i18nT('crewEditorNext.switch_own_copy_title'),
           body: i18nT('crewEditorNext.switch_own_copy_body'),
           confirmLabel: i18nT('components.agentTemplateDetail.discard_and_switch'),
-          layer: 'top',
         })
         if (ok) persistTemplateSwitch(v)
       })()
@@ -581,21 +445,14 @@ export default function CrewEditorNextDialog({
     : kiroAgentOptions
 
   const caps = capsQuery.data
-  // Tools auto-approved to run without a prompt: present rows in `allowedTools`.
-  const autoApprovedTools = new Set(
-    builtFromRows.filter(r => r.section === 'allowedTools' && r.present).map(r => r.id),
-  )
 
   const sections: { key: NextSection; label: string }[] = [
     { key: 'general', label: i18nT('crewEditorNext.section_general') },
-    { key: 'builtFrom', label: i18nT('crewEditorNext.section_built_from') },
+    { key: 'builtFrom', label: i18nT('crewEditorNext.section_capabilities') },
     { key: 'approvals', label: i18nT('crewEditorNext.tab_approvals') },
     { key: 'schedules', label: i18nT('crewEditorNext.tab_schedules') },
     { key: 'webhooks', label: i18nT('crewEditorNext.tab_webhooks') },
     { key: 'memory', label: i18nT('crewEditorNext.section_memory') },
-    // Advanced: the worker's extra kit. Only a crewmate that owns its config
-    // file has a worker to extend, so the section exists only then.
-    ...(caps?.mode === 'mate' ? [{ key: 'advanced' as NextSection, label: i18nT('crewWorkerKit.section_advanced') }] : []),
     // The default crewmate cannot be deleted — the backend rejects it with 409
     // — so the classic editor hid its Danger Zone. Keep that guard.
     ...(isDefaultCrew ? [] : [{ key: 'danger' as NextSection, label: i18nT('crewEditorNext.section_danger') }]),
@@ -626,13 +483,6 @@ export default function CrewEditorNextDialog({
       : memoryState === 'legacy'
         ? (editing === 'default' ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1') : i18nT('pages.kiroCrewAgentsPage.private_memory_legacy'))
         : `${i18nT(memoryState === 'ownership_mismatch' ? 'pages.kiroCrewAgentsPage.memory_binding_mismatch' : 'pages.kiroCrewAgentsPage.memory_binding_unavailable')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
-
-  const builtFromTabs: { key: BuiltFromTab; label: string }[] = [
-    { key: 'details', label: i18nT('crewEditorNext.tab_details') },
-    { key: 'tools', label: i18nT('crewEditorNext.tab_tools') },
-    { key: 'mcp', label: i18nT('crewEditorNext.tab_mcp') },
-    { key: 'skills', label: i18nT('crewEditorNext.tab_skills') },
-  ]
 
   const memoryTabs: { key: MemoryTab; label: string }[] = [
     { key: 'profile', label: i18nT('crewEditorNext.tab_profile') },
@@ -726,14 +576,11 @@ export default function CrewEditorNextDialog({
                   <DisplayNameField value={displayName} onChange={setDisplayName} fallback={editing} />
 
                   {ownsFile ? (
-                    <Field label={templateFieldLabel} hint={i18nT('crewEditorNext.built_from_mate_hint')}>
+                    <Field label={i18nT('crewEditorNext.section_capabilities')} hint={i18nT('crewEditorNext.built_from_mate_hint')}>
                       <div className="flex items-center justify-between gap-3" data-testid="next-built-from-owned">
                         <span className="text-[13px] text-text">{builtFromName}</span>
-                        {/* No hand-off: this dialog holds the unsaved crew draft, and
-                            "Ask the agent" would navigate away from it. */}
-                        {builtFromError && <ErrorNotice message={builtFromError} variant="inline" testId="next-built-from-error" />}
-                        <Btn onClick={() => guardNav(() => setSection('advanced'))} disabled={navBlocked} data-testid="next-open-advanced">
-                          {i18nT('crewEditorNext.open_advanced')}
+                        <Btn onClick={() => guardNav(() => setSection('builtFrom'))} disabled={navBlocked} data-testid="next-open-advanced">
+                          {i18nT('crewEditorNext.open_capabilities')}
                         </Btn>
                       </div>
                     </Field>
@@ -860,37 +707,7 @@ export default function CrewEditorNextDialog({
 
               {effectiveSection === 'builtFrom' && (
                 <div className="flex min-h-0 flex-1 flex-col" data-testid="next-pane-builtFrom">
-                  {/* Horizontal tab switcher */}
-                  <div
-                    role="tablist"
-                    aria-label={i18nT("crewEditorNext.builtfrom_sections_aria")}
-                    className="flex shrink-0 gap-1 border-b border-border"
-                  >
-                    {builtFromTabs.map(t => {
-                      const isActive = t.key === builtFromTab
-                      return (
-                        <button
-                          key={t.key}
-                          type="button"
-                          role="tab"
-                          aria-selected={isActive}
-                          data-testid={`next-builtfrom-tab-${t.key}`}
-                          onClick={() => setBuiltFromTab(t.key)}
-                          className={[
-                            'relative -mb-px px-3 py-2 text-[12.5px] focus-ring disabled:opacity-50 disabled:cursor-not-allowed',
-                            isActive
-                              ? 'border-b-2 border-accent font-medium text-text'
-                              : 'border-b-2 border-transparent text-muted hover:text-text',
-                          ].join(' ')}
-                        >
-                          {t.label}
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  {/* Tab content */}
-                  <div className="min-h-0 flex-1 overflow-y-auto pt-4">
+                  <div className="min-h-0 flex-1 overflow-y-auto">
                     {capsQuery.isLoading && (
                       <div className="flex items-center gap-2 text-[12px] text-muted">
                         <Loader2 size={14} className="lucide-inline animate-spin" />
@@ -898,10 +715,9 @@ export default function CrewEditorNextDialog({
                       </div>
                     )}
                     {capsQuery.error && (
-                      /* No hand-off: Built From is display-only (no unsaved
-                         draft), and the hand-off would navigate away from the
-                         open editor and discard the crew/approvals/memory
-                         drafts the user may have in progress. */
+                      // No hand-off: the editor is a modal holding the user's
+                      // unsaved edits in its other sections; the hand-off would
+                      // navigate away and discard them.
                       <ErrorNotice
                         message={capsQuery.error instanceof Error ? capsQuery.error.message : i18nT('crewEditorNext.load_error')}
                         variant="inline"
@@ -910,107 +726,66 @@ export default function CrewEditorNextDialog({
                       />
                     )}
                     {caps && (
-                      <>
-                        {builtFromTab === 'details' && (
-                          <div className="flex flex-col gap-4" data-testid="next-builtfrom-details" style={{ maxWidth: 560 }}>
-                            {/* Minimal read-only summary. The real substance of
-                                "built from" is the Tools / MCP Servers / Skills
-                                tabs; Details just names the template, marks it
-                                read-only, and points there. The old raw
-                                source/scope/mode/available dump was internal
-                                jargon — we surface a row ONLY when it is
-                                actionable (template missing, or user-authored). */}
-                            <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-elevated p-4">
-                              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">
-                                <Lock size={12} className="lucide-inline" />
-                                {i18nT('crewEditorNext.read_only')}
-                              </div>
-                              <div className="text-[14px] text-text">
-                                {i18nT('crewEditorNext.built_from_headline')} <span className="font-semibold" data-testid="next-builtfrom-name">{ownsFile ? builtFromName : templateDisplayName(caps.template.name)}</span>
-                                {/* No hand-off: the unsaved crew draft, as above. */}
-                                {ownsFile && builtFromError && <ErrorNotice message={builtFromError} variant="inline" testId="next-builtfrom-error" />}
-                              </div>
-                              <p className="m-0 text-[12px] leading-relaxed text-muted">
-                                {i18nT(ownsFile ? 'crewEditorNext.built_from_body_mate' : 'crewEditorNext.built_from_body')}
-                              </p>
-                            </div>
+                      <div className="flex flex-col gap-4" data-testid="next-builtfrom-details" style={{ maxWidth: 560 }}>
+                        <div className="flex items-baseline gap-3">
+                          <span className="text-[13px] text-text" data-testid="next-builtfrom-name">
+                            {i18nT('crewEditorNext.capabilities_headline', { name: displayName.trim() || editing })}
+                          </span>
+                        </div>
+                        <p className="m-0 text-[12px] leading-relaxed text-muted">
+                          {i18nT('crewEditorNext.capabilities_body')}
+                        </p>
 
-                            {/* At-a-glance summary: how much this template gives
-                                the mate, plus its effective model. Counts are the
-                                present rows per section — the same sets the Tools /
-                                MCP / Skills tabs list. These are NON-interactive
-                                readouts (not jump buttons): the Built From tab bar
-                                above already navigates to each section, and three
-                                sibling action buttons in one row would exceed the
-                                two-action cap. */}
-                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                              {([
-                                { tab: 'tools' as const, label: i18nT('crewEditorNext.tab_tools'), n: presentRows(builtFromRows, 'tools').length },
-                                { tab: 'mcp' as const, label: i18nT('crewEditorNext.stat_mcp_servers'), n: presentRows(builtFromRows, 'mcpServers').length },
-                                { tab: 'skills' as const, label: i18nT('crewEditorNext.tab_skills'), n: presentRows(builtFromRows, 'skills').length },
-                              ]).map(stat => (
-                                <div
-                                  key={stat.tab}
-                                  data-testid={`next-builtfrom-stat-${stat.tab}`}
-                                  className="flex flex-col items-start gap-0.5 rounded-md border border-border bg-bg-elevated p-3 text-left"
-                                >
-                                  <span className="text-[18px] font-semibold leading-none text-text">{stat.n}</span>
-                                  <span className="text-[11px] text-muted">{stat.label}</span>
-                                </div>
-                              ))}
-                              {/* Model is not a Built-From tab (it lives in
-                                  Behavior → Model), so this stat is a readout, not
-                                  a jump target. */}
-                              <div className="flex flex-col items-start gap-0.5 rounded-md border border-border bg-bg-elevated p-3">
-                                <span className="truncate text-[14px] font-semibold leading-tight text-text" title={resolved?.model || i18nT('pages.kiroCrewAgentsPage.inherited')}>
-                                  {resolved?.model || i18nT('pages.kiroCrewAgentsPage.inherited')}
-                                </span>
-                                <span className="text-[11px] text-muted">{i18nT('crewEditorNext.stat_model')}</span>
-                              </div>
-                            </div>
+                        {/* Band 1 — comes with (the worker base). Read-only rows. */}
+                        <CapabilityBand
+                          testId="comes-with"
+                          heading={i18nT('crewEditorNext.band_comes_with', { name: builtFromName })}
+                          note={i18nT('crewEditorNext.band_comes_with_note')}
+                          rows={builtFromRows.filter(r => r.present && r.state === 'inherited')}
+                          hideWhenEmpty
+                        />
 
-                            {/* Warnings only — shown when something is actually
-                                worth the user's attention. */}
-                            {!caps.template.available && (
-                              /* No hand-off: a removed/unresolvable parent
-                                 template is a read-side resolution failure, and
-                                 the hand-off would navigate away from the open
-                                 editor and discard its unsaved crew fields
-                                 (display name, workspace, model, color) and any
-                                 approvals/memory draft. */
-                              <ErrorNotice
-                                message={i18nT('crewEditorNext.template_unavailable', { name: caps.template.name })}
-                                variant="inline"
-                                askAgent={false}
-                                testId="next-builtfrom-unavailable"
-                              />
-                            )}
-                            {!ownsFile && caps.template.available && caps.template.source !== 'builtin' && caps.template.source !== 'package' && (
-                              <p className="m-0 text-[12px] text-muted" data-testid="next-builtfrom-authored">
-                                {i18nT('crewEditorNext.template_authored')}
-                              </p>
-                            )}
+                        {/* Band 2 — added. Removable rows (the only editable thing here;
+                            approvals are configured in the Approvals section). */}
+                        <CapabilityBand
+                          testId="added"
+                          heading={i18nT('crewEditorNext.band_added', { name: displayName.trim() || editing })}
+                          note={i18nT('crewEditorNext.band_added_note')}
+                          rows={builtFromRows.filter(r => r.present && r.state === 'local')}
+                          onRemove={ownsFile ? removeCapability : undefined}
+                          removeBusy={removeBusy}
+                          emptyText={i18nT('crewEditorNext.band_added_empty')}
+                        />
+
+                        {/* No hand-off on the two notices below: the editor modal
+                            holds the user's unsaved edits in its other sections,
+                            which the hand-off navigation would discard. */}
+                        {removeError && (
+                          <ErrorNotice message={removeError} variant="inline" askAgent={false} testId="next-builtfrom-remove-error" />
+                        )}
+
+                        {!caps.template.available && (
+                          <ErrorNotice
+                            message={i18nT('crewEditorNext.template_unavailable', { name: caps.template.name })}
+                            variant="inline"
+                            askAgent={false}
+                            testId="next-builtfrom-unavailable"
+                          />
+                        )}
+
+                        {/* Add abilities lives on the same page as the bands it
+                            feeds — a mate owns a worker file to extend. */}
+                        {ownsFile && (
+                          <div className="border-t border-border pt-4">
+                            <WorkerKitPane
+                              member={editing}
+                              name={displayName.trim() || (editingAgent ? crewDisplayName(editingAgent) : editing)}
+                              templates={kiroAgentOptions}
+                              onOpenApprovals={() => selectSection('approvals')}
+                            />
                           </div>
                         )}
-                        {builtFromTab === 'tools' && (
-                          <ToolsTab
-                            rows={presentRows(builtFromRows, 'tools')}
-                            autoApproved={autoApprovedTools}
-                            filter={toolFilter}
-                            onFilter={setToolFilter}
-                          />
-                        )}
-                        {builtFromTab === 'mcp' && (
-                          <McpServersTab rows={presentRows(builtFromRows, 'mcpServers')} />
-                        )}
-                        {builtFromTab === 'skills' && (
-                          <SkillsTab
-                            rows={presentRows(builtFromRows, 'skills')}
-                            filter={skillFilter}
-                            onFilter={setSkillFilter}
-                          />
-                        )}
-                      </>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1172,14 +947,6 @@ export default function CrewEditorNextDialog({
                   </div>
                   </>)}
                 </div>
-              )}
-
-              {effectiveSection === 'advanced' && (
-                <WorkerKitPane
-                  member={editing}
-                  name={displayName.trim() || (editingAgent ? crewDisplayName(editingAgent) : editing)}
-                  templates={kiroAgentOptions}
-                />
               )}
 
               {effectiveSection === 'danger' && !isDefaultCrew && (

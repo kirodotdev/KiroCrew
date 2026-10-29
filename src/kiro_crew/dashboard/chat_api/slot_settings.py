@@ -84,6 +84,7 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
                 "pct": slot.autocompact_pct,
                 "global_pct": published_autocompact_pct(),
                 **await _slot_agent_autocompact_fields(state, slot),
+                "harness_managed": await _slot_harness_managed_backend(state, slot),
                 "min": AUTOCOMPACT_PCT_MIN,
                 "max": AUTOCOMPACT_PCT_MAX,
             }
@@ -298,6 +299,41 @@ async def _slot_agent_autocompact_fields(state: DashboardState, slot: Any) -> di
     label, _ = redact_exfiltration_urls(found[0])
     label, _ = redact_credentials(label)
     return {"agent_pct": found[1], "agent": label}
+
+
+async def _slot_harness_managed_backend(state: DashboardState, slot: Any) -> str | None:
+    """Backend id when *slot*'s session compacts on its own, else ``None``.
+
+    A backend in ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` (KAS) runs its own
+    summarization, and the turn-end gate declines Crew's ``/compact`` for it at
+    any threshold, so the popover says the slider does not apply there. The
+    live session's provider answers when one exists; otherwise the answer is
+    for the backend the slot's next session starts on, chosen by the same
+    member-aware selector a new session uses.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HARNESS_MANAGED_COMPACTION
+    from kiro_crew.members import select_provider_backend
+
+    key = effective_session_key(slot)
+    sessions = state.sessions
+    get_provider = getattr(sessions, "get_provider", None)
+    provider = get_provider(key) if callable(get_provider) else None
+    if provider is not None:
+        backend = getattr(provider, "harness_managed_compaction_backend", None)
+        return backend if isinstance(backend, str) and backend else None
+    try:
+        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        backend = select_provider_backend(
+            key,
+            getattr(agent_cfg, "member_acp_backend", ""),
+            getattr(agent_cfg, "acp_backend", ""),
+        )
+    except Exception:
+        logger.debug("autocompact: could not resolve slot %s's backend", key, exc_info=True)
+        return None
+    if isinstance(backend, str) and backend in ACP_BACKENDS_HARNESS_MANAGED_COMPACTION:
+        return backend
+    return None
 
 
 def _slot_next_agent_autocompact_default(session_key: str, slot: Any) -> tuple[str, float] | None:

@@ -429,8 +429,8 @@ def parse_codex_compaction_update(
     display text the adapter is free to reword, and it is localized on some
     clients.
 
-    codex-acp 2.2.2 dropped the marker. Its pair, captured in the lane
-    (``test/fixtures/acp_frames/codex/compact-live-2.2.2.jsonl``)::
+    codex-acp 2.2.2 dropped the marker, and 2.3.0 still sends the pair without it.
+    Its pair, captured in the lane (``test/fixtures/acp_frames/codex/compact-live.jsonl``)::
 
         tool_call        kind=think  status=in_progress  title="Compact conversation"
         tool_call_update             status=completed    (no title, no kind)

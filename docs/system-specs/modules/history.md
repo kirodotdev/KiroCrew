@@ -702,7 +702,7 @@ order, and pins that no owner imports the facade:
 | `scope.ts` | the shell's interface: `ChatSidebarProps`, and `SidebarScope`, the one object of props, shell state, owner-hook results and confirming callbacks the shell builds after its last hook call and hands every render owner below |
 | `laneRows.tsx` | how a lane draws its rows: `renderSessionRow` (each row behind its window stub, stamped in paint order and clamped at `SIDEBAR_DISPLACEMENT_WINDOW`), the dormant section and its hover hold, the Older Sessions hint that ends a lane, and the crew groups |
 | `folderBlocks.tsx` | the tree's folder blocks: the folder header row and its hover cluster, the shared dropdown/context action renderer used by tree and board headers, the body with the pinned conductor card and the sorted and dormant rows, the hidden-folder reveal, and the folder-scoped create-failure notice |
-| `listLanes.tsx`, `boardLane.tsx` | the conductor, flat and tree lanes, with the drag overlay and chat-pane drop target the flat and tree lanes share (the conductor lane has no drag and drop); the tag-column board with its column headers, filter popover, card drop, column folder blocks and unfile strip |
+| `listLanes.tsx`, `boardLane.tsx`, `columnDragFeedback.ts` | the conductor, flat and tree lanes, with the drag overlay and chat-pane drop target the flat and tree lanes share (the conductor lane has no drag and drop); the tag-column board with its column headers, filter popover, card drop, column folder blocks and unfile strip; and what a column reorder shows while a header grip is dragged: the whole column is the drag image, the dragged column dims, and the column under the pointer draws an accent bar on the side the dragged column takes on release (data attributes on the columns rather than shell state, because `dragover` repeats many times a second) |
 | `SidebarHeader.tsx`, `SearchDock.tsx` | the header (list menu and split New button); the dock over the lanes: its field (the search row's lane toggle and sort and filter menu, with the filter and sort label tables) and its shelf (the active filter chips and the list-level notices) |
 | `HistoryPane.tsx`, `folderModal.tsx` | the Older Sessions splitter, footer and pane; the one folder create / settings modal |
 | `sessionCleanup.tsx`, `bulkModelSwitch.tsx` | the cleanup panel (`useSessionCleanup`: window, dry-run preview, archive write) and the model switch panel (`useBulkModelSwitch`: pick, roster, skip-running, switch write) |
@@ -1654,14 +1654,74 @@ no longer destroy older turns.
   escape hatch if the guard's warn-and-proceed production fallback ever proves
   insufficient (e.g. a hot on-loop path that must not be lost).
 - **Rewrite path** (`rewrite=True`, an explicit `messages` snapshot, or a slot
-  left in `_pending_rewrite` — rewind/regenerate/fork): writes
+  left in `_pending_rewrite` — rewind/fork, and a Regenerate's replace write): writes
   `metadata + frozen_prefix + serialize(snapshot)`. These INTENTIONALLY drop the
   post-edit window tail, so the dropped lines are archived first via
   `_archive_dropped_lines` → `_archive_lines` (the frozen prefix appears
   unchanged in both old and new, so it is never archived). `_pending_rewrite` is
-  set by rewind/regenerate after they truncate the window and cleared only on a
+  set by rewind after it truncates the window and cleared only on a
   successful rewrite save, so a failed inline rewrite still gets retried as an
   archive-safe rewrite by the next flush (never silently overwritten).
+  A Regenerate truncates nothing up front: the previous reply stays until the
+  turn ends, and `chat_turn/regenerate_swap.settle_regenerate` replaces it only
+  when the turn produced a reply, through one rewrite pinned to the transcript
+  and slot the Regenerate was authorized against that names the rows it removes
+  (`retired_rows`). The variants stashed at the press keep the endpoint's
+  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  the turn runs: the segment flush attaches none to a reply of a turn that owns
+  the target, and the reply gets them only from the committed rewrite, so a
+  declined swap (refused or failed write, a reply trimmed into the frozen
+  prefix, a restart mid-turn) never saves the previous reply as a variant of
+  the new one beside its own row.
+  While the turn runs, the history it hands the model leaves the previous
+  reply out: the cold-start replay excludes the target's rows from the disk
+  transcript and the live window by delivery identity
+  (`build_session_replay(exclude_messages=regenerate_replaced_rows(slot))`),
+  and the interrupted-turn preamble walks
+  `rows_before_regenerate_target`. The question is asked again, so its old
+  answer must not precede it as an answer to nothing.
+  A previous reply partly trimmed off the window's front
+  into the frozen prefix cannot be retired by a rewrite, so that swap is
+  refused. While a swap is in flight (from its snapshot to its memory
+  update, `_swap_in_flight`) the window's front trim waits, so no append can
+  credit a row the swap is retiring to the frozen prefix; the first append
+  after the swap trims the whole excess. An empty turn, or a refused or failed replace, leaves both
+  memory and disk as they were, so nothing is owed and `_pending_rewrite` is
+  never set.
+  A recovery the Regenerate turn queues before it has a reply (a
+  session-not-found replay, a refusal fallback, a continuation) is the same
+  Regenerate's next attempt: `_queue_recovery` hands the target to it
+  (`carry_regenerate_target`), the empty first attempt keeps it waiting with
+  the stashed variants held on it, and the drain gives it to the replay turn
+  when that turn starts alone (`adopt_regenerate_target`), so the replay's
+  reply replaces the previous one. A replay that leaves the queue without
+  running drops the target, and the previous reply stays.
+  A row made of nothing but backend control notices (the Claude adapter's
+  `Compacting...`, streamed as assistant text and flagged
+  `AcpEvent.control_notice`) is not a reply: the target records each notice
+  chunk (`note_regenerate_notice`), and a row whose text is blank once they are
+  removed (`is_regenerate_answer`) is neither recorded as the reply nor given
+  the stashed variants. So a notice-only turn that dies leaves the previous
+  reply, and one that ends normally hands the target to the compaction
+  continuation it queues, whose real reply replaces the previous one.
+  Both seams that save such a row (the segment flush and the cancel path's
+  `_persist_partial_reply`) tag it `meta.kind="compaction"`,
+  `meta.notice="regenerate_notice_only"` (`_segment_row_meta`). It is then a
+  system notice on disk and after a reload, so the next Regenerate's scan,
+  in the handler and in the frontend, passes over it to the reply that was
+  kept, and a later success keeps that reply as a version.
+- **Swap-won guard** (`write_guards.swap_basis` / `snapshot_predates_swap`):
+  every save reads the slot's swap epoch before it copies the window, and a
+  committed Regenerate swap publishes itself inside the transcript lock
+  (`publish_swap`, the replace write's `after_commit_under_lock`). A save whose
+  copy predates that commit, or falls between the commit and the event loop
+  applying it to memory (`finish_swap`), would write the retired reply back and
+  drop the new reply's variants. Under the lock such a save re-takes its copy
+  from memory and applies the committed swap to it (`apply_committed_swap`,
+  with the swap record read before the re-copy, since the event loop may
+  apply and clear it meanwhile);
+  a caller's own `messages` snapshot cannot be re-taken, so that save is refused
+  and the caller re-decides.
 - **Foreign-append merge & id-first dedup** (`_frozen_prefix_and_foreign_appends`):
   a default save captures its `window` snapshot BEFORE taking `_locked`, so a
   cross-process writer (subagent / cron / CLI) can fully append + release the
@@ -1755,8 +1815,17 @@ no longer destroy older turns.
     the id through. The
     `test_foreign_append_content_identity_dedup_semantics` contract test pins
     that fallback; the `TestForeignFoldMidIdentity` cases pin pass 0.
-  - **Residual window (rewrite saves).** The scan runs only for default saves
-    (`collect_foreign = not rewrite`). Rewrite saves (rewind / regenerate / fork)
+  - **Residual window (rewrite saves).** The scan runs for default saves and for
+    a rewrite that names `retired_rows` (`collect_foreign = not rewrite or
+    retired_entries is not None`): the retired rows are matched, so their disk
+    copies drop, but never emitted, and any other window-region line the snapshot
+    lacks is kept. The Regenerate replace write is that case, so a workflow result
+    landing during its await survives. Such a row is a same-process dual write:
+    its window copy can reach the slot after the save that kept its disk line
+    as foreign. The cached fast path therefore re-emits a cached foreign line
+    only while no window (or retired) entry carries it, by the scan's id tier
+    (`_drop_carried_foreign`: equal `meta.mid`, corroborated by
+    `(role, content)` or `ts`), so the next save writes that row once. Other rewrite saves (rewind / fork)
     intentionally truncate the window and are same-session/same-process, so they
     **skip** the foreign scan and can still clobber a concurrent cross-process
     append that lands between the pre-lock window snapshot and the lock — a known,
@@ -1889,8 +1958,8 @@ archived instead of being permanently deleted:
 - **Fail closed**: an archive failure never lets the rewrite drop the rows.
   Rotation declines to rotate, compaction (`rewrite_session`) raises with the
   transcript untouched, the dashboard rewrite path raises so the save writes
-  nothing (a rewind answers `503 rewind_save_failed`; a regenerate keeps
-  `_pending_rewrite` and the next save retries), the file-change bound keeps the
+  nothing (a rewind answers `503 rewind_save_failed`; a Regenerate's replace
+  write that raises keeps both replies, in memory and on disk), the file-change bound keeps the
   prefix as read, and foreign-dedup keeps its lines.
 - **Retention**: configurable via `session.archive_retention_days` (default 30
   days; `-1` or `null` disables cleanup so the user manages deletion manually).
@@ -2303,7 +2372,15 @@ session-end pass may have claimed the transcript meanwhile), then the
 task. The idle sweep schedules a count only for a key past its throttle, not busy
 and outside its retry deadline, so a key in backoff costs one metadata read and no
 count. `_prefs_offset` advances to the counted total only when the prefs pass
-completes without a refusal, raise or cancellation, and the idle throttle is set
+completes without a refusal, raise or cancellation. A prefs pass whose turn came
+back with no reply or an unparseable one, or could not be dispatched, returns
+`_CONSOLIDATION_EMPTY`; a parsed `{}` is a completed pass with nothing to write,
+because the prefs-only prompt asks the model to omit unchanged keys. On
+`_CONSOLIDATION_EMPTY` the offset stays put, the history span's attempt cap is
+not charged, and `_prefs_retry` arms an in-memory retry-at for the key from
+`_CONSOLIDATION_BACKOFF_BASE_SECS`, doubling per consecutive empty pass up to
+`_CONSOLIDATION_BACKOFF_MAX_SECS`. `maybe_consolidate` schedules nothing for a
+key inside that deadline, and a completed prefs pass clears it. The idle throttle is set
 only when the history pass completes without one. A pass that raises has already
 logged it. A count that fails to read logs a warning and skips that check.
 

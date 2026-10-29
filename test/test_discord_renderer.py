@@ -908,6 +908,79 @@ class TestTurnTeardown:
         assert await finished(decider(SimpleNamespace(request_id="r15")), "the decision") is True
 
 
+def _future_on_a_closed_loop() -> "asyncio.Future[bool]":
+    """A future whose loop is gone, as a turn on an earlier loop leaves behind."""
+    dead = asyncio.new_event_loop()
+    try:
+        return dead.create_future()
+    finally:
+        dead.close()
+
+
+@pytest.mark.usefixtures("_clean_approval_registry")
+class TestAReservationFromAClosedLoop:
+    """A registry entry outliving its event loop is not a reservation.
+
+    The registry is process-global and outlives any one loop. Awaiting a future
+    from a closed loop raises ``attached to a different loop``, and a verdict on
+    it belongs to an ended turn, so both adoption sites must open a fresh window.
+    """
+
+    @pytest.mark.asyncio
+    async def test_arming_replaces_a_reservation_from_a_dead_loop(self) -> None:
+        key = DiscordApprovalDecider.key("sk", "r20")
+        DiscordApprovalDecider._REGISTRY[key] = _future_on_a_closed_loop()
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        assert DiscordApprovalDecider._REGISTRY[key].get_loop() is asyncio.get_running_loop()
+        decider = DiscordApprovalDecider(session_key="sk")
+        task = asyncio.ensure_future(decider(SimpleNamespace(request_id="r20")))
+        await asyncio.sleep(0)
+        assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+        assert await finished(task, "the decision") is True
+
+    @pytest.mark.asyncio
+    async def test_the_wait_denies_rather_than_raising_on_a_dead_reservation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no arm on this loop, the wait still must not await the foreign future."""
+        monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
+        key = DiscordApprovalDecider.key("sk", "r21")
+        DiscordApprovalDecider._REGISTRY[key] = _future_on_a_closed_loop()
+        decider = DiscordApprovalDecider(session_key="sk")
+        assert await finished(decider(SimpleNamespace(request_id="r21")), "the denial") is False
+
+    @pytest.mark.asyncio
+    async def test_a_verdict_recorded_on_a_dead_loop_is_not_adopted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A decision belongs to the turn that asked for it, not a later request."""
+        monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
+        key = DiscordApprovalDecider.key("sk", "r22")
+        stale = _future_on_a_closed_loop()
+        stale.set_result(True)
+        DiscordApprovalDecider._REGISTRY[key] = stale
+        decider = DiscordApprovalDecider(session_key="sk")
+        assert await finished(decider(SimpleNamespace(request_id="r22")), "the denial") is False
+
+
+class TestTheSweepReachesTheRealRegistry:
+    """The end-of-turn sweep must not travel through the construction seam."""
+
+    def test_the_discord_sweep_is_the_class_that_holds_the_reservations(self) -> None:
+        from kiro_crew.discord import transport_dispatch as discord_dispatch
+
+        assert discord_dispatch._APPROVAL_REGISTRY is DiscordApprovalDecider
+
+    def test_the_dispatcher_does_not_sweep_through_its_construction_seam(self) -> None:
+        import inspect
+
+        from kiro_crew.discord import transport_dispatch as discord_dispatch
+
+        source = inspect.getsource(discord_dispatch)
+        assert "DiscordApprovalDecider.discard_session" not in source
+        assert "_APPROVAL_REGISTRY.discard_session" in source
+
+
 class TestRedactionNotice:
     """When redaction rewrote what landed, one follow-up notice says so.
 

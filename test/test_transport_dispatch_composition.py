@@ -109,6 +109,7 @@ BASE_NAMES = frozenset(
         "TurnOutcome",
         "TurnRecord",
         "Verdict",
+        "_APPROVAL_REGISTRY",
         "_BUSY_OPTIONS_REFUSAL",
         "_CHANNEL",
         "_CHAT_TYPE_THREAD",
@@ -493,7 +494,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
             "(self, msg: 'InboundMessage', *, drain: 'bool' = True, interpret_commands: "
             "'bool' = True, origin_tag: 'str' = '', monitor_completion: "
             "'MonitorCompletionHook | None' = None, monitor_session_key: 'str | None' = "
-            "None) -> 'MonitorDispatchResult | None'"
+            "None, skill_trigger_text: 'str | None' = None) -> 'MonitorDispatchResult | None'"
         ),
     ),
     "is_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),

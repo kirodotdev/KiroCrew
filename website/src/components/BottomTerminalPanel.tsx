@@ -5,6 +5,7 @@ import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useLongPressReorder } from '../hooks/useLongPressReorder'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2 } from 'lucide-react'
 import {
@@ -379,6 +380,11 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
   // only signal that tabs continue past the clipped edge. The scroller keeps
   // its box as tabs open/close/rename, so remeasure on the tabs list.
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLUListElement>()
+  const attachWheel = useWheelToHorizontal<HTMLUListElement>()
+  const attachScroller = useCallback((node: HTMLUListElement | null) => {
+    attachEdges(node)
+    attachWheel(node)
+  }, [attachEdges, attachWheel])
   useEffect(() => { remeasure() }, [tabs, remeasure])
 
   // New tabs spawn in the selected session's project directory when one is
@@ -495,7 +501,7 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
             shrink below its content like the group did. */}
         <div className="relative min-w-0 flex items-center">
         <Reorder.Group
-          ref={attachEdges}
+          ref={attachScroller}
           axis="x"
           values={tabs}
           onReorder={setTabsOrder}

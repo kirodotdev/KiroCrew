@@ -178,6 +178,16 @@ describe('CrewDynamicDashboard', () => {
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
   })
 
+  it('carries the link bridge, so a _blank or _top link reaches the host instead of a dead click (#25461)', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    mount()
+    await screen.findByTestId('crew-dashboard-iframe')
+    expect(mints.length).toBeGreaterThan(0)
+    expect(mints[mints.length - 1]).toContain('kirocrew-dashboard:open')
+    // The grant set is unchanged: the bridge is the way out, not a wider sandbox.
+    expect(screen.getByTestId('crew-dashboard-iframe')).toHaveAttribute('sandbox', 'allow-scripts')
+  })
+
   it('mounts the gateway-composed page and never the stored copy', async () => {
     // Not a PREFERENCE between two pages: the stored copy is not a fallback at all.
     // It comes out of a writable `instance.json`, the composed one comes from the

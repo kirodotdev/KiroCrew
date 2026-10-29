@@ -390,6 +390,13 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
         try:
             d = ctx.client.patch(f"/api/chat/folders/{fld_id}", move_body, session_key=caller_key)
         except DashboardError as refused:
+            if refused.code == "folder_name_exists":
+                return (
+                    "Error: the destination already holds a folder with this name. "
+                    "Two folders with one name under the same parent cannot be told "
+                    "apart by path, so the move is refused. Rename one of them "
+                    "first (chat_folder_update), then move it."
+                )
             # The endpoint owns the cycle guard (a folder cannot move into its
             # own descendant) — surface its verdict rather than re-deriving it.
             return f"Error: {refused.error}"

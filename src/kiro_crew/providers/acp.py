@@ -207,6 +207,10 @@ class AcpProvider(LLMProvider):
         # copy, ``apps.agent_launch``), set by session allocation; ``agent``
         # stays the session's identity. Read by the Kiro runtime start only.
         self.app_launch_agent = ""
+        # The app that owns this session, set by session allocation from the chat
+        # slot's own app (never from transcript metadata). The remote git proxy's
+        # egress check passes it to governance so an app-bound profile applies.
+        self.owning_app = ""
         # Kept on the provider, not only on the placeholder client: on the kiro
         # path ``_start_kiro_runtime_impl`` replaces that client with an
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
@@ -460,15 +464,21 @@ class AcpProvider(LLMProvider):
 
     @property
     def steer_upgrade_notice(self) -> str:
-        """The upgrade notice when this session's adapter is too old to steer, else ``""``.
+        """The notice when this session's adapter cannot steer, else ``""``.
 
-        Read off :attr:`agent_version`, so ``""`` before the handshake and for an
-        adapter that reported no readable version.
+        Too old (:attr:`agent_version` below the steer floor), or its handshake left
+        out the field the steer is gated on (the session card, ``card_for`` with the
+        ``initialize`` result, withdraws ``mid_turn_steer``). ``""`` before the
+        handshake and for an adapter that reported no readable version.
         """
-        from kiro_crew.acp.client_turn_control import steer_version_issue
+        from kiro_crew.acp.client_turn_control import (
+            steer_unadvertised_issue,
+            steer_version_issue,
+        )
 
-        return steer_version_issue(
-            str(getattr(self._client, "backend", "") or ""), self.agent_version
+        backend = str(getattr(self._client, "backend", "") or "")
+        return steer_version_issue(backend, self.agent_version) or steer_unadvertised_issue(
+            backend, getattr(self._client, "initialize_result", None)
         )
 
     @property

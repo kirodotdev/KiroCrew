@@ -18,6 +18,7 @@ import { revealComposer } from '../pages/chat/composerFocus'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { agentSwitchTarget, interceptSlashCommand, isInterceptedSlashCommand, isSideCommand } from '../pages/chat/ChatInput'
 import { extractKnowledgeQuery } from '../pages/chat/useKnowledgeFetch'
+import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { ComposerHandle } from '../chat-core/composer/Composer'
 import { isComposerSendHeld } from '../utils/composerSendHolds'
@@ -296,7 +297,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // a crewmate DM sent from mid-history streamed its answer below the fold.
     // Through the virtualizer's own handle, not a raw scrollTop write, so the
     // follow guard accounts for the move (followPolicy's write invariant).
-    setTimeout(scrollToBottom, SCROLL_AFTER_RENDER_MS)
+    // Settings -> Chat can turn the send-time jump off (#25754).
+    if (loadChatConfig().scrollOnSend) setTimeout(scrollToBottom, SCROLL_AFTER_RENDER_MS)
     // A failed send has to say so on the pane it was typed into. This path
     // reported nothing at all: the composer had already cleared and a rejected
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered

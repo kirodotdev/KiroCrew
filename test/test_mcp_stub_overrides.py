@@ -318,8 +318,9 @@ class TestManagedServersFollowTheControlPlane:
         from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
         from kiro_crew.mcp_discovery import _MANAGED_SERVERS_CALLER_AWARE
 
-        # computer: tenant-nonce gated. cron: outside this layer's measured scope.
-        excluded = {"kirocrew-computer", "kirocrew-cron"}
+        # computer: tenant-nonce gated. cron and secrets: outside this layer's
+        # measured scope (secrets is opt-in, credential-bearing egress).
+        excluded = {"kirocrew-computer", "kirocrew-cron", "kirocrew-secrets"}
         assert len(MANAGED_STUB_FOLLOWERS) == len(set(MANAGED_STUB_FOLLOWERS))
         assert set(MANAGED_STUB_FOLLOWERS) == (
             _MANAGED_SERVERS_CALLER_AWARE - {MANAGED_STUB_LEADER} - excluded

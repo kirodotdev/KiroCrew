@@ -23,6 +23,9 @@ from kiro_crew import platform_compat
 from kiro_crew.cloud.connect import FARGATE_HEALTH_PATH
 from kiro_crew.deploy.engine import tool_spawn_env
 from kiro_crew.instances.constants import (
+    CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING_SECS,
+)
+from kiro_crew.instances.constants import (
     DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
@@ -202,6 +205,12 @@ class _SshTunnel:
         # (instance_id) on a proven end-to-end probe success so the manager can
         # clear the self-heal attempt counter once the forward is verified live.
         self._on_healthy: Callable[[str], None] | None = None
+        # Optional seam, assigned the same way: True only when the owner reads
+        # ``instances.connect_timeout_secs`` into this tunnel's budget, so a
+        # readiness timeout may tell the user to raise it. A tunnel built
+        # without that setting (the desktop client-only tunnel keeper) leaves it
+        # False, and its timeout message never names a setting it ignores.
+        self._timeout_tunable = False
         self._transport = transport  # "ssh" or "ssm"
         self._ssm_target = ssm_target
         self._aws_profile = aws_profile
@@ -453,6 +462,9 @@ class _SshTunnel:
 
         Fails early if the ssh child exits before the port comes up (e.g. auth
         failure, ExitOnForwardFailure), capturing stderr for diagnostics.
+
+        A timeout with the child still running is reported by
+        :meth:`_ready_timeout_error`, which names the timeout tunable.
         """
         deadline = time.monotonic() + self._connect_timeout
         while time.monotonic() < deadline:
@@ -467,8 +479,57 @@ class _SshTunnel:
                     return False
                 return True
             await asyncio.sleep(_READY_POLL_INTERVAL_SECS)
-        self.status.error = f"timed out after {self._connect_timeout}s waiting for forward"
+        self.status.error = self._ready_timeout_error()
         return False
+
+    def _ready_timeout_error(self) -> str:
+        """Compose the readiness-timeout message for the active transport.
+
+        Reached only when the deadline lapsed with the port never reachable and
+        the child never observed exited. A child that is STILL RUNNING has not
+        failed with a classifiable error: it is either still connecting (a slow
+        jump-host or proxy handshake for SSH, a slow session handshake for SSM)
+        or stuck on a host that never answers. The two look identical from here,
+        so the message names both possibilities and the timeout tunable rather
+        than asserting either cause. A child that ALREADY EXITED in the same tick
+        the loop gave up, or a ``_proc`` cleared by a racing ``stop()``, keeps the
+        generic wording because no stderr classification ran against it. A
+        budget already at ``CONNECT_TIMEOUT_CEILING_SECS`` cannot be raised, so
+        that message points at the host's reachability instead of the tunable.
+        So does a tunnel whose owner never set ``_timeout_tunable``: its budget
+        does not come from ``instances.connect_timeout_secs``, so raising that
+        setting would change nothing.
+        """
+        timeout = self._connect_timeout
+        proc = self._proc
+        if proc is None or proc.returncode is not None:
+            return f"timed out after {timeout}s waiting for forward"
+        if not self._timeout_tunable:
+            knob = "Check that the host is reachable and connect again."
+        elif timeout >= _CONNECT_TIMEOUT_CEILING_SECS:
+            knob = (
+                "This budget is already at its maximum, so check that the host is "
+                "reachable rather than raising it."
+            )
+        else:
+            knob = (
+                "If the host is reachable but slow to connect, raise the budget with "
+                "`kirocrew config set instances.connect_timeout_secs <value>` and "
+                "connect again."
+            )
+        if self._transport == "ssm":
+            return (
+                f"timed out after {timeout}s waiting for the SSM port forward; the "
+                f"session was still starting when the budget ran out. The SSM "
+                f"session handshake may be slow, or the target may not be "
+                f"answering (check that its SSM agent is online). {knob}"
+            )
+        return (
+            f"timed out after {timeout}s waiting for the SSH forward; ssh was "
+            f"still connecting when the budget ran out. A host reached through a "
+            f"jump host or proxy can spend most of this budget on the proxy "
+            f"handshake, or the host may be unreachable. {knob}"
+        )
 
     async def _failed_on_child_exit(self) -> bool:
         """Record an already-exited child as an ERROR status; True if it exited.

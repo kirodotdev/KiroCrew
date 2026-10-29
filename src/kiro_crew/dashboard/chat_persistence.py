@@ -343,7 +343,9 @@ def _remember_reasoning_effort_for_restore(level: str) -> None:
     path = _effort_marker_path(directory, level)
     # Old raw-name markers remain readable after upgrade. Avoid creating a
     # duplicate that would count twice against the durable bound.
-    lock_fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    lock_fd = open_create_or_existing(directory / ".lock", os.O_RDWR, 0o600)
     with os.fdopen(lock_fd, "r+b") as lock_file, file_lock(lock_file.fileno(), required=True):
         if path.is_symlink():
             raise OSError("validated effort marker is a symlink")

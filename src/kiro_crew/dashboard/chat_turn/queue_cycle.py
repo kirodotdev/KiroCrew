@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _mark_turn_end,
         _start_next_queued_turn,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import settle_regenerate
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.steer_queue import _requeue_unconsumed_steers
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
@@ -561,6 +562,16 @@ async def _end_turn_tail(
     """
     turn_exit.handed_off = True
     outcome = turn_exit.outcome
+    # A Regenerate replaces the previous reply only now that the turn is over
+    # and before a queued successor can start (``regenerate_swap``). Whatever
+    # the depth: the frame that runs this tail is the turn's end, since a
+    # ``/prompts get`` re-entry (depth 1) runs it for an outer frame that handed
+    # its tail off, and the hand-off below is not depth-gated either. The
+    # target's generation check keeps any other turn out.
+    try:
+        await settle_regenerate(state, slot)
+    except Exception:
+        logger.warning("Regenerate settle failed", exc_info=True)
     if outcome is not None:
         # End-of-turn fallback: catches set_project and reset_conversation calls
         # that fired mid-turn, after the start-of-turn consume already ran. This

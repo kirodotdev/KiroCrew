@@ -261,6 +261,7 @@ class _AllocationOwner(Protocol):
     _warm_pool: asyncio.Queue[tuple[LLMProvider, float]]
     _background_tasks: set[asyncio.Task[Any]]
     _bg_runtime: Any | None
+    on_session_released: Callable[[str], None] | None
 
     def _fold_key(self, key: str) -> str: ...
 
@@ -1175,6 +1176,19 @@ class SessionAllocationService:
                 # acquired. A run that never returns still goes stale and is
                 # reaped; a run working between tasks is not mistaken for one.
                 session.last_used = time.monotonic()
+                # Every surface ends a turn here, so this is the one point that
+                # sees a channel turn finish without knowing its transport
+                # (``on_session_released``). The observer only schedules work; a
+                # raise is logged and dropped so it can never leave the lease
+                # looking held. getattr: an owner double may predate the field.
+                listener = getattr(self._owner, "on_session_released", None)
+                if callable(listener):
+                    try:
+                        listener(key)
+                    except Exception:
+                        self._deps.logger.warning(
+                            "release(%s): release observer raised", key, exc_info=True
+                        )
             if getattr(session, "adopted_parked", False):
                 # The claim that just ended adopted entries a forced stop parked
                 # (``adopt_parked_queue``). Their channels' drains are woken

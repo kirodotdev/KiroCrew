@@ -133,6 +133,9 @@ Which = Callable[[str], "str | None"]
 #               (launchd)  the plist lacks KeepAlive=true or the expected
 #                          ExitTimeOut value for detached graceful restart
 STATUS_OK = "ok"
+#: The foreground gateway is the desktop app's: the CLI refuses to restart it,
+#: and the app restarts it itself.
+STATUS_DESKTOP_SUPERVISED = "desktop_app_supervised"
 
 
 class _UnsafeTargetValue(ValueError):
@@ -633,6 +636,21 @@ DetachedSpawn = Callable[[list[str]], None]
 #: replacement gateway would inherit? See :func:`default_confinement`.
 Confinement = Callable[[], "str | None"]
 
+#: ``(port) -> bool`` — does the desktop app supervise the gateway on *port*?
+#: See :func:`default_desktop_supervised`.
+DesktopSupervised = Callable[[int], bool]
+
+
+def default_desktop_supervised(port: int) -> bool:
+    """Whether the desktop app supervises the gateway on *port*.
+
+    The CLI's restart refuses that gateway, so a detached restart spawned for
+    it would change nothing (:func:`kiro_crew.cli_server_stop.desktop_app_supervisor`).
+    """
+    from kiro_crew.cli_server_stop import desktop_app_supervisor
+
+    return desktop_app_supervisor(port, explicit_port=True) is not None
+
 
 def default_confinement() -> "str | None":
     """Why a process spawned from here would inherit confinement, or ``None``.
@@ -772,6 +790,7 @@ class ForegroundBackend:
                  read_launcher: ReadLauncher, pid_exists: PidExists,
                  spawn: DetachedSpawn = default_detached_spawn,
                  confinement: Confinement = default_confinement,
+                 desktop_supervised: DesktopSupervised = default_desktop_supervised,
                  ) -> None:
         self._marker_ports = marker_ports
         self._read_pid = read_pid
@@ -779,6 +798,7 @@ class ForegroundBackend:
         self._pid_exists = pid_exists
         self._spawn = spawn
         self._confinement = confinement
+        self._desktop_supervised = desktop_supervised
 
     # -- discovery --
     def _locate(self) -> "tuple[int, int] | None":
@@ -843,6 +863,10 @@ class ForegroundBackend:
                 return "no_foreground_gateway"
             if self._resolve_binary(located[0]) is None:
                 return "no_kirocrew_binary"
+            if self._desktop_supervised(located[0]):
+                # The detached restart would be refused, so spawning it would
+                # report a restart that never happens.
+                return STATUS_DESKTOP_SUPERVISED
             return STATUS_OK
 
         return await _off_loop(_probe)

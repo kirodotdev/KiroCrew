@@ -880,7 +880,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "labelKey": "pages.settings.chatPanel.auto_compact_threshold",
-    "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+    "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,
@@ -1196,6 +1196,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "sessions"
+    }
+  },
+  {
+    "id": "chat.jump-to-the-bottom-when-you-send",
+    "label": "Jump to the bottom when you send",
+    "labelKey": "pages.settings.chatPanel.scroll_on_send",
+    "hint": "When off, sending a message leaves the transcript where it is.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
     }
   },
   {
@@ -2273,6 +2285,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.show-unread-dot-on-session-cards",
+    "label": "Show unread dot on session cards",
+    "labelKey": "pages.settings.displayPanel.show_unread_dot",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    },
+    "configKey": "dashboard.show_unread_dot"
+  },
+  {
     "id": "display.theme",
     "label": "Theme",
     "labelKey": "pages.settings.displayPanel.theme",
@@ -2685,6 +2709,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "New chats you start in the dashboard run here unless you pick another profile in the “Run this chat on” menu before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now.",
     "tab": "session-environments",
     "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.machine-size",
+    "label": "Machine size",
+    "labelKey": "sessionEnvironments.boxdSize",
+    "description": "A snapshot keeps the size it was saved with, so this applies only to profiles without one. Larger sizes bill more while the machine runs.",
+    "tab": "session-environments",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "session-environments.secret-name-for-the-token-usually-sprites-token",
+    "label": "Secret name for the token (usually SPRITES_TOKEN)",
+    "labelKey": "sessionEnvironments.tokenSecret",
+    "description": "The name the token is stored under in Settings → Secrets. Change it only to use a different saved token.",
+    "tab": "session-environments",
+    "type": "input",
     "occurrence": 1
   },
   {

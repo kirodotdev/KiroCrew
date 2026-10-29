@@ -201,6 +201,14 @@ def _consolidate_cmd(args) -> None:
     mem = MemoryStore()
     mem.init()
     skills = SkillsLoader()
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence (probes only
+    # for a Kiro CLI pick) and reload, so the factory reads the pick as KAS. Only
+    # on the consolidation path, so the list-only branch above spends no spawn.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    ensure_kiro_cli_kas_verdict()
+    cfg = KiroCrewConfig.load()
     sessions = SessionManager(cfg, provider_factory=build_provider_factory(cfg))
 
     # vector_store omitted: skill dedup uses SkillsLoader.find_similar() (Jaccard),

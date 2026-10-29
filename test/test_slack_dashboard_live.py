@@ -100,11 +100,6 @@ def harness(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     )
     monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
     monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
-    # The Slack renderer streams a chunk at once or holds it for the turn's end
-    # by how long ago its last edit was. Every chunk goes out at once here, so a
-    # Slack transcript compared across runs cannot differ by how fast the host
-    # (or the tab's own writes) happened to be.
-    monkeypatch.setattr("kiro_crew.slack.renderer._EDIT_INTERVAL", 0.0)
 
     state = _make_state(tmp_path)
     state.sessions.channel_key_for_stem = lambda stem: ""

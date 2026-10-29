@@ -55,6 +55,11 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
     group from it.  Without this branch a 3.9 host silently sees zero plugins,
     and an Amazon host then fails closed at boot even with the companion
     installed.
+
+    In an enterprise build a failed scan raises :class:`PlatformCompositionError`
+    instead of answering ``[]``: an empty answer there means "no companion, boot
+    on the core defaults", so a scan that could not read an installed
+    companion's metadata must not be mistaken for one that found none.
     """
     try:
         eps = importlib.metadata.entry_points()
@@ -63,7 +68,12 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
             return list(eps.select(group=PLUGIN_GROUP))
         # Python 3.9: entry_points() returns a dict {group: [EntryPoint, ...]}.
         return list(eps.get(PLUGIN_GROUP, []))  # type: ignore[attr-defined]
-    except Exception:
+    except Exception as exc:
+        if edition.is_enterprise():
+            raise PlatformCompositionError(
+                f"could not read the installed {PLUGIN_GROUP!r} entry points "
+                f"({type(exc).__name__}: {exc}); refusing to boot (fail-closed)."
+            ) from exc
         logger.debug("entry-point discovery failed", exc_info=True)
         return []
 

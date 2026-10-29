@@ -164,8 +164,9 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": ["", "auto"],
                         "description": "Tool approval mode for this job. "
-                        "'auto' auto-approves all tools without prompting. "
-                        "Empty or omitted uses default hook-based approval.",
+                        "Empty or omitted uses default hook-based approval. "
+                        "'auto' (auto-approve all tools) is refused here: only the "
+                        "owner can turn it on, on the Schedule page.",
                     },
                     "model": {
                         "type": "string",
@@ -312,7 +313,8 @@ def _list_tools() -> list[dict[str, Any]]:
                     "approval_mode": {
                         "type": "string",
                         "enum": ["", "auto"],
-                        "description": "New tool approval mode",
+                        "description": "New tool approval mode. '' turns auto-approve "
+                        "off; 'auto' is refused here (owner-only, Schedule page).",
                     },
                     "silent": {"type": "boolean", "description": "Whether the job runs silently"},
                     "skip_dates": {

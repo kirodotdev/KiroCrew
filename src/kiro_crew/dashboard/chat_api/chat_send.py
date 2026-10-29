@@ -268,8 +268,6 @@ def crew_steer_consumed(state: Any, slot: Any, message: str) -> None:
     if marker is None:
         return
     try:
-        import asyncio
-
         from kiro_crew.dashboard.handlers import crew_workers
 
         task = asyncio.get_running_loop().create_task(
@@ -1402,7 +1400,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     finally:
         if _reserve_turn_admission:
             slot._turn_admission_reserved = False
-    slot.recovery_retrigger_count = 0
     state.push_slots_update()
 
     if ws_mode:

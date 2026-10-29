@@ -415,12 +415,13 @@ def test_off_a_skill_added_in_advanced_settings_reaches_a_fresh_worker(off, mate
 def test_off_a_custom_template_still_configures_the_worker(off, mate_home):
     from kiro_crew import mate_worker_kit
 
-    ask = {"template": "release-bot", "keep_additions": True}
+    ask = {"template": "release-bot"}
     preview = mate_worker_kit.preview("pixel", ask)
     mate_worker_kit.apply("pixel", {**ask, "revision": preview["revision"]})
     worker = _fresh_worker(mate_home)
     assert "jira" in worker["mcpServers"]
-    assert "Release SOP." in worker["prompt"]
+    # The template's prompt rides as behaviour directions, after the worker's own.
+    assert worker["prompt"].endswith("\n\nRelease SOP.")
 
 
 # ── per crewmate: on for one, the others unaffected ──

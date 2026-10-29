@@ -725,7 +725,9 @@ describe('MembersPage create links open the New mate card', () => {
       fireEvent.click(screen.getByTestId('member-post-create-retry'))
       expect(await rosterRow('radar')).toBeInTheDocument()
       await waitFor(() => expect(screen.queryByTestId('member-post-create-error')).toBeNull(), PANE_READY)
-      // The retry listed it; the chat the user picked is still the one open.
+      // The retry listed it; the chat the user picked is still the one open,
+      // and the create was not sent a second time.
+      expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
       expect(api.memberThread).not.toHaveBeenCalledWith('radar')
       expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
     } finally {

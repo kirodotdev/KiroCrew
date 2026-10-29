@@ -65,6 +65,10 @@ declare global {
     /** A macOS swipe the shell relays as one route-history step (-1 Back,
      *  1 Forward). Optional: absent in a browser and on an older shell. */
     onHistoryStep?: (cb: (delta: unknown) => void) => () => void
+    /** The trackpad's real finger-down (`begin`) and finger-up (`end`), from
+     *  Chromium's gesture-scroll events (macOS only). Optional: absent in a
+     *  browser and on an older shell. See lib/scrollTouch. */
+    onScrollTouch?: (cb: (phase: unknown) => void) => () => void
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
     onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
@@ -87,6 +91,14 @@ declare global {
   interface CloseActionAPI {
     get: () => Promise<CloseAction>
     set: (action: CloseAction) => Promise<CloseAction>
+  }
+
+  /** First-run setup's "connect to a crew on another machine" exit. `start`
+   *  opens the desktop app's remote-crew form; on "switching" the window is
+   *  about to leave this page for the crew's dashboard. */
+  interface RemoteCrewSetupAPI {
+    available: () => Promise<boolean>
+    start: () => Promise<'switching' | 'cancelled' | 'unavailable'>
   }
 
   interface CrashReportsAPI {
@@ -298,6 +310,7 @@ declare global {
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
+    remoteCrewSetupAPI?: RemoteCrewSetupAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI

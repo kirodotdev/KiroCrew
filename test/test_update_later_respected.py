@@ -174,7 +174,12 @@ def _run_provider(cfg: SimpleNamespace):
             patch.object(
                 CommandProvider,
                 "check",
-                AsyncMock(return_value=UpdateCheckResult(available=True, remote_version="2.0.0")),
+                AsyncMock(
+                    side_effect=[
+                        UpdateCheckResult(available=True, remote_version="2.0.0"),
+                        UpdateCheckResult(available=False),
+                    ]
+                ),
             ),
             patch.object(CommandProvider, "apply", AsyncMock(return_value=True)) as apply,
             patch("kiro_crew.config.KiroCrewConfig.load", return_value=cfg),

@@ -211,6 +211,27 @@ test("managed check(): no checkCommand -> check error (cannot discover, not 'lat
   assert.ok(!states.some((s) => s.state === "not-available"));
 });
 
+// A spawn script for an apply that installs: the check offers 0.5.0.5 until
+// `applyCommand` runs, then reports up to date (non-zero), as a real check does
+// once the version is installed.
+function installsOnApply(applyCommand) {
+  let applied = false;
+  return (cmd) => {
+    if (cmd === applyCommand) {
+      applied = true;
+      return { code: 0, out: "" };
+    }
+    return applied ? { code: 1 } : { code: 0, out: "0.5.0.5" };
+  };
+}
+
+// The quit-apply runs detached from the before-quit handler; wait for its exit.
+async function untilExited(exits) {
+  for (let i = 0; i < 50 && exits.length === 0; i += 1) {
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 test("managed install() runs updateCommand then relaunch+exit", async (t) => {
   const relaunches = [];
   const exits = [];
@@ -219,8 +240,7 @@ test("managed install() runs updateCommand then relaunch+exit", async (t) => {
   });
   deps.app.relaunch = () => relaunches.push(true);
   deps.app.exit = (c) => exits.push(c);
-  const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  const { commands, restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -258,8 +278,7 @@ test("managed auto-on-restart: pref true + found arms before-quit that runs upda
   deps.getAutoDownloadPreference = () => true;
   deps.app.relaunch = () => relaunches.push(true);
   deps.app.exit = (c) => exits.push(c);
-  const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  const { commands, restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -267,7 +286,7 @@ test("managed auto-on-restart: pref true + found arms before-quit that runs upda
   assert.ok(quit, "pref true + found must arm a before-quit handler");
   const event = { preventDefault: () => {} };
   quit.fn(event);
-  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  await untilExited(exits);
   assert.ok(commands.includes("pkgtool update kirocrew"), "before-quit must run the updateCommand");
   assert.strictEqual(relaunches.length, 1);
   assert.deepStrictEqual(exits, [0]);
@@ -333,6 +352,75 @@ test("managed auto-on-restart: a FAILED apply on quit exits without relaunching"
   assert.strictEqual(relaunches.length, 0, "a failed apply must NOT relaunch into an uninstalled version");
   assert.deepStrictEqual(exits, [0], "the quit is still honored (exit 0)");
   assert.strictEqual(failed.length, 1, "onInstallFailed fires on a failed quit-apply");
+});
+
+test("managed install(): an apply the check still offers again does not relaunch", async (t) => {
+  const failed = [];
+  const exits = [];
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => { throw new Error("must not relaunch into the same version"); };
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.deepStrictEqual(commands, ["check", "apply", "check"], "the check runs again after the apply");
+  assert.deepStrictEqual(exits, [], "the app keeps running");
+  assert.strictEqual(failed.length, 1, "onInstallFailed fires so the gateway comes back");
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "install", "an unchanged install is an install-phase error");
+  assert.match(err.message, /did not change/);
+});
+
+test("managed install(): a re-check offering another version still relaunches", async (t) => {
+  const relaunches = [];
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = () => {};
+  let version = "0.5.0.5";
+  const { restore } = stubSpawn((cmd) => {
+    if (cmd === "check") return { code: 0, out: version };
+    version = "0.5.0.6";
+    return { code: 0, out: "" };
+  });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.strictEqual(relaunches.length, 1, "a newer version on offer is not the same-version loop");
+});
+
+test("managed auto-on-restart: an apply on quit the check still offers quits without relaunching", async (t) => {
+  const relaunches = [];
+  const exits = [];
+  const failed = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "pref true + found arms the quit-apply");
+  quit.fn({ preventDefault: () => {} });
+  await untilExited(exits);
+  assert.deepStrictEqual(commands, ["check", "apply", "check"]);
+  assert.strictEqual(relaunches.length, 0, "an unchanged install must NOT relaunch");
+  assert.deepStrictEqual(exits, [0], "the quit is still honored (exit 0)");
+  assert.strictEqual(failed.length, 1);
 });
 
 test("managed check(): the version comes from stdout only, ignoring stderr warnings", async (t) => {

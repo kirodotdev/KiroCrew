@@ -214,6 +214,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   type KirocrewCfg = {
     dashboard?: {
       recent_tint_count?: number
+      show_unread_dot?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
     }
   }
@@ -251,6 +252,20 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Steps are computed from the SHOWN count so rapid clicks stack on the
   // in-flight value instead of re-incrementing a stale server value.
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // The per-row unread dot on sidebar cards (dashboard.show_unread_dot). On by
+  // default; only a literal `false` hides it, the same rule ChatSidebar reads.
+  const shownUnreadDot = overlay.shown('dashboard.show_unread_dot', mcQ.data?.dashboard?.show_unread_dot !== false)
+  const [unreadDotError, setUnreadDotError] = useState<string | null>(null)
+  const unreadDotMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.show_unread_dot', value),
+    path: () => 'dashboard.show_unread_dot',
+    displayValue: v => v,
+    applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.show_unread_dot', value),
+    onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
+    onSupersede: () => setUnreadDotError(null),
+  }))
 
   // Default shell for the built-in terminal — persisted server-side
   // (dashboard.terminal.shell) because the SHELL is spawned by the gateway
@@ -1064,6 +1079,16 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               only things inside it. No hand-off: `shellDraft` and `installValue`
               share this panel and the navigation would unmount them. */}
           <ErrorNotice message={tintError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_unread_dot')}
+            checked={shownUnreadDot}
+            onChange={v => unreadDotMut.mutate(v)}
+            disabled={unreadDotMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.show_unread_dot"
+          />
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={unreadDotError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
             <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>

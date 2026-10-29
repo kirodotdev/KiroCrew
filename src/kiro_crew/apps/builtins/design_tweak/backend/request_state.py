@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.platform_compat import strip_extended_length_prefix
+
 JsonObject = dict[str, Any]
 
 COMMENT_STATUSES = ("new", "sent", "done")
@@ -133,8 +135,11 @@ def contain_path(base: Path | str, candidate: str = "") -> Path:
 
     base_real = os.path.realpath(base)
     candidate_real = os.path.realpath(os.path.join(base_real, candidate))
-    base_cmp = os.path.normcase(base_real)
-    candidate_cmp = os.path.normcase(candidate_real)
+    # Windows' ``\\?\`` prefix is folded off both sides before ``normcase``,
+    # which neither adds nor strips it: one ``realpath`` can keep it while the
+    # other does not, and the lone prefix would read as an escape.
+    base_cmp = os.path.normcase(strip_extended_length_prefix(base_real))
+    candidate_cmp = os.path.normcase(strip_extended_length_prefix(candidate_real))
     if not candidate_cmp.startswith(base_cmp):
         raise PathEscape(f"{candidate_real!r} is outside {base_real!r}")
     if candidate_cmp != base_cmp and not candidate_cmp[len(base_cmp) :].startswith(
@@ -155,8 +160,11 @@ def request_file(runtime: Any, base: Path, request_id: str) -> Path:
 def is_kirocrew_internal(runtime: Any, target: Path) -> bool:
     """Return whether ``target`` resolves within a private Kiro Crew tree."""
 
-    real = runtime.os.path.realpath(target)
+    # Folded on both sides so a ``\\?\``-prefixed resolve of an internal path
+    # is still recognised as internal.
+    real = strip_extended_length_prefix(runtime.os.path.realpath(target))
     for base in runtime._KIROCREW_INTERNAL_DIRS:
+        base = strip_extended_length_prefix(base)
         if real == base or real.startswith(base + runtime.os.sep):
             return True
     return False

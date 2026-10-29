@@ -311,6 +311,33 @@ function clampLocal(localX, localY, bounds) {
   };
 }
 
+// ── Click-through state ───────────────────────────────────────────────────
+
+/**
+ * Make an overlay click-through. Every click-through call goes through here.
+ *
+ * Off Windows the overlay keeps `forward: true`, as upstream did.
+ *
+ * On Windows `forward` is NOT used (#23345). Electron implements it there by
+ * re-posting every mouse move to the overlay's Chromium widget, and Chromium
+ * answers each one by setting the cursor for the transparent page. The
+ * dashboard window shares the same UI thread, so its I-beam/hand and the
+ * overlay's arrow took turns on every move: the cursor flickered over text and
+ * buttons whenever Mochi was on.
+ *
+ * Mochi does not need the forwarded moves. Whether the pointer is over the pet,
+ * bubble or menu is decided in the MAIN process from
+ * `screen.getCursorScreenPoint()` (startHitPoll), and the overlay is made fully
+ * interactive (setIgnoreMouseEvents(false)) for the pet, the open menu and a
+ * drag before the renderer needs any mouse event.
+ *
+ * Read `process.platform` at call time so tests can switch it per case.
+ */
+function setClickThrough(win) {
+  if (process.platform === "win32") win.setIgnoreMouseEvents(true);
+  else win.setIgnoreMouseEvents(true, { forward: true });
+}
+
 // ── The handoff ───────────────────────────────────────────────────────────
 
 /**
@@ -326,7 +353,7 @@ function transferPetToDisplay(targetDisplayId, localX, localY, isDragging = fals
     if (oldWin && !oldWin.isDestroyed()) {
       oldWin.webContents.send("mochi-pet:set-active", false);
       if (!isDragging) {
-        oldWin.setIgnoreMouseEvents(true, { forward: true });
+        setClickThrough(oldWin);
       }
     }
   }
@@ -445,7 +472,7 @@ function stopDragPolling() {
   // display. The hitbox poll switches the active overlay back once the renderer
   // reports a real rectangle.
   for (const win of overlays.values()) {
-    if (!win.isDestroyed()) win.setIgnoreMouseEvents(true, { forward: true });
+    if (!win.isDestroyed()) setClickThrough(win);
   }
   lastIgnoreState = true;
 }
@@ -465,7 +492,7 @@ function startHitPoll() {
       // Safety net: an interactive overlay with no known hitbox swallows every
       // click on the display — the worst failure this module can produce.
       if (!lastIgnoreState) {
-        win.setIgnoreMouseEvents(true, { forward: true });
+        setClickThrough(win);
         lastIgnoreState = true;
       }
       return;
@@ -484,7 +511,7 @@ function startHitPoll() {
 
     if (shouldIgnore !== lastIgnoreState) {
       lastIgnoreState = shouldIgnore;
-      if (shouldIgnore) win.setIgnoreMouseEvents(true, { forward: true });
+      if (shouldIgnore) setClickThrough(win);
       else win.setIgnoreMouseEvents(false);
     }
   }, POLL_MS);
@@ -552,7 +579,7 @@ function bindIpc() {
     // false below.
     for (const [id, win] of overlays) {
       if (!win.isDestroyed() && id !== activeDisplayId) {
-        win.setIgnoreMouseEvents(true, { forward: true });
+        setClickThrough(win);
       }
     }
     lastIgnoreState = false;
@@ -562,7 +589,7 @@ function bindIpc() {
   ipcMain.on("mochi-pet:ignore-mouse", (_e, ignore) => {
     const win = activeDisplayId !== null ? overlays.get(activeDisplayId) : null;
     if (!win || win.isDestroyed()) return;
-    if (ignore) win.setIgnoreMouseEvents(true, { forward: true });
+    if (ignore) setClickThrough(win);
     else win.setIgnoreMouseEvents(false);
     lastIgnoreState = !!ignore;
   });
@@ -668,7 +695,7 @@ function createOverlayForDisplay(display) {
   // eaten by Chromium's WM_MOUSEACTIVATE handler (MA_NOACTIVATEANDEAT), so the pet
   // could never be clicked or dragged. acceptFirstMouse is the macOS-only analogue.
   if (process.platform !== "win32") win.setFocusable(false);
-  win.setIgnoreMouseEvents(true, { forward: true });
+  setClickThrough(win);
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows
   // WDA_EXCLUDEFROMCAPTURE; no-op elsewhere). This window covers a whole display,

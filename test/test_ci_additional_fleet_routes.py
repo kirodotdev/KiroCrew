@@ -16,6 +16,14 @@ _EXPRESSIONS = {
     "push-pr": parity._CANONICAL_ROUTING_EXPR,
     "push": parity._CANONICAL_PUSH_EXPR,
     "push-dispatch": parity._CANONICAL_DISPATCH_EXPR,
+    # Named for its workflow rather than its events, unlike the three above:
+    # exactly one workflow uses it. It is covered here and has deliberately NOT
+    # moved to the larger-runner group, for the reason given in
+    # test_the_ratchet_audit_route_stays_off_the_larger_runner_group below.
+    # The truth table alone does NOT hold it there -- it reads its expectation
+    # out of the expression under test -- so that separate assertion is what
+    # does.
+    "ratchet-audit": parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR,
 }
 
 
@@ -123,10 +131,10 @@ def test_expression_interpreter_rejects_unknown_syntax_and_context(expression):
 @pytest.mark.parametrize(
     "event,repo,head,actor,actors,eligible_policies",
     [
-        ("push", _REPO, "", "101", _ACTORS, {"push-pr", "push", "push-dispatch"}),
-        ("push", _REPO, "", "202", _ACTORS, {"push-pr", "push", "push-dispatch"}),
+        ("push", _REPO, "", "101", _ACTORS, {"push-pr", "push", "push-dispatch", "ratchet-audit"}),
+        ("push", _REPO, "", "202", _ACTORS, {"push-pr", "push", "push-dispatch", "ratchet-audit"}),
         ("pull_request", _REPO, _REPO, "101", _ACTORS, {"push-pr"}),
-        ("workflow_dispatch", _REPO, "", "101", _ACTORS, {"push-dispatch"}),
+        ("workflow_dispatch", _REPO, "", "101", _ACTORS, {"push-dispatch", "ratchet-audit"}),
         ("push", _FORK, "", "101", _ACTORS, set()),
         ("pull_request", _REPO, _FORK, "101", _ACTORS, set()),
         ("pull_request", _REPO, "", "101", _ACTORS, set()),
@@ -147,7 +155,7 @@ def test_expression_interpreter_rejects_unknown_syntax_and_context(expression):
         ("pull_request_target", _REPO, _REPO, "101", _ACTORS, set()),
         ("workflow_run", _REPO, _REPO, "101", _ACTORS, set()),
         ("workflow_call", _REPO, "", "101", _ACTORS, set()),
-        ("merge_group", _REPO, "", "101", _ACTORS, set()),
+        ("merge_group", _REPO, "", "101", _ACTORS, {"ratchet-audit"}),
     ],
 )
 def test_actor_and_event_truth_table(
@@ -166,7 +174,19 @@ def test_actor_and_event_truth_table(
     eligible = policy in eligible_policies and (
         event != "pull_request" or action in {"opened", "synchronize"}
     )
-    expected = "codebuild-kirocrew-gha-linux-456-3" if eligible else "ubuntu-latest"
+    # The non-fleet destination is read off the policy's own expression rather
+    # than hardcoded per policy, so a policy that moves to the group later is
+    # covered here without touching this line, and one that has not moved still
+    # asserts the hosted image. Dropping the fork branch from a moved policy
+    # fails this assertion, which is the point: a group label is unreachable
+    # from a fork, and a job asking for one there waits until GitHub cancels it.
+    moved = parity._GROUP_THEN_HOSTED_TAIL in _EXPRESSIONS[policy]
+    if eligible:
+        expected = "codebuild-kirocrew-gha-linux-456-3"
+    elif moved and repo == _REPO:
+        expected = "kirocrew-linux-4-core"
+    else:
+        expected = "ubuntu-latest"
     assert _evaluate(_EXPRESSIONS[policy], context) == expected
 
 
@@ -269,8 +289,33 @@ def test_additional_routes_have_no_container_or_cloud_credential_steps(filename,
         assert "claude-code-action" not in step.get("uses", "")
 
 
+def test_the_ratchet_audit_route_stays_off_the_larger_runner_group():
+    """`main-ratchet-audit.yml` keeps its hosted fallback until the merge-group
+    leg is dealt with on purpose.
+
+    `merge-queue-readiness.yml` lists that workflow in its polled set. It polls
+    every merge group, counts a queued run as pending, and fails the group
+    closed when its budget runs out. So routing this policy's non-fleet path to
+    `kirocrew-runners` puts merge capacity behind the pull-request lanes that
+    already compete for that group's cap.
+
+    Pinned DIRECTLY, and not left to the truth table above, because that table
+    reads its expected value out of the expression under test. A change that
+    edits this constant and the workflow together -- which is the shape a real
+    move takes -- carries the expectation along with it and passes. So the table
+    catches a workflow edited alone and nothing else. Deleting this assertion is
+    the deliberate act that decision ought to require.
+    """
+    assert parity._GROUP_THEN_HOSTED_TAIL not in parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR, (
+        "main-ratchet-audit.yml's non-fleet path must stay on the hosted image: "
+        "merge-queue-readiness.yml polls that workflow on every merge group and fails "
+        "the group closed on a run left queued, so a capped group puts merge capacity "
+        "behind the PR lanes. Settle the merge-group leg before changing this."
+    )
+
+
 @pytest.mark.parametrize("filename", ["build-wheel.yml", "dependency-vulnerability.yml"])
-def test_reusable_routes_keep_schedule_callers_hosted(filename):
+def test_reusable_routes_keep_schedule_callers_off_the_fleet(filename):
     workflow = yaml.safe_load((parity._WORKFLOWS_DIR / filename).read_text(encoding="utf-8"))
     assert "workflow_call" in workflow.get("on", workflow.get(True))
     for caller in ("nightly.yml", "release.yml"):

@@ -18,7 +18,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
 ``_deferred_model_switch_key``, ``_pending_discard_from_wake``, ``_pending_memory_mode``, ``_pending_model_pick``,
 ``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_reasoning_effort``,
-``_recovery_chat_triggered``, ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``,
+``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``,
 ``_session_requested_model``,
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
@@ -26,7 +26,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
-``jev_route``, ``memory_store``, ``project``, ``recovery_retrigger_count``,
+``jev_route``, ``memory_store``, ``project``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
 
@@ -376,10 +376,6 @@ def init_session_fields(self: _ChatSlot) -> None:
     # Unclaimed-prefetch teardown timer (resume prefetch). At most one per
     # slot: a newer resumed prefetch cancels the previous timer.
     self._prefetch_ttl_task = None
-    self._recovery_chat_triggered = False  # guard against concurrent failure recovery
-    # Consecutive recovery re-triggers since the last user send. The Slack
-    # gateway's ``_retrigger_recovery`` caps it; ``api_chat`` resets it.
-    self.recovery_retrigger_count = 0
     self._slack_linked = False  # True when linked to a Slack thread
     self._slack_channel = ""
     self._slack_thread_ts = ""

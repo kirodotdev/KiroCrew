@@ -715,3 +715,91 @@ class TestOss:
         with pytest.raises(PlatformCompositionError, match="only in an enterprise build"):
             governance.load_security_policy()
         assert cps.requests == []
+
+
+class TestBootWithoutCompanion:
+    """An enterprise build with no companion boots on the core defaults, every gate on.
+
+    Each test runs the real ``bootstrap_context`` with no ``kirocrew.plugins`` entry
+    point, against the fake control plane, so the policy fetch, the built-in
+    baseline and the local tiers are the shipped ones.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_selectable_backends(self):
+        """Boot narrows the process-wide selectable-backend set to the policy's; undo it.
+
+        ``apply_selectable_denials`` assigns ``baseline - denied``, so an empty denial
+        restores the full set for the tests that run after this one.
+        """
+        from kiro_crew.agent_sdk.backends import apply_selectable_denials
+
+        yield
+        apply_selectable_denials(set())
+
+    @staticmethod
+    def _boot(monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import bootstrap
+
+        monkeypatch.setattr(bootstrap, "plugin_entry_points", lambda: [])
+        return bootstrap.bootstrap_context(KiroCrewConfig())
+
+    def test_boot_fetches_the_policy_and_composes_the_core_defaults(
+        self, enterprise, vault, cps, monkeypatch
+    ):
+        from kiro_crew.platform.defaults import DefaultIdentityProvider
+
+        vault()
+        ctx = self._boot(monkeypatch)
+        assert ctx.is_enterprise
+        assert isinstance(ctx.identity, DefaultIdentityProvider)
+        assert len(cps.requests) == 1
+        assert ctx.governance is not None
+
+    def test_a_scope_the_policy_does_not_name_is_denied(self, enterprise, vault, cps, monkeypatch):
+        vault()
+        ceiling = self._boot(monkeypatch).governance
+        # Named by the remote policy: it answers.
+        assert governance.resolve(ceiling, None, "channels", "slack").permitted
+        assert not governance.resolve(ceiling, None, "channels", "discord").permitted
+        # Not named: the built-in baseline holds it at its minimal set.
+        assert not governance.resolve(ceiling, None, "network.egress", "example.com").permitted
+        assert not governance.gate_decision(ceiling, None, "Running: ls").permitted
+
+    def test_a_local_policy_only_narrows(self, enterprise, vault, cps, monkeypatch, tmp_path):
+        local = tmp_path / "local-policy.json"
+        local.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "boot": {},
+                    "network": {"egress": {"mode": "deny", "deny": []}},
+                    "channels": {"members": {"mode": "deny", "deny": ["slack"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(local))
+        vault()
+        ceiling = self._boot(monkeypatch).governance
+        # Asked to widen egress: still the baseline's denial.
+        assert not governance.resolve(ceiling, None, "network.egress", "example.com").permitted
+        # Asked to narrow what the remote policy allowed: narrowed.
+        assert not governance.resolve(ceiling, None, "channels", "slack").permitted
+
+    @pytest.mark.parametrize("signed_in", [True, False])
+    def test_a_failed_fetch_exits(self, enterprise, vault, cps, monkeypatch, capsys, signed_in):
+        if signed_in:
+            vault()
+            cps.reply = _http_error(500, {"message": "boom"})
+        with pytest.raises(SystemExit) as exited:
+            try:
+                self._boot(monkeypatch)
+            except PlatformCompositionError as exc:
+                enterprise_boot.refuse_policy_boot(exc)
+                raise
+        assert exited.value.code == enterprise_boot.EXIT_CODE
+        err = capsys.readouterr().err
+        assert "governance rules" in err
+        assert _TOKEN not in err

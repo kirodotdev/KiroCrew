@@ -557,16 +557,20 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # renders exactly as a reparent does. Checked for a move to the top
             # level too -- "" is still a move.
             return False, "foreign_descendant"
-        if refuse_duplicate_name and "name" in changes:
+        current_parent = str(target.get("parent_id") or "")
+        final_parent = new_parent if reparenting else current_parent
+        if refuse_duplicate_name and ("name" in changes or final_parent != current_parent):
             # Same rule and same place as create_folder_record's: an agent never
             # makes a same-name sibling, because the two then share one path and
-            # neither can be addressed by it. Decided here, under the lock, over
-            # the whole tree -- a crew member's own GET is filtered, so a check
-            # against what the caller can read would miss a folder it cannot
-            # see. The folder's own row is excluded, so re-casing its own name
-            # is allowed. The browser keeps a person's freedom to name two alike.
-            final_parent = new_parent if reparenting else str(target.get("parent_id") or "")
-            folded = str(changes["name"]).strip().casefold()
+            # neither can be addressed by it. A rename and a move both make one
+            # (chat_folder_move sends a parent_id-only PATCH), so both are
+            # checked; a write that keeps both the name and the parent is not.
+            # Decided here, under the lock, over the whole tree -- a crew
+            # member's own GET is filtered, so a check against what the caller
+            # can read would miss a folder it cannot see. The folder's own row
+            # is excluded, so re-casing its own name is allowed. The browser
+            # keeps a person's freedom to name two alike.
+            folded = str(changes.get("name", target.get("name")) or "").strip().casefold()
             if any(
                 str(f.get("id")) != fid
                 and str(f.get("parent_id") or "") == final_parent
@@ -662,7 +666,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             outcome="denied",
             source="duplicate_name",
             resources=fid,
-            error="agent rename would duplicate a sibling folder name",
+            error="agent rename or move would duplicate a sibling folder name",
         )
         return web.json_response(
             {

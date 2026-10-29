@@ -55,6 +55,7 @@ from kiro_crew.history_consolidation_memory import (
 )
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_BUSY,
+    _CONSOLIDATION_EMPTY,
     _CONSOLIDATION_MAX_HEAD_SLICES,
     _CONSOLIDATION_REFUSED,
     AttemptedSpan,
@@ -103,9 +104,11 @@ async def _consolidate(
     refuses the span, its transcript changes during extraction, or the
     pass loses its consolidation lease to a peer, and
     :data:`_CONSOLIDATION_BUSY` when another process already holds that
-    lease; every other completion returns ``None``. Callers distinguish
-    either from a completed pass with :func:`_no_pass_ran`, never against
-    one instance. A changed source remains pending rather than consuming
+    lease, and :data:`_CONSOLIDATION_EMPTY` when a preference-only pass
+    (*include_history* False) got no usable answer; every other completion
+    returns ``None``. Callers distinguish
+    any of them from a completed pass with :func:`_no_pass_ran`, never
+    against one instance. A changed source remains pending rather than consuming
     the failure/abandon budget of a different span.
     """
     # Every store pass below runs on the background memory pool (mc-membg), so a
@@ -823,7 +826,10 @@ async def _consolidate(
             # on a widening interval instead of on every 60s tick.
             if include_history:
                 await self._note_environment_failure(key, str(exc))
-            return None
+                return None
+            # The preference-only window has no durable backoff; the caller
+            # keeps the window pending and arms its in-memory one.
+            return _CONSOLIDATION_EMPTY
         except _ConsolidationReplyUnusable as exc:
             result = None
             failure = str(exc)
@@ -835,9 +841,19 @@ async def _consolidate(
             # the in-memory throttle while the durable count still says
             # unconsolidated: the span re-bills a full turn every idle window,
             # and immediately after every restart. Charge the attempt.
-            if include_history and not await self._note_failed_attempt(
-                key, attempted, failure, lease
-            ):
+            if not include_history:
+                # A parsed ``{}`` is a valid answer here: the prefs-only prompt
+                # tells the model to omit every key that did not change, so the
+                # pass completed with nothing to write.
+                if isinstance(result, dict):
+                    return None
+                # The attempt cap writes the history span's abandon marker, so
+                # it is not charged here. The preference-only caller keeps the
+                # window pending and arms its in-memory backoff instead.
+                return _CONSOLIDATION_EMPTY
+            if isinstance(result, dict):
+                failure = "empty JSON answer"
+            if not await self._note_failed_attempt(key, attempted, failure, lease):
                 # The lease went to a peer: nothing was charged, and this
                 # is not a completed pass.
                 return _CONSOLIDATION_REFUSED
@@ -1283,7 +1299,8 @@ async def _call_llm(
     prompt never reached the provider at all — no session manager, or the
     background session could not be acquired because kiro-cli is missing, not
     logged in, or failing to start — or the provider sent back no text and
-    billed nothing, as a throttled provider does once its own retries run out.
+    billed nothing, as a throttled provider does once its own retries run out,
+    or the turn failed with ``AcpAuthRequired`` because the login lapsed.
     Billing that reads zero counts as nothing only on a provider whose
     ``reports_turn_usage`` is True; elsewhere an empty reply is charged.
     That case is signalled separately rather than folded into ``None``
@@ -1298,7 +1315,9 @@ async def _call_llm(
 
     Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
     failure inside it may still have been billed, so it returns ``None`` and is
-    charged rather than risk an unbounded retry loop over real spend.
+    charged rather than risk an unbounded retry loop over real spend. The one
+    exception is ``AcpAuthRequired`` raised before any text streamed, on a backend
+    that reports usage and shows none billed: a signed-out kiro-cli ran no model.
     """
     if not self._sessions:
         self._logger.warning("LLM consolidation skipped — no session manager")
@@ -1368,7 +1387,27 @@ async def _call_llm(
                 # attachment, so no readable file may become an image block.
                 allow_image=False,
             )
-        except Exception:
+        except Exception as exc:
+            # A signed-out kiro-cli runs no model and clears on the next login, so
+            # an overnight lapse must not spend the attempt cap. Only when nothing
+            # streamed and a usage-reporting backend shows no billing on any
+            # attempt: absent metering proves nothing, so that turn is charged.
+            # Matched by class name: the ACP exception type lives behind the
+            # agent-SDK import boundary, which application code may not cross
+            # (the same handle as ``_is_auth_required`` in dashboard/chat_threads.py).
+            if (
+                type(exc).__name__ == "AcpAuthRequired"
+                and not reply
+                and getattr(client, "reports_turn_usage", False) is True
+                and not usage_has_billing(
+                    provider_last_turn_usage(client, since=stats_before, consume=False)
+                )
+            ):
+                self._logger.warning(
+                    "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                    _time.monotonic() - t_start,
+                )
+                raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
             # The model and the prompt size are the two facts a context-window
             # overflow or a 429 is diagnosed from.
             self._logger.warning(
@@ -1387,7 +1426,9 @@ async def _call_llm(
             _time.monotonic() - t_start,
             result is not None,
         )
-        if result:
+        # A parsed ``{}`` is an answer, not a missing one: the prefs-only prompt
+        # tells the model to omit every unchanged key, so the caller decides it.
+        if result is not None:
             return result
         text = "".join(reply)
         if not text.strip():

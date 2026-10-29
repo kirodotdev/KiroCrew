@@ -13,6 +13,7 @@ import {
   TAB_STATUS_COLOR,
   closeSessionTab,
   loadSessionTabs,
+  moveSessionTab,
   nextActiveAfterClose,
   openSessionTab,
   pruneSessionTabs,
@@ -224,5 +225,21 @@ describe('truncateTabTitle', () => {
   it('ellipsizes past the limit', () => {
     expect(truncateTabTitle('y'.repeat(30))).toBe('y'.repeat(24) + '…')
     expect(truncateTabTitle('abcdef', 3)).toBe('abc…')
+  })
+})
+
+describe('moveSessionTab', () => {
+  const T = ['a', 'b', 'c', 'd']
+  it('moves right and left, keeping the others in order', () => {
+    expect(moveSessionTab(T, 'a', 2)).toEqual(['b', 'c', 'a', 'd'])
+    expect(moveSessionTab(T, 'd', 1)).toEqual(['a', 'd', 'b', 'c'])
+  })
+  it('clamps an index past either end', () => {
+    expect(moveSessionTab(T, 'b', 99)).toEqual(['a', 'c', 'd', 'b'])
+    expect(moveSessionTab(T, 'c', -5)).toEqual(['c', 'a', 'b', 'd'])
+  })
+  it('leaves the set unchanged for an unknown key or the same index', () => {
+    expect(moveSessionTab(T, 'z', 0)).toEqual(T)
+    expect(moveSessionTab(T, 'b', 1)).toEqual(T)
   })
 })

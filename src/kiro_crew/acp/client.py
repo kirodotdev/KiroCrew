@@ -231,7 +231,6 @@ from kiro_crew.acp.client_turn_control import _GOOSE_SESSION_STEER  # noqa: F401
 from kiro_crew.acp.client_turn_control import _ConcurrentSteerTurn  # noqa: F401
 from kiro_crew.acp.client_turn_control import format_command_result  # noqa: F401
 from kiro_crew.acp.client_turn_control import parse_slash_command  # noqa: F401
-from kiro_crew.acp.client_turn_control import steering_advertised  # noqa: F401
 from kiro_crew.acp.harness import claude as claude_mod  # noqa: F401
 from kiro_crew.acp.harness import pi as pi_mod  # noqa: F401
 from kiro_crew.acp.harness import process_adapter_for  # noqa: F401
@@ -293,6 +292,7 @@ from kiro_crew.acp.transport_framing import (  # noqa: F401
     write_request_frame_bounded,
     write_response_frame_bounded,
 )
+from kiro_crew.acp.types import steering_advertised  # noqa: F401
 from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,

@@ -9,6 +9,7 @@ const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice")
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
+const { armScrollTouch } = require("./scroll-touch");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const {
   createCloseHandler,
@@ -323,6 +324,11 @@ function createWindowLifecycle(options) {
     armSwipeHistory(win, view.webContents, {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
       panelUnderCursor: () => browserPanelUnderCursor(win, screen.getCursorScreenPoint()),
+    });
+    // The trackpad's real finger-down / finger-up, so a two-finger drag in the
+    // dashboard releases on the lift-off instead of a guessed gap (macOS only).
+    armScrollTouch(view.webContents, {
+      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
     });
 
     // Teardown order is load-bearing: no command poller or CDP owner may outlive

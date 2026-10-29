@@ -36,7 +36,8 @@ from kiro_crew.dashboard.handlers.agents import (
 )
 
 # The EXACT key set every row carries, from BOTH sources (the ``cfg.agents``
-# rows and the project-scope rows). ``name`` and ``scope`` are handler-added;
+# rows and the project-scope rows). ``name``, ``scope`` and ``owns_mate_file``
+# are handler-added;
 # the rest are allowlisted record fields. Changing this set is a
 # network-boundary contract change: check the frontend consumers first
 # (``website/src/components/AgentSelector.tsx`` declares the ``KiroCrewAgent``
@@ -45,6 +46,7 @@ ROSTER_ROW_KEYS = frozenset(
     {
         "name",
         "scope",
+        "owns_mate_file",
         "kiro_agent",
         "workspace",
         "memory_store",
@@ -58,6 +60,9 @@ ROSTER_ROW_KEYS = frozenset(
         "avatar",
     }
 )
+
+# The keys the handler writes rather than copies off the record.
+HANDLER_ADDED_KEYS = frozenset({"name", "scope", "owns_mate_file"})
 
 # Record fields deliberately withheld, each verified to have no consumer in
 # ``website/src``: the two watchdog windows and the compaction default are
@@ -262,7 +267,7 @@ class TestRosterRowIsAnAllowlistNotASpread:
         # stop classifying anything and let the next added field through.
         assert WITHHELD_RECORD_FIELDS <= record_fields
         # And the allowlist must not claim a record field that does not exist.
-        assert ROSTER_ROW_KEYS - {"name", "scope"} <= record_fields
+        assert ROSTER_ROW_KEYS - HANDLER_ADDED_KEYS <= record_fields
 
     def test_an_attribute_the_allowlist_does_not_name_is_dropped(self) -> None:
         """Behavioral proof, not just a literal comparison.
@@ -317,7 +322,7 @@ class TestUnshowableValuesAreMasked:
     # ``TestAvatarIsShapeAllowlistedNotMasked``. Excluded here rather than
     # softening these assertions, so the rule for every other field stays
     # "the sentinel, exactly".
-    RECORD_FIELDS_SHIPPED = tuple(sorted(ROSTER_ROW_KEYS - {"name", "scope", "avatar"}))
+    RECORD_FIELDS_SHIPPED = tuple(sorted(ROSTER_ROW_KEYS - HANDLER_ADDED_KEYS - {"avatar"}))
 
     def _full(self) -> KiroCrewAgentConfig:
         return KiroCrewAgentConfig(
@@ -362,16 +367,21 @@ class TestUnshowableValuesAreMasked:
         """`dict[str, object]` is honest about exactly one field, not a loophole.
 
         Every value is a `str` but `avatar`, which is a `dict` the dashboard needs
-        verbatim. Asserting the exception BY NAME means a second structured field
-        cannot appear without this test failing.
+        verbatim, and `owns_mate_file`, a handler-computed `bool`. Asserting the
+        exceptions BY NAME means another non-string field cannot appear without
+        this test failing.
         """
         cfg = KiroCrewAgentConfig()
         object.__setattr__(cfg, "description", {"nested": "object"})
         for redact in (False, True):
             row = _agent_roster_row("probe", "global", cfg, redact=redact)
             assert isinstance(row["avatar"], dict)
+            assert row["owns_mate_file"] is False
             non_str = {k for k, v in row.items() if not isinstance(v, str)}
-            assert non_str == {"avatar"}, f"unexpected structured value(s): {non_str}"
+            assert non_str == {
+                "avatar",
+                "owns_mate_file",
+            }, f"unexpected non-string value(s): {non_str}"
 
     def test_owner_keeps_name_addressable_but_app_token_does_not_need_it(self) -> None:
         """``name`` survives only where something can actually address it.

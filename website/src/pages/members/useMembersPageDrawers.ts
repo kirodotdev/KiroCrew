@@ -644,7 +644,9 @@ export function useMembersPageTrackpadSwipe({
       d.on = false
       const x = sidePanelX.get()
       // The lift-off: the last move for a recognised tail; the decision time for
-      // a gap, where fingers that had stopped before they left carry no speed.
+      // a gap, where fingers that had stopped before they left carry no speed;
+      // the shell's reported lift-off for `lift`, so the last 60ms are the
+      // fingers' own and a pause before lifting carries no speed either.
       const last = d.samples[d.samples.length - 1]
       const liftAt = how === 'momentum' && last ? last.t : at
       let first: { x: number; t: number } | undefined

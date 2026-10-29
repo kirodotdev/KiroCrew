@@ -11,6 +11,7 @@ import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider } from '../../components/NavigationLeaveGuard'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
+import { sseSubagentQueued } from '../../store/chatSlice'
 import { __resetPaneDraftsForTests, readPaneDraft, writePaneDraft } from '../../utils/chatPaneDrafts'
 import { _resetViewedThreadForTests } from '../../lib/viewedThread'
 import {
@@ -942,10 +943,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(cta)
     expect(await screen.findByTestId('crewmate-create-look')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Goal' })).toBeNull()
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }))
     fireEvent.click((await screen.findAllByTestId('crewmate-empty-advanced'))[0])
-    expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })
@@ -1090,6 +1091,26 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
         key: 'member-oncall', mode: 'member', running: false,
         subagents_running: false, messages: 0,
       }] as never))
+    })
+    expect(screen.queryByTestId('member-presence-dot')).toBeNull()
+  })
+
+  it('keeps a member present while its only children are queued, then clears it', async () => {
+    // A child held behind the spawn caps has not started, so the slots frame
+    // reports subagents_running false; the queued depth still marks the session busy.
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', running: false }),
+    ])
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'member-oncall', mode: 'member', running: false,
+        subagents_running: false, messages: 0,
+      }] as never))
+      store.dispatch(sseSubagentQueued({ slot: 'member-oncall', queued: 2 } as never))
+    })
+    expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
+    act(() => {
+      store.dispatch(sseSubagentQueued({ slot: 'member-oncall', queued: 0 } as never))
     })
     expect(screen.queryByTestId('member-presence-dot')).toBeNull()
   })

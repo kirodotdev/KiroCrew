@@ -310,7 +310,7 @@ pins ride in the policy file for it:
   one required answers 409 `locked_by_policy`, and `POST /api/update/approve`
 refuses an update armed on another channel (403 `approve_blocked_by_policy`);
 every wheel apply checks the pin again under the update lock before downloading
-(`wheel_engine.check_policy_channel`, enforced inside `apply_wheel_update` under the update lock immediately before `promote` swaps the stable link, which the dashboard approve, the scheduled auto-apply and `kirocrew server update` all reach; the reads before the download are advisory). Two tiers fold to the
+(`wheel_engine.check_policy_channel`, enforced inside `apply_wheel_update` under the update lock immediately before `promote` swaps the stable link, which the dashboard approve, the scheduled auto-apply and `kirocrew update` all reach; the reads before the download are advisory). Two tiers fold to the
   authority's channel, else the subordinate's. The `cli.sh` installer still
   reads the file directly.
 - **`min_version`** — the minimum version the fleet may run. On an install
@@ -1132,89 +1132,75 @@ unconditional rebuild would rewrite a file kiro-cli watches every refresh interv
 "The file" is every spec a session can be started on through a crew, not only `kirocrew.json`.
 The rebuild re-derives Kiro Crew's own specs, then the fork refresh
 (`agent_materialization.fork_refresh`) re-filters `allowedTools` and strips governed
-`autoApprove` on every corroborated fork, and then runs the same two passes over every
-**shared template** a crew in `config.json` is bound to: a spec created on the Agent
-templates tab, edited on the agent detail page, or turned into a shared template by publish.
-Those writers filter only when they write, so without this pass such a template would keep
-the grants the ceiling now denies. The shared-template pass touches nothing but those two
-lists, rewrites a file only when a pass removed something, and never writes a spec no crew is
-bound to. A spec counts as the bound template when its stem is the bound name or it declares
-that name, and when two specs claim it every JSON one is filtered, since which is live is
-undefined. That is why the pass does not resolve through `agent.agent_spec_path`: a resolver
-for a writer acting on one agent prefers a declared match over a stem match and refuses two
-declared matches, and either rule would leave a claimant's grants unfiltered here. The
-exemption for Kiro Crew's own specs and for forks is per file, not per name: the pass skips
-`<name>.json` for an owned name its installer governs and the file `agent.agent_spec_path`
-resolves for a fork, because those are the only files those writers rewrite, and filters
-every other file that claims the name. A second file declaring `kirocrew`, for example, is
-one kiro-cli may load as that agent while the installer re-filters only `kirocrew.json`. A
-fork whose name two files declare has no file the fork refresh wrote, so every claimant is
-filtered. The pass does
-not hold spawns the way the fork gate does. A bound template it fails to rewrite for a
-reason a retry can clear (a spec file raised an `OSError` on its read, the agents directory could not be listed, its write raised, `config.json` or
-`config.local.json` could not be read whole by this load) is folded into the rebuild's
-conductor hold (`_held_out` and `agent._conductor_spec_held`, below), so the ceiling memo
-stays behind and the next poll or maintenance wake retries it; the hook does not skip an
-unchanged generation while that hold is set, and neither does the gateway's profile watch
-(`agent.reproject_for_profile_change`, on its own retry backoff, the retry a host without
-distribution polling has between maintenance wakes), which covers a hold the boot path's deferred
-pass sets after `prime_ceiling_projection` seeded the baseline. The hold lasts until the
-template is filtered, like a held conductor spec: releasing it while the failure persists
-would mark the tightened ceiling projected with a denied grant possibly still on disk, and
-nothing would retry it once the failure cleared. That includes a read this process is
-denied (`PermissionError`). kiro-cli runs as the same user and cannot load the file while
-its permissions deny the read, but restoring them puts whatever grants it carries back in
-front of kiro-cli with no ceiling move to trigger a retry. A Windows sharing or lock
-violation arrives as the same `PermissionError` and clears when the other handle closes.
-Neither rebuilds on every poll: the probe below re-reads the file and lets the next tick
-rebuild once the read succeeds. The directory is listed with `os.scandir`, whose errors
-propagate (`agent_spec_format.iter_agent_spec_files_strict`): `Path.glob` swallows a failed
-listing and answers with an empty directory, which would let the memo advance past every
-bound template in it. A spec file with a second hard link is held too, until its link count is
-one again, and logged at WARNING with the remedy. The fenced reader refuses a
-multiply-linked inode for good, because the other name may be any file on the volume, but
-kiro-cli reads the same bytes without that fence, so its grants are live and this pass cannot
-filter them; the file is never written through the shared inode. Any other regular file the
-reader refuses is held the same way, since its link count or kernel path changed under the
-read and a retry may read it; a refused directory or pipe at a spec name is not held. Whether a config file could
-not be read is asked of the load itself (`KiroCrewConfig._base_unreadable` and
-`_overlay_unreadable`), not of `degraded_sections`, whose whole-config marker lasts the
-process: a hold on it would never clear after the file was repaired. A template no retry can
-fix (a markdown spec this writer
-cannot re-serialize, bytes that do not parse, a capability reconcile that refuses) is logged
-at WARNING and not held.
+`autoApprove` on every corroborated fork. A **shared template** a crew in `config.json` is
+bound to (a spec created on the Agent templates tab, edited on the agent detail page, turned
+into a shared template by publish, or installed by a package) is filtered only when one of
+those writers writes it, and the rebuild does not rewrite it.
 
-A file the pass cannot read holds whether or not it claims a bound name, because an unread
-file may be the one that declares it. Such a hold cannot clear until the file changes or a
-read of it succeeds, so it does not rebuild on every poll. The same is true of a config file
-the load could not read whole. When the pass's hold rests only on what it could not read, it
-records each unreadable file's path, inode, link count and mtime, the loader's fingerprint of
-both config files when one was unreadable, and the governance answer generation it ran under
-(`fork_refresh._shared_template_hold_record`). The ceiling hook and the maintenance wake skip
-the rebuild while that answer is current and is also the one the last rebuild derived its
-grants under (`agent._rebuild_answer_generation`), every recorded file is unchanged and still reads as
-held, and a fresh config load still cannot read a file whole
-(`fork_refresh.shared_template_hold_unchanged`; it re-reads each file through the same fence
-and logs nothing, and the loader never caches a read that failed). The memo stays behind
-either way, so the tightened answer is still not recorded as projected. A new answer, any
-change to a held file or config file, or a read that now succeeds (a sharing violation that
-cleared, an extra link that was removed) runs the rebuild on the next tick. A hold with any
-other cause is retried as before, because it can clear with nothing on disk changing: a
-conductor installer's hold (`agent._conductor_installers_held`), a write or governance pass
-that raised, or a rebuild that raised. The boot, pending and retry warnings name which kind
-of spec is held.
+A shared template is a spec Kiro Crew does not own, and the pass never writes one
+(the 2026-10-28 owner decision in docs/decisions, every crewmate on a user-level agent moves to the conductor):
+it is the same file kiro-cli loads for that agent OUTSIDE Kiro Crew, so a rewrite stripped
+the user's own sessions too, and a package manager that reinstalls the spec fought it on
+every restart. The startup crewmate migration moves the rows that used to reach such a file
+onto their own crewmate file (crew-mode.md, "Existing crewmates move at startup"), and for a
+row still bound to one the ceiling holds two ways. KAS never takes grants from the file:
+Crew projects the spec at session start and filters both lists against the live ceiling
+there (`acp.kas_agents._ceiling_permitted`, `kas_permissions.merge_user_permissions`).
+kiro-cli does read them, so a kiro-cli start on a crew-bound spec Crew does not own is
+REFUSED while the two governance passes would remove a grant (an `allowedTools` entry or a
+server's `autoApprove` entry; an empty list is no grant) from any file that claims the
+agent, or while such a file cannot be read or has a second hard link
+(`fork_refresh.require_shared_template_within_ceiling`, called from the kiro-cli harness and
+from `AcpClient` for every host in `ACP_BACKENDS_SPEC_FILE_GRANTS`), and
+again when a shared runtime activates another agent's spec from disk at `session/set_mode`
+(`acp.runtime_mode_activation._activate_mode_bracketed`, which ends the session first), since
+that spec is read there and not at the spawn. A runtime on such a host also checks the
+session's effective agent before each `session/new` and `session/load`
+(`acp.runtime_session_setup._refuse_over_ceiling_start`), because a session that names no
+agent inherits the spawn agent on a warm runtime, and its spec may have gained a grant since
+the spawn checked it. A binding counts when it records the agent's
+name or the file stem kiro-cli is dispatched under its declared name
+(`config.loader_snapshots.dispatch_kiro_agent`), and a config load that could not read a
+config file whole checks the agent's claimants as if it were bound, because the missing
+binding may be this one. So does an agent a crewmate ran on before the startup migration
+moved it (`mate_config_migration.moved_from_agents`), because a conversation from before
+the move keeps the template its own record names; a ledger that cannot be read counts as
+naming it. The refusal names the file and the remedy and writes nothing. So the rebuild's pass over shared
+templates now runs only the capability reconcile (which writes the materialization Crew
+owns) and reads no template file.
+Kiro Crew's own specs and forks are untouched by any of this: their writers own them.
 
-A spec no crew is bound to is not re-filtered, whoever wrote it. A file hand-placed in the
-agents directory is outside every Kiro Crew writer. A template created on the Agent
+The start check reads every spec that claims the agent: one whose stem is the name or
+that declares it, every JSON claimant when two do, since which one kiro-cli loads is
+undefined. That is why it does not resolve through `agent.agent_spec_path`, which prefers a
+declared match over a stem match and refuses two declared matches. The exemption for Kiro
+Crew's own specs and for forks is per file, not per name: it skips `<name>.json` for an owned
+name its installer governs and the file `agent.agent_spec_path` resolves for a fork, and
+checks every other file that claims the name. A markdown claimant is skipped, because
+kiro-cli does not load the markdown form. Bytes that do not parse as a spec carry no grant
+kiro-cli could load. A file the fenced reader refuses (a second hard link, a link count or
+path that changed under the read) or one whose read raises refuses the start, since
+kiro-cli may read what the check could not; so does a binding or lineage read that raises.
+
+The rebuild still holds for what its shared-template pass does: a capability reconcile that
+raised, and a `config.json` or `config.local.json` this load could not read whole (asked of
+the load itself, `KiroCrewConfig._base_unreadable` and `_overlay_unreadable`, not of
+`degraded_sections`, whose whole-config marker lasts the process). Either is folded into the
+rebuild's conductor hold (`_held_out` and `agent._conductor_spec_held`, below), so the
+ceiling memo stays behind and the next poll or maintenance wake retries. For an unreadable
+config file the pass records the loader's fingerprint of both config files and the
+governance answer generation it ran under (`fork_refresh._shared_template_hold_record`), and
+the ceiling hook and the maintenance wake skip the rebuild while that answer is current, is
+the one the last rebuild derived its grants under (`agent._rebuild_answer_generation`), and a
+fresh config load still cannot read a file whole (`fork_refresh.shared_template_hold_unchanged`).
+A hold with any other cause is retried as before, because it can clear with nothing on disk
+changing: a conductor installer's hold (`agent._conductor_installers_held`), a reconcile that
+raised, or a rebuild that raised. The boot, pending and retry warnings name which kind of spec
+is held.
+
+A spec no crew is bound to is not checked, whoever wrote it. A template created on the Agent
 templates tab and left unbound keeps the grants it was saved with, and a subagent started on
 it through `spawn` runs with them. That spawn path is not covered here.
-
-The removal is one-way. A denied `allowedTools` entry or governed `autoApprove` list is
-dropped from the template, not parked: when the ceiling later loosens, nothing puts it back,
-and the template's author re-adds it on the Agent templates tab or the detail page. That is
-the contract every writer of these lists already has (a template saved under a tight ceiling
-loses the same entries at write time), and keeping a restorable copy would mean storing a
-grant the fleet forbids beside a file kiro-cli reads.
 
 Two details make the generation bound safe rather than merely cheap. The baseline is seeded by
 `prime_ceiling_projection` **before the poller starts**, because the first poll can itself
@@ -1329,7 +1315,9 @@ reads the profile, so any profile at all would withhold every such grant. The ce
 the one in the gate's own context snapshot, so a ceiling or profile with any opinion on
 the tool's scopes keeps the call at the prompt; an unresolved profile store or an error
 withholds. The KAS projection asks `may_grant_builtin_at_gate_now` once when it records
-the grant; the gate asks again on every call.
+the grant; the gate asks again on every call. A spec's `toolsSettings.shell.allowedCommands`
+takes the same row and the same question, asked about `execute_bash`: the patterns are
+recorded only when it holds, and the row asks it again for every matching command.
 
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
@@ -1784,7 +1772,7 @@ unfenced is `echo x > ~/.kiro/agents/kirocrew.json`:
 documented design choice — so the shell route rests on the OS sandbox, which seals
 the agents dir and not yet the registry leaf.
 
-**The crewmate folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `kits/`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
+**The crewmate folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
 **Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
 
@@ -2395,7 +2383,7 @@ reported/skipped; import success never implies a governance grant.
 ### `vet_and_audit` — the audited-decision seam for governed outbound messaging
 
 `governance_profiles.vet_and_audit(scope, item, *, session_key, tool_name,
-app="", fail_closed=False, log_warning=True)` evaluates ONE permission
+agent="", app="", fail_closed=False, log_warning=True)` evaluates ONE permission
 decision via `governance_permits` AND writes its SEL
 `log_governance_decision` record — **grant and denial alike** — from a
 single code path, then returns the Decision. Any chokepoint whose outcome
@@ -2723,6 +2711,15 @@ denials leave the same forensic trail.
   PTY, which is an ungoverned plane by design (see below). A deployment that
   needs an actual bound on where the host can reach should treat the example
   as a starting point for defense-in-depth, not as sufficient on its own.
+  One gateway-side egress is governed by host besides the fetch tool: the
+  remote session git proxy (`remote_session/git_gateway.py`) asks
+  `vet_and_audit("network.egress", <host>, agent=<calling agent>, fail_closed=True)` (`github.com`,
+  `gitlab.com`, `bitbucket.org` or `dev.azure.com`) before every request it
+  carries upstream on a remote session's behalf, because there the GATEWAY is
+  the one reaching out, with its own credential. `AcpProvider` supplies the
+  calling agent to proxy startup; the channel keeps it independently of guest
+  frames. Missing identity refuses forwarding, and the audited seam passes it
+  into the existing task-profile resolution before intersecting the policy ceiling.
   Separately: once a `commands` deny pattern is adopted into policy, it
   becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
   pins, union not override) — a user cannot locally opt out of a pinned rule

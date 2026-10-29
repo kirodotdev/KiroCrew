@@ -25,12 +25,14 @@ if TYPE_CHECKING:
         _redact,
         _spawn_scope_refusal,
         body_int,
+        body_not_object_error,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
         effort_drop_reason,
         effort_pending_note,
         internal_memory_scope,
+        parent_project_dirs,
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
@@ -235,6 +237,16 @@ async def api_spawn(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    # The parent's project scope, read as soon as the request names its parent
+    # and before any later await (the backend probe, the memory-scope and
+    # record reads), so a parent session that ends meanwhile cannot shrink the
+    # scope the gate checks now and the queued row records. Dict reads only;
+    # a non-string parent is refused below and reads no scope here.
+    asked_parent = body.get("parent_session", "")
+    parent_dirs = list(parent_project_dirs(asked_parent)) if isinstance(asked_parent, str) else []
     try:
         cleaned = validate_tool_args(
             {
@@ -346,7 +358,10 @@ async def api_spawn(request: web.Request) -> web.Response:
             (
                 parent_execution.template_id,
                 await asyncio.to_thread(
-                    parent_template_allowlists, parent_session, parent_execution.template_id
+                    parent_template_allowlists,
+                    parent_session,
+                    parent_execution.template_id,
+                    parent_dirs,
                 ),
             )
             if parent_execution is not None
@@ -415,6 +430,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
         _parent_spawn_policy=parent_spawn_policy,
+        _parent_project_dirs=parent_dirs,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -615,6 +631,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     task = str(body.get("task", "") or "").strip()
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)

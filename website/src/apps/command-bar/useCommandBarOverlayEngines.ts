@@ -26,11 +26,14 @@ import { MATES_STALE_MS, type Scope } from './commandBarOverlayModel'
 export function useCommandBarOverlayEngines({
   scope,
   liveSlots,
+  subagentQueued,
   dispatch,
   navigate,
 }: {
   scope: Scope
   liveSlots: RootState['dashboard']['slots']
+  /** Accepted-but-unstarted sub-agents per slot key (`chat.subagentQueued`). */
+  subagentQueued?: Record<string, number>
   dispatch: AppDispatch
   navigate: (route: string) => void
 }) {
@@ -187,7 +190,12 @@ export function useCommandBarOverlayEngines({
    * Derived from the same live slot frames the root's attention group reads
    * (`useCommandBarOverlayRootRows`), so the running indicator costs this surface no
    * request and cannot disagree with what the Crewmates page shows — that page reads
-   * `running || subagents_running` off these same frames.
+   * `running || subagents_running` off these same frames, plus the queued depth.
+   *
+   * A child waiting behind the concurrency, memory or posture cap has not started, so
+   * `subagents_running` is false for it, yet the gateway still refuses a new turn on
+   * that session. A mate whose turn ended with only queued children is busy for the
+   * reader's question, so the queued depth counts too.
    *
    * Keyed on `agent` rather than on the slot key, and that is sound because a member
    * slot is BORN with its crew pinned: the thread route sets `slot.agent` to the
@@ -202,11 +210,11 @@ export function useCommandBarOverlayEngines({
     const byName = new Set<string>()
     for (const slot of liveSlots) {
       if (slot.mode !== 'member') continue
-      if (!(slot.running || slot.subagents_running)) continue
+      if (!(slot.running || slot.subagents_running || (subagentQueued?.[slot.key] ?? 0) > 0)) continue
       if (slot.agent) byName.add(slot.agent)
     }
     return byName
-  }, [liveSlots])
+  }, [liveSlots, subagentQueued])
 
   /**
    * The crewmates view's engine — this app's own roster corpus

@@ -2,23 +2,24 @@
  *  (`Field`), workspace (with the nested create-workspace dialog), memory
  *  store, model, reasoning effort, display name, routing keywords and session
  *  color. The crew editor sheet, the Crewmates page's New crewmate dialog and
- *  the crew profile settings mount them; consumers import them from
- *  `KiroCrewAgentsPage.tsx`, which re-exports every one. */
+ *  the crew profile settings mount them, each importing this module directly.
+ *  It imports no page, so a consumer never closes a module cycle through it.
+ *  `KiroCrewAgentsPage.tsx` re-exports every name for its existing importers. */
 import { useState, useEffect } from 'react'
-import { api } from '../api/client'
-import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
-import { Btn, SendBtn, Input } from '../components/ui'
+import { api } from '../../api/client'
+import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
+import { Btn, SendBtn, Input } from '../ui'
 import {
   Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle,
-} from '../components/ui/dialog'
-import InfoTip from '../components/InfoTip'
-import SimpleSelect from '../components/SimpleSelect'
-import { type KiroCrewAgent } from '../components/AgentSelector'
-import { EFFORT_LEVELS, effortLabel } from '../lib/effort'
-import { isAssistantMember } from '../lib/assistantMember'
-import { i18nT } from '../i18n/t'
-import { uiLocation } from '../uiLocations/uiLocation'
-import ErrorNotice from '../components/ErrorNotice'
+} from '../ui/dialog'
+import InfoTip from '../InfoTip'
+import SimpleSelect from '../SimpleSelect'
+import { type KiroCrewAgent } from '../AgentSelector'
+import { EFFORT_LEVELS, effortLabel } from '../../lib/effort'
+import { isAssistantMember } from '../../lib/assistantMember'
+import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import ErrorNotice from '../ErrorNotice'
 
 // An example input value, independent of the display language.
 const HEX_COLOR_EXAMPLE = '#4f8ef7'
@@ -204,11 +205,7 @@ export function WorkspaceModal({
   // name/directory/copy-from. The explicit Cancel and the X still close.
   const [dirty, setDirty] = useState(false)
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
-  /* Also mounted by the Crewmates page's New crewmate dialog
-     (`pages/members/NewCrewmateDialog.tsx`), whose Advanced section offers the
-     same "new workspace" entry as the editor.
-
-     Kept MOUNTED and driven by `open`, rather than conditionally rendered.
+  /* Kept MOUNTED and driven by `open`, rather than conditionally rendered.
      Radix tracks dismissable layers in a global stack, and tearing this whole
      subtree out the instant it closes skipped the layer's own deregistration —
      the editor underneath was then left believing it was no longer the top
@@ -238,9 +235,8 @@ export function WorkspaceModal({
   )
 }
 
-/** One labelled control in the editor panel, with an optional explainer. Also the
- *  frame around every field of the Crewmates page's New crewmate dialog
- *  (`pages/members/NewCrewmateDialog.tsx`), so the two forms share one frame. */
+/** One labelled control with an optional explainer: the frame around every
+ *  field of the crew forms, so they share one frame. */
 export function Field({ label, hint, info, children }: { label: string; hint?: string; info?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -263,9 +259,9 @@ function withCurrent(opts: string[], cur: string): string[] {
 
 /**
  * One component per binding, so the create dialog and the editor's panes render
- * the SAME control rather than two copies that drift. The Crewmates page's
- * `NewCrewmateDialog` composes them in its Advanced settings; the editor mounts them
- * individually, one per rail pane.
+ * the SAME control rather than two copies that drift. The create dialog
+ * composes them in its Advanced settings; the editor mounts them individually,
+ * one per rail pane.
  */
 export function WorkspaceField({ options, value, onChange, onNewWorkspace, subject, hint, ownOption = false }: {
   options: string[]; value: string; onChange: (v: string) => void; onNewWorkspace: () => void; subject: FormSubject

@@ -245,10 +245,10 @@ class TestOwnershipTracksTheFilesystem:
         opened: list[int] = []
         real_open = os.open
 
-        def _record_flags(path, flags, *rest):
+        def _record_flags(path, flags, *rest, **kwargs):
             if str(path).endswith("settings.local.json"):
                 opened.append(flags)
-            return real_open(path, flags, *rest)
+            return real_open(path, flags, *rest, **kwargs)
 
         client = _client(tmp_path, permission_mode="default")
         with pytest.MonkeyPatch.context() as patch:

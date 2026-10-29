@@ -20,8 +20,9 @@ prefix or prefix tuple, never by a loose regex.
 
 ## Cron notification
 
-A cron job called `send_message(session="origin")` and the origin dashboard slot
-was reachable. `dashboard/handlers/messaging.py` wraps the text:
+A cron job called `send_message(session="origin")`, or a script cron reported a
+result, and the origin dashboard slot was reachable. `dashboard/handlers/messaging.py`
+and `slack/gateway_runtime/cron_exec.py` wrap the text the same way:
 
 ```
 [Cron notification from "<job name>"]
@@ -50,7 +51,11 @@ was reachable. `dashboard/handlers/messaging.py` wraps the text:
   waiting card names the entry in `meta.queueId`, the id the drain's `queue_pop`
   frame carries, so the card comes down when the message starts its turn
   (`cron_inject.queue_cron_notification`, which a script cron's result uses too). An
-  idle slot instead gets an immediate guarded turn.
+  idle slot queues the same card and the queue drain starts it at once
+  (`session_deliver._deliver_idle`), so it waits behind a Stop being resolved, a
+  sign-in hold, memory preparation or an entry already queued. A slot that is
+  closing or receives the message during gateway shutdown takes nothing, and the
+  notification takes the out-of-session fallback.
 - When the origin slot is not in memory it is rehydrated from history. A session
   that is genuinely gone (never persisted, deleted, or closed) resolves to nothing
   and delivery falls back to a dashboard notification (plus a Slack DM when the
@@ -632,6 +637,23 @@ pass, or one that auto-continues a trivial read — with no round-trip to the us
 - The `reason` is external process output, and it is redacted (exfiltration URLs,
   then credentials) on the dequeue path shared by every queued turn, before the
   continuation is classified or dispatched.
+- **A sub-agent's prompt ends the same way.** A child run fires Stop (Hooks-page
+  hooks and the spec hooks its backend cannot run) each time one of its prompts
+  ends, with that prompt's final segment as `assistant_text` and the child's own
+  `session_key`, `subagent_id` and `parent_session_key`. A block decision sends the
+  redacted reasons to the child as its next prompt on the same session, behind the
+  same prefix, so a Stop gate also covers work a parent delegates. The child
+  continues only after a successful end, with no stop, reap or shutdown under way,
+  and under the same `agent.max_stop_hook_nudges` cap, counted per run; past the
+  cap the run ends as it stands. A prompt that a stall or capacity recovery, or a
+  resume after a host refusal, ends still fires Stop but never continues from it:
+  that path already has its own next step (`subagent_manager/run_turn.py` and
+  `subagent_manager/stop_hooks.py`). The prompt's stream is drained before the next prompt
+  starts, so the provider's own turn cleanup never lands on the continuation. Each
+  prompt a Stop hook continues writes its own usage row, as a dashboard turn does.
+  The parent's result keeps both answers, a blank line apart, and every re-prompt
+  (continuation, recovery or refusal resume) starts a new `assistant_text`, so a
+  Stop hook judges only the text the child wrote after it.
 
 **How to treat it:** it is an instruction from an automation the operator
 configured, not a question from a person. Do the work it asks for and continue.

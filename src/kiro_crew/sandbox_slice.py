@@ -611,11 +611,28 @@ _CGROUP_TOTAL_MEMORY_FRACTION = 0.80
 # the per-scope fallback (8192) for the same "never clamp a single scope
 # tighter than its own ceiling" reason as the fraction.
 _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB = 12288
-# Aggregate pids.max across all concurrent scopes: four fully-loaded scopes'
-# worth (4 x 8192). Bounds the composition blow-up (32 scopes x 8192 tasks =
-# 262144 otherwise) while still allowing several concurrent JVM-scale builds,
-# each of which legitimately needs thousands of threads.
+# Fallback aggregate pids.max across all concurrent scopes, used only when the
+# host reading fails. The normal default is host-sized
+# (:func:`_default_max_total_tasks`), and this value is also its floor.
 _CGROUP_DEFAULT_MAX_TOTAL_TASKS = 32768
+
+
+def _default_max_total_tasks(total_memory_mb: int | None = None) -> int:
+    """Default aggregate ``pids.max`` for the agents slice, sized from the host.
+
+    *total_memory_mb* is the slice ``MemoryMax`` being applied alongside it, so
+    the task ceiling follows a configured memory ceiling. See
+    :func:`kiro_crew.host_task_sizing.size_slice_tasks` for the formula.
+    Falls back to :data:`_CGROUP_DEFAULT_MAX_TOTAL_TASKS` when the host cannot
+    be read.
+    """
+    try:
+        from kiro_crew.host_task_sizing import host_task_facts, size_slice_tasks
+
+        return size_slice_tasks(host_task_facts(), total_memory_mb)
+    except Exception:
+        logger.debug("slice tasks: host reading failed, using the fixed default")
+        return _CGROUP_DEFAULT_MAX_TOTAL_TASKS
 
 
 def _default_max_total_memory_mb() -> int:
@@ -638,13 +655,14 @@ def _slice_limits_from_config() -> tuple[int, int]:
 
     Reads ``resource_limits.max_total_memory_mb`` / ``max_total_processes``
     from the same config block as the per-scope knobs. ``0`` or junk means
-    "use default" — the aggregate ceiling is never left unset, matching the
+    "use default", where the task default is host-sized
+    (:func:`_default_max_total_tasks`) — the aggregate ceiling is never left unset, matching the
     per-scope rule in :func:`_cgroup_limits_from_config`. The two memory knobs
     are deliberately independent of one another: per-scope answers "how big may
     one tree get", aggregate answers "how much may all trees claim together".
     """
     total_mem_mb = _default_max_total_memory_mb()
-    total_tasks = _CGROUP_DEFAULT_MAX_TOTAL_TASKS
+    total_tasks: int | None = None
     try:
         # circular import: same constraint as _cgroup_limits_from_config —
         # config.loader consumers import sandbox, so the import stays local.
@@ -662,6 +680,9 @@ def _slice_limits_from_config() -> tuple[int, int]:
             total_tasks = rl.max_total_processes
     except Exception:
         logger.debug("slice limits: config unavailable, using defaults")
+    if total_tasks is None:
+        # Sized against the memory ceiling actually applied, configured or not.
+        total_tasks = _default_max_total_tasks(total_mem_mb)
     return total_mem_mb, total_tasks
 
 

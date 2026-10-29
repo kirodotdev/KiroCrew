@@ -74,6 +74,9 @@ class _EmptyVectorStore:
     def close(self) -> None:
         pass
 
+    def recorded_embedding_space(self) -> None:
+        return None
+
     def get_all_semantic(self) -> list:
         return []
 

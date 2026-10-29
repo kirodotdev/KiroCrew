@@ -1,4 +1,8 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { crewApprovalDecidableHere, runsCrewMode } from '../lib/crewMode'
+import CrewApprovalCards from './crew/CrewApprovalCards'
+import { CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
+import { useCrewRoot } from './crew/useCrewRoot'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -192,7 +196,22 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey))
+  // Children accepted but still queued behind the spawn caps: delegated work the
+  // slots frame's `subagents_running` does not count. Read only as the pill
+  // seam's `delegatedOnly` input, so this caption and the header pill resolve
+  // one moment the same way. The caption itself shows only while the crewmate's
+  // own turn runs (`crewmateTyping`); delegated work after the turn, started or
+  // queued, is the header pill's and the roster's to show.
+  const paneQueued = useAppSelector((s) => (s.chat.subagentQueued?.[slotKey] ?? 0) > 0)
   const paneRunsHere = useSlotRunsHere(paneSlot && paneSlot.executor !== 'remote' ? paneSlot.key : null)
+  // A Split View pane holding a Crew Mode worker follows the main pane's rule:
+  // its approval is decided only on the conductor's card (no band here), and a
+  // closed conductor turns its composer off. A pane holding the conductor keeps
+  // its approval cards (edge review R3 G3, Z1).
+  const paneCrewRoot = paneSlot?.crew_root || ''
+  const { rootClosed: paneCrewRootClosedRaw } = useCrewRoot(paneCrewRoot)
+  const paneCrewRootClosed = !!paneCrewRoot && paneCrewRootClosedRaw
+  const noSend = useCallback(() => {}, [])
   // A stop is under way on this pane's turn: the stream state's own `stopping`
   // phase, or a Stop pressed from another tab that reaches this pane only as
   // the slots frame's `stopping` flag. This is the footer's and composer's
@@ -235,9 +254,11 @@ export default function ChatPane({
   // voice props, only the two things the atom cannot know — the endpointer's
   // auto-submit, and (through the root) that a pane's composer IS its slot's, so
   // the atom's default on-screen predicate is exact. Push-to-talk only when the
-  // host says so (`pushToTalk`): the key binding is document-wide, so a
-  // split-view grid of panes must not arm it (ChatPage owns it there); the
-  // Members page's single DM pane does. The pane's steer-not-queue rule
+  // host says so (`pushToTalk`): the key binding is document-wide, so exactly
+  // one composer may hold it. In split view that is the focused pane (the
+  // grid moves it with focus, and a pane that loses it mid-hold commits what
+  // was said); the Members page's single DM pane holds it while nothing
+  // covers the chat. The pane's steer-not-queue rule
   // (#8852) stays on `canSteer` below until the Send atom exists.
   const composerRef = useRef<ComposerHandle>(null)
   const autoSubmitRef = useRef<(() => void) | null>(null)
@@ -349,7 +370,7 @@ export default function ChatPane({
   // keep resolving one moment from one seam.
   const liveActivity = useSlotActivity(crewmate ? slotKey : '', {
     running: crewmateLive,
-    delegatedOnly: !!paneSlot?.subagents_running && !paneSlot?.running,
+    delegatedOnly: (!!paneSlot?.subagents_running || paneQueued) && !paneSlot?.running,
     stopping: !!paneSlot?.stopping,
   })
   // The host declares the conversation surface; only the gateway decides
@@ -561,6 +582,9 @@ export default function ChatPane({
   // press: the composer's default busy decision with this pane's own composer
   // inputs (never the flipped chord), so it steers where Send would steer.
   autoSubmitRef.current = () => {
+    // A crew member of a closed conductor sends nothing (its box is off): stop
+    // the dictation and keep its text, as an upload hold does in doSend.
+    if (paneCrewRootClosed) { composerRef.current?.voice()?.disarmForSend(); return }
     // An attachment still uploading holds the composer: doSend owns that hold
     // (it ends the dictation and sends nothing) and doSteer has no copy of it.
     if (isComposerSendHeld(slotKey)) { doSend(); return }
@@ -673,7 +697,7 @@ export default function ChatPane({
         } as React.CSSProperties}
       >
         {!frameless && (
-        <div data-pane-title-row className={`group/header relative z-50 flex items-center gap-2 pr-3 py-2 border-b border-border bg-card shrink-0 transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[49px]' : 'pl-3'}`}>
+        <div data-pane-title-row className={`@container/panehead group/header relative z-50 flex items-center gap-2 pr-3 py-2 border-b border-border bg-card shrink-0 transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[49px]' : 'pl-3'}`}>
           {/* Leading edge (#10585): in split view this pane may stand in for
               the single-chat title row at the surface's top-left. `inset`
               clears the shell's stationary sidebar toggle: the pane starts at
@@ -1048,6 +1072,11 @@ export default function ChatPane({
             shape as ChatPage's inputAreaRef). */}
         {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
         <div ref={inputAreaRef} className="relative z-10 dock-inert">
+        {paneSlot?.crew_mode_root && <CrewApprovalCards root={slotKey} />}
+        {paneCrewRoot && (
+          <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
+            waitingForApproval={!!paneSlot?.pending_approval} />
+        )}
         <Composer
           ref={composerRef}
           slotKey={slotKey}
@@ -1059,13 +1088,16 @@ export default function ChatPane({
         <ComposerInput
           value={input}
           onChange={handleUserInput}
-          onSend={doSend}
+          onSend={paneCrewRootClosed ? noSend : doSend}
           aboveComposer={deliveryStrip.show ? (
             <DeliveryWarningStrip
               noteId={`pane-delivery-note-${slotKey}`}
               onDismiss={deliveryStrip.onDismiss}
             />
           ) : undefined}
+          slotApprovalChrome={crewApprovalDecidableHere(paneSlot, 'worker_split_pane')}
+          disabled={paneCrewRootClosed}
+          lockedPlaceholder={paneCrewRootClosed ? '' : undefined}
           // A chat bound to a Session Environment runs in its workspace, so a `!`
           // command would land on this machine instead: refused like a remote
           // crew's, and held while that placement is still unread.
@@ -1124,7 +1156,8 @@ export default function ChatPane({
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
-          onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
+          derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
+          onAgentClick={!agentLocked && !runsCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}
@@ -1170,7 +1203,7 @@ export default function ChatPane({
               setFollowUpPicked(next)
             }
           }}
-          onFollowUpSend={(text?: string) => doSend(text)}
+          onFollowUpSend={(text?: string) => { if (!paneCrewRootClosed) doSend(text) }}
           project={paneSlot?.project ?? ''}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")

@@ -584,6 +584,7 @@ class TestOneRowPerSkillFile:
         rows = [
             {"key": "s", "source": "kirocrew", "owned": False, "path": str(md),
              "deliveries": 7, "last_used_at": 1700000000.0,
+             "created_at": 1690000000.0,
              "size_bytes": 42, "inject_on_trigger": False},
             {"key": "kiro-user/s", "source": "kiro-user", "path": str(md)},
         ]
@@ -591,6 +592,7 @@ class TestOneRowPerSkillFile:
         assert [r["key"] for r in out] == ["kiro-user/s"]
         assert out[0]["deliveries"] == 7
         assert out[0]["last_used_at"] == 1700000000.0
+        assert out[0]["created_at"] == 1690000000.0
         assert out[0]["size_bytes"] == 42
         # A pointer-only skill stays pointer-only on the kept row.
         assert out[0]["inject_on_trigger"] is False

@@ -251,7 +251,6 @@ class TestChannelActivationRouting:
             "text": "check status",
             "ts": "7.0",
             "team": "TTEST",
-            "team": "TTEST",
         }
 
         with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm:

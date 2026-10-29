@@ -31,8 +31,9 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_possibly_delivered``,
 ``_steer_retract``, ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
 ``_steer_user_origin``, ``_subagent_deliveries_inflight``,
-``_subagents_inline_collected``, ``_synthesis_completion_turns``,
-``_synthesis_inflight``, ``_synthesis_recheck``, ``_synthesis_rechecks``,
+``_subagents_inline_collected``, ``_synthesis_armers``,
+``_synthesis_completion_turns``, ``_synthesis_inflight``, ``_synthesis_recheck``,
+``_synthesis_rechecks``,
 ``_tool_stall_exhausted_emitted``, ``_tool_stall_retries``, ``_transient_5xx_retries``,
 ``_transient_ladder_started``, ``_turn_channel_narrowed``, ``_turn_channel_origin``,
 ``_turn_retries``, ``_turn_user_sent``, ``_wait_contested``, ``_wait_last_ping``,
@@ -57,6 +58,11 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # single post-fan-out synthesis turn. Cleared if a user message drains
     # first (user takes over).
     self._pending_synthesis = False
+    # The sub-agent ids whose completions armed the current _pending_synthesis.
+    # An inline-collected skip removes only its own id and disarms once none
+    # is left, so a result the blocking spawn tool returned cannot cancel a
+    # synthesis an unrelated background child armed.
+    self._synthesis_armers = set()
     # True while chat_runner owns the one readiness-wait/synthesis task.
     # Kept separate from _pending_synthesis so readiness loss does not
     # consume the one-shot request or permit duplicate waiters.
@@ -424,6 +430,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # already be in the pipe, and the RPC's own verdict arrives too late to
     # mark an entry the drain may already have run.
     self._steer_rpc_in_flight = set()
+    # Native-card ids with a /question/steer delivery in flight. Off the card
+    # record on purpose, so a steer claim never rides a serialized pending card.
+    self._native_steer_in_flight = set()
     # A pending steer the person is taking back, and the ``_session/steer/clear``
     # written for it whose drop kiro-cli has not reported yet. Both live for one
     # turn at most: the turn's report or its teardown settles them

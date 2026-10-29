@@ -765,7 +765,8 @@ notifications are never served from disk.
 bugs:
 
 - **A closed app gets notifications only through Web Push.** Turn on
-  Settings → Desktop alerts → **Notify me even when Kiro Crew is closed** on each
+  Settings → Notifications → Desktop alerts → **Notify me even when Kiro Crew is
+  closed** on each
   device. The dashboard then registers a Web Push subscription, and every
   delivered note that is not muted or passive also arrives while the installed
   app is closed or backgrounded. Web Push needs the dashboard served over HTTPS;

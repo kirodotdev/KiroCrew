@@ -14,7 +14,7 @@ Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``, ``member_context``,
-``memory_mode``, ``start_priority``.
+``memory_mode``, ``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
@@ -610,13 +610,21 @@ async def _start_kiro_runtime_impl(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    # Who governance judges: a crew member runs on a template, and its own name
+    # is what a task profile binds to; a template-only session is its template.
+    governed_agent = self._crew_agent or agent or "kirocrew"
     remote = (
         await prepare_for_session(
             session_key, before_compute=runtime.check_remote_workspace_supported
         )
         if session_environments_enabled()
         and (
-            bool(section.coder_url or section.profiles)
+            bool(
+                section.coder_url
+                or section.profiles
+                or getattr(section, "sprites_profiles", None)
+                or getattr(section, "boxd_profiles", None)
+            )
             or await asyncio.to_thread(_choices_file_may_exist, session_key)
         )
         else None
@@ -640,6 +648,14 @@ async def _start_kiro_runtime_impl(
                 "close": functools.partial(remote.launch.close_relay, relay),
             }
         )
+        # GitHub git from the workspace goes through this gateway, which holds
+        # the credential (remote_session/git_gateway.py). In the background:
+        # it never delays the start, and a failure only costs git access.
+        begin_git_proxy = getattr(remote.launch, "begin_git_proxy", None)
+        if callable(begin_git_proxy) and session_key:
+            begin_git_proxy(
+                session_key, agent=governed_agent, app=getattr(self, "owning_app", "") or ""
+            )
         report_start_stage(session_key, "starting_agent")
 
     from kiro_crew.session_environment import (

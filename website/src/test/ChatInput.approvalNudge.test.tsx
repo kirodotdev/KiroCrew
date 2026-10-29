@@ -134,6 +134,14 @@ describe('approval nudge trigger (B2)', () => {
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Want fewer approval prompts?' })).toBeInTheDocument())
   })
 
+  it('is held back while a Crew Mode worker approval card shows above the composer', async () => {
+    const base = stateWithApproval()
+    const withWorker = { ...base, dashboard: { ...base.dashboard, slots: [...(base.dashboard as RootState['dashboard']).slots, { key: 'w-1', crew_root: 'slot-1', pending_approval: true, messages: 0, running: true, waiting_for_input: false }] } as unknown as RootState['dashboard'] }
+    const { store } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(withWorker) })
+    await approveN(store, 3)
+    expect(screen.queryByRole('dialog', { name: 'Want fewer approval prompts?' })).not.toBeInTheDocument()
+  })
+
   it('does not appear when the mode is no longer normal', async () => {
     const { store } = renderWithProviders(<ChatInput {...defaultProps} approvalMode="trust_reads" />, { store: createTestStore(stateWithApproval()) })
     await approveN(store, 3)

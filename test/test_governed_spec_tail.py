@@ -44,12 +44,11 @@ _PACKAGE = Path(auto_approve.__file__).resolve().parent
 #: ``_refresh_dynamic_fields`` ``includeMcpJson`` pin) rather than a derived one.
 _PRIMARY_SPEC_WRITER = "default_spec_commit.py"
 
-#: ``(module, function)`` writers outside the tail by design. The shared-template
-#: pass re-filters a user's own template in place: it runs the two grant passes
-#: (``fork_refresh._apply_governance_passes``) and leaves the user's ``mcp.json``
-#: merge and KAS block as written, so the full tail would rewrite fields it does not
-#: own.
-_USER_TEMPLATE_WRITERS = frozenset({("fork_refresh.py", "_govern_json_spec")})
+#: ``(module, function)`` writers outside the tail by design. None: the shared-template
+#: pass never writes a spec Kiro Crew does not own
+#: (``fork_refresh.require_shared_template_within_ceiling`` refuses a kiro-cli start on
+#: one the ceiling would narrow instead).
+_USER_TEMPLATE_WRITERS: frozenset[tuple[str, str]] = frozenset()
 
 
 @pytest.fixture(autouse=True)

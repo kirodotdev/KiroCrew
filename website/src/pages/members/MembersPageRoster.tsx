@@ -48,6 +48,7 @@ import type { RosterView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { type ChatSlot } from '../../types'
+import { useAppSelector } from '../../store'
 import { type MembersPageProfileFlight } from './MembersPageProfile'
 import { CrewmateEmptyHero, MemberRow } from './MembersPageRosterRows'
 import { ROSTER_MAX, ROSTER_MIN, type GoneNotice, type PostCreateFailure, type TFn } from './membersPageModel'
@@ -132,13 +133,17 @@ export function useMembersPageRosterView({
 }: MembersPageRosterViewOptions) {
   const { projectionSlug, members } = rosterRead
   const { teamsQ } = teamsRead
+  // A child queued behind the spawn caps has not started, so `subagents_running`
+  // misses it, yet the gateway still refuses a new turn on that session: the
+  // queued depth counts as busy here as it does in the Command Bar.
+  const subagentQueued = useAppSelector((s) => s.chat.subagentQueued)
   const liveRunning = useMemo(() => {
     const byKey: Record<string, boolean> = {}
     for (const s of liveSlots) {
-      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running)
+      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running || (subagentQueued?.[s.key] ?? 0) > 0)
     }
     return byKey
-  }, [liveSlots])
+  }, [liveSlots, subagentQueued])
   const isRunning = useCallback(
     (m: MemberRosterRow) => {
       const key = slotKeyOf(m)

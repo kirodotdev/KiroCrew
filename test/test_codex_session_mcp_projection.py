@@ -105,9 +105,10 @@ class TestTransportFilter:
     def test_a_MEANINGLESS_transport_type_is_dropped_TOO(self):
         """The adapter validates the ``type`` field at all, so the filter must.
 
-        A deliberately meaningless ``{"type": "nonsense-type"}`` element is accepted
-        by codex-acp exactly as an unadvertised ``sse`` one is: ``session/new``
-        answers with a ``sessionId`` and the server is never wired. Keeping only
+        A deliberately meaningless ``{"type": "nonsense-type"}`` element fares
+        exactly as a bare unadvertised ``sse`` one does: up to codex-acp 2.2.2 it was
+        accepted and never wired, and since 2.3.0 it fails the whole ``session/new``
+        with ``-32602``. Keeping only
         transports that were POSITIVELY advertised is what covers both, where a
         denylist of known-bad spellings would cover neither.
         """

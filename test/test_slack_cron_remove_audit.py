@@ -75,7 +75,8 @@ class TestSlackSingleRemoveAudit:
         svc = MagicMock()
         svc.remove_job_async = AsyncMock(return_value=True)
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
-            await h._handle_cron_command("cron remove j1", svc, "C", "t")
+            out = await h._handle_cron_command("cron remove j1", svc, "C", "t")
+        assert out is not None and "Removed cron job" in out
         svc.remove_job_async.assert_awaited_once_with("j1", actor="slack", source="slack")
         mock_sel.return_value.log_api_access.assert_not_called()
 
@@ -431,7 +432,8 @@ class TestGatewayDoneRemovalAudit:
         # owns the audit when it lands on disk, so the gateway audits nothing.
         gw = _make_gw()
         job = _make_script_job()
-        await _run_done_callback(gw, job, remove_side_effect=CronStoreBusy("busy"))
+        result, _ = await _run_done_callback(gw, job, remove_side_effect=CronStoreBusy("busy"))
+        assert "all done" in (result or "")
         gw.cron_svc.defer_removal.assert_called_once_with("sj1")
         gw.cron_svc.audit_one_shot_removal.assert_not_called()
 
@@ -446,7 +448,10 @@ class TestGatewayDoneRemovalAudit:
         """
         gw = _make_gw()
         job = _make_script_job()
-        await _run_done_callback(gw, job, remove_side_effect=CronStoreUnreadable("unreadable"))
+        result, _ = await _run_done_callback(
+            gw, job, remove_side_effect=CronStoreUnreadable("unreadable")
+        )
+        assert "all done" in (result or "")
         gw.cron_svc.defer_removal.assert_called_once_with("sj1")
         gw.cron_svc.audit_one_shot_removal.assert_not_called()
 
@@ -456,7 +461,8 @@ class TestGatewayDoneRemovalAudit:
         # that path owns the audit record; no event may claim this delete.
         gw = _make_gw()
         job = _make_script_job()
-        await _run_done_callback(gw, job, remove_result=False)
+        result, _ = await _run_done_callback(gw, job, remove_result=False)
+        assert "all done" in (result or "")
         gw.cron_svc.audit_one_shot_removal.assert_not_called()
 
     @pytest.mark.asyncio

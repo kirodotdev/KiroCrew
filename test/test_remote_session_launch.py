@@ -423,6 +423,39 @@ def test_local_session_is_untouched():
     assert AcpRuntime._remote_session_servers(rt, [{"name": "s"}]) == [{"name": "s"}]
 
 
+@pytest.mark.parametrize(("tier", "lent"), [("strict", False), ("standard", True)])
+def test_remote_workspace_git_notice_is_true_on_every_tier(monkeypatch, tier, lent):
+    """The proxy reads the tier per request, so the notice is tier-neutral: it never
+    promises private repositories, and it names what ``strict`` refuses."""
+    from kiro_crew import sandbox
+    from kiro_crew.config.loader import config_dir
+    from kiro_crew.remote_session import git_gateway
+
+    (config_dir() / "config.json").write_text(
+        json.dumps({"agent": {"sandbox": tier}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    assert git_gateway.gateway_logins_lent() is lent
+    out = AcpRuntime._remote_workspace_agents(_runtime(), [{"id": "a", "tools": "*"}], [])
+    prompt = " ".join(out[0]["prompt"].split())
+    assert "private repositories included" not in prompt
+    assert (
+        "For a host the gateway has a git login for and is allowed to lend, git goes "
+        "through the gateway, which adds that login; any other host uses the "
+        "workspace's own git login, if it has one."
+    ) in prompt
+    assert (
+        "Under the strict agent sandbox the gateway lends none, so only the workspace's "
+        "own login applies."
+    ) in prompt
+    assert (
+        "A push through the gateway that updates or deletes a protected branch such as "
+        "main is refused whole, as it is for a local session; push a feature branch instead."
+    ) in prompt
+    assert "do not unset git's url rewrites" in prompt
+    assert "GIT_ASKPASS" not in prompt  # the workspace's own askpass is left alone
+
+
 def test_workspace_server_is_added_once():
     rt = _runtime()
     servers = AcpRuntime._remote_session_servers(rt, [{"name": "workspace"}, {"name": "core"}])
@@ -722,3 +755,117 @@ def test_local_shell_services_and_bus_are_tmp_owned(tmp_path):
     assert env["XDG_RUNTIME_DIR"] == str(shell.runtime_dir)
     assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={shell.runtime_dir / 'bus'}"
     assert f"XDG_RUNTIME_DIR={shell.runtime_dir}" in shell.argv("true")
+
+
+@sync
+async def test_git_proxy_runs_in_the_guest_and_answers_through_the_gateway(tmp_path):
+    """Install, worker, real RemoteLink, channel: the whole path, upstream faked."""
+    import http.client
+
+    from test_remote_git_proxy import HttpBackendUpstream
+
+    launch = _launch(tmp_path, "sess-git")
+    await launch.install()
+    upstream = HttpBackendUpstream(tmp_path, status=404)
+
+    async def credential(host):
+        return "Basic eC1hY2Nlc3MtdG9rZW46dA=="
+
+    try:
+        await launch.start_git_proxy(
+            "dashboard:chat-git",
+            credential_source=credential,
+            agent="researcher",
+            egress_permitted=lambda key, host, agent: True,
+            http_session=upstream,
+        )
+        port_file = tmp_path / "guest" / ".kirocrew-worker" / launch.git_proxy_port_file
+        await async_wait_until(
+            port_file.exists, off_loop=True, describe=lambda: "guest proxy port is unpublished"
+        )
+        port = int(port_file.read_text().strip())
+
+        def fetch() -> int:
+            # A loopback connection to the guest proxy: only the port varies.
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+            try:
+                connection.request(
+                    "GET",
+                    "/github.com/acme/w/info/refs?service=git-upload-pack",
+                    headers={"Authorization": f"Bearer {launch.git_proxy_secret}"},
+                )
+                return connection.getresponse().status
+            finally:
+                connection.close()
+
+        assert await asyncio.wait_for(asyncio.to_thread(fetch), 60) == 404
+        assert upstream.calls[0]["url"] == (
+            "https://github.com/acme/w/info/refs?service=git-upload-pack"
+        )
+    finally:
+        await launch.stop_git_proxy()
+    assert launch.git_proxy is None
+    # The proxy is gone with its link: its port file goes with it.
+    await async_wait_until(
+        lambda: not port_file.exists(),
+        off_loop=True,
+        describe=lambda: "guest proxy port file remains after shutdown",
+    )
+    assert not port_file.exists()
+
+
+@sync
+async def test_an_older_relay_closing_does_not_stop_the_live_git_proxy(tmp_path):
+    """A start can make more than one relay; only the current one owns the proxy.
+
+    Seen live: the first relay of a start idled out 16 minutes in and stopped the
+    proxy while the session was still working through the second relay.
+    """
+    launch = _launch(tmp_path, "sess-relays")
+    await launch.install()
+    stops: list[str] = []
+
+    async def stop() -> None:
+        stops.append("stop")
+
+    launch.stop_git_proxy = stop  # observe, do not reach the guest
+    first = await launch.workspace_server(str(tmp_path / "guest"))
+    first_relay = launch.relay
+    await launch.workspace_server(str(tmp_path / "guest"))
+    second_relay = launch.relay
+    try:
+        assert first and first_relay is not second_relay
+        await first_relay.close()
+        assert stops == []  # the old relay is gone; the proxy stays
+        await second_relay.close()
+        assert stops == ["stop"]
+    finally:
+        await first_relay.close()
+        await second_relay.close()
+
+
+@sync
+async def test_a_runtime_ending_normally_stops_its_git_proxy(tmp_path):
+    """The normal end of a runtime goes through ``close_relay``, which forgets
+    ``launch.relay`` before the close runs: the proxy must still stop."""
+    launch = _launch(tmp_path, "sess-runtime-end")
+    await launch.install()
+    stops: list[str] = []
+
+    async def stop() -> None:
+        stops.append("stop")
+
+    launch.stop_git_proxy = stop  # observe, do not reach the guest
+    await launch.workspace_server(str(tmp_path / "guest"))
+    relay = launch.relay
+    try:
+        alive = [True]
+        launch.close_relay_when_ended(lambda: alive[0])
+        alive[0] = False
+        await async_wait_until(
+            lambda: launch.relay is None and stops,
+            describe=lambda: f"relay={launch.relay!r} stops={stops!r}",
+        )
+        assert stops == ["stop"]
+    finally:
+        await relay.close()

@@ -255,6 +255,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     AgentCheck,
     ParentRecordUnreadable,
     ParentSpawnPolicy,
+    _accepted_project_dirs,
     _available_agents_hint,
     _inherited_member_agent,
     _internal_agent_refusal,

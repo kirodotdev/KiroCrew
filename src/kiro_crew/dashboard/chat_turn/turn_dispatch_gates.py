@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         StructuredStatus,
         classify_stop_reason,
         crew_log_emit,
+        injection_receipts,
         logger,
         read_context_tokens,
         sel,
@@ -63,6 +64,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     """Load a person's recovery context, expand the input's skill mentions and settle the replay before the prompt is built."""
     slot_ctx_blocks: dict[str, int]
     slot_ctx_omitted: dict[str, dict[str, Any]]
+    slot_ctx_receipts: dict[str, dict[str, Any]]
     from kiro_crew.dashboard import responsive_chat
 
     _prompt_depth = turn._prompt_depth
@@ -175,6 +177,8 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     turn.slot_ctx_phase = slot_ctx_phase
     slot_ctx_omitted = {}
     turn.slot_ctx_omitted = slot_ctx_omitted
+    slot_ctx_receipts = {}
+    turn.slot_ctx_receipts = slot_ctx_receipts
     # Chars this turn prepends between the request header and the user's
     # text; set in _turn_build_prompt's context_builder branch, 0 elsewhere.
     _user_prepend_offset = 0
@@ -271,6 +275,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     slot = turn.slot
     slot_ctx_blocks = turn.slot_ctx_blocks
     slot_ctx_omitted = turn.slot_ctx_omitted
+    slot_ctx_receipts = turn.slot_ctx_receipts
     slot_ctx_phase = turn.slot_ctx_phase
     state = turn.state
     turn_exit = turn.turn_exit
@@ -602,10 +607,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # messages for the stats attach, which is a different question from which
     # turn this is. The two were already decoupled once, for the stats bug.
     #
-    # Regenerate and rewind keep their retry semantics for free. Both truncate
-    # the window before dispatching, so _turn_admit's hoisted expression returns the ordinal of
-    # the turn being re-run and the emitter's `attempt` increments -- no ordinal
-    # has to be threaded through either path.
+    # Rewind keeps its retry semantics for free: it truncates the window before
+    # dispatching, so _turn_admit's hoisted expression returns the ordinal of
+    # the turn being re-run and the emitter's `attempt` increments. Regenerate
+    # keeps the previous reply live until its turn ends, so the ordinal is
+    # computed without it (``rows_before_regenerate_target``) to the same effect.
     # `durable_row_count` is the SHARED counting rule every site that sets or
     # advances that base uses, so the ordinal cannot disagree with the base
     # about which rows are durable. It is resolved ONCE, in _turn_admit above its
@@ -766,6 +772,22 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         phase=slot_ctx_phase,
         omitted=slot_ctx_omitted,
     )
+    # Which lessons this composition carried, for the same reason the composition
+    # is written here: only an ADMITTED turn put them in front of the model. The
+    # write goes to a worker thread, so this adds no suspension point either.
+    if slot_ctx_receipts and injection_receipts.records_session(getattr(slot, "memory_mode", "")):
+        injection_receipts.schedule_write(
+            injection_receipts.build_line(
+                slot_ctx_receipts,
+                session_key=session_key,
+                turn_index=_crew_log_turn_no,
+                user_msg_id=injection_receipts.user_row_mid(turn._current_replay_message),
+                model=_crew_log_model(slot, slot.model or agent_model),
+                agent=getattr(slot, "agent", "") or "",
+                phase=slot_ctx_phase,
+                store=str(turn.memory_store or ""),
+            )
+        )
     crew_log_emit.on_turn_started(
         _crew_log_sid,
         _crew_log_turn_no,

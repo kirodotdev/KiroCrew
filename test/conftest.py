@@ -300,6 +300,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_create_rate_limit_buckets,
     _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
+    _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,
     _reset_materialized_agents_snapshot,
     _reset_runtime_ownership_tables,
@@ -528,6 +529,24 @@ def _fresh_update_ownership(_floor_monkeypatch):
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_host_unservable_backends(_floor_monkeypatch):
+    """Give every test its own copy of the host's KAS-floor verdicts.
+
+    The gateway's KAS floor records what it learned about this host's kiro-cli as
+    process state: ``mark_backend_unservable`` drops KAS, and
+    ``confirm_kiro_cli_offers_kas`` moves a Kiro CLI pick onto KAS. A test that
+    drives the floor would otherwise leave either verdict to every later test in
+    the worker. Rebound per test, so a verdict made in one test is gone in the next.
+    """
+    from kiro_crew.agent_sdk import backends
+
+    _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+    _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
 
 
 @pytest.fixture

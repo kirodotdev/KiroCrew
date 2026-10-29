@@ -519,6 +519,18 @@ class TestThePreviewerTracksTheDSL:
         plan = _plan('await ctx.some_future_verb("do work")\n')
         assert _nodes(plan, "") == [{"kind": "unknown", "label": "call", "certain": False}]
 
+    def test_opening_or_messaging_a_session_draws_a_session_marker(self):
+        # The work lands in another session and never reports in this run's stream,
+        # so the plan says "something happens here", one marker per call. A mode
+        # change starts nothing and draws nothing.
+        plan = _plan(
+            'slot = await ctx.open_session("w")\n'
+            'await ctx.send_to_session(slot, "go")\n'
+            'await ctx.set_session_mode(slot, "normal")\n'
+        )
+        marker = {"kind": "unknown", "label": "session", "certain": False}
+        assert _nodes(plan, "") == [marker, marker]
+
     def test_runner_prompt_label_cut_has_not_moved(self):
         """``RUNNER_PROMPT_LABEL_CHARS`` mirrors a literal in code this module does not own.
 

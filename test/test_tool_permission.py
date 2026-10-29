@@ -668,6 +668,55 @@ async def test_a_refused_program_name_downgrades_to_the_next_stage(names):
     assert settled.by == "person"
 
 
+@pytest.fixture
+def fresh_decline_notices():
+    """The once-per-session ledger is process-global; start and end each test empty."""
+    name_grant._DECLINE_NOTICES.clear()
+    yield
+    name_grant._DECLINE_NOTICES.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_platform_scope_decline_is_narrated_once_per_session_but_audited_every_time(
+    names, fresh_decline_notices
+):
+    # A platform-scope refusal's text is one constant per session, so the
+    # narration (the surface's log line) is written once per session, as the
+    # dashboard and LLM surfaces already do. The audit row is per call.
+    names.verdicts["Run: ls -la"] = name_grant.Refusal(
+        code=name_grant.WINDOWS_UNMODELLED, detail="ls lookup is not modelled here"
+    )
+    log: list = []
+    policy = _policy(
+        log,
+        gate=Judges(log, Hit("hook_auto_approve", Evidence.NAME, vouch=True)),
+        grants=(GATE_GRANT,),
+    )
+    for session_key in ("k", "k", "other"):
+        await settle(Ask(_event(), RecordingWire(log), session_key), policy)
+    narrated = [e for e in log if e[:2] == ("narrate", "declined")]
+    audited = [e for e in log if e[:2] == ("audit", "declined")]
+    assert narrated == [("narrate", "declined", name_grant.WINDOWS_UNMODELLED)] * 2
+    assert len(audited) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_command_scope_decline_is_still_narrated_every_time(names, fresh_decline_notices):
+    # Command-scope refusals differ per invocation, so each one is narrated.
+    names.verdicts["Run: ls -la"] = _SHADOWED
+    log: list = []
+    policy = _policy(
+        log,
+        gate=Judges(log, Hit("hook_auto_approve", Evidence.NAME, vouch=True)),
+        grants=(GATE_GRANT,),
+    )
+    for _ in range(2):
+        await settle(Ask(_event(), RecordingWire(log), "k"), policy)
+    assert [e for e in log if e[:2] == ("narrate", "declined")] == [
+        ("narrate", "declined", "shadowed")
+    ] * 2
+
+
 @pytest.mark.asyncio
 async def test_only_a_name_grant_is_vouched_for(names):
     names.verdicts["Run: ls -la"] = _SHADOWED

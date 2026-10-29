@@ -260,6 +260,10 @@ class TestFireDiscordNudge:
         result = await orch._fire_discord_nudge(loop, "[Monitor wake]")
 
         assert result is boundary_result
+        # A wake is the monitor's own report, with no loop message to read
+        # triggers from, so it names no trigger text.
+        _, kwargs = _awaited(transport.dispatcher.handle_message)
+        assert "skill_trigger_text" not in kwargs
 
     @pytest.mark.asyncio
     async def test_structured_delivery_stays_dispatched_after_accepted_turn_error(self):
@@ -354,6 +358,8 @@ class TestFireDiscordNudge:
         assert "keep checking" in synthetic.text
         # interpret_commands=False keeps a nudge body from parsing as `!command`.
         assert kwargs["interpret_commands"] is False
+        # Skill triggers read the loop's own message, not the cycle header.
+        assert kwargs["skill_trigger_text"] == "keep checking"
 
     @pytest.mark.asyncio
     async def test_structured_monitor_supplies_completion_hook(self):

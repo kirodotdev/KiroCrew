@@ -365,7 +365,7 @@ def _artifact(args: argparse.Namespace) -> None:
         slug = args.slug
         version = getattr(args, "version", None)
         path = f"/api/artifacts/{slug}"
-        if version:
+        if version is not None:
             path = f"/api/artifacts/{slug}/versions/{int(version)}"
         d = _request("GET", path)
         if d.get("error"):

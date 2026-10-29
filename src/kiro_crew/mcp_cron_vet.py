@@ -53,6 +53,7 @@ from kiro_crew.mcp_cron_shell_scan import (
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context, redact_log_via_context
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.platform_compat import strip_extended_length_prefix
 from kiro_crew.security import (
     _fold_line_continuations,
     audit_bash_exfiltration,
@@ -591,9 +592,13 @@ def _vet_script_file(file_path: str) -> str | None:
                     "Error: cron script changed during security review; retry with a regular file"
                 )
             opened_path = fd_real_path(descriptor)
+            # ``resolve()`` can keep Windows' ``\\?\`` prefix while the
+            # descriptor's path comes back plain; fold it off both sides so the
+            # same file is not read as a redirect. Lexical only.
             if (
                 opened_path is None
-                or Path(opened_path) != resolved
+                or strip_extended_length_prefix(Path(opened_path))
+                != strip_extended_length_prefix(resolved)
                 or is_sensitive_path(opened_path)
             ):
                 return "Error: cannot verify cron script path for security review; retry with a regular file"

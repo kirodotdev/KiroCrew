@@ -21,7 +21,12 @@ _BASE_CONFIG = {
     "an_edition_section": {"keep": "me"},
 }
 #: What a read adds to a section that omits them.
-_DEFAULTS = {"default_profile": "", "stop_on_shutdown": True}
+_DEFAULTS = {
+    "sprites_profiles": [],
+    "boxd_profiles": [],
+    "default_profile": "",
+    "stop_on_shutdown": True,
+}
 
 
 def _profile(pid: str = "dev", **overrides: object) -> dict:
@@ -179,6 +184,8 @@ class TestLoader:
         section = {
             "coder_url": "https://c.example.com",
             "profiles": [_profile("a")],
+            "sprites_profiles": [],
+            "boxd_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
         }

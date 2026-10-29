@@ -93,12 +93,13 @@ class TestDiedReplacementWording:
         assert "refused" not in out
         assert "kirocrew logs -f" in out
 
-    def test_the_owner_is_only_looked_up_when_the_port_answers(self, capsys):
-        with patch("kiro_crew.cli_server._config_dir_owner") as mock_desktop:
+    def test_the_owner_is_only_looked_up_again_when_the_port_answers(self, capsys):
+        """The one lookup is the up-front desktop check; the wording adds none."""
+        with patch("kiro_crew.cli_server._config_dir_owner", return_value=None) as mock_desktop:
             code, _sel, _url = readiness.TestRestartReadinessVerdict()._drive(
                 poll=1, ready_status=0, marker_pid=[None, None]
             )
-        mock_desktop.assert_not_called()
+        assert mock_desktop.call_count == 1
         assert code == 1
         out = capsys.readouterr().out
         assert "Nothing is serving port" in out

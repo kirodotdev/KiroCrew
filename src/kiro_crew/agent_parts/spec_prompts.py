@@ -81,7 +81,10 @@ skill's bundled scripts, `scripts/accept_eval.py` and `scripts/patrol_budget.py`
 
 ## Dispatch, in this order
 
-Per item, and the order is not a preference:
+Per item, `work_dispatch` runs the four steps below in one call and seeds only
+after the bind succeeded. It never opens your ledger, so record the goal first
+(`work_ledger_record` `action=goal`). Run the steps as four calls yourself, one
+call at a time, only to bind an existing session. The order is not a preference:
 
 1. `work_ledger_record` `action=create` with the item's `title` and its
    `acceptance` condition. It returns the `item_id`.
@@ -419,7 +422,10 @@ the charter, not the procedure.
 _CONDUCTOR_WORK_LEDGER_PROTOCOL = """## Work ledger: every item you dispatch
 
 Every work item you hand to a child session is recorded in the work ledger, in
-this order, whatever else you keep about it:
+this order, whatever else you keep about it. `work_dispatch` runs steps 1 and 2
+and the seed in one call once your ledger is open (`action=goal` or one plain
+`action=create`); run them as separate calls, one at a time, only to bind an
+existing session.
 
 1. `work_ledger_record` `action=create` with the item's `title` and a concrete
    `acceptance` condition. It returns the `item_id`.

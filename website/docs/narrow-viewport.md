@@ -605,6 +605,21 @@ phone-width window, a creation surface), so a run nobody acts on is never cancel
 relayed run may only start the close, and only while the Dashboard tab is on screen. A static Dashboard page (sandbox without
 `allow-scripts`) runs no relay, so a swipe that starts over one is the frame's.
 
+In the macOS desktop app the release can be exact. The shell reads Chromium's
+`gestureScrollBegin` / `gestureScrollEnd` off the dashboard's WebContents `input-event`
+(`electron/scroll-touch.js`) and sends each change as `begin` or `end` through the preload's
+`onScrollTouch`; `lib/scrollTouch` subscribes. Once a phase has been heard, `end` releases the
+drag (`onDragEnd('lift', at)`, with `at` the lift-off, so the 60ms speed is the fingers' own),
+and a pause with the fingers still down no longer ends it, up to `FINGER_HOLD_MAX_MS`
+(1s, so a lost `end` cannot hold the panel). The gap and the momentum signature stay armed
+as the fallback, and a page that never hears a phase (a browser, Windows, Linux) behaves
+exactly as above. A remote crew's pane is a cross-origin iframe of InstancesViewport with no
+preload: its own document reads the wheels over it, and it asks its host for the phases
+(`mc-scroll-touch-watch`). The host accepts the request only from that pane's own iframe at
+its tunnel origin, holds one bridge subscription while any pane listens, and forwards each
+phase only to the pane on screen, addressed to its exact origin; the pane accepts a phase
+only from `window.parent` at the origin it asked, for its own watch id.
+
 ## A panel that gains a gesture must be bound LIVE to its offset
 
 A panel moved only by a tap may serialize its offset at render time —

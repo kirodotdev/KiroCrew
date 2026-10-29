@@ -96,13 +96,14 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
             )
         doc = _read_doc(cfg_path)
-        assert doc["agents"]["new"]["kiro_agent"] == "ka"
+        # Created from the built-in worker, then bound to its own file.
+        assert doc["agents"]["new"]["kiro_agent"] == "new"
         assert doc["agents"]["new"]["workspace"] == "ws"
         store = doc["agents"]["new"]["memory_store"]
         assert store != "default"
@@ -275,7 +276,7 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
@@ -307,7 +308,7 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )

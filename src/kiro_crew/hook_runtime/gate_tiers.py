@@ -1159,6 +1159,30 @@ def _spec_builtin_names(call: ToolCall) -> tuple[str, ...]:
     return tuple(dict.fromkeys(n for n in names if n))
 
 
+def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
+    """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
+
+    Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
+    command recovered by the host, holding none of
+    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`, that one of ``spec_granted_commands``
+    matches whole, as kiro-cli anchors each entry at both ends. Each entry is read
+    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the subset
+    both engines read alike and matches it in linear time; any other grants nothing.
+    """
+    from kiro_crew.platform import allowed_commands
+
+    if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
+        return False
+    command = call.command
+    if not isinstance(command, str) or not allowed_commands.plain_command(command):
+        return False
+    for pattern in call.spec_granted_commands:
+        segments = allowed_commands.parse(pattern)
+        if segments is not None and allowed_commands.matches(segments, command):
+            return True
+    return False
+
+
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     """A KAS built-in the session's agent spec grants in ``allowedTools``.
 
@@ -1215,12 +1239,14 @@ def grant_spec_builtin(
         return None
     call = facts.call
     granted = call.spec_granted_builtins
-    if not granted or not call.kas_builtin_ids or not call.identity_trusted:
+    if not (granted or call.spec_granted_commands):
+        return None
+    if not call.kas_builtin_ids or not call.identity_trusted:
         return None
     if call.mcp_server or not call.mcp_tool:
         return None
     names = _spec_builtin_names(call)
-    if not any(name in granted for name in names):
+    if not any(name in granted for name in names) and not _spec_command_granted(call, names):
         return None
     from kiro_crew.platform.governance import may_grant_builtin_at_gate
 

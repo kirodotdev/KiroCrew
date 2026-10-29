@@ -9,6 +9,9 @@ export interface CapabilityRow extends CapabilityRef {
   value: unknown
   managed?: boolean
   shared_reference?: boolean
+  /** On a crewmate worker row: the stored editor row a Remove drops, or `null`
+   *  when the row has none of its own (it goes with its server, or stays). */
+  remove?: CapabilityRef | null
 }
 export interface CapabilityView {
   schema_version: 1
@@ -70,35 +73,32 @@ export const crewCapabilitiesApi = {
 }
 export const crewCapabilitiesKey = (member: string) => ['crew-capabilities', member] as const
 
-/** A crewmate's worker kit: the one template last copied into its own file. */
+/** A crewmate's worker kit: abilities added to its own file from other agents. */
 export interface WorkerKitView {
   member: string
-  /** The template the kit was last copied from; '' when none was. */
-  template: string
-  /** The template to name for it: `template`, or for a private copy the
-   *  template it was forked from; '' when a private copy's origin is unknown. */
-  origin?: string
-  /** `template` is a crewmate's private copy, whose id is never shown. */
-  private_copy?: boolean
   revision: string
-  /** The file holds kit items the last copy did not write. */
-  has_additions_since: boolean
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
   section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools'
   id: string
-  change: 'added' | 'removed' | 'changed'
+  /** `added`: written by the add. `skipped`: already present, so left alone. */
+  /** `replaced`: the behaviour-directions slot already holds other directions. */
+  change: 'added' | 'replaced' | 'skipped'
 }
 export interface WorkerKitPreview {
   member: string
   template: string
   revision: string
+  runs_unasked: boolean
+  /** The behaviour directions the add writes; `""` when the agent has none. */
+  directions?: string
+  /** The directions the slot holds now, which a `replaced` row overwrites; `""` when empty. */
+  current_directions?: string
   changes: WorkerKitChange[]
 }
 export interface WorkerKitRequest {
   template: string
-  keep_additions: boolean
   revision?: string
 }
 const workerKitEndpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/worker-kit`

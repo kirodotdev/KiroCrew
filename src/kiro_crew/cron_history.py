@@ -498,7 +498,7 @@ class CronHistoryStore:
         """
         try:
             os.stat(self._dir)
-            fd = os.open(str(self._lock_path()), os.O_WRONLY | os.O_CREAT, 0o600)
+            fd = platform_compat.open_create_or_existing(str(self._lock_path()), os.O_WRONLY, 0o600)
         except OSError:
             return False
         os.close(fd)
@@ -548,7 +548,7 @@ class CronHistoryStore:
 
     def _lock(self) -> int:
         """Acquire advisory lock, return fd."""
-        fd = os.open(str(self._lock_path()), os.O_WRONLY | os.O_CREAT, 0o600)
+        fd = platform_compat.open_create_or_existing(str(self._lock_path()), os.O_WRONLY, 0o600)
         platform_compat.acquire_lock(fd, exclusive=True)
         return fd
 

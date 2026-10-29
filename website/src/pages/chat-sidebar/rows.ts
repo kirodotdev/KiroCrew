@@ -195,6 +195,8 @@ export interface RowShell {
   boost: PaletteBoost
   boostFor: (hex: string) => PaletteBoost
   recentTintCount: number
+  /** `dashboard.show_unread_dot`: false hides the per-row unread dot. Absent reads as shown. */
+  showUnreadDot?: boolean
   /** A dnd-kit drag is in flight, the raw LOCAL key of a dragged session (only local
    *  rows can be dragged), and that session's pinned rank and drawn position. */
   dragInFlight: boolean

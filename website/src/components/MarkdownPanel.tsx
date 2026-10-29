@@ -17,7 +17,7 @@ import MarkdownOutlineRail from './MarkdownToc'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 import { countLines } from './FileChangeChips'
-import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
+import { findBestOccurrence, findLooseSpan, indexPage, rangesForSpan, unselectableSpans, type PageIndex, type TextSpan } from '../hooks/useMarkdownCommentHighlights'
 import { detectFileType, BinaryFileCard } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
 import { downloadFileName } from '../utils/fileReadUrl'
@@ -540,9 +540,14 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     // Try live selection first
     if (sel && !sel.isCollapsed && sel.anchorNode && root.contains(sel.anchorNode)) {
-      const raw = sel.toString()
+      const range = sel.getRangeAt(0)
+      // Firefox gives a Selection one range per table cell when cells are
+      // selected as cells (Ctrl+drag). The offset and line below are range 0's,
+      // so the quote is too, as `SelectionToolbar` already takes it for its
+      // composer: all the ranges' text together describes cells no one offset
+      // places.
+      const raw = sel.rangeCount > 1 ? range.toString() : sel.toString()
       if (raw.trim()) {
-        const range = sel.getRangeAt(0)
         if (root.contains(range.startContainer) && root.contains(range.endContainer)) {
           const anchor = raw.trim()
           const rect = range.getBoundingClientRect()
@@ -902,15 +907,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         textNodes.push({ node: node as Text, start: fullText.length })
         fullText += (node as Text).nodeValue ?? ''
       }
-      const locate = (off: number): { node: Text; offset: number } | null => {
-        for (const tn of textNodes) {
-          const len = tn.node.nodeValue?.length ?? 0
-          if (off <= tn.start + len) return { node: tn.node, offset: off - tn.start }
-        }
-        return null
-      }
       const ranges: Range[] = []
       const hits: { range: Range; comment: InlineComment }[] = []
+      // Both built at most once per pass, and only when a comment reaches them.
+      let unselectable: TextSpan[] | undefined
+      const skipped = () => (unselectable ??= unselectableSpans(textRoot, textNodes))
+      let pageIndex: PageIndex | undefined
+      const page = () => (pageIndex ??= indexPage(fullText, skipped()))
       for (const comment of comments) {
         // An image comment's anchor is the image's alt text, which is not text
         // in the document; its box is drawn by the image's overlay.
@@ -923,17 +926,20 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         }
         const quote = comment.renderedQuote || comment.anchor
         const bestIdx = findBestOccurrence(fullText, quote, comment.startOffset)
-        if (bestIdx < 0) continue
-        const s = locate(bestIdx)
-        const e = locate(bestIdx + quote.length)
-        if (!s || !e) continue
-        try {
-          const r = document.createRange()
-          r.setStart(s.node, s.offset)
-          r.setEnd(e.node, e.offset)
+        // A comment with no `renderedQuote` (saved before it existed, or made on
+        // the toolbar's fallback path) quotes the browser's selection string,
+        // which an exact search misses once it crosses cells, rows or
+        // paragraphs (see `findLooseSpan`).
+        const span = bestIdx >= 0
+          ? { start: bestIdx, end: bestIdx + quote.length }
+          : comment.renderedQuote ? null : findLooseSpan(page(), comment.anchor, comment.startOffset)
+        if (!span) continue
+        // A span that runs out of a table into the next paragraph covers the
+        // table's Copy buttons, which the reader couldn't select: paint around them.
+        for (const r of rangesForSpan({ text: fullText, nodes: textNodes }, span.start, span.end, skipped())) {
           ranges.push(r)
           hits.push({ range: r, comment })
-        } catch { /* skip */ }
+        }
       }
       activeHits = hits
       if (ranges.length === 0) { clear(); return }

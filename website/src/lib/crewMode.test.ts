@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeView, openingHidesSessionList, isConductorAgent, runsCrewMode,
-  memoryModeAllowsCrewMode, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
+  DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
+  memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
+  gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere,
 } from './crewMode'
 
 afterEach(() => resetCrewModeCatalog())
@@ -10,17 +11,30 @@ afterEach(() => resetCrewModeCatalog())
 const GATEWAY_CONDUCTORS = ['kirocrew-conductor', 'kirocrew-ledger-conductor', 'kirocrew-pipeline-conductor', 'kirocrew-security-conductor', 'kirocrew-team-lead']
 
 describe('crewMode', () => {
-  it('counts the conductor the catalog names, even when the family list omits it', () => {
+  it('runs on the shipped conductor until the catalog says otherwise', () => {
     expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-conductor')
+    expect(crewModeAgent()).toBe('kirocrew-conductor')
+  })
+
+  it('swaps the conductor to the one the catalog names', () => {
     setCrewModeCatalog('better-conductor', ['kirocrew-conductor', 'kirocrew-team-lead'])
+    expect(crewModeAgent()).toBe('better-conductor')
+    // The configured agent is a conductor even when the family list omits it.
     expect(isConductorAgent('better-conductor')).toBe(true)
     expect(isConductorAgent('kirocrew-team-lead')).toBe(true)
     expect(isConductorAgent('kirocrew')).toBe(false)
   })
 
-  it('keeps conductor templates in a normal chat picker on this part: the picker is still the way onto one', () => {
-    // The drop lands with the composer's Crew Mode switch; until then the rule
-    // passes every row, crewmates and conductor templates alike.
+  it('never treats a crewmate as a conductor, whatever its name', () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    expect(runsConductor('kirocrew-conductor', 'template')).toBe(true)
+    expect(runsConductor('kirocrew-conductor', undefined)).toBe(true)
+    expect(runsConductor('kirocrew-conductor', 'member')).toBe(false)
+  })
+
+  it('drops conductor templates from a normal chat picker and keeps crewmates, whatever their name', () => {
+    // The composer's Crew Mode switch is the way onto a conductor, so the picker
+    // lists none of the catalog's conductor set; a crewmate row stays.
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor', 'kirocrew-pipeline-conductor'])
     const rows = [
       { name: 'kirocrew', selection_kind: 'template' },
@@ -28,7 +42,10 @@ describe('crewMode', () => {
       { name: 'kirocrew-pipeline-conductor', selection_kind: 'template' },
       { name: 'kirocrew-conductor', selection_kind: 'member' },
     ]
-    expect(withoutConductors(rows)).toEqual(rows)
+    expect(withoutConductors(rows)).toEqual([
+      { name: 'kirocrew', selection_kind: 'template' },
+      { name: 'kirocrew-conductor', selection_kind: 'member' },
+    ])
   })
 
   it('opening a worker the list leaves out hides the sessions list; a root or a plain chat never does', () => {
@@ -58,6 +75,15 @@ describe('crewMode', () => {
       { key: 'c' },
     ]
     expect(crewModeView(rows).map(r => r.key)).toEqual(['w', 'c'])
+  })
+
+  it('treats the empty name and the configured default as the default agent', () => {
+    expect(isDefaultAgentName('', 'default')).toBe(true)
+    expect(isDefaultAgentName('default', 'default')).toBe(true)
+    expect(isDefaultAgentName('custom-x', 'default')).toBe(false)
+    // `kirocrew` is the default only while none is configured.
+    expect(isDefaultAgentName('kirocrew', 'default')).toBe(false)
+    expect(isDefaultAgentName('kirocrew', '')).toBe(true)
   })
 
   it('needs a Persistent chat, since an Incognito or Temporary one cannot open sessions', () => {
@@ -99,6 +125,7 @@ describe('runsCrewMode', () => {
 
   it('names no conductor before the catalog lands, so a restored conductor chat is an ordinary chat until then', () => {
     resetCrewModeCatalog()
+    expect(gatewayRunsCrewMode()).toBe(false)
     for (const name of GATEWAY_CONDUCTORS) expect(runsCrewMode(name, 'template')).toBe(false)
     // The stamp a Crew Mode chat carries is recognized on its own.
     expect(runsCrewMode('kirocrew-conductor', 'template', 'kirocrew-conductor')).toBe(true)
@@ -106,6 +133,7 @@ describe('runsCrewMode', () => {
 
   it('keeps no client copy of the conductor set: a catalog with no list counts its agent alone', () => {
     setCrewModeCatalog('kirocrew-conductor', undefined)
+    expect(gatewayRunsCrewMode()).toBe(true)
     expect(runsCrewMode('kirocrew-conductor', 'template')).toBe(true)
     expect(runsCrewMode('kirocrew-team-lead', 'template')).toBe(false)
   })
@@ -114,6 +142,7 @@ describe('runsCrewMode', () => {
     // A catalog with neither Crew Mode field: the gateway predates Crew Mode.
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
     setCrewModeCatalog(undefined, undefined)
+    expect(gatewayRunsCrewMode()).toBe(false)
     for (const name of GATEWAY_CONDUCTORS) {
       expect(runsCrewMode(name, 'template')).toBe(false)
       expect(isConductorAgent(name)).toBe(false)
@@ -124,6 +153,7 @@ describe('runsCrewMode', () => {
     // The agent chord cycles over the whole list and lands on a conductor as today.
     expect(agentCycleTarget(rows, 'kirocrew-conductor', 'template', 1)).toBe('kirocrew-ledger-conductor')
     // The switch still knows which agent it would turn on.
+    expect(crewModeAgent()).toBe(DEFAULT_CREW_MODE_AGENT)
   })
 
   it('keeps a stamped chat in Crew Mode until the gateway moves it', () => {
@@ -150,5 +180,22 @@ describe('autoOpenRows -- what the page may open on its own', () => {
     const rows = [{ key: 'plain' }, { key: 'root', crew_mode_root: true }, { key: 'member', crew_root: 'root' }]
     expect(autoOpenRows(rows).map(s => s.key)).toEqual(['plain', 'root'])
     expect(autoOpenRows([{ key: 'member', crew_root: 'root' }])).toEqual([])
+  })
+})
+
+describe('crewApprovalDecidableHere', () => {
+  it('lets a crew member\'s approval be decided on its conductor\'s card alone', () => {
+    const worker = { crew_root: 'chat-1-1' }
+    for (const surface of CREW_APPROVAL_SURFACES) {
+      expect(crewApprovalDecidableHere(worker, surface)).toBe(surface === 'conductor_card')
+    }
+  })
+
+  it('leaves every other session its usual controls on every surface', () => {
+    for (const surface of CREW_APPROVAL_SURFACES) {
+      expect(crewApprovalDecidableHere({ crew_root: '' }, surface)).toBe(true)
+      expect(crewApprovalDecidableHere({}, surface)).toBe(true)
+      expect(crewApprovalDecidableHere(null, surface)).toBe(true)
+    }
   })
 })

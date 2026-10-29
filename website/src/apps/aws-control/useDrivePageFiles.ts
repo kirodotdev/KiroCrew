@@ -188,6 +188,16 @@ export function useDrivePageFiles(account: string) {
     }
     wasCreatingFolder.current = creatingFolder
   }, [creatingFolder])
+  /** The folder-name field, and a request to focus it after the next commit.
+   *  The Move picker's New folder action cannot rely on the field's
+   *  `autoFocus`: when the field is already open (it keeps a typed name across
+   *  a blur), it does not remount, and focus would fall to `<body>` as the
+   *  picker unmounts. A counter, so a second request also runs the effect. */
+  const folderNameRef = useRef<HTMLInputElement>(null)
+  const [folderNameFocusRequest, setFolderNameFocusRequest] = useState(0)
+  useEffect(() => {
+    if (folderNameFocusRequest) folderNameRef.current?.focus({ preventScroll: true })
+  }, [folderNameFocusRequest])
   /** The file a "Move to folder…" picker is open for, or null. */
   const [moveTarget, setMoveTarget] = useState<string | null>(null)
   /** Who opened the row menu that is closing, and whether one of its items
@@ -211,13 +221,26 @@ export function useDrivePageFiles(account: string) {
   /** Whether the Move picker is on screen, readable from a mutation callback
    *  that may fire after the reader has already dismissed it. */
   const moveDialogOpenRef = useRef(false)
-  /** The one way the Move picker closes — Escape, X, backdrop, or a landed
-   *  move. Never refused: a move still in flight keeps running without it. */
+  /** How the Move picker closes — Escape, X, backdrop, or a landed move.
+   *  Never refused: a move still in flight keeps running without it. */
   const closeMoveDialog = () => {
     moveDialogOpenRef.current = false
     setMoveTarget(null)
     setMoveError(null)
     returnFocusToOpener()
+  }
+  /** The picker's empty state ("no other folder here") offers New folder. It
+   *  closes the picker and opens the toolbar's own folder-name field rather
+   *  than growing a second create form inside the picker: the field is the one
+   *  write path for folders. Focus goes to that field (whether it was just
+   *  opened or already open), not back to the row menu's opener. No move can
+   *  be in flight here — an empty picker has no destination to start one. */
+  const moveToNewFolder = () => {
+    moveDialogOpenRef.current = false
+    setMoveTarget(null)
+    setMoveError(null)
+    setCreatingFolder(true)
+    setFolderNameFocusRequest((n) => n + 1)
   }
   /** The ONE way out of the folder disclosure (Escape, Cancel, blur-on-empty),
    *  carrying the whole close invariant: (1) it refuses while a create is in
@@ -718,8 +741,8 @@ export function useDrivePageFiles(account: string) {
     renaming, renameValue, setRenameValue, renameError, query, setQuery, debouncedQuery,
     setHighlightKey, highlighted, highlightProps, confirmDelete, setConfirmDelete, confirmFolder,
     setConfirmFolder, newFolder, setNewFolder, creatingFolder, setCreatingFolder, folderError,
-    folderToggleRef, moveTarget, rememberMenuOpener, skipRestoreIfDialog, openShare, openMove,
-    returnFocusToOpener, moveDialogOpenRef, closeMoveDialog, closeFolderDisclosure, handOff,
+    folderToggleRef, folderNameRef, moveTarget, rememberMenuOpener, skipRestoreIfDialog, openShare, openMove,
+    returnFocusToOpener, moveDialogOpenRef, closeMoveDialog, moveToNewFolder, closeFolderDisclosure, handOff,
     deletedHere, fileRef, attachScroller, edges, listQ, folders, files, uploadMut, deleteMut,
     openConfirmDelete, deleteFailedFor, folderCreateMut, folderDeleteMut, onCreateFolder, onPick,
     dropTarget, moveError, setMoveError, pageError, moveMut, moveBusy, movingKey, renameMut,

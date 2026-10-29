@@ -175,7 +175,7 @@ class _Host:
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
-        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg: dict(self.creds))
+        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
         mp.setattr(cli_doctor.gateway_lock, "lock_holder", self._lock_holder)
@@ -251,6 +251,8 @@ class _Host:
         # marker goes on the family that defines it. The real section reads the
         # host's process table, which no frozen report can pin.
         mp.setattr(resources, "_doctor_acp_runtimes", self._marker("_doctor_acp_runtimes"))
+        # Same reason: the real section reads the host's kernel limits and cgroup tree.
+        mp.setattr(resources, "_doctor_task_ceilings", self._marker("_doctor_task_ceilings"))
         import kiro_crew.doctor_checks.workload as workload
 
         # Same reason: added after the move. The real section walks the host's
@@ -437,6 +439,7 @@ Configuration
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
   <<_doctor_acp_runtimes>>
+  <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
@@ -620,6 +623,7 @@ Configuration
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
   <<_doctor_acp_runtimes>>
+  <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>

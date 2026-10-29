@@ -16,6 +16,7 @@ import { isEmptyTurn, buildOutgoingTurn } from '../../../chat-core/composer/outg
 import { storeSentPastes } from '../../../chat-core/composer/composerPastes'
 import { addNotification } from '../../../store/notificationsSlice'
 import { isInterceptedSlashCommand, interceptSlashCommand } from '../ChatInput'
+import { loadChatConfig } from '../ChatSettings'
 import { api } from '../../../api/client'
 import { resolveAskAfterSend } from '../../../lib/resolveAskAfterSend'
 import { uniqueNotificationTs } from './notificationTs'
@@ -724,7 +725,8 @@ export function useComposerSend({
     }
     if (!isolated) window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false
-    setTimeout(() => scrollBottom(), SCROLL_AFTER_RENDER_MS)
+    // Settings -> Chat can turn the send-time jump off (#25754).
+    if (loadChatConfig().scrollOnSend) setTimeout(() => scrollBottom(), SCROLL_AFTER_RENDER_MS)
     if (slot) dispatch(startLocalTurn(slot))
     const sendEpoch = slot ? selectSlotRunEpoch(store.getState(), slot) : 0
     const restoreComposerAfterFailedSend = () => {

@@ -149,6 +149,12 @@ export interface PopoutController {
   isSelfPopout(id: string): boolean
   /** From inside a popout: focus the opener and close; navigate to the main view when close is refused. */
   returnSelfToMain(): void
+  /**
+   * From inside a popout whose entity is gone: focus the opener and close; when
+   * close is refused, navigate to the main view with no entity named, since a
+   * deep link to the gone entity would only report it missing.
+   */
+  closeSelf(): void
   /** Register THIS window as the live popout for `id` (responder role). Returns cleanup. */
   registerPopout(id: string): () => void
   /**
@@ -441,14 +447,22 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
    * instead. The control must always visibly do something.
    */
   function returnSelfToMain(): void {
+    leaveSelf(true)
+  }
+
+  function closeSelf(): void {
+    leaveSelf(false)
+  }
+
+  function leaveSelf(keepEntity: boolean): void {
     const id = selfId
     try { window.opener?.focus() } catch (e) { logDebug('opener focus vetoed', e) }
     try { window.close() } catch (e) { logDebug('self close vetoed', e) }
     // If we're still alive, the close was refused (no script opener). Fall back
-    // to becoming the main view for this entity.
+    // to becoming the main view, for this entity when it still exists.
     if (!window.closed) {
       if (id) post({ t: 'close', id }) // tell other windows this popout is gone
-      navigate(mainViewUrl(id))
+      navigate(mainViewUrl(keepEntity ? id : null))
     }
   }
 
@@ -543,7 +557,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   return {
     subscribe, getSnapshot, openPopout, focusPopout, bringBack,
-    isSelfPopout, returnSelfToMain, registerPopout,
+    isSelfPopout, returnSelfToMain, closeSelf, registerPopout,
     forwardToMain, setNavIntentHandler,
     __setNavigateForTests, __setWindowOpenForTests, __resetForTests,
   }

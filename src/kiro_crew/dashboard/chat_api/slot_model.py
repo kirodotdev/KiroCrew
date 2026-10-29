@@ -39,7 +39,6 @@ if TYPE_CHECKING:
         capabilities_of,
         deny_app_slot_access,
         effective_session_key,
-        is_channel_session_key,
         is_owner_dashboard_request,
         logger,
         model_registry,
@@ -294,16 +293,48 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
     (a frame WITHOUT ``reset`` never deletes, so the backend sets ``reset``
     whenever it has no real counts to send). With a live provider the payload
     carries the freshly rebased stats from ``set_model``; without one (the
-    session-reset path) it carries no tokens, so the reducer deletes the entry
-    and the UI falls back to its own model-derived window for the slot's new
-    model. Best-effort: a broadcast failure must not fail the switch.
+    cold-reset path) it carries no tokens, so the reducer keeps the stored
+    ``used`` and the UI derives the percentage against the new model's window.
+    Best-effort: a broadcast failure must not fail the switch.
+
+    When the new model's window is unknown, the frame carries ``used_tokens``
+    (if the live rebase knows it) but neither ``pct`` nor ``window_tokens``.
+    ``used`` is roughly model-independent and the transcript is unchanged across
+    a switch, so the meter derives ``used / new-window`` against its own
+    model-derived window — a correct reading, not the old model's percentage
+    pinned beside a window that does not describe it. A rebase that DID
+    resolve the new window ships the full ``pct``/``used``/``window`` triple and
+    is not a reset. When ``used`` is genuinely unknown (a percentage-only
+    backend) nothing is carried, and the reducer clears the reading rather than
+    derive a wrong number.
     """
     try:
         if provider is not None:
             payload = _context_usage_payload(slot_key, provider)
         else:
-            payload = {"slot": slot_key, "pct": 0.0}
+            # No provider on the cold-reset path: no measurement to send, so the
+            # reducer keeps its stored ``used`` and derives against the new
+            # window.
+            payload = {"slot": slot_key}
         payload["reset"] = True
+        if not payload.get("window_tokens"):
+            # New window unknown: a pct computed against the OLD window must not
+            # pair with the NEW model's window downstream, so drop both the pct
+            # and the (zero) window. Keep ``used_tokens`` when the provider has
+            # it — the meter derives the percentage from it against the new
+            # window. ``_context_usage_payload`` only sets ``used_tokens``
+            # alongside ``window_tokens``, so surface it here from the provider.
+            payload.pop("pct", None)
+            payload.pop("window_tokens", None)
+            payload.pop("used_tokens", None)
+            used = 0
+            if provider is not None and hasattr(provider, "context_used_tokens"):
+                try:
+                    used = int(provider.context_used_tokens() or 0)
+                except Exception:
+                    used = 0
+            if used > 0:
+                payload["used_tokens"] = used
         state.broadcast_context_usage(slot_key, payload)
     except Exception:
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
@@ -483,29 +514,6 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "model": model_name, "jev_route": jev_route})
         provider = state.sessions.get_provider(session_key)
         _busy = _switch_target_busy(state, slot, session_key, provider)
-        # A session that runs NATIVE channel turns (Slack/Discord/Telegram/
-        # Teams) must keep the pre-existing 409 for a mid-turn pick: those turn
-        # loops never pass through the dashboard boundaries apply_deferred_model_switch
-        # runs at, so deferring would report success while the channel kept
-        # replying on the old model. The deferral is thus confined to pure
-        # dashboard sessions. Three signals decide it, the same ones
-        # turn_admission reads to tell a channel-driven turn from a direct
-        # dashboard one: a channel session key; a mirror link that accepts
-        # inbound resume (a `!sessions` resume keeps its ``dashboard:`` key yet
-        # is driven by the channel, so the key prefix alone is not enough); or a
-        # Slack channel bound on the slot. A busy channel-owned session gets the
-        # same answer the session_set_model pick gives a busy channel target.
-        # Applying a deferred pick at a channel turn's completion is a separate,
-        # transport-wide change.
-        _channel_owned = (
-            is_channel_session_key(session_key)
-            or state.sessions.mirror_accepts_inbound(session_key)
-            or bool(getattr(slot, "_slack_channel", ""))
-        )
-        if _busy and _channel_owned:
-            return web.json_response(
-                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
-            )
         if _busy:
             # Never tear down an in-flight turn: _try_live_model_switch
             # declines a mid-turn live switch (awaiting the backend's answer
@@ -537,6 +545,22 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             _reset_only = not isinstance(provider, AcpProvider) or not _wire_model_id(
                 provider, model_name
             )
+            # A session whose turns a channel (Slack/Discord/Telegram/Teams) can
+            # drive lands a deferred pick at a channel turn's end too, but only
+            # LIVE (``land_model_pick_after_channel_turn``): a channel turn
+            # cold-starts on the default model ladder, not on ``slot.model``, so
+            # the reset fallback cannot land the pick there. A reset-only pick on
+            # such a session keeps the pre-existing 409, the answer the
+            # session_set_model pick gives a busy channel target, rather than
+            # report a deferral the channel could keep serving the old model past.
+            # Which sessions count is ``channel_drives_session``.
+            # circular import: session_control imports dashboard modules at module level.
+            from kiro_crew.dashboard.session_control import channel_drives_session
+
+            if _reset_only and channel_drives_session(state, slot, session_key):
+                return web.json_response(
+                    {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                )
             if _reset_only:
                 children_409 = await _subagents_attached_response(
                     state, slot, session_key, "slot_model"

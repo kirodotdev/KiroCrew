@@ -173,6 +173,7 @@ function harness(overrides = {}) {
     },
     logPath: () => "/virtual/logs/gateway-launch.log",
     predictLocalPort: overrides.predictLocalPort,
+    onStaleBundleRespawn: overrides.onStaleBundleRespawn,
     fsMod,
     osMod: { homedir: () => "/virtual/home" },
     pathMod: path.posix,

@@ -488,6 +488,22 @@ async def _verify_unix_peer(
             # before claim, a cron script, a pooled MCP backend outside this
             # manager.
             return None
+        bound = _bound_session_keys_on_chain(tenancy.chain)
+        if declared in bound:
+            # The roster is complete and omits the declared key, but the
+            # gateway's own ownership tables place it on this process. That is
+            # a ``spawn_run`` shared subagent: the roster is built from the
+            # session manager, which never registers a shared session, so the
+            # parent's turn publishes a roster naming only the parent while the
+            # subagent's stubs declare the subagent's key. The tenancy claim is
+            # in this process's memory, which an agent cannot edit, so it is
+            # positive evidence the process hosts the session -- and the parent
+            # sharing that process can read the key, so the declaration is
+            # still admitted only on a token naming it, exactly like any other
+            # co-tenant.
+            return await _attest_shared(
+                "mapping omits a session the ownership tables bind here", hosts=len(bound)
+            )
         _sel_fn().log_api_access(
             caller=declared,
             forwarded=is_proxied_request(request),

@@ -128,7 +128,7 @@ provider.
 |-------|---------|-------|
 | absent or `""` | Kiro Agent (KAS) | No choice: the default. Falls back to kiro-cli when KAS is unavailable. |
 | `kas` | Kiro Agent (KAS) | Served through kiro-cli's `acp --agent-engine v3` relay. |
-| `kiro` | kiro-cli | The Kiro CLI choice. |
+| `kiro` | kiro-cli | The Kiro CLI choice. kiro-cli now serves its sessions on its v3 (KAS) engine, so once Kiro Crew confirms your kiro-cli offers v3 this choice runs through KAS, and the dashboard offers one click to save `kas`. On a kiro-cli too old for v3 it keeps the older engine, and `kirocrew doctor` names `kiro-cli update`. |
 | `claude` | Claude Code | Uses the public `claude-agent-acp` adapter. |
 | `codex` | Codex | Uses the Codex ACP adapter. |
 | `opencode` | OpenCode | Uses OpenCode's native ACP server. |
@@ -692,6 +692,9 @@ member-memory sandbox is required.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `work_ledger.max_depth` | How many levels of the work ledger may conduct. Depth 0 is the root conductor, so `2` lets it dispatch one level of conductors whose own items are workers, and `3` lets those conductors dispatch conductors of their own. Accepted range 2-10; a value outside it is refused at load with a warning and the default applies, it is never clamped. Each extra level multiplies sessions (three levels of three items is 27), so raise it only where concurrency is already capped per level. Lowering it leaves open ledgers alone, but new ledgers and new items at the levels it removes are refused. | `2` |
+| `work_ledger.remote_dispatch` | Preview. Lets a conductor on another machine place work items on this crew. When `true`, `GET /api/chat/headroom` answers this machine's free memory, CPU load and free scratch disk to the owner, every owner session-create reply carries that `headroom` snapshot, and an owner create that carries a `work_item` is refused `crew_busy` (naming `memory`, `cpu` or `disk`) when one is short. When `false`, the route answers 404 and no create is checked. Read on every request, so no restart is needed | `false` |
+| `work_ledger.remote_dispatch_memory_gb` | Free memory one dispatched worker needs; a work-item create is refused `crew_busy` on memory when less is free. A value that is not a positive number uses the default | `2.0` |
+| `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. A value that is not a positive number uses the default | `10.0` |
 
 ### Power
 

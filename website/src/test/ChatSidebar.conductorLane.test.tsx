@@ -221,7 +221,7 @@ afterEach(() => {
 })
 
 describe('chat sidebar — conductor lane', () => {
-  it('draws a Crew Mode root as a plain row with badge, eyebrow, worker ghosts and what needs you', async () => {
+  it('draws a Crew Mode root as a plain row with an inline ghost, eyebrow, worker ghosts and what needs you', async () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -233,8 +233,17 @@ describe('chat sidebar — conductor lane', () => {
     expect(card).toBeTruthy()
     // A plain session row: no tinted card frame.
     expect(card.className).not.toContain('crew-card')
-    expect(within(card).getByTestId('crew-eyebrow')).toHaveTextContent('Crew Mode')
-    expect(within(card).getByTestId('crew-ghost-badge')).toBeTruthy()
+    const eyebrow = within(card).getByTestId('crew-eyebrow')
+    expect(eyebrow).toHaveTextContent('Crew Mode')
+    // A whole-pixel tracking: an em fraction at this size renders "CRE W MODE".
+    expect(eyebrow.className).toContain('tracking-[1px]')
+    expect(eyebrow.className).not.toMatch(/tracking-\[[\d.]+em\]/)
+    // The ghost is a 12px mark inline on the eyebrow line, just before the eyebrow,
+    // not a 26px badge before the title: the title keeps the row's full width.
+    expect(within(card).queryByTestId('crew-ghost-badge')).toBeNull()
+    const ghost = eyebrow.previousElementSibling as HTMLElement
+    expect(ghost).toHaveAttribute('data-testid', 'kiro-ghost-mark')
+    expect(ghost.style.width).toBe('12px')
     // The conductor's name is not shown: Crew Mode chooses it.
     expect(within(card).queryByText('kirocrew-conductor')).toBeNull()
     // The server's groups, not a guess from the rows: W1's "done" comes from the API.

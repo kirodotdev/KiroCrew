@@ -385,7 +385,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # declarable paths (see ``docs/app-kit/api-reference.md``). No
     # ``internal_auth`` clause: this route has no ``X-Internal-Secret`` caller,
     # and a clause naming one would exempt a future caller nobody reviewed.
-    if request.get("app") == "":
+    # The test is ``not app`` rather than ``app == ""``: an internal-secret
+    # request carries no ``app`` key at all, and must meet the owner gate too
+    # (same shape as the file and workflow routes) -- this and the sibling
+    # delete/batch-delete/update/enable gates below.
+    if not request.get("app"):
         # Body-scope import, like the sibling gates in this package
         # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
         # reaches back into sibling handler modules, so importing the helper at
@@ -617,7 +621,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
 async def api_cron_delete(request: web.Request) -> web.Response:
     """DELETE /api/crons/{id} — remove a cron job."""
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.delete")
         if owner_denied is not None:
             return owner_denied
@@ -683,7 +687,7 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     purged per successfully-removed job, mirroring the single-delete path, and a
     single ``crons`` refresh is pushed after the batch instead of one per id.
     """
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.batch_delete")
         if owner_denied is not None:
             return owner_denied
@@ -734,7 +738,7 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
 
 async def api_cron_update(request: web.Request) -> web.Response:
     """PATCH /api/crons/{id} — update a cron job (partial)."""
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.update")
         if owner_denied is not None:
             return owner_denied
@@ -929,7 +933,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
 
 async def api_cron_enable(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/enable — toggle enable/disable."""
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.enable")
         if owner_denied is not None:
             return owner_denied

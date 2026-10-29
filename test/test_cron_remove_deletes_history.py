@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 import kiro_crew.cron as cron_mod
 import kiro_crew.mcp_cron as mcp_cron
@@ -202,7 +203,8 @@ def test_control_the_dashboard_route_deletes_the_history_once(service, tmp_path,
     monkeypatch.setattr(history, "_delete_job_history_sync", _counting_delete)
     state = MagicMock()
     state.crons = service
-    app = web.Application()
+    state.owner_id = ""
+    app = as_owner(web.Application())
     app["state"] = state
     app.router.add_delete("/api/crons/{job_id}", api_cron_delete)
 

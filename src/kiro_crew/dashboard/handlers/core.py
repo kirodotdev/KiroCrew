@@ -506,7 +506,10 @@ async def api_theme_config(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "config.theme.write")
     if denied is not None:
         return denied
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
 
@@ -651,6 +654,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
         _keep_omitted_session_environment_keys,
+        _keep_vm_profiles,
+        _profile_ids,
+        _session_environment_key_validators,
         _tailnet_governance_pinned_off,
         _UnknownDefaultProfile,
         api_kirocrew_config_patch,

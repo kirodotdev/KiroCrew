@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         check_memory_available,
         logger,
         on_event_loop,
+        parent_project_dirs,
         parent_spawn_policy,
         platform_compat,
         pop_memory_check_cause,
@@ -117,6 +118,7 @@ class _GateMixin(ManagerComponent):
         label: str = "",
         _execution_context: dict | None = None,
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
+        _parent_project_dirs: "list[str] | None" = None,
         _agent_check: "AgentCheck | None" = None,
         _recovering_row: bool = False,
         _stop_before_memory_read: bool = False,
@@ -464,8 +466,15 @@ class _GateMixin(ManagerComponent):
         # ``spawn()`` callers and the in-memory queue's synchronous drain, which
         # re-enters WITHOUT a stored copy so the declaration is read fresh at
         # dispatch (``queue_params`` below says why).
+        # ``_parent_project_dirs`` is the parent's project scope at ACCEPT time:
+        # read here on the first entry (the resolver is dict reads, no I/O) and
+        # carried by every re-entry from ``queue_params``, so a drain re-reads
+        # the declaration from the scope the spawn was admitted under even when
+        # the parent session has since ended and its live scope reads empty.
+        if _parent_project_dirs is None:
+            _parent_project_dirs = list(parent_project_dirs(parent_session_key))
         if _gate and _parent_spawn_policy is None:
-            _parent_spawn_policy = parent_spawn_policy(parent_session_key)
+            _parent_spawn_policy = parent_spawn_policy(parent_session_key, _parent_project_dirs)
         allowlist_err = (
             _vet_parent_available_agents(_parent_spawn_policy, execution.template_id, app=app)
             if _gate and _parent_spawn_policy is not None
@@ -551,7 +560,10 @@ class _GateMixin(ManagerComponent):
             # through the gate's inline fallback above -- a memo-pinned
             # directory read (``_PARENT_ALLOWLIST_MEMO``), so a ``scandir``
             # in the ordinary case, and a full parse only when the memo
-            # declines to pin.
+            # declines to pin. What IS queued is where to read it from: the
+            # parent's project directories at accept time, applied on top of
+            # its live ones at every drain.
+            "_parent_project_dirs": _parent_project_dirs,
             "crew": crew,
             "_memory_mode": _memory_mode,
             # Same rule for the asking turn: `spawn_async` re-enters from this

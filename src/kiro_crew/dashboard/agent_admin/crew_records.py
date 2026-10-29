@@ -471,6 +471,15 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 status=409,
             )
         name, display_name = keyed.key, keyed.display_name
+        # Judged against the key, not the typed name: the key is what
+        # adopt_own_file compares the template with.
+        from kiro_crew.mate_config import start_template_refusal
+
+        template_refusal = start_template_refusal(kiro_agent, name)
+        if template_refusal:
+            return web.json_response(
+                {"error": template_refusal, "code": "mate_template_unsupported"}, status=400
+            )
         model_reason = _model_pin_rejected(
             model, request, cfg.agent.provider, backend=_pin_entitlement_backend(cfg)
         )

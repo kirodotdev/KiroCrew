@@ -7,8 +7,9 @@ worst loads a stricter posture on a host that has nothing to enforce it.
 Precedence (first match wins):
   0. An enterprise build (``kiro_crew.edition.is_enterprise()``, stamped at build
      time) is always ``enterprise``; nothing below can change it.  With no
-     companion installed such a build fails closed at boot.  An ``oss`` build
-     skips this step and resolves exactly as below.
+     companion installed such a build boots on the core defaults (bootstrap);
+     an installed companion that fails to compose still fails closed.  An
+     ``oss`` build skips this step and resolves exactly as below.
   1. ``KIROCREW_PROFILE`` env var (explicit operator/dev override).
   2. A non-empty ``kirocrew.plugins`` entry-point group (companion installed) —
      the cheap, authoritative signal: capability comes from the installed
@@ -83,8 +84,9 @@ def resolve_profile(cfg: "KiroCrewConfig", *, entry_points: "Sequence[object]") 
     """Resolve the active profile.  See module docstring for precedence."""
     # 0. An enterprise build is always the enterprise profile. The edition is
     #    stamped into the package at build time, so no env var, marker or entry
-    #    point can lower it. An enterprise build with no companion installed
-    #    therefore fails closed at boot (discovery raises); that is intended.
+    #    point can lower it. With no companion installed bootstrap composes the
+    #    core defaults under this profile; an installed companion that fails to
+    #    compose still fails closed (discovery raises).
     if edition.is_enterprise():
         return PROFILE_ENTERPRISE
 

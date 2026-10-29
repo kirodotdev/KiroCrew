@@ -146,10 +146,12 @@ only document naming sha256s — for `latest` alone, so a pinned build fetches t
 pinned version's own artifact URL and verifies it against the committed sha: it
 never reads the mutable manifest, a hotfix rebuild of an older tag keeps working
 after upstream releases, and a version bump without matching sha lines fails
-closed with the bump procedure in the error. The two pin files have no reader
-in a default release: only a `BUNDLE_KIRO_CLI=1` build reads them (the Docker
-image resolves kiro-cli from the upstream `latest` manifest on its own), and
-they stay in the tree for that opt-in. `KIRO_CLI_VERSION=latest`
+closed with the bump procedure in the error. The Docker image reads the same two
+files: `docker/Dockerfile` bind-mounts them from the build context (admitted by
+`.dockerignore`), installs that version's Linux zip after checking it against
+its `kirocli-<arch>-linux.zip` sha line, and never reads the manifest, and
+`publish-docker.yml` labels the image with the pinned version. A
+`BUNDLE_KIRO_CLI=1` desktop build reads them too. `KIRO_CLI_VERSION=latest`
 resolves the manifest instead and takes the version and sha it names, for a local
 build that wants the newest release (still sha256-verified). Bumping both files,
 after testing against the new release, is the whole procedure for
@@ -683,7 +685,17 @@ local SSH forward to a remote gateway looks like, is reused only when a remote
 crew is recorded for that port; otherwise the supervisor refuses it
 (`foreign-holder`) and the gateway-failure dialog offers **Add Remote Crew**
 (see [The gateway-failure dialog](#the-gateway-failure-dialog)). Adopting an
-unattributed holder would post this machine's local secret to it. Before
+unattributed holder would post this machine's local secret to it. On Windows a
+holder is attributed by the executable path the launch resolver selected. A
+source or pip venv's gateway listens from the venv's base interpreter (its
+`Scripts\python.exe` is a redirector), which every Python program can run, so
+that interpreter counts only when it is the one the venv's `pyvenv.cfg` names,
+its argv0 names that interpreter or the venv's redirector, its script is
+exactly that venv's `Scripts\kirocrew.exe`, and a server subcommand follows
+(`windowsVenvBaseInterpreterLaunches` in
+[`windows-port.js`](../../website/electron/windows-port.js)). Like every
+Windows rule here, this attributes by command line: it does not tell apart a
+process of the same account that copies that exact command line. Before
 reusing a same-family local gateway on a fixed-path POSIX install, the shell
 checks whether its sole listener is running from this app's current bundled
 backend path. If that bundled gateway reports an older version than the app,
@@ -907,6 +919,16 @@ handles terminate observed descendants without trusting recycled PIDs. Cleanup
 finishes before the gateway permits a retry.
 Hosting setup in the gateway provides one implementation and one UI for the
 desktop app, local browser, remote browser, Linux, and Windows.
+
+The desktop app adds one exit to that screen for a user who will only use crews
+on other machines: **Connect to a crew on another machine** opens the
+remote-crew form, and saving it stops the gateway this app started, saves the
+crew for the launch port, turns "Run a local gateway" off and reconnects the
+main window to the crew, so that crew's own setup runs where its agents will
+(`runtime/gateway/remote-switch.js`). The link shows only in the main window and
+only while the port's gateway is this app's own child; an adopted gateway is not
+the app's to stop. If the gateway does not stop, nothing is saved and the app
+keeps using it. The way back is the failure dialog's Start Local Gateway, below.
 
 ### The gateway-failure dialog
 

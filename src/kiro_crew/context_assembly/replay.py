@@ -315,16 +315,31 @@ def _replay_identity(row: dict) -> tuple | None:
     return None
 
 
-def _merge_replay_rows(disk: list[dict], pending: list[dict], current: dict | None) -> list[dict]:
-    """Reconcile one snapshot before quota selection, budgeting and formatting."""
+def _merge_replay_rows(
+    disk: list[dict],
+    pending: list[dict],
+    current: dict | None,
+    excluded: list[dict] | None = None,
+) -> list[dict]:
+    """Reconcile one snapshot before quota selection, budgeting and formatting.
+
+    *excluded* rows are left out of both sides, by object and by delivery
+    identity: a Regenerate's previous reply stays in the window and on disk
+    while the turn re-asks its question, and must not reach the replay as an
+    answer to nothing.
+    """
     from kiro_crew.history import transcript_sort_key
 
     current_id = _replay_identity(current) if current is not None else None
+    excluded_objs = {id(row) for row in excluded or ()}
+    excluded_ids = {i for i in (_replay_identity(row) for row in excluded or ()) if i is not None}
     rows: list[dict] = []
     positions: dict[tuple, deque[int]] = defaultdict(deque)
     for row in disk:
         identity = _replay_identity(row)
         if current_id is not None and identity == current_id:
+            continue
+        if identity is not None and identity in excluded_ids:
             continue
         if identity is not None:
             positions[identity].append(len(rows))
@@ -332,6 +347,8 @@ def _merge_replay_rows(disk: list[dict], pending: list[dict], current: dict | No
     for row in pending:
         identity = _replay_identity(row)
         if row is current or (current_id is not None and identity == current_id):
+            continue
+        if id(row) in excluded_objs or (identity is not None and identity in excluded_ids):
             continue
         matches = positions.get(identity) if identity is not None else None
         if matches:

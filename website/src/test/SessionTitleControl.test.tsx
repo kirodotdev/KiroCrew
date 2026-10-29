@@ -35,6 +35,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
+import { generateSlotTitle } from '../hooks/slotTitleGeneration'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import { api } from '../api/client'
 import { sseSlotTitle, updateSlotPin } from '../store/dashboardSlice'
@@ -453,6 +454,51 @@ describe('SessionTitleControl', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
     await waitFor(() => expect(screen.getByRole('button', { name: REGEN })).toBeTruthy())
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+  })
+
+  it('one slot open in two panes generates once, and both panes show the spinner', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const [first] = screen.getAllByRole('button', { name: REGEN })
+    await act(async () => { fireEvent.click(first) })
+    // The other pane's button is gone too: it shows the spinner instead.
+    expect(screen.queryAllByRole('button', { name: REGEN })).toHaveLength(0)
+    expect(screen.getAllByText('Generating title…')).toHaveLength(2)
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve({ title: 'Done' }) })
+    await waitFor(() => expect(screen.queryAllByText('Generating title…')).toHaveLength(0))
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+  })
+
+  it('a header press while a menu-started generation runs sends no second request', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    let menuCall!: Promise<void> | null
+    await act(async () => { menuCall = generateSlotTitle(SLOT, store.dispatch) })
+    // The header shows the menu's generation and offers no second press.
+    expect(screen.queryAllByRole('button', { name: REGEN })).toHaveLength(0)
+    expect(screen.getByText('Generating title…')).toBeTruthy()
+    await act(async () => { resolve({ title: 'Done' }); await menuCall })
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
   })
 
   it('shows the spinner instead of the button while a title is generating', async () => {

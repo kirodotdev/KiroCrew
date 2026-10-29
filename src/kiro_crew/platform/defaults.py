@@ -37,6 +37,7 @@ from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import (
     BUILTIN_PROVISIONER_ID,
     CapabilityResult,
+    CloudInstancePolicy,
     InterceptDecision,
     MobileConnectMethod,
     OtlpDestination,
@@ -788,6 +789,13 @@ class DefaultSpeechProviderRegistry:
 
     def default_tts(self) -> Optional[str]:
         return None
+
+
+class DefaultCloudInstancePolicyProvider:
+    """Nothing added: an EC2 crew's role carries Session Manager's policy only."""
+
+    def instance_policy(self) -> CloudInstancePolicy:
+        return CloudInstancePolicy()
 
 
 class DefaultRemoteProvisionerProvider:

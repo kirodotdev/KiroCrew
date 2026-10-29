@@ -5,7 +5,7 @@
  */
 import type { ComponentType } from 'react'
 import { AlarmClock,
-  CalendarClock, Cog, FolderCog, Goal, Gauge, KeyRound, LayoutDashboard, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
+  CalendarClock, Cog, FolderCog, Workflow, Goal, Gauge, KeyRound, LayoutDashboard, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
   type LucideIcon,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
@@ -24,6 +24,8 @@ export interface CardKindSpec {
   decline?: () => string
   /** One line beside the primary button: what the press does and how to take it back. */
   pressNote?: () => string
+  /** The kind's own `code_exec` warning, when the generic one misstates when code runs. */
+  riskNote?: () => string
   Body: ComponentType<KindBodyProps>
 }
 
@@ -114,6 +116,19 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
     // The Folder settings section's own name, so the card reads as that setting.
     icon: FolderCog, label: () => i18nT('components.folderConfigModal.steering_dirs'),
     primary: () => i18nT('components.changeCards.primary_setting_change'), Body: NoBody,
+  },
+  'workflow.save': {
+    icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_save'),
+    primary: () => i18nT('components.changeCards.primary_workflow_save'),
+    riskNote: () => i18nT('components.changeCards.risk_workflow'),
+    decline: () => i18nT('components.changeCards.decline_workflow_save'),
+    pressNote: () => i18nT('components.changeCards.press_workflow_save'), Body: NoBody,
+  },
+  'workflow.update': {
+    icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_update'),
+    primary: () => i18nT('components.changeCards.primary_workflow_update'),
+    riskNote: () => i18nT('components.changeCards.risk_workflow'),
+    pressNote: () => i18nT('components.changeCards.press_workflow_update'), Body: NoBody,
   },
 }
 

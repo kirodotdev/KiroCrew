@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
+import { setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -724,6 +725,10 @@ export function useAppShell() {
     return subscribeNativeNavigate(path => {
       const slotKey = chatDeepLinkSlot(path)
       if (slotKey) {
+        // The session lives in the local Crew. Over a Remote Crew pane, bring
+        // the local Crew forward first (as the notification banner does), so
+        // the leave prompt and the switched session are both on screen.
+        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
         applyNavIntentInMain(
           // `path` is deliberately dropped in favour of the bare route: a
           // NavIntent carries no query string, and ChatPage writes `?sid=` back
@@ -742,7 +747,7 @@ export function useAppShell() {
       if (!mayLeaveForNavigation()) return
       navigate(path)
     })
-  }, [navigate, dispatch, mayLeaveForNavigation])
+  }, [navigate, dispatch, mayLeaveForNavigation, appStore])
   // A mouse's Back/Forward buttons on macOS, relayed by the shell as a swipe.
   useNativeHistoryStep(isMobile)
 

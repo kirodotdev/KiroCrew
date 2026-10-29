@@ -873,7 +873,7 @@ def reveal_in_file_manager(target: str) -> bool:
         return False
 
 
-def open_with_default_app(target: str) -> bool:
+def open_with_default_app(target: str, *, wait_for_exit: float | None = None) -> bool:
     """Launch *target* with its associated application. ``True`` if it started.
 
     Separate from :func:`reveal_in_file_manager` because it is the opposite
@@ -882,6 +882,13 @@ def open_with_default_app(target: str) -> bool:
     through the shell rather than an argv the caller can inspect, and the path
     typically arrives from a request. POSIX keeps it: ``open`` / ``xdg-open`` hand
     the file to the desktop's handler without a shell in between.
+
+    By default the launcher is not waited on, so ``True`` means only that it
+    started. With *wait_for_exit* (seconds) the launcher's exit status decides:
+    ``/usr/bin/open`` exits non-zero when no application handles the target, and
+    ``xdg-open`` exits 3 or 4 when no handler is registered. A launcher still
+    running at the deadline counts as launched, because ``xdg-open``'s generic
+    path runs the application in the foreground.
     """
 
     if IS_WINDOWS:
@@ -891,17 +898,22 @@ def open_with_default_app(target: str) -> bool:
         if sys.platform == "darwin":
             if not os.path.isfile("/usr/bin/open"):
                 return False
-            subprocess.Popen(["/usr/bin/open", target], env=env)
-            return True
-        if not os.path.isfile("/usr/bin/xdg-open"):
-            return False
-        subprocess.Popen(["/usr/bin/xdg-open", target], env=env)
-        return True
+            proc = subprocess.Popen(["/usr/bin/open", target], env=env)
+        else:
+            if not os.path.isfile("/usr/bin/xdg-open"):
+                return False
+            proc = subprocess.Popen(["/usr/bin/xdg-open", target], env=env)
     except OSError:
         logger.warning(
             "default application did not start for %s; caller should degrade", target, exc_info=True
         )
         return False
+    if wait_for_exit is None:
+        return True
+    try:
+        return proc.wait(timeout=wait_for_exit) == 0
+    except subprocess.TimeoutExpired:
+        return True
 
 
 def _reveal_env() -> dict[str, str]:

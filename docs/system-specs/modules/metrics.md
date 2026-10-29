@@ -528,7 +528,7 @@ Tests: `test/metrics/test_harness_label.py`.
 | `kirocrew.work.created` | counter | `kind` (`goal` / `item`), `depth` (`0` / `1` / `2+` — the creating board's own depth) | `dashboard/handlers/work_ledger_conductor.py::api_work_ledger_record` via `_count_recorded`, after the write's `work/recorded` entry landed in the crew log, which is the point the route itself treats as the commit. `kind=goal` counts ONLY the goal write that opened the board (its committed header carries `goal_version == 1`); a reword, a round bump, a cap raise and an explicit `new_goal` are all later writes and count nothing, so the series reads as boards rather than as goal writes. `kind=item` is one minted item. Declared in `metrics/work.py`; no goal text, title, acceptance or item id is emitted. |
 | `kirocrew.work.item_closed` | counter | `state` (`accepted` / `rejected` / `abandoned` — the ledger's terminal states, since `close` refuses `open`), `fails` (`0` / `1` / `2` / `3+`), `duration` (`le_10m` / `le_1h` / `le_4h` / `gt_4h`, each edge inclusive: 600 s / 3600 s / 14400 s from the item's `created_at` to its `closed_at`, beyond which `gt_4h`) | Same site, on `action=close`, from the committed item rather than from the request. A duration is a bucketed counter rather than a histogram so the distribution survives a backend that keeps no explicit buckets; the edges live in `metrics/work.py::DURATION_BUCKET_EDGE_SECS`. An unreadable or missing stamp yields `duration=other` rather than a plausible-looking zero. Counted at the close rather than in the crew log's `work` fold because that fold forgets a closed item once `WORK_CLOSED_WINDOW` newer ones close, keeping only a total — so `state`, `fails` and the duration exist only at the moment the close commits. |
 | `kirocrew.work.dispatches` | counter | `target_kind` (`session` / `crew`) | Same site, on `action=bind` — the action that names the target — after that bind's `work/recorded` entry landed. Deliberately NOT on the `crew/dispatch` echo written just after it: that echo is best-effort and is skipped entirely for a board driven from a slot belonging to no crew, so counting on it would drop every dispatch such a board made. `session` is the only kind the bind builds; `crew` is declared because `crew_log/entry_types.py::CREW_TARGET_KINDS` names it, so a second target kind lands in its own series instead of in `other`. |
-| `kirocrew.work.reports` | counter | `status` (`progress` / `done` / `blocked` / `question` / `failed`), `reason` (`approval` / `needs_human` / `none` when the report named none) | `dashboard/handlers/work_ledger_worker.py::api_work_report`, after the report's `work/recorded` entry landed, from the committed item. A refused report — an unknown or closed item, a `done` carrying no evidence, a status outside the worker's vocabulary — returns before this point and contributes nothing. `reason` is carried as the literal `none` rather than omitted, so "no reason given" is distinguishable from a dropped attribute. `failed` is declared because `crew_log/entry_types.py::CREW_REPORT_STATUSES` names it; the ledger's worker half can commit only the other four, so this route never emits it today. No summary or artifact text is emitted. |
+| `kirocrew.work.reports` | counter | `status` (`progress` / `done` / `blocked` / `question` / `reply` / `failed`; `reply` only while `work_ledger.remote_dispatch` is on), `reason` (`approval` / `needs_human` / `none` when the report named none) | `dashboard/handlers/work_ledger_worker.py::api_work_report`, after the report's `work/recorded` entry landed, from the committed item. A refused report — an unknown or closed item, a `done` carrying no evidence, a status outside the worker's vocabulary — returns before this point and contributes nothing. `reason` is carried as the literal `none` rather than omitted, so "no reason given" is distinguishable from a dropped attribute. `failed` is declared because `crew_log/entry_types.py::CREW_REPORT_STATUSES` names it; the ledger's worker half can commit only the others, so this route never emits it today. No summary or artifact text is emitted. |
 | `kirocrew.crew_mode.turned_on` | counter | `via` (`switch` / `create`), `repeat` (bool — a Crew Mode chat already existed) | `dashboard/chat_api/agent_switch.py::switch_slot_agent` after a committed switch from a non-conductor onto a conductor (`via=switch`), and `dashboard/chat_api/slot_create.py::api_chat_slot_create` for a new chat born on one (`via=create`). `repeat` is the repeat-use signal: true when the gateway already knew another Crew Mode root. No session key, title or agent name is emitted. |
 | `kirocrew.crew_mode.new_chats` | counter | `crew_mode` (bool) | `slot_create.py::api_chat_slot_create`, one per new chat. The share of new chats in Crew Mode is `sum(kirocrew.crew_mode.turned_on) / sum(kirocrew.crew_mode.new_chats)` over a window. |
 | `kirocrew.crew_mode.runs_finished` | counter | `state` (`accepted` / `rejected` / `abandoned`) | `dashboard/handlers/work_ledger_conductor.py::_count_crew_mode_run`, after an `action=close` on a board a Crew Mode root owns landed in the crew log. A run is one crew member item a Crew Mode chat dispatched. |
@@ -1141,6 +1141,25 @@ section names, which is exactly what the entry declares; the crew log refuses an
 undeclared member, and that refusal would also lose the block sizes. Omitted text,
 keys and rules are never recorded.
 
+**Which lessons a turn carried (`usage/injections/`).** The lesson tiers are ranked
+against the request, trimmed to a budget and filtered by topic, so the set a turn
+received cannot be rebuilt from the store afterwards. `render_lesson_tier` (and
+`render_withheld_tier`) also calls `injection_receipts.record` with the memory keys of
+the rows it KEPT and the omitted count; `_turn_build_prompt` opens
+`injection_receipts.collect()` beside `context_omissions.collect()`, and
+`_turn_dispatch_gates`, right after `context/composed`, appends one JSON line to
+`<data home>/usage/injections/YYYY-MM-DD.jsonl` (local day, owner-only): `ts`,
+`session_key`, `turn_index` (the crew log ordinal), `user_msg_id` (the `meta.mid` of the row that opened the turn, frozen on entry;
+empty on a synthetic turn), `model`, `agent`, `surface`, `phase`,
+`memory_store`, `lessons`, `lessons_omitted`, `findings`, `findings_omitted`, and
+`turn_lessons`: the keys `turn_lessons_block` adds to a follow-up under
+`memory.inject_lessons_per_turn`. Only an admitted turn whose composition rendered a
+lesson block writes a line, so a per-turn build that added none writes nothing: the
+model still holds what the session's earlier lines recorded. Incognito and temporary sessions write nothing. The write runs on a worker
+thread (no suspension point in the gate) and never fails the turn. Legacy JSONL lesson
+rows have no key: a kept one is not named, and a cut one still counts in `*_omitted`. Lesson
+text is never written. Purpose: scoring which lessons change behaviour (#20446).
+
 **Current-request recency boundary.** Injected blocks are not the only proof that a
 turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
 native conversation history even when this turn emits no Kiro Crew context block,
@@ -1561,12 +1580,13 @@ during that chain.
 
 ## Anonymous outbound telemetry (`beacon.py`, `apps/install_receipt.py`)
 
-There are now **four independent** telemetry paths. Keep them straight:
+There are now **five independent** telemetry paths. Keep them straight:
 
 | Path | Purpose | Data | Egress | Switch |
 |------|---------|------|--------|--------|
 | OTEL metrics (`metrics/`) | Ops observability | DELTA histograms / counters | **Never** (local JSONL; OTLP only if the operator sets an endpoint) | `telemetry.enabled` (**off**) |
 | Token row store (`usage/tokens/`) | Cost + context analytics | One row per model-spending turn | **Never** | always on |
+| Injection receipts (`usage/injections/`) | Lesson precision scoring | One line per admitted turn that rendered a lesson tier: memory keys and counts, no text | **Never** | always on; skipped for incognito and temporary sessions |
 | **Beacon (`beacon.py`)** | **Product analytics** | One anonymous ping per install per day | **Yes — to the Kiro Crew endpoint** | `telemetry.beacon_enabled` (**on**) |
 | **Install receipt (`apps/install_receipt.py`)** | **Official app adoption** | One anonymous receipt after a successful official-catalog install/update | **Yes — to the same endpoint** | `telemetry.beacon_enabled` (**on**) |
 

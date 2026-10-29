@@ -30,7 +30,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -51,7 +51,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "secret123"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -73,7 +73,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "pat-token"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -109,7 +109,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 host_key = "acme.atlassian.net".encode().hex().upper()
                 return {
                     "JIRA_API_TOKEN": "global-fallback",
@@ -145,7 +145,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 # Simulate load_credentials' setdefault seeding the .env global
                 # into the process environment during the call. Use monkeypatch
                 # so the seed is auto-reverted at test teardown and cannot leak
@@ -181,7 +181,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "env-token"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -211,7 +211,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "env-token"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -237,7 +237,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -274,7 +274,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 # env overlay would also place it here; the resolver reads the
                 # override directly from os.environ before the global vault.
                 return {"JIRA_API_TOKEN": "env-override"}
@@ -308,7 +308,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -357,7 +357,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 # load_credentials overlays the migrated secret:// ref here too.
                 return {"JIRA_API_TOKEN": "secret://JIRA_API_TOKEN"}
 
@@ -390,7 +390,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -425,7 +425,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": _ENV_FILE_TOKEN}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -473,7 +473,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": _OPERATOR_TOKEN}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)

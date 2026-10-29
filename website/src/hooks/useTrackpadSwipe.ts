@@ -32,6 +32,13 @@
  * dropped once it is recognised, so the panel stops where the fingers left it
  * and the rest of the run is held, never dragging again.
  *
+ * In the desktop app the shell also reports the trackpad's real finger-down and
+ * finger-up (lib/scrollTouch). Once a phase has been heard, the lift-off is
+ * that `end` (`lift`), and a pause with the fingers still down no longer ends
+ * the drag, up to {@link FINGER_HOLD_MAX_MS}. The gap and the momentum
+ * signature stay armed, so a lost or late phase only costs precision, and a
+ * page that never hears one (a plain browser) behaves exactly as above.
+ *
  * Under `prefers-reduced-motion` there is no live drag: the run is read whole
  * and, if it was a clear horizontal swipe past {@link SWIPE_THRESHOLD_PX},
  * `onSwipe(dir)` fires once when it ends.
@@ -49,6 +56,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { WHEEL_LINE_PX } from './useWheelToHorizontal'
 import { hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
+import { subscribeScrollTouch } from '../lib/scrollTouch'
 
 export type TrackpadSwipeDir = 'left' | 'right'
 
@@ -66,6 +74,10 @@ export const swipeTiming = { idleMs: SWIPE_GESTURE_IDLE_MS }
  * is a lift-off, so a slow or slowing finger keeps following 1:1.
  */
 export const MOMENTUM_DECAY_EVENTS = 3
+/** With the fingers known down, the longest pause, ms, that still keeps the
+ *  drag. Past it the drag ends as a gap anyway, so a lost `end` cannot hold a
+ *  panel half-open. */
+export const FINGER_HOLD_MAX_MS = 1000
 /** The band a momentum step's ratio lies in. */
 const MOMENTUM_RATIO_MIN = 0.5
 const MOMENTUM_RATIO_MAX = 0.98
@@ -137,7 +149,11 @@ type RunOwner = 'drag' | 'held' | 'other'
  * sample in order and act on each verdict, and call `finish(at)` when the run
  * has gone quiet. `wants` is asked once per run, at its first event.
  */
-export function createTrackpadSwipeReader(wants: (dir: TrackpadSwipeDir, fromFrame: boolean) => boolean) {
+export function createTrackpadSwipeReader(
+  wants: (dir: TrackpadSwipeDir, fromFrame: boolean) => boolean,
+  /** True while the shell reports the fingers down. Unset: never known. */
+  fingersDown: () => boolean = () => false,
+) {
   let lastAt = -Infinity
   let owner: RunOwner | null = null
   /** Bumped when a run starts, whoever owns it. */
@@ -177,7 +193,10 @@ export function createTrackpadSwipeReader(wants: (dir: TrackpadSwipeDir, fromFra
   return {
     feed(s: WheelSample): WheelVerdict {
       const out: WheelVerdict = { consume: false }
-      if (s.at - lastAt > swipeTiming.idleMs && owner !== null) {
+      const gap = s.at - lastAt
+      // Fingers known down: a pause is not a lift-off, up to the hold cap.
+      const holding = owner === 'drag' && gap <= FINGER_HOLD_MAX_MS && fingersDown()
+      if (gap > swipeTiming.idleMs && owner !== null && !holding) {
         // The quiet timer should have ended it already; end it here regardless,
         // so a new run is always decided afresh.
         if (finish(lastAt)) {
@@ -253,6 +272,22 @@ export function createTrackpadSwipeReader(wants: (dir: TrackpadSwipeDir, fromFra
       return out
     },
     finish,
+    /** The fingers left (the shell's `end`). Ends a drag in progress the way a
+     *  recognised tail does, but keeps what was held back (it was the fingers),
+     *  then holds the rest of the run. Returns whether a drag was in progress. */
+    lift(): boolean {
+      if (owner !== 'drag') return false
+      finish()
+      owner = 'held'
+      return true
+    },
+    /** The fingers landed again (the shell's `begin`): a held tail is over, so
+     *  the next event decides a new run. Returns whether one was held. */
+    dropHeld(): boolean {
+      if (owner !== 'held') return false
+      owner = null
+      return true
+    },
     /** The drag's run so far, for a reduced-motion read of the whole swipe. */
     summary: () => ({ dir, sumX, sumY }),
     /** The drag's new sum when the last `finish` applied held-back deltas. */
@@ -313,8 +348,11 @@ export interface TrackpadSwipeOptions {
   onDragMove: (sumX: number, at: number) => void
   /** The fingers are off. `momentum`: the tail was recognised, so they left
    *  with the speed of the last moves. `gap`: no event for the idle window, so
-   *  they had stopped before they left. `at` is when it was decided. */
-  onDragEnd: (how: 'momentum' | 'gap', at: number) => void
+   *  they had stopped before they left. `lift`: the desktop shell reported the
+   *  real lift-off and `at` is when, so the speed over the moves just before
+   *  `at` is the fingers' own. For `gap` and `momentum`, `at` is when it was
+   *  decided. */
+  onDragEnd: (how: 'momentum' | 'gap' | 'lift', at: number) => void
   /** Reduced motion: one clear swipe, reported once at the end of its run. */
   onSwipe: (dir: TrackpadSwipeDir) => void
   /** Whether a frame's relayed wheel may join a run. Unset: none may. */
@@ -328,7 +366,12 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
   useEffect(() => {
     const root = rootRef.current
     if (!enabled || !root) return
-    const reader = createTrackpadSwipeReader((d, fromFrame) => optsRef.current.wants(d, fromFrame))
+    /** The shell's last finger phase: null until one is heard (a browser never). */
+    let fingers: boolean | null = null
+    const reader = createTrackpadSwipeReader(
+      (d, fromFrame) => optsRef.current.wants(d, fromFrame),
+      () => fingers === true,
+    )
     const docEl = document.documentElement
     let held = false
     let prior = ''
@@ -347,7 +390,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       docEl.style.overscrollBehaviorX = prior
     }
     /** The fingers are off: settle a live drag, or read a reduced-motion run. */
-    const endLive = (how: 'momentum' | 'gap', at: number, run = reader.summary()) => {
+    const endLive = (how: 'momentum' | 'gap' | 'lift', at: number, run = reader.summary()) => {
       const was = live
       live = null
       if (was === 'drag') optsRef.current.onDragEnd(how, at)
@@ -369,6 +412,13 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
         quietFrame = undefined
         if (seq !== at) return
         const now = performance.now()
+        // The fingers are still down: a pause, not a lift-off. Look again when
+        // the hold cap runs out, unless an event or the `end` comes first.
+        const paused = now - reader.lastEventAt()
+        if (fingers === true && live === 'drag' && paused < FINGER_HOLD_MAX_MS) {
+          quiet = window.setTimeout(onQuiet, Math.max(1, FINGER_HOLD_MAX_MS - paused))
+          return
+        }
         reader.finish(now)
         const moved = reader.takeFlush()
         if (moved !== undefined && live === 'drag') optsRef.current.onDragMove(moved, reader.lastEventAt())
@@ -465,9 +515,44 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // own time, not the message's: it decides run gaps and the release speed.
       run({ dx: d.dx, dy: d.dy, mode, ctrl: false, owned: false, at: relayedWheelTime(d.t, event.timeStamp), fromFrame: true })
     }
+    let liftFrame: number | undefined
+    let pendingLift: (() => void) | undefined
+    const stopTouch = subscribeScrollTouch((phase, at) => {
+      if (phase === 'begin') {
+        // A lift still waiting for its frame belongs to the gesture before.
+        if (pendingLift) {
+          if (liftFrame !== undefined) cancelAnimationFrame(liftFrame)
+          pendingLift()
+        }
+        fingers = true
+        if (reader.dropHeld()) {
+          window.clearTimeout(quiet)
+          quiet = undefined
+          letGo()
+        }
+        return
+      }
+      fingers = false
+      if (!live) return
+      // Wait one frame: wheels queued ahead of this message are the fingers'
+      // last moves, and input is delivered before the next frame's callbacks.
+      const lift = () => {
+        liftFrame = undefined
+        pendingLift = undefined
+        if (!live || !reader.lift()) return
+        const moved = reader.takeFlush()
+        if (moved !== undefined && live === 'drag') optsRef.current.onDragMove(moved, reader.lastEventAt())
+        endLive('lift', at)
+      }
+      pendingLift = lift
+      if (typeof requestAnimationFrame === 'function') liftFrame = requestAnimationFrame(lift)
+      else lift()
+    })
     root.addEventListener('wheel', onWheel, { passive: false })
     window.addEventListener('message', onMessage)
     return () => {
+      stopTouch?.()
+      if (liftFrame !== undefined) cancelAnimationFrame(liftFrame)
       root.removeEventListener('wheel', onWheel)
       window.removeEventListener('message', onMessage)
       window.clearTimeout(quiet)

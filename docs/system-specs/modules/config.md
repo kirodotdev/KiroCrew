@@ -107,7 +107,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
 | `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
 
-**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend crewmate threads run on and the mapped value is gated like any other pick. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"`, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend crewmate threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
 import of the higher owner, the idiom this package already uses for the ACP
@@ -730,7 +730,7 @@ names that test; every other report-only row gives its plain reason:
 | `stt.model` | "turbo" -> "base", 0.5.0 | reports | a picker value; adopting changes transcription accuracy |
 | `instances.warm_set_cap` | 5 -> 0, #7248 | reports | 5 is an ordinary deliberate cap |
 | `agent.subagent_max_turns` | 100 -> 1000, #12203 | reports | an explicitly stored 100 is a supported cost/turn cap |
-| `agent.session_control` | false -> true, #8375 | reports | false is the supported global withdrawal of peer-session tools |
+| `agent.session_control` | false -> true, #8375 | reports | false is the supported withdrawal of peer-session tools from ordinary agents; crew members and the owner-tab Conductor keep a creator-fenced dispatch bypass unless `agent.member_dispatch` is also false |
 | `skills.lazy_load` | false -> true, #12131 | reports | false is the supported switch to the short skill entry; its `note` reaches the load line too (`meaning_moved`, above) |
 | `agent.subagent_spawn_stagger_secs` | 2.0 -> 0.25, #12203 | reports | the knob to raise when the host or provider is the bottleneck |
 | `session.watchdog_rss_max_mb` | 1536 -> 0, #16393 | reports | 1536 is an ordinary deliberate ceiling; holding it only recycles idle sessions, which keep their history |
@@ -2586,8 +2586,12 @@ Three parts, each deliberately singular:
 **One poll.** `ConfigWatch` runs one background task that compares
 `loader._config_fingerprint()` (mtime_ns + size + mode of `config.json` and
 `config.local.json`) every `DEFAULT_POLL_INTERVAL_SECS` (2s, floored at 0.05).
-The two `stat` calls run in `asyncio.to_thread`, never on the loop. Nothing else
-in the gateway polls `config.json`.
+The same cycle also compares `loader.env_fingerprint()`, the credential twin of
+the document fingerprint over `.env`, tracked separately on purpose: the document
+fingerprint is the parsed-config cache key, so folding `.env` into it would bust
+that cache on every unrelated credential edit. The `stat` calls run in
+`asyncio.to_thread`, never on the loop. Nothing else in the gateway polls either
+file.
 
 **One kick.** An in-process writer does not wait for the tick: it calls
 `live.notify_config_written()`, which sets a force flag and wakes the poll
@@ -2606,6 +2610,226 @@ from the full list) and diffed (`diff_config_docs`). The new config is adopted
 PRE-load fingerprint is recorded so a write landing mid-read leaves it unequal to
 the file and the next tick reloads. Cycles are serialized by a lock, so the diff
 is always old-vs-newer and an applier never sees an out-of-order pair.
+
+### `.env` credential hot-reload
+
+Before, `.env` was read once at gateway boot and nothing re-read it, so a
+credential added or rotated in `$KIROCREW_HOME/.env` took effect only after a
+full gateway restart — inconsistent with `config.json`, whose settings the
+watcher already hot-applies ([#22450](https://github.com/kirodotdev/KiroCrew/issues/22450)).
+The dashboard's own credential writer applied its `.env` changes live (direct
+`os.environ` set/pop plus a channel restart off the config half of its
+transaction), but a hand edit or any non-dashboard writer did not.
+
+Now the same cycle that reloads `config.json` also reconciles `.env`. When the
+`.env` fingerprint moves, the watcher re-reads the raw credential map
+(`loader.read_env_credentials_raw()`, off the loop — literal line values, so a
+`secret://NAME` reference stays the reference) and diffs it against the last one
+(`loader.changed_env_keys`). The changed keys are pushed into `os.environ`
+(`loader.apply_env_credential_changes`, which the watcher hands the previous
+baseline so it can tell a value `.env` itself propagated from one the process
+inherited): a key present in the new file is set, and a key gone from it is
+popped ONLY when the current process value still equals what `.env` last set.
+This uses `os.environ[k] = v` / `pop`, not boot's `setdefault` — boot lets an
+inherited shell value win (the separate precedence concern of
+[#22449](https://github.com/kirodotdev/KiroCrew/issues/22449)), but an operator
+editing `.env` on a running gateway *means* the edit, so a live change
+overrides. Only keys the operator actually changed are touched; the two boot
+carve-outs are kept for every caller (the Docker `_KIROCREW_CREDS_SCRUBBED` skip
+for credential keys, and `PATH` extension rather than replacement). Values are
+never logged, only key names. A read that could not be decoded — UTF-16/UTF-32,
+or a plain invalid byte under the active encoding (both raise
+`UnicodeDecodeError`; `read_env_credentials_raw` catches both and marks the
+read non-definitive rather than letting either propagate out of the poll
+cycle) — is never diffed: an empty map from it would otherwise read as every
+credential cleared. Its `.env` fingerprint is also **not advanced**, so a tick
+that hit a one-off transient failure (an `OSError`, e.g. a Windows sharing
+violation mid-rotation) is retried on the very next cycle instead of being
+silently dropped the moment the file's mtime stops moving; a persistently bad
+file just pays a harmless repeated re-read (the undecodable warning still
+fires only once).
+
+The apply itself is the other way the cycle can fail, and it is treated the
+same way. `apply_env_credential_changes` is best-effort — a bad apply must not
+kill the poll — so it is wrapped and a raise is logged, not propagated. But the
+baseline and the `.env` fingerprint advance **only after the apply succeeds**:
+on a raise, both are left exactly as they were and nothing is dispatched. If
+either advanced on failure, a rotation that never reached `os.environ` would be
+recorded as in force, so a later repair that reverts the offending edit would
+diff only that edit and never re-apply the rotation — stranding the channel
+after the fix. The failing case is a malformed line saved in the same write as
+a rotation (an empty-name `=value` parses to the key `""`, which `os.environ`
+rejects); left unadvanced, the next tick re-reads and retries the whole diff,
+and because nothing dispatched, no channel restart runs against a credential the
+apply did not install. That retry means the same bad file re-fails every tick,
+so the failure WARNING (with its traceback) fires ONCE per distinct failing
+`.env` fingerprint and the retries log at DEBUG — the same warn-once shape the
+undecodable path uses — rather than spewing a traceback every poll interval
+while a malformed line sits in the file; a successful apply clears the
+remembered failure signature so a later failure warns afresh.
+
+The apply is also **atomic across the batch**, not just at the cycle level.
+`apply_env_credential_changes` validates every key it would WRITE (a changed key
+with a non-empty new value, not one the Docker scrub skips) BEFORE mutating
+anything — the key must be a legal environment name (`is_legal_env_name`: not
+empty, no `=` or NUL) and the value must carry no embedded NUL, the two things
+`os.environ[k] = v` rejects — and raises `ValueError` touching nothing if any is
+illegal. Without that, a diff is applied key by key, so a
+malformed key midway (the empty name again) would raise only after the keys
+iterated before it — in hash order — were already written to `os.environ`. The
+caller keeping its baseline does not undo those writes: a later restore of the
+old file would then diff to nothing, leave the stray value in the process, and a
+subsequent `restart_channel` → `load_credentials()` would prefer that process
+value over the restored `.env` line and reconnect with the wrong credential. A
+pop is never validated — removing a key cannot raise — but an illegal key in the
+diff at all means the file is malformed, so the whole apply is refused and
+retried once the operator fixes it.
+
+The watcher's diff baseline must be what `.env` **actually propagated into
+`os.environ` at boot**, not a disk read taken when the watcher starts. The
+gateway loads credentials (`load_credentials`) well before the watcher's
+post-bind `start()`, so a rotation made in that window would, if the baseline
+were a fresh disk read at `start()`, be adopted as the baseline the first cycle
+re-reads unchanged — no diff, so the new value is never applied and the channel
+stays on the revoked credential until the next full restart. To close that, the
+FIRST `load_credentials()` of the process records the raw `.env` map it read
+(`loader.record_boot_raw_env`, before its own environment-wins override, so the
+record equals what `read_env_credentials_raw` returns) and the watcher's
+`start(initial=...)` seeds `_creds` from it (`loader.take_boot_raw_env`,
+consume-once) rather than reading disk. A window rotation is then a real diff
+the first cycle applies; a boot with no window edit sees the baseline equal the
+current file and dispatches nothing, so channels do not bounce on every boot.
+Only the first load wins — a later dashboard/doctor `load_credentials()` whose
+disk read already reflects a window edit cannot overwrite the record and hide
+the change. With no record (a test driving the watcher directly), `start()`
+falls back to the off-loop `_prime_creds_baseline` read.
+
+The first read on a watcher whose baseline was *properly primed*
+(seeded from the boot record, or read `.env` definitively) establishes the same
+map again and dispatches nothing, because the process already booted on those
+values. But `_creds` is `None` on a watcher whose boot read was **not**
+definitive (the file was undecodable or unreadable at boot, so `load_credentials`
+also never propagated anything from it) — there, the first later definitive
+read diffs against an *empty* baseline and applies/dispatches every key, since
+none of them was actually in force yet. Adopting an unprimed first read as a
+silent baseline would otherwise drop an `.env` repair on the floor: the
+operator fixes a UTF-16 save to UTF-8, and the credential it now holds never
+reaches `os.environ` because nothing diffs it in.
+
+A live **removal does not unset an inherited value**, and ownership is decided
+by a RECORD of what `.env` propagation actually wrote, not by value equality. A
+set `_env_owned_keys` holds the keys `.env` genuinely put in `os.environ`: boot's
+propagate loop adds a key only when its `setdefault` finds the name ABSENT and
+writes it, and a live apply adds a key when it sets one. A key the process
+already holds from its service/shell environment is never recorded, because
+`setdefault` was a no-op for it — even when `.env` carried the identical value.
+On removal, the key is popped only when `.env` owns it in that record (and the
+record drops it); an unowned inherited value is left in place rather than
+stranding the channel uncredentialed until the next restart. Value equality is
+deliberately NOT the test: an inherited credential that merely equals the `.env`
+line would otherwise be deleted when the `.env` line goes away, disabling a
+channel whose service-supplied credential should remain. The ownership record is
+home-derived boot state, so the integration second-boot harness resets it
+between boots, the same as the boot `.env` baseline. Ownership and removal are
+keyed by the canonical `os.environ` ENTRY — the name case-folded on Windows,
+where `os.environ` is case-insensitive, and the name itself on POSIX. So a
+case-only `.env` rename (`https_proxy` -> `HTTPS_PROXY`), which the diff sees as
+one key added and one removed, does not let the removal pop the entry the
+addition just wrote: a removed key is skipped when another key in the same batch
+writes its entry, and ownership follows the entry rather than the exact case. Because an in-app restart
+(`os.execv`) keeps `os.environ` but resets this process's Python state, the
+record would be empty on the successor and every `.env` key would read as
+inherited — so every change to the record hands the owned key names to
+`platform_compat.keep_for_reexec` under the `_KIROCREW_ENV_OWNED_KEYS` marker,
+the same channel the managed-service launch marker uses. The `reexec_*` seams
+write it into the environment only right before the exec, and the successor's
+first `load_credentials` reads it back and deletes it
+(`adopt_env_owned_keys_from_reexec`), keeping removal correct across a restart. Post-boot credential reads are also
+NON-propagating: EVERY gateway-process reader after the one boot seed — the
+channel-start section adoption, the channel reconnect, the readiness badge, and
+every dashboard settings panel (Slack, Telegram, Discord, WeCom, Teams, Webex,
+Weixin, Feishu, Jira, the upload destination) — calls
+`load_credentials(propagate=False)`, because a concurrent worker-thread read that
+re-ran the `setdefault` propagate loop could restore a credential the live
+watcher just popped and silently undo an external `.env` removal. After boot,
+`os.environ` credential mutation belongs to the live applier alone. An
+AST-based contract test
+(`test_only_the_boot_seed_propagates_credentials_into_os_environ`) scans the
+WHOLE source tree and fails if any `load_credentials` call omits
+`propagate=False`, with a four-entry allowlist for the reads that legitimately
+propagate: the gateway boot seed (`process_entry`), the orchestrator-init
+fallback, and the standalone `kirocrew` CLI and `doctor` processes (separate
+short-lived processes that race no watcher and seed their own children). The key list
+is COMMA-joined, not
+NUL-joined: `os.environ` rejects a NUL in a value (the same reject the batch
+validation enforces), so a NUL separator would raise and silently lose the whole
+record the moment two keys are owned; a comma is legal in an env value and never
+appears in an env var name. A degraded channel section is handled too: a
+`credentials.<KEY>` path for a channel whose section the loader discarded is
+DEFERRED alongside that section's own paths (the credential path is in its own
+namespace, so it must be added to the deferral explicitly), and the watcher
+retries it once the section validates — rather than being dropped and leaving
+the transport on the old token. The overwrite **warning fires only on a genuine
+collision** — when the
+current process value matches neither the new nor the last-propagated `.env`
+value, i.e. a foreign/inherited value is being overwritten. A routine rotation
+does not warn (boot propagated the old `.env` value, so the environment held
+exactly what `.env` last set). In that collision case the warning notes that the
+live value will not survive a restart, because boot's `setdefault` rebuilds the
+inherited value — the one remaining live-vs-restart divergence, the
+[#22449](https://github.com/kirodotdev/KiroCrew/issues/22449) precedence
+interaction this change does not otherwise alter.
+`test_env_credential_hot_reload.py` pins each of these.
+
+The dashboard's channel-credential writer applies its own `.env` changes to
+`os.environ` the same way, through `apply_env_credential_changes` (with no
+baseline, so a cleared key is popped unconditionally — the dashboard owns no
+diff baseline, the watcher does), which is how it inherits the
+`_KIROCREW_CREDS_SCRUBBED` skip rather than re-exposing a scrubbed credential in
+`/proc/<pid>/environ` through a hand-rolled set/pop loop.
+
+The credential change rides the SAME dispatch as a synthetic `credentials.<KEY>`
+path — a namespace no config section owns, so it cannot collide with a real
+leaf. The channel-restart applier (`_on_channel_config_change`) maps it onto the
+channels whose descriptor names that key in its `credentials` tuple OR its
+`restart_credentials` tuple (`registry.changed_credential_keys`, the credential
+twin of `changed_boot_keys`) and restarts each one through `restart_channel`,
+which re-reads `cfg.load_credentials()` on the way back up — so a rotated
+Telegram/Discord/WeCom/… token reconnects that channel with the new value,
+exactly as a changed `config.json` connection parameter does. The two tuples are
+disjoint by intent: `credentials` names what the channel needs ALL of to connect
+(so `channel_readiness` reports a missing one), while `restart_credentials` names
+a key that is restart-relevant but not required — Teams' `MICROSOFT_APP_TENANT_ID`
+is the case, since a live `TeamsClient` authenticates against a fixed tenant and
+cannot adopt a corrected one, yet an unset tenant is the supported multi-tenant
+mode and must not read as a missing credential. Folding the tenant into
+`credentials` would restart on a tenant edit but wrongly mark Teams un-ready when
+no tenant is set; leaving it out of both would leave a tenant-only edit undetected
+and the client stuck on the wrong tenant. Slack is the one exception to the
+restart: its socket client is host-managed (`_connect_slack`) with no in-process
+restart path, so a Slack token changed in `.env` logs a restart-needed notice to
+the operator (the same honest fallback as `slack.command`) rather than being
+silently ignored.
+
+`changed_credential_keys` matches by the canonical environment-entry name, the
+same case-fold the apply side uses: on Windows a `.env` key whose case differs
+from the declared credential constant addresses the same token, so matching the
+literal case would miss a rotation and restart nothing; the match canonicalizes
+both sides and returns the declared constant the restart path expects. On POSIX
+the canonical form is the name itself, so matching is unchanged.
+
+Closing a channel clears what outlives its client. Teams is the case: its
+inbound webhook ROUTE is pre-registered once and survives every client close,
+dispatching to the late-bound `state.teams_on_activity`. So `_close_channel_locked`
+clears that handler when it closes Teams — otherwise a credential removal that
+closed the client would leave the route running turns for authenticated,
+allow-listed senders; the route handler already answers 503 when the handler is
+unset. As defence in depth the `TeamsClient` itself answers 503 from
+`on_activity` once closed — both at entry AND rechecked after the
+request-processing awaits (JWT verify, body read), immediately before the turn
+task is created and registered, since a request already past the entry guard is
+not yet in the cancel sweep's `_handler_tasks` and would otherwise start a turn
+on a just-closed channel.
 
 ### The applier registry
 
@@ -3020,7 +3244,7 @@ class AgentConfig:
     subagent_queue_max_wait_secs: int = 1800  # DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS; longest a spawn deferred by spawn_min_memory_gb stays parked (spawns are not gated on the memory posture tier) (time spent eligible, queued for a slot, is not counted) before it ends as 'never started: waiting for memory' (delivered, depth 0). Also the per-start and per-episode bound of the macOS kernel memory-pressure hold. 0 = no bound. Load-time clamped to [0, 86400]. Live (SubagentManager.LIVE_CONFIG_PATHS). See modules/subagent.md § Durable task queue and § macOS: the kernel memory-pressure hold
     start_collect_timeout_secs: int = 300  # how long the session-start gate's StartCollector keeps a timed-out session/new (row `recovering`) to adopt a late answer before the attempt is abandoned. Load-time clamped to [10, 3600]; restart=True
     session_start_concurrency: int | str = "auto"  # ACP session/new requests outstanding per gateway event loop (SessionStartGate; fixed, not adaptive). Queue time behind it is not start time. "auto" is sized once per process by session_start_sizing: clamp(min(cpus // 4, available_GB // 3), 2, 16), cpus = affinity capped by cgroup v2 cpu.max; an integer is load-time clamped to [1, 64]; junk falls back to "auto"; restart=True
-    child_env_defaults: dict[str, str] = {}  # env vars set on every spawned kiro-cli child (AcpRuntime via KiroHarness/KasHarness.apply_spawn_env, auxiliary AcpClient via _resolve_spawn_env(kiro_api_key=True)) ONLY when the key is absent from the inherited env (ambient or per-session overlay; an explicit empty value wins). Applied before the agent-env scrub. Opt-in tuning, e.g. {"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"} to cap kiro-cli's core-count-sized pools. Allowlist only (CHILD_ENV_DEFAULT_NAMES): TOKIO_WORKER_THREADS and RAYON_NUM_THREADS, each a decimal integer string (ASCII digits, nothing stripped) in [1, 1024], stored as str(int) ("04" -> "4"); any other name or value is dropped with a warning (key named, never value). Live (next spawn). See acp/child_env_defaults.py
+    child_env_defaults: dict[str, str] = {}  # env vars set on every spawned kiro-cli child (AcpRuntime via KiroHarness/KasHarness.apply_spawn_env, auxiliary AcpClient via _resolve_spawn_env(kiro_api_key=True)) ONLY when the key is absent from the inherited env (ambient or per-session overlay; an explicit empty value wins). Applied before the agent-env scrub. A name left out of this map gets the host-sized default min(cpus, 4) (host_task_sizing.thread_pool_env_defaults), so kiro-cli's core-count-sized pools are capped by default; a value set here wins, e.g. {"TOKIO_WORKER_THREADS": "8"}. Allowlist only (CHILD_ENV_DEFAULT_NAMES): TOKIO_WORKER_THREADS and RAYON_NUM_THREADS, each a decimal integer string (ASCII digits, nothing stripped) in [1, 1024], stored as str(int) ("04" -> "4"); any other name or value is dropped with a warning (key named, never value). Live (next spawn). See acp/child_env_defaults.py
     env: dict[str, str] = {}  # agent.env: operator env vars laid over the inherited gateway env of EVERY agent child (every backend, both drivers) by the shared launch tail (acp.launch.launch via acp/agent_env.py::agent_env_overlay), so shell tool calls and agent-started MCP servers inherit them. Precedence: gateway env < agent.env < request.extra_env < the driver's env_before_scrub (session identity, credential repair) < scrub_agent_subprocess_env (still removes any denied name) < everything set after the scrub; the set-if-unset defaults (child_env_defaults in env_before_scrub, inject_xdist_auto_cap's PYTEST_XDIST_AUTO_NUM_WORKERS after the scrub) only fill a name agent.env left unset, so agent.env wins over them. For non-sensitive values only (proxy, CA bundle, AWS profile, registry). Refused at SAVE by the config publish floor (config.loader._refuse_agent_env_entries, reached by every writer -- kirocrew config set in each form, every dashboard write, KiroCrewConfig.save): sections.agent_env_write_refusals applies the same per-entry rule as the load path plus the scrub check, and ConfigWriteRefused names each refused key and its reason (never a value) with nothing written; a write that leaves an on-disk mapping holding a refused entry exactly as it found it publishes with a warning, and an unreadable prior file refuses. Dropped with a warning (key named, never value) at load by sections.coerce_agent_env: a non-POSIX-identifier name, a non-string or NUL-bearing value, a name in AGENT_ENV_DENIED_NAMES / AGENT_ENV_DENIED_PREFIXES / AGENT_ENV_DENIED_SUFFIXES unless it is in AGENT_ENV_DATA_ONLY_NAMES (GIT_TERMINAL_PROMPT, GIT_SSL_CAINFO) (upper-cased compare; refused are the names Crew or the sandbox sets and the names known to make the loader, a shell, a runtime or a tool run code the command did not name -- a denylist that narrows that class and cannot close it; toolchain selection such as JAVA_HOME or CC is accepted: process identity and paths Crew/the sandbox sets, LD_ / DYLD_ / GCONV_PATH / GLIBC_TUNABLES / OPENSSL_ / KRB5 loader and C-library hooks, DBUS_*_BUS_ADDRESS and SYSTEMD_ read by the pre-sandbox cgroup scope, shell start-up and option names BASH* / ENV / SHELLOPTS / PS0-PS4 / ZDOTDIR / IFS, runtime hooks PYTHON / PERL / RUBY / GEM_ / LUA_ / NODE_OPTIONS / JAVA_TOOL_OPTIONS / COR_ / CORECLR_, GIT_ / SSH_ / XDG_ namespaces, config files that name a program such as AWS_CONFIG_FILE / KUBECONFIG / DOCKER_CONFIG, and every name ending PATH / LIB / LIBS / MODULE / MODULES / OPT / OPTS / OPTIONS / FLAGS / _PRELOAD / COMMAND / SHELL / EXECUTABLE / EDITOR / PAGER / ASKPASS / BROWSER / _RSH / WRAPPER / RUNNER / CONFIG / CONFIG_DIR / CONFIG_FILE / CONFIG_HOME; KIROCREW_ / KIRO_ / DSH_ / OPENCODE_ namespaces), a harness sign-in home override (every name in agent_sdk.host_auth.home_override_env_vars(), because the credential read gate anchors those from the gateway's own environment), and a credential-shaped name (AGENT_ENV_CREDENTIAL_CLASS: a _-separated name segment that is or ends in KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL, optionally plural or numbered, case-insensitive -- API_KEY, GITHUB_TOKEN, APIKEY are refused, GOPRIVATE and TOKENIZERS_PARALLELISM accepted) because values are plaintext in config.json; dropped at spawn by agent_env_overlay: a name sections.agent_env_scrub_removes() matches (sandbox.agent_env_scrub_prefixes(), upper-cased compare). Unreadable config applies nothing. Live (next agent spawn; a change also parks the shared background runtime, SessionManager._on_config_change -> retire_for_agent_env_change).
     cold_start_concurrency: int | str = "auto"   # background cold starts one SessionManager runs at once (_start_sem; a person's start has one more reserved permit). "auto" = the effective session_start_concurrency width clamped to [4, 16] (cold_start_sizing). Integer load-time clamped to [1, 32]; junk -> "auto"; restart=True
     runtime_spawn_concurrency: int | str = "auto"  # ACP runtime spawn + initialize handshakes per gateway event loop (cold-start admission). "auto" = half the effective session_start_concurrency width clamped to [2, 8]. Integer load-time clamped to [1, 32]; junk -> "auto"; restart=True
@@ -3157,6 +3381,7 @@ class DashboardConfig:
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
+    show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
@@ -3531,8 +3756,9 @@ screenshot.
 
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
-nothing else: `coder_url`, `profiles`, and the optional `default_profile` and
-`stop_on_shutdown`. `config/session_environments.py` owns
+nothing else: `coder_url`, `profiles`, and the optional `sprites_profiles`,
+`boxd_profiles`, `default_profile` and `stop_on_shutdown`.
+`config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -3548,8 +3774,23 @@ duplicate or over-cap profile is dropped with a warning).
   digit then letters, digits, `_` or `-` (64 max, unique); `name` is 1-128
   characters, `template` 1-255, `workdir` an absolute POSIX path of at most
   1024. Text is whitespace-stripped and may not hold control characters.
-- `default_profile`: a saved profile id or `""` (this machine); a whole-section
-  save refuses a default the same save drops.
+- `sprites_profiles` (Fly.io Sprites): at most 20 `{id, name, token_secret,
+  workdir}` records. `token_secret` names the Settings > Secrets entry holding
+  the Sprites API token (a letter or `_`, then letters, digits or `_`); the token
+  itself is never stored here.
+- `boxd_profiles`: at most 20 `{id, name, snapshot, vcpu, workdir}` records.
+  `snapshot` is `""` or a boxd snapshot name or id, `vcpu` one of 0 (the org
+  default), 1, 2, 4 or 8, and a profile naming both is refused (a snapshot keeps
+  its own size). `id`, `name` and `workdir` follow the Coder profile rules.
+- One id may not name profiles of two providers, since a session's choice
+  resolves by id. Leaf and whole-section saves check the final merged section
+  under the config write lock; a load keeps such a collision visible (the picker
+  omits the id and launch refuses it as ambiguous) and drops each malformed
+  entry individually.
+- `default_profile`: a saved profile id of any provider or `""` (this machine); a whole-section
+  save refuses a default the same save drops, and a `sprites_profiles` or
+  `boxd_profiles` leaf write refuses to drop the profile the saved default names
+  (`unknown_profile`).
 - `stop_on_shutdown`: a boolean, default `true`.
 
 There is no `enabled` field (the opt-in is the per-device preview flag) and no
@@ -3558,7 +3799,7 @@ refused. An absent or non-object section loads with every key at its default,
 and an unmodelled key inside it is preserved by `save()` and omitted from the
 GET.
 
-`PATCH /api/config/kirocrew` accepts `session_environments` and each of its five
+`PATCH /api/config/kirocrew` accepts `session_environments` and each of its seven
 keys as paths, all through the `"normalized"` spec type. Whole-section saves
 require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
 value under the config lock. A write goes through `update_config_locked`,
@@ -3638,7 +3879,7 @@ read by more than one enforcement mechanism, and two of those keys mean
 | `cpu_weight` | — | `CPUWeight`, 1..10000 | — |
 | `max_cpu_percent` | — | `CPUQuota`, opt-in: unset emits no property | — |
 | `max_total_memory_mb` | — | slice `MemoryMax` (all trees together) | — |
-| `max_total_processes` | — | slice `TasksMax` | — |
+| `max_total_processes` | — | slice `TasksMax`; unset = host-sized default (`host_task_sizing.size_slice_tasks`) | — |
 | `scope_memory_high_pct` | — | per-scope `MemoryHigh` as % of `MemoryMax`, 1..100; unset = 90; `0` = emit none | — |
 | `slice_reclaim_trigger_pct` | — | slice page-cache reclaim trigger, % of slice `memory.high`; unset = `95`, `0` = off for this gateway only, `50..99` used, else `95`; never inside a pod | — |
 | `xdist_auto_cap` | — | — | `-1` auto, `0` off, `N` fixed |
@@ -3651,6 +3892,17 @@ On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 `slice_reclaim_trigger_pct`) are accepted but not enforced there,
 and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
+
+The slice task default is sized once per process from the host
+(`host_task_sizing.host_task_facts`: affinity CPUs, RAM, `kernel.pid_max`,
+`kernel.threads-max` and the user slice's `pids.max`). The slice gets 512 tasks
+for every 512 MB of the slice `MemoryMax` it is applied with, plus one 8192-task
+scope ceiling, so legitimate load reaches `MemoryMax` first. It is capped at half
+the tightest host limit, and never set below 32768 unless that limit is itself
+lower. A failed host read falls back to the fixed 32768. The per-scope default
+stays a fixed 8192. `kirocrew doctor`'s
+Task ceilings section prints the values, their source and the live slice usage;
+it is advisory and never adds an issue.
 
 On macOS no mechanism bounds the agent tree's memory: the cgroup path is a no-op,
 and the session host's rlimit profile sets only `RLIMIT_NOFILE`, so `max_memory_mb`

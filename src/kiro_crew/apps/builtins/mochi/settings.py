@@ -316,7 +316,9 @@ def settings_mutation(data_dir: Path) -> Iterator[None]:
     target = settings_path(data_dir)
     lock_path = target.with_name(target.name + ".lock")
     data_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield

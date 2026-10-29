@@ -4,7 +4,7 @@
  * list setting's card is titled and labelled for what the person will see.
  */
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
 import { effortLabel } from '../lib/effort'
@@ -69,6 +69,155 @@ describe('CardChanges', () => {
     expect(screen.getByText(L('field_approval_mode'))).toBeTruthy()
     // The permission being approved is explained under the value.
     expect(screen.getByTestId('change-card-hint')).toHaveTextContent(L('approval_mode_hint_normal'))
+  })
+
+  it('shows a workflow card script whole, as code, and its diff one marked row per line', () => {
+    const script = 'META = {"name": "x"}\nasync def workflow(ctx):\n    return 1'
+    // Source lines that start with the diff marks themselves stay their own rows.
+    const diff = ' async def workflow(ctx):\n-    return 0\n+    return 1\n--- never delete\n+++ notes)'
+    render(<CardChanges changes={[
+      { field: 'workflow_command', label: 'Command', after: '/workflow x' },
+      { field: 'workflow_diff', label: 'Changes to the script', after: diff },
+      { field: 'workflow_source', label: 'Script', after: script },
+    ]} />)
+    const blocks = screen.getAllByTestId('change-card-code')
+    expect(blocks.map(b => b.tagName)).toEqual(['PRE'])
+    expect(blocks[0].className).toContain('font-mono')
+    const codeLines = within(blocks[0]).getAllByTestId('change-card-code-line')
+    expect(codeLines.map(l => within(l).getByTestId('change-card-line-text').textContent)).toEqual(script.split('\n'))
+    const rows = screen.getAllByTestId('change-card-diff-line')
+    expect(rows.map(r => r.dataset.kind)).toEqual(['context', 'remove', 'add', 'remove', 'add'])
+    expect(rows[3].lastElementChild?.textContent).toBe('-- never delete')
+    expect(rows[4].lastElementChild?.textContent).toBe('++ notes)')
+    expect(rows[2].className).toContain('bg-ok-subtle')
+    expect(rows[1].className).toContain('bg-danger-subtle')
+    // The mark sits in its own gutter, apart from the line text beside it.
+    expect(rows[2].firstElementChild?.textContent).toBe('+')
+    expect(rows[2].firstElementChild?.getAttribute('aria-hidden')).toBe('true')
+    expect(rows[2].textContent).toContain(L('added'))
+    expect(rows[1].textContent).toContain(L('removed'))
+    for (const k of ['field_workflow_command', 'field_workflow_diff', 'field_workflow_source']) expect(screen.getByText(L(k))).toBeTruthy()
+    expect(screen.getByText('/workflow x')).toBeTruthy()
+  })
+
+  it('keeps every workflow script and diff line on one numbered row, scrolling sideways', () => {
+    // Plain spaces push the tail of line 2 far right; wrapped, it would start a
+    // row of its own at column 0 and read as a top-level statement.
+    const tail = `pass${' '.repeat(150)}; await ctx.agent("confirm")`
+    const script = `if ctx.args.get("never"):\n    ${tail}\nreturn 1`
+    render(<CardChanges changes={[
+      { field: 'workflow_diff', label: 'Changes to the script', after: ` if ctx.args.get("never"):\n+    ${tail}` },
+      { field: 'workflow_source', label: 'Script', after: script },
+    ]} />)
+    const block = screen.getByTestId('change-card-code')
+    const lines = within(block).getAllByTestId('change-card-code-line')
+    expect(lines).toHaveLength(3)
+    expect(lines.map(l => within(l).getByTestId('change-card-line-number').textContent)).toEqual(['1', '2', '3'])
+    for (const l of lines) {
+      expect(within(l).getByTestId('change-card-line-number').getAttribute('aria-hidden')).toBe('true')
+    }
+    const texts = [
+      ...within(block).getAllByTestId('change-card-line-text'),
+      ...within(screen.getByTestId('change-card-diff')).getAllByTestId('change-card-line-text'),
+    ]
+    expect(texts).toHaveLength(5)
+    for (const t of texts) {
+      expect(t.className).toContain('whitespace-pre')
+      expect(t.className).not.toContain('whitespace-pre-wrap')
+      expect(t.className).not.toContain('overflow-wrap')
+    }
+    expect(texts[1].textContent).toBe(`    ${tail}`)
+    // Sideways only: no height cap, so no line ever sits below the box's bottom edge.
+    for (const box of [block, screen.getByTestId('change-card-diff')]) {
+      expect(box.className).toContain('overflow-x-auto')
+      expect(box.className).not.toMatch(/max-h-|overflow-auto|overflow-y-auto/)
+    }
+    // The +/− mark sits behind a border, apart from script text that starts with -- or ++.
+    for (const mark of screen.getAllByTestId('change-card-diff-mark')) expect(mark.className).toContain('border-r')
+  })
+
+  it('draws each hunk separator as a labelled gap row, never as a script line', () => {
+    const diff = [
+      '\u22ef lines 7-9 \u22ef',
+      '     if ctx.args.get("confirmed"):',
+      '-        await ctx.agent("old")',
+      '+        await ctx.agent("new")',
+      '\u22ef lines 27-29 \u22ef',
+      '     return 1',
+      '+    await purge()',
+      // A script line that merely looks like a separator stays a script line.
+      ' # \u22ef lines 1-2 \u22ef',
+    ].join('\n')
+    render(<CardChanges changes={[{ field: 'workflow_diff', label: 'Changes to the script', after: diff }]} />)
+    const gaps = screen.getAllByRole('separator')
+    expect(gaps).toHaveLength(2)
+    expect(gaps.map(g => g.dataset.testid)).toEqual(['change-card-diff-gap', 'change-card-diff-gap'])
+    expect(gaps[1].getAttribute('aria-label')).toBe(L('diff_gap_label', { start: '27', end: '29' }))
+    expect(gaps[1]).toHaveTextContent(L('diff_gap', { start: '27', end: '29' }))
+    // Set apart from code: its own face, muted and dashed, outside the +/− rows.
+    for (const cls of ['font-sans', 'text-muted', 'border-dashed', 'border-border']) expect(gaps[0].className).toContain(cls)
+    expect(gaps[0].className).not.toContain('font-mono')
+    expect(within(gaps[0]).queryByTestId('change-card-line-text')).toBeNull()
+    const rows = screen.getAllByTestId('change-card-diff-line')
+    expect(rows.map(r => r.dataset.kind)).toEqual(['context', 'remove', 'add', 'context', 'add', 'context'])
+    expect(rows[5].lastElementChild?.textContent).toBe('# \u22ef lines 1-2 \u22ef')
+    // The gap sits between the two hunks, in document order.
+    const all = Array.from(screen.getByTestId('change-card-diff').querySelectorAll(
+      '[data-testid="change-card-diff-gap"], [data-testid="change-card-diff-line"]',
+    ))
+    expect(all.map(n => (n as HTMLElement).dataset.testid)).toEqual([
+      'change-card-diff-gap', 'change-card-diff-line', 'change-card-diff-line', 'change-card-diff-line',
+      'change-card-diff-gap', 'change-card-diff-line', 'change-card-diff-line', 'change-card-diff-line',
+    ])
+  })
+
+  it('draws no gap row for a hunk that opens at line 1, since nothing above it is hidden', () => {
+    const diff = ['\u22ef lines 1-3 \u22ef', ' a = 1', '-b = 2', '+b = 3'].join('\n')
+    render(<CardChanges changes={[{ field: 'workflow_diff', label: 'Changes to the script', after: diff }]} />)
+    expect(screen.queryByRole('separator')).toBeNull()
+    expect(screen.getAllByTestId('change-card-diff-line').map(r => r.dataset.kind)).toEqual(['context', 'remove', 'add'])
+  })
+
+  it('says on screen that a code box hides lines past its right edge', () => {
+    const proto = HTMLElement.prototype
+    const saved = {
+      scrollWidth: Object.getOwnPropertyDescriptor(proto, 'scrollWidth'),
+      clientWidth: Object.getOwnPropertyDescriptor(proto, 'clientWidth'),
+    }
+    Object.defineProperty(proto, 'scrollWidth', { configurable: true, get: () => 900 })
+    Object.defineProperty(proto, 'clientWidth', { configurable: true, get: () => 300 })
+    try {
+      render(<CardChanges changes={[
+        { field: 'workflow_source', label: 'Script', after: 'X = 1  # ' + 'a'.repeat(140) },
+        { field: 'workflow_diff', label: 'Changes to the script', after: '-X = 0\n+X = 1  # ' + 'a'.repeat(140) },
+      ]} />)
+      expect(screen.getByTestId('change-card-code').dataset.fadeRight).toBe('true')
+      expect(screen.getByTestId('change-card-diff').dataset.fadeRight).toBe('true')
+      const notes = screen.getAllByTestId('change-card-code-overflow')
+      expect(notes).toHaveLength(2)
+      for (const n of notes) expect(n).toHaveTextContent(L('code_scrolls'))
+    } finally {
+      for (const [k, d] of Object.entries(saved)) {
+        if (d) Object.defineProperty(proto, k, d)
+        else delete (proto as unknown as Record<string, unknown>)[k]
+      }
+    }
+  })
+
+  it('shows no overflow line when every code line fits', () => {
+    render(<CardChanges changes={[{ field: 'workflow_source', label: 'Script', after: 'X = 1' }]} />)
+    expect(screen.getByTestId('change-card-code').dataset.fadeRight).toBeUndefined()
+    expect(screen.queryByTestId('change-card-code-overflow')).toBeNull()
+  })
+
+  it('names a hunk that only removes lines by the line it removes after', () => {
+    const diff = ['\u22ef after line 10 \u22ef', '-    await purge()'].join('\n')
+    render(<CardChanges changes={[{ field: 'workflow_diff', label: 'Changes to the script', after: diff }]} />)
+    const gap = screen.getByRole('separator')
+    expect(gap.getAttribute('aria-label')).toBe(L('diff_gap_after_label', { line: '10' }))
+    expect(gap).toHaveTextContent(L('diff_gap_after', { line: '10' }))
+    const rows = screen.getAllByTestId('change-card-diff-line')
+    expect(rows.map(r => r.dataset.kind)).toEqual(['remove'])
   })
 
   it('shows every rule in full and each imported cron as arriving paused', () => {

@@ -414,6 +414,9 @@ export interface WhatsAppGroup {
   rules: string
   /** Minimum seconds between agent replies in this group (anti-flood). */
   cooldown_s: number
+  /** Numbers admitted in this group in place of the global allowed_wa_ids.
+   *  Absent means the global list applies; carried through edits unchanged. */
+  allowed_wa_ids?: string[]
 }
 
 /** WhatsApp (personal account, QR-paired via neonize) config from

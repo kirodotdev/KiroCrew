@@ -1092,8 +1092,9 @@ class TestTheShieldedSteerDelivery:
     BEFORE its RPC and pops them in one reconciliation tail AFTER it, guarding the
     RPC with `except Exception` -- which does not catch `CancelledError`. So a bare
     `await` under the budget unwinds through the RPC and skips that tail, while the
-    bytes may already have reached kiro-cli. Nothing else pops those maps
-    (`_settle_consumed_steers` clears only the attachment and decision-strip maps;
+    bytes may already have reached kiro-cli. Nothing else pops the two id maps
+    (`_settle_consumed_steers` releases the provenance, attachment and
+    decision-strip records but not `_steer_delivery_ids` or `_steer_send_ids`;
     `_requeue_unconsumed_steers` returns early once settling emptied
     `_pending_steers`), so the surviving `_steer_delivery_ids` entry refuses that
     exact text on that slot forever and `retained_steer_count` never falls back.
@@ -1163,8 +1164,12 @@ class TestTheShieldedSteerDelivery:
             "text is refused on this slot forever"
         )
         assert target._steer_send_ids == {}
-        assert target._steer_user_origin == {}
-        assert target._steer_admissions == {}
+        # The provenance maps are held with the pending steer, not stranded: the
+        # echo's settle or the teardown's requeue pops them, and nothing else is
+        # retained.
+        assert set(target._steer_admissions) == set(target._pending_steers)
+        assert set(target._steer_user_origin) == set(target._pending_steers)
+        assert set(target._steer_channel_origin) == set(target._pending_steers)
         # `_pending_steers` is NOT asserted empty: the steered tail deliberately
         # leaves it for the turn, whose `steering_consumed` echo settles it and
         # whose teardown otherwise degrades it to a visible queue card. Popping it
@@ -1275,6 +1280,8 @@ class TestTheShieldedSteerDelivery:
         prompt = sc._SEND_PROVENANCE.format(caller=caller.key, via=sc.BROADCAST_VIA) + text
         _settle_consumed_steers(target, f"<user_message>\n{prompt}\n</user_message>", state)
         assert target._pending_steers == []
+        assert target._steer_admissions == {}, "the settle must release the held admission"
+        assert target._steer_user_origin == {} and target._steer_channel_origin == {}
 
         # A fresh steer of the SAME provenance-wrapped text is accepted, not
         # refused by a guard reading a leftover entry.

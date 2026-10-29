@@ -14,6 +14,7 @@ import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import type { MemoryMode } from '../../components/MemoryModeChip'
 import { memoryModeAllowsCrewMode, runsCrewMode } from '../../lib/crewMode'
+import { forgetSlotSuccession, recordSlotSuccession } from '../../utils/slotSuccession'
 
 type Ref<T> = { current: T }
 
@@ -143,9 +144,14 @@ export async function runMemorySwitch(
     if (now !== from) left = true
     else if (left) revisited = true
   })
+  // Recorded before the switch: `switchSlot.pending` makes `next` active at
+  // once, and a host embedding `from` (the Papyrus co-author panel) must
+  // already know it is the hand-over, not an unrelated change of session.
+  recordSlotSuccession(from, next)
   try {
     await c.dispatch(switchSlot({ key: next, requestSeq: origin.seq })).unwrap()
   } catch (error) {
+    forgetSlotSuccession(from)
     // The rejected switch moves the view back to the old slot, and the
     // slot-change effect clears any error not marked to survive a switch --
     // which would erase the only report that the switch failed.
@@ -161,8 +167,12 @@ export async function runMemorySwitch(
   }
   // Timed out or unmounted while the switch loaded: the old slot's draft
   // and uploads may have moved on since. Keep both sessions.
-  if (attempt.timedOut || !c.composerMountedRef.current) return false
+  if (attempt.timedOut || !c.composerMountedRef.current) {
+    forgetSlotSuccession(from)
+    return false
+  }
   if (revisited || activeNow() === from) {
+    forgetSlotSuccession(from)
     dropReplacement(true)
     return false
   }

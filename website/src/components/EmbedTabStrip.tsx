@@ -9,6 +9,7 @@ import { errMessage } from '../utils/thunkError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import {
   TAB_STATUS_COLOR,
   removeTabAt,
@@ -278,13 +279,15 @@ export default function EmbedTabStrip() {
   const stripRef = useRef<HTMLDivElement | null>(null)
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
-  // The hook owns the node's edge measurement; this keeps a plain handle to
-  // the same node for the drag auto-scroll, pointer capture, and the wheel
-  // translation, which all read stripRef directly.
+  const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+
+  // The hooks own the node's edge measurement and wheel scrolling; this keeps a
+  // plain handle to the same node for the drag auto-scroll and pointer capture.
   const setStrip = useCallback((node: HTMLDivElement | null) => {
     stripRef.current = node
     attachEdges(node)
-  }, [attachEdges])
+    attachWheel(node)
+  }, [attachEdges, attachWheel])
 
   // Tabs opening, closing, or renaming keep the strip's own box, so neither
   // the ResizeObserver nor a scroll event reports the changed content width —
@@ -470,7 +473,6 @@ export default function EmbedTabStrip() {
           ref={setStrip}
           className="flex items-center gap-1 overflow-x-auto relative"
           style={{ scrollbarWidth: 'none' }}
-          onWheel={e => { if (stripRef.current) stripRef.current.scrollLeft += e.deltaY }}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerCancel}

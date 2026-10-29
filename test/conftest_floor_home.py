@@ -89,17 +89,151 @@ def _tmp_root_prefix_for_run() -> str:
 # directory becomes the data home the whole session falls back to, so every secret,
 # token and ``memory.db`` the suite fabricates would land where that account chose.
 # ``mkdtemp`` creates with O_EXCL at mode 0700 and fails rather than adopting.
-# These literals are also the session guard's source of truth below. They must
-# exist before choosing the import-time floor so even an inherited temp root
-# inside live memory cannot influence that choice.
-_REAL_DATA_HOMES = (
-    pathlib.Path.home() / ".kiro" / "crew",
-    pathlib.Path.home() / ".kirocrew",
-)
+# The live homes below are also the session guard's source of truth. They are
+# fixed before the floor's base is chosen, so an inherited ``TMPDIR`` that names
+# live data is rejected as a base rather than trusted.
+
+
+def _account_home() -> pathlib.Path:
+    """The account's home from the password database, ignoring ``HOME``.
+
+    A harness that fakes ``HOME`` moves ``Path.home()`` with it, but the live data
+    home stays where the account's real home is. Falls back to ``Path.home()`` where
+    there is no password database (Windows) or no entry for this uid.
+    """
+    if os.name != "nt":
+        try:
+            import pwd
+
+            return pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except (ImportError, KeyError, OSError):
+            pass
+    return pathlib.Path.home()
+
+
+def _home_is_faked() -> bool:
+    """Whether ``HOME`` names a directory other than the account's real home."""
+    try:
+        return pathlib.Path.home().resolve() != _account_home().resolve()
+    except (OSError, RuntimeError):  # pragma: no cover - no resolvable home at all
+        return False
+
+
+def _real_data_homes() -> "tuple[pathlib.Path, ...]":
+    """The live data homes under ``Path.home()`` and, when ``HOME`` is faked, the real home.
+
+    A faked ``HOME`` alone would otherwise aim every check in this file at the fake
+    home's ``.kiro/crew`` while an inherited ``KIROCREW_HOME`` still names the real one.
+    """
+    bases = [pathlib.Path.home()]
+    if _home_is_faked():
+        bases.append(_account_home())
+    return tuple(
+        base / leaf
+        for base in bases
+        for leaf in (pathlib.Path(".kiro", "crew"), pathlib.Path(".kirocrew"))
+    )
+
+
+_REAL_DATA_HOMES = _real_data_homes()
+
+
+#: Names the floor the controller created, so an xdist worker, which inherits it as
+#: ``KIROCREW_HOME`` with ``TMPDIR`` already rewritten, can tell it is this run's own.
+_HOME_FLOOR_ENV = "KIROCREW_TEST_HOME_FLOOR"
+
+
+def _resolved_or_none(value: "str | None") -> "pathlib.Path | None":
+    if not value:
+        return None
+    try:
+        return pathlib.Path(value).expanduser().resolve()
+    except OSError:
+        return None
+
+
+def _own_scratch_dirs() -> "tuple[pathlib.Path, ...]":
+    """This process's own scratch: ``$KIROCREW_SCRATCH``, its ``TMPDIR`` and this run's floor.
+
+    Read once at import, before ``pytest_configure`` repoints ``TMPDIR``. The floor
+    entry is honoured only when its name is a ``kc-pytest-<this user>-<pid>-home-*``
+    directory, so the variable cannot widen the exemption to another session's tree.
+    """
+    dirs = [_resolved_or_none(os.environ.get(n)) for n in ("KIROCREW_SCRATCH", "TMPDIR")]
+    floor = _resolved_or_none(os.environ.get(_HOME_FLOOR_ENV))
+    user_prefix = _tmp_root_prefix_for_run().rsplit("-", 2)[0] + "-"
+    if floor is not None and floor.name.startswith(user_prefix) and "-home-" in floor.name:
+        dirs.append(floor)
+    return tuple(d for d in dirs if d is not None)
+
+
+_OWN_SCRATCH_DIRS = _own_scratch_dirs()
+
+
+def _overlaps_a_real_data_home(path: pathlib.Path) -> "pathlib.Path | None":
+    """The live data home *path* equals, contains or sits inside, else ``None``.
+
+    Containment in both directions, not equality. A PARENT is the dangerous miss:
+    ``~/.kiro`` is kiro-cli's own home and resolves the whole live tree underneath it,
+    and ``~`` resolves everything. A CHILD counts too, since the suite deletes
+    directories it believes it created. The one child that does not count is THIS
+    process's own scratch (:func:`_own_scratch_dirs`) when it sits strictly inside a
+    managed scratch root (``<home>/scratch/<tree>/...``): the gateway reclaims it, and
+    the per-test homes of an agent-driven run live there. Another session's scratch
+    tree, and the scratch root itself, stay refused.
+    """
+    try:
+        here = path.expanduser().resolve()
+    except OSError:  # an unreadable component cannot be the live home
+        return None
+    for real in _REAL_DATA_HOMES:
+        try:
+            live = real.resolve()
+        except OSError:
+            live = real.absolute()
+        if here == live or live in here.parents or here in live.parents:
+            own = any(here == d or d in here.parents for d in _OWN_SCRATCH_DIRS)
+            if own and (live / "scratch") in here.parents:
+                continue
+            return real
+    return None
+
+
+def _an_agent_inherited_the_live_home(value: str) -> bool:
+    """Whether a Kiro Crew agent's shell handed this run the live ``KIROCREW_HOME``.
+
+    Every agent the gateway spawns inherits ``KIROCREW_HOME`` pointing at the live
+    home and gets ``KIROCREW_SCRATCH`` naming its own scratch tree. An agent did not
+    choose that home, so the run is given its own floor instead of the refusal below,
+    which stays for a person who exported the live home by hand.
+    """
+    if not os.environ.get("KIROCREW_SCRATCH"):
+        return False
+    return _overlaps_a_real_data_home(pathlib.Path(value)) is not None
+
+
+def _host_home_floor_bases() -> "tuple[pathlib.Path, ...]":
+    """Where the floor may go, best first: ``$TMPDIR``, then the system temp dirs.
+
+    ``$TMPDIR`` comes first because in an agent it is the process's scratch tree,
+    which the gateway reclaims when the agent's processes are gone, so a floor a
+    SIGKILL left behind does not pile up in a shared ``/tmp``. Each candidate is
+    still checked against the live homes by :func:`_create_host_home_floor`, so an
+    inherited ``TMPDIR`` that is the live home, or a parent of it, is skipped.
+    """
+    if os.name == "nt":
+        return (
+            pathlib.Path.home() / "AppData" / "Local" / "Temp",
+            pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Temp",
+            pathlib.Path(os.environ.get("ProgramData", r"C:\ProgramData")),
+        )
+    system = (pathlib.Path("/tmp"), pathlib.Path("/var/tmp"), pathlib.Path("/usr/tmp"))
+    tmpdir = os.environ.get("TMPDIR")
+    return ((pathlib.Path(tmpdir),) if tmpdir else ()) + system
 
 
 def _create_host_home_floor() -> pathlib.Path:
-    """Create the import-time floor without consulting temp environment vars.
+    """Create the import-time floor in the first safe base :func:`_host_home_floor_bases` names.
 
     Named with :func:`_tmp_root_prefix_for_run` plus ``home-``, so the directory reads
     ``kc-pytest-<user>-<pid>-home-<random>`` and sorts beside the temp root the same run
@@ -111,29 +245,12 @@ def _create_host_home_floor() -> pathlib.Path:
     ``kirocrew-test-floor-`` name identified neither the account nor the run, so a stray
     one could not be told from another user's or from a run still in progress.
     """
-    if os.name == "nt":
-        candidates = (
-            pathlib.Path.home() / "AppData" / "Local" / "Temp",
-            pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Temp",
-            pathlib.Path(os.environ.get("ProgramData", r"C:\ProgramData")),
-        )
-    else:
-        candidates = (pathlib.Path("/tmp"), pathlib.Path("/var/tmp"), pathlib.Path("/usr/tmp"))
-    for candidate in candidates:
+    for candidate in _host_home_floor_bases():
         try:
             base = candidate.resolve(strict=True)
         except OSError:
             continue
-        unsafe = False
-        for real in _REAL_DATA_HOMES:
-            try:
-                live = real.resolve()
-            except OSError:
-                live = real.absolute()
-            if base == live or live in base.parents or base in live.parents:
-                unsafe = True
-                break
-        if unsafe or not base.is_dir():
+        if _overlaps_a_real_data_home(base) is not None or not base.is_dir():
             continue
         try:
             prefix = f"{_tmp_root_prefix_for_run()}home-"
@@ -144,9 +261,11 @@ def _create_host_home_floor() -> pathlib.Path:
 
 
 _HOST_HOME_FLOOR: "pathlib.Path | None" = None
-if not os.environ.get("KIROCREW_HOME"):
+_INHERITED_HOME = os.environ.get("KIROCREW_HOME")
+if not _INHERITED_HOME or _an_agent_inherited_the_live_home(_INHERITED_HOME):
     _HOST_HOME_FLOOR = _create_host_home_floor()
     os.environ["KIROCREW_HOME"] = str(_HOST_HOME_FLOOR)
+    os.environ[_HOME_FLOOR_ENV] = str(_HOST_HOME_FLOOR)  # flake-ok: run-wide, set once at import
 
     @atexit.register
     def _remove_host_home_floor() -> None:
@@ -190,22 +309,15 @@ def _refuse_a_real_data_home() -> None:
     a module defines one, and a duplicate silently replaces the earlier definition
     instead of running alongside it.
     """
-    resolved = pathlib.Path(os.environ["KIROCREW_HOME"]).expanduser()
-    for real in _REAL_DATA_HOMES:
-        try:
-            here, live = resolved.resolve(), real.resolve()
-        except OSError:  # an unreadable component cannot be the live home
-            continue
-        # CONTAINMENT in both directions, not equality. A PARENT is the dangerous
-        # miss: ``~/.kiro`` is kiro-cli's own home and resolves the whole live tree
-        # underneath it, and ``~`` resolves everything. A CHILD is refused too, since
-        # the suite deletes directories it believes it created.
-        if here == live or live in here.parents or here in live.parents:
-            raise pytest.UsageError(
-                f"KIROCREW_HOME points at the live data home {real}. The suite writes, "
-                f"truncates and deletes under it, so running here destroys real memory, "
-                f"sessions and config. Unset KIROCREW_HOME or point it at a scratch dir."
-            )
+    real = _overlaps_a_real_data_home(pathlib.Path(os.environ["KIROCREW_HOME"]))
+    if real is not None:
+        raise pytest.UsageError(
+            f"KIROCREW_HOME points at the live data home {real}. The suite writes, "
+            f"truncates and deletes under it, so running here destroys real memory, "
+            f"sessions and config. Run `env -u KIROCREW_HOME pytest ...`: the suite then "
+            f"makes its own home under $TMPDIR and removes it at exit. Leave HOME alone; "
+            f"a fake HOME rebuilds the uv, npm and bytecode caches on every run."
+        )
 
 
 # ── the operator's data home is host state too ────────────────────────

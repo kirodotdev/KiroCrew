@@ -1143,9 +1143,12 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The first read is not the side turn's: it words an ACP "Agent mode ... is
     # not available" refusal by checking the derived file's owner marker, on
     # whatever channel's session raised it -- hence its own label and "unknown".
+    # The second words the same refusal for an ordinary agent whose file is
+    # present, so it carries the same label.
     # ``side_readonly_reap`` is the reaper's read of a derived file it may
     # remove: gateway maintenance no channel asked for, so "unknown" as well.
     "kiro_crew/dashboard/side_readonly_spec.py": [
+        ("agent_mode_refusal", "unknown"),
         ("agent_mode_refusal", "unknown"),
         ("side_readonly_reap", "unknown"),
         ("side_readonly_spec", "dashboard"),

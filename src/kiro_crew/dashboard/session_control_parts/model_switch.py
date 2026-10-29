@@ -33,6 +33,7 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import autho
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
 from kiro_crew.members import select_provider_backend
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -447,7 +448,11 @@ def arm_model_switch_reset(state: "DashboardState", slot: "_ChatSlot") -> None:
 
 
 async def apply_deferred_model_switch(
-    state: "DashboardState", slot: "_ChatSlot", *, session_lock_held: bool = False
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    *,
+    session_lock_held: bool = False,
+    live_only: bool = False,
 ) -> bool:
     """Land a model pick the picker took while a turn was in flight.
 
@@ -488,6 +493,13 @@ async def apply_deferred_model_switch(
     held session lock; without taking the same session-keyed lock here, this
     tail ``set_model`` would race that restore on the shared client and the
     restore could overwrite the pick.
+
+    ``live_only`` is passed by the channel-turn boundary
+    (:func:`land_model_pick_after_channel_turn`): when the live switch does not
+    land, the pick stays deferred instead of arming the reset. A channel turn
+    cold-starts on the default model ladder, not on ``slot.model``, so a reset
+    there would move the session off the old model without putting it on the
+    pick. The next dashboard boundary lands it, as before.
 
     Returns True when the deferred reset was armed, so the caller's consume
     knows a teardown may follow.
@@ -535,12 +547,18 @@ async def apply_deferred_model_switch(
         if not session_lock_held:
             await _locks.enter_async_context(slot_switch_session_lock(session_key))
         await _locks.enter_async_context(slot._model_pick_lock)
+        if not slot._deferred_model_switch_key:
+            # Another boundary landed the pick (or armed its reset) while this
+            # one waited for the locks: two boundaries can race for one pick
+            # once a channel turn's end is one of them. Applying it again would
+            # arm a second reset against the session the first one set up.
+            return False
         # Read the pick UNDER the locks, not before them. A newer /model request
         # commits through the busy branch WITHOUT taking the session lock, so
         # slot.model and the deferred key can both change while this helper waits
         # for the lock. Reading here applies what is current once serialised,
         # never a model captured before the wait while a newer pick queued in.
-        key = slot._deferred_model_switch_key or key
+        key = slot._deferred_model_switch_key
         model = slot.model or "auto"
         provider = state.sessions.get_provider(session_key)
         try:
@@ -601,6 +619,14 @@ async def apply_deferred_model_switch(
         _broadcast_context_reset(state, slot.key, provider)
         state.push_slots_update()
         logger.info("Slot %s deferred model switch landed live on %r", slot.key, model)
+        return False
+    if live_only:
+        # The marker was never cleared above, so the pick stays deferred for the
+        # next dashboard boundary (see ``live_only`` in the docstring).
+        logger.info(
+            "Slot %s deferred model switch held at a channel boundary: live switch did not land",
+            slot.key,
+        )
         return False
     # The live switch did not land, so the pin applies only via a cold-start
     # reset. ``_consume_pending_reset`` leaves an armed reset UNSPENT while
@@ -775,6 +801,140 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
         detail={**_pick_audit_fields(model, effort), "stage": "turn_start"},
     )
     return changed
+
+
+def channel_drives_session(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> bool:
+    """Whether *session_key*'s turns can run on a channel path (Slack, Discord, ...).
+
+    The three signals ``turn_admission`` reads to tell a channel-driven turn from a
+    direct dashboard one: a channel session key; a mirror link that accepts inbound
+    resume (a ``!sessions`` resume keeps its ``dashboard:`` key yet the channel drives
+    it); or a Slack channel bound on the slot. Such a session can go a whole
+    conversation without a dashboard turn boundary.
+    """
+    return (
+        is_channel_session_key(session_key)
+        or bool(state.sessions.mirror_accepts_inbound(session_key))
+        or bool(getattr(slot, "_slack_channel", ""))
+    )
+
+
+#: Landings in flight, held so the loop keeps a reference until each one ends.
+_CHANNEL_PICK_LANDINGS: set[asyncio.Task[None]] = set()
+
+
+def _log_landing_failure(task: asyncio.Task[None]) -> None:
+    _CHANNEL_PICK_LANDINGS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("Model pick landing after a channel turn failed", exc_info=task.exception())
+
+
+def schedule_channel_pick_landing(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Run :func:`land_model_pick_after_channel_turn` for *slot* on the running loop."""
+    task = asyncio.ensure_future(land_model_pick_after_channel_turn(state, slot))
+    _CHANNEL_PICK_LANDINGS.add(task)
+    task.add_done_callback(_log_landing_failure)
+
+
+def channel_pick_waits_on(state: "DashboardState", slot: "_ChatSlot", released_key: str) -> bool:
+    """Whether *slot* holds a pick that the end of a turn on *released_key* may land.
+
+    *released_key* is the session manager's folded key, so the slot's keys are
+    folded the same way before comparing.
+    """
+    fold = state.sessions._fold_key
+    if slot._deferred_model_switch_key:
+        if fold(slot._deferred_model_switch_key) == released_key:
+            return True
+    pick = slot._pending_model_pick
+    if pick is None or pick.reasoning_effort is not None:
+        return False
+    return fold(effective_session_key(slot)) == released_key
+
+
+async def land_model_pick_after_channel_turn(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Land *slot*'s waiting model pick at a boundary no dashboard turn passes.
+
+    Scheduled by the session manager's release observer when a turn lease on the
+    slot's session ends with no dashboard turn of the slot's own reserved or in
+    flight (a Slack, Discord, Telegram or Teams turn, a cron run). Two kinds of
+    pick wait here:
+
+    * the picker's deferred pick (``_deferred_model_switch_key``);
+    * a ``session_set_model`` pick (``_pending_model_pick``) that changes only the
+      model. It is committed through :func:`apply_pending_model_pick`, the same
+      gate a dashboard turn start runs, and handed to the deferred switch.
+
+    LIVE ONLY. The session moves through the harness's in-place switch or not at
+    all: a channel turn cold-starts on the default model ladder rather than on
+    ``slot.model``, so the reset a dashboard boundary would arm cannot land the
+    pick here. A pick the live switch cannot take, and a pick that sets an effort
+    (a live session keeps the level it started with), keep waiting for the next
+    dashboard turn, exactly as before this boundary existed.
+
+    The session is between turns when this runs, but a new channel turn may
+    already hold it: the live switch declines under an active turn, the pick stays
+    deferred, and that turn's own release retries.
+    """
+    if slot.running:
+        # The slot's own dashboard turn owns this boundary, from the moment a
+        # send reserves it: its admission and its tail land the pick, reset
+        # path included.
+        return
+    pick = slot._pending_model_pick
+    if pick is not None and pick.reasoning_effort is None:
+        # Warms the config the pick's fence re-check reads, so the synchronous
+        # gate below does no file IO on the loop.
+        await prewarm_enabled_check()
+        if slot.running or slot._pending_model_pick is not pick:
+            return
+        if apply_pending_model_pick(state, slot):
+            # circular import: chat_handlers imports this module at module level.
+            from kiro_crew.dashboard.chat_handlers import save_slot_off_loop
+            from kiro_crew.dashboard.chat_utils import slot_history_key
+
+            # slot.model now names the pick and the live session does not run
+            # it yet: that is exactly the deferred marker's state.
+            slot._deferred_model_switch_key = effective_session_key(slot)
+            state.push_slots_update()
+            if not await save_slot_off_loop(
+                state, slot, force=True, expected_history_key=slot_history_key(slot)
+            ):
+                slot._dirty = True
+    if not slot._deferred_model_switch_key or slot.running:
+        return
+    # Hold the session's own turn lease across the live switch. The dashboard
+    # session lock does not exclude a channel turn, and a channel prompt that
+    # starts while the switch awaits its reply would read the same stdout.
+    # Taken without waiting: a turn that already holds the lease lands the pick
+    # at its own release.
+    lease_key = state.sessions._fold_key(effective_session_key(slot))
+    if slot_switch_session_lock(effective_session_key(slot)).locked():
+        # A dashboard switch or turn start holds the session lock and may be
+        # waiting for this lease; taking the lease first would deadlock it.
+        return
+    if not await state.sessions.try_acquire(lease_key):
+        return
+    _LANDING_LEASES.add(lease_key)
+    try:
+        if slot._deferred_model_switch_key and not slot.running:
+            await apply_deferred_model_switch(state, slot, live_only=True)
+    finally:
+        # wake_queue: a channel message that arrived while this landing held
+        # the lease was queued behind it, and no channel turn ends to drain it.
+        state.sessions.release(lease_key, wake_queue=True)
+        _LANDING_LEASES.discard(lease_key)
+
+
+#: Session keys whose lease a landing holds right now. The release observer
+#: skips their release, or a pick the live switch refused would land again,
+#: release again, and loop.
+_LANDING_LEASES: set[str] = set()
+
+
+def landing_holds_lease(key: str) -> bool:
+    """Whether a model-pick landing is releasing the lease on *key* itself."""
+    return key in _LANDING_LEASES
 
 
 #: Lowercased spellings of the picker's Jev entry that ``session_set_model``

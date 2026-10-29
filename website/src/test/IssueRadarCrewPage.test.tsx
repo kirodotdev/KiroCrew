@@ -31,6 +31,7 @@ const api = {
   crew: vi.fn(),
   setCrewPaused: vi.fn(),
   resumeCrewModelSwitching: vi.fn(),
+  retireCrew: vi.fn(),
 }
 
 // Only `issueRadarApi` is stubbed: `TERMINAL_PHASES` / `EDITING_PHASES` /
@@ -48,6 +49,7 @@ vi.mock('../apps/issue-radar/context', () => ({
 }))
 
 const CrewPageView = (await import('../apps/issue-radar/views/CrewPageView')).default
+const RetiredCrewNotice = (await import('../apps/issue-radar/components/RetiredCrewNotice')).default
 
 /** The instant every fixture stamp is measured from. Frozen so the 24h boundary
  *  is a fact of the test, not of the clock it ran on. */
@@ -162,6 +164,7 @@ beforeEach(() => {
   ctx.value = {
     active: { owner: 'o', repo: 'r' },
     refreshPrefs: { listPollMs: 60_000, detailPollMs: 15_000, staleTimeMs: 30_000, pollInBackground: false, prefetchPulls: false },
+    setRetiredCrew: vi.fn(),
   }
   api.crew.mockResolvedValue(payload())
   api.setCrewPaused.mockImplementation((_ref: unknown, _id: string, paused: boolean) =>
@@ -532,5 +535,209 @@ describe('CrewPageView — pause', () => {
     await waitFor(() => {
       expect(api.setCrewPaused).toHaveBeenCalledWith({ owner: 'o', repo: 'r' }, 'crew-andromeda', false)
     })
+  })
+})
+
+describe('CrewPageView — retire', () => {
+  it('retires this crew in this repo only after the confirmation, then refetches the roster', async () => {
+    api.retireCrew.mockResolvedValue({ crew: crew({ retired_at: ago(0) }) })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { queryClient } = renderPage()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    // The zone states what the backend keeps before anything is pressed.
+    expect(await screen.findByTestId('crew-retire-zone')).toHaveTextContent(copy('retire_hint'))
+    await user.click(screen.getByTestId('crew-retire'))
+
+    // The click alone retires nothing: the dialog names the crew first.
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(copy('retire_confirm_title', { name: 'Andromeda' }))
+    expect(api.retireCrew).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: copy('retire') }))
+
+    await waitFor(() => {
+      expect(api.retireCrew).toHaveBeenCalledWith({ owner: 'o', repo: 'r' }, 'crew-andromeda')
+    })
+    // The crews column says which crew went, wherever the selection lands next.
+    await waitFor(() => {
+      expect(ctx.value.setRetiredCrew).toHaveBeenCalledWith({ name: 'Andromeda', ref: { owner: 'o', repo: 'r' } })
+    })
+    // The roster refetch is what moves the page off a crew that has left it.
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['issue-radar', 'crews', expect.any(String)] })
+    })
+  })
+
+  it('retires nothing when the confirmation is cancelled', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: i18next.t('components.confirmDialog.cancel') as string }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(api.retireCrew).not.toHaveBeenCalled()
+  })
+
+  it('says why a retire failed, with the gateway’s reason', async () => {
+    api.retireCrew.mockRejectedValue(new Error('crew_not_found'))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: copy('retire') }))
+
+    const notice = await screen.findByTestId('crew-retire-error')
+    expect(notice).toHaveTextContent(copy('retire_failed'))
+    expect(notice).toHaveTextContent('crew_not_found')
+  })
+
+  it('keeps a crew’s failed or pending retire off another crew’s page', async () => {
+    // The view is not keyed by crew, so the mutation outlives a change of crew.
+    api.retireCrew.mockRejectedValue(new Error('crew_not_found'))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: copy('retire') }))
+    expect(await screen.findByTestId('crew-retire-error')).toHaveTextContent('crew_not_found')
+
+    api.crew.mockResolvedValue(payload({ crew: crew({ id: 'crew-bootes', name: 'Bootes' }) }))
+    rerender(<CrewPageView crewId="crew-bootes" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-name')).toHaveTextContent('Bootes')
+    })
+    expect(screen.queryByText('crew_not_found')).not.toBeInTheDocument()
+    expect(screen.getByTestId('crew-retire')).toBeEnabled()
+
+    // Back on the crew it was for, the failure is still said.
+    api.crew.mockResolvedValue(payload())
+    rerender(<CrewPageView crewId="crew-andromeda" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-retire-error')).toHaveTextContent('crew_not_found')
+    })
+  })
+
+  it('retires the crew the dialog named even if the page re-points while it is open', async () => {
+    // The view is not keyed by crew: a roster poll can move it to another crew
+    // (this one retired from a second tab) while the confirmation is still up.
+    api.retireCrew.mockResolvedValue({ crew: crew({ retired_at: ago(0) }) })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    await screen.findByRole('dialog')
+    api.crew.mockResolvedValue(payload({ crew: crew({ id: 'crew-bootes', name: 'Bootes' }) }))
+    rerender(<CrewPageView crewId="crew-bootes" />)
+    // The page now shows the other crew; the pending confirmation still names
+    // the one it was opened for.
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-name')).toHaveTextContent('Bootes')
+    })
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(copy('retire_confirm_title', { name: 'Andromeda' }))
+    await user.click(within(dialog).getByRole('button', { name: copy('retire') }))
+
+    await waitFor(() => {
+      expect(api.retireCrew).toHaveBeenCalledTimes(1)
+    })
+    expect(api.retireCrew).toHaveBeenCalledWith({ owner: 'o', repo: 'r' }, 'crew-andromeda')
+    await waitFor(() => {
+      expect(ctx.value.setRetiredCrew).toHaveBeenCalledWith({ name: 'Andromeda', ref: { owner: 'o', repo: 'r' } })
+    })
+  })
+
+  it('allows one retire at a time, but says “Retiring…” only on its own crew', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.retireCrew.mockReturnValue(new Promise((resolve) => { settle = resolve }))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: copy('retire') }))
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-retire')).toHaveTextContent(copy('retiring'))
+    })
+
+    api.crew.mockResolvedValue(payload({ crew: crew({ id: 'crew-bootes', name: 'Bootes' }) }))
+    rerender(<CrewPageView crewId="crew-bootes" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-name')).toHaveTextContent('Bootes')
+    })
+    // Another retire would take over the shared mutation and drop the first
+    // one's outcome, so the button waits; it does not claim Bootes is retiring.
+    expect(screen.getByTestId('crew-retire')).toBeDisabled()
+    expect(screen.getByTestId('crew-retire')).toHaveTextContent(copy('retire'))
+    expect(screen.getByTestId('crew-retire')).not.toHaveAttribute('aria-busy', 'true')
+
+    settle({ crew: crew({ retired_at: ago(0) }) })
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-retire')).toBeEnabled()
+    })
+  })
+
+  it('raises the retired notice for the repo the retire was sent in, after a repo switch', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.retireCrew.mockReturnValue(new Promise((resolve) => { settle = resolve }))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { rerender } = renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: copy('retire') }))
+    await waitFor(() => {
+      expect(api.retireCrew).toHaveBeenCalledWith({ owner: 'o', repo: 'r' }, 'crew-andromeda')
+    })
+
+    // The user moves to another repo while the DELETE is still out.
+    ctx.value = { ...ctx.value, active: { owner: 'o2', repo: 'r2' } }
+    rerender(<CrewPageView crewId="crew-andromeda" />)
+    settle({ crew: crew({ retired_at: ago(0) }) })
+
+    await waitFor(() => {
+      expect(ctx.value.setRetiredCrew).toHaveBeenCalledWith({ name: 'Andromeda', ref: { owner: 'o', repo: 'r' } })
+    })
+  })
+
+  it('says it is retiring while the request is out', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.retireCrew.mockReturnValue(new Promise((resolve) => { settle = resolve }))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: copy('retire') }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-retire')).toHaveTextContent(copy('retiring'))
+    })
+    expect(screen.getByTestId('crew-retire')).toBeDisabled()
+    settle({ crew: crew({ retired_at: ago(0) }) })
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-retire')).toHaveTextContent(copy('retire'))
+    })
+  })
+})
+
+describe('RetiredCrewNotice', () => {
+  it('names the retired crew, quoted, and clears on dismiss', async () => {
+    ctx.value = { ...ctx.value, retiredCrewName: 'Andromeda' }
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderWithProviders(<RetiredCrewNotice />)
+
+    const notice = await screen.findByTestId('crew-retired-notice')
+    expect(notice).toHaveTextContent(copy('retired_notice', { name: 'Andromeda' }))
+    await user.click(within(notice).getByRole('button'))
+    expect(ctx.value.setRetiredCrew).toHaveBeenCalledWith(null)
+  })
+
+  it('renders nothing when no crew was retired in this tab', () => {
+    ctx.value = { ...ctx.value, retiredCrewName: null }
+    renderWithProviders(<RetiredCrewNotice />)
+    expect(screen.queryByTestId('crew-retired-notice')).not.toBeInTheDocument()
   })
 })

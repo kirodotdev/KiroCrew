@@ -85,6 +85,8 @@ _TOOL_NAME_RE = re.compile(r"^\S+\s+@[^/\s]+/(?P<name>[\w.\-]+)")
 _HANDOFF_TOOLS = frozenset({"session_send"})
 #: The dispatch that seeds a new session: its seed row says ``via session_create``.
 _CREATE_TOOLS = frozenset({"session_create"})
+#: The one-call dispatch: it opens the session and seeds it ``via session_send``.
+_DISPATCH_TOOLS = frozenset({"work_dispatch"})
 _QUESTION_TOOLS = frozenset({"ask_question"})
 
 
@@ -318,6 +320,11 @@ def derive_lane(
             # The new session's key is not in the call's input; its title is, when
             # the caller named one, and the seed lands on the session it created.
             sends.append({"ts": _iso(ts), "to": _tool_arg(row, "title"), "via": "create"})
+        elif name in _DISPATCH_TOOLS:
+            # Opens the session (its title is ``session_title``, else ``title``) and
+            # seeds it, so the seed row reads ``via session_send``.
+            title = _tool_arg(row, "session_title") or _tool_arg(row, "title")
+            sends.append({"ts": _iso(ts), "to": title, "via": "dispatch"})
         approved: datetime | None = None
         end_index = index
         if tcid and text.startswith("🔧"):
@@ -365,8 +372,9 @@ def handoffs(lanes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     recorded ``target`` is that worker, at or before that row. A ``via
     session_create`` seed (the first dispatch) leaves at the sender's last
     ``session_create`` call at or before it, one whose recorded ``title``, when it
-    names one, is the worker's. A seed whose sender is not a lane, or which has no
-    such call, is not drawn.
+    names one, is the worker's. A ``via session_send`` seed also leaves at the
+    sender's last ``work_dispatch`` call whose session title is the worker's. A
+    seed whose sender is not a lane, or which has no such call, is not drawn.
     """
     by_key = {lane["key"]: lane for lane in lanes}
     titles: dict[str, int] = {}
@@ -394,6 +402,22 @@ def handoffs(lanes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         wanted = str(send.get("to") or "").strip().casefold()
         return not wanted or wanted == str(lane.get("title") or "").strip().casefold()
 
+    def dispatched(send: dict[str, Any], lane: dict[str, Any]) -> bool:
+        """Whether a recorded ``work_dispatch`` call opened *lane*: its title names it,
+        and only this lane carries that title. The call's input holds no session key,
+        so two workers sharing a title cannot be told apart and neither is drawn."""
+        wanted = str(send.get("to") or "").strip().casefold()
+        title = str(lane.get("title") or "").strip().casefold()
+        return bool(wanted) and wanted == title and titles.get(title) == 1
+
+    def matches(send: dict[str, Any], lane: dict[str, Any], by_create: bool) -> bool:
+        via = send.get("via")
+        if by_create:
+            return via != "dispatch" and created(send, lane)
+        if via == "dispatch":
+            return dispatched(send, lane)
+        return via != "create" and names(send.get("to"), lane)
+
     out: list[dict[str, Any]] = []
     for lane in lanes:
         for seed in lane.get("seeds", []):
@@ -409,11 +433,7 @@ def handoffs(lanes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 for ts in (
                     parse_ts(send.get("ts"))
                     for send in sender.get("sends", [])
-                    if (
-                        created(send, lane)
-                        if by_create
-                        else send.get("via") != "create" and names(send.get("to"), lane)
-                    )
+                    if matches(send, lane, by_create)
                 )
                 if ts and ts <= landed
             ]
@@ -452,7 +472,12 @@ def summarize(lanes: list[dict[str, Any]], *, now: datetime, live: bool) -> dict
     firsts = [ts for ts in (parse_ts(lane.get("first_ts")) for lane in lanes) if ts]
     lasts = [ts for ts in (parse_ts(lane.get("last_ts")) for lane in lanes) if ts]
     started = min(firsts) if firsts else None
-    ended = now if live else (max(lasts) if lasts else None)
+    if live:
+        ended = now
+    elif lasts:
+        ended = max(lasts)
+    else:
+        ended = None
     elapsed_ms = 0
     if started and ended and ended >= started:
         elapsed_ms = int((ended - started).total_seconds() * 1000)

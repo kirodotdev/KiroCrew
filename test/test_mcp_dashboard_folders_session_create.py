@@ -455,6 +455,7 @@ class TestAdvertisedSet:
             "session_adopt",
             "session_handoff",
             "session_release",
+            "work_dispatch",
         }
 
 

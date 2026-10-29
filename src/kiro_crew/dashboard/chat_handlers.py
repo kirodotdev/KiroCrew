@@ -225,6 +225,7 @@ from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _created_slot_row,
     _default_template_stamp,
     _persist_app_agent_owner,
+    _persist_birth_line,
     _retract_failed_newborn,
     api_chat_slot_create,
 )
@@ -297,6 +298,7 @@ from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
     _slot_agent_autocompact_fields,
+    _slot_harness_managed_backend,
     _slot_next_agent_autocompact_default,
     _turn_timeout_body_value,
     _turn_timeout_payload,

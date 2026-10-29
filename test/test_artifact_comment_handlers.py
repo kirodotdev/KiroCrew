@@ -207,7 +207,7 @@ class TestDeleteAndList:
     @pytest.mark.asyncio
     async def test_get_anchor_includes_prefix_suffix(self, store):
         # Regression: the local GET serializer must echo prefix/suffix so the
-        # markdown overlay can disambiguate a repeated quote — rangeForAnchor
+        # markdown overlay can disambiguate a repeated quote — rangesForAnchor
         # matches on quote+prefix+suffix and ignores the offsets. Without these
         # a comment on a later occurrence highlights the first match. Must match
         # the remote serializer (_serialize_remote_comment).

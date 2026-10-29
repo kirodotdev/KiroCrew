@@ -642,6 +642,43 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             self.dashboard_state.push_refresh("update_available")
         return False
 
+    async def _restart_unless_apply_changed_nothing(result: Any) -> None:
+        """Restart into the applied update, or report an apply that changed nothing.
+
+        The check runs again first. When it still offers the version the apply
+        was for, the apply left the install as it was (for example a package
+        manager pin the apply honours and the check ignores). Restarting then
+        would boot into the same check and the same apply on every cycle,
+        closing every session each time, so the outcome is reported and the
+        gateway keeps running. A re-check that errors, finds nothing, or offers
+        another version is not that loop, and the restart goes ahead.
+        """
+        assert isinstance(provider, UpdateProvider)
+        after = await provider.check()
+        offered = str(result.remote_version or "")
+        if after.available and not after.error and str(after.remote_version or "") == offered:
+            message = (
+                f"The update command finished, but the check still offers {offered}: "
+                "the install did not change, so Kiro Crew is not restarting. "
+                "Check the policy's apply_command and check_command."
+            )
+            logger.warning(
+                "Auto-update: apply_command exited 0 but the check still offers %s — "
+                "the install did not change; not restarting",
+                offered,
+            )
+            self._notice_wheel_update_once(
+                f"apply_unchanged:provider:{offered}",
+                "Kiro Crew update changed nothing",
+                message,
+            )
+            self._publish_provider_update_state(after)
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress("failed", message)
+                self.dashboard_state.push_refresh("update_available")
+            return
+        await self._restart_after_update(respawn_executable)
+
     # Say who owns updates on every path, "already latest" included, so the
     # dashboard need not run its own check to learn it.
     _update_info["managed_by"] = MANAGED_BY_COMMAND
@@ -716,7 +753,7 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             self._pending_update_version = ""
             success = await provider.apply()
             if success:
-                await self._restart_after_update(respawn_executable)
+                await _restart_unless_apply_changed_nothing(result)
             elif self.dashboard_state:
                 self.dashboard_state.push_update_progress(
                     "failed", "Update apply failed — run manually: kirocrew update"
@@ -752,7 +789,7 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
                 self._pending_update_version = ""
                 success = await provider.apply()
                 if success:
-                    await self._restart_after_update(respawn_executable)
+                    await _restart_unless_apply_changed_nothing(result)
                 elif self.dashboard_state:
                     self.dashboard_state.push_update_progress(
                         "failed", "Update apply failed — run manually: kirocrew update"

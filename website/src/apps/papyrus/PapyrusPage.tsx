@@ -36,7 +36,7 @@ import type { ChatSlot } from '../../types'
 import { papyrusApi, pdfUrl, type Diagnostic } from './api'
 import { companionContextLines, DEFAULT_MAIN_FILE } from './companionPrompt'
 import {
-  countDiagnostics, countWords, gitBranchLabel, loadLastProject, loadSlot,
+  countDiagnostics, countWords, forgetSlot, gitBranchLabel, loadLastProject, loadSlot,
   saveLastProject, saveSlot, texFiles,
   TREE_WIDTH_KEY, TREE_COLLAPSED_KEY, DEFAULT_TREE_WIDTH, MIN_TREE_WIDTH, MAX_TREE_WIDTH,
   COLLAPSED_TREE_WIDTH,
@@ -808,6 +808,25 @@ export default function PapyrusPage() {
     }
   }, [project, slotCreating, dispatch, injectContext])
 
+  // The remembered session no longer exists on the gateway (deleted or archived
+  // from the sessions list). Forget it so the panel offers "Start a session"
+  // instead of trying the dead key again on every open of this paper. Only the
+  // key that failed is dropped: a newer session started meanwhile is kept.
+  const forgetGoneSession = useCallback((gone: string) => {
+    if (project && loadSlot(project) === gone) forgetSlot(project)
+    setSlotKey(current => (current === gone ? null : current))
+  }, [project])
+
+  // The embedded chat replaced the paper's session with a new one (picking a
+  // memory mode does this): remember the new session for the paper, and hand it
+  // the paper's context, which the replacement does not carry over.
+  const adoptReplacedSession = useCallback((old: string, next: string) => {
+    if (project && loadSlot(project) === old) saveSlot(project, next)
+    setSlotKey(current => (current === old ? next : current))
+    contextRequestSeq.current += 1
+    injectContext({ slotKey: next, seq: contextRequestSeq.current })
+  }, [project, injectContext])
+
   const toggleChat = useCallback(() => {
     setChatOpen(open => {
       if (!open && !slotKey) void startSession()
@@ -1406,6 +1425,8 @@ export default function PapyrusPage() {
                     slotKey={slotKey}
                     creating={slotCreating}
                     onStartSession={startSession}
+                    onSessionGone={forgetGoneSession}
+                    onSessionReplaced={adoptReplacedSession}
                     onOpenFull={openFullChat}
                     onClose={() => setChatOpen(false)}
                   />

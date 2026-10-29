@@ -101,18 +101,32 @@ _VALUE_ROUTES = frozenset({("PATCH", "/api/config/kirocrew"), ("PUT", "/api/dash
 _BACKGROUND: set[asyncio.Task[Any]] = set()
 
 
-def _audit(caller: str, operation: str, outcome: str, error: str = "") -> None:
+def _audit(
+    caller: str, operation: str, outcome: str, error: str = "", *, resources: str = "/api/cards"
+) -> None:
     try:
         sel().log_api_access(
             caller=caller or "unknown",
             operation=operation,
             outcome=outcome,
             source="dashboard",
-            resources="/api/cards",
+            resources=resources,
             error=error,
         )
     except Exception:  # pragma: no cover - an audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _card_resources(card: dict[str, Any]) -> str:
+    """The audit resource for a workflow card's rows; every other card keeps ``/api/cards``.
+
+    A workflow card puts runnable code into the library, so its proposal row names
+    the card and its kind, and the owner's decline (the one decision no route
+    records) gets a row of its own. Its save is the definition route's own row.
+    """
+    if card.get("kind") not in catalog.WORKFLOW_KINDS:
+        return "/api/cards"
+    return f"/api/cards/{card.get('id') or ''} {card.get('kind')}"
 
 
 def _refusal(exc: CardError | catalog.CardCatalogError) -> web.Response:
@@ -514,6 +528,19 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
                 "which offers the user the Preview first; use that instead",
             )
         )
+    if kind in catalog.WORKFLOW_KINDS and await asyncio.to_thread(
+        _crewmate_caller, request.app["state"], slot_key, sk
+    ):
+        # The library is the owner's, global to every crewmate; a crewmate (its
+        # chat or its worker) asks the owner's assistant instead.
+        _audit(sk, "cards.propose", "denied", "workflow_crewmate_caller")
+        return _refusal(
+            CardError(
+                403,
+                "owner_assistant_only",
+                "only the main assistant's own dashboard chat can propose a saved workflow",
+            )
+        )
     return await propose_for_caller(
         request,
         slot_key,
@@ -522,6 +549,16 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
         params=body.get("params"),
         reason=body.get("reason"),
     )
+
+
+def _crewmate_caller(state: Any, slot_key: str, sk: str) -> bool:
+    """Whether the caller is a crewmate's own thread or one of its workers. Blocking."""
+    from kiro_crew import members
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    if is_crewmate_thread(state.get_slot(slot_key)):
+        return True
+    return members.is_crewmate_worker_session(slot_key) or members.is_crewmate_worker_session(sk)
 
 
 def _crewmate_drives_capabilities_off(state: Any, slot_key: str, sk: str) -> bool:
@@ -637,7 +674,7 @@ async def propose_for_caller(
     await chat_cards.load_conversation_window(request.app["state"], public)
     chat_cards.record_change_proposed(request.app["state"], public)
     delivered = await _broadcast(request.app["state"], public)
-    _audit(sk, "cards.propose", "ok")
+    _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
     return web.json_response({**public, "delivered_clients": delivered})
 
 
@@ -1003,7 +1040,15 @@ async def api_cards_cancel(request: web.Request) -> web.Response:
         rec = store.get(request.match_info["card_id"])
         revert = store.snapshot(rec)
         store.cancel(rec, body.get("revision"))
-        return web.json_response(await _publish(request, rec, revert))
+        published = await _publish(request, rec, revert)
+        if rec.get("kind") in catalog.WORKFLOW_KINDS:
+            _audit(
+                str(request.get("user") or "owner"),
+                "cards.decline",
+                "rejected",
+                resources=_card_resources(rec),
+            )
+        return web.json_response(published)
     except CardError as exc:
         return _refusal(exc)
 

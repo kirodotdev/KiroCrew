@@ -25,7 +25,7 @@ const navigate = vi.fn()
 
 const storeState: {
   dashboard: { slots: Record<string, unknown>[]; unreadSlots: string[] }
-  chat: { slotStatusDetail: Record<string, unknown>; activeSlot: string | null }
+  chat: { slotStatusDetail: Record<string, unknown>; activeSlot: string | null; subagentQueued?: Record<string, number> }
 } = {
   dashboard: { slots: [], unreadSlots: [] },
   chat: { slotStatusDetail: {}, activeSlot: null },
@@ -359,6 +359,21 @@ describe('command bar — mates view, listing and search', () => {
       ],
       unreadSlots: [],
     }
+    await openMatesView()
+    await waitFor(() => expect(hasRow('oncall')).toBe(true))
+    expect(rowByText('oncall').textContent).toContain(BUSY)
+  })
+
+  it('counts a mate whose only children are QUEUED as working', async () => {
+    // A child held behind the spawn caps has not started, so the frame says
+    // subagents_running false; the gateway still refuses a turn on that session.
+    storeState.dashboard = {
+      slots: [
+        { key: 'member-oncall', mode: 'member', agent: 'oncall', running: false, subagents_running: false },
+      ],
+      unreadSlots: [],
+    }
+    storeState.chat = { slotStatusDetail: {}, activeSlot: null, subagentQueued: { 'member-oncall': 2 } }
     await openMatesView()
     await waitFor(() => expect(hasRow('oncall')).toBe(true))
     expect(rowByText('oncall').textContent).toContain(BUSY)

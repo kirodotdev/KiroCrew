@@ -55,13 +55,9 @@ import type { CronJob } from '../../types'
 import { type KiroCrewAgent } from '../AgentSelector'
 import { modelSupportsEffort } from '../../lib/effort'
 import { type TemplateProvenance } from '../../lib/templateSource'
+import { INHERIT_MODEL } from './crewFields'
 
-/** The stored spelling for "no per-agent pin, inherit the next tier down". The
- *  select shows this as a real option; the backend normalizes it back to ''.
- *  Same value as KiroCrewAgentsPage's export; defined here so the hook (and the
- *  dialog that consumes it) never import back into the page — that would close
- *  a cycle (page -> CrewEditorNextDialog -> useCrewEditor -> page). */
-export const INHERIT_MODEL = 'auto'
+export { INHERIT_MODEL }
 
 /** How long a schedule-draft discard confirm stays fully locked while the
  *  create request is in flight. The lock exists because discarding cannot

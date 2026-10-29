@@ -324,24 +324,24 @@ describe('SpecDetail docs split', () => {
     expect(divider).toHaveAttribute('aria-valuenow', '44')
   })
 
-  it('drags within its clamp and releases the cursor lock on mouse up', async () => {
+  it('drags within its clamp and releases the cursor lock on pointer up', async () => {
     installFetch(BASE)
     renderDetail()
 
     await screen.findByTestId('doc-view')
     const divider = screen.getByRole('separator')
 
-    fireEvent.mouseDown(divider)
+    fireEvent.pointerDown(divider, { clientX: 300, pointerId: 1 })
     expect(document.body.style.cursor).toBe('col-resize')
 
-    fireEvent.mouseMove(window, { clientX: 100 })
+    fireEvent.pointerMove(divider, { clientX: 100, pointerId: 1 })
     expect(divider).toHaveAttribute('aria-valuenow', '25')
 
-    fireEvent.mouseUp(window)
+    fireEvent.pointerUp(divider, { clientX: 100, pointerId: 1 })
     expect(document.body.style.cursor).toBe('')
 
-    // Listeners are gone: a later move must not move the divider.
-    fireEvent.mouseMove(window, { clientX: 400 })
+    // The drag ended: a later move must not move the divider.
+    fireEvent.pointerMove(divider, { clientX: 400, pointerId: 1 })
     expect(divider).toHaveAttribute('aria-valuenow', '25')
   })
 

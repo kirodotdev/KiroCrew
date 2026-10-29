@@ -104,10 +104,38 @@ def _spawn_artifact_folder_icon_task(
     the value :meth:`ArtifactFolderStore.rename` returns from inside its own
     bump's critical section, and the create path pins 0, which a fresh folder's
     epoch is by construction. A read-back would be a second lock acquisition and
-    could capture a competing mutation's epoch."""
+    could capture a competing mutation's epoch.
+
+    Coalesced per folder: at most ONE generation is in flight per folder, and
+    a spawn that arrives while one runs only records itself as the folder's
+    NEXT request (a later spawn replaces it; an older epoch never displaces a
+    newer one). When the in-flight task finishes, the latest recorded request
+    starts. So a rename burst costs at most two model calls per folder however
+    long it is. The in-flight task is never cancelled: it may be part-way
+    through acquiring a background session, and cancelling it there would leak
+    that session. Folder delete drops the queued request of every folder it
+    removes (:func:`_cancel_artifact_folder_icon_tasks`); an in-flight one
+    finishes and its write is dropped, because the folder is gone."""
     state = request.app.get("state")
     if state is None:
         return
+    current = _ARTIFACT_FOLDER_ICON_INFLIGHT.get(folder_id)
+    # The entry counts as occupied until its own cleanup removes it, even once
+    # its task is done: that cleanup is what starts the queued request, so a
+    # spawn starting here in between would leave an older queued request to
+    # run after it.
+    if current is not None:
+        queued = _ARTIFACT_FOLDER_ICON_NEXT.get(folder_id)
+        if expected_epoch >= current[1] and (queued is None or expected_epoch >= queued[1]):
+            _ARTIFACT_FOLDER_ICON_NEXT[folder_id] = (name, expected_epoch)
+        return
+    _start_artifact_folder_icon_task(state, folder_id, name, expected_epoch)
+
+
+def _start_artifact_folder_icon_task(
+    state: Any, folder_id: str, name: str, expected_epoch: int
+) -> None:
+    """Run one icon generation for *folder_id*; when it ends, start the queued one."""
 
     async def _run() -> None:
         try:
@@ -124,11 +152,44 @@ def _spawn_artifact_folder_icon_task(
 
     task = asyncio.ensure_future(_run())
     _ARTIFACT_FOLDER_ICON_TASKS.add(task)
-    task.add_done_callback(_ARTIFACT_FOLDER_ICON_TASKS.discard)
+    _ARTIFACT_FOLDER_ICON_INFLIGHT[folder_id] = (task, expected_epoch)
+
+    def _cleanup(done: asyncio.Task[None]) -> None:
+        _ARTIFACT_FOLDER_ICON_TASKS.discard(done)
+        current = _ARTIFACT_FOLDER_ICON_INFLIGHT.get(folder_id)
+        if current is None or current[0] is not done:
+            return
+        del _ARTIFACT_FOLDER_ICON_INFLIGHT[folder_id]
+        queued = _ARTIFACT_FOLDER_ICON_NEXT.pop(folder_id, None)
+        if queued is not None:
+            _start_artifact_folder_icon_task(state, folder_id, queued[0], queued[1])
+
+    task.add_done_callback(_cleanup)
+
+
+def _cancel_artifact_folder_icon_tasks(folder_ids: Any) -> None:
+    """Drop the queued icon request of each deleted folder.
+
+    The in-flight generation, if any, is left to finish (see
+    :func:`_spawn_artifact_folder_icon_task` for why it is never cancelled);
+    its write-back re-finds the folder under the store lock and drops the icon
+    for a folder that is gone. Nothing new starts for the folder after it.
+    """
+    for fid in folder_ids:
+        _ARTIFACT_FOLDER_ICON_NEXT.pop(str(fid), None)
 
 
 # Keep strong refs so in-flight icon tasks aren't garbage-collected mid-run.
 _ARTIFACT_FOLDER_ICON_TASKS: set[asyncio.Task[None]] = set()
+
+#: The generation running for each folder, with the epoch it is pinned to.
+#: Entries remove themselves through the task's done callback.
+_ARTIFACT_FOLDER_ICON_INFLIGHT: dict[str, tuple[asyncio.Task[None], int]] = {}
+
+#: The latest (name, epoch) request that arrived while a folder's generation
+#: was in flight; it starts when that generation ends. One per folder, so the
+#: backlog behind the serialized generator stays bounded.
+_ARTIFACT_FOLDER_ICON_NEXT: dict[str, tuple[str, int]] = {}
 
 
 async def api_artifact_folder_create(request: web.Request) -> web.Response:
@@ -482,6 +543,7 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
             extra={"folder_id": fid},
         )
         return _err(str(exc), status=500)
+    _cancel_artifact_folder_icon_tasks(summary.get("deleted_folder_ids") or [fid])
     kept = list(summary.get("kept_published_artifact_slugs", []))
     _audit(
         tool="artifact_folder_delete",

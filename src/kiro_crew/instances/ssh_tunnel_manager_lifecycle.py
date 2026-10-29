@@ -471,6 +471,7 @@ async def connect(
         self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
         tunnel.status.turn_url = params.turn_url(local_port)
         tunnel._on_healthy = self._on_tunnel_healthy
+        tunnel._timeout_tunable = True  # budget is _connect_timeout_for(...)
         ok = await tunnel.start()
         if not ok:
             self._last_error[instance_id] = tunnel.status.error or "tunnel failed to start"

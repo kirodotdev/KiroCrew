@@ -58,6 +58,22 @@ export function resolveFolderProjectDir(
 }
 
 /**
+ * The folder's resolved project_dir when it differs from the session's own
+ * `project`, else undefined. No folder, or a chain that sets no directory, is
+ * never a mismatch. Both sides are realpath-normalized by the gateway, so a
+ * plain comparison is exact.
+ */
+export function folderProjectMismatch(
+  folders: ChatFolder[],
+  folderId: string | undefined,
+  project: string | undefined
+): string | undefined {
+  if (!folderId) return undefined
+  const dir = resolveFolderProjectDir(folders, folderId)
+  return dir && dir !== (project || '') ? dir : undefined
+}
+
+/**
  * Resolve the extra steering directories for a folder.
  *
  * Unlike `resolveFolderProjectDir` (nearest-wins), steering dirs ACCUMULATE up

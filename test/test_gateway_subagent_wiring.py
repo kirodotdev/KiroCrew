@@ -43,6 +43,7 @@ class _Slot:
         self.task: Any = None
         self.running = False
         self._pending_synthesis = False
+        self._synthesis_armers: set[str] = set()
         self._subagents_inline_collected: set[str] = set()
         self._subagent_deliveries_inflight = 0
         self._synthesis_completion_turns = 0

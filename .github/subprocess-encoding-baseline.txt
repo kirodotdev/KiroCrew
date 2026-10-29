@@ -25,8 +25,6 @@
 1 src/kiro_crew/cron_script.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/handlers_system.py
-1 src/kiro_crew/diagnostics.py
-1 src/kiro_crew/env.py
 2 src/kiro_crew/service/apparmor.py
 1 src/kiro_crew/service/macos.py
 2 test/test_acp_backend_kas.py

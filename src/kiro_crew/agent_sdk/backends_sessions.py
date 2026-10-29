@@ -206,7 +206,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
 # (set_mode, then ``_kiro.dev/session/terminate``, then set_mode -> -32603 Session
 # not found); KAS 0.66.70 ``test/fixtures/acp_frames/kas/session-evict-live.jsonl``
 # (set_mode, then ``_kiro/session/delete`` -> success, then set_mode -> -32000 not
-# found); codex-acp 2.2.2 ``test/fixtures/acp_frames/codex/session-evict-live.jsonl``
+# found); codex-acp 2.3.0 ``test/fixtures/acp_frames/codex/session-evict-live.jsonl``
 # (set_config_option, then ``session/close`` -> {}, then set_config_option -> Session
 # not found). The real-adapter lane's live test is the anti-drift guard; these
 # captures are the replayed record.

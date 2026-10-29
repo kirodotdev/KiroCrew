@@ -14,6 +14,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_card_handshake_fields import live_init
 from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew.acp import session_handle as sh
@@ -35,6 +36,8 @@ class _Runtime:
 
     def __init__(self, backend: str = ACP_BACKEND_CODEX) -> None:
         self.acp_backend = backend
+        # codex-acp 2.2.2's own handshake: it advertises ``_session/steering``.
+        self.initialize_result = live_init("codex/steering-live.jsonl")
         self.is_alive = lambda: True
         self.answer: asyncio.Future = asyncio.get_running_loop().create_future()
         self.requests: list[tuple[str, dict]] = []
@@ -413,6 +416,7 @@ def _runtime_with_fake_process() -> tuple[AcpRuntime, asyncio.StreamReader, Magi
     rt._process = proc
     rt._pid = _UNALLOCATABLE_PID
     rt._initialized = True
+    rt._initialize_result = live_init("codex/steering-live.jsonl")
     return rt, reader, proc
 
 
@@ -955,6 +959,7 @@ def test_the_handle_names_codex_as_needing_loss_recovery():
 def _handle_for(backend: str) -> AcpSessionHandle:
     rt = MagicMock()
     rt.acp_backend = backend
+    rt.initialize_result = live_init("codex/steering-live.jsonl")
     return AcpSessionHandle("sess-1", asyncio.Queue(), rt)
 
 
@@ -1225,3 +1230,52 @@ async def test_a_written_steer_whose_runtime_then_stalls_is_ambiguous():
     with pytest.raises(AcpRuntimeDead) as ei:
         await handle.steer("hello")
     assert ei.value.ambiguous_delivery is True
+
+
+# ── The handshake decides: no advertisement, no steer ──
+
+
+def _unadvertised() -> dict:
+    init = live_init("codex/steering-live.jsonl")
+    init["_meta"].pop("steering")
+    return init
+
+
+@pytest.mark.asyncio
+async def test_a_codex_that_drops_the_advertisement_is_queued_not_steered():
+    """codex-acp 2.2.2's handshake with ``_meta.steering`` removed: nothing is sent,
+    steer() answers False so the composer queues, and the handle offers no steer."""
+    rt = _Runtime()
+    rt.initialize_result = _unadvertised()
+    handle = _handle(rt)
+    assert handle.supports_steer is False
+    assert await handle.steer("also check the tests") is False
+    assert rt.requests == []
+    assert handle._steering_answers == []
+
+
+@pytest.mark.asyncio
+async def test_the_live_advertisement_still_steers():
+    rt = _Runtime()
+    handle = _handle(rt)
+    assert handle.supports_steer is True
+    rt.answer.set_result({"outcome": "injected"})
+    assert await handle.steer("also check the tests") is True
+    assert [m for m, _ in rt.requests] == ["_session/steering"]
+
+
+def test_the_real_runtime_keeps_its_handshake_for_the_handle():
+    rt, _reader, _proc = _runtime_with_fake_process()
+    rt._acp_backend = ACP_BACKEND_CODEX
+    handle = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    assert handle.initialize_result == live_init("codex/steering-live.jsonl")
+    assert handle.supports_steer is True
+    rt._initialize_result = _unadvertised()
+    assert handle.supports_steer is False
+
+
+def test_kiro_steers_without_any_advertisement():
+    rt = MagicMock()
+    rt.acp_backend = ACP_BACKEND_KIRO
+    rt.initialize_result = {}
+    assert AcpSessionHandle("sess-1", asyncio.Queue(), rt).supports_steer is True

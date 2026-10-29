@@ -52,7 +52,6 @@ from kiro_crew.acp.client_spawn_env import (
     kiro_cli_not_found_message,
 )
 from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
-from kiro_crew.acp.client_turn_control import steering_advertised
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
@@ -85,14 +84,17 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
+    steering_advertised,
 )
 from kiro_crew.agent import (
     DerivedSpecSnapshot,
     DerivedSpecStale,
     ForkGovernanceUnresolved,
+    SharedTemplateOverCeiling,
     ensure_agent_materialized,
     require_fork_governance,
     require_fresh_derived_spec,
+    require_shared_template_within_ceiling,
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -290,6 +292,15 @@ async def _spawn(self: AcpClient) -> None:
         try:
             await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
         except ForkGovernanceUnresolved as exc:
+            raise AcpError(str(exc)) from exc
+        # A harness that may read the spec file's own grants is refused on a
+        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
+        # rewrites such a file.
+        try:
+            await asyncio.to_thread(
+                require_shared_template_within_ceiling, self._agent, self.backend
+            )
+        except SharedTemplateOverCeiling as exc:
             raise AcpError(str(exc)) from exc
         # The same cwd-first resolution makes a checkout that declares a MANAGED
         # agent name the spec that runs, whatever Kiro Crew installed under it.
@@ -816,6 +827,7 @@ async def _initialize_session(self: AcpClient) -> None:
     self._agent_version = agent_version_from_init(init_resp)
     self._agent_version_read = True
     self._steering_advertised = steering_advertised(init_resp)
+    self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
     self._note_pi_adapter_version()
     self._note_goose_version()
     # Copilot only: a release other than the verified one is refused here, before

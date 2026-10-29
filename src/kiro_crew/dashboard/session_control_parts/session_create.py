@@ -50,7 +50,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _channel_link_of,
     _cron_caller,
     _delegation_lineage_fenced,
-    _member_bypass,
+    _dispatch_bypass,
     _member_caller,
     caller_slot_key,
     session_control_enabled,
@@ -242,10 +242,12 @@ async def create_session(
     # opt-in — passes without `agent.session_control`. That member bypass is
     # itself gated by the operator ceiling `agent.member_dispatch` (default
     # true = today's behaviour); with it off the member falls back under the
-    # switch like any other caller. Every other caller still needs the switch.
-    # The member's automatic grant is bounded by ownership in `authorize_target`,
-    # not here: creation makes the caller the owner by construction.
-    if not session_control_enabled() and not _member_bypass(state, caller_key):
+    # switch like any other caller. The Conductor in the owner's own tab gets the
+    # same bypass under the same ceiling (`_conductor_bypass`). Every other caller
+    # still needs the switch. Both automatic grants are bounded by ownership in
+    # `authorize_target`, not here: creation makes the caller the owner by
+    # construction.
+    if not session_control_enabled() and not _dispatch_bypass(state, caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",

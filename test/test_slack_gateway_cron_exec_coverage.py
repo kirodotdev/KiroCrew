@@ -61,6 +61,7 @@ from slack_gateway_cron_exec_coverage_helpers import (
 
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard import chat_persistence
+from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND
 from kiro_crew.slack import gateway as gw
 from kiro_crew.testing.wait import async_wait_until
 
@@ -1023,25 +1024,48 @@ class TestDeliverScriptResult:
         orch.dashboard_state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_report_injects_into_an_idle_slot(self):
-        """An idle slot takes the notification as a real turn."""
+    async def test_report_queues_and_drains_on_an_idle_slot(self):
+        """An idle slot queues the notification and the queue drain starts it."""
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
         slot = _mock_slot(running=False)
+        slot.key = "chat-1-2"
+        slot._lock = asyncio.Lock()
+        slot._queue = []
+        slot._turn_admission_reserved = False
+        slot.is_closing = False
+        slot._last_turn_auth_required = False
+        slot._stopping = False
+        slot._stop_state = "idle"
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         job = _job(script="probes.py:check", session_key="dashboard:chat-1-2")
-        turn = MagicMock()
         result = {"status": "report", "message": "green again"}
-        spawn = MagicMock(return_value=turn)
-        with (
-            patch("kiro_crew.dashboard.turn_dispatch.spawn_guarded_turn", spawn),
-            patch("kiro_crew.dashboard.chat_runner._run_chat", MagicMock(return_value=MagicMock())),
-        ):
+        drain = AsyncMock(return_value=True)
+        with patch("kiro_crew.dashboard.chat_runner._start_next_queued_turn", drain):
             async with _cron_cb(orch, script_result=result) as cb:
                 assert await cb(job) == "green again"
-        spawn.assert_called_once()
-        assert slot.append.call_args[0][0] == "inject"
-        assert slot.task is turn
+        slot.queue_append.assert_called_once()
+        assert slot.queue_append.call_args.kwargs["kind"] == CRON_NOTIFICATION_KIND
+        assert slot.queue_append.call_args.args[0].startswith('[Cron notification from "')
+        drain.assert_awaited_once_with(orch.dashboard_state, slot)
+        assert slot._turn_admission_reserved is False
+
+    @pytest.mark.asyncio
+    async def test_report_on_a_closing_slot_falls_back_to_a_notification(self):
+        """A slot that is closing takes no card, which would be dropped with it."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = _mock_slot(running=False)
+        slot.key = "chat-1-2"
+        slot._lock = asyncio.Lock()
+        slot.is_closing = True
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        job = _job(script="probes.py:check", session_key="dashboard:chat-1-2")
+        result = {"status": "report", "message": "green again"}
+        async with _cron_cb(orch, script_result=result) as cb:
+            assert await cb(job) == "green again"
+        slot.queue_append.assert_not_called()
+        orch.dashboard_state.notify.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_report_falls_back_to_notification_when_no_slot(self):

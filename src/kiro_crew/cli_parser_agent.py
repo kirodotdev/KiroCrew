@@ -38,6 +38,17 @@ _AUTO_PAUSE_AFTER_HELP = (
 _fmt = argparse.RawDescriptionHelpFormatter
 
 
+def _positive_int(value: str) -> int:
+    """An argparse ``type`` for a count or number that starts at 1."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a whole number, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {number}")
+    return number
+
+
 def register_chat_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) -> None:
     chat_parser = cli_help.add_command(
         sub,
@@ -47,6 +58,11 @@ Examples:
   kirocrew chat                      # Interactive mode
   kirocrew chat -m 'check my CRs'    # Single message
   kirocrew chat --model claude-opus  # Use specific model
+
+Tool permission prompt (same keys as kiro-cli chat):
+  y  allow this call once
+  n  deny (default; anything else also denies)
+  o  deny and type a reply to the agent instead
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -535,7 +551,9 @@ Examples:
 
     art_show = art_sub.add_parser("show", help="Print an artifact's content")
     art_show.add_argument("slug", help="Artifact slug")
-    art_show.add_argument("--version", type=int, help="Specific version (default: current)")
+    art_show.add_argument(
+        "--version", type=_positive_int, help="Specific version, 1 or more (default: current)"
+    )
     art_show.add_argument(
         "--meta",
         action="store_true",
@@ -735,7 +753,14 @@ def register_agent_parser(sub: _Commands) -> None:
         help="Agent id, or any name: shown as typed, stored under a URL-safe id",
     )
     agent_create.add_argument("--display-name", default="", help="Label the dashboard shows")
-    agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
+    agent_create.add_argument(
+        "--kiro-agent",
+        default="kirocrew",
+        help=(
+            "Template the crew starts from. Only 'kirocrew', the built-in worker "
+            "(the default), is accepted; add other abilities in the crew's editor"
+        ),
+    )
     agent_create.add_argument(
         "--workspace",
         default="",

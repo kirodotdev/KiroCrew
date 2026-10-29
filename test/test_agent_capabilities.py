@@ -521,6 +521,24 @@ def test_transport_types_are_validated_before_any_write(editor):
     assert len(list(specs.glob("*.json"))) == 1
 
 
+def test_stdio_row_with_empty_url_can_still_be_pinned(editor):
+    """The editor accepts a stdio row with an empty ``url`` on a pin, so a
+    row the Capabilities API loads can also be saved.
+    """
+    service, home, specs, parent = editor
+    parent["mcpServers"]["search"].pop("env")
+    parent["mcpServers"]["search"]["url"] = ""
+    (specs / "parent.json").write_text(json.dumps(parent))
+    row = next(r for r in service.get("A")["rows"] if r["section"] == "mcpServers")
+    assert row["value"]["url"] == ""
+    save(
+        service,
+        [{"section": "mcpServers", "id": "search", "action": "set", "value": row["value"]}],
+        enroll=True,
+    )
+    assert spec_for(home, specs)["mcpServers"]["search"]["command"] == row["value"]["command"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "caller,app_id,expected",

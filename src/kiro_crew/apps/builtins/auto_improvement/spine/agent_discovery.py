@@ -247,6 +247,52 @@ def _module_name_for(rel: str) -> str:
     return stem
 
 
+#: Top-level folders that can hold an ``__init__.py`` but are never the source a
+#: discovery scan reads.
+_NOT_SOURCE_DIRS = frozenset({"tests", "test", "docs", "examples", "scripts", "build", "dist"})
+
+#: The prompt's words for a repo whose source folder could not be narrowed.
+REPO_ROOT_LABEL = "the repository root"
+
+
+def _packages_in(parent: Path) -> list[str]:
+    """Names of the importable packages directly under *parent*, sorted."""
+    try:
+        entries = sorted(parent.iterdir())
+    except OSError:
+        return []
+    return [
+        entry.name
+        for entry in entries
+        if entry.is_dir() and not entry.name.startswith(".") and (entry / "__init__.py").is_file()
+    ]
+
+
+def source_root(clone: Path) -> str:
+    """The repo-relative folder holding the target's Python source, or ``"."``.
+
+    ``src/kiro_crew`` first, so a scan of this repository reads what it always read.
+    Then a ``src/`` layout: its one package, or ``src`` itself when it holds none or
+    several. Then a flat layout: the one top-level package, skipping test, doc and
+    script folders. Anything else is the whole repository, so a layout this does not
+    recognise still gets read rather than pointed at a folder that does not exist.
+    """
+    root = Path(clone)
+    if (root / "src" / "kiro_crew").is_dir():
+        return "src/kiro_crew"
+    if (root / "src").is_dir():
+        packages = _packages_in(root / "src")
+        return f"src/{packages[0]}" if len(packages) == 1 else "src"
+    packages = [name for name in _packages_in(root) if name not in _NOT_SOURCE_DIRS]
+    return packages[0] if len(packages) == 1 else "."
+
+
+def _dependents_search_root(clone: Path) -> str:
+    """Where :func:`dependents_of` looks for importers: all of ``src`` when the repo has
+    one (a caller may live in a sibling package), else :func:`source_root`."""
+    return "src" if (Path(clone) / "src").is_dir() else source_root(clone)
+
+
 def dependents_of(clone: Path, changed: list[str], *, limit: int = 24) -> dict[str, list[str]]:
     """Map each changed file → the OTHER source files that import/reference its module
     (the "surrounding code that uses the new functionality"). A cheap dependency probe:
@@ -255,9 +301,7 @@ def dependents_of(clone: Path, changed: list[str], *, limit: int = 24) -> dict[s
     Not a precise import graph (no AST) — a deliberately cheap, dependency-direction hint so
     the agent knows which callers to read when judging whether a change broke a CONTRACT its
     users rely on. Capped so a hot module (imported everywhere) doesn't flood the prompt."""
-    src_dir = Path(clone) / "src"
-    if not src_dir.exists():
-        return {}
+    search_root = _dependents_search_root(clone)
     out: dict[str, list[str]] = {}
     for rel in changed:
         leaf = _module_name_for(rel)
@@ -265,7 +309,7 @@ def dependents_of(clone: Path, changed: list[str], *, limit: int = 24) -> dict[s
             continue
         # Find files that import this leaf (``import leaf`` / ``from … import leaf`` /
         # ``from …leaf import``). Exclude the file itself + tests.
-        res = _git_grep_imports(clone, leaf)
+        res = _git_grep_imports(clone, leaf, search_root)
         deps = [f for f in res if f != rel and not _is_test_path(f)]
         if deps:
             out[rel] = deps[:6]  # a handful of representative callers per changed file
@@ -274,12 +318,14 @@ def dependents_of(clone: Path, changed: list[str], *, limit: int = 24) -> dict[s
     return out
 
 
-def _git_grep_imports(clone: Path, leaf: str) -> list[str]:
-    """Repo-relative source files that mention ``leaf`` in an import statement. Uses
-    ``git grep`` (fast, respects tracked files); returns [] on any failure."""
+def _git_grep_imports(clone: Path, leaf: str, root: str = "src") -> list[str]:
+    """Repo-relative source files under *root* that mention ``leaf`` in an import
+    statement. Uses ``git grep`` (fast, respects tracked files); returns [] on any
+    failure."""
     # Match: `import leaf`, `import leaf as`, `from x import leaf`, `from x.leaf import`
     pattern = rf"(import|from).*\b{re.escape(leaf)}\b"
-    out = _git(["grep", "-lE", pattern, "--", "src/"], clone, timeout=60.0)
+    pathspec = "." if root == "." else f"{root}/"
+    out = _git(["grep", "-lE", pattern, "--", pathspec], clone, timeout=60.0)
     return [ln.strip() for ln in out.splitlines() if ln.strip().endswith(".py")]
 
 
@@ -662,8 +708,8 @@ def discover_surfaces_via_agent(
     # every focus file (rendered compactly as a priority slice + the rest).
     changed = prioritize_focus(all_changed, rotate=rotate)
     dependents = dependents_of(Path(clone), changed) if changed else {}
-    src_dir = Path(clone) / "src" / "kiro_crew"
-    src_label = "src/kiro_crew" if src_dir.exists() else "src"
+    root = source_root(Path(clone))
+    src_label = REPO_ROOT_LABEL if root == "." else root
     prompt = _build_prompt(
         src_label=src_label,
         changed=changed,

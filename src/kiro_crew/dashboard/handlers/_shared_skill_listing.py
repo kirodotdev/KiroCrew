@@ -429,10 +429,16 @@ def _one_row_per_skill_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if key and key != kept.get("key") and key not in aliases:
                 aliases.append(key)
         kept["aliases"] = aliases
-        # Usage, size and the injection mode come only from the loader's read,
-        # so a kept row from another source would otherwise show the skill as
-        # never used, sizeless and "on demand" even when it is pointer-only.
-        for field in ("deliveries", "last_used_at", "size_bytes", "inject_on_trigger"):
+        # Usage, size, creation time and the injection mode come only from the
+        # loader's read, so a kept row from another source would otherwise show
+        # the skill as never used, undated, sizeless and "on demand".
+        for field in (
+            "deliveries",
+            "last_used_at",
+            "created_at",
+            "size_bytes",
+            "inject_on_trigger",
+        ):
             if kept.get(field) is None and row.get(field) is not None:
                 kept[field] = row[field]
     return out

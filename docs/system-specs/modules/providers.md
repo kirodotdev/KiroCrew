@@ -75,11 +75,12 @@ The Claude Code harness has its own page: [claude-code-provider.md](claude-code-
 ## Session Environments contract
 
 Session Environments (a developer feature preview) chooses where a session's
-workspace tools execute; Coder is the workspace provider. Shared helpers live in
-`session_environment.py` (the start-stage and remote-workspace records, the
-local-only tool fence, `SessionEnvironmentUnavailable`), apart from the LLM
-provider selector: placement adds no `agent.provider` value and selects no model.
-Gateway hosting and whole-Crew deployment are out of scope.
+workspace tools execute; Coder, Fly.io Sprites and boxd are the workspace
+providers. Shared helpers live in `session_environment.py` (the start-stage and
+remote-workspace records, the local-only tool fence,
+`SessionEnvironmentUnavailable`), apart from the LLM provider selector:
+placement adds no `agent.provider` value and selects no model. Gateway hosting
+and whole-Crew deployment are out of scope.
 
 Configuration lives in Settings > Session Environments, shown by the per-device
 toggle under Settings > Developer > Feature Previews (schema in
@@ -89,9 +90,23 @@ and rejected writes. Saving starts no compute, removing a profile stops or
 deletes nothing external, turning the preview off changes nothing, and an older
 gateway shows an unsupported notice. "Verify readiness"
 (`POST /api/session-environments/check`, owner-only, saved configuration only)
-runs `coder whoami` and `CoderClient.probe` per profile, touching no workspace.
-"Manage" (`GET /api/session-environments/workspaces`, owner-only) lists
-registry rows without a Coder command.
+runs `coder whoami` and `CoderClient.probe` per profile, plus
+`git_gateway.login_status` per proxied git host, which runs only status
+commands (`gh auth status`, `glab auth status`, `az account show`) and reads
+their exit codes with output discarded. A host that falls back to git's
+credential helper reports `unchecked` rather than asking the helper, since
+asking would hand the gateway the secret; the card says that row cannot be
+checked and says to clone a private repository over HTTPS on the gateway so
+the helper saves the login (a bare `git credential approve` waits on stdin),
+and a `not_signed_in` row names the
+sign-in command to run on the gateway. Under the `strict` tier
+`git_gateway.git_readiness` runs no command and reports every host `withheld`,
+and the card shows one row saying no gateway login is shared. It touches no
+workspace. The Sprites check lists at most one sprite per profile (proving its
+token) and the boxd check runs one `boxd machine list` (proving the CLI's
+login); neither creates or wakes anything. "Manage"
+(`GET /api/session-environments/workspaces`, owner-only) lists registry rows
+without a Coder command.
 
 ### Placement and the tool fence
 
@@ -143,6 +158,178 @@ reviewed remote-safe. `deploy_artifact` refuses only `local_dir`; the
 computer-use refusal is about placement, not governance.
 
 ### Transport
+
+Git from a remote workspace to GitHub, GitLab, Bitbucket and Azure DevOps is
+proxied through the gateway, so the credential never goes to the guest. Session
+start runs `begin_git_proxy` in the background (it never delays the start, and
+a failure only costs that git access): a guest worker runs `git_proxy.py`, a
+stdlib HTTP server on guest loopback that writes the port to the file the
+gateway names with the required `--port-file` (one per launch; there is no
+shared default on either side), and the gateway's
+`git_gateway.GitProxyChannel` answers it over that worker's own authenticated
+link. `workspace_tools.run_command` gives each command git's environment config
+(`GIT_CONFIG_COUNT`, so the workspace template needs git 2.31 or newer: an
+older git ignores those variables and reaches the host directly, without the
+gateway's login), appended after any `GIT_CONFIG_*` entries the command's
+environment already sets, rewriting each host's spellings
+(`workspace_tools.GIT_PROXY_REWRITES`, pinned equal to `git_gateway.HOSTS`:
+`https://`, `git@host:` and `ssh://git@host/` for the first three, HTTPS only
+for `dev.azure.com`, whose SSH path shape differs) to `/<host>/` on the proxy,
+for the lendable hosts only, and only while the port answers (a stale file from
+a dead proxy must not break public clones). Which hosts are lendable is the
+gateway's call: once the guest proxy sends a `lend` frame, the channel
+publishes `{"t": "lend", "hosts": [...]}` (`GitProxyChannel.lendable_hosts`:
+empty under `strict` or an unknown tier, else each host whose credential
+sources answer; values never leave the gateway) at once, every
+`LEND_REFRESH_SECS` (60 s), and as soon as an upstream 401 drops a cached
+login. Hosts are looked up concurrently, each under its own lock, and until
+the first full list is out each host is published as soon as its login is
+found, in a frame marked `"partial": true`, so a slow source for one host does
+not hold back another's; a refresh publishes only its full list. A login the host refused is not lent again until its source returns a
+different value (a source such as `gh auth token` can keep printing a revoked
+token), so that host goes direct until a fresh sign-in. The proxy keeps the list as `<port> <host>...` in `<port file>.lend`
+(`<port> * <host>...` for a partial one),
+removes it on exit, and `git_proxy_env` re-reads it for every command; a list
+that is unreadable routes nothing. A list that is missing, or names another
+port, means the gateway has not answered this proxy yet (the proxy removes the
+file before it asks): a command run then waits for the first answer, up to
+`GIT_PROXY_FIRST_LEND_WAIT_SECS` (20 s, above one credential CLI's 15 s limit),
+so a first private clone right after the session starts still gets the login.
+A partial list keeps the command waiting, since a host still being looked up
+would be left out of its rewrite; a complete list, even an empty one, is used
+at once. Past the wait the command routes what has been found (nothing if no
+list came), and if the proxy stops it routes nothing. The proxy itself starts in
+the background, and writes its port file only once it listens (its server binds
+without a host-name lookup, which can stall on macOS). Each new tool server is
+told by the launch whether a proxy start is in flight (`starting:<n>`, from
+`RemoteWorkerLaunch.git_proxy_state`) or not (`none`). Only during an in-flight
+start, and within the tool server's first `GIT_PROXY_FIRST_LEND_WAIT_SECS`, does
+a command with no listening port file wait for it. The wait ends as soon as the
+port answers, or when the launch writes start `n`'s number to
+`<port file>.failed` because that start failed. With no start in flight, a
+missing proxy costs no wait. A host that
+is not routed keeps the workspace's own git login (its SSH key, its
+`GIT_ASKPASS`), exactly as without Kiro Crew, so under `strict` everything goes
+direct. `GIT_ASKPASS` and the terminal prompt are never changed; a credential
+helper scoped to the proxy's own URL answers `quit=1`, so a routed request
+that ends in a 401 prompts no one. The protected-branch rule below covers
+routed pushes only: a push made with the workspace's own login goes straight
+to the forge, as from any machine holding that key. No
+git config file is written, so a terminal opened outside the tool is
+unaffected. The channel accepts only git's smart-HTTP requests
+(`info/refs?service=git-upload-pack|git-receive-pack` by GET, the two pack
+endpoints by POST) whose repository path matches that host's shape in
+`HOSTS`: `owner/repo` on GitHub and Bitbucket, nested `group/.../project` on
+GitLab, `org/[project/]_git/repo` (percent-encoded names) on Azure. Every
+segment is decoded and refused if it is empty, `.`/`..`/`-`, starts with `-`,
+or holds a separator, `@`, `:` or a control character. Leading-dot repository
+names such as `.github` remain valid. The upstream URL
+is rebuilt from those parts (GitLab gets `.git` so it does not redirect), so the
+guest cannot aim it elsewhere. It then asks
+`vet_and_audit("network.egress", <host>, agent=<calling agent>, fail_closed=True)`.
+The calling agent is captured by `AcpProvider` and carried through proxy startup
+into the channel, never taken from a guest frame. An absent identity refuses
+proxy startup and forwarding; a task-bound agent profile still intersects the
+policy ceiling even on an unrestricted dashboard surface. A push asks no one:
+before a `git-receive-pack` POST goes upstream, the channel reads its
+ref-update commands (`PushCommands`: optional `shallow` lines, then
+`<old> <new> <ref>` pkt-lines up to the flush, capped at 8 MiB) and refuses the
+whole push when any command updates or deletes a protected branch
+(`is_protected_ref`, which reuses the local git-publish floor's
+`_PROTECTED_BRANCHES` and `_normalize_ref` on the lower-cased ref, so
+`refs/heads/main`, `refs/remotes/<r>/main` and any case of them match exactly
+as `git push origin <ref>` does locally; parity is at the destination-ref
+level, since the local check's refusals of unresolvable spellings such as a
+bare push or `--all` reach the proxy already resolved to concrete refs). The refusal is a receive-pack result
+that marks every command `ng` (in the side band the client asked for, every
+packet within its size limit, with the reason on a `remote:` line), so git prints `! [remote rejected]` per ref; a
+client that asked for no report gets a 403. Nothing of a refused push goes
+upstream. A body that cannot be read (a bad pkt-line, a short ref name, a
+compressed body, a body that ends before its flush, a signed push's
+certificate) is refused with a 403. Every other push, a force-push or delete
+of a feature branch included, goes through unprompted, as it would locally,
+and any process in the workspace can make one, as any local process can. Every
+push decision writes one SEL `governance_decision` row (`_audit_push`: scope
+`git.push`, the repository and refs as the item, outcome `allowed` or
+`denied`, rule `no-protected-branch`, `protected-branch`, `unreadable-push` or
+`strict-sandbox`), best-effort, so a failed write never changes the answer. A
+request refused before the egress check (a host or endpoint the proxy does not
+carry, or a channel with no calling agent) writes one denied row too (scope
+`git.request`, rule `not-proxied` or `no-agent`). The
+channel then takes the credential from that host's sources on this
+machine, in order (`host_credential`): `gh auth token` for GitHub (Basic
+`x-access-token`), `glab config get token` then git's credential helper for
+GitLab (Basic `oauth2`), git's credential helper for Bitbucket (Basic
+user:password, an app password or API token), and `az account get-access-token`
+for the Azure DevOps resource then the helper for Azure (Bearer, or a PAT as
+Basic). The helper is asked with `GIT_TERMINAL_PROMPT=0` and
+`GCM_INTERACTIVE=never`, so it answers from what is stored and never opens a
+prompt or a browser on the gateway. Under the `strict` agent sandbox tier, which
+hides those logins from local agents, the proxy lends none
+(`gateway_logins_lent`: the configured tier and its readability from one
+`KiroCrewConfig.load()`, with the governance floor applied, read per request; an unreadable tier counts as strict, and so does a
+load that `KiroCrewConfig.load()` marked degraded -- an unparseable
+`config.json` or `config.local.json`, or a degraded `agent` section -- because
+that load stands field defaults in rather than raising). Under `strict` the
+guest routes nothing here (the published list is empty); a request that still
+arrives, from a list published before the tier changed, is read upstream
+anonymously, a private read's 401 reaching git as a 403 naming the strict tier,
+and a push is refused with that message before its body is read. Other tiers
+lend as described here, by the maintainer's choice of "strict lends no gateway
+git login at all" over per-tier lending: under `standard` and `cc` a remote
+session is also lent logins those tiers hide from local agents (`~/.azure`
+under both, `~/.git-credentials` under `cc`), so its git reach can exceed a
+local agent's on the same tier.
+Each host's value is cached in memory for
+five minutes, never logged or framed, sent upstream only, with no redirect
+followed, and the response is streamed back. An upstream 401 drops the cached
+value. For a push it reaches git as a 403 naming that host's sign-in step; a
+read retries once anonymously (so a public repository still clones), and if
+that also gets a 401 it reaches git as that 401, which prompts no one because
+the proxy's URL has its own `quit` credential helper. Azure's legacy `ORG.visualstudio.com` URLs and clone
+URLs carrying a user (`https://ORG@dev.azure.com/...`) are not rewritten. The proxy lives as long as the session's CURRENT
+workspace relay: a start can make more than one (an early tools probe, a
+respawn), so the git relay's `close` stops the proxy only when the closing relay is
+the newest one `workspace_server` made (`_git_proxy_relay`, which survives
+`close_relay` forgetting `launch.relay` at a runtime's normal end; a restart's
+replacement close leaves the proxy to the restart's own `begin_git_proxy`),
+ending its input first so it removes its own port file,
+so an older relay idling out cannot leave a live session without git. The agent's
+remote-workspace notice says git to the four hosts works as usual: through the
+gateway, with its login, for a host it can lend for, and with the workspace's
+own login otherwise (only that under `strict`), and that a protected-branch
+push through the gateway is refused; it tells the agent not to hunt for keys or
+unset the rewrites, and does not mention `GIT_ASKPASS`, which stays the
+workspace's. `git_proxy.py` ships in the installed worker
+files, and the gateway starts it with `--build`, the SHA-256 of its own copy:
+a guest of another build (or started without one) exits before it frames
+anything, and a guest link that ends before its first frame marks its start
+failed, so version skew ends git's wait at once instead of hanging. A
+request's upload flows on credit: the guest sends at most
+`git_proxy.UPLOAD_WINDOW` body frames ahead of the `credit` frames the gateway
+returns as it takes each piece, so the gateway's frame reader never waits on
+one request and a stalled upload cannot hold back its own `cancel` or another
+request; a guest past its window fails only that request. Pinned end to end by `test_remote_git_proxy.py`,
+which runs a real `git` clone and push through the real proxy and channel
+against `git http-backend`, and asserts the token never crosses to the guest.
+The git-only `GitProxyLink` binds its output reader to a byte watermark: when
+unread bytes fill the reader, it stops feeding the wire endpoint before more
+output can be acknowledged. It pauses through the base link's own consumer
+gate, so the link's stall check counts a busy git reader as reading, not as a
+silent connection. The worker's unacknowledged-byte limit then stops
+the guest producer, including when an upstream push stops draining its body.
+If the guest cannot finish delivering the response (or uploading its request),
+it sends a `cancel` frame for that request id. The channel cancels and awaits
+only that request's task, closing its upstream response and releasing its
+live-request slot without waiting for the rest of a repository download.
+
+Git LFS inherits the same URL aliases. Its batch and lock-verification POSTs
+receive a 307 redirect to their original HTTPS endpoint after the egress check,
+without reading or attaching a gateway credential. Object transfers run directly
+from the workspace: public LFS remains anonymous, while private LFS requires
+workspace-side authentication. `test_remote_git_channel_bounds.py` verifies real LFS
+clone/smudge and pre-push upload through this exclusion, as well as bounded wire
+receive flow.
 
 A vendor tunnel is not assumed to deliver ACP byte for byte (an SSM port forward
 rewrote LF into CR; ECS Exec does not forward piped stdin), so tunnels use
@@ -264,8 +451,16 @@ workspace within `UNSAVED_CHECK_SECS` and publishes one `system.agent` notice
 naming unsaved work. The workspace is then stopped and stamped
 `deletion_due_at` = now + `ARCHIVED_RETENTION_DAYS` (7, fixed: a stopped workspace
 still holds its disk). Reopening before
-the deadline (`retention.resume_check` in `prepare`) clears the stamp and
-restarts the same workspace. `retention.run_sweeper` (every minute, first pass
+the deadline clears the stamp: a History resume awaits `retention.keep_reopened`
+before it publishes the tab (`retention.resume_check` for Coder, `reopen_session`
+for a sprite or boxd machine, which identity-checks the live VM first and leaves a
+same-name replacement alone). A cancellation that fails refuses the resume with
+`reopen_retention_failed` (503, retryable); so does a reopen whose registry
+write fails (only a replacement VM under the recorded name is left alone and
+not kept). A resume refused after the
+cancellation archives the still-closed session again; a refused revive of a
+session that was never closed archives nothing. `prepare` runs the check
+again and restarts the same workspace. `retention.run_sweeper` (every minute, first pass
 30 s after boot) runs `sweep_due`: a due row is flipped to `deleting` under the
 registry lock (`begin_deletion`, the critical section `cancel_deletion` also
 takes), its owner, template and uuid are proven, the workspace is deleted, and
@@ -278,6 +473,8 @@ default), `_shutdown_and_exit` runs `retention.stop_for_shutdown` under
 `SHUTDOWN_STOP_SECS` (8 s, inside the 10 s graceful budget so the hard-exit
 cleanup and audit flush still run before SIGKILL), never raising: it stops every running
 registry-owned workspace except stop-destroys-compute ones and stamps nothing.
+That covers rows whose profile was since removed, so the settings card shows the
+stored switch as it is and keeps an "on" switch usable with no profile left.
 Without one, the worker's orphan timeout (above the link lease, so a restart
 reconnects first) and the Coder deadline, which only the gateway extends, stop
 the guest. Retention deletion needs a running gateway; a stopped workspace keeps
@@ -288,6 +485,101 @@ pending approvals are dropped and their commands never ran remotely. An active
 `run_command` dies with its process group when the guest worker retires or
 orphans; detached background processes are not tracked. The next message
 reconnects to the same workspace.
+
+### Sprites and boxd: one persistent VM per session
+
+Fly.io Sprites profiles (`session_environments.sprites_profiles`) and boxd
+profiles (`session_environments.boxd_profiles`) give each session its own VM
+that keeps its disk when idle. A choice row records the resolved provider beside
+its profile id; `session_environments/routing.py` (`profile_provider`) derives
+the provider from the id for `prepare_for_session`, `session_browse` and the
+dashboard (legacy rows are tagged `coder`). `prepare_for_session` refuses a row
+whose recorded provider
+is neither `coder` nor the one the id now names, so a removed profile whose id
+another provider reuses never moves the session onto a fresh VM. A `coder` row
+whose session already owns a Coder workspace row is refused the same way, so
+an archived workspace never stays due for deletion behind a moved session. An id in more
+than one provider list is unavailable at launch and omitted from the picker.
+The start gate counts Sprites and boxd profiles as configuration beside the
+Coder URL and profiles. Unlike a Coder profile, a Sprites or boxd profile may
+leave `workdir` blank: each start reads the machine's login home (`$HOME`, which
+must be absolute) and records it on the session's row (`SessionResource.home`),
+which the session, Files and the terminal then use.
+
+The provider-neutral `session_environments/` package holds what more than one
+provider shares, so `coder/` keeps only Coder's own code: `routing.py` (the
+provider table, the cross-provider id rule and the guard above), the VM branches
+of browse and retention (`browse.py`, `retention.py`), and `persistent_vm.py`.
+A test keeps `sprites_session` and `boxd_session` from importing any of it from
+`coder/`. Both providers share `persistent_vm.py`: `SessionResourceRegistry` (one file per
+provider under the data home, fail-closed on a corrupt or unknown-version file,
+reading only declared row fields, written atomically under a blocking
+cross-process lock, so every call runs through `asyncio.to_thread`) and
+`PersistentVmEnvironments`, which owns when a VM is created, kept or deleted:
+
+- `prepare` bumps the owner's `retention.session_lifecycle` generation and runs
+  under its lock, as the Coder path does. `check_ready` (a Sprites token in the
+  vault, the boxd CLI installed) runs before anything is reserved.
+- A name (`kirocrew-` or `kc-` plus 16 random hex digits) and its row are
+  written BEFORE the create call, so a failed create is reclaimed immediately or
+  by a later prepare or archive; cleanup reads the live VM first. The returned
+  provider id is recorded, and a VM answering under the name with another id is
+  refused, never adopted. The row records the Sprites `token_secret`, so a
+  sprite whose profile was removed is still deleted when due. The retention task
+  starts when either registry exists, even with no profiles or Coder URL (an
+  off-loop probe; a metadata failure keeps maintenance enabled, and live config
+  is rechecked after it), so archived-row sweeps and boxd shutdown hibernation
+  survive profile removal. A VM deleted outside Kiro Crew is replaced under a
+  new name (`created`).
+- `retention._archive` archives Sprites and boxd VMs inside the same lifecycle
+  lock and generation check: the row is stamped due in `ARCHIVED_RETENTION_DAYS`
+  before any remote call. boxd arms its own `delete-after` timer for the same
+  days and hibernates the machine; a sprite goes cold
+  on its own. Live identity is checked before arming a timer and before
+  deletion, so a same-name replacement is never touched. A reopen before the
+  deadline clears the stamp (and boxd's timer): a History resume does so at once
+  (`retention.schedule_reopened`, under the lifecycle lock, superseding a queued
+  archive, creating and waking nothing), and `prepare` again on the next start.
+  A failed boxd undo keeps the stamp so that start retries it.
+- `retention.sweep_once` runs `PersistentVmEnvironments.sweep_due` for both
+  providers before the Coder sweep, with or without a Coder URL; it is
+  registry-only while nothing is due and re-reads each due row under the
+  session's lifecycle lock before deleting. One provider's failure is logged
+  once per distinct message and never stops the other.
+- `stop_for_shutdown` hibernates every boxd machine (rows untouched); sprites
+  need no call.
+- The environment health card and the unsaved-work check resolve the session
+  with `wake=False`: a VM whose live record is not `running` (a cold or warm
+  sprite, a hibernated boxd machine) reports `stopped` with no exec, since an
+  exec would wake it. The Files panel and terminal are explicit requests and
+  may wake one.
+
+Sprites is reached through its API alone (`sprites_session/client.py`): the
+token is read from the vault per call by the profile's `token_secret`, sent only
+as the `Authorization` header, and never framed, logged or passed to the sprite.
+`SpritesShell.run` is one non-TTY exec WebSocket with the worker secret on
+stdin, and `SpritesWorkerLaunch.dial` opens the proxy WebSocket to the worker's
+`127.0.0.1` port, so `RemoteWorkerLaunch`, the workspace relay and the git proxy
+run unchanged. A sprite is created with URL auth `sprite`, never `public`. The
+dashboard terminal runs `sprites_session.terminal` as its PTY child
+(`bridge_argv` takes only a minted sprite name, its recorded id and a secret
+name; the bridge re-checks that id under the token it loads) on a POSIX
+gateway. boxd uses the gateway's own `boxd auth login`; a one-way fingerprint
+of `boxd auth --json` (account and active org) is recorded per machine, so a
+lookup miss under another account or org is refused, never read as a deletion,
+and so is a miss after which the account read differently than before it.
+The fingerprint (Sprites: of the token) is saved with the reservation before
+the create, and the create refuses under any other one, so a create cut short
+before its record is bound still names the account its machine lives in.
+`boxd machine exec <m> -- sh -c <cmd>` streams stdin and stdout and returns the
+remote exit code like `coder ssh`, so `BoxdShell` drops into the unchanged
+launch, and the terminal is `boxd machine exec --tty <m>` changing into the
+session's working folder before it starts a login shell. Machine names are
+validated before any argv is built. The Files and terminal views look the VM up
+(`GET /v1/sprites/{name}`, `boxd machine get`) and never create one. The
+Settings card stores a Sprites token through a masked field straight into the
+vault (`POST /api/secrets`) and never deletes vault entries; a failed vault
+listing renders `ErrorNotice` with a Retry that preserves drafts.
 
 ### Dashboard views
 
@@ -349,6 +641,61 @@ sandbox. The guest-script rule covers only execution inside the guest
 import the gateway sandbox), never a gateway CLI reaching a guest; gateway-side
 agent-influenced commands use the sandbox chokepoint. The two `main` entries
 are in-process `asyncio.run`. No directory-wide exemption exists.
+The boxd lifecycle CLI is a gateway spawn with fixed machine verbs, validated
+gateway-created names, saved snapshot/CPU settings and a validated retention
+duration, no local shell or agent-selected cwd, and stdin closed; it needs the
+host login. The Sprites terminal's bridge argv runs isolated Python with `-P`
+so the terminal's working directory cannot shadow the standard library.
+
+The gateway's Git credential and readiness CLI calls also have individual audit
+entries: their verbs and host names come from the fixed credential-source and
+host tables, never guest argv. Every CLI and Git helper executable passes
+`github_runner.validate_provider_executable(require_protected=True)` off-loop:
+user-writable installs and overrides are refused, even outside a project. Children
+receive a minimal environment with a trusted system PATH, no interpreter injection,
+and a non-project cwd. Git helper discovery uses protected Git in its installation
+directory and stops repository discovery there. Global/system config is read only
+as data: fixed helper selectors (`store`, `cache`, `osxkeychain`, `manager`,
+`manager-core`, `libsecret`, `wincred`, or the exact `gh auth git-credential` shape)
+are rebuilt with protected absolute executables, found in Git's exec-path or, for a
+helper installed outside it (Git Credential Manager in `/usr/local/bin`), in the
+trusted system directories. Shell snippets, configured paths
+and extra arguments are not executed. `store` and `cache` run only Git's `get`
+action against their default locations, never a write. Host-scoped keys and helper
+resets are retained and passed to `credential fill` as `GIT_CONFIG_KEY_n` /
+`GIT_CONFIG_VALUE_n` pairs, never as `-c key=value` text (a free-text subsection
+can hold `=`, which git would split at; a key holding `=` or a control character
+is skipped). `credential fill` reads only that synthesized configuration,
+with the original global/system files disabled, preventing a config swap from
+changing what executes. A host with no usable protected helper fails to authenticate;
+readiness still discards every output stream without reading a secret.
+Known limitation: the helper is asked per host, with no repository path, so a
+helper set for one path under a host (`credential.https://dev.azure.com/<org>.helper`)
+is not matched; a helper set for the host (`credential.https://dev.azure.com.helper`
+or `credential.helper`) is. In that case the host is not lent (its git uses the
+workspace's own login), and the refusal and the gateway log name the setting to use.
+On a Windows gateway the same validated helpers are run without git's shell:
+git runs every helper through `sh -c`, and Git for Windows keeps `sh` in its own
+`usr\bin`, which is not on the trusted `PATH`. `_fill_directly` runs each
+helper's validated executable with `get`, in git's config order, honouring an
+empty value's list reset and the host-scoped keys `credential.https://<host>.helper`
+(`_helper_applies`), and speaks the helper protocol itself: a user name one helper
+returns goes to the next, an expired password is dropped, `quit` stops. The secret
+is read from the helper's stdout pipe only; it is in no argv, environment or
+file. Git Credential Manager, which Git for Windows ships beside `git.exe`
+(`mingw64\bin`), is a candidate there under the same protected-install walk. A
+lookup that times out or is cancelled kills the CLI's whole process tree (`az` is
+`az.cmd`). The relay token file gets an owner-only, inheritance-protected DACL
+(Owner Rights and the gateway user's SID), read back before the token is
+written; otherwise the file is removed and the launch fails.
+A Windows gateway that cannot read its own SID or load the security-descriptor
+API lends nothing (`lending_unverifiable`): the lend list is empty,
+`host_credential` and the git-helper source refuse with `WINDOWS_LENDING_UNVERIFIED`,
+a push is refused whole (audited as `windows-unverified`), and readiness reports
+`unsupported`, which the card states in one line. With remote workspace paths
+matched as POSIX on any gateway (#23498), a remote workspace starts on a Windows
+gateway too, so lending works there end to end: workspace, guest proxy, gateway
+lookup and lent login.
 
 ### Template contract
 
@@ -837,7 +1184,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 ```
 
 - `agent.provider` is fixed to `"acp"` (enum `["acp"]`); the provider is not a choice.
-- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites).
+- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites). A stored Kiro CLI pick (`"kiro"`) resolves to KAS once the gateway confirmed the host's kiro-cli offers v3 and while KAS is selectable, so the factory builds a KAS provider for it with KAS's launch, projection, permissions and compaction; it builds the Kiro CLI provider without that confirmation ([harness-parity](harness-parity.md) H1). The Kiro CLI provider, its skill-view aliases and the `cli.json` overlay stay for that case.
 - `create_provider_factory()` returns a `Callable` that builds an `AcpProvider` for the resolved backend.
 
 An agent spec's model is consumed by kiro-cli before Kiro Crew reaches

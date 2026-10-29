@@ -57,9 +57,17 @@ def _fresh_reexec_environment(_floor_monkeypatch):
     consumed must not make a later test's gateway read as service-launched, nor
     be written into the environment by a later test's stubbed exec.
     """
-    from kiro_crew import platform_compat
+    from kiro_crew import platform_compat, platform_compat_runtime
 
-    _floor_monkeypatch.setattr(platform_compat, "_KEPT_FOR_REEXEC", {})
+    # ONE fresh dict bound in both modules: ``keep_for_reexec`` and the
+    # ``reexec_*`` seams resolve ``_KEPT_FOR_REEXEC`` in
+    # ``platform_compat_runtime``, while readers go through the facade, so
+    # rebinding only the facade name would leave the dict the writers fill
+    # shared across tests (the ``.env`` ownership marker is kept on every
+    # ownership change, so a stale one would reach a later test's exec stub).
+    fresh: dict[str, str] = {}
+    _floor_monkeypatch.setattr(platform_compat, "_KEPT_FOR_REEXEC", fresh)
+    _floor_monkeypatch.setattr(platform_compat_runtime, "_KEPT_FOR_REEXEC", fresh)
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +154,38 @@ def _drop_live_config_snapshot():
     live.reset_for_tests()
     yield
     live.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _reset_env_boot_record_and_ownership():
+    """Give every test an empty boot ``.env`` record and ``.env`` ownership set.
+
+    Both are process-global: any test that drives ``load_credentials()`` records
+    the raw ``.env`` map it read as the live watcher's boot baseline, and notes
+    the keys ``.env`` propagated as owned. Left behind, a later test's
+    ``ConfigWatch.start()`` adopts that map as its baseline and its first cycle
+    dispatches spurious ``credentials.*`` changes, and a later removal test sees
+    ownership it never recorded -- failures that depend on which tests share an
+    xdist worker. Reset on both sides, the same shape as the live watcher reset.
+    """
+    from kiro_crew.config import loader_credentials
+
+    # Looked up, not imported by name: the root floor must not take every test
+    # down with it on a tree where these helpers do not exist (an older owner
+    # module, or a proof run that reverts the production change).
+    resets = [
+        fn
+        for fn in (
+            getattr(loader_credentials, "reset_boot_raw_env", None),
+            getattr(loader_credentials, "reset_env_owned_keys", None),
+        )
+        if fn is not None
+    ]
+    for reset in resets:
+        reset()
+    yield
+    for reset in resets:
+        reset()
 
 
 @pytest.fixture(autouse=True)

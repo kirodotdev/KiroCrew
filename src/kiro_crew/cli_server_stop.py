@@ -384,6 +384,135 @@ def _refuse_service_alias(operation: str, port: int) -> bool:
     return True
 
 
+def _process_path(pid: int) -> str:
+    """Where *pid* runs from, with ``/`` separators, or ``""`` when unreadable.
+
+    The executable path where the host reports one (Linux, macOS), else the
+    command line (the only source Windows has), without its opening quote.
+    """
+    where = platform_compat.process_executable_path(pid) or platform_compat.process_command_line(
+        pid
+    )
+    return (where or "").replace("\\", "/").lstrip('"')
+
+
+def _config_dir_owner() -> tuple[int, bool] | None:
+    """The live ``gateway.lock`` holder as ``(pid, from_desktop_bundle)``, or ``None``.
+
+    Best effort: a free lock and any probe failure both return ``None``.
+    ``from_desktop_bundle`` reads the same ``backend-dist`` path component
+    :func:`platform_compat.is_bundled_interpreter` reads for this process, in
+    :func:`_process_path` of the holder.
+    """
+    try:
+        holder = lock_holder(config_dir())
+    except (LockProbeError, OSError):
+        return None
+    if holder.pid is None or not holder.alive:
+        return None
+    segments = _process_path(holder.pid).split("/")
+    return holder.pid, platform_compat.BUNDLED_BACKEND_DIST_DIRNAME in segments[:-1]
+
+
+#: How many ancestors of the gateway are read to find the desktop app. The app
+#: spawns the bundled interpreter directly; the slack covers a launcher shim
+#: inside the bundle.
+_SUPERVISOR_SEARCH_DEPTH = 4
+
+
+def _desktop_supervisor_pid(holder_pid: int) -> int | None:
+    """The live desktop app that spawned the gateway *holder_pid*, or ``None``.
+
+    The gateway runs from ``<app>/<resources>/backend-dist/``; the app's own
+    executable sits elsewhere under ``<app>``. The first ancestor outside the
+    bundle must run from under ``<app>``. A gateway the app left behind (the app
+    quit or crashed) has a reaped, reused or re-homed parent, so it is not
+    supervised and a stop from here stays down. Paths compare case-folded:
+    Windows and macOS paths are case-insensitive, and a false match only
+    refuses. Any unreadable step returns ``None``.
+    """
+    segments = _process_path(holder_pid).split("/")
+    try:
+        bundle_at = segments[:-1].index(platform_compat.BUNDLED_BACKEND_DIST_DIRNAME)
+    except ValueError:
+        return None
+    if bundle_at < 2:
+        return None
+    app_root = "/".join(segments[: bundle_at - 1]).casefold() + "/"
+    bundle_root = "/".join(segments[: bundle_at + 1]).casefold() + "/"
+    pid = holder_pid
+    for _ in range(_SUPERVISOR_SEARCH_DEPTH):
+        pid = platform_compat.get_ppid(pid)
+        if pid <= 1:
+            return None
+        where = _process_path(pid).casefold()
+        if where.startswith(bundle_root):
+            continue
+        return pid if where.startswith(app_root) else None
+    return None
+
+
+def desktop_app_supervisor(port: int, *, explicit_port: bool) -> tuple[int, int] | None:
+    """``(gateway_pid, app_pid)`` when the desktop app supervises this home's gateway.
+
+    The check :func:`_refuse_desktop_supervised` refuses on, without the audit
+    record or the message, so a caller that would run ``kirocrew restart`` can
+    learn beforehand that it will be refused. ``None`` when the gateway is not
+    recognised as the app's, or any probe fails.
+
+    The lock names this home's gateway, but ``--port`` can name another home's
+    gateway on another port. With *explicit_port* the answer is the app only
+    when this home's gateway is a listener on *port*; an empty or failed
+    listener lookup answers ``None``.
+    """
+    found = _config_dir_owner()
+    if found is None or not found[1]:
+        return None
+    gateway_pid = found[0]
+    if explicit_port and gateway_pid not in platform_compat.find_listening_pids(port):
+        return None
+    app_pid = _desktop_supervisor_pid(gateway_pid)
+    return None if app_pid is None else (gateway_pid, app_pid)
+
+
+def _refuse_desktop_supervised(operation: str, port: int, *, explicit_port: bool) -> bool:
+    """Refuse *operation* when the desktop app supervises this home's gateway.
+
+    The app restarts a gateway that goes away, so killing it from the CLI is
+    undone (``stop``) or raced (``restart``). Like a systemd/launchd unit, the
+    gateway's manager owns its lifecycle: nothing is signalled, one SEL
+    ``denied`` event is written, and the remedy is printed. Returns ``True``
+    after refusing. A gateway that is not recognised as the app's, including any
+    probe failure, returns ``False`` and keeps the existing path; see
+    :func:`desktop_app_supervisor` for what is recognised.
+    """
+    found = desktop_app_supervisor(port, explicit_port=explicit_port)
+    if found is None:
+        return False
+    gateway_pid, app_pid = found
+    sel().log_api_access(
+        caller="cli",
+        operation=operation,
+        outcome="denied",
+        source="cli",
+        resources=f"pids=[{gateway_pid}] port={port} reason=desktop_app_supervised app_pid={app_pid}",
+    )
+    if operation == "gateway_restart":
+        print(
+            f"❌ The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
+            f"so `kirocrew restart` will not kill it.\n"
+            f"   Restart it from the app (Settings → About → Restart gateway), "
+            f"or quit the app and run `kirocrew restart` again."
+        )
+    else:
+        print(
+            f"❌ The Kiro Crew desktop app (pid {app_pid}) runs this gateway (pid {gateway_pid}), "
+            f"so `kirocrew stop` will not kill it: the app would start it again.\n"
+            f"   Quit the app to stop the gateway."
+        )
+    return True
+
+
 def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None:
     """Stop a running Kiro Crew gateway.
 
@@ -423,6 +552,12 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
     # an alias), but the fallback below would then SIGTERM the alias target's
     # managed process on the port — exactly what this CLI must not do.
     if cli_port is None and _refuse_service_alias("gateway_stop", port):
+        sys.exit(1)
+
+    # Same rule for the desktop app, which starts its gateway again after a
+    # stop from here. ``--expect-pid`` (above) is the app's own stop path and
+    # is not refused.
+    if _refuse_desktop_supervised("gateway_stop", port, explicit_port=cli_port is not None):
         sys.exit(1)
 
     # Cross-platform port -> listening PID lookup (lsof on POSIX, netstat -ano

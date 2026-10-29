@@ -153,7 +153,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
     ),
     "kiro_crew.sandbox_leaves": tuple("""
         _POLICY_CACHE_LEAF _VOICE_RUNTIME_LEAF _CREW_HOME_DEFAULT _CREW_HOME_PREFIXES
-        _LIVE_TARGET_LEAF _LIVE_TARGET_STAGING_LEAF _AUTH_STORE_STAGING_LEAF MD_NOTEBOOK_APP_NAME
+        _LIVE_TARGET_LEAF _LIVE_TARGET_STAGING_LEAF _AUTH_STORE_STAGING_LEAF
+        _SECRET_REQUEST_POLICY_LEAF MD_NOTEBOOK_APP_NAME
         _MD_NOTEBOOK_STATE_LEAVES _MD_NOTEBOOK_STAGING_LEAF _CREW_HIDDEN_LEAVES
         _MD_NOTEBOOK_STATE_FILES _MD_NOTEBOOK_RETIRED_STATE_LEAVES
         _CREW_UNREADABLE_MASK_LEAVES _RELOCATED_CREW_HIDDEN_LEAVES _CREW_READONLY_LEAVES
@@ -282,8 +283,11 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _TRUSTED_LAUNCHER_TIMEOUT_SECS LAUNCHER_EXEC_FAILURE_RE
         """.split()),
     "kiro_crew.sandbox_wrap": tuple("""
+        _INHERITED_USERNS_FAILURE_ENV _read_inherited_userns_failure
+        _set_inherited_userns_failure _inherited_unshare_failure
         _last_unshare_failure unavailable_remedy unavailable_reason remedy_guidance
-        _warm_thread _record_probe_failure _background_warm _kick_background_warm
+        _warm_thread _record_probe_failure _holds_inherited_unshare_failure
+        _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
         """.split()),
@@ -312,7 +316,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _warn_windows_inert_resource_limits_once apply_windows_resource_ceiling
         _SCOPE_UNIT_PREFIX _SCOPE_UNIT_TOKEN_SAFE scope_unit_name cgroup_scope_argv
         name_scope_unit _CGROUP_TOTAL_MEMORY_FRACTION _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB
-        _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_memory_mb
+        _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_tasks _default_max_total_memory_mb
         _slice_limits_from_config _SLICE_LIMITS_APPLIED ensure_agents_slice_limits
         _USER_MANAGER_CGROUP_BASE _agents_slice_cgroup_dir _read_cgroup_counters
         read_cgroup_int _SLICE_THROTTLE_PROBE_SEEN _SLICE_THROTTLE_EDGE_AT

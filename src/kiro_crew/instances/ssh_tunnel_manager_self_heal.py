@@ -253,6 +253,7 @@ async def _rebuild(
     )
     tunnel.status.turn_url = params.turn_url(local_port)
     tunnel._on_healthy = self._on_tunnel_healthy
+    tunnel._timeout_tunable = True  # budget is _connect_timeout_for(...)
     async with self._lock:
         if self._tunnel_epoch.get(inst.id, 0) != expected_epoch:
             raise _RecoverySuperseded(inst.id)

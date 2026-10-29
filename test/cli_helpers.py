@@ -121,7 +121,7 @@ def _pin_default_config(monkeypatch) -> None:
         return cfg
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
-    monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
+    monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self, **kw: {})
 
 
 @pytest.fixture(autouse=True)

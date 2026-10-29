@@ -219,12 +219,15 @@ async def _answer_permission_request(
                     metadata={"reason": "hook_auto_approve"},
                 )
                 return False
-            logger.warning(
-                "declining a hook auto-approve: %s; the request "
-                "falls through to the Slack handler's normal "
-                "approval ladder",
-                _ng_refusal.log_text,
-            )
+            # Once per session for a platform-scope refusal; the audit row
+            # below is still written for every call.
+            if name_grant.should_log_decline(session_key, _ng_refusal):
+                logger.warning(
+                    "declining a hook auto-approve: %s; the request "
+                    "falls through to the Slack handler's normal "
+                    "approval ladder",
+                    _ng_refusal.log_text,
+                )
             name_grant.log_decline(
                 source="slack",
                 session_key=session_key,

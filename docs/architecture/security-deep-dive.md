@@ -356,6 +356,21 @@ model's title **and** the raw command:
   reverse-shell forms, narrowly scoped so it can be a hard deny at the gate
   without blocking benign local commands.
 
+**The exfiltration-shape check is defence in depth, not a boundary.** It
+matches flags and command forms, so it cannot close every way a client that
+talks to a remote service, such as `gh`, can send local bytes; each flag it
+added would also refuse ordinary use of that client. What keeps a credential
+store out of a shell's reach is the OS sandbox (Layer 0) at a tier that masks
+it, on a spawn Kiro Crew wraps: Kiro Crew's own secret stores are hidden in
+every tier, while `~/.aws`, `~/.kube` and the `gh` config are masked under
+`strict` but not by the default `standard` tier (the per-tier lists
+in `sandbox_tiers.py`; `security/paths.py::sandbox_credential_targets` is the
+matching set for the adapter-harness and Claude deny lists). Output redaction
+(Layer 4) covers credential text that reaches a human or an external service
+through tool output; it does not see bytes a subprocess sends itself. A command
+that sends local bytes past this check is a gap in an extra layer, and closing
+it for credentials is the sandbox tier's job, not a longer flag list.
+
 `SUSPICIOUS_BASH_PATTERNS` / `audit_bash_command()` are a **separate, advisory**
 surface: they back the `kirocrew security audit` history scan and the posture
 count, and are not enforced at the gate. The gate enforces the narrower checks

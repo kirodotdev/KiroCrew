@@ -91,7 +91,6 @@ const PAGE_HOOKS = [
 describe('KiroCrewAgentsPage owners', () => {
   it('are the files the page is made of', () => {
     expect(OWNERS).toEqual([
-      'KiroCrewAgentsPageFields.tsx',
       'KiroCrewAgentsPageRoster.tsx',
       'kiroCrewAgentsPageRosterLabels.ts',
     ])

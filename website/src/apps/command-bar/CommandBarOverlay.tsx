@@ -187,6 +187,7 @@ export default function CommandBarOverlay({
   const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
+  const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
   const simplifiedToolNames = useSimplifiedToolNames()
   // `aria-modal` is a promise that Tab cannot reach the page behind the dialog, so
   // the trap has to be real. Escape is owned by the dialog panel's own keydown
@@ -206,7 +207,7 @@ export default function CommandBarOverlay({
     folders,
     runningMates,
     mates,
-  } = useCommandBarOverlayEngines({ scope, liveSlots, dispatch, navigate })
+  } = useCommandBarOverlayEngines({ scope, liveSlots, subagentQueued, dispatch, navigate })
 
   // The query is NOT reset here. It is seeded at mount, and clearing it on the open
   // edge would drop the type-ahead along with anything typed before this effect ran.

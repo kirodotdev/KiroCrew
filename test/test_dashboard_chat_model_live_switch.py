@@ -787,6 +787,9 @@ class TestSlotModelSwitchContextBroadcast:
     async def test_reset_fallback_broadcasts_token_clearing_event(self, tmp_path):
         # No live provider -> the reset path: no token counts, so the frontend
         # deletes its stored entry and falls back to the model-derived window.
+        # The reset recreates the session but RESUMES THE SAME CONVERSATION, so
+        # the frame omits `pct` — the last known percentage still describes the
+        # session and the meter must keep it rather than drop to 0%.
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         state.broadcast_ws = MagicMock()
@@ -800,7 +803,7 @@ class TestSlotModelSwitchContextBroadcast:
         assert resp.status == 200
         state.sessions.reset.assert_awaited_once()
         events = self._find_context_events(state.broadcast_ws)
-        assert events == [{"slot": state._slots["a"].key, "pct": 0.0, "reset": True}]
+        assert events == [{"slot": state._slots["a"].key, "reset": True}]
 
     @pytest.mark.asyncio
     async def test_broadcast_failure_does_not_fail_the_switch(self, tmp_path):

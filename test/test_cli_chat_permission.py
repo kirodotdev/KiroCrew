@@ -130,7 +130,13 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "answer,call,outcome",
-        [("a", ("approve", 7, False), "allowed"), ("d", ("reject", 7, False), "denied")],
+        [
+            ("y", ("approve", 7, False), "allowed"),
+            ("n", ("reject", 7, False), "denied"),
+            # The pre-Kiro-CLI keys still answer the same way for one release.
+            ("a", ("approve", 7, False), "allowed"),
+            ("d", ("reject", 7, False), "denied"),
+        ],
     )
     async def test_the_turn_completes_whatever_the_human_answers(
         self, monkeypatch, capsys, answer, call, outcome
@@ -148,8 +154,25 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         # A prefix match reads `abort` as an allow -- the opposite of intent.
         # The other rejects are what a person types when a single-key prompt did
         # not register, plus the do-nothing answers.
-        [(a, True) for a in ("a", "A", " a ", "a\n")]
-        + [(a, False) for a in ("abort", "allow", "always", "wait", "ad", "x", "", EOFError)],
+        [(a, True) for a in ("y", "Y", " y ", "y\n", "a", "A", " a ", "a\n")]
+        + [
+            (a, False)
+            for a in (
+                "yes",
+                "yank",
+                "yn",
+                "n",
+                "no",
+                "abort",
+                "allow",
+                "always",
+                "wait",
+                "ad",
+                "x",
+                "",
+                EOFError,
+            )
+        ],
     )
     async def test_only_the_exact_allow_token_approves(self, monkeypatch, answer, allows):
         provider, sels, _ = await self._drive(monkeypatch, answer=answer)
@@ -157,11 +180,43 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
         assert [s["outcome"] for s in sels] == ["allowed" if allows else "denied"]
 
     @pytest.mark.asyncio
+    async def test_the_prompt_advertises_kiro_clis_keys_not_the_legacy_ones(self, monkeypatch):
+        """`kiro-cli chat` asks [y/n/t]; this prompt shows the same y / n so a
+        habitual `y` is not read as a refusal. The legacy a / d still work but
+        are not advertised."""
+        _, _, reads = await self._drive(monkeypatch, answer="n")
+        prompt = reads["prompts"][0]
+        assert "[y] allow once" in prompt
+        assert "[n] deny (default)" in prompt
+        assert "[a]" not in prompt and "[d]" not in prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", ["t", "T", " t ", "t\n"])
+    async def test_kiro_clis_trust_key_denies_and_says_why(self, monkeypatch, capsys, answer):
+        """Kiro CLI's `t` trusts the tool for the session. There is no session
+        grant here, so it denies -- approving once would leave the person
+        believing later calls are trusted -- and the notice names the key that
+        does allow."""
+        provider, sels, reads = await self._drive(monkeypatch, answer=answer)
+        assert provider.calls == [("reject", 7, False)]
+        assert [s["outcome"] for s in sels] == ["denied"]
+        assert reads["n"] == 1
+        out = capsys.readouterr().out
+        assert "trusting a tool for the session is not available" in out
+        assert "Answer y to allow each call once" in out
+
+    @pytest.mark.asyncio
+    async def test_only_the_trust_key_prints_the_trust_notice(self, monkeypatch, capsys):
+        for answer in ("trust", "n", "y"):
+            await self._drive(monkeypatch, answer=answer)
+            assert "not available in kirocrew chat" not in capsys.readouterr().out
+
+    @pytest.mark.asyncio
     async def test_no_answer_grants_a_persistent_approval(self, monkeypatch):
         """There is no "always allow": a backend that records one stops sending
         permission requests for matching calls, and a request never sent is a
         call this ladder never runs and never audits."""
-        for answer in ("a", "w", "always"):
+        for answer in ("y", "a", "t", "w", "always"):
             provider, _, reads = await self._drive(monkeypatch, answer=answer)
             assert all(not always for kind, _, always in provider.calls if kind == "approve")
         # The prompt must not advertise an option the responder cannot honour.

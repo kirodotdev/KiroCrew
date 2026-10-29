@@ -289,10 +289,21 @@ const statusHeldOrphanTest = (state: DashboardState): ((key: string) => boolean)
   state.slotsListPartial === true,
 )
 
+/** The keys of the Crew Mode crew members among *slots* that the person's lists
+ *  leave out (`crewModeView`): those whose root is a row too, since that root's
+ *  Crew panel lists them. Counts shown to the person skip them; their unread
+ *  entries stay for that panel. A crew member whose root is closed is a row
+ *  again, so it counts. */
+export const crewMemberKeys = (slots: readonly { key: string; crew_root?: string }[]): ReadonlySet<string> => {
+  const keys = new Set(slots.map(s => s.key))
+  return new Set(slots.filter(s => !!s.crew_root && keys.has(s.crew_root)).map(s => s.key))
+}
+
 /** The unread keys an embedded instance reports to the Instances hub. */
 export const relayedUnreadKeys = (state: DashboardState): string[] => {
   const isHeldOrphan = statusHeldOrphanTest(state)
-  return (state.unreadSlots ?? []).filter(key => !isHeldOrphan(key))
+  const crewMembers = crewMemberKeys(state.slots ?? [])
+  return (state.unreadSlots ?? []).filter(key => !isHeldOrphan(key) && !crewMembers.has(key))
 }
 
 /** True while slot-list state can hide absent unread sessions from the hub count. */

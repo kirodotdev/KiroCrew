@@ -6,19 +6,27 @@ import { Provider } from 'react-redux'
 import { createTestStore } from './helpers'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
+import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { SessionEnvironmentsCard } from '../pages/settings/SessionEnvironmentsCard'
 import { FeaturePreviewsSection } from '../pages/settings/FeaturePreviewsSection'
 import { PREVIEW_SESSION_ENVIRONMENTS } from '../utils/previewFlags'
 import { settingEntryOffered } from '../components/commandPalette/settingsSearchCore'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+import { setSettingsDeepLinkTarget } from '../components/settings'
 
 vi.mock('../pages/settings/DecisionsCard', () => ({ DecisionsCard: () => null }))
 
 const profile = { id: 'dev', name: 'Development', template: 'python-dev', workdir: '/workspace/repo' }
+interface SpritesRow { id: string; name: string; token_secret: string; workdir: string }
+interface BoxdRow { id: string; name: string; snapshot: string; vcpu: number; workdir: string }
 interface Section {
   coder_url: string
   profiles: typeof profile[]
+  sprites_profiles?: SpritesRow[]
+  boxd_profiles?: BoxdRow[]
   default_profile?: string
+  stop_on_shutdown?: boolean
 }
 let stored: { session_environments?: Section }
 let reads: number
@@ -55,11 +63,16 @@ beforeEach(() => {
     http.get('*/api/session-environments/workspaces', () => HttpResponse.json({ workspaces: [] })),
   )
 })
-afterEach(() => { cleanup(); qc?.clear(); localStorage.clear(); vi.useRealTimers() })
+afterEach(() => { cleanup(); qc?.clear(); localStorage.clear(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 const url = () => screen.getByLabelText('Coder URL')
 const typeUrl = (value: string) => fireEvent.change(url(), { target: { value } })
+/** The Sprites token field's label: the token's format is part of it. */
+const TOKEN_LABEL = 'Sprites API token'
+/** The section's one Save. */
 const save = () => screen.getByRole('button', { name: 'Save settings' })
+/** The visible tab's Add button (each provider section has one). */
+const addVisible = () => fireEvent.click(screen.getAllByRole('button', { name: /^Add (Coder|Sprites|boxd) profile$/ }).find(b => !b.closest('[hidden]'))!)
 const toggle = () => screen.getByRole('switch', { name: 'Session Environments' })
 /** Saved profiles start collapsed; open one by its header (name, then subtitle). */
 const expand = (title: string) => fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${title}`) }))
@@ -77,6 +90,9 @@ async function mounted() {
   await screen.findByLabelText('Coder URL')
   return view
 }
+/** The status glyph of the check line holding `node`. */
+const glyph = (node: HTMLElement) => node.closest('li')!.querySelector('svg')!
+const SANDBOX_LINK = 'Change the agent sandbox (Developer → Config)'
 
 describe('Session Environments configuration preview', () => {
   it('indexes the opt-in but hides the URL search result until enabled', () => {
@@ -361,6 +377,26 @@ describe('Session Environments configuration preview', () => {
     expect(writes).toEqual([])
   })
 
+  it('offers no agent hand-off from a missing provider list while a draft is unsaved', async () => {
+    // A gateway older than Sprites and boxd returns no lists for them.
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: '' } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    for (const tab of ['Fly.io Sprites', 'boxd']) {
+      fireEvent.click(screen.getByRole('radio', { name: tab }))
+      const clean = await screen.findByText(/does not support Session Environments settings/)
+      expect(within(clean.closest('[role="alert"]') as HTMLElement).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    }
+    fireEvent.click(screen.getByRole('radio', { name: 'Coder' }))
+    fireEvent.change(url(), { target: { value: 'https://draft.example.test' } })
+    for (const tab of ['Fly.io Sprites', 'boxd']) {
+      fireEvent.click(screen.getByRole('radio', { name: tab }))
+      // The hand-off navigates away, which would drop the unsaved Coder edit.
+      const dirty = await screen.findByText(/does not support Session Environments settings/)
+      expect(within(dirty.closest('[role="alert"]') as HTMLElement).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+    }
+  })
+
   it('retries loading after a failed configuration read', async () => {
     configReads(true)
     mount()
@@ -422,8 +458,9 @@ describe('Coder setup and saved profile management', () => {
     expect(instructions.open).toBe(false)
     instructions.open = true
     expect(screen.getByRole('link', { name: 'Open provider setup documentation' })).toHaveAttribute('href', 'https://coder.com/docs/admin/setup')
-    // One provider, so there is no provider choice to make.
-    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    // A saved Coder setup opens on the Coder tab.
+    expect(screen.getByRole('radio', { name: 'Coder', exact: true })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Fly.io Sprites' })).not.toBeChecked()
     // Where the "Run this chat on" menu is, said once on the card (under Profiles).
     expect(screen.getAllByText(/“Run this chat on” menu next to the message box/)).toHaveLength(1)
     expect(screen.getByText('Archiving a chat stops its workspace and deletes it 7 days later.')).toBeVisible()
@@ -435,18 +472,48 @@ describe('Coder setup and saved profile management', () => {
     const header = screen.getByRole('button', { name: /^Development/ })
     expect(header).toHaveAttribute('aria-expanded', 'false')
     expect(header).toHaveTextContent('python-dev')
-    expect(screen.queryByLabelText('Coder template')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Coder template')).not.toBeVisible()
     fireEvent.click(header)
     expect(header).toHaveAttribute('aria-expanded', 'true')
     for (const hint of ['A short unique code: letters, digits, _ and - only. Chats remember it, so changing it later stops chats already on this profile.', 'Shown in the “Run this chat on” menu.', "Which kind of machine each chat gets: Coder creates the chat's workspace from this template, for example python-dev. Run coder templates list on this machine to see yours; Check Coder connection then confirms it works.", "Full path of the folder in the workspace where the chat's files and commands run. It starts with /, for example /workspace/project."]) expect(screen.getByText(hint)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Coder template'), { target: { value: 'node-dev' } })
     fireEvent.click(header)
-    await waitFor(() => expect(screen.queryByLabelText('Coder template')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Coder template')).not.toBeVisible()
     expect(header).toHaveTextContent('node-dev')
     fireEvent.click(header)
     expect(screen.getByLabelText('Coder template')).toHaveValue('node-dev')
     fireEvent.click(screen.getByRole('button', { name: 'Add Coder profile' }))
     expect(screen.getByRole('button', { name: /^profile-1/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(writes).toEqual([])
+  })
+
+  it('keeps an unsaved Sprites token mounted but unfocusable across collapse', async () => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: [], managed: [] })))
+    const saveToken = vi.spyOn(api, 'secretsSave')
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    const header = screen.getByRole('button', { name: /^Fly/ })
+    const field = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(field, { target: { value: 'unsaved-token' } })
+    fireEvent.click(header)
+    const body = document.getElementById(header.getAttribute('aria-controls')!)!
+    // Inert at once (nothing inside takes focus), hidden once the collapse lands,
+    // so the body is still drawn while it animates shut.
+    expect(body).toHaveAttribute('inert')
+    expect(body).not.toHaveAttribute('hidden')
+    await waitFor(() => expect(body).toHaveAttribute('hidden'))
+    expect(field).toBeInTheDocument()
+    expect(field).not.toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Save token' })).toBeNull()
+    fireEvent.click(header)
+    expect(screen.getByLabelText(TOKEN_LABEL)).toBe(field)
+    await waitFor(() => expect(field).toBeVisible())
+    expect(field).toHaveValue('unsaved-token')
+    expect(body).not.toHaveAttribute('inert')
+    expect(saveToken).not.toHaveBeenCalled()
     expect(writes).toEqual([])
   })
 
@@ -545,11 +612,10 @@ describe('Coder setup and saved profile management', () => {
     })
   })
 
-  it('disables the shutdown switch until a profile exists', async () => {
-    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: true } as Section }
+  it('keeps the shutdown switch off and locked until a profile exists', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: false } as Section }
     await mounted()
     const stop = () => screen.getByRole('switch', { name: 'Stop workspaces when Kiro Crew shuts down' })
-    // Shown off while it cannot apply, so it never reads as "on and locked".
     expect(stop()).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getAllByText('Save a profile above to turn this on.')).toHaveLength(2)
     fireEvent.click(stop())
@@ -557,19 +623,36 @@ describe('Coder setup and saved profile management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Coder profile' }))
     expect(stop()).not.toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByText(/Off: they keep running, so chats reconnect faster/)).toBeInTheDocument()
-    expect(stop()).toBeChecked()
+    expect(stop()).not.toBeChecked()
     expect(writes).toEqual([])
+  })
+
+  it('shows a stored "on" shutdown switch as on, and lets it be turned off, with no profile left', async () => {
+    // Shutdown still stops or hibernates every registered machine, so a switch
+    // drawn off here would hide that the next restart acts on them.
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: true } as Section }
+    await mounted()
+    const stop = () => screen.getByRole('switch', { name: 'Stop workspaces when Kiro Crew shuts down' })
+    expect(stop()).toBeChecked()
+    expect(stop()).not.toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText(/Off: they keep running, so chats reconnect faster/)).toBeInTheDocument()
+    fireEvent.click(stop())
+    expect(stop()).not.toBeChecked()
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({ stop_on_shutdown: false })
   })
 })
 
 describe('Session Environments readiness and workspaces', () => {
-  it('runs the read-only check and reports Coder and each template', async () => {
+  it('runs the read-only check and reports Coder, each template and each git host', async () => {
     let checks = 0
     server.use(http.post('*/api/session-environments/check', () => {
       checks++
       return HttpResponse.json({
         coder: { ok: true, owner: 'devuser' },
         profiles: [{ id: 'dev', ok: false, error: 'Coder template is unavailable' }],
+        git: { 'github.com': 'signed_in', 'dev.azure.com': 'not_signed_in', 'bitbucket.org': 'unchecked' },
       })
     }))
     await mounted()
@@ -581,11 +664,122 @@ describe('Session Environments readiness and workspaces', () => {
     const failure = within(results).getByRole('alert')
     expect(failure).toHaveTextContent('Development: Coder template is unavailable')
     expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(results).toHaveTextContent('GitHub: signed in on this machine')
+    expect(results).toHaveTextContent(
+      'Azure DevOps: not signed in on this machine. To sign in, run az login in a terminal on this machine.',
+    )
+    expect(results).toHaveTextContent(
+      "Bitbucket: can't be checked from here; git will use this machine's saved Bitbucket login if there is one. If git can't sign in, clone a private Bitbucket repository over HTTPS in a terminal on this machine; git's credential helper saves the login it asks for.",
+    )
+    // No bare `git credential approve`: typed alone it waits on stdin.
+    expect(results).not.toHaveTextContent('git credential approve')
+    // Bitbucket has a display name of its own, like the other hosts.
+    expect(results).not.toHaveTextContent('bitbucket.org')
+    // The sign-in command reads as a command the reader copies, untranslated.
+    const command = within(results).getByText('az login')
+    expect(command.tagName).toBe('CODE')
+    expect(command).toHaveAttribute('translate', 'no')
+    // A git host is optional: signed out is a muted state ring, never the
+    // danger cross the blocking Coder and template failures use, and never an
+    // arrow that reads as a sign-in button.
+    const signedOut = glyph(command)
+    expect(signedOut).toHaveClass('lucide-circle-dashed', 'text-muted')
+    expect(signedOut).not.toHaveClass('lucide-log-in')
+    expect(signedOut).not.toHaveClass('text-danger')
+    expect(results.querySelector('svg.text-danger, svg.lucide-x, svg.lucide-log-in')).toBeNull()
+    expect(within(results).queryAllByRole('button').filter(b => !b.closest('[role="alert"]'))).toEqual([])
+    const unchecked = glyph(within(results).getByText(/^Bitbucket: can't be checked/))
+    expect(unchecked).toHaveClass('lucide-minus', 'text-muted')
+    expect(glyph(within(results).getByText('GitHub: signed in on this machine'))).toHaveClass('lucide-check', 'text-ok')
+    // Nothing was withheld, so there is no sandbox to point at.
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
     expect(writes).toEqual([])
   })
 
+  it('says once that a Windows gateway that cannot verify its account shares no git login, with no sandbox link', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [],
+      git: { 'github.com': 'unsupported', 'gitlab.com': 'unsupported', 'bitbucket.org': 'unsupported', 'dev.azure.com': 'unsupported' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    within(results).getByText(
+      "This machine can't verify its own Windows account, so its git logins aren't shared with remote sessions. Each workspace uses its own git login.",
+    )
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|GitLab|Bitbucket|Azure DevOps|signed in on this machine/)
+    // The sandbox tier is not the reason, so nothing points at it.
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
+  })
+
+  it('says once that a strict sandbox shares no git login and links to where the sandbox is set', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [],
+      git: { 'github.com': 'withheld', 'gitlab.com': 'withheld', 'bitbucket.org': 'withheld', 'dev.azure.com': 'withheld' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    const withheld = within(results).getByText(
+      "Git logins aren't shared while the agent sandbox is set to strict. Each workspace uses its own git login.",
+    )
+    // One line for every host, not four identical ones.
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|GitLab|Bitbucket|Azure DevOps|signed in on this machine/)
+    // Withheld has a glyph of its own, distinct from the unchecked dash.
+    expect(glyph(withheld)).toHaveClass('lucide-lock', 'text-muted')
+    expect(glyph(withheld)).toHaveAttribute('aria-hidden', 'true')
+    const link = screen.getByRole('link', { name: SANDBOX_LINK })
+    expect(link).toHaveAttribute('href', '/developer?tab=config&highlight=key%3Aagent.sandbox')
+    expect(results).not.toContainElement(link)
+  })
+
+  it('keeps per-host rows when only some hosts are withheld', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [], git: { 'github.com': 'withheld', 'gitlab.com': 'unchecked' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(glyph(within(results).getByText("GitHub: not shared with remote sessions under the 'strict' sandbox"))).toHaveClass('lucide-lock')
+    expect(glyph(within(results).getByText(/^GitLab: can't be checked/))).toHaveClass('lucide-minus')
+    expect(results).not.toHaveTextContent(/Git logins aren't shared/)
+    expect(screen.getByRole('link', { name: SANDBOX_LINK })).toBeVisible()
+  })
+
+  it('renders the Coder and profile rows from a gateway that sends no git field', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [{ id: 'dev', ok: true }],
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('Signed in to Coder as devuser')
+    expect(results).toHaveTextContent('Development: template python-dev is available')
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|Git logins|signed in on this machine/)
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
+  })
+
+  it('says the readiness check also reads git sign-ins, and leaves the Manage hint to p1', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    // The readiness rows say how git signs in; the Manage hint does not repeat it.
+    expect(screen.queryByText(/Git to GitHub, GitLab, Bitbucket and Azure DevOps/)).toBeNull()
+    // The readiness check says it also reads which git hosts this machine is signed in to.
+    expect(screen.getByText(
+      "Checks that the Coder CLI on this machine is signed in, that each profile's template exists, and which git hosts this machine is signed in to. Nothing is started and no credential is read.",
+    )).toBeVisible()
+    expect(screen.queryByText(/which keeps the credentials/)).toBeNull()
+  })
+
   it('surfaces failed Coder checks with a safe hand-off and drops them while editing', async () => {
-    checkAnswers({ coder: { ok: false, error: 'Coder login expired' }, profiles: [] })
+    checkAnswers({ coder: { ok: false, error: 'Coder login expired' }, profiles: [], git: {} })
     await mounted()
     fireEvent.click(check())
     const results = await screen.findByRole('list', { name: 'Check results' })
@@ -838,5 +1032,739 @@ describe('Session Environments readiness and workspaces', () => {
       expect(reopen).toBeDisabled()
       expect(reopen).toHaveAccessibleDescription('Save or discard your changes first.')
     }
+  })
+})
+
+describe('Sprites and boxd providers', () => {
+  it('opens the tab, row and disclosure holding a deep-linked setting', async () => {
+    // With Coder open and every row closed, the palette's "Machine size" and
+    // "Secret name" links reveal the tab, row and disclosure that hold them.
+    const box = { id: 'box', name: 'Box', snapshot: '', vcpu: 2, workdir: '/w' }
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], sprites_profiles: [fly], boxd_profiles: [box] } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.getByRole('radio', { name: 'Coder' })).toBeChecked()
+    expect(screen.getByLabelText('Machine size')).not.toBeVisible()
+    act(() => setSettingsDeepLinkTarget('[data-setting-label="Machine size"]'))
+    await waitFor(() => expect(screen.getByLabelText('Machine size')).toBeVisible())
+    expect(screen.getByRole('radio', { name: 'boxd' })).toBeChecked()
+    act(() => setSettingsDeepLinkTarget(null))
+    const secretName = 'Secret name for the token (usually SPRITES_TOKEN)'
+    expect(screen.getByLabelText(secretName)).not.toBeVisible()
+    act(() => setSettingsDeepLinkTarget(`[data-setting-label="${secretName}"]`))
+    await waitFor(() => expect(screen.getByLabelText(secretName)).toBeVisible())
+    expect(screen.getByRole('radio', { name: 'Fly.io Sprites' })).toBeChecked()
+    act(() => setSettingsDeepLinkTarget(null))
+  })
+  it('shows the one shutdown switch the same on every tab, with what it does per provider', async () => {
+    const box = { id: 'box', name: 'boxd', snapshot: '', vcpu: 2, workdir: '/w' }
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], boxd_profiles: [box], stop_on_shutdown: true } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    const shutdown = () => screen.getByRole('switch', { name: 'Stop workspaces when Kiro Crew shuts down' })
+    const coder = /^On: Kiro Crew stops your workspaces when it shuts down\..*Coder's own auto-stop still applies\.$/
+    const sprites = 'Sprites are not stopped when Kiro Crew shuts down: a sprite hibernates on its own when idle and keeps its files.'
+    const boxd = 'boxd: when this is on, the machines this computer created are hibernated, so they keep their files.'
+    for (const tab of ['Coder', 'Fly.io Sprites', 'boxd']) {
+      fireEvent.click(screen.getByRole('radio', { name: tab, exact: true }))
+      // One switch, one label and one Coder line on every tab, never a per-tab variant.
+      expect(shutdown()).toBeChecked()
+      expect(screen.getByText(coder)).toBeVisible()
+      const notes = screen.getByTestId('shutdown-provider-notes')
+      expect(within(notes).getByText(boxd)).toBeVisible()
+      expect(within(notes).getByText(sprites)).toBeVisible()
+      expect(shutdown()).toHaveAccessibleDescription(`${boxd} ${sprites}`)
+    }
+  })
+
+  it('reports only the selected provider in the check, even with a Coder URL still saved', async () => {
+    const fly = { id: 'fly', name: 'Fly.io Sprites', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], sprites_profiles: [fly] } }
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' },
+      profiles: [{ id: 'dev', ok: true }],
+      sprites: [{ id: 'fly', ok: true }],
+      git: { 'github.com': 'signed_in' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    expect(screen.getByText(/Sprites API token is accepted/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Check Sprites connection' }))
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('Fly.io Sprites: Sprites API token accepted')
+    expect(results).toHaveTextContent('GitHub: signed in on this machine')
+    expect(results).not.toHaveTextContent('Coder')
+    // Switching back to Coder shows the Coder rows from the same result.
+    fireEvent.click(screen.getByRole('radio', { name: 'Coder', exact: true }))
+    expect(results).toHaveTextContent('Signed in to Coder as devuser')
+    expect(results).not.toHaveTextContent('Sprites API token')
+  })
+
+  it('says why Check is unavailable when the open provider has nothing saved', async () => {
+    const fly = { id: 'fly', name: 'Fly.io Sprites', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    const checkSprites = () => screen.getByRole('button', { name: 'Check Sprites connection' })
+    expect(checkSprites()).toBeEnabled()
+    expect(checkSprites()).toHaveAccessibleDescription(/Sprites API token is accepted/)
+    fireEvent.click(screen.getByRole('radio', { name: 'boxd' }))
+    const checkBoxd = screen.getByRole('button', { name: 'Check boxd connection' })
+    expect(checkBoxd).toBeDisabled()
+    expect(checkBoxd).toHaveAccessibleDescription('Nothing is saved for this provider yet. Save a profile first, then check it.')
+  })
+
+  it('opens on Sprites when only Sprites is saved, and checks without a Coder URL', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [] } }
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: false }, profiles: [], git: {}, sprites: [{ id: 'sprites-1', ok: false, error: 'the Sprites API token was refused' }],
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    addVisible()
+    expect(screen.getByLabelText('Secret name for the token (usually SPRITES_TOKEN)')).toHaveValue('SPRITES_TOKEN')
+    // Where the token is kept is rarely changed, so it starts tucked away.
+    expect(screen.getByText('Advanced: secret name').closest('details')).not.toHaveAttribute('open')
+    // The secret name says what it is: the key the token is stored under, not the token.
+    expect(screen.getByText(/The name the token is stored under in Settings → Secrets\./)).toBeInTheDocument()
+    expect(screen.getByLabelText(TOKEN_LABEL)).toHaveAttribute('placeholder', 'Paste a Sprites API token')
+    // A new profile's working folder starts blank: the sprite's own home folder.
+    expect(screen.getByLabelText('Working folder')).toHaveValue('')
+    expect(screen.getByText("Leave blank to use the machine's home folder.")).toBeInTheDocument()
+    // Until the configuration is saved, the profile says it is not in the composer yet.
+    expect(screen.getByTestId('sprites-profile-unsaved')).toHaveTextContent('This profile is not saved yet')
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    await waitFor(() => expect(screen.queryByTestId('sprites-profile-unsaved')).toBeNull())
+    expect((writes[0] as { value: Section }).value.sprites_profiles).toEqual([
+      { id: 'sprites-1', name: 'Sprites profile 1', token_secret: 'SPRITES_TOKEN', workdir: '' },
+    ])
+    expect(JSON.stringify(writes[0])).not.toMatch(/"token"/)
+    const check = await screen.findByRole('button', { name: 'Check Sprites connection' })
+    await waitFor(() => expect(check).toBeEnabled())
+    fireEvent.click(check)
+    // A failed row is a notice, with the gateway's reason.
+    expect(await screen.findByText(/the Sprites API token was refused/)).toBeVisible()
+  })
+
+  it('saves a Sprites token to the vault from a masked field and never shows it back', async () => {
+    const good = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/srv/work' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [good] } }
+    const vault: { name: string; value: string }[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: vault.map(v => v.name), managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        vault.push(await request.json() as { name: string; value: string })
+        return HttpResponse.json({ ok: true })
+      }),
+      http.delete('*/api/secrets/:name', ({ params }) => {
+        vault.splice(vault.findIndex(v => v.name === params.name), 1)
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    // Only Sprites is saved, so the card opens on it.
+    expect(screen.getByRole('radio', { name: 'Fly.io Sprites' })).toBeChecked()
+    expand('Fly')
+    const field = screen.getByLabelText(TOKEN_LABEL)
+    expect(field).toHaveAttribute('type', 'password')
+    // One Save: there is no separate token button to choose between.
+    expect(screen.queryByRole('button', { name: 'Save token' })).not.toBeInTheDocument()
+    fireEvent.change(field, { target: { value: 'my-org/t1/secret-value' } })
+    fireEvent.click(save())
+    await waitFor(() => expect(vault).toEqual([{ name: 'SPRITES_TOKEN', value: 'my-org/t1/secret-value' }]))
+    await waitFor(() => expect(field).toHaveValue(''))
+    expect(await screen.findByText(/A token is saved as SPRITES_TOKEN\./)).toBeVisible()
+    // The token never rides on the profile draft or a config write.
+    expect(writes).toEqual([])
+    expect(document.body.innerHTML).not.toContain('secret-value')
+    expect(screen.queryByRole('button', { name: 'Remove token' })).not.toBeInTheDocument()
+    expect(screen.getByText(/remove unused ones in Settings → Secrets/)).toBeVisible()
+    expect(vault).toHaveLength(1)
+  })
+
+  it('drops a passed check when only the token changes, so a save does not bring it back', async () => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    const vault: { name: string; value: string }[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: vault.map(v => v.name), managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        vault.push(await request.json() as { name: string; value: string })
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    checkAnswers({ coder: { ok: false }, profiles: [], git: {}, sprites: [{ id: 'fly', ok: true }] })
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('button', { name: 'Check Sprites connection' }))
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('Fly: Sprites API token accepted')
+    expand('Fly')
+    const field = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(field, { target: { value: 'replacement-token' } })
+    fireEvent.click(save())
+    await waitFor(() => expect(vault).toEqual([{ name: 'SPRITES_TOKEN', value: 'replacement-token' }]))
+    await waitFor(() => expect(field).toHaveValue(''))
+    // The saved token was never checked: no earlier "accepted" stands for it.
+    expect(screen.queryByRole('list', { name: 'Check results' })).toBeNull()
+    expect(writes).toEqual([])
+  })
+
+  it('freezes the token field during Save and clears only what was saved', async () => {
+    const good = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [good] } }
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const saved: string[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: saved.length ? ['SPRITES_TOKEN'] : [], managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        const body = await request.json() as { value: string }
+        await held
+        saved.push(body.value)
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    const field = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(field, { target: { value: 'first-value' } })
+    fireEvent.click(save())
+    await waitFor(() => expect(field).toBeDisabled())
+    await act(async () => { release() })
+    await waitFor(() => expect(saved).toEqual(['first-value']))
+    await waitFor(() => expect(field).toBeEnabled())
+    expect(field).toHaveValue('')
+  })
+
+  it('shows only the next step, never a transport code, when a token save cannot reach the server', async () => {
+    const good = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [good] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: [], managed: [] })))
+    vi.spyOn(api, 'secretsSave').mockRejectedValue(new TypeError('Failed to fetch'))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'new-token' } })
+    fireEvent.click(save())
+    expect(await screen.findByText(/Choose Save settings to try again/)).toBeVisible()
+    expect(screen.queryByText(/change the name under Advanced: secret name/)).toBeNull()
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull()
+    expect(writes).toEqual([])
+  })
+
+  it('brings a refused token into view when its row was collapsed on another tab', async () => {
+    const good = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [good] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: [], managed: [] })))
+    vi.spyOn(api, 'secretsSave').mockRejectedValue(new ApiError(400, 'the value is empty'))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: '   ' } })
+    expand('Fly') // collapse it again
+    fireEvent.click(screen.getByRole('radio', { name: 'boxd' }))
+    // Rows and tabs stay mounted (drafts survive), only hidden.
+    expect(screen.getByLabelText(TOKEN_LABEL)).not.toBeVisible()
+    fireEvent.click(save())
+    await waitFor(() => expect(screen.getByText('the value is empty')).toBeVisible())
+    expect(screen.getByRole('radio', { name: 'Fly.io Sprites' })).toBeChecked()
+    expect(screen.getByLabelText(TOKEN_LABEL)).toBeVisible()
+    expect(writes).toEqual([])
+  })
+
+  it('names the reason a token save failed, keeps the token and writes no configuration', async () => {
+    const good = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [good] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: ['SPRITES_TOKEN'], managed: [] })))
+    vi.spyOn(api, 'secretsSave').mockRejectedValue(new ApiError(409, 'the vault is locked'))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    expect(await screen.findByText(/A token is saved as SPRITES_TOKEN\./)).toBeVisible()
+    const field = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(field, { target: { value: 'new-token' } })
+    fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Renamed' } })
+    fireEvent.click(save())
+    expect(await screen.findByText('the vault is locked')).toBeVisible()
+    expect(screen.getByText(/any token already saved as SPRITES_TOKEN is unchanged/)).toBeVisible()
+    // The server's own reason stands in for the retry advice: retrying would meet it again.
+    expect(screen.queryByText(/Choose Save settings to try again/)).toBeNull()
+    // ...and the fix that is on this card comes first: another secret name.
+    expect(screen.getByText(
+      'To save it under another name instead, change the name under Advanced: secret name below, then choose Save settings.',
+    )).toBeVisible()
+    expect(screen.getByTestId('sprites-token-reason')).toHaveTextContent('the vault is locked')
+    // The collapsed header names no secret: it lives only under Advanced.
+    expect(screen.getByRole('button', { name: /^Renamed/ })).not.toHaveTextContent('SPRITES_TOKEN')
+    expect(screen.queryByText(/A token is saved as SPRITES_TOKEN\./)).toBeNull()
+    expect(field).toHaveValue('new-token')
+    // The configuration goes first, so the rename is stored; the refused token
+    // stays typed for the next Save and "Settings saved." is not claimed.
+    expect(writes).toHaveLength(1)
+    expect(screen.queryByText('Settings saved.')).toBeNull()
+  })
+
+  it('writes no credential when the gateway refuses the configuration', async () => {
+    // A token typed beside an invalid edit never overwrites the saved
+    // credential: the configuration is refused before any vault write.
+    const good = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [good] } }
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: ['SPRITES_TOKEN'], managed: [] })),
+      http.patch('*/api/config/kirocrew', () => HttpResponse.json({ error: 'sprites_profiles[0].id is invalid' }, { status: 400 })),
+    )
+    const saveToken = vi.spyOn(api, 'secretsSave')
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'other-account-token' } })
+    fireEvent.change(screen.getByLabelText('Profile ID'), { target: { value: 'bad id' } })
+    fireEvent.click(save())
+    expect(await screen.findByText(/sprites_profiles\[0\]\.id is invalid/)).toBeVisible()
+    expect(saveToken).not.toHaveBeenCalled()
+    expect(screen.getByLabelText(TOKEN_LABEL)).toHaveValue('other-account-token')
+  })
+
+  it("preserves all vault tokens when saved profiles are removed", async () => {
+    const deleteSecret = vi.spyOn(api, 'secretsDelete')
+    const a = { id: 'fly-a', name: 'Fly A', token_secret: 'TOKEN_A', workdir: '/w' }
+    const b = { id: 'fly-b', name: 'Fly B', token_secret: 'SHARED', workdir: '/w' }
+    const c = { id: 'fly-c', name: 'Fly C', token_secret: 'SHARED', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [a, b, c] } }
+    const deleted: string[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: ['TOKEN_A', 'SHARED'], managed: [] })),
+      http.delete('*/api/secrets/:name', ({ params }) => { deleted.push(String(params.name)); return HttpResponse.json({ ok: true }) }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    const removeProfile = (title: string) => {
+      expand(title)
+      const header = screen.getByRole('button', { name: new RegExp(`^${title}`) })
+      const panel = header.closest('div')!.parentElement!
+      fireEvent.click(within(panel).getByRole('button', { name: 'Remove profile' }))
+    }
+    removeProfile('Fly A')
+    removeProfile('Fly B')
+    expect(deleted).toEqual([])
+    fireEvent.click(save())
+    await screen.findByText('Settings saved.')
+    expect(stored.session_environments?.sprites_profiles).toEqual([c])
+    expect(deleteSecret).not.toHaveBeenCalled()
+    expect(deleted).toEqual([])
+  })
+
+  it('picks a default environment across providers, and drops it with the profile', async () => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], sprites_profiles: [fly], default_profile: '' } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    const defaults = screen.getByRole('region', { name: 'Global defaults' })
+    fireEvent.click(within(defaults).getByRole('switch', { name: 'Start new chats on a profile' }))
+    fireEvent.click(within(defaults).getByRole('combobox', { name: 'Default for new chats' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Fly' }))
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value.default_profile).toBe('fly')
+    // Removing the default profile moves the default to the first remaining
+    // profile of the same provider, then of the others: here none is left on
+    // Sprites, so Coder's.
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    expand('Fly')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove profile' }).find(b => !b.closest('[hidden]'))!)
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(2))
+    expect((writes[1] as { value: Section }).value).toMatchObject({ default_profile: 'dev', sprites_profiles: [] })
+  })
+
+  it('moves a removed Sprites default to another Sprites profile before a Coder one', async () => {
+    const a = { id: 'fly-a', name: 'Fly A', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    const b = { id: 'fly-b', name: 'Fly B', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], sprites_profiles: [a, b], default_profile: 'fly-a' } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    expand('Fly A')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove profile' }).find(btn => !btn.closest('[hidden]'))!)
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({ default_profile: 'fly-b', sprites_profiles: [b] })
+  })
+
+  it('names each tab\'s own machine in the card intro, never a Coder workspace on a VM tab', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [], boxd_profiles: [] } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.getByText(/Each chat on a profile gets its own Coder workspace/)).toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    expect(screen.getByText(/Each chat on a profile gets its own sprite, the machine/)).toBeVisible()
+    expect(screen.queryByText(/its own Coder workspace, the machine/)).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: 'boxd', exact: true }))
+    expect(screen.getByText(/Each chat on a profile gets its own boxd machine, the machine/)).toBeVisible()
+  })
+
+  it('carries the default along when a Sprites or boxd profile id is renamed', async () => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'SPRITES_TOKEN', workdir: '/w' }
+    const box = { id: 'box', name: 'Box', snapshot: '', vcpu: 0, workdir: '/w' }
+    for (const [tab, name, id, renamed] of [['Fly.io Sprites', 'Fly', 'fly', 'fly-2'], ['boxd', 'Box', 'box', 'box-2']]) {
+      writes.length = 0
+      stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly], boxd_profiles: [box], default_profile: id } }
+      const view = mount()
+      await screen.findByLabelText('Coder URL')
+      fireEvent.click(screen.getByRole('radio', { name: tab, exact: true }))
+      expand(name)
+      const field = within(screen.getByRole('group', { name })).getByLabelText('Profile ID')
+      fireEvent.change(field, { target: { value: renamed } })
+      fireEvent.click(save())
+      await waitFor(() => expect(writes).toHaveLength(1))
+      expect((writes[0] as { value: Section }).value.default_profile).toBe(renamed)
+      view.unmount()
+    }
+  })
+
+  it('adds a boxd profile, where a snapshot keeps its own size, and checks it', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [], boxd_profiles: [] } }
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: false }, profiles: [], git: {}, boxd: [{ id: 'boxd-1', ok: true }],
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    const radio = screen.getByRole('radio', { name: 'boxd' })
+    // The boxd mark is decorative; the text label stays the choice's name.
+    expect(radio.closest('label')!.querySelector('span[aria-hidden="true"]')).not.toBeNull()
+    fireEvent.click(radio)
+    addVisible()
+    fireEvent.click(screen.getByRole('combobox', { name: 'Machine size' }))
+    fireEvent.click(await screen.findByRole('option', { name: '2 vCPU, 8 GiB' }))
+    // Naming a snapshot returns the size to the default, which boxd requires.
+    fireEvent.change(screen.getByLabelText('Start from a saved boxd snapshot (optional)'), { target: { value: 'my-workspace' } })
+    expect(screen.getByRole('combobox', { name: 'Machine size' })).toBeDisabled()
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value.boxd_profiles).toEqual([
+      { id: 'boxd-1', name: 'boxd profile 1', snapshot: 'my-workspace', vcpu: 0, workdir: '' },
+    ])
+    const check = await screen.findByRole('button', { name: 'Check boxd connection' })
+    await waitFor(() => expect(check).toBeEnabled())
+    fireEvent.click(check)
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('boxd profile 1: signed in to boxd on this computer')
+  })
+
+  it("lists only the open provider's workspaces", async () => {
+    const box = { id: 'bx', name: 'Box', snapshot: '', vcpu: 0, workdir: '/w' }
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], boxd_profiles: [box] } }
+    server.use(http.get('*/api/session-environments/workspaces', () => HttpResponse.json({ workspaces: [
+      { workspace: 'crewenv-1', slot: 'a', state: 'running', template: 'python-dev', created_at: '', deletion_due_at: '' },
+      { workspace: 'kc-0123456789abcdef', provider: 'boxd', slot: 'b', state: '', template: 'bx', created_at: '', deletion_due_at: '' },
+    ] })))
+    mount()
+    const manage = await screen.findByRole('region', { name: /Manage/ })
+    // The provider cards only switch the settings shown; the hint says so.
+    expect(screen.getByText(/Profiles from every provider stay saved/)).toBeVisible()
+    expect(await within(manage).findByText('crewenv-1')).toBeVisible()
+    expect(within(manage).queryByText('kc-0123456789abcdef')).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: 'boxd' }))
+    expect(await within(manage).findByText('kc-0123456789abcdef')).toBeVisible()
+    expect(within(manage).getByText('In use by a chat')).toBeVisible()
+    expect(within(manage).queryByText('crewenv-1')).toBeNull()
+  })
+})
+
+
+describe('Sprites vault ownership and read failures', () => {
+  const fly = { id: 'fly', name: 'Fly', token_secret: 'SHARED', workdir: '/w' }
+
+  it('keeps a pre-existing secret when an unsaved profile is removed', async () => {
+    const deleteSecret = vi.spyOn(api, 'secretsDelete')
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: ['SHARED'], managed: [] })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    addVisible()
+    fireEvent.change(screen.getByLabelText('Secret name for the token (usually SPRITES_TOKEN)'), { target: { value: 'SHARED' } })
+    await screen.findByText(/A token is saved as SHARED/)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove profile' }))
+    expect(screen.queryByLabelText(TOKEN_LABEL)).not.toBeInTheDocument()
+    expect(deleteSecret).not.toHaveBeenCalled()
+    expect(writes).toEqual([])
+  })
+
+  it('keeps the old vault entry when a profile secret name is changed and saved', async () => {
+    const deleteSecret = vi.spyOn(api, 'secretsDelete')
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: ['SHARED'], managed: [] })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    await screen.findByText(/A token is saved as SHARED/)
+    fireEvent.change(screen.getByLabelText('Secret name for the token (usually SPRITES_TOKEN)'), { target: { value: 'OTHER' } })
+    fireEvent.click(save())
+    await screen.findByText('Settings saved.')
+    expect(stored.session_environments?.sprites_profiles?.[0].token_secret).toBe('OTHER')
+    expect(deleteSecret).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('surfaces a vault listing failure and retries without losing drafts (stale data: %s)', async stale => {
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ error: 'offline' }, { status: 500 })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    if (stale) await act(async () => {
+      qc.setQueryData(['secrets'], { names: ['SHARED'], managed: [] })
+      // The mounted field must observe a failed refetch with cached names.
+      await qc.invalidateQueries({ queryKey: ['secrets'] })
+    })
+    expand('Fly')
+    const error = await screen.findByText("Couldn't check whether a token is saved. Retry to check again.")
+    // With nothing cached, the field stays neutral: the notice below says it could not look.
+    if (!stale) expect(screen.getByLabelText(TOKEN_LABEL)).toHaveAttribute('placeholder', 'Paste a Sprites API token')
+    expect(error.closest('[role="alert"]')).not.toBeNull()
+    expect(screen.queryByText(/No token is saved as SHARED yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/A token is saved as SHARED/)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'unsaved-token' } })
+    fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Draft name' } })
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: ['SHARED'], managed: [] })))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await screen.findByText(/A token is saved as SHARED/)
+    expect(screen.getByLabelText(TOKEN_LABEL)).toHaveValue('unsaved-token')
+    expect(screen.getByLabelText('Profile name')).toHaveValue('Draft name')
+    expect(screen.queryByText("Couldn't check whether a token is saved. Retry to check again.")).not.toBeInTheDocument()
+    expect(writes).toEqual([])
+  })
+})
+
+describe('Profile draft identity', () => {
+  it.each([false, true])('saves a typed token with the profile, never into config, and keeps it when the vault refuses (new profile: %s)', async newProfile => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'TOKEN', workdir: '/workspace/sprite' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: newProfile ? [] : [fly] } }
+    const vault: { name: string; value: string }[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: vault.map(row => row.name), managed: [] })),
+      http.post('*/api/secrets', () => HttpResponse.json({ error: 'vault unavailable' }, { status: 500 })),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    if (newProfile) addVisible()
+    else expand('Fly')
+    const token = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(token, { target: { value: 'unsaved-token' } })
+    fireEvent.change(screen.getByLabelText('Profile ID'), { target: { value: 'renamed-fly' } })
+    fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Renamed Fly' } })
+    // The configuration is stored first, so a refused token keeps it saved and
+    // leaves only the token typed for the next Save.
+    fireEvent.click(save())
+    await screen.findByText(/^The token was not saved, so any token already saved as/)
+    expect(writes).toHaveLength(1)
+    expect(JSON.stringify(writes)).not.toContain('unsaved-token')
+    expect(screen.queryByText('Settings saved.')).toBeNull()
+    expect(screen.getByLabelText(TOKEN_LABEL)).toBe(token)
+    expect(token).toHaveValue('unsaved-token')
+    server.use(http.post('*/api/secrets', async ({ request }) => {
+      vault.push(await request.json() as { name: string; value: string })
+      return HttpResponse.json({ ok: true })
+    }))
+    fireEvent.click(save())
+    await screen.findByText('Settings saved.')
+    expect(vault).toEqual([{ name: newProfile ? 'SPRITES_TOKEN' : 'TOKEN', value: 'unsaved-token' }])
+    expect(writes).toHaveLength(1)
+    expect(JSON.stringify(writes)).not.toContain('unsaved-token')
+    expect(JSON.stringify(qc.getQueryData(['kirocrewConfig']))).not.toContain('unsaved-token')
+    expand('Renamed Fly')
+    // The same editor row survives the save, now empty.
+    expect(screen.getByLabelText(TOKEN_LABEL)).toBe(token)
+    expect(token).toHaveValue('')
+    expect(screen.queryByTestId('sprites-profile-unsaved')).not.toBeInTheDocument()
+    expect(save()).toBeDisabled()
+  })
+
+  it('keeps each token on its own row when a config-save response reorders profiles', async () => {
+    const a = { id: 'fly-a', name: 'Fly A', token_secret: 'TOKEN_A', workdir: '/workspace/a' }
+    const b = { id: 'fly-b', name: 'Fly B', token_secret: 'TOKEN_B', workdir: '/workspace/b' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [a, b] } }
+    const vault = new Map<string, string>()
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: [...vault.keys()], managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        const { name, value } = await request.json() as { name: string; value: string }
+        vault.set(name, value)
+        return HttpResponse.json({ ok: true })
+      }),
+      http.patch('*/api/config/kirocrew', async ({ request }) => {
+        const body = await request.json() as { path: string; value: Section }
+        writes.push(body)
+        stored = { session_environments: { ...body.value, sprites_profiles: [...body.value.sprites_profiles!].reverse() } }
+        return HttpResponse.json(stored)
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expandAll()
+    const [tokenA, tokenB] = screen.getAllByLabelText(TOKEN_LABEL)
+    fireEvent.change(tokenA, { target: { value: 'draft-for-a' } })
+    fireEvent.change(tokenB, { target: { value: 'draft-for-b' } })
+    fireEvent.change(screen.getAllByLabelText('Profile name')[0], { target: { value: 'Renamed A' } })
+    fireEvent.click(save())
+    await screen.findByText('Settings saved.')
+    // Each token went to its own profile's secret, before the reorder came back.
+    expect(Object.fromEntries(vault)).toEqual({ TOKEN_A: 'draft-for-a', TOKEN_B: 'draft-for-b' })
+    expandAll()
+    expect(screen.getAllByLabelText(TOKEN_LABEL)).toEqual([tokenB, tokenA])
+    expect(within(screen.getByRole('group', { name: 'Renamed A' })).getByLabelText(TOKEN_LABEL)).toBe(tokenA)
+    expect(within(screen.getByRole('group', { name: 'Fly B' })).getByLabelText(TOKEN_LABEL)).toBe(tokenB)
+  })
+
+  it.each([
+    ['different tokens', 'token-for-b', false],
+    ['the same token', 'token-for-a', true],
+  ])('refuses two profiles sharing a secret name when their typed tokens differ, and stores a matching one once (%s)', async (_label, typedB, saves) => {
+    const a = { id: 'fly-a', name: 'Fly A', token_secret: 'SPRITES_TOKEN', workdir: '/workspace/a' }
+    const b = { id: 'fly-b', name: 'Fly B', token_secret: 'SPRITES_TOKEN', workdir: '/workspace/b' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [a, b] } }
+    const vault: { name: string; value: string }[] = []
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: vault.map(row => row.name), managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        vault.push(await request.json() as { name: string; value: string })
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expandAll()
+    const [tokenA, tokenB] = screen.getAllByLabelText(TOKEN_LABEL)
+    fireEvent.change(tokenA, { target: { value: 'token-for-a' } })
+    fireEvent.change(tokenB, { target: { value: typedB } })
+    fireEvent.change(screen.getAllByLabelText('Profile name')[0], { target: { value: 'Renamed A' } })
+    fireEvent.click(save())
+    if (saves) {
+      // One value for one key: stored once, nothing overwritten.
+      await screen.findByText('Settings saved.')
+      expect(vault).toEqual([{ name: 'SPRITES_TOKEN', value: 'token-for-a' }])
+      return
+    }
+    // Two values for one key would silently keep only the last: refuse before
+    // any write, keep both drafts, and say how to tell them apart.
+    expect(await screen.findByText(/Another profile has a different token typed for SPRITES_TOKEN/)).toBeVisible()
+    expect(vault).toEqual([])
+    expect(writes).toEqual([])
+    expect(screen.queryByText('Settings saved.')).toBeNull()
+    expect(tokenA).toHaveValue('token-for-a')
+    expect(tokenB).toHaveValue('token-for-b')
+  })
+
+  it('keeps a token draft mounted across a settings refetch without configuration edits', async () => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'TOKEN', workdir: '/workspace/sprite' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: [], managed: [] })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    const token = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(token, { target: { value: 'unsaved-token' } })
+    stored.session_environments!.sprites_profiles = [{ ...fly, name: 'Updated Fly' }]
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(screen.getByLabelText('Profile name')).toHaveValue('Updated Fly'))
+    expect(screen.getByLabelText(TOKEN_LABEL)).toBe(token)
+    expect(token).toHaveValue('unsaved-token')
+    // A typed token is an unsaved edit: Save is offered, nothing was written.
+    expect(save()).toBeEnabled()
+    expect(writes).toEqual([])
+  })
+  it('never saves a typed token under a secret name a refresh moved it to', async () => {
+    const fly = { id: 'fly', name: 'Fly', token_secret: 'TOKEN_A', workdir: '/workspace/sprite' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [fly] } }
+    const vault = new Map([['TOKEN_B', 'other-account']])
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: [...vault.keys()], managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        const { name, value } = await request.json() as { name: string; value: string }
+        vault.set(name, value)
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly')
+    fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'typed-for-a' } })
+    // Another window rebinds the profile to TOKEN_B while the token is typed.
+    stored.session_environments!.sprites_profiles = [{ ...fly, token_secret: 'TOKEN_B' }]
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(screen.getByLabelText(/Secret name for the token/)).toHaveValue('TOKEN_B'))
+    fireEvent.click(save())
+    expect(await screen.findByText(/The secret name changed to TOKEN_B after you typed the token/)).toBeVisible()
+    expect(vault.get('TOKEN_B')).toBe('other-account')
+    expect(vault.has('TOKEN_A')).toBe(false)
+    expect(screen.getByLabelText(TOKEN_LABEL)).toHaveValue('typed-for-a')
+    // Saving again, after the notice, stores it under the name now shown.
+    fireEvent.click(save())
+    await screen.findByText('Settings saved.')
+    expect(vault.get('TOKEN_B')).toBe('typed-for-a')
+  })
+  it.each(['', 'draft-for-b'])('removing a profile never transfers its token to the next row (%s)', async draftForB => {
+    const a = { id: 'fly-a', name: 'Fly A', token_secret: 'TOKEN_A', workdir: '/w' }
+    const b = { id: 'fly-b', name: 'Fly B', token_secret: 'TOKEN_B', workdir: '/w' }
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [a, b] } }
+    const vault = new Map([['TOKEN_A', 'stored-a'], ['TOKEN_B', 'stored-b']])
+    server.use(
+      http.get('*/api/secrets', () => HttpResponse.json({ names: [...vault.keys()], managed: [] })),
+      http.post('*/api/secrets', async ({ request }) => {
+        const { name, value } = await request.json() as { name: string; value: string }
+        vault.set(name, value)
+        return HttpResponse.json({ ok: true })
+      }),
+    )
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expand('Fly A')
+    expand('Fly B')
+    const rowA = within(screen.getByRole('group', { name: 'Fly A' }))
+    const rowB = within(screen.getByRole('group', { name: 'Fly B' }))
+    const inputA = rowA.getByLabelText(TOKEN_LABEL)
+    const inputB = rowB.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(inputA, { target: { value: 'draft-for-a' } })
+    fireEvent.change(inputB, { target: { value: draftForB } })
+    // Editing the public id must not remount the token field or disclosure.
+    fireEvent.change(rowB.getByLabelText('Profile ID'), { target: { value: 'renamed-b' } })
+    expect(rowB.getByLabelText(TOKEN_LABEL)).toBe(inputB)
+    fireEvent.click(rowA.getByRole('button', { name: 'Remove profile' }))
+    expect(inputA).not.toBeInTheDocument()
+    expect(screen.getByLabelText(TOKEN_LABEL)).toBe(inputB)
+    expect(inputB).toHaveValue(draftForB)
+    expect(screen.getByRole('button', { name: /^Fly B/ })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(save())
+    await screen.findByText('Settings saved.')
+    // The removed row's token was never saved; B's only when one was typed.
+    expect(vault.get('TOKEN_A')).toBe('stored-a')
+    expect(vault.get('TOKEN_B')).toBe(draftForB || 'stored-b')
+    expect(stored.session_environments?.sprites_profiles).toEqual([{ ...b, id: 'renamed-b' }])
+    expect(JSON.stringify(writes)).not.toContain('draft-for-a')
+  })
+
+  it('does not give a newly added profile the removed row\'s token', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], sprites_profiles: [] } }
+    server.use(http.get('*/api/secrets', () => HttpResponse.json({ names: [], managed: [] })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly.io Sprites' }))
+    addVisible()
+    const field = screen.getByLabelText(TOKEN_LABEL)
+    fireEvent.change(field, { target: { value: 'removed-token' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove profile' }))
+    addVisible()
+    expect(screen.getByLabelText('Profile ID')).toHaveValue('sprites-1')
+    expect(screen.getByLabelText(TOKEN_LABEL)).not.toBe(field)
+    expect(screen.getByLabelText(TOKEN_LABEL)).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Save token' })).not.toBeInTheDocument()
+    expect(writes).toEqual([])
   })
 })

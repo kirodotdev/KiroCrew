@@ -626,7 +626,6 @@ class TestSubagentDone:
         slot.task = None
         slot.key = "test-slot"
         slot.mode = ""
-        slot._recovery_chat_triggered = False
         slot._pending_subagent_failures = []
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
 
@@ -671,7 +670,6 @@ class TestSubagentDone:
         slot.running = True
         slot.key = "busy-slot"
         slot.mode = ""
-        slot._recovery_chat_triggered = False
         slot._pending_subagent_failures = []
         slot.queue_append = MagicMock()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -834,12 +832,12 @@ class TestSubagentDone:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Tests: _retrigger_recovery
+# Tests: sub-agent failure events
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestRetriggerRecovery:
-    """Recovery retrigger for queued subagent failures."""
+class TestSubagentFailureEvents:
+    """Sub-agent failure events queue their notices on the parent tab."""
 
     def _setup(self):
         orch = _make_orchestrator()

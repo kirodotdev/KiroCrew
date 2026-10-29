@@ -137,6 +137,35 @@ def strip_extended_length_prefix(path: _StrOrPath) -> _StrOrPath:
     return path
 
 
+def names_a_verbatim_only_file(path: str | os.PathLike) -> bool:
+    r"""True when *path* carries Windows' extended-length prefix and its plain
+    spelling would name a DIFFERENT file.
+
+    Only the ``\\?\`` spelling reaches a component that ends in a dot or a space,
+    or one whose stem is a DOS device (``CON``, ``NUL``, ``COM1`` ...): ordinary
+    Win32 lookup trims the first and maps the second to the device. A caller that
+    goes on to read, write or store the folded path must refuse such a path, or
+    the fold redirects it to a sibling. Lexical, like the fold itself.
+    """
+    import ntpath
+
+    from kiro_crew.constants import WINDOWS_DEVICE_STEMS
+
+    text = str(path)
+    if not text.startswith("\\\\?\\"):
+        return False
+    # Only the components under the volume anchor are remapped: a drive, or a
+    # UNC ``\\server\share`` whose names are the share's own, never a device.
+    _anchor, tail = ntpath.splitdrive(strip_extended_length_prefix(text))
+    for part in tail.replace("/", "\\").split("\\"):
+        if part in ("", ".", ".."):
+            continue
+        stem = part.split(".", 1)[0].rstrip(" ").casefold()
+        if part[-1] in ". " or stem in WINDOWS_DEVICE_STEMS:
+            return True
+    return False
+
+
 def is_link_or_junction(path: str | os.PathLike) -> bool:
     """True if *path* is a symlink OR (on Windows) a directory junction.
 

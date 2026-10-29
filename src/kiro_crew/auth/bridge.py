@@ -121,13 +121,23 @@ _VAULT_IDENTITY_CLAIMS = (
 _VAULT_PUBLIC_CLAIMS = ("identity", "provider")
 
 
-def _identity_digest(token: KasToken) -> str:
-    """The identity fingerprint of one resolved token (see :data:`_VAULT_IDENTITY_CLAIMS`)."""
+def _identity_digest(token: KasToken, signin_generation: str = "") -> str:
+    """The identity fingerprint of one resolved token (see :data:`_VAULT_IDENTITY_CLAIMS`).
+
+    *signin_generation* is the vault's sign-in marker
+    (:meth:`TokenStore.signin_generation`). It tells apart two same-kind accounts
+    the server answered with one ``profileArn``. Folded in only when set, so a
+    vault no sign-in has marked yet keeps the fingerprint it already had.
+    """
     digest = hashlib.sha256()
     for claim in _VAULT_IDENTITY_CLAIMS:
         digest.update(claim.encode())
         digest.update(b"=")
         digest.update(str(getattr(token, claim, None) or "").encode())
+        digest.update(b"\n")
+    if signin_generation:
+        digest.update(b"signin_generation=")
+        digest.update(signin_generation.encode())
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -161,10 +171,22 @@ def vault_identity_claims() -> tuple[str, dict[str, str]]:
     no secret, ARN or registration detail. ``("", {})`` when nothing is stored or
     the vault cannot be read; never raises. Blocking file IO -- call off the loop.
     """
+    read: list[tuple[KasToken | None, str]] = []
+
+    def _read_token_and_marker() -> None:
+        token = store.resolve()
+        read.append((token, store.signin_generation() if token is not None else ""))
+
     try:
-        token = default_token_store().resolve()
+        store = default_token_store()
+        # Under the sign-out lock a login holds from its marker bump to its
+        # save, so the token and the marker always describe one sign-in: an
+        # unlocked read could pair the previous account's token with the new
+        # account's marker and fingerprint it as the new account.
+        store.with_signout_lock(_read_token_and_marker)
     except Exception:  # noqa: BLE001 - detection must never fail a turn
         return "", {}
+    token, signin_generation = read[0] if read else (None, "")
     if token is None:
         return "", {}
     claims = {
@@ -179,7 +201,7 @@ def vault_identity_claims() -> tuple[str, dict[str, str]]:
     start_url = recorded_start_url(token)
     if start_url:
         claims["start_url"] = start_url
-    return _identity_digest(token), claims
+    return _identity_digest(token, signin_generation), claims
 
 
 def describe_vault_identity() -> str | None:

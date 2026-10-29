@@ -294,6 +294,7 @@ class SessionLifecycleOwner(Protocol):
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        stop_shared_children: bool = False,
     ) -> bool: ...
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None: ...
@@ -691,6 +692,8 @@ class SessionLifecycleService:
     cancel_owned_turn = _turn_stop.cancel_owned_turn
     stop_turn = _turn_stop.stop_turn
     _send_abort_for_session = _turn_stop._send_abort_for_session
+    _select_shared_children = _turn_stop._select_shared_children
+    _stop_shared_children = _turn_stop._stop_shared_children
     _eager_respawn = _turn_stop._eager_respawn
     _respawn_as = _turn_stop._respawn_as
     # ── Every session at once (fleet) ──

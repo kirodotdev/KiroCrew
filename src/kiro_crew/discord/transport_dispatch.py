@@ -77,7 +77,10 @@ from kiro_crew.discord.commands import (
 from kiro_crew.discord.renderer import (  # noqa: F401
     _STYLE_DANGER,
     _STYLE_SUCCESS,
-    DiscordApprovalDecider,
+)
+from kiro_crew.discord.renderer import DiscordApprovalDecider
+from kiro_crew.discord.renderer import DiscordApprovalDecider as _APPROVAL_REGISTRY
+from kiro_crew.discord.renderer import (  # noqa: F401
     DiscordRenderer,
     build_model_components,
     session_provenance_tag,
@@ -393,7 +396,14 @@ class DiscordDispatcher:
             restricted=self._session_restricted,
             conv_log=self.conv_log,
             slot_state=lambda: getattr(self._session_resume, "dashboard_state", None),
-            approvals=Approvals(discard=DiscordApprovalDecider.discard_session),
+            # ``_APPROVAL_REGISTRY`` is ``DiscordApprovalDecider`` under a second
+            # name. Reservations are class state, so the sweep has to reach the
+            # class holding them, and the construction name is a seam callers and
+            # tests substitute to observe the decider a turn builds. Sweeping
+            # through that name aims at the substitute: it raises on a plain
+            # function, and on a stand-in class it clears an empty registry and
+            # leaves the real window armed past the end of its turn.
+            approvals=Approvals(discard=_APPROVAL_REGISTRY.discard_session),
             drift=DISCORD_DRIFT,
         )
 
@@ -453,8 +463,12 @@ class DiscordDispatcher:
         origin_tag: str = "",
         monitor_completion: MonitorCompletionHook | None = None,
         monitor_session_key: str | None = None,
+        skill_trigger_text: str | None = None,
     ) -> MonitorDispatchResult | None:
         """Drive one authorized inbound message through the channel turn pipeline.
+
+        ``skill_trigger_text`` is what skill triggers match when the text was
+        generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
 
         ``interpret_commands`` says whether *text* may execute as a command
         (model-authored text never may). Resume routing is consulted when
@@ -898,6 +912,7 @@ class DiscordDispatcher:
                     if monitor_completion is not None
                     else None
                 ),
+                skill_trigger_text=skill_trigger_text,
             )
         finally:
             # Identity-checked: a later turn on this key may have published its own.

@@ -26,6 +26,7 @@ from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import (
     _expire_cache_file,
     _external_registry_cache_identity,
+    _installed_manifest_cache_path,
     _manifest_cache_path,
     _manifest_negative_cache_path,
     _read_external_registry_cache,
@@ -502,6 +503,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
             entry_name = e.get("name")
             if isinstance(entry_name, str) and entry_name:
                 expire_paths.add(_manifest_cache_path(e))
+                expire_paths.add(_installed_manifest_cache_path(e))
                 expire_paths.add(_manifest_negative_cache_path(e))
         for cache_path in expire_paths:
             await asyncio.to_thread(_expire_cache_file, cache_path)

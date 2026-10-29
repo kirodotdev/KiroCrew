@@ -101,6 +101,12 @@ async def _run_eval(args: argparse.Namespace) -> None:
     names = ", ".join(s.name for s in scenarios)
     print(f"Running: {names} ({total_turns} turns)\n")
 
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence before the
+    # load reads the pick. Probes only for a Kiro CLI pick; off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     config = KiroCrewConfig.load()
     provider_factory = build_provider_factory(config)
 

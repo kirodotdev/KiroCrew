@@ -127,8 +127,25 @@ class TestDependents:
         (tmp_path / "src").mkdir()
         return tmp_path
 
-    def test_no_src_dir_maps_nothing(self, tmp_path) -> None:
-        assert ad.dependents_of(tmp_path, ["src/a.py"]) == {}
+    def test_a_src_layout_searches_all_of_src(self, monkeypatch, clone) -> None:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(ad, "_git", _recording_git(calls))
+        ad.dependents_of(clone, ["src/pkg/a.py"])
+        assert calls[0][-2:] == ["--", "src/"]
+
+    def test_a_flat_layout_searches_its_package(self, monkeypatch, tmp_path) -> None:
+        (tmp_path / "mypkg").mkdir()
+        (tmp_path / "mypkg" / "__init__.py").write_text("")
+        monkeypatch.setattr(
+            ad, "_git", lambda args, cwd, timeout=60.0: "mypkg/a.py\nmypkg/user.py\n"
+        )
+        assert ad.dependents_of(tmp_path, ["mypkg/a.py"]) == {"mypkg/a.py": ["mypkg/user.py"]}
+
+    def test_an_unrecognised_layout_searches_the_whole_repo(self, monkeypatch, tmp_path) -> None:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(ad, "_git", _recording_git(calls))
+        ad.dependents_of(tmp_path, ["a.py"])
+        assert calls[0][-2:] == ["--", "."]
 
     def test_importers_exclude_the_file_itself_and_tests(self, monkeypatch, clone) -> None:
         patterns: list[str] = []
@@ -153,6 +170,77 @@ class TestDependents:
         out = ad.dependents_of(clone, [f"src/m{i}.py" for i in range(5)], limit=2)
         assert list(out) == ["src/m0.py", "src/m1.py"]
         assert all(len(v) == 6 for v in out.values())
+
+
+def _package(parent: Path, name: str) -> Path:
+    (parent / name).mkdir(parents=True)
+    (parent / name / "__init__.py").write_text("")
+    return parent / name
+
+
+class TestSourceRoot:
+    def test_this_repository_reads_src_kiro_crew(self, tmp_path) -> None:
+        _package(tmp_path / "src", "kiro_crew")
+        _package(tmp_path / "src", "other")
+        assert ad.source_root(tmp_path) == "src/kiro_crew"
+
+    def test_the_real_repository_is_unchanged(self) -> None:
+        assert ad.source_root(Path(__file__).resolve().parents[1]) == "src/kiro_crew"
+
+    def test_a_src_layout_with_one_other_package_reads_it(self, tmp_path) -> None:
+        _package(tmp_path / "src", "otherpkg")
+        assert ad.source_root(tmp_path) == "src/otherpkg"
+
+    def test_a_src_layout_with_no_or_several_packages_reads_src(self, tmp_path) -> None:
+        (tmp_path / "src").mkdir()
+        assert ad.source_root(tmp_path) == "src"
+        _package(tmp_path / "src", "a")
+        _package(tmp_path / "src", "b")
+        assert ad.source_root(tmp_path) == "src"
+
+    def test_a_flat_layout_reads_its_package_not_its_tests(self, tmp_path) -> None:
+        _package(tmp_path, "mypkg")
+        _package(tmp_path, "tests")
+        assert ad.source_root(tmp_path) == "mypkg"
+
+    def test_a_folder_without_init_is_not_a_package(self, tmp_path) -> None:
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "x.py").write_text("")
+        assert ad.source_root(tmp_path) == "."
+
+
+class TestDiscoveryPromptSourceRoot:
+    """The unscoped prompt names the folder the target's source really lives in."""
+
+    def _prompt(self, clone: Path) -> str:
+        from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import AgentResult
+
+        captured: dict[str, str] = {}
+
+        class _Runner:
+            def run(self, prompt, *, cwd, **_kw):
+                captured["prompt"] = prompt
+                return AgentResult(ok=True, text="[]")
+
+        ad.discover_surfaces_via_agent(_Runner(), clone=clone)
+        return captured["prompt"]
+
+    def test_a_repo_with_no_src_names_its_package(self, tmp_path) -> None:
+        _package(tmp_path, "mypkg")
+        prompt = self._prompt(tmp_path)
+        assert "READ the code under mypkg and" in prompt
+        assert "under src " not in prompt
+
+    def test_a_src_layout_names_its_package(self, tmp_path) -> None:
+        _package(tmp_path / "src", "otherpkg")
+        assert "READ the code under src/otherpkg and" in self._prompt(tmp_path)
+
+    def test_an_unrecognised_layout_names_the_repository_root(self, tmp_path) -> None:
+        assert f"READ the code under {ad.REPO_ROOT_LABEL} and" in self._prompt(tmp_path)
+
+    def test_this_repository_still_names_src_kiro_crew(self, tmp_path) -> None:
+        _package(tmp_path / "src", "kiro_crew")
+        assert "READ the code under src/kiro_crew and" in self._prompt(tmp_path)
 
 
 class TestNormalizeSurface:

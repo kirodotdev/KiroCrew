@@ -13,6 +13,7 @@ on ``execute_bash``/``shell``), not by ``security.py``'s underscored
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from kiro_crew.cloud import connect as connect_mod
@@ -475,8 +476,36 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cloud_iam_policy(_args: argparse.Namespace) -> int:
-    print(iam.policy_json())
+def _cloud_iam_policy(args: argparse.Namespace) -> int:
+    """Print the launcher policy, or with ``--host-policies`` its addendum.
+
+    stdout stays one JSON document either way, so it can be piped straight into
+    ``aws iam create-policy``. When the edition adds host policies, the plain form
+    says on stderr that a second policy is needed and how to print it.
+    """
+    want_addendum = getattr(args, "host_policies", False)
+    if not want_addendum:
+        # The main policy does not depend on the edition seam, so it is printed
+        # even when the addendum below cannot be built.
+        print(iam.policy_json())
+    try:
+        addendum = iam.host_policy_document()
+    except AWSError as exc:
+        # stderr, so stdout stays the one JSON document already printed.
+        print(str(exc), file=sys.stderr)
+        return 1
+    if want_addendum:
+        if addendum is None:
+            ui.fail("This build adds no host policies, so there is no second policy to apply.")
+            return 1
+        print(json.dumps(addendum, indent=2))
+        return 0
+    if addendum is not None:
+        print(
+            "This build also attaches host policies to each instance role. Apply a "
+            "second policy from `kirocrew cloud iam-policy --host-policies` beside this one.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -508,6 +537,8 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     from kiro_crew.cloud import source as source_mod
 
     profile, region = _resolve(args)
+    if getattr(args, "upgrade", False):
+        return _cloud_iam_boundary_upgrade(args, profile, region)
     boundaries = [
         ("Instance permissions boundary", source_mod.ensure_instance_boundary),
         ("Fargate crew task-role boundary", source_mod.ensure_crew_boundary),
@@ -551,6 +582,39 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
         "every launch reads its boundary to verify it."
     )
     return 0
+
+
+def _cloud_iam_boundary_upgrade(args: argparse.Namespace, profile: str, region: str) -> int:
+    """`iam-boundary --upgrade`: re-version boundaries an earlier build created (admin).
+
+    Needed once per account when this build's instance boundary carries the
+    edition's ``cloud_instance_policy`` statements and the account's boundary was
+    created without them; a launch refuses it until then and names this step.
+    Only a boundary holding exactly that earlier document is changed. A missing
+    or hand-edited one is reported and left alone.
+    """
+    from kiro_crew.cloud import source as source_mod
+
+    targets = [("Instance permissions boundary", False)]
+    if getattr(args, "ssm_kms", False):
+        targets.append(("KMS-session instance boundary", True))
+    failed = False
+    for label, kms in targets:
+        try:
+            outcome = source_mod.upgrade_instance_boundary(profile, region, kms=kms)
+        except AWSError as exc:
+            failed = True
+            ui.fail(str(exc))
+            if exc.missing_action:
+                ui.detail(f"Grant `{exc.missing_action}` and retry.")
+            if exc.action == "sts:GetCallerIdentity":
+                break
+            continue
+        if outcome == source_mod.UPGRADE_UPGRADED:
+            ui.ok(f"{label} upgraded to this build's document.")
+        else:
+            ui.ok(f"{label} already holds this build's document; nothing changed.")
+    return 1 if failed else 0
 
 
 def _cloud_doctor(args: argparse.Namespace) -> int:

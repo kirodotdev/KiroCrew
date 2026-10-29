@@ -433,8 +433,9 @@ class DashboardState:
         self.teams_connect_error: str = ""
         # Late-bound inbound webhook handler for the Teams channel. The route
         # POST /api/messaging/teams is registered at app-build time (aiohttp
-        # freezes routes at startup); maybe_start_teams sets this to the built
-        # client's on_activity once credentials are present. None => 503.
+        # freezes routes at startup); the gateway host sets this to the client's
+        # on_activity once that client is the accepted Teams handle
+        # (channel_lifecycle._publish_teams_webhook). None => 503.
         self.teams_on_activity: Any = None
         # True only while the Weixin (personal WeChat over iLink) channel's
         # long-poll loop is running (set in maybe_start_weixin). Read by the
@@ -1118,6 +1119,7 @@ class DashboardState:
     wire_session_compact_callback = _session_events.wire_session_compact_callback
     _notify_channel_compaction = _session_events._notify_channel_compaction
     wire_session_bind_listener = _session_events.wire_session_bind_listener
+    wire_session_release_listener = _session_events.wire_session_release_listener
     wire_session_unbind_listener = _session_events.wire_session_unbind_listener
     _spawn_unbind_notice = _session_events._spawn_unbind_notice
     _on_unbind_notice_done = _session_events._on_unbind_notice_done

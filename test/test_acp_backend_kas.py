@@ -657,3 +657,246 @@ class TestNoImportCycle:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip().split("|") == ["", ""]
+
+
+class TestAKiroCliPickRunsOnKasOnceV3IsConfirmed:
+    """A stored Kiro CLI pick runs on KAS only once this process confirmed v3.
+
+    kiro-cli serves a bare ``acp`` on its v3 (KAS) engine, and only the KAS path
+    drives it; the gateway's probe is the evidence (the a-kiro-cli-choice-runs-on-kas
+    entry in docs/decisions).
+    """
+
+    @pytest.fixture
+    def registry(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+
+        monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+        monkeypatch.setattr(backends, "_host_unservable", {})
+        monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+        return backends
+
+    def test_without_evidence_the_pick_keeps_kiro_cli(self, tmp_path, registry):
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+        assert cfg.to_dict()["agent"]["acp_backend"] == KIRO_STORED
+
+    def test_a_confirmed_v3_kiro_cli_runs_the_pick_on_kas(self, tmp_path, registry):
+        registry.confirm_kiro_cli_offers_kas()
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KAS
+        provider = cfg.create_provider_factory()(session_key="test:kiro-pick", agent="")
+        assert provider.is_kas_backend is True
+
+    def test_the_bundle_route_keeps_the_pick_on_kiro_cli(self, tmp_path, registry):
+        """A v3 kiro-cli says nothing about the bundled engine, which may be absent."""
+        registry.confirm_kiro_cli_offers_kas()
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED, "kas_bundle": True}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+        provider = cfg.create_provider_factory()(session_key="test:bundle-pick", agent="")
+        assert provider.is_kiro_backend is True
+
+    def test_a_policy_that_denies_kas_keeps_kiro_cli(self, tmp_path, registry):
+        registry.confirm_kiro_cli_offers_kas()
+        registry.apply_selectable_denials({ACP_BACKEND_KAS})
+        try:
+            cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        finally:
+            registry.apply_selectable_denials(set())
+        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+
+    @pytest.mark.parametrize("bad", ["kiro-cli", "byo-harness", 7, True, [], None])
+    def test_a_degraded_value_takes_the_floor_not_kas(self, bad, tmp_path, registry):
+        """The floor a typo takes is not a pick (harness-parity H3)."""
+        registry.confirm_kiro_cli_offers_kas()
+        assert _load_agent_config({"acp_backend": bad}, tmp_path).agent.acp_backend == (
+            ACP_BACKEND_KIRO
+        )
+
+    def test_a_malformed_value_is_warned_about_once(self, tmp_path, registry, caplog):
+        caplog.set_level("WARNING")
+        _load_agent_config({"acp_backend": 7}, tmp_path)
+        assert caplog.text.count("Ignoring agent.acp_backend") == 1
+
+
+class TestAProcessOutsideTheGatewayReachesTheSameVerdict:
+    """A process that never runs the gateway floor still moves a Kiro CLI pick.
+
+    The gateway records its KAS-floor verdict in process state; the CLI, an eval
+    run and a peer server do not run that floor, so ``ensure_kiro_cli_kas_verdict``
+    runs the same one bounded ``acp --help`` probe before the first spawn and
+    promotes a stored Kiro CLI pick to KAS on positive evidence only. Without it
+    those processes start the v2 launch where kiro-cli already serves v3 (the
+    a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+    """
+
+    @pytest.fixture
+    def registry(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+
+        monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+        monkeypatch.setattr(backends, "_host_unservable", {})
+        monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+        monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+        return backends
+
+    def _stored_is_kiro(self, monkeypatch, is_kiro=True, bundle=False):
+        """Stub the cheap stored-value reads the helper gates the probe on."""
+        monkeypatch.setattr(
+            "kiro_crew.config.loader_document.acp_backend_stored_as_kiro", lambda: is_kiro
+        )
+        monkeypatch.setattr(
+            "kiro_crew.config.loader_document.acp_backend_bundle_route", lambda: bundle
+        )
+
+    def _probe(self, monkeypatch, verdict):
+        """Make the one bounded probe answer *verdict* without a real spawn."""
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: verdict)
+
+    def test_a_confirmed_v3_probe_moves_the_pick_onto_kas(self, tmp_path, registry, monkeypatch):
+        """No floor ran, but the per-process probe confirms v3 and promotes."""
+        self._stored_is_kiro(monkeypatch)
+        self._probe(monkeypatch, (True, None))
+        # Before the probe the pick would load as the v2 Kiro CLI launch.
+        assert _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path).agent.acp_backend == (
+            ACP_BACKEND_KIRO
+        )
+        registry.ensure_kiro_cli_kas_verdict()
+        assert registry.kiro_cli_offers_kas() is True
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KAS
+
+    @pytest.mark.parametrize("stored", ["", ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+    def test_a_non_kiro_stored_backend_spends_no_probe(self, registry, monkeypatch, stored):
+        """A user who never picked Kiro CLI pays no spawn: the probe is not run.
+
+        This is the existing-experience guard -- every ``kirocrew chat`` on a
+        default / kas / claude / codex backend must start exactly as it did.
+        """
+        self._stored_is_kiro(monkeypatch, is_kiro=False)
+
+        def _boom():
+            raise AssertionError(f"must not probe for a non-kiro stored backend {stored!r}")
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _boom)
+        registry.ensure_kiro_cli_kas_verdict()
+        assert registry.kiro_cli_offers_kas() is False
+        # Not marked probed either, so a later load for a different config may re-check.
+        assert registry._kiro_cli_kas_probed is False
+
+    def test_the_bundle_route_spends_no_probe(self, registry, monkeypatch):
+        """A Kiro CLI pick on the bundle route stays on kiro-cli, like the floor.
+
+        KAS on the bundle route is Crew's own bundled engine, which kiro-cli's v3
+        support says nothing about, so the gateway floor declines to promote there
+        and this helper must too -- otherwise the CLI would launch the bundled
+        engine while the gateway runs kiro-cli on the same config.
+        """
+        self._stored_is_kiro(monkeypatch, is_kiro=True, bundle=True)
+
+        def _boom():
+            raise AssertionError("must not probe on the bundle route")
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _boom)
+        registry.ensure_kiro_cli_kas_verdict()
+        assert registry.kiro_cli_offers_kas() is False
+        assert registry._kiro_cli_kas_probed is False
+
+    @pytest.mark.parametrize(
+        "verdict",
+        [(None, None), (False, "this kiro-cli does not offer engine v3")],
+        ids=["unknown", "gap"],
+    )
+    def test_no_positive_evidence_keeps_the_pick_on_kiro_cli(
+        self, tmp_path, registry, monkeypatch, verdict
+    ):
+        """An unknown probe or a v3 gap leaves the pick on the v2 launch."""
+        self._stored_is_kiro(monkeypatch)
+        self._probe(monkeypatch, verdict)
+        registry.ensure_kiro_cli_kas_verdict()
+        assert registry.kiro_cli_offers_kas() is False
+        assert _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path).agent.acp_backend == (
+            ACP_BACKEND_KIRO
+        )
+
+    def test_the_probe_runs_at_most_once_per_process(self, registry, monkeypatch):
+        """A gap is remembered, so a later config load does not re-spawn the probe."""
+        self._stored_is_kiro(monkeypatch)
+        calls = {"n": 0}
+
+        def _verdict():
+            calls["n"] += 1
+            return (None, None)
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _verdict)
+        registry.ensure_kiro_cli_kas_verdict()
+        registry.ensure_kiro_cli_kas_verdict()
+        assert calls["n"] == 1
+
+    def test_an_existing_floor_verdict_is_not_re_probed(self, registry, monkeypatch):
+        """The gateway already confirmed v3, so the helper spends no spawn."""
+        registry.confirm_kiro_cli_offers_kas()
+        self._stored_is_kiro(monkeypatch)
+
+        def _boom():
+            raise AssertionError("must not probe when evidence is already recorded")
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _boom)
+        registry.ensure_kiro_cli_kas_verdict()
+        assert registry.kiro_cli_offers_kas() is True
+
+    def test_kas_not_selectable_spends_no_spawn(self, registry, monkeypatch):
+        """A policy that denies KAS keeps the pick on v2 without probing."""
+        self._stored_is_kiro(monkeypatch)
+        registry.apply_selectable_denials({ACP_BACKEND_KAS})
+
+        def _boom():
+            raise AssertionError("must not probe when KAS is not selectable")
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _boom)
+        try:
+            registry.ensure_kiro_cli_kas_verdict()
+        finally:
+            registry.apply_selectable_denials(set())
+        assert registry.kiro_cli_offers_kas() is False
+
+    def test_concurrent_callers_probe_exactly_once(self, registry, monkeypatch):
+        """Two threads reaching the helper at once still run the one spawn once."""
+        import threading
+
+        self._stored_is_kiro(monkeypatch)
+        start = threading.Barrier(8, timeout=10)
+        calls = {"n": 0}
+        lock = threading.Lock()
+
+        def _verdict():
+            with lock:
+                calls["n"] += 1
+            return (True, None)
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _verdict)
+
+        def _run():
+            # A bounded barrier: if a sibling thread failed to start, this raises
+            # BrokenBarrierError on the timeout instead of waiting forever.
+            start.wait()
+            registry.ensure_kiro_cli_kas_verdict()
+
+        threads = [threading.Thread(target=_run) for _ in range(8)]
+        started: list[threading.Thread] = []
+        try:
+            for t in threads:
+                t.start()
+                started.append(t)
+        finally:
+            # A rejected Thread.start() must not strand the threads already parked
+            # at the barrier: abort it so their bounded wait returns, then join each
+            # with a timeout and assert none is left running.
+            if len(started) != len(threads):
+                start.abort()
+            for t in started:
+                t.join(timeout=15)
+            assert not any(t.is_alive() for t in started), "a probe thread did not finish"
+        assert len(started) == len(threads)
+        assert calls["n"] == 1
+        assert registry.kiro_cli_offers_kas() is True

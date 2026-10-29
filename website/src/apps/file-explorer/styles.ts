@@ -27,9 +27,9 @@ export const FE_CSS = `
 .mc-fe-pathbar-input:focus { border-color:var(--accent); }
 .mc-fe-branch { display:inline-flex; align-items:center; gap:4px; padding:3px 7px; font-size:11px; background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); border-radius:10px; font-family:var(--mono, ui-monospace, monospace); flex-shrink:0; }
 .mc-fe-branch-count { color:var(--warn); }
-.mc-fe-breadcrumbs { display:flex; flex:1; align-items:center; gap:1px; font-size:13px; color:var(--muted); cursor:text; overflow-x:auto; scrollbar-width:none; padding:5px 8px; border-radius:6px; border:1px solid transparent; min-width:0; background:var(--card); }
+.mc-fe-breadcrumbs { display:flex; flex:1; align-items:center; gap:1px; font-size:13px; color:var(--muted); cursor:text; overflow-x:auto; scrollbar-width:none; padding:5px 8px; border-radius:6px; border:1px solid var(--border); min-width:0; background:var(--card); }
 .mc-fe-breadcrumbs::-webkit-scrollbar { display:none; }
-.mc-fe-breadcrumbs:hover { border-color:var(--border); }
+.mc-fe-breadcrumbs:hover { border-color:var(--muted); }
 .mc-fe-bc { padding:1px 2px; border-radius:3px; cursor:pointer; white-space:nowrap; font-family:var(--mono, ui-monospace, monospace); }
 .mc-fe-bc:hover { color:var(--text); background:color-mix(in srgb, var(--text) 10%, transparent); }
 .mc-fe-bc-sep { color:var(--muted); opacity:.4; font-family:var(--mono, ui-monospace, monospace); }

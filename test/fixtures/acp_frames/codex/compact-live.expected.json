@@ -47,7 +47,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      5354,
+      7354,
       258400
     ],
     "usage_cost": null
@@ -64,6 +64,12 @@
     ],
     "frame": "session/update",
     "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
   },
   {
     "frame": "response",

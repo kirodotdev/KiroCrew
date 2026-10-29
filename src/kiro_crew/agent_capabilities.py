@@ -790,16 +790,15 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
         spec.get("allowedTools"), str(spec.get("name", ""))
     ):
         vouched.add("permissions")
-    parent = snap["parent_spec"]
+    parent, reviewed = snap["parent_spec"], set((snap["intent"] or {}).get("reviewed_keys", ()))
     if "permissions" not in spec and "permissions" in parent:
         # The writer's own gate removed it, so it is Crew's output, not a hand edit.
         if not _spec_permissions_accepted():
             vouched.add("permissions")
-    # A deleted key is drift too: kiro-cli reads an absent key as its default
-    # (``includeMcpJson`` absent means true), so a dropped parent key can grant.
+    # A deleted key can grant (absent ``includeMcpJson`` reads true): it is drift too.
     return sorted(
         key
-        for key in (set(spec) | set(parent)) - vouched
+        for key in (set(spec) | set(parent) | reviewed) - vouched
         if key not in spec or key not in parent or spec[key] != parent[key]
     )
 
@@ -818,6 +817,7 @@ def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
         error.file = snap["target"] + ".json"
         raise error
     intent["materialized"] = _digest(spec)
+    intent["reviewed_keys"] = sorted(spec)  # every stamp, so no baseline is read stale
     return drifted
 
 
@@ -1098,7 +1098,7 @@ class CapabilityService:
                         "oauthScopes",
                         "oauth",
                     }
-                    if set(value) - allowed or ("command" in value and "url" in value):
+                    if set(value) - allowed or ("command" in value and value.get("url", "") != ""):
                         raise CapabilityError("invalid_transport", 400)
                     if "oauth" in value and (
                         not isinstance(value["oauth"], dict)

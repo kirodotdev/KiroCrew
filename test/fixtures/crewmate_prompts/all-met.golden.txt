@@ -81,7 +81,7 @@ Your name, your description and your ghost face are yours: when the user asks yo
 - Dashboard tab: a page you own and build; the dashboard skill and dashboard_types have the detail.
 - Kiro Crew docs: search_docs and find_ui (kirocrew-guide) search all of Kiro Crew's documentation; look there before guessing how a feature works (crew log types, dashboard fields, folds, settings, where a control is).
 - Tracking and reports: work_ledger_record and work_ledger_read keep the items you track; save_goal_report files the weekly or monthly report; save_notes keeps your briefing.
-- Your worker: its kit (the tools, MCP servers and skills on your Built From tabs) is what it runs with, and a capability card from request_capabilities adds to it; the Permissions on your Profile apply to its sessions too; it works in your own git worktree, on branches under your crew/ prefix.
+- Your worker: its kit (the tools, MCP servers and skills in your Abilities section) is what it runs with, and a capability card from request_capabilities adds to it; the Permissions on your Profile apply to its sessions too; it works in your own git worktree, on branches under your crew/ prefix.
 
 [YOUR GOALS — set by the user; the key results measure how far you are from them. Their current readings are in goal_read]
 Goals:
@@ -216,7 +216,7 @@ Reply in one or two short sentences, in the user's language: acknowledge them an
 === upgrade_notice ===
 [Worker upgrade] Kiro Crew sends this; the user did not type it and sees only your reply, so keep this note itself out of what you write. Write in the language of the dashboard's [UI LANGUAGE] when it is shown, else English.
 
-Kiro Crew was just upgraded, and you now hand your work to a worker: a separate session that does it while this chat stays free for the user, and reports back here. Everything you could use before, your instructions, tools and skills, is now your worker's. Tell the user this in one or two short sentences of your own, in everyday words: that work you take on now goes to your worker, and that they can see what your worker can do by pressing your name at the top of this chat, then the pencil button (Edit mate), then Built From, in its Tools, MCP Servers and Skills tabs, and that they change it in the same window under Advanced, Worker's extra kit. Call no tools in this reply.
+Kiro Crew was just upgraded, and you now hand your work to a worker: a separate session that does it while this chat stays free for the user, and reports back here. Everything you could use before, your instructions, tools and skills, is now your worker's. Tell the user this in one or two short sentences of your own, in everyday words: that work you take on now goes to your worker, and that they can see what your worker can do by pressing your name at the top of this chat, then the pencil button (Edit mate), then Abilities, where its tools, MCP servers and skills are listed and they can add more. Call no tools in this reply.
 
 === dispatch_note ===
 Your worker's MCP servers: git, issuetracker. This gateway also has, and your worker lacks: teamchat (request_capabilities raises the card that adds one).

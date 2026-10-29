@@ -269,6 +269,13 @@ def test_the_header_is_real_elapsed_time_and_summed_credits():
     assert live["elapsed_ms"] == 99_000
 
 
+def test_a_finished_timeline_with_no_timed_row_has_no_end():
+    # A finished header with no recorded moment has no end; it never takes the request's clock.
+    lane = _lane([{"role": "user", "content": "go"}])
+    head = crew_timeline.summarize([lane], now=T0 + timedelta(seconds=99), live=False)
+    assert head["ended"] == "" and head["elapsed_ms"] == 0
+
+
 def test_a_long_lane_keeps_its_newest_bars_and_counts_the_rest(monkeypatch):
     monkeypatch.setattr(crew_timeline, "MAX_SEGMENTS_PER_LANE", 2)
     rows = [_row("tool", i, f"🔧 @x/t{i}", tool_call_id=str(i)) for i in range(4)]
@@ -688,3 +695,54 @@ def test_a_create_call_never_pairs_with_a_send_seed():
     root = {"key": "root", "title": "Goal", **_lane([_create(10, "", "c1")])}
     worker = {"key": "w1", "title": "w", **_lane([_seeded("root", 12, "send")])}
     assert crew_timeline.handoffs([root, worker]) == []
+
+
+def _dispatch(seconds: float, tcid: str, **args: str) -> dict[str, Any]:
+    payload = {"tool_id": "kirocrew-dashboard::work_dispatch", "arguments": args}
+    return _row(
+        "tool",
+        seconds,
+        "🔧 @kirocrew-dashboard/work_dispatch",
+        tool_call_id=tcid,
+        input=json.dumps(payload),
+    )
+
+
+def test_a_work_dispatch_seed_is_drawn_from_the_dispatch_call():
+    """``work_dispatch`` opens the worker and seeds it ``via session_send``; the
+    hand-off leaves at the call whose session title names the worker."""
+    root = {
+        "key": "root",
+        "title": "Goal",
+        **_lane([_dispatch(10, "d1", title="fix flake", session_title="worker A")]),
+    }
+    worker = {"key": "w1", "title": "worker A", **_lane([_seeded("root", 12, "send")])}
+    other = {"key": "w2", "title": "fix flake", **_lane([_seeded("root", 13, "send")])}
+    links = crew_timeline.handoffs([root, worker, other])
+    assert [(link["from"], link["to"]) for link in links] == [("root", "w1")]
+    assert links[0]["start"] == _at(10) and links[0]["end"] == _at(12)
+
+
+def test_a_work_dispatch_without_a_session_title_names_the_item_title():
+    root = {"key": "root", "title": "Goal", **_lane([_dispatch(10, "d1", title="fix flake")])}
+    worker = {"key": "w1", "title": "fix flake", **_lane([_seeded("root", 12, "send")])}
+    assert [link["to"] for link in crew_timeline.handoffs([root, worker])] == ["w1"]
+
+
+def test_a_work_dispatch_never_pairs_with_a_create_seed():
+    root = {"key": "root", "title": "Goal", **_lane([_dispatch(10, "d1", title="w")])}
+    worker = {"key": "w1", "title": "w", **_lane([_seeded("root", 12, "create")])}
+    assert crew_timeline.handoffs([root, worker]) == []
+
+
+def test_two_workers_sharing_a_title_draw_no_dispatch_hand_off():
+    """Two ``work_dispatch`` calls naming one title cannot be told apart, so
+    neither worker is drawn from either call."""
+    root = {
+        "key": "root",
+        "title": "Goal",
+        **_lane([_dispatch(10, "d1", title="same"), _dispatch(11, "d2", title="same")]),
+    }
+    first = {"key": "w1", "title": "same", **_lane([_seeded("root", 12, "send")])}
+    second = {"key": "w2", "title": "same", **_lane([_seeded("root", 13, "send")])}
+    assert crew_timeline.handoffs([root, first, second]) == []

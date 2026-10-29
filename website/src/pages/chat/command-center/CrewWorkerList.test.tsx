@@ -11,7 +11,7 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelVi
 
 import { switchSlot } from '../../../store/chatSlice'
 import { ApiError } from '../../../api/apiError'
-import CrewWorkerList, { CrewWorkersTab } from './CrewWorkerList'
+import CrewWorkerList, { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -123,6 +123,26 @@ describe('CrewWorkerList (design B)', () => {
     expect(store.getState().chat.activeSlot).toBe('elsewhere')
     expect(panel.openPanelView).not.toHaveBeenCalledWith('w-gone', 'workers')
     expect(screen.queryByText('Could not reopen that session. Try again.')).toBeNull()
+  })
+
+  it('reopenCrewSession says whether the reopened session took the view', async () => {
+    // Took the view: the person was still where they asked from.
+    api.resumeChatSlot.mockResolvedValueOnce({ ok: true, key: 'w-gone', messages: [] })
+    const store = createTestStore({ dashboard: { slots: [] } } as never)
+    await expect(reopenCrewSession(store.dispatch, store.getState, 'w-gone', 'Worker E')).resolves.toEqual({ ok: true, activated: true, key: 'w-gone' })
+    expect(store.getState().chat.activeSlot).toBe('w-gone')
+    // Reopened, but the person picked another chat while it was pending.
+    let answer: (v: unknown) => void = () => {}
+    api.resumeChatSlot.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    const pending = reopenCrewSession(store.dispatch, store.getState, 'w-two', 'Worker F')
+    await vi.waitFor(() => expect(api.resumeChatSlot).toHaveBeenCalledTimes(2))
+    store.dispatch(switchSlot({ key: 'elsewhere' }))
+    answer({ ok: true, key: 'w-two', messages: [] })
+    await expect(pending).resolves.toEqual({ ok: true, activated: false, key: 'w-two' })
+    expect(store.getState().chat.activeSlot).toBe('elsewhere')
+    // Could not reopen.
+    api.resumeChatSlot.mockRejectedValueOnce(new Error('gone'))
+    await expect(reopenCrewSession(store.dispatch, store.getState, 'w-three', 'Worker G')).resolves.toEqual({ ok: false, activated: false, key: 'w-three' })
   })
 
   it('says so when a closed worker cannot be reopened', async () => {

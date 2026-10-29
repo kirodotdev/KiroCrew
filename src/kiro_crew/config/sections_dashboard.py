@@ -858,6 +858,15 @@ class DashboardConfig:
             "graded accent stripe (0-10; 0 = off).",
         ),
     )
+    show_unread_dot: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Unread Dot on Session Cards",
+            "Show the unread dot on a sidebar session card when the agent finished "
+            "and you have not read the result. Folder and aggregate unread counts "
+            "are not affected.",
+        ),
+    )
     # Literal enum rather than FOLDER_SORT_MODES: that constant lives in
     # sections_limits with the other write/load bounds, and this field spells the
     # same list. test_config_patch.py::TestFolderSortRoundTrip::

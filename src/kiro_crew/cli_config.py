@@ -24,7 +24,7 @@ from kiro_crew.config.loader import (
     workspace_dir_from_entry,
 )
 from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
-from kiro_crew.config.sections import _migrate_workspaces
+from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.superseded_defaults import (
     acked_superseded,
     adopt_coerced_keys,
@@ -118,6 +118,37 @@ def _refuse_missing_workspace_dirs(data: dict, current: dict) -> dict:
                 f"workspace {name!r}: dir {entry.dir!r} is not an existing directory"
             )
     return data
+
+
+def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
+    """Warn when a stored ``agent.bot_name`` will load differently from the typed value.
+
+    ``config set`` stores and echoes the raw value, but the loader runs it
+    through ``_sanitize_bot_name`` before any session reads it, dropping emoji,
+    symbols and braces and capping the length.  The echoed ``✅`` line is the
+    typed value, so without this the user learns nothing when the loaded name
+    will differ — including the case where every character is dropped and the
+    default name is used instead.  A non-text value never gets here: the
+    declared-type check refuses it first.  The warning reports the loaded
+    spelling; the write itself still succeeded, so this is advice, not a refusal.
+    """
+    if key != "agent.bot_name" or not isinstance(parsed, str):
+        return
+    loaded = _sanitize_bot_name(parsed)
+    if loaded == parsed:
+        return
+    if loaded:
+        print(
+            f"⚠️  {key} will load as {json.dumps(loaded)}, not {json.dumps(parsed)} — "
+            "the loader drops characters it cannot use in a name.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"⚠️  {key} will load as empty — the loader drops every character of "
+            f"{json.dumps(parsed)}, so the default name is used instead.",
+            file=sys.stderr,
+        )
 
 
 def _config_cmd(args: argparse.Namespace) -> None:
@@ -359,6 +390,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
                 if dropped:
                     _print_dropped_overlay_keys(key, dropped)
+                _warn_if_bot_name_altered(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -398,6 +430,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     resources=f"{key}={json.dumps(parsed)}",
                 )
                 print(f"✅ {key} = {json.dumps(parsed)}")
+                _warn_if_bot_name_altered(key, parsed)
     elif action == "edit":
 
         p = config_path()

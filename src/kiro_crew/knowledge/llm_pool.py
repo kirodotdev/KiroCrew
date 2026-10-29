@@ -210,15 +210,20 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     data = _read_config() if config is None else config
     selection = backend_from_stored(_section(data, "agent").get("acp_backend"))
     resolved = resolve_selected_backend(selection)
+    # A Kiro CLI pick resolves to KAS while kiro-cli offers v3, and landing back on
+    # Kiro here is landing on what the user picked, so it is not worth a warning.
+    declared = selection is not None
+    if selection == ACP_BACKEND_KIRO:
+        declared = False
     if not capabilities_for(resolved).honors_zero_tool_ban:
         _log_capability_fallback(
             resolved,
-            selection is not None,
+            declared,
             "does not honor a zero-tool spec (honors_zero_tool_ban is False)",
         )
         return ACP_BACKEND_KIRO
     if not capabilities_for(resolved).acp_client_spawnable:
-        _log_capability_fallback(resolved, selection is not None, "is not acp_client_spawnable")
+        _log_capability_fallback(resolved, declared, "is not acp_client_spawnable")
         return ACP_BACKEND_KIRO
     return resolved
 

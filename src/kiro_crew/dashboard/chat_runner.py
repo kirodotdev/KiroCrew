@@ -29,6 +29,7 @@ from typing import (  # noqa: F401
 
 from kiro_crew import (  # noqa: F401
     context_omissions,
+    injection_receipts,
     mcp_apps_render,
     model_registry,
     resource_status,
@@ -185,6 +186,7 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (
     _arm_queued_delivery_settlement,
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
+    idle_slot_admits_drain,
     subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
@@ -196,6 +198,10 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _answer_text_only,
     _current_turn_carries_image_ref,
     _should_suppress_requeue,
+)
+from kiro_crew.dashboard.chat_turn.regenerate_swap import (  # noqa: F401
+    RegenerateTarget,
+    release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
     _flush_segment,
@@ -290,6 +296,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     expire_slack_options,
     mirror_is_paused,
     run_to_completion,
+    variant_from_row,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -796,6 +803,11 @@ async def _run_chat(
     # deactivate a loop whose config advanced since (the A->B->A race that a
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
+    # The text skill triggers match on a loop's wake, when it is not the
+    # message: a plain nudge passes the loop's own message, without the cycle
+    # header the fire path prepends. ``None`` matches the turn's own text. Set
+    # only by ``_fire_dashboard_nudge``.
+    _skill_trigger_text: str | None = None,
     _directive_channel_origin: bool = False,
     # The message is turn CONTENT and its first word is never read as a dashboard
     # command: set by the drain for an entry the channel hand-off stamped
@@ -841,6 +853,7 @@ async def _run_chat(
         _directive_self_wake=_directive_self_wake,
         _directive_loop_id=_directive_loop_id,
         _directive_loop_gen=_directive_loop_gen,
+        _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,

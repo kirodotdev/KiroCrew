@@ -740,6 +740,18 @@ class TestPromptResolution:
         with pytest.raises(KasAgentTranslationError, match="unreadable"):
             resolve_prompt({"prompt": f"file://{p}"}, agent_id="a", agents_dir=tmp_path)
 
+    def test_missing_file_prompt_names_the_spec_dir_and_the_remedy(self, tmp_path):
+        # A spec left behind by an uninstalled tool points at a prompt that no
+        # longer exists; the refusal must say where the spec lives and what to do.
+        gone = tmp_path / "gone" / "prompt.md"
+        with pytest.raises(KasAgentTranslationError) as excinfo:
+            resolve_prompt({"prompt": f"file://{gone}"}, agent_id="old", agents_dir=tmp_path)
+        message = str(excinfo.value)
+        assert "unreadable" in message
+        assert str(tmp_path) in message
+        assert "delete the 'old' spec" in message
+        assert "choose another agent" in message
+
     def test_build_projects_a_prompt_less_spec_with_the_fallback(self, tmp_path):
         (tmp_path / "kirocrew-lite.json").write_text(
             json.dumps({"name": "kirocrew-lite", "tools": [], "prompt": ""}), encoding="utf-8"

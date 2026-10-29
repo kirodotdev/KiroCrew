@@ -832,10 +832,12 @@ class AgentConfig:
             "kiro-cli Child Env Defaults",
             "Environment variables given to every spawned kiro-cli process (chat "
             "sessions, background sessions and subagents) ONLY when the variable "
-            "is not already set in the environment it inherits. Empty by default. "
-            "kiro-cli sizes its thread pools by core count, so on a many-core host "
-            "running dozens of kiro-cli processes they can be capped, e.g. "
-            '{"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"}. Only '
+            "is not already set in the environment it inherits. kiro-cli sizes its "
+            "thread pools by core count, and every thread counts against the agent "
+            "slice's task ceiling, so a name left out of this map defaults to "
+            "min(cpus, 4) for TOKIO_WORKER_THREADS and RAYON_NUM_THREADS; kirocrew "
+            "doctor shows the value in force. A value set here wins, e.g. "
+            '{"TOKIO_WORKER_THREADS": "8"}. Only '
             "TOKIO_WORKER_THREADS and RAYON_NUM_THREADS are accepted, each a "
             "decimal integer string from 1 to 1024; any other "
             "entry is ignored with a warning. Kiro Crew's own agent environment "
@@ -1116,10 +1118,13 @@ class AgentConfig:
             "config: the tools come from the kirocrew-dashboard MCP server, so an "
             "agent that does not mount it never has them, exactly like any other "
             "MCP server. Turn this off to withdraw the capability from every agent "
-            "at once without editing each spec. Sessions can only reach peers in "
-            "the same workspace; incognito, app-scoped and scheduled sessions are "
-            "never addressable, and a crew member or a scheduled run reaches only "
-            "sessions it created itself.",
+            "at once without editing each spec, except crew member DM sessions and "
+            "the Conductor in your own dashboard tab, which keep dispatching "
+            "workers unless Member Dispatch is also off. Sessions can only reach "
+            "peers in the same workspace; incognito, app-scoped and scheduled "
+            "sessions are never addressable, and a crew member, a scheduled run, "
+            "or a Conductor admitted with this off reaches only sessions it "
+            "created itself.",
         ),
     )
     session_manager_chain: bool = field(
@@ -1136,15 +1141,16 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Member Dispatch",
-            "Let a crew member's DM session open and drive worker sessions it "
-            "creates, even when Session Control is off. On by default, because "
-            "dispatching work into workers is the crew-member operating model, "
-            "not an opt-in: this is the zero-configuration contract. Turn this "
-            "off to put member callers back under the Session Control switch, so "
-            "an operator who withdrew session control keeps member DM threads "
-            "chat-only without disabling the member. When on, a member's reach is "
-            "still bounded to sessions it created itself (creator ownership), the "
-            "same fence that binds it when Session Control is on.",
+            "Let a crew member's DM session, and the Conductor in your own "
+            "dashboard tab, open and drive worker sessions they create, even when "
+            "Session Control is off. On by default, because dispatching work into "
+            "workers is the crew-member operating model, not an opt-in: this is "
+            "the zero-configuration contract. Turn this off to put member callers "
+            "and the Conductor back under the Session Control switch, so an "
+            "operator who withdrew session control keeps them chat-only without "
+            "disabling them. When on, their reach is still bounded to sessions "
+            "they created themselves (creator ownership), the same fence that "
+            "binds a member when Session Control is on.",
         ),
     )
     crew_panel: bool = field(

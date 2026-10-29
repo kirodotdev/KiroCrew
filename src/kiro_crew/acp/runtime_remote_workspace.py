@@ -223,7 +223,16 @@ def _remote_workspace_agents(self: AcpRuntime, agents: Any, servers: list[Any]) 
     notice = (
         f"\n\nThis session's files and shell live in a remote workspace at {workdir}. "
         f"Use the @{name} tools for every file and command; local file and shell "
-        "tools are not available."
+        "tools are not available. Git over HTTPS or SSH to GitHub, GitLab, Bitbucket "
+        "and Azure DevOps (dev.azure.com) works from those commands as usual. For a "
+        "host the gateway has a git login for and is allowed to lend, git goes "
+        "through the gateway, which adds that login; any other host uses the "
+        "workspace's own git login, if it has one. Under the strict agent sandbox "
+        "the gateway lends none, so only the workspace's own login applies. A push "
+        "through the gateway that updates or deletes a protected branch such as main "
+        "is refused whole, as it is for a local session; push a feature branch "
+        "instead. Do not go looking for keys or tokens, and do not unset git's url "
+        "rewrites."
     )
     out = []
     for agent in agents:

@@ -18,8 +18,9 @@
 export type WorkItemState = 'open' | 'accepted' | 'rejected' | 'abandoned'
 
 /** What the worker last said about itself — the worker's column. `null` before
- *  its first report, which is not the same as "fine". */
-export type WorkReportStatus = 'progress' | 'done' | 'blocked' | 'question' | null
+ *  its first report, which is not the same as "fine". `reply` is written only
+ *  while the `work_ledger.remote_dispatch` preview is on. */
+export type WorkReportStatus = 'progress' | 'done' | 'blocked' | 'question' | 'reply' | null
 
 /** `accept_eval.py`'s own five values, carried through without translation. */
 export type WorkVerdict = 'pass' | 'fail' | 'pending' | 'refused' | 'error' | null

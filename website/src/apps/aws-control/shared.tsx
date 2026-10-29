@@ -47,7 +47,7 @@ import type { DriveSection, DriveUsage } from './types'
  * and the accounts pane gates on no profile being ticked in the Add-accounts
  * form (`handOff` in `AccountsPane`, fed by `AddAccounts`'s `onDraftChange`).
  */
-export function AwsErrorNotice({ error, message, title, variant = 'block', className, testId, onRetry, askAgent }: {
+export function AwsErrorNotice({ error, message, title, variant = 'block', className, testId, onRetry, askAgent, askAgentLabel, actionPlacement }: {
   /** The thrown value, when there is one. Its journal entry rides along to the agent. */
   error?: unknown
   /** The localised sentence. Falsy renders nothing, so callers need no `&&` guard. */
@@ -76,6 +76,12 @@ export function AwsErrorNotice({ error, message, title, variant = 'block', class
    * the agent to read.
    */
   askAgent?: boolean
+  /** Scoped hand-off label ("Ask the agent about this move"), passed through
+   *  to `ErrorNotice`. Ignored when `askAgent` is off. */
+  askAgentLabel?: string
+  /** `below` stacks the hand-off under the message, for a narrow host such as
+   *  the `max-w-sm` Move picker; see `ErrorNotice`'s prop of the same name. */
+  actionPlacement?: 'beside' | 'below'
 }) {
   const notice = (
     <ErrorNotice
@@ -84,6 +90,8 @@ export function AwsErrorNotice({ error, message, title, variant = 'block', class
       title={title}
       variant={variant}
       askAgent={askAgent}
+      askAgentLabel={askAgentLabel}
+      actionPlacement={actionPlacement}
       className={onRetry ? 'w-full' : className}
       testId={testId}
     />

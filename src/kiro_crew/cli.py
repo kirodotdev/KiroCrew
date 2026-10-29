@@ -490,6 +490,7 @@ def main() -> None:
     cli_parser_admin.register_cloud_parser(sub)
     cli_parser_gateway.register_logs_parser(sub)
     cli_parser_gateway.register_token_parser(sub)
+    cli_parser_gateway.register_open_parser(sub)
     cli_parser_gateway.register_logout_parser(sub)
     cli_parser_gateway.register_status_parser(sub)
 
@@ -530,6 +531,11 @@ def main() -> None:
     # mcp-mate (MCP server -- a crewmate changing its own record from its own
     # chat: ``update_self`` and the card-backed asks).
     sub.add_parser("mcp-mate")
+
+    # mcp-secrets (MCP server -- the opt-in mediated-secret request tool: an agent
+    # granted ``@kirocrew-secrets`` may send a write to an owner-authorized origin
+    # with a Custom secret whose value never reaches the model).
+    sub.add_parser("mcp-secrets")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
@@ -930,6 +936,11 @@ def main() -> None:
     elif args.command == "mcp-mate":
         # Lazily imported for the same reason as the guide.
         importlib.import_module("kiro_crew.mcp_mate").run_mcp_server()
+    elif args.command == "mcp-secrets":
+        # Lazily imported like the other opt-in servers, so the gateway boot path
+        # never loads the sandboxed forwarder just to exist. It does NOT import
+        # the vault -- the vault read happens host-side in the dashboard handler.
+        importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the
@@ -1025,6 +1036,10 @@ def main() -> None:
         from kiro_crew.cli_server import _token
 
         _token(args)
+    elif args.command == "open":
+        from kiro_crew.cli_open import cmd_open
+
+        sys.exit(cmd_open(args))
     elif args.command == "logout":
         from kiro_crew.cli_server import _logout, resolve_client_port
 

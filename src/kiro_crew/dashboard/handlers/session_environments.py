@@ -34,7 +34,9 @@ def _profiles() -> list[dict[str, object]]:
     is never advertised ahead of them. Disk only before any snapshot exists."""
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.session_environments import VM_PROVIDERS
     from kiro_crew.session_environment import session_environments_enabled
+    from kiro_crew.session_environments.routing import ambiguous_profile_ids
 
     if not session_environments_enabled():
         return []
@@ -42,9 +44,20 @@ def _profiles() -> list[dict[str, object]]:
     if config is None:
         config = KiroCrewConfig.load()
     section = config.session_environments
+    # An id saved for two providers names neither: the launch path refuses it,
+    # so it is not offered.
+    ambiguous = ambiguous_profile_ids(section)
+    if ambiguous:
+        logger.warning(
+            "session environments: profile id(s) %s are saved for more than one provider; "
+            "not offering them",
+            sorted(ambiguous),
+        )
     out: list[dict[str, object]] = []
     if section.coder_url:
         for p in section.profiles:
+            if p.id in ambiguous:
+                continue
             out.append(
                 {
                     "id": p.id,
@@ -54,15 +67,36 @@ def _profiles() -> list[dict[str, object]]:
                     "template": p.template,
                 }
             )
+    # Sprites and boxd profiles need no Coder URL.
+    for provider, key, _label in VM_PROVIDERS:
+        for item in getattr(section, key, None) or []:
+            if isinstance(item, dict) and item.get("id") and item["id"] not in ambiguous:
+                out.append(
+                    {
+                        "id": item["id"],
+                        "name": item.get("name") or item["id"],
+                        "provider": provider,
+                        "workdir": item.get("workdir") or "",
+                    }
+                )
     return out
 
 
 async def api_session_environments_check(request: web.Request) -> web.Response:
     """Is the saved setup ready to run?
 
-    Owner-only, read-only against Coder (``whoami``, template list). Answers::
+    Owner-only, read-only against Coder (``whoami``, template list) and
+    status-only for git logins (exit codes; no credential is read). Answers::
 
-        {"coder": {"ok", "owner" | "error"}, "profiles": [{"id", "ok", "error"?}]}
+        {"coder": {"ok", "owner" | "error"},
+         "profiles": [{"id", "ok", "error"?}],
+         "sprites": [{"id", "ok", "error"?}],
+         "boxd": [{"id", "ok", "error"?}],
+         "git": {host: "signed_in" | "not_signed_in" | "unchecked" | "withheld" | "unsupported"}}
+
+    The Sprites check lists at most one sprite per profile (proving its token);
+    the boxd check runs one ``boxd machine list`` (proving the CLI's login).
+    Neither creates or wakes anything.
     """
     if (
         refusal := await require_owner_dashboard_request(request, "session_environments.check")
@@ -72,25 +106,39 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
     from kiro_crew.coder.session_launch import CoderSessionEnvironments
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import data_home
+    from kiro_crew.remote_session.git_gateway import git_readiness
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
+    git = await git_readiness()
+    others = {"sprites": await _check_sprites(section), "boxd": await _check_boxd(section)}
     if not section.coder_url:
         return web.json_response(
-            {"coder": {"ok": False, "error": "no Coder URL is saved"}, "profiles": []}
+            {
+                "coder": {"ok": False, "error": "no Coder URL is saved"},
+                "profiles": [],
+                **others,
+                "git": git,
+            }
         )
     try:
         # Resolving the coder binary walks PATH, and a missing one raises.
         envs = CoderSessionEnvironments(section, await asyncio.to_thread(data_home))
         client = await asyncio.to_thread(envs._client)
     except SessionEnvironmentUnavailable as exc:
-        return web.json_response({"coder": {"ok": False, "error": str(exc)[:300]}, "profiles": []})
+        # Neither the git rows nor the other providers depend on Coder: a
+        # missing CLI still reports them.
+        return web.json_response(
+            {"coder": {"ok": False, "error": str(exc)[:300]}, "profiles": [], **others, "git": git}
+        )
     try:
         owner, _owner_id = await client.current_user()
     except CoderClientError as exc:
         # The CLI's own words: a timeout or a bad identity reply is not a
         # sign-in problem, and the card shows them under Details.
-        return web.json_response({"coder": {"ok": False, "error": str(exc)[:200]}, "profiles": []})
+        return web.json_response(
+            {"coder": {"ok": False, "error": str(exc)[:200]}, "profiles": [], **others, "git": git}
+        )
     profiles: list[dict[str, object]] = []
     for profile in section.profiles:
         try:
@@ -98,7 +146,9 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
             profiles.append({"id": profile.id, "ok": True})
         except CoderClientError as exc:
             profiles.append({"id": profile.id, "ok": False, "error": str(exc)[:200]})
-    return web.json_response({"coder": {"ok": True, "owner": owner}, "profiles": profiles})
+    return web.json_response(
+        {"coder": {"ok": True, "owner": owner}, "profiles": profiles, **others, "git": git}
+    )
 
 
 def _template_names(raw: object) -> list[str]:
@@ -152,6 +202,48 @@ class _WorkspacesUnreadable(Exception):
     """The workspace registry could not be read (I/O failure or corrupt file)."""
 
 
+async def _check_sprites(section: Any) -> list[dict[str, object]]:
+    """Per Sprites profile: is its token saved and accepted? Creates or wakes nothing."""
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+    from kiro_crew.sprites_session.launch import NAME_PREFIX, SpritesSessionEnvironments
+
+    environments = SpritesSessionEnvironments(section, await asyncio.to_thread(data_home))
+    out: list[dict[str, object]] = []
+    for profile in environments.profiles():
+        try:
+            client = await environments.client(profile)
+            await client.list_sprites(prefix=NAME_PREFIX, max_results=1)
+            out.append({"id": profile.get("id"), "ok": True})
+        except SessionEnvironmentUnavailable as exc:
+            out.append({"id": profile.get("id"), "ok": False, "error": str(exc)[:200]})
+    return out
+
+
+async def _check_boxd(section: Any) -> list[dict[str, object]]:
+    """Per boxd profile: CLI installed and signed in? One shared ``machine list``.
+
+    Every boxd profile shares the gateway's one ``boxd auth login``, so one
+    listing answers for all of them.
+    """
+    profiles = [p for p in getattr(section, "boxd_profiles", None) or [] if isinstance(p, dict)]
+    if not profiles:
+        return []
+    from kiro_crew.boxd_session.cli import BoxdCLI
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    try:
+        cli = await asyncio.to_thread(BoxdCLI)
+        await cli.list_machines()
+        error = ""
+    except SessionEnvironmentUnavailable as exc:
+        error = str(exc)[:200]
+    return [
+        {"id": p.get("id"), "ok": not error, **({"error": error} if error else {})}
+        for p in profiles
+    ]
+
+
 async def api_session_environments_workspaces_get(request: web.Request) -> web.Response:
     """``GET /api/session-environments/workspaces``: owner-only, registry-only (no
     Coder command) state and deletion date per owned workspace."""
@@ -181,7 +273,7 @@ async def api_session_environments_workspaces_get(request: web.Request) -> web.R
             except (OSError, ValueError, SessionEnvironmentUnavailable):
                 return ""
 
-        out: list[dict[str, object]] = []
+        out: list[dict[str, object]] = list(_persistent_workspaces(data_home()))
         for row in rows:
             out.append(
                 {
@@ -215,6 +307,51 @@ async def api_session_environments_workspaces_get(request: web.Request) -> web.R
     return web.json_response({"workspaces": workspaces})
 
 
+def _slot_of(session_key: str) -> str:
+    """A dashboard session's slot, so the card can name it."""
+    return session_key.split(":", 1)[1] if session_key.startswith("dashboard:") else ""
+
+
+def _persistent_registries(home: Any) -> list[tuple[str, Any]]:
+    from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
+    from kiro_crew.session_environments.persistent_vm import SessionResourceRegistry
+    from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
+
+    return [
+        (cls.label.lower(), SessionResourceRegistry(home / cls.registry_file, cls.label))
+        for cls in (SpritesSessionEnvironments, BoxdSessionEnvironments)
+    ]
+
+
+def _persistent_workspaces(home: Any) -> list[dict[str, object]]:
+    """Sessions' sprites and boxd machines, from their own registries (no remote call)."""
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    out: list[dict[str, object]] = []
+    for provider, registry in _persistent_registries(home):
+        try:
+            rows = registry.all()
+        except SessionEnvironmentUnavailable as exc:
+            # Not an empty inventory: machines and their deadlines may still exist.
+            raise _WorkspacesUnreadable(str(exc)) from exc
+        for row in rows:
+            out.append(
+                {
+                    "workspace": row.name,
+                    "provider": provider,
+                    "kind": "session",
+                    "slot": _slot_of(row.session_key),
+                    "profile": row.profile_id,
+                    # The registry records no live state; the card shows none.
+                    "state": "",
+                    "template": row.profile_id,
+                    "created_at": row.created_at,
+                    "deletion_due_at": row.deletion_due_at,
+                }
+            )
+    return out
+
+
 def _environment_locked(slot: object) -> bool:
     """True once the session has any message: the environment is then fixed."""
     total = getattr(slot, "total_messages", 0)
@@ -225,8 +362,17 @@ def _remote_workspace_created(session_key: str) -> bool:
     """Whether a verified workspace exists; an unreadable registry says yes."""
     from kiro_crew.coder.registry import WorkspaceBindingRegistry, WorkspaceRegistryCorrupt
     from kiro_crew.config.paths import data_home
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
-    registry = WorkspaceBindingRegistry(data_home() / "coder" / "session-envs.json")
+    home = data_home()
+    for _provider, persistent in _persistent_registries(home):
+        try:
+            # A row is written before the create call, so one means a VM may exist.
+            if persistent.get(session_key) is not None:
+                return True
+        except SessionEnvironmentUnavailable:
+            return True
+    registry = WorkspaceBindingRegistry(home / "coder" / "session-envs.json")
     try:
         binding = registry.get_by_session(session_key)
     except (OSError, WorkspaceRegistryCorrupt):
@@ -249,7 +395,23 @@ async def _choice_locked(slot: object, session_key: str, profile: str | None) ->
         return False
     if profile is None:
         return True
+    if await asyncio.to_thread(_saved_for_two_providers, profile):
+        # It may have run on either provider, so it stays fixed.
+        return True
     return await asyncio.to_thread(_remote_workspace_created, session_key)
+
+
+def _saved_for_two_providers(profile: str) -> bool:
+    """Whether ``profile`` names profiles of more than one provider (a hand edit)."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+    from kiro_crew.session_environments.routing import profile_provider
+
+    try:
+        profile_provider(KiroCrewConfig.load().session_environments, profile)
+    except SessionEnvironmentUnavailable:
+        return True
+    return False
 
 
 def _slot_session_key(request: web.Request) -> str | None:
@@ -461,7 +623,8 @@ async def apply_default_environment(
         default = str(getattr(section, "default_profile", "") or "")
         if not default or _environment_locked(slot):
             return False
-        if default not in {p["id"] for p in await asyncio.to_thread(_profiles)}:
+        providers = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
+        if default not in providers:
             return False
         key = effective_session_key(slot)
         if not key:
@@ -486,7 +649,7 @@ async def apply_default_environment(
                 await sessions.remove(key)
             if getattr(slot, "_pending_reset_history_key", None) == key:
                 slot._pending_reset_history_key = None
-            await asyncio.to_thread(choices.set, key, default)
+            await asyncio.to_thread(choices.set, key, default, str(providers[default]))
             if isinstance(terminals, dict):
                 from kiro_crew.dashboard.handlers.terminal import retire_local_shells_of_chat
 
@@ -514,12 +677,14 @@ async def api_chat_slot_environment_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "profile must be a string or null", "code": "invalid_request"}, status=400
         )
+    provider = ""
     if profile is not None:
-        known = {p["id"] for p in await asyncio.to_thread(_profiles)}
+        known = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
         if profile not in known:
             return web.json_response(
                 {"error": "profile is not configured", "code": "unknown_profile"}, status=400
             )
+        provider = str(known[profile])
     from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
     from kiro_crew.llm_helpers_parts.model_fallback import slot_switch_session_lock
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
@@ -556,7 +721,10 @@ async def api_chat_slot_environment_put(request: web.Request) -> web.Response:
                         status=409,
                     )
                 if previous != profile:
-                    await asyncio.to_thread(choices.set, key, profile)
+                    if profile is None:
+                        await asyncio.to_thread(choices.set, key, None)
+                    else:
+                        await asyncio.to_thread(choices.set, key, profile, provider)
             except (ValueError, SessionEnvironmentUnavailable) as exc:
                 return web.json_response({"error": str(exc), "code": "choice_refused"}, status=400)
             if previous != profile:

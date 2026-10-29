@@ -181,6 +181,57 @@ on_superseded() {
   exit 1
 }
 
+# A run whose status lags its jobs. GitHub rolls finished jobs up into the run
+# asynchronously, and the run-level status has been seen reading `in_progress`
+# for over 30 minutes after every job of it concluded `success`. So at the TOTAL
+# budget, before failing closed, the barrier reads the run's jobs once: when the
+# run is on its first attempt, the attempt has jobs, every one is `completed`
+# with `success` or `skipped`, at
+# least one is `success`, and the newest finished at least ROLLUP_SETTLE seconds
+# ago (so a job that `needs:` the others has had time to be created), the gate
+# is green in fact and the matrix is released with a warning saying why. Any
+# read failure, an unfinished or failed job, or a run awaiting fork approval
+# keeps the fail-closed exit. Read only, like every other call here.
+ROLLUP_SETTLE=60
+JOBS_SEEN=""
+jobs_all_passed() {
+  local gate="$1" gid attempt jobs verdict
+  JOBS_SEEN=""
+  gid="$(printf '%s' "$gate" | jq -r '.id')"
+  attempt="$(printf '%s' "$gate" | jq -r '.run_attempt // 1')"
+  # A later attempt lists only the jobs it ran again, so one green job there
+  # says nothing about another job that failed in an earlier attempt. Only a
+  # first attempt holds every job of the run.
+  if [ "$attempt" != "1" ]; then
+    echo "::warning::Fast Gate run $gid is on attempt $attempt; a later attempt's job list leaves out earlier attempts, so its status is taken as read."
+    return 1
+  fi
+  if ! jobs="$(gh api --method GET \
+    "repos/$REPO/actions/runs/$gid/attempts/$attempt/jobs" -f per_page=100 2>/dev/null)"; then
+    echo "::warning::Could not read the jobs of Fast Gate run $gid, so its status is taken as read."
+    return 1
+  fi
+  verdict="$(printf '%s' "$jobs" \
+    | jq -r --argjson now "$(now)" --argjson settle "$ROLLUP_SETTLE" \
+        '(.jobs // []) as $j
+         | if (.total_count // -1) <= 0 or ($j | length) != .total_count then "no"
+           elif ($j | all(.status == "completed"
+                          and (.conclusion == "success" or .conclusion == "skipped"))) | not
+           then "no"
+           elif ($j | any(.conclusion == "success")) | not then "no"
+           elif ($j | map(.completed_at // "" | select(. != "") | fromdateiso8601)
+                   | (length == ($j | length)) and (($now - max) >= $settle)) | not
+           then "no"
+           else "yes \($j | length)" end' 2>/dev/null || echo no)"
+  case "$verdict" in
+    yes\ *)
+      JOBS_SEEN="${verdict#yes }"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 started="$(now)"
 seen=false
 
@@ -279,6 +330,13 @@ while :; do
   fi
 
   if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
+    if [ "$status" != "completed" ] && [ "$status" != "awaiting maintainer approval" ] \
+        && jobs_all_passed "$latest"; then
+      echo "::warning::Fast Gate run $url still reads '$status' after ${elapsed}s, but all" \
+           "$JOBS_SEEN of its jobs completed green at least ${ROLLUP_SETTLE}s ago: GitHub has" \
+           "not rolled them up into the run yet. Releasing the heavy jobs."
+      exit 0
+    fi
     echo "::error::Fast Gate still '$status' after ${elapsed}s ($url)." \
          "Failing closed rather than starting the matrix unverified." \
          "This is not a verdict on the code: re-run this job once that run completes."

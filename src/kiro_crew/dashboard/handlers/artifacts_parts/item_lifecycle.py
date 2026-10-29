@@ -582,7 +582,30 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
                 extra={"slug": slug, "source_path": source_path},
             )
             return _err("path traversal not allowed", status=403)
+        from kiro_crew.platform_compat import (
+            names_a_verbatim_only_file,
+            strip_extended_length_prefix,
+        )
+
         resolved_path = Path(os.path.expanduser(source_path)).resolve()
+        # The folded path is what gets stat'ed and stored, so a name only the
+        # ``\\?\`` spelling can reach (a trailing dot, a DOS device) is refused:
+        # its plain spelling names a different file.
+        if names_a_verbatim_only_file(resolved_path):
+            _audit(
+                tool="artifact_relocate",
+                request=request,
+                outcome="denied",
+                error="verbatim-only name",
+                extra={"slug": slug, "source_path": source_path},
+            )
+            return _err(
+                "source_path names a file Windows reaches only by its extended-length path",
+                status=400,
+            )
+        # Windows' ``\\?\`` prefix folded off (lexically), as the producer folds
+        # the roots, so a prefixed resolve is not read as an escape.
+        resolved_path = strip_extended_length_prefix(resolved_path)
         # Fixed-root containment. The root SET comes from the store's single
         # producer (``ArtifactStore.allowed_source_roots``) so this barrier and
         # the store's own read/write barriers cannot drift: a copy omitting the

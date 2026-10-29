@@ -125,6 +125,10 @@ export interface Skill {
    *  `deliveries` is. Drives the Skills list's "last used" text and its
    *  Recently used sort. */
   last_used_at?: number | null
+  /** Unix time (seconds) from the SKILL.md frontmatter's `created_at`;
+   *  `null`/absent when none is recorded (never the file's mtime). Drives the
+   *  Newest first sort. */
+  created_at?: number | null
   /** False when the SKILL.md lives outside the directory Kiro Crew owns (e.g. a
    *  `skills.extra_paths` entry). Such a skill is listed but not ours to rewrite,
    *  so the injection toggle must not be offered — the endpoint refuses it. */

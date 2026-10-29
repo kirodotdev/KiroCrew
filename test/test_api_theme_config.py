@@ -354,6 +354,20 @@ async def test_theme_config_put_no_change_no_write(cfg_file: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_theme_config_put_rejects_malformed_json_with_coded_400(cfg_file: Path) -> None:
+    """A body that is not JSON answers the coded 400 and writes nothing."""
+    _write(cfg_file, {"timezone": "UTC"})
+    before = cfg_file.read_bytes()
+    req = _owner_request()
+    req.method = "PUT"
+    req.json = AsyncMock(side_effect=json.JSONDecodeError("Expecting value", "not json", 0))
+    resp = await core_mod.api_theme_config(req)
+    assert resp.status == 400
+    assert json.loads(resp.body) == {"error": "invalid JSON", "code": "invalid_json"}
+    assert cfg_file.read_bytes() == before
+
+
+@pytest.mark.asyncio
 async def test_theme_config_put_rejects_non_object_body() -> None:
     """PUT /api/config/theme rejects arrays instead of raising during key access."""
     with pytest.raises(web.HTTPBadRequest):

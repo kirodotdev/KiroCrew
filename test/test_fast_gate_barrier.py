@@ -1275,13 +1275,28 @@ class TestLintRunsBeforeTheHeavyJobs:
         [
             (
                 {"only_backend": "true", "only_frontend": "false"},
-                {"backend-test", "frontend-test", "coverage-combine", "real-adapter-contract"},
+                {
+                    "backend-test",
+                    "frontend-test",
+                    "coverage-combine",
+                    "real-adapter-contract",
+                    "backend-test-kernel-lock-owner",
+                    "backend-test-sandbox",
+                    "backend-test-crew-container",
+                },
                 {"frontend-lint", "bundle-size", "frontend-coverage-merge"},
             ),
             (
                 {"only_backend": "false", "only_frontend": "true"},
                 {"backend-test", "frontend-test", "bundle-size", "frontend-coverage-merge"},
-                {"backend-lint", "coverage-combine", "real-adapter-contract"},
+                {
+                    "backend-lint",
+                    "coverage-combine",
+                    "real-adapter-contract",
+                    "backend-test-kernel-lock-owner",
+                    "backend-test-sandbox",
+                    "backend-test-crew-container",
+                },
             ),
             (
                 {"only_backend": "false", "only_frontend": "false"},
@@ -1299,10 +1314,10 @@ class TestLintRunsBeforeTheHeavyJobs:
             _LINT_GATE,
             "backend-test-windows",
             "backend-test-ipv6",
-            "backend-test-kernel-lock-owner",
             "e2e",
             "integration",
             "electron-test",
+            "pod-boot-windows",
             "coverage-gate",
         }
         ran = {job for job, result in results.items() if result == "success"}

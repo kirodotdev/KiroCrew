@@ -8,7 +8,7 @@ import { KiroGhostMark } from '../KiroGhostMark'
 import { i18nT } from '../../i18n/t'
 import { CREW_GROUP_LABEL_KEY, CREW_GROUP_TONE, type CrewWorkerGroup } from '../../lib/crewWorkers'
 
-/** The solid ghost on the crew gradient: the root row's badge, the breadcrumb's root. */
+/** The solid ghost on the crew gradient: the breadcrumb's root. */
 export function CrewGhostBadge({ size = 28 }: { size?: number }) {
   return (
     <span aria-hidden="true" data-testid="crew-ghost-badge" className="crew-grad shrink-0 rounded-full grid place-items-center" style={{ width: size, height: size }}>
@@ -17,10 +17,12 @@ export function CrewGhostBadge({ size = 28 }: { size?: number }) {
   )
 }
 
-/** "CREW MODE" in the crew gradient, the root row's first line. */
+/** "CREW MODE" in the crew gradient, the root row's first line. Tracked a whole
+ *  pixel: an em fraction at this size lands letters on fractional pixels, which
+ *  renders one gap wider than the rest. */
 export function CrewEyebrow() {
   return (
-    <span data-testid="crew-eyebrow" className="crew-eyebrow-text font-bold uppercase tracking-[0.12em] truncate">
+    <span data-testid="crew-eyebrow" className="crew-eyebrow-text font-bold uppercase tracking-[1px] truncate">
       {i18nT('components.crewMode.eyebrow')}
     </span>
   )

@@ -26,7 +26,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _audit,
     _audit_denials,
     _cron_caller,
-    _member_bypass,
+    _dispatch_bypass,
     caller_slot_key,
     prewarm_enabled_check,
     session_control_enabled,
@@ -141,7 +141,7 @@ async def fork_session(
     # Same gate order as `create_session`, for the same reasons: the member
     # bypass is resolved on the caller, then the config switch, then the
     # unattended prefix.
-    if not session_control_enabled() and not _member_bypass(state, caller_key):
+    if not session_control_enabled() and not _dispatch_bypass(state, caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",

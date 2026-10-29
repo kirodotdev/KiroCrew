@@ -208,14 +208,13 @@ describe('all session dashboards', () => {
     expect(visualCards().map(card => card.getAttribute('data-slot'))).toEqual(['root'])
     const inbox = screen.getByRole('region', { name: 'Needs you' })
     expect(within(inbox).queryByText('Worker session')).toBeNull()
-    // R3 Z2: the conductor carries its worker's wait, as info that opens the
-    // conductor's chat (its Crew panel lists the worker); there is still no
-    // worker card and no decision button here.
+    // R3 Z2: the conductor carries its worker's wait, as info that links to the
+    // approval card; there is still no worker card and no decision button here.
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeInTheDocument()
     const notice = within(inbox).getByTestId('crew-approval-notice')
     expect(notice).toHaveTextContent('Crew members waiting for a tool decision: 1')
-    expect(notice).toHaveTextContent('Decide it in Root session: its Crew panel lists them.')
-    expect(within(notice).getByRole('link', { name: /Open the Crew Mode chat/ })).toHaveAttribute('href', '/chat?sid=root')
+    expect(notice).toHaveTextContent('Decide it on the approval card in Root session.')
+    expect(within(notice).getByRole('link', { name: /Open the approval card/ })).toHaveAttribute('href', '/chat?sid=root')
     expect(within(inbox).queryByRole('button', { name: 'Approve' })).toBeNull()
     expect(within(visualCards()[0]).getByText('Needs you')).toBeInTheDocument()
   })

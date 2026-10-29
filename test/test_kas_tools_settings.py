@@ -114,16 +114,14 @@ class TestTranslation:
             "write": {"allowedPaths": ["./out/**"]},
         }
         assert _rules(settings) == []
-        assert _lost(settings) == [
-            "read.allowedPaths",
-            "shell.allowedCommands",
-            "write.allowedPaths",
-        ]
+        # allowedCommands is answered by Crew at the gate, not by a rule
+        # (`test_kas_allowed_commands.py`), so only the path allows are named.
+        assert _lost(settings) == ["read.allowedPaths", "write.allowedPaths"]
 
     def test_deny_by_default_is_reported_not_translated(self):
         settings = {"shell": {"allowedCommands": ["git status"], "denyByDefault": True}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["shell.allowedCommands", "shell.denyByDefault"]
+        assert _lost(settings) == ["shell.denyByDefault"]
 
     def test_write_fallback_deny_is_reported_not_translated(self):
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}

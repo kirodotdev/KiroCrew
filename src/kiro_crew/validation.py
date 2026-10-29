@@ -483,6 +483,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_STOP_SCHEMA,
         SESSION_SUMMARY_SCHEMA,
         WAIT_SCHEMA,
+        WORK_DISPATCH_SCHEMA,
         _validate_channel_routing,
         _validate_session_set_model,
     )
@@ -532,6 +533,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         WORK_LEDGER_READ_SCHEMA,
         WORK_LEDGER_REBUILD_SCHEMA,
         WORK_LEDGER_RECORD_SCHEMA,
+        WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
         WORK_REPORT_SCHEMA,
         _validate_dashboard_write_tool,
         _validate_work_artifacts,

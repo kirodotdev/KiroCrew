@@ -84,7 +84,9 @@ _IMPORTED_COLLECTIONS = ("semantic", "episodic")
 #: Printed after `memory import` when rows still lack a vector. The CLI store has
 #: no embed_fn (loading the model would add its startup cost to every invocation),
 #: so `import_memory`'s `_try_embed` returns None and every imported episode lands
-#: keyword-only; the export file carries no vectors either. Without this line the
+#: keyword-only. A semantic row keeps the vector its export carried only when the
+#: export names the same model as this store; any other semantic row lands
+#: keyword-only too. Without this line the
 #: summary ("Skipped: 0") reads as complete while semantic recall over the imported
 #: rows silently does not work. The gateway's paced repair loop and its boot sweep
 #: (`slack/gateway_runtime/memory_lifecycle.py`) are what fill them, each only once
@@ -1085,11 +1087,35 @@ def _memory_verb(args: argparse.Namespace) -> None:
                                 f"{collection}; {omitted} omitted",
                                 file=sys.stderr,
                             )
+                # Read on both sides of the row read; see the vector block below.
+                space_before = store.recorded_embedding_space()
+                semantic = store.get_all_semantic()
                 data: dict[str, object] = {
-                    "semantic": store.get_all_semantic(),
+                    "semantic": semantic,
                     "episodic": episodic,
                     "events": events,
                 }
+                if any(row.get("embedding") is not None for row in semantic):
+                    # Each stored vector BLOB ships as base64 of its float32 bytes,
+                    # which `memory import` can restore; `default=str` would write
+                    # an unreadable bytes repr. The two top-level keys name the
+                    # space and model the vectors came from, so an importer only
+                    # carries them into a store whose vectors use the same model.
+                    # They are appended only when vectors ship, so a payload
+                    # without vectors keeps its previous shape.
+                    from kiro_crew.vector_memory_runtime import bulk_ingest
+
+                    for row in semantic:
+                        row["embedding"] = bulk_ingest.encode_embedding_blob(row.get("embedding"))
+                    space_after = store.recorded_embedding_space()
+                    if space_after == space_before:
+                        data["embedding_space_sig"], data["embedding_model"] = (
+                            bulk_ingest.export_embedding_space(space_after)
+                        )
+                    else:
+                        # A model swap committed while the rows were read: their
+                        # vectors may belong to either space, so name neither.
+                        data["embedding_space_sig"], data["embedding_model"] = None, None
                 if getattr(args, "include_markdown", False):
                     # Opt-in so the default payload shape stays byte-identical
                     # for existing consumers. Only reachable for the DEFAULT store,
@@ -1149,7 +1175,9 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 print(f"  Semantic: {counts['semantic']}")
                 print(f"  Episodic: {counts['episodic']}")
                 print(f"  Skipped:  {counts['skipped']}")
-                if counts["episodic"] > 0 and store.has_pending_embeddings():
+                if (
+                    counts["semantic"] > 0 or counts["episodic"] > 0
+                ) and store.has_pending_embeddings():
                     print(_IMPORT_EMBED_NOTE)
                 if dropped and memory_store_version(store_name) != 2:
                     # A V2 export reads the canonical relation, so its rows carry
