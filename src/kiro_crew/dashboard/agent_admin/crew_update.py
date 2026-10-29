@@ -890,6 +890,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # the saved permission here, under the same config lock as the
             # compare-and-set above, so no browser write can land out of order.
             await _apply_member_approval_to_live_thread(request, name, agent.approval_mode)
+        if "display_name" in changed:
+            # The mate's home folder carries its display name.
+            from kiro_crew.dashboard.mate_folders import follow_display_name
+
+            await follow_display_name(
+                request.app.get("state"), agent.memory_store, agent.display_name or name
+            )
         # Best-effort per-member event log: the save succeeded, so emit a
         # config snapshot with the list of fields that actually changed.
         try:

@@ -325,9 +325,12 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 synced[:] = [n for n in synced if n not in deferred_names]
             if (state := request.app.get("state")) is not None:
                 from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
+                from kiro_crew.dashboard.mate_folders import hand_back_home
 
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)
+                    # The pruned mate's home goes back to the person, as on a delete.
+                    await hand_back_home(state, store_name)
         except BaseException as exc:
             if not isinstance(exc, Exception):
                 raise

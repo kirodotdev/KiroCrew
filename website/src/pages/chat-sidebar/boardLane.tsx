@@ -17,6 +17,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import TagManagerList from '../../components/TagManagerList'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
+import { isMateManaged } from '../../utils/mateFolders'
 import type { ChatFolder, ChatTag } from '../../types'
 import { SESSION_LANES } from '../chat/sessionLane'
 import { SessionRowWindowScroller } from '../chat/sessionRowWindow'
@@ -76,10 +77,14 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     // the collapse state it no longer has anything to remember.
     const emptyBody = hideEmptyFolderBody && deepChildren.length === 0 && childSlots.length === 0
     const collapsed = boardFolderCollapsed(columnId, folder)
+    // A mate's folder is managed for the person: open and collapse only. No
+    // menu, rename, new chat, drag, or drop -- the list view's rule.
+    const mateManaged = isMateManaged(folder, folders)
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
-    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
+    // A mate's folder takes no folder moved into it, so it is no destination.
+    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id) && !isMateManaged(f, folders))
     // The board lane's answer to a reveal. A column has no folder HEADER row, so the
     // tree's `folderFlash` has nothing to attach to here and a board reveal used to
     // scroll to the column and then sit there unmarked -- the scroll alone is not the
@@ -109,7 +114,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
       // The header row itself, like the list view's `focusListFolderRow`.
       document.querySelector<HTMLElement>(`[data-board-folder-row="${columnId}:${folder.id}"]`)?.focus({ preventScroll: true })
     }
-    const draggable = !!dragHandleProps && !(editingId === folder.id && editScope === columnId)
+    const draggable = !!dragHandleProps && !mateManaged && !(editingId === folder.id && editScope === columnId)
     return (
       // Two drop mechanisms coexist on this block, one per drag SOURCE:
       //  • Native HTML5 onDrop (below) — SESSION cards drag natively (they set
@@ -123,7 +128,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
       //    drag never fires dnd-kit's onDragEnd and a dnd-kit drag never fires
       //    the DOM drop event. Id is column-scoped because a root folder renders
       //    once per board column and dnd-kit droppable ids must be unique.
-      <DndDroppable key={`col-${columnId}-folder-drop-${folder.id}`} id={`col-${columnId}-folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
+      <DndDroppable key={`col-${columnId}-folder-drop-${folder.id}`} id={`col-${columnId}-folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }} disabled={mateManaged}>
         {({ setNodeRef, isOver }) => (
       // The drag handlers below make this a mouse-only drop target with no
       // keyboard analogue, so scope-disable the static-interaction rule.
@@ -138,9 +143,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         // paints nothing. Naming this box gives the same declaration something to
         // key on here.
         className={`folder-col rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}${boardFolderFlash ? ` session-reveal-flash${boardFolderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
-        onDragOver={e => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('ring-1', 'ring-accent') }}
-        onDragLeave={e => { e.stopPropagation(); e.currentTarget.classList.remove('ring-1', 'ring-accent') }}
+        // A mate's folder accepts no card: without preventDefault on dragover
+        // the browser reads the box as no drop target, so no drop fires here.
+        onDragOver={e => { if (mateManaged) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('ring-1', 'ring-accent') }}
+        onDragLeave={e => { if (mateManaged) return; e.stopPropagation(); e.currentTarget.classList.remove('ring-1', 'ring-accent') }}
         onDrop={e => {
+          if (mateManaged) return
           e.preventDefault(); e.stopPropagation()
           e.currentTarget.classList.remove('ring-1', 'ring-accent')
           const k = e.dataTransfer.getData('text/plain')
@@ -150,7 +158,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         {/* Only the header opens the folder menu; body rows keep their own
          * menus and the rename input keeps its native editing menu. */}
         <ContextMenu>
-          <ContextMenuTrigger asChild disabled={editingId === folder.id && editScope === columnId}>
+          <ContextMenuTrigger asChild disabled={mateManaged || (editingId === folder.id && editScope === columnId)}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
@@ -220,12 +228,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
             // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-            <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} {...offlineProps(connected, i18nT('utils.offline.rename_folders'))} onDoubleClick={e => { e.stopPropagation(); if (!connected) { setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); return } setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
+            <span className="flex-1 truncate" title={mateManaged ? undefined : i18nT('pages.chatSidebar.double_click_to_rename')} {...(mateManaged ? {} : offlineProps(connected, i18nT('utils.offline.rename_folders')))} onDoubleClick={e => { e.stopPropagation(); if (mateManaged) return; if (!connected) { setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); return } setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {/* List-view parity: an empty folder's row keeps its action cluster
             *  visible (see the note in renderFolderHeader). */}
-          {!(editingId === folder.id && editScope === columnId) && (
+          {!mateManaged && !(editingId === folder.id && editScope === columnId) && (
           <span className={`${emptyBody ? '' : 'opacity-0 '}group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5`}>
             {/* ⋯ menu + a primary "new chat in folder" action, mirroring the
              *  list-view folder header (renderFolderHeader) so board view has
@@ -276,7 +284,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             {/* Default: the empty-folder affordance stays exactly as it was, in
              *  list-view parity (see renderFolderBlock). Reached only when the
              *  setting is OFF - with it on there is no body to put this in. */}
-            {deepChildren.length === 0 && childSlots.length === 0 && (
+            {deepChildren.length === 0 && childSlots.length === 0 && !mateManaged && (
               <button key={`col-${columnId}-newchat-${folder.id}`} type="button" data-testid={`col-${columnId}-folder-${folder.id}-empty-new-chat`} data-folder-new-chat=""
                 // Same three-gesture contract as the folder header's "+".
                 onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}

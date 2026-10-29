@@ -364,9 +364,15 @@ async def _ensure_followup_folder(state: Any) -> str:
     folder and build a duplicate. Idempotent — an existing folder is adopted and
     nothing is written.
     """
+    from kiro_crew.dashboard.mate_folders import home_owner_of
+
     def _create_or_adopt(folders: list[dict]) -> tuple[bool, str]:
         for f in folders:
             if str(f.get("name", "")).strip() != followup.FOLDER_NAME:
+                continue
+            # A mate's home, or a folder inside one, holds only that mate's
+            # sessions, so a follow-up never adopts one.
+            if home_owner_of(folders, str(f.get("id") or "")):
                 continue
             # Re-engaging the folder clears `hidden`, matching the folder CRUD
             # handler's own unhide-on-assign rule.

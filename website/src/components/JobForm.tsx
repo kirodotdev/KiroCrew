@@ -10,6 +10,7 @@ import SegmentedControl from './SegmentedControl'
 import SimpleSelect from './SimpleSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
+import { isMateManaged } from '../utils/mateFolders'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
@@ -511,12 +512,19 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  move-to-folder submenu and the launcher's folder rows, so this picker lists
    *  folders in the order and with the ancestry labels the reader already knows --
    *  and a fix to either (a cycle guard, a non-string name off disk) reaches all
-   *  of them at once. */
+   *  of them at once.
+   *
+   *  A mate's home and the folders inside it are left out: they hold only that
+   *  mate's sessions, so the save would be refused. The job's own saved folder
+   *  stays listed, so an existing value is still shown as it is. */
   const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
+  const savedChatFolderId = job?.chat_folder_id || ''
   const folderOptions = useMemo(() => {
-    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode)
+    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode).filter(
+      f => f.folder.id === savedChatFolderId || !isMateManaged(f.folder, chatFolders),
+    )
     return { values: ordered.map(f => f.folder.id), labels: ordered.map(f => f.path) }
-  }, [chatFolders, folderSortMode])
+  }, [chatFolders, folderSortMode, savedChatFolderId])
   /** `hide_in_chat` is the explicit "this job gets no tab" opt-out, and a run with
    *  no tab has nothing to file -- so with it on the picker cannot do anything.
    *  Saying that and refusing input beats accepting a setting whose only

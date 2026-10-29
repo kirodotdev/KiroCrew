@@ -242,6 +242,36 @@ def test_revive_refuses_an_unknown_folder_before_touching_history(tmp_path):
     assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
 
 
+def test_revive_may_not_refile_a_session_out_of_a_mate_home(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import mate_folders
+
+    async def _person(key: str) -> str:
+        return ""
+
+    monkeypatch.setattr(mate_folders, "session_folder_principal", _person)
+    state = _make_state(tmp_path)
+    state._folders.append(
+        {
+            "id": "home",
+            "name": "Radar",
+            "parent_id": None,
+            "owner_app": "member:member-radar-0123",
+            mate_folders.MATE_HOME_KEY: True,
+        }
+    )
+    _folder(state, "f1", "Gamma")
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "home"
+    key = _archive(state, caller, peer)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key, folder_id="f1")
+
+    assert exc.value.code == "mate_home_locked"
+    assert key not in state._slots
+
+
 def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
     state = _make_state(tmp_path)
     _folder(state, "f1", "Gamma")
