@@ -17,10 +17,10 @@ await server.listen()
 
 const browser = await chromium.launch({ executablePath })
 const shots = [
-  { name: 'chooser-en', lang: 'en', sso: false, ssoLabel: 'Continue with company SSO' },
-  { name: 'sso-form-en', lang: 'en', sso: true, ssoLabel: 'Continue with company SSO' },
-  { name: 'chooser-zh-CN', lang: 'zh-CN', sso: false, ssoLabel: '使用公司 SSO 继续' },
-  { name: 'sso-form-zh-CN', lang: 'zh-CN', sso: true, ssoLabel: '使用公司 SSO 继续' },
+  { name: 'chooser-en', lang: 'en', sso: false, ssoLabel: 'Continue with AWS IAM Identity Center' },
+  { name: 'sso-form-en', lang: 'en', sso: true, ssoLabel: 'Continue with AWS IAM Identity Center' },
+  { name: 'chooser-zh-CN', lang: 'zh-CN', sso: false, ssoLabel: '使用 AWS IAM Identity Center 继续' },
+  { name: 'sso-form-zh-CN', lang: 'zh-CN', sso: true, ssoLabel: '使用 AWS IAM Identity Center 继续' },
 ]
 for (const shot of shots) {
   const ctx = await browser.newContext({

@@ -358,6 +358,7 @@ function Chooser({
           <form
             className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
             data-testid="kas-login-sso-form"
+            aria-labelledby="kas-sso-form-title"
             onSubmit={(e) => {
               e.preventDefault()
               if (!startUrlReady || busy) return
@@ -368,6 +369,11 @@ function Chooser({
               })
             }}
           >
+            {/* Each open form names the choice that opened it, so the
+                button it replaced is not the only place that said what it is. */}
+            <h2 id="kas-sso-form-title" className="mb-2 text-[13px] font-semibold text-text-strong">
+              {i18nT('components.kasLogin.provider_company_sso')}
+            </h2>
             <label
               className="block text-[12px] font-medium text-text-strong"
               htmlFor="kas-sso-start-url"
@@ -423,12 +429,16 @@ function Chooser({
           <form
             className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
             data-testid="kas-login-org-form"
+            aria-labelledby="kas-org-form-title"
             onSubmit={(e) => {
               e.preventDefault()
               if (busy) return
               onPick('external_idp', organizationLookupExtra(orgLookup, orgRegion))
             }}
           >
+            <h2 id="kas-org-form-title" className="mb-2 text-[13px] font-semibold text-text-strong">
+              {i18nT('components.kasLogin.provider_organization_idp')}
+            </h2>
             <label
               className="block text-[12px] font-medium text-text-strong"
               htmlFor="kas-org-lookup"
@@ -446,6 +456,9 @@ function Chooser({
             </label>
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
               {i18nT('components.kasLogin.org_helper')}
+            </p>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              {i18nT('components.kasLogin.org_browser_note')}
             </p>
             <label
               className="mt-3 block text-[12px] font-medium text-text-strong"

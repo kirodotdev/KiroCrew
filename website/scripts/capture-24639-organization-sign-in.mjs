@@ -1,8 +1,8 @@
 /**
  * Capture the Kiro sign-in chooser (the embedded card Settings → Agent Harness
  * renders, and the full-screen gate) for the organization (external IdP)
- * sign-in: the fifth choice, its inline form, and the browser-wait screen
- * without the "Use a code instead" path.
+ * sign-in: the fifth choice, its inline form, the IAM Identity Center form
+ * beside it, and the browser-wait screen without the "Use a code instead" path.
  *
  * Usage: node scripts/capture-24639-organization-sign-in.mjs [base-url] [out-dir] [shot-name]
  * Needs a Vite dev server serving website/ on a loopback address (the choice is
@@ -29,6 +29,8 @@ const signedOut = {
 const shots = [
   { name: 'card-chooser-light', theme: 'light', chrome: 'card' },
   { name: 'card-chooser-dark', theme: 'dark', chrome: 'card' },
+  { name: 'card-sso-form-light', theme: 'light', chrome: 'card', sso: true },
+  { name: 'card-sso-form-dark', theme: 'dark', chrome: 'card', sso: true },
   { name: 'card-organization-form-light', theme: 'light', chrome: 'card', open: true },
   { name: 'card-organization-form-dark', theme: 'dark', chrome: 'card', open: true },
   { name: 'card-organization-waiting-light', theme: 'light', chrome: 'card', open: true, submit: true },
@@ -75,6 +77,10 @@ try {
       throw e
     }
     const org = page.getByRole('button', { name: 'Continue with Okta, Entra ID or another identity provider' })
+    if (s.sso) {
+      await page.getByRole('button', { name: 'Continue with AWS IAM Identity Center' }).click()
+      await page.getByTestId('kas-login-sso-form').waitFor()
+    }
     if (s.open) {
       await org.click()
       await page.getByTestId('kas-login-org-form').waitFor()
