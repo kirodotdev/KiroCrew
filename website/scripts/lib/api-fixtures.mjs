@@ -75,3 +75,31 @@ export function logPageFailures(page) {
   page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
   page.on('console', msg => { if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300)) })
 }
+
+/**
+ * Boot state for a Settings frame in a plain browser: a clean store in the given
+ * theme, onboarding done, and the Electron updater bridge the app shell reads on
+ * boot (without it every Settings tab dies in the shell's error boundary).
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} [theme] 'dark' | 'light'
+ */
+export async function installSettingsShell(page, theme = 'dark') {
+  await page.addInitScript(t => {
+    localStorage.clear()
+    localStorage.setItem('mc-theme', t)
+    localStorage.setItem('mc-onboarded', '1')
+    window.updateAPI = {
+      onState: () => () => {},
+      check: async () => ({ ok: true }),
+      download: async () => ({ ok: true }),
+      install: async () => ({ ok: true }),
+      getInfo: async () => ({
+        version: '0.5.0', channel: 'stable', stampedChannel: 'stable',
+        channelSwitchable: true, channelPreference: '',
+        platform: 'darwin-arm64', packaged: true,
+      }),
+      setChannel: async () => ({ ok: true }),
+    }
+  }, theme)
+}

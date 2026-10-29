@@ -1,8 +1,8 @@
 /**
  * Settings > Security and the credential vault: posture and stats, denied
  * commands, redaction allowed hosts, third-party app trust, registry git-identity
- * trust, the read-only governance policy, vault secrets, and the paid-AWS and
- * credential-redaction consents.
+ * trust, the read-only governance policy, vault secrets, and the paid-AWS,
+ * ssh-agent-forwarding and credential-redaction consents.
  */
 
 import type { ClientTransport } from './transport'
@@ -65,6 +65,31 @@ export interface AwsConsentStatus {
  * missing or unreadable record as `true`; `changed_at` is empty until the owner
  * has flipped it at least once.
  */
+/** The owner's consent to forward the host's ssh-agent socket into sessions
+ *  (Settings > Security > SSH agent). `granted` is the position as RECORDED by
+ *  the backend, read fail-closed (a missing or unparseable record is `false`).
+ *  `socket_present` reports whether a new session would have an ssh-agent
+ *  socket to forward, so the panel can say "no ssh-agent detected" rather than
+ *  offering a grant that would forward nothing. */
+export interface SshAgentConsentStatus {
+  granted: boolean
+  granted_at: string | null
+  socket_present: boolean
+  /** True when EVERY new session keeps the socket WITHOUT this grant: the
+   *  configured sandbox level leaves `~/.ssh` readable and no harness's
+   *  credential mask hides it. The card then says so beside "Not allowed" and
+   *  Withdraw; one masking harness makes the grant matter and this is false. */
+  forwarded_without_consent: boolean
+  /** Every harness the verdict covers, config id -> operator-facing name. The
+   *  card names the harnesses this setting decides from it; optional because an
+   *  older gateway does not send it. */
+  harness_labels?: Record<string, string>
+  /** The harnesses whose new sessions keep the socket WITHOUT this grant at the
+   *  configured sandbox level (sorted ids). Empty: the grant decides for every
+   *  harness. The card names them so Withdraw is not read as stopping those. */
+  forwarded_harnesses: string[]
+}
+
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
@@ -473,6 +498,16 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
     revokeAwsConsent: (service: string) =>
       del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
 
+    // SSH agent forwarding consent (Settings > Security > SSH agent). Three
+    // explicit verbs: the handler applies the owner gate per verb. POST records
+    // the grant directly (owner-gated, like the paid-AWS consent); DELETE
+    // withdraws it.
+    sshAgentConsent: () =>
+      fetch('/api/ssh-agent/consent').then(j) as Promise<SshAgentConsentStatus>,
+    grantSshAgentConsent: () =>
+      post('/api/ssh-agent/consent').then(j) as Promise<{ granted: boolean; granted_at: string }>,
+    revokeSshAgentConsent: () =>
+      del('/api/ssh-agent/consent').then(j) as Promise<{ granted: boolean }>,
     // Credential-redaction switch (Settings > Security > Credential redaction).
     // Two explicit verbs, not one helper that takes a method: the handler
     // applies the owner gate to the read and the write separately, and the

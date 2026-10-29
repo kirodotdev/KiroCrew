@@ -292,7 +292,8 @@ def ssh_auth_sock_consent_notice(
         f"ssh-agent not forwarded to the {backend} agent: its sandbox hides ~/.ssh, "
         "so SSH_AUTH_SOCK is kept there only with the ssh-agent forward consent, "
         "which is not granted. git over SSH and SSH commit signing inside that "
-        'session will report no keys. To allow it, write {"enabled": true} to '
+        "session will report no keys. To allow it, press Allow in Settings > "
+        'Security > SSH agent, or write {"enabled": true} to '
         f"{consent_path} from a terminal outside Kiro Crew; the next {backend} "
         "agent that starts picks it up. The consent applies to every agent whose "
         "sandbox hides ~/.ssh, and lets the commands those agents run use the keys "
