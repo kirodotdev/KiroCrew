@@ -394,8 +394,8 @@ def init(self: VectorMemoryStore) -> None:
         # Reads stay on the shared connection until the new one is migrated.
         self._readers.disable()
         if self._db is not None:
-            self._db.close()
-            self._db = None
+            db, self._db = self._db, None
+            _close_shared(db, wal_kept_on_close=self._wal_kept_on_close)
             # The validity token is per-connection (data_version), so a
             # fresh connection's baseline can equal a retained snapshot's;
             # drop both resident scoring sets on the swap or a stale one
@@ -446,6 +446,7 @@ def _init_database(self: VectorMemoryStore) -> None:
         self._bind_lineage(memory_schema.LINEAGE_CREW)
         self._memory_version = 2
         self._db.execute("PRAGMA busy_timeout=5000")
+        self._wal_kept_on_close = sqlite_wal.keep_wal_on_close(self._db)
         return
     # Private files must never enter the legacy schema/migration path.
     if self._db_path.exists():
@@ -490,6 +491,10 @@ def _init_database(self: VectorMemoryStore) -> None:
     self._db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
     # The switch into WAL is not covered by busy_timeout; see kiro_crew.sqlite_wal.
     sqlite_wal.enable_wal(self._db, timeout_secs=_BUSY_TIMEOUT_MS / 1000)
+    # Another process (the gateway, while this is a CLI command) may be writing
+    # through this -wal with locks it lost to a closed descriptor; this close must
+    # not delete the file under it. See kiro_crew.sqlite_wal.keep_wal_on_close.
+    self._wal_kept_on_close = sqlite_wal.keep_wal_on_close(self._db)
     # synchronous stays at the sqlite default (FULL). NORMAL would drop the
     # per-commit fsync, but under WAL that only survives a process crash --
     # an OS crash or power loss can still lose the unsynced WAL tail, and
@@ -656,8 +661,8 @@ def close(self: VectorMemoryStore) -> None:
             # connection may outlive the admission that opened the file.
             self._readers.disable()
             if self._db:
-                self._db.close()
-                self._db = None
+                db, self._db = self._db, None
+                _close_shared(db, wal_kept_on_close=self._wal_kept_on_close)
             self._space_generation += 1
             self._faiss_index = None
             self._faiss_id_map.clear()
@@ -673,6 +678,21 @@ def close(self: VectorMemoryStore) -> None:
             self._semantic_scoring_refused = None
         finally:
             self._release_store_use_lock()
+
+
+def _close_shared(db: sqlite3.Connection, *, wal_kept_on_close: bool) -> None:
+    """Close the store's shared connection without deleting a ``-wal`` another process uses.
+
+    A connection set up by ``sqlite_wal.keep_wal_on_close`` does not checkpoint on
+    close, so the ``-wal`` is emptied here first. That keeps a stopped store's
+    ``-wal`` at zero bytes, so a later replace of the
+    database file never meets a ``-wal`` full of the old file's pages.
+    """
+    try:
+        if wal_kept_on_close:
+            sqlite_wal.truncate_wal_before_close(db)
+    finally:
+        db.close()
 
 
 def _release_store_use_lock(self: VectorMemoryStore) -> None:

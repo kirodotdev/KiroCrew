@@ -546,6 +546,8 @@ class VectorMemoryStore:
         if extra_prefixes:
             self._prefixes.extend(extra_prefixes)
         self._db: sqlite3.Connection | None = None
+        # Whether _db's own close is kept from deleting the -wal (sqlite_wal.keep_wal_on_close).
+        self._wal_kept_on_close = False
         # POSIX permits replacing an open SQLite file. Private V2 stores hold a
         # shared lock outside the swappable store directory for the full
         # connection lifetime so startup restore can refuse rather than move a
