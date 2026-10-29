@@ -886,6 +886,26 @@ class TestInstalledUnitPath:
         monkeypatch.setattr(controller.macos, "PLIST_PATH", plist)
         assert controller.installed_unit_path() == plist
 
+    @pytest.mark.parametrize(
+        "system_id, ours",
+        [("kirocrew.service", True), ("other.service", False)],
+        ids=["our-unit", "alias-of-another-unit"],
+    )
+    def test_system_unit_is_ours_only_when_its_canonical_id_is(
+        self, monkeypatch, tmp_path, system_id, ours
+    ):
+        # The system unit file is stat'ed through any symlink, so an alias of a
+        # stopped unrelated unit looks installed; only the manager's Id says.
+        unit = tmp_path / "kirocrew.service"
+        monkeypatch.setattr(controller.linux, "UNIT_PATH", unit)
+        run = _fake_systemctl(system=_DEAD, system_id=system_id)
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            assert controller.unit_is_ours(unit) is ours
+
+    def test_a_non_system_definition_is_ours_as_returned(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(controller.linux, "UNIT_PATH", tmp_path / "kirocrew.service")
+        assert controller.unit_is_ours(tmp_path / "user.service") is True
+
     def test_absent_definition_is_not_installed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
         monkeypatch.setattr(controller.linux, "UNIT_PATH", tmp_path / "nope.service")

@@ -1264,8 +1264,10 @@ class TestSelfHealRefreshRestart:
             marker_port=None,
             timeout_secs=60.0,
             connect_timeout_secs=10.0,
+            stdout_tail=False,
         ):
             calls["a"] = (host, sub, marker_port, connect_timeout_secs)
+            calls["stdout_tail"] = stdout_tail
             return (0, "")
 
         monkeypatch.setattr(stm, "run_remote_kirocrew", fake_run)
@@ -1276,6 +1278,7 @@ class TestSelfHealRefreshRestart:
         # 10s ssh-exec fail-fast fallback -- a restart
         # on a slow-proxy host must reuse the same budget the mint itself gets.
         assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 5476, 30.0)
+        assert calls["stdout_tail"] is True
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]
