@@ -8296,7 +8296,7 @@
       "cancel": "取消",
       "collect_failed": "无法收集诊断信息",
       "collecting": "正在收集……",
-      "create_report": "生成报告",
+      "create_report": "准备 issue",
       "diagnostics_ready": "诊断信息已就绪 — 已在 {{files}} 个文件中脱敏 {{redactions}} 处密钥。",
       "done": "完成",
       "download_zip": "下载 zip",

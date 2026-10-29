@@ -8433,7 +8433,7 @@
       "cancel": "Abbrechen",
       "collect_failed": "Diagnosedaten konnten nicht erfasst werden",
       "collecting": "Wird erfasst…",
-      "create_report": "Bericht erstellen",
+      "create_report": "Issue vorbereiten",
       "diagnostics_ready": "Diagnose bereit — {{redactions}} Geheimnis(se) in {{files}} Datei(en) redigiert.",
       "done": "Fertig",
       "download_zip": "ZIP herunterladen",

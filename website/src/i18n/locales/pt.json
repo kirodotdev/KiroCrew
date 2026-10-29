@@ -8570,7 +8570,7 @@
       "cancel": "Cancelar",
       "collect_failed": "Falha ao coletar os diagnósticos",
       "collecting": "Coletando…",
-      "create_report": "Criar relatório",
+      "create_report": "Preparar issue",
       "diagnostics_ready": "Diagnósticos prontos — {{redactions}} segredo(s) removido(s) em {{files}} arquivo(s).",
       "done": "Concluído",
       "download_zip": "Baixar zip",

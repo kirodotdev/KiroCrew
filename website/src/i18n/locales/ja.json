@@ -8296,7 +8296,7 @@
       "cancel": "キャンセル",
       "collect_failed": "診断の収集に失敗しました",
       "collecting": "収集中…",
-      "create_report": "レポートを作成",
+      "create_report": "イシューを準備",
       "diagnostics_ready": "診断準備完了 — {{redactions}} 個のシークレットが {{files}} 個のファイルマスクされました。",
       "done": "完了",
       "download_zip": "Zip をダウンロード",
