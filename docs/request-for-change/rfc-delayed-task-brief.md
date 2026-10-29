@@ -150,6 +150,8 @@ A successful brief is a durable `assistant` transcript row tagged `warm_task_bri
 
 ### 3.6 One bounded model call
 
+Since the section 3.8 amendment this one-call brief is the fallback: a qualifying return first wakes the crewmate, and this call runs only in the cases 3.8 lists.
+
 The warm task brief uses `llm_helpers.run_bg_oneliner` with the governed background model, a bounded prompt, a bounded output, a timeout, and no tools. This is the existing model path: no new provider, endpoint, listener, bind, ingress rule, credential path, or third-party data send is added.
 
 Each completed or failed attempt is charged to the owning session as `warm_task_brief` background work, using the existing input-token, output-token, credit, and duration accounting. The Usage view and crew log therefore show the spend.
@@ -260,9 +262,9 @@ sequenceDiagram
     G->>D: check away >= 30m and task changed
     G->>D: claim episode + fingerprint
     G-->>U: Preparing your current-task summary. You can wait here.
-    G->>M: one tool-free background call
+    G->>M: wake turn with the 3.8 tool allowlist, or one tool-free fallback call
     alt snapshot still current
-        M-->>G: structured task brief
+        M-->>G: published or structured task brief
         G-->>U: post second ordinary crewmate message
     else user sends, resets, closes, or the task changes
         G-->>U: post nothing more
@@ -319,6 +321,8 @@ The card draws them in that reading order: status chip and headline, Needs you (
 
 Prompt input can include the user's original request, bounded transcript excerpts, session-ledger state, and shared work-ledger reports. All input stays within the model provider and account already configured for Kiro Crew. No project code, transcript, ledger, credential, or user data is sent to a new service. Existing transcript privacy modes still win; an incognito or otherwise derivation-withheld transcript is ineligible.
 
+The section 3.8 wake path is not tool-free. The wake is a crewmate turn that calls the crewmate's own tools with the crewmate's own credentials and approval scope, so its read tools (`gh pr view`, check runs, deploy and ticket status) reach the same remote systems a normal turn of that crewmate reaches. The wake adds no new service, credential, listener or route. It is narrower than a normal turn: the gateway refuses every tool outside the 3.8 allowlist, including pushes, comments and other remote writes, and caps the turn at `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS`. Only the one-call fallback of section 3.6 stays tool-free.
+
 The implementation PR body must repeat this spend statement, name the 30-minute away threshold, state that return is the only trigger, and state that the deterministic preparing message costs no model call.
 
 ## 7. Authorization and exposure
@@ -348,7 +352,7 @@ The implementation uses focused tests only.
 - Presence tests prove chat routes report `chat.activeSlot`; the Crewmates page reports a separate visible mounted thread regardless of focus; focus-aware `viewedThread` remains unread-only; only `slot_focused(null, hidden=true)` from the last connection arms away; app sockets cannot arm it.
 - Negative presence tests prove chat/member switches, non-chat routes, an open New crewmate card, split-view placeholder focus, and socket cleanup create no episode or call; hiding on X then returning on Y consumes X's episode, so opening X later makes no call.
 - Electron tests pin that the dashboard view does not set `backgroundThrottling: false`; release smoke checks minimize and hide-to-tray on macOS, Windows, and Linux, while occluded-but-visible and unfocused windows make no synthetic signal.
-- Privacy and security tests prove derivation-withheld transcripts are skipped, the call is tool-free, existing auth is unchanged, and no new network surface exists.
+- Privacy and security tests prove derivation-withheld transcripts are skipped, the one-call fallback is tool-free, the wake turn can run only the section 3.8 allowlist under the crewmate's own credentials, existing auth is unchanged, and no new listener, route or credential path is added.
 - Run targeted backend and frontend tests plus lint and type checks for touched packages; do not run the full pytest suite.
 
 ## 9. Rollout and undo

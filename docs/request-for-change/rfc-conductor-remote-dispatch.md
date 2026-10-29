@@ -180,8 +180,7 @@ The tunnel only opens hub → peer, so the peer cannot call the hub back.
 
 The `api/chat` row alone suffices. `api/stream` is not used: no tool streams.
 
-`crew=` takes an instance id or exact name, the selector shape
-[#6874](https://github.com/kirodotdev/KiroCrew/pull/6874) uses. On
+`crew=` takes an instance id or exact name. On
 `session_create(work_item=)` it is optional: omitted, the hub places the item
 (§2b); named, the hub skips placement and sends to that crew, and the peer gate
 still applies. On the other four verbs the hub already knows the crew from the
@@ -411,8 +410,8 @@ ones.
 ### 4. Auth and safety
 
 - **Owner-only.** A `crew=` call, and any placed create, is admitted only from an
-  owner-minted dashboard session, the caller rule #6874 writes
-  (`_authorize_crew_read`). Channel-born, app, cron and workflow callers are
+  owner-minted dashboard session. Wave 1 adds this caller rule itself; no such
+  rule exists on main today. Channel-born, app, cron and workflow callers are
   refused. The proxy route stays owner-only.
 - **Only its own sessions.** `send`, `read`, `stop` and `close` with a crew reach
   only a peer slot that is the `worker_session_key` of an item in the caller's
@@ -549,8 +548,8 @@ nothing that passes today.
 3. **Lineage in the crew group.** The peer slot has no `parent.key` on the peer.
    Should the sidebar nest it under the hub conductor? Proposed: no; it is a
    top-level row in the crew's group.
-4. **#6874's caller rule.** If #6874 merges first, wave 1 reuses
-   `_authorize_crew_read`; if not, wave 1 adds it and #6874 rebases onto it.
+4. **The owner-only caller rule.** Resolved: #6874 closed unmerged, so wave 1
+   adds the §4 caller rule itself. Any later crew-scoped read reuses it.
 5. **#12821 and the server-side fence.** #12821 calls `proxy_request` for
    `api/spawn`, outside `_PROXY_ALLOWED_PREFIXES`. Wave 1 makes server-side
    calls pass the fence. Does #12821 get its own named row, or a closed-set
