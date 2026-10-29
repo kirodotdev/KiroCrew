@@ -43,3 +43,23 @@ def test_run_agent_is_empty_when_nothing_is_known():
 def test_snapshot_names_the_crew_agent_for_a_crew_spawn():
     data = build_subagent_snapshot(_info("", "crew-agent"), now=1000.0)
     assert data["agent"] == "crew-agent"
+
+
+def test_crew_log_spawn_record_names_the_crew_agent(monkeypatch):
+    """A restarted gateway rebuilds finished cards from ``subagent/spawned``, so
+    that record must carry the run's agent too, not the empty spawn argument."""
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.subagent_manager.admission.gate_reporting import (
+        _record_crew_log_spawn_started,
+    )
+
+    recorded: list[dict] = []
+    monkeypatch.setattr(crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(crew_log_emit, "open_child_origin", lambda _id: ("sid-1", 3))
+    monkeypatch.setattr(
+        crew_log_emit, "on_subagent_spawned", lambda sid, turn, **data: recorded.append(data)
+    )
+
+    _record_crew_log_spawn_started(None, _info("", "crew-agent"))  # type: ignore[arg-type]
+
+    assert [entry["agent"] for entry in recorded] == ["crew-agent"]

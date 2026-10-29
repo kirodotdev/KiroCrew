@@ -186,7 +186,7 @@ def _record_crew_log_spawn_started(self: _GateMixin, info: SubagentInfo) -> None
             sid,
             asked_turn,
             agent_id=info.id,
-            agent=info.agent,
+            agent=info.run_agent,
             model=info.model,
             task=info.task,
             scope={
