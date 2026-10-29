@@ -169,7 +169,16 @@ jobs:
     # trigger does not declare the input, and GitHub rejects the workflow at
     # startup. Comparing to true always produces a boolean.
     continue-on-error: ${{ inputs.soft_fail == true }}
-    runs-on: windows-latest
+    # The `kirocrew-runners-windows` larger-runner group, targeted by its
+    # `kirocrew-windows-4-core` LABEL rather than by `group:`; see "The Windows
+    # larger-runner group" in docs/ci/ci-and-reviews.md. The group belongs to
+    # the kirodotdev organization, and this workflow's two triggers --
+    # workflow_call and workflow_dispatch -- are both ones a fork can fire on
+    # its own copy, where that group does not exist. A `group:` reference would
+    # leave such a run queued with no runner that can ever claim it, so the
+    # repository test picks the group here and leaves every other repository on
+    # the shared pool.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest' }}
     timeout-minutes: 60
     # Set only by the step that runs AFTER the artifact upload succeeded, so a
     # consumer job can tell "built and uploaded" from "soft-failed": under
@@ -421,7 +430,9 @@ jobs:
     name: Smoke-install Windows installer (x64)
     needs: build-windows
     if: needs.build-windows.outputs.artifact_uploaded == 'true'
-    runs-on: windows-latest
+    # Same group, same label form, and for the same fork reason as the build
+    # job above.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest' }}
     # The install has a 300s ceiling and the gateway boot 180s, both enforced
     # inside the script. 30 minutes covers those plus checkout and download with
     # room for a cold runner, and is not a substitute for either ceiling.

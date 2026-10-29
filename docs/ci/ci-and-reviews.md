@@ -1276,10 +1276,14 @@ without changing the pin and the gate reds with
 ### The Windows larger-runner group
 
 Three `runs-on` sites take `kirocrew-runners-windows`, a second group holding one
-Windows definition: `ci.yml`'s `pod-boot-windows`, `build.yml`'s
-`build-windows-installer` and `build-ffmpeg-decoder.yml`'s `verify-windows`.
+Windows definition (`kirocrew-windows-4-core`), through `group:`: `ci.yml`'s
+`pod-boot-windows`, `build.yml`'s `build-windows-installer` and
+`build-ffmpeg-decoder.yml`'s `verify-windows`. Two more reach the same
+definition through its LABEL, the way the two cross-platform matrix jobs above
+do: `build-windows.yml`'s `build-windows` (Build Windows Desktop) and
+`smoke-install-windows` (Smoke-install Windows installer (x64)).
 
-**Why these three and nothing else on Windows.** Every other Windows job either
+**Why these and nothing else on Windows.** Every other Windows job either
 already resolves to the CodeBuild fleet through
 `needs.changes.outputs.windows_runner`, or declares no runner of its own. The
 four fleet consumers keep `|| 'windows-latest'` as their fallback deliberately:
@@ -1291,9 +1295,34 @@ largest population of Windows runs there, and
 The Windows legs of a mixed matrix (`backend-test-ipv6`, `new-test-stability`,
 `denial-differential`, `security-scope-review`, `fork-security-scope-review`)
 resolve `runs-on` per leg from `matrix.os`, so they need an expression of the
-`e2e-boot-matrix` shape rather than a group. And `build-windows.yml`, `nightly.yml` and `release.yml` reach
-Windows only on a schedule or a release push, where queue position gates no
-merge.
+`e2e-boot-matrix` shape rather than a group. `nightly.yml` and `release.yml`
+declare no Windows runner of their own: each calls `build-windows.yml` and takes
+whatever the callee resolves.
+
+**`build-windows.yml` was scoped out once, on reasoning that still holds.**
+#25481 left it on `windows-latest` because the workflow reaches Windows only on
+the nightly schedule, a release push or a manual dispatch, where queue position
+gates no merge. That is still true, so the group buys queue position on the
+nightly and release paths and nothing on the pull-request path, where these two
+jobs never run. They move because the goal is to leave no job on a default
+runner, not because a merge gate needed it.
+
+**Those two target the LABEL, not the group.** A site reaches this group through
+`runs-on:` + `group:` when no fork can fire the trigger that runs it, which is
+the form a rename of the definition survives. `build-windows.yml` is
+`workflow_call` and `workflow_dispatch`, and a fork can fire both on its own
+copy, where an organization-scoped runner group does not exist -- the same fork
+reachability that puts the two cross-platform matrix jobs above on a label. A
+`group:` reference there leaves the run queued against a group no runner can
+ever claim, until the 24-hour queue timeout. So each site reads
+
+```yaml
+runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest' }}
+```
+
+which puts this repository on the group and leaves every fork on the shared
+pool. The cost is that a rename of the definition breaks both lines at once,
+which a group reference would have survived.
 
 **A fleet exclusion is not a hosted pin.** Both `pod-boot-windows` and
 `build-windows-installer` carry a documented reason for staying off the fleet,
@@ -1310,11 +1339,12 @@ memory with roughly ten times the disk, so only queue position moves. Unlike
 Linux, these runs leave a free pool for a billed one with no fleet alternative to
 fall back to, so what bounds the spend is how often each job executes rather than
 how long it runs. `build-windows-installer` and `verify-windows` sit behind paths
-filters. The canary has no paths filter of its own and `ci.yml` fires on every
-pull request, so the thing that bounds it is `needs: [await-fast-gate,
+filters, and the two `build-windows.yml` jobs behind a schedule, a release push
+or a dispatch. The canary has no paths filter of its own and `ci.yml` fires on
+every pull request, so the thing that bounds it is `needs: [await-fast-gate,
 lint-gate]` plus `if: needs.lint-gate.result == 'success'`: a run whose lint gate
 skipped skips the canary with it, which is most of them. **That ratio is the
-number to re-measure before adding a fourth Windows site**, from the jobs API
+number to re-measure before adding another Windows site**, from the jobs API
 filtered on this job name, because it is a property of how the gate skips today
 and not a guarantee.
 
