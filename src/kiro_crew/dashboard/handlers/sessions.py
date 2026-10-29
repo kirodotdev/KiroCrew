@@ -394,6 +394,12 @@ _usage_cache_ts: float = 0.0
 #: cache came from the kiro-cli path. Kept beside the cache, never in it, so it
 #: is not served.
 _usage_cache_vault_fp = ""
+#: The vault-path ``signin_required`` marker currently cached, paired with the
+#: vault's :meth:`~kiro_crew.auth.store.TokenStore.write_stamp` taken BEFORE the
+#: attempt that produced it. Held by reference (``is``), so a marker any other
+#: path publishes never inherits the stamp. ``None`` when the cache is not such a
+#: marker. See :func:`_signin_marker_is_stale`.
+_vault_signin_marker: tuple[dict[str, object], str] | None = None
 _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
 # Ceiling on ONE whole refresh. Sized above the sum of the inner bounded steps
 # (whoami ≤30s + the /usage scrape ≤60s, plus the unbounded API read between
@@ -542,20 +548,28 @@ def _publish_usage(payload: dict[str, object], *, vault_fp: str = "") -> None:
     kiro-cli-path publish leaves it empty, so a vault-path failure can never keep
     a kiro-cli reading on screen as the vault account's.
     """
-    global _usage_cache, _usage_cache_ts, _usage_cache_vault_fp
+    global _usage_cache, _usage_cache_ts, _usage_cache_vault_fp, _vault_signin_marker
     _usage_cache = payload
     _usage_cache_ts = time.time()
     _usage_cache_vault_fp = vault_fp
+    _vault_signin_marker = None
 
 
-def _cache_vault_failure(vault_fp: str, reason: str | None = None) -> None:
+def _cache_vault_failure(
+    vault_fp: str, reason: str | None = None, *, stamp: str | None = None
+) -> None:
     """Vault-path counterpart of :func:`_cache_transient_failure`.
 
     Keeps a prior reading (dimmed ``stale``) only when it was published for this
     same vault identity; anything else reports unavailable, with ``reason`` when
     the failure is auth-class.
+
+    ``stamp`` is the vault's write stamp taken before the attempt. A
+    ``signin_required`` marker records it, so the poll can tell that the vault
+    has been rewritten since (a fresh sign-in) and refresh at once instead of
+    serving "sign in again" for the rest of the interval.
     """
-    global _usage_cache, _usage_cache_ts
+    global _usage_cache, _usage_cache_ts, _vault_signin_marker
     if (
         vault_fp
         and _usage_cache.get("credits_plan") is not None
@@ -568,6 +582,39 @@ def _cache_vault_failure(vault_fp: str, reason: str | None = None) -> None:
     if reason is not None:
         unavailable["reason"] = reason
     _publish_usage(unavailable)
+    if reason == _REASON_SIGNIN_REQUIRED and stamp is not None:
+        _vault_signin_marker = (unavailable, stamp)
+
+
+async def _vault_write_stamp() -> str:
+    """The vault's :meth:`TokenStore.write_stamp`, off the event loop."""
+    # Deferred: see _vault_owns_usage_sync.
+    from kiro_crew.auth.bridge import default_token_store
+
+    return await asyncio.to_thread(lambda: default_token_store().write_stamp())
+
+
+async def _signin_marker_is_stale(payload: dict[str, object]) -> bool:
+    """True when ``payload`` says "sign in again" but the vault changed since.
+
+    Only consulted while the vault owns usage. The cached reading is otherwise
+    replaced only by the timed refresh, and an identity change is the only other
+    trigger; signing back in to the SAME account changes neither, so the pill
+    kept "sign in again" for up to ``_USAGE_REFRESH_SECS`` after a good sign-in.
+
+    A vault-path marker carries the write stamp taken before its attempt: any
+    later write (a sign-in, a sign-out) makes it stale. A ``signin_required``
+    marker with no stamp came from the kiro-cli path, which says nothing about
+    Crew's sign-in, so it is stale too. A sign-in that stays broken never
+    rewrites the vault, so the steady state costs one ``stat`` per poll and no
+    API call.
+    """
+    if payload.get("reason") != _REASON_SIGNIN_REQUIRED:
+        return False
+    marker = _vault_signin_marker
+    if marker is None or marker[0] is not payload:
+        return True
+    return await _vault_write_stamp() != marker[1]
 
 
 def _vault_owns_usage_sync() -> bool:
@@ -687,9 +734,12 @@ async def _refresh_from_vault() -> None:
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
 
+    # Taken before anything is read: a sign-in landing at any point after this
+    # makes a "sign in again" marker from this attempt stale on the next poll.
+    stamp = await _vault_write_stamp()
     before = await _vault_fingerprint()
     if not before:
-        _cache_vault_failure("", _REASON_SIGNIN_REQUIRED)
+        _cache_vault_failure("", _REASON_SIGNIN_REQUIRED, stamp=stamp)
         return
 
     async def _failed(reason: str | None) -> None:
@@ -708,12 +758,12 @@ async def _refresh_from_vault() -> None:
             )
             _cache_vault_failure(after)
             return
-        _cache_vault_failure(after, reason)
+        _cache_vault_failure(after, reason, stamp=stamp)
 
     try:
         cred = await KasAuthProvider(default_token_store(), allow_env_api_key=False).current()
     except NotAuthenticated:
-        _cache_vault_failure("", _REASON_SIGNIN_REQUIRED)
+        _cache_vault_failure("", _REASON_SIGNIN_REQUIRED, stamp=stamp)
         return
     except (RefreshRejected, RefreshBlocked) as exc:
         # Permanent either way: the issuer refused the grant, or the entry lacks
@@ -761,7 +811,7 @@ async def _refresh_from_vault() -> None:
             usage.get("credits_plan", "?"),
         )
         return
-    _cache_vault_failure(before, _unavailable_reason(result))
+    _cache_vault_failure(before, _unavailable_reason(result), stamp=stamp)
 
 
 def _publish_account_unproven(identity: dict[str, object], reason: str) -> None:
@@ -1449,6 +1499,11 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
             # The cached reading belongs to another identity (an earlier Crew
             # sign-in, or the kiro-cli path): never serve it, refresh now.
             served = {"available": False}
+            refresh_now = True
+        elif await _signin_marker_is_stale(served):
+            # "Sign in again" from before the vault was last rewritten (or from
+            # the kiro-cli path): the user may have just signed in, so ask now.
+            # The marker stays on screen until the refresh replaces it.
             refresh_now = True
     elif _usage_cache.get("credits_plan") is not None and _usage_cache_vault_fp:
         # The vault path published this reading, but the vault does not own

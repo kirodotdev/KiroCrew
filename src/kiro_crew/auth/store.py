@@ -530,3 +530,22 @@ class TokenStore:
             return True
         stored = set(self._vault.list_names())
         return not any(identity in stored for identity in _PRIORITY)
+
+    def write_stamp(self) -> str:
+        """An opaque value that changes whenever the vault file is rewritten.
+
+        One ``stat`` of ``secrets.enc``; nothing is read or decrypted, so it is
+        cheap enough to call on every dashboard poll. Every write is an atomic
+        replace, so a sign-in, a refresh that persisted a token, and a sign-out
+        each yield a new inode and a new value. ``"absent"`` when the file does
+        not exist; ``""`` when it could not be examined (unknown, and stable, so
+        a caller comparing two unknowns sees no change rather than churning).
+        """
+        try:
+            self._assert_unlinked()
+            st = os.stat(self._vault._store_path)
+        except FileNotFoundError:
+            return "absent"
+        except (OSError, TokenStoreError):
+            return ""
+        return f"{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
