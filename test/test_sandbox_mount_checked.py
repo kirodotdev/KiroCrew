@@ -462,7 +462,9 @@ _CHECKED_RAW_MOUNTS = {
 #: then binding them onto the placeholder inside the stand-in -- the nested re-mask that
 #: re-hides a masked leaf sitting INSIDE such a window, sensitive files and the read-only
 #: seal on an unreadable mask, and ~/.ssh.
-_GUARDED_SITES = 11
+#: Includes ``pin_dirs``' recursive self-bind of the gateway checkout's git directory
+#: and renamable ancestors, which refuses the spawn like every seal.
+_GUARDED_SITES = 12
 
 _EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 

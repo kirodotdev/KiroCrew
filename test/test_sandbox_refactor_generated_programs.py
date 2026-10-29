@@ -130,6 +130,12 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setattr(os, "getuid", lambda: _UID, raising=False)
     monkeypatch.setattr(os, "getgid", lambda: _GID, raising=False)
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    # The checkout running the tests is a git checkout whose layout varies by host.
+    from kiro_crew import sandbox_git_control
+
+    monkeypatch.setattr(
+        sandbox_git_control, "resolved_git_control_layout", sandbox_git_control.GitControlLayout
+    )
     for name, table in _PINNED_TABLES.items():
         monkeypatch.setattr(sandbox, name, table)
     assert type(sandbox._sandbox_policy()).__name__ == "DefaultSandboxPolicy"
@@ -311,6 +317,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
     "sensitive_dir_ids": {"<ROOT>/crew/apps": [13, 14]},
     "private_dirs": ["<ROOT>/crew/apps/alpha/data"],
     "private_dir_ids": {"<ROOT>/crew/apps/alpha/data": [11, 12]},
+    "pin_dirs": [],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
         "<ROOT>/crew/run",

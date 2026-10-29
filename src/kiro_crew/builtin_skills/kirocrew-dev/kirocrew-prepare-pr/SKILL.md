@@ -278,7 +278,7 @@ cannot read Checks; it still fails closed at 20. Use a token with Checks read.
   request to run this loop authorizes its own pushes, dispositions, overrides,
   auto-merge, and the red-main fix PR it opens. Fix permission or a green gate
   alone grants no publication authority.
-- **Never push to a protected base branch.** Always a feature branch, pushed explicitly (`git push -u origin <branch>`).
+- **Never push to a protected base branch.** Always a feature branch, pushed explicitly (`git push origin <branch>`; no `-u`: the sandbox seals the gateway checkout's `.git/config`, which `-u` writes).
 - `--force-with-lease` only on your **own** feature branch, and **always SHA-pinned** (`--force-with-lease=<branch>:<lease_sha>`). The implicit form silently accepts a just-fetched ref and can overwrite a maintainer commit.
 - Confirm before destructive history ops (`reset --hard`, discarding commits) on non-throwaway branches.
 - Keep pre-commit hooks (no `--no-verify`) unless asked. Never commit secrets.
@@ -478,7 +478,7 @@ comes after a record, never instead of one:
 
 1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash guard (`single_commit` only): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** do NOT push (read each diff; name yours after `--`; it also checks `prepare-pr-sweep.md`, read stderr), **41** follow the remedy, **2** env.
 
-   **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push -u origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
+   **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
 
 2. **Create/update the PR** from Phase 1 step 5's body. Run `diff_signals.py --check-body` on the finished file **before** `gh` reads it. `<body>` below is the checked file, `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — never a second copy. New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`, plus one `--attach <path>` per evidence file (see *Screenshots*). Existing → **regenerate the whole body from the current diff**, then `gh pr edit --body-file <body>` — **BEFORE step 1's push**: the review lanes run on `opened`/`synchronize`, never on `edited`. If `gh` fails (a GraphQL error or rate limit), use the REST fallback in `references/ci.md`. Verify the body landed.
 

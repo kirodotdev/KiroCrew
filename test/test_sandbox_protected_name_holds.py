@@ -50,6 +50,28 @@ def _no_host_ssh_probe(monkeypatch):
 
 TIERS = ("standard", "cc", "strict")
 
+
+@pytest.fixture(autouse=True)
+def _plain_gateway_checkout(_floor_monkeypatch):
+    """Pin the gateway checkout's git layout to one plain checkout.
+
+    The live layout follows whatever checkout runs the tests (a plain clone in CI, a
+    linked worktree on a developer host), so the population would differ by host.
+    """
+    from kiro_crew import sandbox_git_control as gc
+
+    gitdir = "/srv/checkout/.git"
+    layout = gc.GitControlLayout(
+        pins=("/srv/checkout", gitdir),
+        readonly=tuple(
+            f"{gitdir}/{leaf}"
+            for leaf in ("hooks", "info", "config", "config.worktree", "commondir")
+        ),
+        guards=(),
+    )
+    _floor_monkeypatch.setattr(gc, "resolved_git_control_layout", lambda: layout)
+
+
 #: Protected names held by an ENCLOSING stand-in mask today. Measured, not aspired
 #: to: it is EMPTY, because nothing in the launcher holds a protected
 #: name for the namespace lifetime. Every mask is placed once, at spawn.
@@ -393,7 +415,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   (``notifications/push_store.py``), masked as a whole directory so the
     #:   ``atomic_write`` temps they publish through are hidden too. At the data-home
     #:   root beside writable siblings, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 296, "cc": 303, "strict": 304}
+    #:
+    #: Five entries per tier for the gateway checkout's git control files
+    #: (``sandbox_git_control``), measured on the plain checkout
+    #: :func:`_plain_gateway_checkout` pins: ``config``, ``config.worktree``,
+    #: ``commondir``, ``hooks`` and ``info``. They sit in the checkout's git
+    #: directory beside the index, objects and refs that in-sandbox commits write, so
+    #: no enclosing mask can hold them. Host git republishes ``config`` by lock and
+    #: rename, so a gateway-side ``git config`` reopens it in a live namespace.
+    EXPECTED: dict[str, int] = {"standard": 301, "cc": 308, "strict": 309}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
