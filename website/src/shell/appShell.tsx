@@ -333,7 +333,9 @@ export function useAppShell() {
   // keyboard hides, so the header stays in view and no gap appears below.
   useKeyboardViewportReset()
   useNotificationSound()
-  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
+  // The rail starts collapsed until the user expands it: only a stored '0'
+  // (the user's own expand) opens it on load.
+  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') !== '0')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed
   // Preview expand mode from the Web Preview tab collapses the left nav

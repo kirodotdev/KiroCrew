@@ -157,6 +157,8 @@ describe('Sidebar Discover badge — pending app updates', () => {
     // Each test owns its installed rows; without a reset the previous test's
     // listApps payload would leak into the cold-cache case.
     vi.mocked(api.listApps).mockResolvedValue([])
+    // The count badge renders on the expanded rail; the rail starts collapsed.
+    localStorage.setItem('mc-nav', '0')
   })
 
   it('shows the updatable count, filtered to gateway-lifecycle apps', async () => {
