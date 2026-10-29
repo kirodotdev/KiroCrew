@@ -35,6 +35,7 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.dashboard.mate_folders import inherited_folder
 from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
+from kiro_crew.dashboard.slot_persistence.metadata_values import fork_point_of_row
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
     MAX_LIVE_SLOTS,
@@ -555,6 +556,7 @@ def _shape_fork_child(
     jev_route_allowed: bool,
     folders: list[dict[str, Any]],
     folder_principal: str,
+    fork_point_row: dict,
 ) -> None:
     """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
 
@@ -565,8 +567,17 @@ def _shape_fork_child(
     Synchronous and assignment-only. :func:`fork_slot` runs it in the
     push-suspended window that began at the mint, so the child's first
     ``slots`` frame already shows the folder, tags and fork title set here.
+    *fork_point_row* is the parent row the cut sits after; its ``meta.mid`` and
+    ``ts`` are what the parent's transcript finds the fork point by.
     """
     new_slot.forked_from = effective_session_key(slot)
+    # Bounded here as well as on read: the parent's rows come from a transcript
+    # agent tools can write, and a value the restore would drop must not be
+    # projected live first.
+    point = fork_point_of_row(fork_point_row, direction)
+    new_slot.fork_point_mid = point.mid
+    new_slot.fork_point_ts = point.ts
+    new_slot.fork_direction = point.direction
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
@@ -1113,6 +1124,10 @@ async def fork_slot(
                 status=400,
             )
 
+    # The parent row the cut sits after: the row at the index, or the last row
+    # when the whole transcript is copied. A tail fork is cut at the same row;
+    # it keeps what follows it instead of what precedes it.
+    fork_point_row = visible[at_index] if at_index is not None else visible[-1]
     head_messages: list[dict] = []
     if direction == _FORK_DIRECTION_TAIL:
         if at_index is None:
@@ -1252,6 +1267,7 @@ async def fork_slot(
                 jev_route_allowed=jev_route_allowed,
                 folders=_safe_folder_tree(state._folders),
                 folder_principal=folder_principal,
+                fork_point_row=fork_point_row,
             )
             if stamp is not None:
                 stamp(new_slot)

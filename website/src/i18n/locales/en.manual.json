@@ -6019,7 +6019,11 @@
       "comments_refused": "{{name}} didn’t receive these comments — send them again from the document. They’re still there.",
       "comments_refused_overlay": "{{name}} didn’t receive these comments — reopen the side panel and send them again. They’re still in the document.",
       "comments_sent_other": "{{count}} comments sent",
-      "your_crewmate": "Your mate"
+      "your_crewmate": "Your mate",
+      "fork_point_forked_into": "Forked into",
+      "fork_point_continued_in": "Later messages continued in",
+      "fork_point_show_all": "Show all",
+      "fork_point_open": "Open {{name}}"
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",

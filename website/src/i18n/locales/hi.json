@@ -12828,7 +12828,11 @@
       "your_crewmate": "तुम्हारा क्रूमेट",
       "jump_to_new_one": "{{count}} नया · नवीनतम पर जाओ",
       "jump_to_new_other": "{{count}} नए · नवीनतम पर जाओ",
-      "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं"
+      "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं",
+      "fork_point_forked_into": "यहाँ फ़ोर्क किया गया",
+      "fork_point_continued_in": "आगे के संदेश यहाँ जारी हैं",
+      "fork_point_show_all": "सभी दिखाओ",
+      "fork_point_open": "{{name}} खोलो"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

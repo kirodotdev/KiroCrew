@@ -12629,7 +12629,11 @@
       "comments_sent_other": "{{count}}件のコメントを送信しました",
       "your_crewmate": "クルーメート",
       "jump_to_new_other": "新着 {{count}} 件 · 最新へ",
-      "could_not_repair_images": "画像を修復できませんでした"
+      "could_not_repair_images": "画像を修復できませんでした",
+      "fork_point_forked_into": "フォーク先",
+      "fork_point_continued_in": "以降のメッセージの続き",
+      "fork_point_show_all": "すべて表示",
+      "fork_point_open": "{{name}} を開く"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

@@ -1333,6 +1333,15 @@ no longer destroy older turns.
   loading the full visible history. Restore paths preserve a missing legacy `mid`
   rather than minting an in-memory-only identity that full-history operations cannot
   resolve.
+- **Fork point record**: the child keeps where it was cut on its own metadata line:
+  `fork_point_mid` and `fork_point_ts` (the `meta.mid` and `ts` of the parent row the
+  cut sits after — the selected row, or the last row of a whole-transcript fork) and
+  `fork_direction` (`head` | `tail`). They are slot-owned keys read back on every
+  hydration purpose. `slot_persistence/metadata_values.py` holds the one bound both the fork and
+  the read apply: a non-string, empty or over-128-character value, or an unknown
+  direction, is recorded and read back as none. The parent's transcript (`pages/chat/forkPoints.ts`) matches
+  `fork_point_mid` against its rows, and `fork_point_ts` only for a child that recorded
+  no id. A fork made before these were recorded carries neither and marks nothing.
 - **Tail-only fork** (`direction="tail"`): copies only `visible[at_index+1:]`
   into the new slot instead of the head `visible[:at_index+1]`. The head is
   always dropped -- there is no summarize option. Gated server-side by

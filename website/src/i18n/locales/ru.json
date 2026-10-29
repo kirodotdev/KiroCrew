@@ -13226,7 +13226,11 @@
       "jump_to_new_few": "{{count}} новых · К последним",
       "jump_to_new_many": "{{count}} новых · К последним",
       "jump_to_new_other": "{{count}} новых · К последним",
-      "could_not_repair_images": "Не удалось восстановить изображения"
+      "could_not_repair_images": "Не удалось восстановить изображения",
+      "fork_point_forked_into": "Ответвлено в",
+      "fork_point_continued_in": "Дальнейшие сообщения продолжены в",
+      "fork_point_show_all": "Показать все",
+      "fork_point_open": "Открыть {{name}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

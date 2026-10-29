@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry
@@ -277,3 +278,43 @@ def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: boo
             meta["reasoning_effort"], persisted_marker=effort_marker
         )
     return has_model
+
+
+# ── Fork point ─────────────────────────────────────────────────────────────────
+# A fork child records the parent row the cut sits after (its ``meta.mid`` and
+# ``ts``) and the direction. ``chat_fork`` bounds them when it records them and
+# the codec bounds them when it reads the line back, through the one bound here,
+# because both the parent transcript and the child's line are agent-writable.
+
+#: Minted row ids are well under this; a timestamp is shorter still.
+FORK_POINT_MAX_CHARS = 128
+FORK_DIRECTIONS = frozenset({"head", "tail"})
+
+
+def fork_point_text(value: object) -> str | None:
+    """*value* as a fork-point id or timestamp, or None when it is not one."""
+    if isinstance(value, str) and 0 < len(value) <= FORK_POINT_MAX_CHARS:
+        return value
+    return None
+
+
+def fork_direction(value: object) -> str | None:
+    """*value* as a fork direction, or None. The type check comes first: a list is unhashable."""
+    return value if isinstance(value, str) and value in FORK_DIRECTIONS else None
+
+
+@dataclass(frozen=True)
+class ForkPoint:
+    mid: str | None
+    ts: str | None
+    direction: str | None
+
+
+def fork_point_of_row(row: dict, direction: str) -> ForkPoint:
+    """The fork point a cut after parent *row* records."""
+    meta = row.get("meta")
+    return ForkPoint(
+        mid=fork_point_text(meta.get("mid") if isinstance(meta, dict) else None),
+        ts=fork_point_text(row.get("ts")),
+        direction=fork_direction(direction),
+    )

@@ -12629,7 +12629,11 @@
       "comments_sent_other": "{{count}} 条评论已发送",
       "your_crewmate": "你的队员",
       "jump_to_new_other": "{{count}} 条新 · 跳到最新",
-      "could_not_repair_images": "无法修复图片"
+      "could_not_repair_images": "无法修复图片",
+      "fork_point_forked_into": "已分叉到",
+      "fork_point_continued_in": "后续消息继续于",
+      "fork_point_show_all": "显示全部",
+      "fork_point_open": "打开 {{name}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",

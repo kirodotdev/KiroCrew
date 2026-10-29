@@ -20,6 +20,8 @@ import { canForkAtWindow } from '../pagination'
 import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
+import ForkPointMarker from '../ForkPointMarker'
+import { forkChildrenAt, forkPointsOf, forkPointsSignature, type ForkPointIndex } from '../forkPoints'
 import { UserMessage, AssistantMessage } from '..'
 import type { TurnStats } from '../AssistantMessage'
 import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
@@ -176,6 +178,16 @@ export function useTranscriptRendering({
 
   const activeSlotTitle = filteredSlots.find(s => s.key === activeSlot)?.title
 
+  // Forks of this session, by the row each was cut after. Keyed on a signature of
+  // the fork fields alone, so an ordinary slot-list frame keeps the same index and
+  // does not re-render every settled turn through the renderer deps below.
+  const forkPointsSig = `${activeSlot ?? ''}\n${forkPointsSignature(filteredSlots, activeSlot)}`
+  const forkPointsCache = useRef<{ sig: string; index: ForkPointIndex } | null>(null)
+  if (forkPointsCache.current?.sig !== forkPointsSig) {
+    forkPointsCache.current = { sig: forkPointsSig, index: forkPointsOf(filteredSlots, activeSlot) }
+  }
+  const forkPoints = forkPointsCache.current.index
+
   // Session documents (in-session artifacts) for the active slot. Used only to
   // badge file-change rows that are tracked docs/artifacts (e.g. a generated
   // PR body) rather than source-file edits. Shares the ['session-artifacts',
@@ -306,6 +318,8 @@ export function useTranscriptRendering({
     // visibleIndexMap is O(1) per row.
     const messageId = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
     const canResolveOnServer = !!messageId && !isStreaming && !isInject
+    // Only a user or assistant row can be a fork point (the fork copies no other role).
+    const forksHere = isStreaming || isInject ? [] : forkChildrenAt(forkPoints, m)
     // The reply a running Regenerate may replace: the new one streams in below it.
     const beingReplaced = !!messageId && replacingMids.has(messageId)
     // Only the first answer row after the previous reply starts the new version;
@@ -386,6 +400,7 @@ export function useTranscriptRendering({
           )}
         </div>
       </div>
+      {forksHere.length > 0 && <ForkPointMarker forks={forksHere} onOpen={selectSessionTab} />}
       </MessageSearchScope>
     )
       },
@@ -473,7 +488,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, forkPoints, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

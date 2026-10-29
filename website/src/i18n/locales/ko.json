@@ -12629,7 +12629,11 @@
       "comments_sent_other": "{{count}}개의 댓글이 전송되었습니다",
       "your_crewmate": "크루메이트",
       "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로",
-      "could_not_repair_images": "이미지를 복구하지 못했습니다"
+      "could_not_repair_images": "이미지를 복구하지 못했습니다",
+      "fork_point_forked_into": "포크된 채팅",
+      "fork_point_continued_in": "이후 메시지 이어짐",
+      "fork_point_show_all": "모두 보기",
+      "fork_point_open": "{{name}} 열기"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
