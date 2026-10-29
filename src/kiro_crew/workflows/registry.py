@@ -196,7 +196,13 @@ class RunHandle:
         # The COUNTS ride in the compact view so a completion message can say the
         # work survived; the payloads themselves ride only in the detail view.
         ended_without_result = self.status not in ACTIVE_STATUSES | {STATUS_FINISHED}
-        partials = self.agent_results if ended_without_result else {}
+        # A failed call keeps its slot in agent_results, the resume cache, but it
+        # settled nothing worth preserving and its reason is under agent_errors. So the
+        # partial count and payload cover only the calls with no recorded failure, and
+        # the "preserved" count never includes a call the failed count also names. A
+        # finished run's agent_results below stays a record of every call.
+        preserved = {k: v for k, v in self.agent_results.items() if k not in self.agent_errors}
+        partials = preserved if ended_without_result else {}
         if partials:
             snap["partial_result_count"] = len(partials)
         if self.agent_errors:

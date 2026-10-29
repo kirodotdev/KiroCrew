@@ -648,7 +648,13 @@ Two distinct serializations:
   the full form. This is additive and status-keyed: `partial_results` stays the
   failed/cancelled channel so a run never reports both, an active run omits both
   (it is still accumulating), and the exposure is a factual record of the calls
-  that settled, not a claim the run produced a validated business artifact. The
+  that settled, not a claim the run produced a validated business artifact. A
+  failed or cancelled run's `partial_result_count` and `partial_results` leave out
+  a call with an entry in `agent_errors`: it keeps its slot in the stored
+  `agent_results`, which reruns replay, but it settled nothing worth preserving, so
+  the "preserved" count never includes a call the failed count also names. A
+  finished run's `agent_results` stays a record of every call, a failed one as
+  `None`. The
   `workflow_result` MCP projection includes these outputs through the same
   recursive redaction as the aggregate result and errors. The completion message
   names the recorded-call count and this field, and explicitly separates a
