@@ -238,20 +238,31 @@ def test_a_refused_oversize_write_is_dropped_and_counted_and_named_once(caplog):
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         emit.on_tool_called(SESSION, 1, name="x" * (70 * 1024), call_id="tc-big")
         emit.on_tool_called(SESSION, 1, name="y" * (70 * 1024), call_id="tc-big2")
-    assert len(_entries()) == before, "a refused write must not land"
+    assert emit.flush()
+    landed = _entries()[before:]
+    # Neither refused entry lands; what lands in their place is the loss admitted.
+    assert [entry["type"] for entry in landed] == ["write/dropped"] * len(landed)
+    assert landed, "the loss was not admitted with a write/dropped marker"
+    assert sum(entry["data"]["dropped_count"] for entry in landed) == 2
     assert emit.dropped_writes() == 2, "both losses are counted"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    # One for the storage failure, one for the loss -- and the SECOND refusal adds
-    # neither, because a failing crew log names itself once rather than per entry.
-    assert len(warnings) == 2, f"expected the failure and the loss once each: {warnings}"
     assert any("gave up on" in record.getMessage() for record in warnings)
+    # The storage failure is named once, not per refused entry: a failing crew log
+    # names itself once. The loss lines around it (a loss, the marker landing, the
+    # next loss) are the writer's own and are counted separately.
+    writer_lines = ("gave up on", "landing again")
+    failures = [r for r in warnings if not any(s in r.getMessage() for s in writer_lines)]
+    assert len(failures) == 1, f"expected the storage failure once: {failures}"
 
 
 def test_a_refused_write_does_not_break_the_next_good_write():
     _open_session()
     emit.on_tool_called(SESSION, 1, name="z" * (70 * 1024), call_id="tc-big")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert _body()[-1]["type"] == "turn/completed"
+    assert emit.flush()
+    body = _body()
+    assert body[-1]["type"] == "turn/completed"
+    assert body[-2]["type"] == "write/dropped", "the loss was not admitted before it"
 
 
 def test_a_storage_layer_that_raises_never_breaks_a_caller(monkeypatch):

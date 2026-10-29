@@ -41,8 +41,9 @@ entry that can never land.
 Every loss is admitted before that unit appends again: the writer owes the unit a
 ``write/dropped`` marker and writes it at the head of the unit's next batch, through
 ``open_unit``. No entry is ever appended after a loss until a marker naming that loss
-has been appended -- with one exception, a refusal on the inline path, which is counted
-but owes no marker (:data:`_INLINE_REFUSAL_OWES_MARKER`).
+has been appended. A refusal on the inline path is no exception: it owes the same marker
+as one on the batch path, and the debt it leaves takes that unit off the inline path
+until the marker lands.
 
 With no event loop running the write happens inline on the calling thread -- which is
 what makes a synchronous caller, and the test suite, deterministic. :meth:`flush` waits
@@ -171,12 +172,6 @@ class WriterLimits:
 
 
 DEFAULT_LIMITS: Final[WriterLimits] = WriterLimits()
-
-#: Whether a REFUSAL on the inline path owes the unit a ``write/dropped`` marker. The
-#: batch path's refusal does, and the emitter spec states that this one should too;
-#: today it is counted as dropped and owes no marker. One named switch, so the two
-#: paths' treatment of the same loss is decided in one place.
-_INLINE_REFUSAL_OWES_MARKER: Final[bool] = False
 
 
 class JobKind(Enum):
@@ -569,9 +564,8 @@ class CrewLogWriter:
     * **A failure is retained** with doubling backoff up to ``max_write_attempts``
       consecutive failed passes, then counted as lost.
     * **Every loss is admitted.** A loss of any cause owes the unit a ``write/dropped``
-      marker, written at the head of its next batch before anything else for it --
-      except a refusal on the inline path, which is counted but owes none
-      (:data:`_INLINE_REFUSAL_OWES_MARKER`).
+      marker, written at the head of its next batch before anything else for it,
+      whichever path lost it.
     * **The ceilings count overflow rather than block.** :meth:`submit` never raises and
       never blocks an event loop; only a caller with no loop running writes inline.
 
@@ -776,7 +770,7 @@ class CrewLogWriter:
                         self._finish(pending)
                         self._note_progress(unit)
                     elif _is_refusal(failure):
-                        self._drop(unit, [pending], mark=_INLINE_REFUSAL_OWES_MARKER)
+                        self._drop(unit, [pending], mark=True)
                     else:
                         self._retain(unit, [pending])
                 finally:

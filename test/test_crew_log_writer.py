@@ -531,18 +531,23 @@ def test_a_refused_entry_is_dropped_at_once_and_the_pass_continues_past_it(units
     assert writer.stats().dropped == 1
 
 
-def test_a_refusal_on_the_inline_path_is_counted_but_owes_no_marker(units, clock):
-    """Preserved divergence: the batch path's refusal owes a marker (above), the inline
-    path's does not, though the emitter spec states the marked behaviour as intended."""
+def test_a_refusal_on_the_inline_path_owes_a_marker_like_the_batch_path(units, clock):
+    """The inline path's refusal is admitted the same way as the batch path's (above):
+    counted, and owed a marker that lands before the unit's next entry."""
     units.create(UNIT)
     units.fault = _failing(_is_step(1), exc=_refusal)
     writer = _writer(units, clock)
-    writer.submit(UNIT, _step(units, UNIT, 1))
+    writer.submit(UNIT, _step(units, UNIT, 1, nbytes=3))
     stats = writer.stats()
-    assert (stats.dropped, writer.loss_markers_owed()) == (1, 0)
-    assert not writer.owes(UNIT)
+    assert (stats.dropped, writer.loss_markers_owed()) == (1, 1)
+    assert writer.owes(UNIT), "the owed marker must keep the next entry off the inline path"
     writer.submit(UNIT, _step(units, UNIT, 2))
-    assert units.entries(UNIT) == [("step/started", {"turn": 1, "step": 2})]
+    assert writer.flush(timeout=10.0)
+    assert units.entries(UNIT) == [
+        ("write/dropped", {"dropped_count": 1, "dropped_bytes": 3}),
+        ("step/started", {"turn": 1, "step": 2}),
+    ]
+    assert writer.loss_markers_owed() == 0
 
 
 # --------------------------------------------------------------------------- #
