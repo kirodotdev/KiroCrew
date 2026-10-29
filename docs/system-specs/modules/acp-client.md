@@ -2451,6 +2451,8 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 
 **Dedupe**: Per-server dedupe via `_oauth_emitted_servers: set[str]` prevents kiro-cli's per-probe retries from spamming the user. Works across both buffered (init drain) and live (mid-session) paths. Cleared on new session.
 
+**Card-owned requests**: a request for a server that a rendered Connections card owns (`_connections_managed_mcp_names`) is tagged `card_owned` on both paths, the init drain and the mid-session `_on_mcp_oauth_request`. The tag rides through every later state of the banner (completed, failed, superseded, expired), and the chat hides tagged banners while `connections_ui` is on, because the card shows the same Authorize action. The KAS sign-in offer re-requests every unauthorized server at each turn start, so an untagged mid-session request would repeat the prompt on every turn of every session.
+
 **URL validation**: `_is_safe_oauth_url()` rejects non-http(s) schemes before dedupe — an unsafe URL doesn't consume the dedupe slot.
 
 **Persistence**: Role-aware redaction (`_redact_meta_for_role`) preserves `oauth_url` for `mcp_oauth` messages so the Authorize link survives history rehydrate, while still scrubbing unsafe schemes on the read path.
