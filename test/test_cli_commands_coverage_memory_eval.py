@@ -9,8 +9,10 @@ with an ``argparse.Namespace``, HTTP goes through a patched
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import struct
 import subprocess
 import sys
 import urllib.error
@@ -449,6 +451,61 @@ class TestMemoryCli:
         out = capsys.readouterr().out
         assert "embedding vectors are not built by this command" in out
         assert "keyword-searchable only" in out
+
+    def test_import_names_pending_semantic_embeddings(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Semantic rows that landed without a vector get the same note."""
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps({"semantic": []}), encoding="utf-8")
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {"semantic": 4, "episodic": 0, "skipped": 0}
+            h.store.has_pending_embeddings.return_value = True
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        assert "embedding vectors are not built by this command" in capsys.readouterr().out
+
+    def test_export_ships_restorable_vectors_and_their_model(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import embeddings
+
+        blob = struct.pack("2f", 0.5, -1.0)
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.return_value = None
+            h.store.get_all_semantic.return_value = [
+                {"key": "a", "embedding": blob},
+                {"key": "b", "embedding": None},
+            ]
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            cc._memory_cmd(_ns(mem_action="export", output=None))
+        data = json.loads(capsys.readouterr().out)
+        assert [row["embedding"] for row in data["semantic"]] == [
+            base64.b64encode(blob).decode("ascii"),
+            None,
+        ]
+        assert list(data)[-2:] == ["embedding_space_sig", "embedding_model"]
+        assert data["embedding_space_sig"] == embeddings.default_embedding_space_signature()
+        assert data["embedding_model"] == {
+            "model_id": embeddings._MODEL_ID,
+            "dim": embeddings._DEFAULT_DIM,
+        }
+
+    def test_export_names_no_space_when_it_changed_during_the_read(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import embeddings
+
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.side_effect = ["aaaa", "bbbb", "bbbb"]
+            h.store.get_all_semantic.return_value = [{"key": "a", "embedding": b"\x00" * 4}]
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            with patch.object(embeddings, "get_shared_embedder", side_effect=RuntimeError):
+                cc._memory_cmd(_ns(mem_action="export", output=None))
+        data = json.loads(capsys.readouterr().out)
+        assert data["embedding_space_sig"] is None
+        assert data["embedding_model"] is None
 
     def test_import_omits_embedding_note_when_nothing_pending(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
