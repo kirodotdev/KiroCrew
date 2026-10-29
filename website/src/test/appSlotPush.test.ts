@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   createAppSlotPush,
+  noteAppSlotChanged,
   noteAppSlotFrame,
   noteAppSlotRows,
   resetAppSlotPushForTests,
@@ -42,6 +43,19 @@ describe('appSlotPush', () => {
     noteAppSlotFrame('chat_chunk', { slot: 's1', content: 'secret text' })
     expect(w.onChange).toHaveBeenCalledTimes(1)
     expect(w.onChange).toHaveBeenCalledWith()
+  })
+
+  it('signals a stream catch-up by slot key, still gated on ownership', () => {
+    owners.set('s1', 'spec-builder')
+    owners.set('s2', 'other-app')
+    const w1 = watcher()
+    const w2 = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w1)
+    createAppSlotPush('spec-builder').watch('s2', w2)
+    noteAppSlotChanged('s1')
+    noteAppSlotChanged('s2')
+    expect(w1.onChange).toHaveBeenCalledTimes(1)
+    expect(w2.onChange).not.toHaveBeenCalled()
   })
 
   it('signals a resolved elicitation, which rewrites its card row', () => {

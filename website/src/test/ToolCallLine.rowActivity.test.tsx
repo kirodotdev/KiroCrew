@@ -57,6 +57,12 @@ describe('ToolCallLine reports itself live', () => {
     expect(renderPill({ messages: [toolMsg()], toolLog: [logEntry('tc_1')], slotRunning: true } as never).live()).toBe(1)
   })
 
+  it('not once it returned while the tab did not watch the slot', () => {
+    // `tool_status` with `returned` marks the entry returned without its output.
+    const returned = { ...logEntry('tc_1'), output_partial: false }
+    expect(renderPill({ messages: [toolMsg()], toolLog: [returned], slotRunning: true } as never).live()).toBe(0)
+  })
+
   it('when it mounts with its approval already pending', () => {
     const p = renderPill({ messages: [toolMsg(), pending('tc_1')], toolLog: [logEntry('tc_1')], slotRunning: true } as never)
     expect(p.live()).toBe(1)

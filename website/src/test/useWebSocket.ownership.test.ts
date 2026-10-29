@@ -49,6 +49,7 @@ const OWNER_MODULES = [
   'browserEvents.ts',
   'bundleReload.ts',
   'chatStream.ts',
+  'chunkWatch.ts',
   'composerCards.ts',
   'connection.ts',
   'contextTraceRefresh.ts',

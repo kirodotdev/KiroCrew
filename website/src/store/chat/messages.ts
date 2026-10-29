@@ -6,6 +6,7 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
+import { toolReturned } from '../../utils/toolReturned'
 import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
@@ -395,7 +396,7 @@ export const messageReducers = {
     }
     // Mark all incomplete toolLog entries as rejected so pills show the right icon
     for (const e of state.toolLog) {
-      if (e.type === 'tool' && e.output == null && !e.rejected) e.rejected = true
+      if (e.type === 'tool' && !toolReturned(e) && !e.rejected) e.rejected = true
     }
   },
   clearMessages(state: ChatState) {
