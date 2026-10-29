@@ -274,7 +274,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
 const LISTEN_MODES: Array<ChannelAgent['listenMode']> = ['all', 'mention', 'silent']
 
 function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext, justCleared = false }: {
-  agent: ChannelAgent; onDismiss: () => void; onListenChange: (m: ChannelAgent['listenMode']) => void; onClearContext: () => void | Promise<void>; justCleared?: boolean
+  agent: ChannelAgent; onDismiss: () => void; onListenChange: (m: ChannelAgent['listenMode']) => void; onClearContext: (begin: () => void) => void | Promise<void>; justCleared?: boolean
 }) {
   const [menu, setMenu] = useState(false)
   const [clearing, setClearing] = useState(false)
@@ -357,7 +357,8 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext, jus
         <Btn
           onClick={async () => {
             if (clearing || justCleared) return
-            setClearing(true); try { await onClearContext() } finally { setClearing(false) }
+            // Busy only once the request starts: a spinner behind the open confirm reads as running.
+            try { await onClearContext(() => setClearing(true)) } finally { setClearing(false) }
           }}
           aria-disabled={clearing || justCleared}
           aria-busy={clearing}
@@ -916,33 +917,51 @@ export default function ChannelPage() {
   // disable the button on the one they moved to, which is a different operation.
   const clearBusyHere = channel?.id !== undefined && clearBusyTargets.includes(channel.id)
 
-  // NOT destructured as `confirm`: that shadows the global in this scope, and the two
-  // remaining `window.confirm` guards here would then test a Promise, which is always truthy.
+  // NOT destructured as `confirm`: that shadows the global in this scope, and the close
+  // button's remaining `window.confirm` guard would then test a Promise, which is always truthy.
   const { confirm: askConfirm, cancel: cancelConfirm, confirmDialog } = useConfirm()
   // The channel the open confirm was raised for. `channel` is recomputed every render, so
   // without pinning it a close mid-dialog redirects the confirm onto one nobody chose.
-  const pendingClearAllRef = useRef<string | null>(null)
+  // A per-agent confirm also pins its agent: a row that leaves mid-dialog withdraws it.
+  const pendingClearRef = useRef<{ channelId: string; agentId?: string } | null>(null)
+  const clearTargetLive = useCallback((cs: Channel[], channelId: string, agentId?: string) => {
+    const ch = cs.find(c => c.id === channelId)
+    return !!ch && (!agentId || ch.agents.some(a => a.id === agentId && a.state !== 'done'))
+  }, [])
   useEffect(() => {
-    const target = pendingClearAllRef.current
-    if (target && !channels.some(c => c.id === target)) {
-      pendingClearAllRef.current = null
+    const target = pendingClearRef.current
+    if (target && !clearTargetLive(channels, target.channelId, target.agentId)) {
+      pendingClearRef.current = null
       cancelConfirm()
     }
-  }, [channels, cancelConfirm])
+  }, [channels, cancelConfirm, clearTargetLive])
 
   const askClearAll = useCallback(async (target: string) => {
-    pendingClearAllRef.current = target
+    pendingClearRef.current = { channelId: target }
     const ok = await askConfirm({
       title: i18nT('pages.channelPage.clear_all_context'),
       body: i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'),
       confirmLabel: i18nT('pages.channelPage.clear_context_and_delete_messages'),
     })
-    pendingClearAllRef.current = null
+    pendingClearRef.current = null
     // The answer arrives an arbitrary time later, so the target is re-checked rather than
     // trusted: the channel can be gone by now, and clearing its successor was never asked for.
     if (!ok || !channels.some(c => c.id === target)) return
     await runClear(target, 'all')
   }, [channels, askConfirm, runClear])
+
+  const askClearAgent = useCallback(async (channelId: string, agent: ChannelAgent, begin: () => void) => {
+    pendingClearRef.current = { channelId, agentId: agent.id }
+    const ok = await askConfirm({
+      title: i18nT('pages.channelPage.clear_context'),
+      body: i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }),
+      confirmLabel: i18nT('pages.channelPage.clear_context'),
+    })
+    pendingClearRef.current = null
+    if (!ok || !clearTargetLive(channels, channelId, agent.id)) return
+    begin()
+    await runClear(channelId, 'agent', agent.id)
+  }, [channels, askConfirm, runClear, clearTargetLive])
 
   // Optimistic, but a refusal reconciles the row from the server: a notice that
   // says "Failed to dismiss agent" beside a row that shows it dismissed would
@@ -1181,10 +1200,7 @@ export default function ChannelPage() {
                       justCleared={clearDone?.channelId === channel.id && clearDone.agentId === agent.id}
                       onDismiss={() => handleDismiss(agent.id)}
                       onListenChange={m => handleListenChange(agent.id, m)}
-                      onClearContext={async () => {
-                        if (!confirm(i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }))) return
-                        await runClear(channel.id, 'agent', agent.id)
-                      }} />
+                      onClearContext={begin => askClearAgent(channel.id, agent, begin)} />
                   ))}
                 </div>
                 <div className="p-2 border-t border-border">

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ChannelPage from '../pages/ChannelPage'
 import { renderWithProviders } from './helpers'
@@ -54,6 +54,14 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByTitle('Clear all context'))
     await waitFor(() => screen.getByRole('button', { name: 'Clear context and delete messages' }))
     await userEvent.click(screen.getByRole('button', { name: 'Clear context and delete messages' }))
+  }
+
+  /** Answers the per-agent in-page confirm; its button restates the act, like the row's. */
+  const answerAgentClear = async (yes = true) => {
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', {
+      name: yes ? 'Clear context' : 'Cancel',
+    }))
   }
 
   /** Fire one `kirocrew-channel` window event, the page's stand-in for the socket. */
@@ -138,18 +146,42 @@ describe('ChannelPage — Clear Context', () => {
   })
 
   it('still ASKS before a per-agent clear, and does nothing when that is declined', async () => {
-    const spy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const spy = vi.spyOn(window, 'confirm')
     renderWithProviders(<ChannelPage />)
     await waitFor(() => screen.getByRole('button', { name: /^\d+ agents?$/ }))
     await userEvent.click(screen.getByRole('button', { name: /^\d+ agents?$/ }))
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
 
-    expect(spy, 'the per-agent clear stopped asking for consent').toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent, 'the in-page confirm lost the role it resets').toContain('Researcher')
+    expect(spy, 'the per-agent clear fell back to the native confirm').not.toHaveBeenCalled()
+    expect(
+      screen.getByTitle('Clear context').getAttribute('aria-busy'),
+      'the row spins behind the confirm, as if the clear were already running',
+    ).not.toBe('true')
+    await answerAgentClear(false)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(
       vi.mocked(api).channelClearContext,
       'a declined per-agent clear ran anyway',
     ).not.toHaveBeenCalled()
+  })
+
+  it('withdraws the per-agent confirmation when its agent leaves under it', async () => {
+    renderWithProviders(<ChannelPage />)
+    await waitFor(() => screen.getByRole('button', { name: '1 agent' }))
+    await userEvent.click(screen.getByRole('button', { name: '1 agent' }))
+    await waitFor(() => screen.getByTitle('Clear context'))
+    await userEvent.click(screen.getByTitle('Clear context'))
+    await screen.findByRole('dialog')
+
+    wsEvent('channel_agent_left', { channel_id: 'ch1', agent_id: 'a1' })
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog'), 'the confirm outlived the agent it was opened for').toBeNull(),
+    )
+    expect(vi.mocked(api).channelClearContext).not.toHaveBeenCalled()
   })
 
   it("a per-agent clear does not erase another agent's unresolved failure", async () => {
@@ -176,10 +208,12 @@ describe('ChannelPage — Clear Context', () => {
 
     const [first, second] = screen.getAllByTitle('Clear context')
     await userEvent.click(first)
+    await answerAgentClear()
     const notice = await screen.findByTestId('clear-context-error')
     expect(notice.textContent).toContain('a1 clear failed')
 
     await userEvent.click(second)
+    await answerAgentClear()
     await waitFor(() => expect(screen.getByTestId('clear-context-done')).toBeInTheDocument())
     expect(
       screen.queryByTestId('clear-context-error'),
@@ -447,6 +481,7 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    await answerAgentClear()
     const notice = await screen.findByTestId('clear-context-error')
     expect(notice.textContent).toContain(i18nT('pages.channelPage.clear_context_agent_gone'))
     expect(notice.textContent).not.toContain('not found')
@@ -616,6 +651,7 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))  // open agents sidebar
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    await answerAgentClear()
     await waitFor(() => expect(vi.mocked(api).channelClearContext).toHaveBeenCalledWith('ch1', 'agent', 'a1'))
   })
 
@@ -630,6 +666,7 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    await answerAgentClear()
 
     const done = await screen.findByTestId('clear-context-done')
     expect(done.textContent).toContain('Analyst')
@@ -646,6 +683,7 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))  // open agents sidebar
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    await answerAgentClear()
 
     const mark = await screen.findByTestId('agent-clear-done')
     expect(mark.getAttribute('aria-label')).toBeTruthy()
@@ -667,13 +705,15 @@ describe('ChannelPage — Clear Context', () => {
     await waitFor(() => screen.getByTitle('Clear context'))
     const pressed = screen.getByTitle('Clear context')
     await userEvent.click(pressed)
+    await answerAgentClear()
 
     const mark = await screen.findByTestId('agent-clear-done')
     expect(mark, 'the cleared row mounted a different element, so the press lost its focus').toBe(pressed)
-    expect(
+    // The confirm hands focus back to its opener once it has animated out.
+    await waitFor(() => expect(
       document.activeElement,
       'focus fell to the body, leaving a keyboard user with no position in the panel',
-    ).toBe(pressed)
+    ).toBe(pressed))
     expect(mark.getAttribute('aria-disabled')).toBe('true')
   })
 
@@ -685,6 +725,7 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    await answerAgentClear()
 
     const mark = await screen.findByTestId('agent-clear-done')
     expect(
@@ -727,6 +768,7 @@ describe('ChannelPage — Clear Context', () => {
     await userEvent.click(screen.getByRole('button', { name: '1 agent' }))
     await waitFor(() => screen.getByTitle('Clear context'))
     await userEvent.click(screen.getByTitle('Clear context'))
+    await answerAgentClear()
     await waitFor(() => screen.getByTestId('agent-clear-done'))
 
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
