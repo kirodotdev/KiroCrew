@@ -1,12 +1,15 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import { BrowserPanel } from './settings/BrowserPanel'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
+import { PeoplePanel } from './settings/PeoplePanel'
+import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
+import { sharedCrewPreviewOn } from '../api/sharedCrewUi'
 import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
@@ -87,6 +90,7 @@ function buildTabs() {
     { key: 'computer-use', tile: 'var(--tile-indigo)', label: i18nT('settings.tabs.computerUse.label'), icon: <SquareMousePointer className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.computerUse.description') },
     { key: 'webhooks', tile: 'var(--tile-orange)', label: i18nT('settings.tabs.webhooks.label'), icon: <Webhook size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.webhooks.description') },
     { key: 'instances', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.instances.label'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.instances.description') },
+    { key: 'people', tile: 'var(--tile-teal)', label: i18nT('sharedCrew.settings_tab_label'), icon: <Users size={16} />, group: GROUP_SYSTEM, description: i18nT('sharedCrew.settings_tab_description') },
     { key: 'privacy', tile: 'var(--tile-blue)', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
     { key: 'security', tile: 'var(--tile-red)', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description'), hostsSubNav: true },
     { key: 'connections', tile: 'var(--tile-green)', label: i18nT('settings.tabs.connections.label'), icon: <Plug size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.connections.description') },
@@ -230,9 +234,13 @@ export default function SettingsPage() {
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
   const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  // People exists only while the gateway reports the Shared Crew preview
+  // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
+  const sharedCrewPreview = sharedCrewPreviewOn(useSharedCrewCapabilities().capabilities)
   const allTabs = buildTabs().filter(t =>
     (t.key !== 'webhooks' || webhooksPreview)
-    && (t.key !== 'session-environments' || sessionEnvironmentsPreview),
+    && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
+    && (t.key !== 'people' || sharedCrewPreview),
   )
   const tabs = updateAvailable ? allTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : allTabs
 
@@ -284,6 +292,7 @@ export default function SettingsPage() {
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
         {tab === 'instances' && <RemoteCrewPanel />}
+        {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && <ConnectionsPanel />}

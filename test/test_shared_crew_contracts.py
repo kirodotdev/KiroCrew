@@ -3,7 +3,9 @@ and the operation state machine."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -62,6 +64,7 @@ from kiro_crew.shared_crew.contracts import (
 )
 from kiro_crew.taskq import model as taskq_model
 
+REPO = Path(__file__).resolve().parent.parent
 ALICE = Principal(
     id=principal_id_for("tailscale", "example.ts.net", "alice@example.com"),
     kind=PrincipalKind.HUMAN,
@@ -418,3 +421,15 @@ class TestSharedDecision:
     def test_expired_is_not_pending(self) -> None:
         expired = replace(self._pending(), state=DecisionState.EXPIRED)
         assert classify_response(expired, "r") is ResolveOutcome.NOT_PENDING
+
+
+def test_typescript_transition_table_matches_python() -> None:
+    """``website/src/api/sharedCrew.ts`` mirrors ``admission.TRANSITIONS``."""
+    source = (REPO / "website" / "src" / "api" / "sharedCrew.ts").read_text(encoding="utf-8")
+    block = source.split("OPERATION_TRANSITIONS", 1)[1].split("}", 1)[0]
+    parsed = {
+        state: frozenset(re.findall(r"'([a-z_]+)'", targets))
+        for state, targets in re.findall(r"(\w+): \[([^\]]*)\]", block)
+    }
+    expected = {s.value: frozenset(t.value for t in targets) for s, targets in TRANSITIONS.items()}
+    assert parsed == expected

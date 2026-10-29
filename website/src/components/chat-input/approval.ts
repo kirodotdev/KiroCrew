@@ -12,6 +12,7 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { toApiDecision } from '../../utils/approvalDecision'
+import { alreadyResolvedDecision, decisionVerdict, mintResponseId, resolvedByLine } from './sharedDecision'
 import { baseCommandLabel, truncateCommandLabel } from '../../utils/trustPatterns'
 import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../ApprovalModePicker'
 import type { SubagentActivity } from '../../types'
@@ -221,6 +222,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     if (!approvalId) return
     setApprovalSubmitting(true)
     setApprovalNotice(null)
+    const responseId = mintResponseId()
     const finish = () => {
       dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision }))
       setApprovalSubmitting(false)
@@ -253,6 +255,14 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     }
     const fail = (err: unknown) => {
       setApprovalSubmitting(false)
+      // Another collaborator answered first: adopt their decision, say who.
+      const settled = alreadyResolvedDecision(err)
+      if (settled) {
+        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: decisionVerdict(settled), allPending: true }))
+        setApprovalNoticeKind('status')
+        setApprovalNotice(resolvedByLine(settled))
+        return
+      }
       // 404 means the backend no longer holds a future for this id — the turn
       // was stopped, timed out, or the process was replaced. The card is an
       // orphan: leaving it up makes every button look broken, so clear it and
@@ -283,15 +293,15 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       // widening its auto-approval surface for a job that is not this session.
       // Downgrade to a one-shot allow instead of silently over-granting.
       if (approvalIsUnattended) {
-        api.resolveApproval(approvalId, 'approve').then(finish).catch(fail)
+        api.resolveApproval(approvalId, 'approve', undefined, responseId).then(finish).catch(fail)
         return
       }
-      const extra: Record<string, string | number> = { request_id: approvalId }
+      const extra: Record<string, string | number> = { request_id: approvalId, response_id: responseId }
       if (pattern) extra.pattern = pattern
       if (ttlSeconds !== undefined) extra.ttl_seconds = ttlSeconds
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else {
-      api.resolveApproval(approvalId, toApiDecision(decision)).then(finish).catch(fail)
+      api.resolveApproval(approvalId, toApiDecision(decision), undefined, responseId).then(finish).catch(fail)
     }
   }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch])
 

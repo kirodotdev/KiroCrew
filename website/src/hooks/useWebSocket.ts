@@ -68,6 +68,7 @@ import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
 import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
+import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
 
 /* The dashboard's single multiplexed WebSocket. `useWebSocket` composes the
@@ -206,6 +207,10 @@ export function useWebSocket() {
       resetContextTraceRefresh()
       // Cache auto-speak preference
       voice.refreshAutoSpeak()
+      // Shared Crew: this socket carries the tab's activity frames, and its
+      // presence, work and decision state is re-read from the server.
+      setSharedCrewSender(payload => socket.sendIfOpen(payload))
+      onSharedCrewSocketOpen(queryClient)
       const catchUp = {
         dispatch,
         queryClient,
@@ -249,6 +254,15 @@ export function useWebSocket() {
             break
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
+            break
+          case 'shared_crew.presence':
+          case 'shared_crew.work':
+          case 'shared_crew.decision':
+          case 'shared_crew.capacity':
+          case 'shared_crew.send_state':
+          case 'shared_crew.typing_lease':
+          case 'shared_crew.memory_change':
+            applySharedCrewFrame(queryClient, data)
             break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
