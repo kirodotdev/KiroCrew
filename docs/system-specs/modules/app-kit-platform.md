@@ -306,6 +306,19 @@ record the SDK default and the crew window draw nothing, while ChatPage passes
 the row to its `renderUnparsedFile` option, which the single-chat page fills
 with its conversational bubble so the raw text stays visible.
 
+For a raster image (`image/*` other than `image/svg+xml`), `FileCard` draws the
+preview as a button that opens the shared image viewer (`dispatchLightbox`) at
+that image; Save stays in the header. The preview's `<img>` carries
+`data-lightbox-turn`, as a reply's markdown image does, and the transcript's
+per-display-item wrapper carries `data-image-turn`, so the viewer pages through
+a turn's markdown images and file-card images as one set in transcript order
+(the single-chat page's `ChatTranscriptView` wrappers carry it too). Images in
+a folded working-step row (`inert` or `data-collapsed="true"`) stay out of the
+set.
+`data-lightbox-filename` gives the viewer's Download the file's own name. A
+surface without the wrapper keeps each message's own set. A preview that fails
+to load becomes an inline `ErrorNotice` and is no longer a control.
+
 ## Host-mediated chat launch and cron toggles
 
 `useChatLauncher().openChat` accepts `slotKey` and `autoSend`. Without a target,

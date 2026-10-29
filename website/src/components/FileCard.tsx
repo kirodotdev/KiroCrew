@@ -1,6 +1,8 @@
-import { memo } from 'react'
-import { Download } from 'lucide-react'
+import { memo, useRef, useState } from 'react'
+import { Download, Maximize2 } from 'lucide-react'
 
+import ErrorNotice from './ErrorNotice'
+import { dispatchLightbox } from './markdown/Lightbox'
 import { i18nT } from '../i18n/t'
 import { fmtBytes } from '../i18n/format'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -54,6 +56,69 @@ function FileHeader({ file, url, saveLink = true }: { file: FileData; url: strin
   )
 }
 
+/**
+ * The image under the header, as a button that opens the full-screen image
+ * viewer at this image. Enter and Space come from the native button.
+ *
+ * The `<img>` carries `data-lightbox-image` + `data-lightbox-turn`, so the
+ * viewer pages through it together with the reply's markdown images in the
+ * same turn (see `dispatchLightbox`), and `data-lightbox-filename`, so the
+ * viewer's Download saves under the file's real name rather than one guessed
+ * from the alt text.
+ *
+ * A preview that fails to load is not a control: there is nothing to enlarge,
+ * so the button gives way to an inline error and Save stays the way to the file.
+ */
+function ImagePreview({ file, url }: { file: FileData; url: string }) {
+  const imgRef = useRef<HTMLImageElement>(null)
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  if (failedUrl === url) {
+    return (
+      <>
+        {/* No hand-off: FileCard is store-free and renders in every chat host,
+            ChatEmbed included, whose unsaved composer draft lives only in the
+            view the hand-off would unmount. Save in the header stays the way
+            to the file. */}
+        <ErrorNotice variant="inline" message={i18nT('components.markdownRenderer.image_failed_to_load')} testId="file-card-image-error" />
+      </>
+    )
+  }
+  return (
+    <button
+      type="button"
+      data-testid="file-card-image-open"
+      aria-label={i18nT('components.chatInput.open_preview_of', { name: file.filename })}
+      title={i18nT('components.chatInput.open_preview_of', { name: file.filename })}
+      className="group/preview relative self-center max-w-full rounded ring-1 ring-transparent hover:ring-border-strong transition-shadow cursor-zoom-in focus-ring-accent"
+      onClick={(e) => {
+        // A transcript ancestor can bind a fold toggle on click; opening the
+        // viewer must not also fold the row.
+        e.stopPropagation()
+        if (imgRef.current) dispatchLightbox(imgRef.current)
+      }}
+    >
+      {/* onError is a load outcome, not an interaction; the button is the control. */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+      <img
+        ref={imgRef}
+        src={url}
+        alt={file.description || file.filename}
+        data-lightbox-image=""
+        data-lightbox-turn=""
+        data-lightbox-filename={file.filename}
+        onError={() => setFailedUrl(url)}
+        className="block max-w-full max-h-[400px] rounded object-contain transition-opacity group-hover/preview:opacity-90"
+      />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute top-2 end-2 grid place-items-center size-7 rounded-md bg-black/60 text-white opacity-0 transition-opacity group-hover/preview:opacity-100 group-focus-visible/preview:opacity-100 [@media(hover:none)]:opacity-100"
+      >
+        <Maximize2 className="lucide-inline" />
+      </span>
+    </button>
+  )
+}
+
 const CARD = 'flex flex-col gap-2 bg-card ring-1 ring-inset forced-colors:border ring-border rounded-lg px-4 py-3 text-sm leading-5 animate-scale-in'
 
 /** Renders a file embed card — inline audio/video/image below the header, or a download card. */
@@ -88,7 +153,7 @@ export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
     return (
       <div className={CARD}>
         <FileHeader file={file} url={url} />
-        <img src={url} alt={file.description || file.filename} className="max-w-full max-h-[400px] rounded object-contain" />
+        <ImagePreview file={file} url={url} />
       </div>
     )
   }

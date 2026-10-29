@@ -475,7 +475,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     // the message's action strip beneath the card standing in for its bubble —
     // only while the value is `folding`, i.e. while that strip is still uncovered.
     return (
-      <div key={'row-' + i} data-display-index={i} data-pinned-standin={hidden ? (hiddenRow?.stripUncovered ? 'folding' : '') : undefined} style={hidden ? { visibility: 'hidden' } : undefined}>
+      <div key={'row-' + i} data-display-index={i} data-image-turn="" data-pinned-standin={hidden ? (hiddenRow?.stripUncovered ? 'folding' : '') : undefined} style={hidden ? { visibility: 'hidden' } : undefined}>
         {node}
       </div>
     )

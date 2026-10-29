@@ -260,8 +260,10 @@ export default function ChatTranscriptView({
           // draws nothing in renderMessage; skip its measured py-1
           // wrapper too, or each quiet cycle leaves an empty spacer row.
           if (item.kind === 'single' && isHiddenInvisibleAssistantRow(item.msg)) return null
+          // `data-image-turn` on both wrappers below: the image viewer pages a
+          // turn's markdown images and file cards as one set (dispatchLightbox).
           if (item.kind === 'turn') {
-            return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} mayBeLive={turnRowMayBeLive} /></div>
+            return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn=""><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} mayBeLive={turnRowMayBeLive} /></div>
           }
           // This row's bubble is the one the pinned banner is standing in for
           // (identity rule below): hide the row and mark it for index.css. The
@@ -277,7 +279,7 @@ export default function ChatTranscriptView({
           const pinnedStandin = !!(pinned && (pinned.ts != null
             ? (item.kind === 'single' && item.msg.ts === pinned.ts)
             : pinned.idx === displayIdx))
-          return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-4 mx-auto w-full py-1 empty:hidden`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : '') : undefined} style={{
+          return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn="" className={`px-4 mx-auto w-full py-1 empty:hidden`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : '') : undefined} style={{
             maxWidth: 'var(--mc-content-width, 900px)',
             // The pinned banner is styled as this row's own bubble and sits
             // at the exact position and width the bubble had when its top

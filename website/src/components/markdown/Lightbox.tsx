@@ -16,7 +16,9 @@ import { overlayCaptionClearancePx } from '../../lib/electron'
 import { ReactReduxContext } from 'react-redux'
 import { setActiveId } from '../../store/instancesSlice'
 
-type LightboxImage = { src: string; alt: string }
+/** `filename` is the name Download saves under when the URL does not carry it
+ *  (an outbox file whose name has no extension, say); see `lightboxFilename`. */
+type LightboxImage = { src: string; alt: string; filename?: string }
 type LightboxDetail = { images: LightboxImage[]; index: number }
 
 /** `margin-top` that drops the top-anchored toolbar (and the "copied" pill under
@@ -71,6 +73,7 @@ const LIGHTBOX_COPY_FLASH_MS = 2500
  *  as `/api/file-raw?path=<abs>`, so prefer the basename of that path; for
  *  other URLs fall back to the pathname basename, then the alt text. */
 function lightboxFilename(image: LightboxImage): string {
+  if (image.filename) return image.filename
   try {
     const u = new URL(image.src, window.location.href)
     const p = u.searchParams.get('path')
@@ -112,18 +115,39 @@ function copyLightboxImage(image: LightboxImage): Promise<boolean> {
   return copyImageToClipboard(fetchLightboxBlob(image).then(imageBlobToPng))
 }
 
-/** Build the lightbox payload for an image click. The set is "all images
- *  inside the nearest [data-image-scope] ancestor"; for markdown messages
- *  that's a MarkdownRenderer instance (one per chat message), and for the
- *  chat-input thumbnail strip it's the strip's outer div. */
+function lightboxImageOf(el: HTMLImageElement): LightboxImage {
+  const filename = el.dataset.lightboxFilename
+  return filename ? { src: el.src, alt: el.alt, filename } : { src: el.src, alt: el.alt }
+}
+
+/** Build the lightbox payload for an image click.
+ *
+ *  An image marked `data-lightbox-turn` is message content: a reply's markdown
+ *  image or a `file_send` card's preview. Those two render as SEPARATE
+ *  transcript rows (the card is its own `file` row, outside the reply's
+ *  MarkdownRenderer), so their shared set is every such image inside the
+ *  nearest `[data-image-turn]` ancestor, which is the transcript's wrapper for
+ *  one display item (a whole turn, or one loose row).
+ *
+ *  Otherwise, and wherever no turn wrapper exists (a surface that renders a
+ *  bare MarkdownRenderer), the set is "all images inside the nearest
+ *  [data-image-scope] ancestor": a MarkdownRenderer instance, the chat-input
+ *  thumbnail strip, or a tool call's thumbnail strip. */
 export function dispatchLightbox(target: HTMLImageElement): void {
-  const scope = target.closest('[data-image-scope]') as HTMLElement | null
-  let detail: LightboxDetail = { images: [{ src: target.src, alt: target.alt }], index: 0 }
+  const turn = target.hasAttribute('data-lightbox-turn')
+    ? target.closest('[data-image-turn]') as HTMLElement | null
+    : null
+  const scope = turn ?? target.closest('[data-image-scope]') as HTMLElement | null
+  const selector = turn ? 'img[data-lightbox-image][data-lightbox-turn]' : 'img[data-lightbox-image]'
+  let detail: LightboxDetail = { images: [lightboxImageOf(target)], index: 0 }
   if (scope) {
-    const els = Array.from(scope.querySelectorAll<HTMLImageElement>('img[data-lightbox-image]'))
+    // A turn keeps its folded working steps mounted (inert, `data-collapsed`);
+    // their images are out of view, so they stay out of the set.
+    const els = Array.from(scope.querySelectorAll<HTMLImageElement>(selector))
+      .filter(el => el === target || !turn || !el.closest('[inert],[data-collapsed="true"]'))
     if (els.length > 0) {
       detail = {
-        images: els.map(el => ({ src: el.src, alt: el.alt })),
+        images: els.map(lightboxImageOf),
         index: Math.max(0, els.indexOf(target)),
       }
     }

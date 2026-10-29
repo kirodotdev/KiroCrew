@@ -591,6 +591,8 @@ export function ImgWithFallback({
         style={imgStyle}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
+        // Pages with the turn's file cards (see dispatchLightbox).
+        data-lightbox-turn=""
         title={alt || src}
         onLoad={(e) => {
           const el = e.currentTarget
