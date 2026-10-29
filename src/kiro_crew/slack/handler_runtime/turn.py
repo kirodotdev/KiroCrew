@@ -272,9 +272,9 @@ class _SlackTurn:
                 _close_gap(self.session_key)
 
     # The one place that takes down the "…is working" thread status and the inline
-    # Stop block: ``_deliver_answer`` calls it on its exits, a compaction replay
-    # calls it before its nested turn starts, and ``handle_message``'s cancel arm
-    # calls it on a cancel. A no-op once the indicators are cleared or
+    # Stop block: ``_deliver_answer`` calls it on its exits, ``_run_turn`` on each
+    # exit before the stream opens, a compaction replay before its nested turn
+    # starts, and ``handle_message``'s cancel arm on a cancel. A no-op once the indicators are cleared or
     # released, so a cancel after delivery adds no second clear. ``keep_status``
     # deletes only the Stop block and leaves the turn owning the status (a review
     # turn keeps it until its draft lands). Each Slack call is guarded on its own,
@@ -804,7 +804,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # ── Early cancellation check: bail before expensive LLM call ──
         if sessions.is_cancelled(session_key, msg_ts):
             logger.info("Message %s cancelled before LLM call — skipping", msg_ts)
-            await slack.set_thread_status(channel, reply_ts, "")
+            await turn.clear_working_indicators()
             return False
         # A replay must not run a message the user has stopped since its first
         # attempt began. Same shape and same placement as the check above: the
@@ -814,12 +814,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             and session_stop_generation(sessions, session_key) != _stop_gen_at_entry
         ):
             logger.info("Message %s stopped before its compaction replay — skipping", msg_ts)
-            await slack.set_thread_status(channel, reply_ts, "")
-            if _working_ts:
-                try:
-                    await slack.delete_message(channel, _working_ts)
-                except Exception:
-                    pass
+            await turn.clear_working_indicators()
             return False
 
         # The permission ladder reads the routed conversation, its agent and this
@@ -848,27 +843,22 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # rather than rendered; without it the pause would be the same
             # silence the per-message echo guard already leaves.
             #
-            # The "Working…" block is deleted on the way out, as the
-            # compaction-replay exit above does: it carries a live Stop button for
-            # a turn that never opened, and this route returns before the normal
-            # path that would clean it up. The latch does not clear on its own, so
-            # leaving it would strand one per refused message.
+            # The "Working…" block is deleted on the way out, as on every early
+            # exit here: it carries a live Stop button for a turn that never
+            # opened, and this route returns before the normal path that would
+            # clean it up. The latch does not clear on its own, so leaving it
+            # would strand one per refused message.
             logger.warning("Slack turn ceiling reached for %s -- conversation paused", session_key)
             if exc.announce:
                 try:
                     await slack.post_message(channel, str(exc), reply_ts or None)
                 except Exception:
                     logger.debug("turn-ceiling notice post failed", exc_info=True)
-            await slack.set_thread_status(channel, reply_ts, "")
-            if _working_ts:
-                try:
-                    await slack.delete_message(channel, _working_ts)
-                except Exception:
-                    pass
+            await turn.clear_working_indicators()
             return False
         except SessionClosingError:
             logger.info("Aborting Slack dispatch for %s — gateway shutting down", session_key)
-            await slack.set_thread_status(channel, reply_ts, "")
+            await turn.clear_working_indicators()
             return False
 
         async for event in client.stream(full_message):

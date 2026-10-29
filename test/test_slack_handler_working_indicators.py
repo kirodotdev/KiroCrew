@@ -226,3 +226,59 @@ class TestWorkingIndicatorCleanup:
         await asyncio.sleep(0)
         statuses = [a[1]["status"] for a in slack.actions if a[0] == "set_thread_status"]
         assert statuses and statuses[-1] == "", slack.actions
+
+
+class TestEarlyExitsClearBothIndicators:
+    """Every exit before the stream opens takes down the status and the Stop block."""
+
+    @staticmethod
+    def _assert_both_cleared(slack: MockSlackClient) -> None:
+        status_clears = [
+            a for a in slack.actions if a[0] == "set_thread_status" and a[1]["status"] == ""
+        ]
+        assert status_clears, slack.actions
+        working_ts = [a for a in slack.actions if a[0] == "blocks"][0][1]["ts"]
+        assert [
+            a for a in slack.actions if a[0] == "delete" and a[1]["ts"] == working_ts
+        ], slack.actions
+
+    @pytest.mark.asyncio
+    async def test_cancelled_before_the_llm_call(self):
+        class _Cancelled(FakeSessionManager):
+            def is_cancelled(self, key, msg_ts):
+                return True
+
+        slack = MockSlackClient()
+        await handle_message(slack, _Cancelled(FakeProvider()), "C1", "hi", "thread1", "msg1", "U1")
+        self._assert_both_cleared(slack)
+
+    @pytest.mark.asyncio
+    async def test_gateway_shutting_down(self):
+        from kiro_crew.session import SessionClosingError
+
+        class _Closing(FakeSessionManager):
+            def begin_turn(self, key):
+                raise SessionClosingError("closing")
+
+        slack = MockSlackClient()
+        await handle_message(slack, _Closing(FakeProvider()), "C1", "hi", "thread1", "msg1", "U1")
+        self._assert_both_cleared(slack)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_status_clear_still_deletes_the_stop_block(self):
+        class _Cancelled(FakeSessionManager):
+            def is_cancelled(self, key, msg_ts):
+                return True
+
+        class _StatusDown(MockSlackClient):
+            async def set_thread_status(self, channel, thread_ts, status):
+                if status == "":
+                    raise RuntimeError("Slack API down")
+                await super().set_thread_status(channel, thread_ts, status)
+
+        slack = _StatusDown()
+        await handle_message(slack, _Cancelled(FakeProvider()), "C1", "hi", "thread1", "msg1", "U1")
+        working_ts = [a for a in slack.actions if a[0] == "blocks"][0][1]["ts"]
+        assert [
+            a for a in slack.actions if a[0] == "delete" and a[1]["ts"] == working_ts
+        ], slack.actions

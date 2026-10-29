@@ -1123,7 +1123,12 @@ def test_a_gated_site_leaves_no_progress_block_behind(relative: str) -> None:
     if "_working_ts = await" not in text:
         return
     branch = _ceiling_branch_source(ast.parse(text))
-    assert "delete_message(channel, _working_ts)" in branch, (
+    # The Slack turn routes the delete through its shared helper, which deletes
+    # the same block (``_SlackTurn.clear_working_indicators`` reads ``_working_ts``).
+    assert (
+        "delete_message(channel, _working_ts)" in branch
+        or "turn.clear_working_indicators()" in branch
+    ), (
         f"{relative} posts a working block before the gate but its ceiling "
         "branch returns without deleting it"
     )
