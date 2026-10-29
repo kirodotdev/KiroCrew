@@ -8,9 +8,12 @@ branch, and the event loop staying responsive during slow startup work.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import logging
 import threading
 import time
+import weakref
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +32,7 @@ from slack_gateway_helpers import (
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack.gateway import GatewayOrchestrator
+from kiro_crew.testing.wait import await_until, finished
 
 _GATEWAY_LOGGER = "kiro_crew.slack.gateway"
 
@@ -1219,6 +1223,87 @@ class TestBgSessionDashboardBranch:
 
         # Boot carried on past the failed announcement.
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
+
+    @pytest.mark.asyncio
+    async def test_the_session_warm_task_survives_a_gc_pass(self):
+        """The probe-gated session warm is held until it finishes.
+
+        The loop holds a task only weakly. A warm parked on a future that
+        nothing else references is a garbage cycle unless boot keeps the task.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+
+        parked = asyncio.Event()
+        refs: list = []
+
+        async def _start_pool_that_parks(**_kwargs):
+            current = asyncio.current_task()
+            assert current is not None
+            refs.append(weakref.ref(current))
+            del current
+            parked.set()
+            await asyncio.get_running_loop().create_future()
+
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = _start_pool_that_parks
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+
+        orch._init_dashboard = _init_dash
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
+            )
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.format_dashboard_urls", return_value=["url"])
+            )
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            raise_nofile_soft_limit = stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            await finished(orch.run(), "the gateway boot")
+            await await_until(parked, what="the session warm to park")
+
+        raise_nofile_soft_limit.assert_called_once_with(10240)
+        (ref,) = refs
+        gc.collect()
+        task = ref()
+        assert task is not None, "the session warm task was garbage-collected"
+        assert task in orch._background_tasks
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_until(task, what="the cancelled warm task")
+        assert task not in orch._background_tasks
 
 
 class TestInitServicesLoopResponsiveness:

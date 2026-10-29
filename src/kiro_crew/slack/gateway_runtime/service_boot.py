@@ -1385,7 +1385,9 @@ async def run(self: GatewayOrchestrator) -> None:
         except Exception:
             logger.warning("Background session start failed", exc_info=True)
 
-    asyncio.create_task(_start_bg_session())
+    _bg_session_task = asyncio.create_task(_start_bg_session())
+    self._background_tasks.add(_bg_session_task)
+    _bg_session_task.add_done_callback(self._background_tasks.discard)
 
     # Stale-asset watchdog: detects when an update prunes the running
     # install's static assets and triggers graceful shutdown so the
