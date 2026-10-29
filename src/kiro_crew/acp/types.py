@@ -208,6 +208,18 @@ def steering_outcome(result: object) -> str:
     return outcome if isinstance(outcome, str) else ""
 
 
+def steering_advertised(init_resp: object) -> bool:
+    """Whether an ``initialize`` result advertises the ``_session/steering`` request.
+
+    The extension is advertised at the TOP level of the result, as
+    ``_meta.steering.supported``, a sibling of ``agentCapabilities``. Only a
+    literal ``true`` counts.
+    """
+    meta = init_resp.get("_meta") if isinstance(init_resp, dict) else None
+    steering = meta.get("steering") if isinstance(meta, dict) else None
+    return isinstance(steering, dict) and steering.get("supported") is True
+
+
 METHOD_SESSION_LOAD = "session/load"
 #: The other standard restore verb, for an agent that keeps sessions but does not
 #: implement full loading: it restores the session WITHOUT replaying the previous

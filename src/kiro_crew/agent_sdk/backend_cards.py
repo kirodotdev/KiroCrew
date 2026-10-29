@@ -167,7 +167,7 @@ own -- the same shape, and for the same reason, as
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Mapping, Tuple
+from typing import Dict, FrozenSet, Mapping, Optional, Tuple
 
 from kiro_crew.agent_sdk import backends
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_payload
@@ -745,6 +745,21 @@ ADVERTISED_FIELD_BY_LINE: Mapping[str, str] = {
     LINE_MODEL_SWITCH: "session.configOptions[model] or session.models.availableModels",
 }
 
+#: The (harness, line) cells whose runtime gate is the line's ``initialize`` field.
+#:
+#: Keyed by harness constant NAME, as :data:`DECLARED_UNMEASURED` is and for the same
+#: reasons. Only the two ``_session/steering`` speakers: claude through
+#: ``AcpClient._steering_request_ready``, codex through ``AcpSessionHandle``. Both
+#: refuse the steer when their handshake lacks the field, so :func:`card_for`, given
+#: that handshake, says the same. kiro-cli, KAS, goose, pi and opencode steer on a
+#: verb that advertises nothing, so their membership stays the whole answer.
+ADVERTISED_BY_HARNESS: FrozenSet[Tuple[str, str]] = frozenset(
+    {
+        ("ACP_BACKEND_CLAUDE", LINE_MID_TURN_STEER),
+        ("ACP_BACKEND_CODEX", LINE_MID_TURN_STEER),
+    }
+)
+
 
 @dataclass(frozen=True)
 class CardLine:
@@ -881,7 +896,35 @@ def _unmeasured_lines(backend: str) -> Dict[str, UnmeasuredLine]:
     return by_backend.get(backend, {})
 
 
-def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, ...]:
+def _advertised(init: Mapping[str, object], wire_path: str) -> bool:
+    """Whether *init* carries a literal ``true`` at *wire_path*.
+
+    *wire_path* is an ``initialize.``-rooted dotted path from
+    :data:`ADVERTISED_FIELD_BY_LINE`. Any missing step, non-object step or value
+    other than ``True`` reads False, the runtime's own fail-closed reading.
+    """
+    node: object = init
+    for key in wire_path.split(".")[1:]:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node is True
+
+
+def _gated_lines(backend: str) -> FrozenSet[str]:
+    """The line ids :data:`ADVERTISED_BY_HARNESS` gates for *backend*.
+
+    Resolved by name on every call, as :func:`_unmeasured_lines` resolves its keys.
+    """
+    by_backend: Dict[str, set] = {}
+    for harness_name, line_id in ADVERTISED_BY_HARNESS:
+        by_backend.setdefault(getattr(backends, harness_name), set()).add(line_id)
+    return frozenset(by_backend.get(backend, ()))
+
+
+def _card_lines(
+    backend: str,
+    specs: Tuple[_LineSpec, ...],
+    init: Optional[Mapping[str, object]] = None,
+) -> Tuple[CardLine, ...]:
     """Every line of *specs* for *backend*, in server order.
 
     Membership decides first and the declared table only ever SOFTENS a negative:
@@ -889,12 +932,20 @@ def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, .
     demonstrated the capability keeps its available mark whatever the table says.
     That ordering is what stops a stale entry from withdrawing a real capability;
     the entry being stale at all is separately a test failure.
+
+    With *init*, a member line in :data:`ADVERTISED_BY_HARNESS` also needs its
+    handshake field. A line that field withdraws is measured: the session's own
+    handshake is the measurement.
     """
     declared = _unmeasured_lines(backend)
+    gated = _gated_lines(backend) if init is not None else frozenset()
     produced = []
     for spec in specs:
-        available = _holds(backend, spec)
-        entry = None if available else declared.get(spec.id)
+        held = _holds(backend, spec)
+        available = held
+        if held and spec.id in gated:
+            available = _advertised(init or {}, ADVERTISED_FIELD_BY_LINE[spec.id])
+        entry = None if held else declared.get(spec.id)
         produced.append(
             CardLine(
                 id=spec.id,
@@ -906,8 +957,13 @@ def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, .
     return tuple(produced)
 
 
-def card_for(backend: str) -> BackendCard:
+def card_for(backend: str, init: Optional[Mapping[str, object]] = None) -> BackendCard:
     """The card for *backend*, complete for any id -- known to this build or not.
+
+    *init* is a live session's ``initialize`` result. Given one, a line the runtime
+    gates on a handshake field (:data:`ADVERTISED_BY_HARNESS`) is available only
+    when membership says so AND that handshake carries the field. Without one the
+    card is membership alone, which is what ``GET /api/acp-backends`` serves.
 
     Total: no raise, no I/O, no dependence on a live session. An id outside every
     set answers False on every capability line and ``unverified`` on tool
@@ -925,8 +981,8 @@ def card_for(backend: str) -> BackendCard:
     return BackendCard(
         backend=backend,
         policy_id=_policy_id(backend),
-        capabilities=_card_lines(backend, USER_FACING_LINES),
-        details=_card_lines(backend, DETAIL_LINES),
+        capabilities=_card_lines(backend, USER_FACING_LINES, init),
+        details=_card_lines(backend, DETAIL_LINES, init),
         security_notes=tuple(spec.id for spec in SECURITY_LINES if _holds(backend, spec)),
         operator_notes=tuple(spec.id for spec in OPERATOR_LINES if _holds(backend, spec)),
         tool_approval=backends.routing_for(backend).value,

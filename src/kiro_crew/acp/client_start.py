@@ -52,7 +52,6 @@ from kiro_crew.acp.client_spawn_env import (
     kiro_cli_not_found_message,
 )
 from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
-from kiro_crew.acp.client_turn_control import steering_advertised
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
@@ -85,6 +84,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
+    steering_advertised,
 )
 from kiro_crew.agent import (
     DerivedSpecSnapshot,
@@ -816,6 +816,7 @@ async def _initialize_session(self: AcpClient) -> None:
     self._agent_version = agent_version_from_init(init_resp)
     self._agent_version_read = True
     self._steering_advertised = steering_advertised(init_resp)
+    self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
     self._note_pi_adapter_version()
     self._note_goose_version()
     # Copilot only: a release other than the verified one is refused here, before

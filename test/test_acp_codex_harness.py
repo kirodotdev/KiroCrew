@@ -37,6 +37,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_card_handshake_fields import live_init
 
 from kiro_crew.acp.client import (
     CLIENT_NAME,
@@ -1154,9 +1155,10 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
 
 
 def _handle_on(backend: str) -> AcpSessionHandle:
-    """A handle whose runtime names *backend* -- the only thing these answers read."""
+    """A handle whose runtime names *backend*, on codex-acp 2.2.2's live handshake."""
     rt = MagicMock()
     rt.acp_backend = backend
+    rt.initialize_result = live_init("codex/steering-live.jsonl")
     return AcpSessionHandle("s1", asyncio.Queue(), rt)
 
 

@@ -1439,6 +1439,11 @@ class AcpSessionProvider(LLMProvider):
         return self._handle.agent_version
 
     @property
+    def initialize_result(self) -> dict:
+        """The backing process's ``initialize`` result — see :attr:`AcpSessionHandle.initialize_result`."""
+        return self._handle.initialize_result
+
+    @property
     def _session_id(self) -> str:
         """Session ID (AcpClient-compatible attribute)."""
         return self._handle.session_id

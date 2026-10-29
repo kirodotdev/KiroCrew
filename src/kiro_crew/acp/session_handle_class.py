@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
+    steering_advertised,
 )
 from kiro_crew.recovery.ladder import InfraError
 
@@ -840,14 +841,19 @@ class AcpSessionHandle:
         ``ACP_BACKENDS_STEERING_REQUEST``, read from the runtime's own backend id.
         The first is kiro-cli's ``_session/steer``, the same answer, from the same
         table, that ``AcpClient.supports_steer`` gives; the second is codex-acp's
-        ``_session/steering``, which only this handle speaks. A capability is
-        granted by opt-in membership, so a host the runtime learns to drive does
-        not inherit an extension it never demonstrated: answering True for one
-        would advertise the steer affordance and then meet the user's mid-turn
-        correction with ``-32601``.
+        ``_session/steering``, which only this handle speaks, and only when the
+        process's handshake advertised it (``_meta.steering.supported: true``). A
+        capability is granted by opt-in membership, so a host the runtime learns to
+        drive does not inherit an extension it never demonstrated: answering True
+        for one would advertise the steer affordance and then meet the user's
+        mid-turn correction with ``-32601``.
         """
         backend = self._runtime.acp_backend
-        return backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
+        if backend in ACP_BACKENDS_STEER:
+            return True
+        return backend in ACP_BACKENDS_STEERING_REQUEST and steering_advertised(
+            self.initialize_result
+        )
 
     @property
     def supports_steer_retract(self) -> bool:
@@ -915,6 +921,12 @@ class AcpSessionHandle:
         session: every handle on one runtime reports the same value.
         """
         return self._runtime.agent_version
+
+    @property
+    def initialize_result(self) -> dict:
+        """The shared process's ``initialize`` result (``{}`` until its handshake)."""
+        init = getattr(self._runtime, "initialize_result", None)
+        return init if isinstance(init, dict) else {}
 
     @property
     def config_options(self) -> list[dict[str, Any]]:

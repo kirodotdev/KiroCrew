@@ -220,6 +220,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_wait_for_response": ("function", True, "87f499e313b4", "session_handle_lifecycle"),
     "_working_tool_bound_reached": ("function", False, "c7051eec1093", "session_handle_watchdog"),
     "agent_version": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "initialize_result": ("property", False, "44dc9acb7120", "session_handle_class"),
     "answer_elicitation": ("function", True, "2fcb1ac189fa", "session_handle_elicitation"),
     "apply_session_permission_routing": (
         "function",
