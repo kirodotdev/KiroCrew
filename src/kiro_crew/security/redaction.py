@@ -56,6 +56,7 @@ from .redaction_entropy import (  # noqa: F401
     _PLANTUML_SOURCE_CAP,
     _RUN_PIECE_RES,
     _SECRET_KEY_LEN,
+    _SHAREPOINT_LOCATOR_RE,
     _bare_secret_window_starts,
     _contains_bare_secret,
     _contains_fixed_credential,
@@ -63,6 +64,7 @@ from .redaction_entropy import (  # noqa: F401
     _is_code_literal,
     _looks_like_secret_key,
     _plantuml_source,
+    _sharepoint_locator_digest,
     _text_contains_bare_secret,
 )
 from .redaction_patterns import _is_json_object_segment  # noqa: F401
@@ -84,9 +86,15 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
         _IN_DIAGRAM_SCAN.set(previous)
 
 
-def _document_link_spans(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
-    spans = []
+def _document_link_spans(
+    text: str, attested_sharepoint_digests: frozenset[str] = frozenset()
+) -> list[tuple[int, int]]:
+    """Return fixed public-link and boundary-attested SharePoint locator spans."""
+    spans = [
+        match.span()
+        for match in _SHAREPOINT_LOCATOR_RE.finditer(text)
+        if _sharepoint_locator_digest(match) in attested_sharepoint_digests
+    ]
     budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
@@ -848,7 +856,12 @@ def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     return "".join(parts)
 
 
-def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[str, list[str]]:
+def redact_credentials(
+    text: str,
+    *,
+    defer_token_param: bool = False,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
+) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
@@ -861,8 +874,16 @@ def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[s
     a value an earlier pass already partly claimed is still redacted here, and
     every other pass still runs. With the empty default prefix set the output is
     byte-identical to a plain call.
+
+    ``attested_sharepoint_digests`` is a pure, immutable snapshot supplied by a
+    gateway boundary. The empty default keeps non-gateway and cold-load callers
+    fail closed under ordinary markerless credential redaction.
     """
-    spans, warnings, _rules = _credential_redaction_plan(text, defer_token_param=defer_token_param)
+    spans, warnings, _rules = _credential_redaction_plan(
+        text,
+        defer_token_param=defer_token_param,
+        attested_sharepoint_digests=attested_sharepoint_digests,
+    )
     if not spans:
         return text, warnings
     return _splice(text, spans), warnings
@@ -971,6 +992,7 @@ def _credential_redaction_plan(
     *,
     defer_token_param: bool = False,
     keep_sri_digests: bool = True,
+    attested_sharepoint_digests: frozenset[str] = frozenset(),
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
 
@@ -1132,7 +1154,7 @@ def _credential_redaction_plan(
         # never pays for either. The digest lookup is by exact span, so a text of
         # many digests costs one set probe per run, not one pass over them all.
         if link_spans is None:
-            link_spans = _document_link_spans(text)
+            link_spans = _document_link_spans(text, attested_sharepoint_digests)
             if keep_sri_digests:
                 digest_spans = _sri_digest_spans(text)
         if (m.start(), run_end) in digest_spans or any(

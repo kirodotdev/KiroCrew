@@ -16,7 +16,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -245,6 +245,21 @@ class CredentialPolicy(Protocol):
         companion supplies its own trusted-tenant host list.  The set is NEVER
         sourced from ``config.json`` — an agent-writable exemption would be a hole
         in the redaction ceiling, so the companion adapter is the only supplier.
+        """
+        ...
+
+    def provider_generated_sharepoint_fields(
+        self,
+    ) -> "Dict[Tuple[str, str], FrozenSet[str]]":
+        """Trusted MCP result fields that may mint SharePoint locator attestations.
+
+        Keys are exact ``(server, tool)`` identities resolved by the ACP gateway;
+        values are exact dotted JSON paths to scalar strings the provider generated.
+        Paths traverse provider-result object fields and envelope lists only. The gateway
+        additionally requires HTTPS, a valid SharePoint sharing route and item id, exact
+        membership in :meth:`exempt_exact_hosts`, and a complete scan proving absence
+        from the same call's input. Public default is empty. A pre-method or failing companion
+        also earns no attestation.
         """
         ...
 

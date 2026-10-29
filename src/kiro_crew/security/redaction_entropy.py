@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import bisect
 import contextvars
+import hashlib
 import math
 import re
 import zlib
@@ -730,6 +731,20 @@ _DOCUMENT_LINK_RE = re.compile(
     r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
     r")/?(?![A-Za-z0-9+/_-])"
 )
+_SHAREPOINT_LOCATOR_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])https://"
+    r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.sharepoint\.com))"
+    r"(?P<path>/:[A-Za-z]:/s/[A-Za-z0-9._~%-]{1,128}/(?P<item>[EI][A-Za-z0-9_-]{45}))"
+    r"(?=$|[?&#\s<>|)\]}'\".,;:!?])",
+    re.IGNORECASE,
+)
+
+
+def _sharepoint_locator_digest(match: re.Match[str]) -> str:
+    canonical = match.group("host").lower() + match.group("path")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 _PLANTUML_ALPHABET = {
     c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
 }

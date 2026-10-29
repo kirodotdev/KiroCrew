@@ -642,7 +642,7 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         mcp_server_name_cache=self._tool_call_mcp_server,
         tool_name_cache=self._tool_call_tool_name,
         harness_tool_name_cache=self._tool_call_harness_tool_name,
-        identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
+        identity_unreadable_cache=self._identity_unreadable_cache_for_permission(),
         # ORIGIN-BOUND provenance: cache entries are keyed by the
         # emitting frame's sessionId, so a child cannot replay a consumed
         # parent toolCallId to inherit trusted params for a different

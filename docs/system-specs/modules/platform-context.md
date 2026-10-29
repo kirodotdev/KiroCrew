@@ -57,7 +57,7 @@ omit the policy.
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
-| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
+| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction, all exemption and provider-field sets empty) | internal token regexes + trusted-tenant hosts + exact provider-generated SharePoint result fields |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
@@ -798,6 +798,7 @@ Wired sites:
   `frozenset()` — the empty set means MORE redaction (every host runs the
   heuristics), the safe direction, and stricter than any companion-supplied list
   could be; NO logging on the degrade path (runs inside the stdio MCP servers).
+- Provider-generated SharePoint locator fields (`CredentialPolicy.provider_generated_sharepoint_fields()`): a mapping from exact `(MCP server, tool)` identity to exact dotted paths ending at scalar string leaves. Paths traverse provider-result object fields and envelope lists only. The public default is `{}`. The ACP gateway reads it only after the call identity has resolved through its origin-bound cache and the complete raw input for that same call remains available. A declared path is not sufficient: the candidate must be HTTPS, use the closed SharePoint sharing route and item-id grammar, name an exact member of `exempt_exact_hosts()`, and not echo a locator from the call input. A pre-method adapter, malformed mapping, absent identity-readability key, unreadable or unresolved identity, absent or incomplete raw input, or any exception earns no attestation. Every shared-runtime ACP harness records the explicit readability verdict; the public policy still supplies no provider fields, and enabling a production provider remains an explicit maintainer decision backed by companion evidence. The gateway persists only canonical locator digests in the agent-hidden registry.
 - Pass-4 token-parameter URL prefixes
   (`CredentialPolicy.token_param_exempt_url_prefixes()`) — redaction pass 4
   redacts every `token=` URL value by name. It skips only a literal `?token=`

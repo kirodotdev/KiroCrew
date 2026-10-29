@@ -569,6 +569,7 @@ def test_the_session_handle_names_the_workspace_only_when_its_runtime_attached_i
             _tool_call_tool_name={"s|tc-1": "run_command"},
             _tool_call_harness_tool_name={},
             _identity_unreadable_cache_for_wire=lambda: None,
+            _identity_unreadable_cache_for_permission=lambda: None,
             _session_id="s",
             _runtime=SimpleNamespace(acp_backend="kas", _remote_workspace=remote_workspace),
             _permission_options={},
