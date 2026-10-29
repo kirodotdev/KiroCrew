@@ -1144,7 +1144,7 @@ def check_policy_channel(channel: str) -> None:
     The one channel-pin check every wheel install passes: :func:`apply_wheel_update`
     enforces it under the update lock immediately before ``promote`` swaps the
     stable link, whichever route called it (dashboard approve, scheduled
-    auto-apply, ``kirocrew server update``). The earlier reads are advisory, made
+    auto-apply, ``kirocrew update``). The earlier reads are advisory, made
     so a refusal comes before a download and names the policy: the engine's own
     before its preflight, and the approve route's. The
     caller picked *channel* when it read the feed or armed the request; an
