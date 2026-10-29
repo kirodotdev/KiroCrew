@@ -1,12 +1,16 @@
-"""Channel rows of ``kirocrew doctor``: Slack, Discord, WhatsApp, and every other one.
+"""Channel rows of ``kirocrew doctor``: Slack, Discord, WhatsApp, Signal, and every other one.
 
-No token value is ever printed, in whole or in part.
+No token value is ever printed, in whole or in part, and no phone number either.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import urllib.request
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_doctor
@@ -257,6 +261,215 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     print(f"  dm policy:   {wa.dm_policy}")
 
 
+#: Bound on ``signal-cli --version``. A JVM build takes a second or two to start;
+#: a doctor run must never hang on a wedged binary, so past this it is reported
+#: as unresponsive rather than waited on.
+SIGNAL_VERSION_TIMEOUT_S = 15.0
+
+#: The version probe's process runner, bound here so a test can inject a result
+#: without patching ``subprocess.run`` process-wide or needing a real binary.
+_run = subprocess.run
+
+
+def _signal_needs_java(cli_path: str) -> bool:
+    """Whether *cli_path* is the JVM launcher script rather than the native build.
+
+    The upstream JVM distribution ships ``bin/signal-cli`` as a shell script
+    (``#!``) that starts ``java``; the Linux native build is one compiled
+    executable. Two bytes answer it without running anything.
+    """
+    try:
+        with open(cli_path, "rb") as fh:
+            return fh.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def _java_location() -> str:
+    """The ``java`` the signal-cli launcher would pick, or ``""``.
+
+    The launcher script prefers ``$JAVA_HOME/bin/java`` and falls back to
+    ``java`` on ``PATH``; this follows the same order so the answer matches what
+    the gateway's child would run under the same environment.
+    """
+    java_home = os.environ.get("JAVA_HOME", "").strip()
+    if java_home:
+        candidate = Path(java_home) / "bin" / "java"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("java") or ""
+
+
+def _signal_cli_version(cli_path: str) -> tuple[str, str]:
+    """``(version, problem)`` from ``signal-cli --version``; exactly one is set.
+
+    Bounded by :data:`SIGNAL_VERSION_TIMEOUT_S` and run with no stdin, so it can
+    neither hang nor wait on input. ``--version`` opens no account and touches
+    no network.
+    """
+    try:
+        proc = _run(
+            [cli_path, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=SIGNAL_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "", f"no answer within {SIGNAL_VERSION_TIMEOUT_S:.0f}s"
+    except OSError as exc:
+        return "", f"could not run it ({exc.strerror or type(exc).__name__})"
+    out = (proc.stdout or "").strip()
+    if proc.returncode == 0 and out:
+        return out.splitlines()[0][:120], ""
+    lines = [line for line in (proc.stderr or proc.stdout or "").splitlines() if line.strip()]
+    reason = lines[-1].strip()[:120] if lines else "no output"
+    return "", f"exited {proc.returncode}: {reason}"
+
+
+def _signal_data_dir() -> Path:
+    """signal-cli's default data directory, resolved the way signal-cli does.
+
+    ``$XDG_DATA_HOME/signal-cli``, else ``~/.local/share/signal-cli``. The
+    gateway passes no ``--data-dir``, so this is the store the channel opens.
+    """
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "signal-cli"
+
+
+def _signal_local_accounts(data_dir: Path) -> set[str] | None:
+    """Every number and ACI signal-cli's local ``accounts.json`` lists.
+
+    ``None`` when there is no readable store. One file read: no subprocess, no
+    network, and no contention for the account lock a running gateway holds.
+    """
+    from kiro_crew.signal_cli.client import normalize_identifier
+
+    try:
+        raw = json.loads((data_dir / "data" / "accounts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entries = raw.get("accounts") if isinstance(raw, dict) else None
+    known: set[str] = set()
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict):
+            for key in ("number", "uuid"):
+                if ident := normalize_identifier(entry.get(key)):
+                    known.add(ident)
+    return known
+
+
+def _doctor_signal(cfg: KiroCrewConfig, issues: list[str]) -> None:
+    """Report the Signal channel's prerequisites without starting the gateway.
+
+    Everything the channel needs lives outside Kiro Crew -- a signal-cli binary,
+    a Java runtime for its JVM build, an account registered or linked out of
+    band -- and each one fails as silence: the gateway retries a failed start in
+    the background, and the fail-closed allow-list drops messages unanswered.
+
+    The binary comes from the SAME resolver the channel spawns from
+    (``signal_cli/bridge_path.py``), so doctor cannot vouch for a binary the
+    gateway would not run. Every identifier printed goes through
+    ``redact_identifier``: a phone number is personal data.
+    """
+    # Function-local, so the channel package loads only when this section runs.
+    from kiro_crew.signal_cli.bridge_path import (
+        ENV_OVERRIDE,
+        describe_lookup,
+        resolve_bridge_path,
+    )
+    from kiro_crew.signal_cli.client import (
+        account_identifier,
+        coerce_identifier,
+        identifier_problem,
+        normalize_identifier,
+        redact_identifier,
+    )
+    from kiro_crew.signal_cli.transport import allowed_numbers_from_config
+
+    print("\nSignal Integration")
+    section = getattr(cfg, "signal", None)
+    if section is None or not getattr(section, "enabled", False):
+        print("  status:      ⏭  not enabled (optional)")
+        print("  setup:       install signal-cli, register or link it, then set")
+        print("               signal.enabled, signal.account and signal.allowed_numbers")
+        return
+
+    cli_path = resolve_bridge_path()
+    if cli_path:
+        print(f"  signal-cli:  ✅ {cli_path}")
+        version, problem = _signal_cli_version(cli_path)
+        if version:
+            print(f"  version:     ✅ {version}")
+        else:
+            print(f"  version:     ❌ {problem}")
+            print("               The channel cannot start until signal-cli runs.")
+            issues.append("signal: signal-cli does not run")
+        if _signal_needs_java(cli_path):
+            java = _java_location()
+            if java:
+                print(f"  java:        ✅ {java} (JVM build)")
+            else:
+                print("  java:        ❌ not found, and this signal-cli is the JVM build")
+                print("               Fix: install the Java its release names, set JAVA_HOME,")
+                print("               or use the Linux native build")
+                issues.append("signal: java missing")
+    else:
+        print("  signal-cli:  ❌ not found, so the enabled channel cannot start")
+        print(f"               {describe_lookup()}")
+        print(f"               Fix: install signal-cli, or set {ENV_OVERRIDE} to its absolute path")
+        issues.append("signal: signal-cli not found")
+
+    raw_account = getattr(section, "account", "")
+    account = account_identifier(raw_account)
+    account_problem = identifier_problem(raw_account)
+    if not account:
+        print("  account:     ❌ signal.account is not set")
+        issues.append("signal: account not set")
+    elif account_problem:
+        print(f"  account:     ❌ {redact_identifier(account)} is {account_problem}")
+        issues.append("signal: account malformed")
+    else:
+        print(f"  account:     ✅ {redact_identifier(account)}")
+        data_dir = _signal_data_dir()
+        known = _signal_local_accounts(data_dir)
+        # Warnings, not issues: a store under another user's home or a custom
+        # data dir is legitimate, and signal-cli is the final word at start.
+        if known is None:
+            print(f"  store:       ⚠️  no signal-cli account store at {data_dir}")
+            print("               Register or link the account first (see signal-integration.md)")
+        elif account in known:
+            print("  store:       ✅ account found in signal-cli's local store")
+        else:
+            print(f"  store:       ⚠️  account not listed in {data_dir / 'data' / 'accounts.json'}")
+            print("               Register or link it first, or signal-cli rejects it at start")
+
+    raw_allowed = getattr(section, "allowed_numbers", None)
+    entries = raw_allowed if isinstance(raw_allowed, list) else []
+    bad = [e for e in entries if identifier_problem(e) not in ("", "empty")]
+    usable = [
+        n for n in allowed_numbers_from_config(raw_allowed) or [] if not identifier_problem(n)
+    ]
+    if usable:
+        print(
+            f"  allowed:     ✅ {len(usable)} usable {'entry' if len(usable) == 1 else 'entries'}"
+        )
+    else:
+        print("  allowed:     ❌ no usable allowed_numbers, so every message is rejected")
+        print("               Add your own number or ACI (for Note to Self, the account's own)")
+        issues.append("signal: allowed_numbers empty")
+    if bad:
+        shown = ", ".join(
+            redact_identifier(normalize_identifier(coerce_identifier(e)) or str(e)) for e in bad
+        )
+        print(f"               ❌ {len(bad)} never match (not +E.164 or an ACI): {shown}")
+        issues.append("signal: malformed allowed_numbers")
+
+
 def _doctor_slack(
     cfg: KiroCrewConfig, creds: dict[str, str], has_slack: bool, issues: list[str]
 ) -> None:
@@ -310,13 +523,13 @@ def _doctor_other_channels(cfg: KiroCrewConfig, creds: dict[str, str], issues: l
     try:
         from kiro_crew.channels import channel_readiness
 
-        # Slack, Discord and WhatsApp each have a dedicated section above reporting
-        # the same credential AND the live connection, so listing them again here
-        # would name one fault twice in the closing issue line.
+        # Slack, Discord, WhatsApp and Signal each have a dedicated section above
+        # reporting the same prerequisites, so listing them again here would name
+        # one fault twice in the closing issue line.
         rows = [
             row
             for row in channel_readiness(cfg, creds)
-            if row.channel_type not in ("slack", "discord", "whatsapp")
+            if row.channel_type not in ("slack", "discord", "whatsapp", "signal")
         ]
     except Exception:
         rows = []

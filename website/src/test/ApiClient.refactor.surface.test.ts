@@ -188,6 +188,7 @@ const API_KEY_ORDER = [
   'getDiscordConfig', 'saveDiscordConfig', 'getTelegramConfig', 'saveTelegramConfig',
   'getWeComConfig', 'getFeishuConfig', 'saveFeishuConfig', 'saveWeComConfig',
   'getWebexConfig', 'saveWebexConfig', 'getIMessageConfig', 'saveIMessageConfig',
+  'getSignalConfig', 'saveSignalConfig',
   'getGovernanceChannels', 'getTeamsConfig', 'saveTeamsConfig', 'getWeixinConfig',
   'saveWeixinConfig', 'weixinQrStart', 'weixinQrStatus', 'getWhatsAppConfig',
   'saveWhatsAppConfig', 'whatsAppQrStart', 'whatsAppQrStatus', 'whatsAppUnlink',

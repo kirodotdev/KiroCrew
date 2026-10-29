@@ -299,6 +299,7 @@ _SECTION_CHANNELS = {
     "discord": sections.DiscordConfig,
     "webex": sections.WebexConfig,
     "imessage": sections.IMessageConfig,
+    "signal": sections.SignalConfig,
     "teams": sections.TeamsConfig,
     "wecom": sections.WeComConfig,
     "feishu": sections.FeishuConfig,

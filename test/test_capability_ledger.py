@@ -242,6 +242,7 @@ class TestCorrectedDeclarations:
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES
         from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
         from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
+        from kiro_crew.signal_cli.transport import SIGNAL_CAPABILITIES
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
         from kiro_crew.teams.transport import TEAMS_CAPABILITIES
         from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
@@ -275,6 +276,7 @@ class TestCorrectedDeclarations:
             TELEGRAM_CAPABILITIES,
             WEIXIN_CAPABILITIES,
             IMESSAGE_CAPABILITIES,
+            SIGNAL_CAPABILITIES,
             WHATSAPP_CAPABILITIES,
         ):
             assert caps.max_message_bytes == 0
@@ -385,6 +387,7 @@ class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
     def test_no_other_transport_declares_it(self) -> None:
         from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
         from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
+        from kiro_crew.signal_cli.transport import SIGNAL_CAPABILITIES
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
         from kiro_crew.teams.transport import TEAMS_CAPABILITIES
         from kiro_crew.webex.transport import WEBEX_CAPABILITIES
@@ -399,6 +402,7 @@ class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
             "wecom": WECOM_CAPABILITIES,
             "weixin": WEIXIN_CAPABILITIES,
             "imessage": IMESSAGE_CAPABILITIES,
+            "signal": SIGNAL_CAPABILITIES,
             "whatsapp": WHATSAPP_CAPABILITIES,
             "feishu": FEISHU_CAPABILITIES,
         }

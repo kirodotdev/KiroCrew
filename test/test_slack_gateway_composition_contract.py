@@ -759,6 +759,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
         ),
         (
+            "_hoist_signal",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
             "_hoist_teams",
             "method",
             "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
@@ -1277,6 +1282,7 @@ def test_no_owner_reads_a_hoisted_channel_attribute() -> None:
         "discord",
         "webex",
         "imessage",
+        "signal",
         "teams",
     )
     offenders = [

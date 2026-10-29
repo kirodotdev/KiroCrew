@@ -10,23 +10,23 @@ platform could support it.
 
 ## The matrix
 
-| | Slack | Discord | Telegram | Teams | Webex | WeCom | Weixin | iMessage | WhatsApp | Feishu |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Streams the reply as it is written | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
-| Sends a file back to you | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
-| Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
-| Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-| Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
-| Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
-| Parses `@everyone`-style mentions | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | Slack | Discord | Telegram | Teams | Webex | WeCom | Weixin | iMessage | Signal | WhatsApp | Feishu |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Streams the reply as it is written | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Sends a file back to you | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 2000 chars | 4096 chars | 4000 chars |
+| Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | 300s | — |
+| Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Parses `@everyone`-style mentions | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Reading the rows
 
@@ -79,11 +79,11 @@ address the agent prints uncopyable.
 
 ## Choices on a channel with no buttons
 
-Five channels show `0` tappable choices: WeCom, Weixin, iMessage, WhatsApp and
-Feishu. On four of them the choices still arrive in full. WeCom, Weixin, iMessage
-and Feishu turn the whole `[OPTIONS:]` list into numbered lines in the message
-body, and you answer by typing the number as an ordinary message — nothing to
-configure, nothing to tap, nothing dropped with the trailer. It is the same helper
+Six channels show `0` tappable choices: WeCom, Weixin, iMessage, Signal, WhatsApp
+and Feishu. On five of them the choices still arrive in full. WeCom, Weixin,
+iMessage, Signal and Feishu turn the whole `[OPTIONS:]` list into numbered lines
+in the message body, and you answer by typing the number as an ordinary message —
+nothing to configure, nothing to tap, nothing dropped with the trailer. It is the same helper
 that handles overflow on a channel that does have buttons
 (`render_options_as_text` numbers every choice through `format_overflow`), so the
 numbering reads the same everywhere.
@@ -94,20 +94,21 @@ numbering it, so a question whose choices live only in that trailer arrives with
 the choices missing. Nothing you can configure changes it today.
 
 Tool approval is a separate question from choices, and it takes a different path.
-WeCom, Weixin, iMessage and Feishu install no approval decider at all, so in
-`interactive` mode a tool needing permission is refused rather than asked about.
-WhatsApp does install one, so an approval — unlike a choice list — does reach you,
-as a numbered prompt with the usual 300-second window.
+WeCom, Weixin, iMessage and Feishu install no approval decider at all, so
+in `interactive` mode a tool needing permission is refused rather than asked about.
+WhatsApp and Signal do install one, so an approval — unlike a choice list on
+WhatsApp — does reach you, as a numbered prompt you answer by typing `1`, `2` or
+`3`, with the usual 300-second window.
 
 ## Approval timeouts
 
-Only six channels ask you at all. Slack, Discord, Telegram, Teams, Webex and
-WhatsApp install an approval decider, so a tool that needs permission produces a
-prompt and waits:
+Only seven channels ask you at all. Slack, Discord, Telegram, Teams, Webex,
+WhatsApp and Signal install an approval decider, so a tool that needs permission
+produces a prompt and waits:
 
 - **Slack: `agent.tool_approval_timeout_secs`** (default 600 seconds), read
   through the same resolver the dashboard uses.
-- **Discord, Telegram, Teams, Webex, WhatsApp: 300 seconds.**
+- **Discord, Telegram, Teams, Webex, WhatsApp, Signal: 300 seconds.**
 
 An unanswered prompt is **denied**, never approved — the timeout never means yes.
 
@@ -166,7 +167,8 @@ guide: [Slack](slack-integration.md), [Discord](discord-integration.md),
 [Telegram](telegram-integration.md), [Teams](teams-integration.md),
 [Webex](webex-integration.md), [WeCom](wecom-integration.md),
 [Weixin](weixin-integration.md), [iMessage](imessage-integration.md),
-[WhatsApp](whatsapp-integration.md), [Feishu](feishu-integration.md).
+[Signal](signal-integration.md), [WhatsApp](whatsapp-integration.md),
+[Feishu](feishu-integration.md).
 
 The contracts these values come from are described in
 [`docs/system-specs/modules/messaging.md`](https://github.com/kirodotdev/KiroCrew/blob/main/docs/system-specs/modules/messaging.md),

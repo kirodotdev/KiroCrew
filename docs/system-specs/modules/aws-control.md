@@ -2499,7 +2499,7 @@ recorded as an outbound request the deployment makes rather than suppressed.
 the backend starts, the supervisor writes `<config dir>/config.json` with every
 channel section's `enabled` false, merged over anything already there so a shipped
 file cannot outvote it, and the launch environment carries no channel credential.
-Both halves are required and neither covers the other's case: `imessage` and
+Both halves are required and neither covers the other's case: `imessage`, `signal` and
 `whatsapp` carry no credential in the gateway's channel registry, so they start on
 their config flag alone, and `slack` has no `enabled` key at all, so it starts on
 its tokens alone. Both name lists are ratcheted against that registry in both

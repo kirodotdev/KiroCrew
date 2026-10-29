@@ -889,6 +889,82 @@ class IMessageConfig:
 
 
 @dataclass
+class SignalConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Signal channel. Drives a local signal-cli (Java) over "
+            "JSON-RPC on stdio, so there is no bot token and no hosted relay. "
+            "signal-cli must already be registered as its own number or linked "
+            "as a secondary device of your account. The turn itself still goes "
+            "to the configured model provider, as on any channel.",
+            tags=["signal"],
+        ),
+    )
+    account: str = field(
+        default="",
+        metadata=_meta(
+            "Account",
+            "The signal-cli account to run as, as an E.164 phone number "
+            "(e.g. '+447700900123'): a dedicated bot number you registered, or "
+            "your own number when signal-cli is linked as a secondary device "
+            "(then you talk to the agent through Note to Self).",
+            tags=["signal"],
+        ),
+    )
+    allowed_numbers: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Numbers",
+            "E.164 phone numbers or Signal ACI UUIDs permitted to message the "
+            "agent. Empty = deny all (fail closed). To chat through Note to "
+            "Self on a linked device, list the account's own number here.",
+            tags=["signal"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a conversation's context passes this, prompt the user to "
+            "/compact or /new instead of auto-compacting.",
+            tags=["signal"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this, even without a user "
+            "decision, so the window never overflows.",
+            tags=["signal"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["signal"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Shared normalization: clamp both thresholds and guarantee soft <= hard
+        # so a misconfig can't make the soft nudge unreachable. Mirrors
+        # IMessageConfig.
+        self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
+            self.soft_threshold_pct, self.hard_threshold_pct
+        )
+        self.account = (self.account or "").strip()
+
+
+@dataclass
 class TeamsConfig:
     enabled: bool = field(
         default=False,

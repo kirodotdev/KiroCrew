@@ -34,9 +34,10 @@ vi.mock('../pages/settings/FeishuPanel', () => ({ FeishuPanel: () => <div data-t
 vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-testid="teams-panel" /> }))
 vi.mock('../pages/settings/WeixinPanel', () => ({ WeixinPanel: () => <div data-testid="weixin-panel" /> }))
 vi.mock('../pages/settings/IMessagePanel', () => ({ IMessagePanel: () => <div data-testid="imessage-panel" /> }))
+vi.mock('../pages/settings/SignalPanel', () => ({ SignalPanel: () => <div data-testid="signal-panel" /> }))
 
 const govChannelsMock = vi.fn().mockResolvedValue({
-  slack: true, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true,
+  slack: true, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true, signal: true,
 })
 
 vi.mock('../api/client', () => ({
@@ -49,6 +50,7 @@ vi.mock('../api/client', () => ({
     getFeishuConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWeixinConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getIMessageConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
+    getSignalConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWhatsAppConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     // Governance policy map; default all-permitted so the existing (non-governance)
     // tests are unaffected. Governance-specific tests override it per case.
@@ -63,7 +65,7 @@ vi.mock('../hooks/useContainerWidth', () => ({
   useContainerWidth: () => [{ current: null }, mockWidth],
 }))
 
-import { ChannelsPanel } from '../pages/settings/ChannelsPanel'
+import { ChannelsPanel, CHANNEL_KEYS } from '../pages/settings/ChannelsPanel'
 
 function makeUi(route = '/settings?tab=channels') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -88,7 +90,7 @@ beforeEach(() => {
   slackMountCount = 0
   govChannelsMock.mockReset()
   govChannelsMock.mockResolvedValue({
-    slack: true, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true,
+    slack: true, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true, signal: true,
   })
 })
 
@@ -131,12 +133,27 @@ describe('ChannelsPanel — wide (two-pane)', () => {
     expect(screen.getByRole('option', { name: /Slack/ })).toHaveAttribute('aria-selected', 'false')
   })
 
+  it('lists Signal between iMessage and WhatsApp and routes ?channel=signal to its panel', async () => {
+    mockWidth = 1000
+    renderAt('/settings?tab=channels&channel=signal')
+    expect(await screen.findByTestId('signal-panel')).toBeInTheDocument()
+    const names = screen.getAllByRole('option').map(o => o.textContent ?? '')
+    const at = (brand: string) => names.findIndex(n => n.startsWith(brand))
+    expect(at('Signal')).toBe(at('iMessage') + 1)
+    expect(at('WhatsApp')).toBe(at('Signal') + 1)
+    expect(screen.getByRole('option', { name: /Signal/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('exports signal among the channel keys', () => {
+    expect(CHANNEL_KEYS).toContain('signal')
+  })
+
   it('shows per-channel connection status from the config endpoints', async () => {
     mockWidth = 1000
     renderAt()
     expect(await screen.findByText('Connected')).toBeInTheDocument()       // slack
     expect(await screen.findByText('Not connected')).toBeInTheDocument()   // discord
-    expect((await screen.findAllByText('Needs setup')).length).toBe(7)     // telegram, webex, feishu, teams, weixin, imessage, whatsapp
+    expect((await screen.findAllByText('Needs setup')).length).toBe(8)     // telegram, webex, feishu, teams, weixin, imessage, signal, whatsapp
     expect(await screen.findByText('Status unavailable')).toBeInTheDocument() // wecom (fetch error)
   })
 })
@@ -222,7 +239,7 @@ describe('ChannelsPanel — channels governance', () => {
     // line) and its detail pane renders the disabled state, never the form.
     mockWidth = 1000
     govChannelsMock.mockResolvedValue({
-      slack: true, discord: false, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true,
+      slack: true, discord: false, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true, signal: true,
     })
     renderAt('/settings?tab=channels&channel=discord')
 
@@ -236,7 +253,7 @@ describe('ChannelsPanel — channels governance', () => {
   it('greys Slack too when denied (Slack IS governed)', async () => {
     mockWidth = 1000
     govChannelsMock.mockResolvedValue({
-      slack: false, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true,
+      slack: false, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true, signal: true,
     })
     renderAt('/settings?tab=channels&channel=slack')
 
@@ -255,7 +272,7 @@ describe('ChannelsPanel — channels governance', () => {
   it('shows "unavailable" (not the form) for a null (eval-error) channel', async () => {
     mockWidth = 1000
     govChannelsMock.mockResolvedValue({
-      slack: true, discord: null, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true,
+      slack: true, discord: null, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true, signal: true,
     })
     renderAt('/settings?tab=channels&channel=discord')
     expect(await screen.findByText(/policy status unavailable/)).toBeInTheDocument()

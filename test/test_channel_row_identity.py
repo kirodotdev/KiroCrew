@@ -47,6 +47,7 @@ _CHANNELS = [
     ("discord", "kiro_crew.discord.transport_dispatch"),
     ("feishu", "kiro_crew.feishu.transport_dispatch"),
     ("imessage", "kiro_crew.imessage.transport_dispatch"),
+    ("signal", "kiro_crew.signal_cli.transport_dispatch"),
     ("teams", "kiro_crew.teams.transport_dispatch"),
     ("webex", "kiro_crew.webex.transport_dispatch"),
     ("wecom", "kiro_crew.wecom.transport_dispatch"),
