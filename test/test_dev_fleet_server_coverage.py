@@ -24,9 +24,11 @@ doubles more than one module reads live in ``dev_fleet_server_coverage_helpers.p
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import sys
 import time
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1149,6 +1151,34 @@ async def test_disk_stale_cache_coalesces_one_refresh(monkeypatch):
     )
     assert fleet_state._DISK == {"status": "done", "total_mb": 7, "per": {"wt-a": 7}}
     assert started == 1
+
+
+@pytest.mark.asyncio
+async def test_disk_refresh_task_is_held_until_it_finishes(monkeypatch):
+    """The loop keeps only a weak reference, so the module must hold the refresh."""
+    monkeypatch.setattr(fleet_state, "_DISK", {"status": "idle", "total_mb": None, "per": {}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", 0.0)
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    release = asyncio.Event()
+
+    async def fake_discover():
+        await release.wait()
+        return [{"path": "/repo/wt-a"}]
+
+    monkeypatch.setattr(repository, "_discover_worktrees", fake_discover)
+    monkeypatch.setattr(runtime, "_trusted_bin", lambda name: "/usr/bin/du")
+    monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "5\t/repo/wt-a", "")))
+
+    assert (await fleet_state._disk())["status"] == "computing"
+    held = getattr(fleet_state, "_DISK_TASKS", set())
+    assert len(held) == 1, "nothing holds the parked disk refresh"
+    ref = weakref.ref(next(iter(held)))
+    gc.collect()
+    assert ref() is not None, "a parked refresh was collected mid-run"
+    release.set()
+    await async_wait_until(lambda: not held, describe=lambda: f"held disk tasks: {len(held)}")
+    assert fleet_state._DISK == {"status": "done", "total_mb": 5, "per": {"wt-a": 5}}
 
 
 @pytest.mark.asyncio

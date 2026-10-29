@@ -412,6 +412,20 @@ async def off_loop(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     return await loop.run_in_executor(subprocess_executor(), partial(fn, *args, **kwargs))
 
 
+#: Provisioning runs started and not awaited. The loop holds only a weak
+#: reference to a running task, so one nothing else holds can be collected
+#: mid-run and leave the provisioning state stuck at "running".
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _run_in_background(coro: Awaitable[Any]) -> asyncio.Task[Any]:
+    """Start *coro* as a task this module holds until it finishes."""
+    task = asyncio.ensure_future(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
 def _require_enabled(
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
@@ -660,7 +674,7 @@ async def _handle_engine_provision(request: web.Request) -> web.Response:
         _engine_state.log = ""
         _engine_state.started = time.time()
     _audit("engine_provision", provision.ENGINE_TAG, "started")
-    asyncio.ensure_future(off_loop(_run_provision))
+    _run_in_background(off_loop(_run_provision))
     return web.json_response({"state": "running"}, status=202)
 
 
@@ -892,7 +906,7 @@ async def _handle_assets_provision(request: web.Request) -> web.Response:
     # Detached: the caller gets 202 immediately. The task is not awaited, so a
     # failure inside it is recorded in the provisioning state (which the UI
     # polls) rather than surfacing as an unhandled exception.
-    asyncio.ensure_future(off_loop(_provision_assets, force))
+    _run_in_background(off_loop(_provision_assets, force))
     return web.json_response({"state": "running"}, status=202)
 
 
