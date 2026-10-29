@@ -1608,6 +1608,17 @@ class AcpSessionProvider(LLMProvider):
         """Process start time (for PID recycle detection)."""
         return getattr(self._runtime, "_start_time", None)
 
+    @property
+    def _mcp_gateway_socket(self) -> str | None:
+        """The runtime's gatewayd socket, read beside ``_pid`` for the abort push.
+
+        ``LLMProvider.runtime_abort_target`` reads ``_client._pid`` and
+        ``_client._mcp_gateway_socket``. After startup the provider's client is
+        this object, so without this property the socket read ``None`` and a hard
+        stop skipped the abort, leaving in-flight pooled tool calls running.
+        """
+        return getattr(self._runtime, "_mcp_gateway_socket", None)
+
     async def refresh_process_tree(self) -> None:
         """Record descendants the runtime started since its last snapshot, before a teardown.
 
