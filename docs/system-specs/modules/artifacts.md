@@ -502,7 +502,7 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
 | `GET` | `/api/artifacts/{slug}/versions/{n}` | Specific version content |
 | `GET` | `/api/artifact-folders` | Folder tree with `item_count` + breadcrumb `path` |
-| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task |
+| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task (at most one in flight per folder: a rename during it queues only the latest name, deleting the folder drops that queued request, and the in-flight task is never cancelled) |
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
