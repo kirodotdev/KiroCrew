@@ -49,7 +49,7 @@ from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
-from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.platform_compat import is_link_or_junction, strip_extended_length_prefix
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.meetings")
@@ -192,7 +192,11 @@ def contain(path: Path, *, operation: str, root: Path | None = None) -> Path:
     # so it flags this resolve — the same false positive suppressed at
     # ``security.is_sensitive_path``'s resolve().
     resolved = path.resolve()  # lgtm[py/path-injection]
-    if not resolved.is_relative_to(base):
+    # Windows' ``\\?\`` prefix folded off both sides first, so a path resolved
+    # mid-replace is not read as an escape. Lexical only.
+    if not strip_extended_length_prefix(resolved).is_relative_to(
+        strip_extended_length_prefix(base)
+    ):
         _audit(operation, str(path), outcome="denied")
         raise MeetingsPathError("path escapes the meetings data directory", status=403)
     return resolved

@@ -383,6 +383,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _win_reparse_refused,
         first_linked_ancestor,
         lstat_is_name_surrogate,
+        names_a_verbatim_only_file,
         open_create_no_reparse,
         open_file_no_reparse,
         pin_directory,

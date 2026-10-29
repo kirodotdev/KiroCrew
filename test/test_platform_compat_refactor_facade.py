@@ -193,7 +193,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         pinned_dir_flags PINNED_TREE_MAX_DEPTH PinnedDirectory pinned_directory
         _win_open_without_following open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
         _WIN_OPEN_ALWAYS _WIN_FILE_ATTRIBUTE_TAG_INFO win_fd_is_link _win_reparse_refused
-        win_open_no_reparse open_create_no_reparse
+        win_open_no_reparse open_create_no_reparse names_a_verbatim_only_file
         """.split()),
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE

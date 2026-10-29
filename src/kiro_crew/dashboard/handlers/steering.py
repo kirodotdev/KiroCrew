@@ -547,6 +547,12 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
         probe_resolved = probe.resolve(strict=True)
     except OSError:
         return False
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe_resolved = strip_extended_length_prefix(probe_resolved)
+    base_resolved = strip_extended_length_prefix(base_resolved)
     return probe_resolved == base_resolved or base_resolved in probe_resolved.parents
 
 

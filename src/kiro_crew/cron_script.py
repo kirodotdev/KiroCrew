@@ -1174,6 +1174,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.json_line import parse_json_object_line  # noqa: F401
     from kiro_crew.loopback_http import loopback_urlopen  # noqa: F401
     from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV  # noqa: F401
+    from kiro_crew.platform_compat import strip_extended_length_prefix  # noqa: F401
     from kiro_crew.port_resolution import resolve_serving_port  # noqa: F401
     from kiro_crew.sandbox import (  # noqa: F401
         _AGENT_DENIED_ENV_KEYS,

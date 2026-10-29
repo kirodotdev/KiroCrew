@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _sel,
         binary_content_is_flagged,
         config_loader,
+        platform_compat,
         read_bounded_json,
         redact,
         redact_for_display,
@@ -96,9 +97,29 @@ def _gate_upload_file(
             None,
             None,
         )
-    resolved = Path(file_path).resolve()
-    allowed_outbox = config_loader.outbox_dir().resolve()
-    allowed_workspace = config_loader.workspace_root().resolve()
+    fold = platform_compat.strip_extended_length_prefix
+    unfolded = Path(file_path).resolve()
+    # The folded path is the one read, so a name only the ``\\?\`` spelling
+    # reaches (a trailing dot, a DOS device) is refused: its plain spelling
+    # names a different file.
+    if platform_compat.names_a_verbatim_only_file(unfolded):
+        _audit_denial(f"verbatim_only_name: {file_path}")
+        return (
+            web.json_response(
+                {
+                    "error": "file_path names a file reachable only by its extended-length path",
+                    "code": "path_not_allowed",
+                },
+                status=403,
+            ),
+            None,
+            None,
+        )
+    # Windows' ``\\?\`` prefix folded off all three (lexically), so one resolve
+    # keeping it is not read as an escape.
+    resolved = fold(unfolded)
+    allowed_outbox = fold(config_loader.outbox_dir().resolve())
+    allowed_workspace = fold(config_loader.workspace_root().resolve())
     if not (resolved.is_relative_to(allowed_outbox) or resolved.is_relative_to(allowed_workspace)):
         _audit_denial(f"path_not_allowed: {file_path}")
         return (

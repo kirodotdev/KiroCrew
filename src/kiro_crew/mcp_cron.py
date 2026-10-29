@@ -1503,6 +1503,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         current_context,
         redact_log_via_context,
     )
+    from kiro_crew.platform_compat import (  # noqa: F401
+        strip_extended_length_prefix,
+    )
     from kiro_crew.sandbox import (  # noqa: F401
         _AGENT_DENIED_ENV_KEYS,
     )

@@ -17,7 +17,11 @@ from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform_compat import RENAME_NOREPLACE_AVAILABLE, rename_noreplace  # noqa: F401
+from kiro_crew.platform_compat import (  # noqa: F401
+    RENAME_NOREPLACE_AVAILABLE,
+    rename_noreplace,
+    strip_extended_length_prefix,
+)
 
 from .parsers import (
     _SLOT_KEY_RE,
@@ -762,8 +766,13 @@ def _contained(child: Path, root: Path) -> bool:
     ``/`` in spec names, but the containment test makes the invariant explicit
     at the point of use rather than implied by a regex three functions away.
     """
+    # Windows' ``\\?\`` prefix folded off both sides first: one ``realpath``
+    # can keep it while the other does not, and the lone prefix would read as an
+    # escape. Lexical only.
+    plain_child = strip_extended_length_prefix(os.path.realpath(child))
+    plain_root = strip_extended_length_prefix(os.path.realpath(root))
     try:
-        Path(os.path.realpath(child)).relative_to(Path(os.path.realpath(root)))
+        Path(plain_child).relative_to(Path(plain_root))
         return True
     except ValueError:
         return False

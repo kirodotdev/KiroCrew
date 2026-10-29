@@ -937,10 +937,16 @@ def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
         return ("", f"cwd resolution failed: {exc}")
     if not os.path.isdir(resolved):
         return ("", "cwd does not exist or is not a directory")
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
     resolved_roots = [os.path.realpath(os.path.expanduser(r)) for r in allowed_roots]
+    # Windows' ``\\?\`` prefix is folded off both sides before the compare:
+    # ``realpath`` can keep it on one operand and not the other, and the lone
+    # prefix would read as an escape. Lexical, so no redirect is blessed.
+    plain_resolved = strip_extended_length_prefix(resolved)
     for root in resolved_roots:
         # ``path_within`` strips a trailing separator before adding one, so a
         # filesystem-root entry (``/``, ``H:\``) admits the directories below it.
-        if sandbox_plan.path_within(resolved, root):
+        if sandbox_plan.path_within(plain_resolved, strip_extended_length_prefix(root)):
             return (resolved, "")
     return ("", f"cwd is not under any allowed root: {allowed_roots}")
