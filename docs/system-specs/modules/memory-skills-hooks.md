@@ -1906,7 +1906,11 @@ past the cap is read, the snapshot names the file with its size and the cap in o
 core `essential-context#oversized-skipped:<template>` note, and the KAS document
 reader and `kiro_launch_documents` skip it with a warning. It is never truncated:
 a file that size could not fit the 64,000-character envelope whole, and a prefix
-would present partial rules as complete. Any other declared source the read refuses
+would present partial rules as complete. A steering document whose `inclusion` value
+is not `always`, `fileMatch`, `manual` or `auto` reads as `always` in the snapshot,
+the KAS document reader and `kiro_launch_documents` alike (`_steering_inclusion`),
+with a warning naming the file, as `steering-and-hooks.md` documents; it never
+refuses the member session. Any other declared source the read refuses
 still refuses the turn; an over-cap declared source, `AGENTS.md` or `SOUL.md` still
 raises, with the file, its size and the cap in bytes in the message, and a non-UTF-8
 steering file still raises. There is no mtime-only content cache or automatic
