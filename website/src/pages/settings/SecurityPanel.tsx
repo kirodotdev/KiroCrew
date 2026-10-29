@@ -5,6 +5,7 @@
  * a sibling owner, and every name callers import from here is re-exported:
  * - `SecurityPanelPosture.tsx`: Live security posture
  * - `SecurityPanelApprovals.tsx`: Auto-approve
+ * - `SecurityPanelSshAgent.tsx`: SSH agent forwarding
  * - `SecurityPanelDeniedCommands.tsx`: Denied commands
  * - `SecurityPanelTailnet.tsx`: Tailnet
  * - `SecurityPanelTrust.tsx`: Third-party apps, Registry trust
@@ -17,7 +18,7 @@ import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ShieldCheck, EyeOff, Terminal, Layers, ExternalLink, Gavel, Gauge, Boxes, BookOpen,
-  Network, GitBranch,
+  Network, GitBranch, KeyRound,
 } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { SettingsSubNav } from '../../components/SettingsSubNav'
@@ -28,6 +29,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtTime, toDate } from '../../i18n/format'
 import { CODE_BASE, PostureSection } from './SecurityPanelPosture'
 import { type KirocrewCfgShape, YoloDurationCard } from './SecurityPanelApprovals'
+import { SshAgentConsentCard } from './SecurityPanelSshAgent'
 import { DeniedCommandsSection } from './SecurityPanelDeniedCommands'
 import { TAILNET_STATE_KEY, TailnetOriginCard } from './SecurityPanelTailnet'
 import { ThirdPartyAppsCard, TrustedRegistriesCard } from './SecurityPanelTrust'
@@ -69,7 +71,7 @@ function DocsSection() {
  * The rail states which is which before any row is read, and the two large
  * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
  */
-type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'layers' | 'governance' | 'docs'
+type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'ssh_agent' | 'layers' | 'governance' | 'docs'
 type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
 
 interface SecuritySectionDef {
@@ -105,6 +107,7 @@ export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   apps: 'pages.settings.securityPanel.third_party_apps_section',
   registries: 'pages.settings.securityPanel.trustedRegistries.section_title_rail',
   redaction: 'pages.settings.securityPanel.redaction_section',
+  ssh_agent: 'pages.settings.securityPanel.ssh_agent_section',
   layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
   governance: 'pages.settings.securityPanel.governance_policy',
   docs: 'pages.settings.securityPanel.documentation',
@@ -128,6 +131,7 @@ const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'apps', icon: <Boxes size={15} />, group: 'yours' },
   { key: 'registries', icon: <GitBranch size={15} />, group: 'yours' },
   { key: 'redaction', icon: <EyeOff size={15} />, group: 'yours' },
+  { key: 'ssh_agent', icon: <KeyRound size={15} />, group: 'yours' },
   { key: 'layers', icon: <Layers size={15} />, group: 'enforced' },
   { key: 'governance', icon: <Gavel size={15} />, group: 'enforced' },
   { key: 'docs', icon: <BookOpen size={15} />, group: 'reference' },
@@ -199,6 +203,9 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
     staleTime: 300_000,
   })
 
+  // The ssh-agent row has no rail summary either: no rail-level read of an
+  // owner-gated GET for every non-owner who opens Security.
+  //
   // NO rail summary for the credential-redaction row, deliberately, and this is a
   // gate decision rather than a design preference. `SettingsSubNav` renders a
   // label and a summary as two adjacent catalog keys, which the render-time i18n
@@ -306,6 +313,11 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
               </SettingsSection>
             )}
             {key === 'redaction' && <RedactionSection />}
+            {key === 'ssh_agent' && (
+              <SettingsSection title={i18nT('pages.settings.securityPanel.ssh_agent_section')}>
+                <SshAgentConsentCard />
+              </SettingsSection>
+            )}
             {key === 'layers' && <LayersSection />}
             {key === 'governance' && <GovernancePolicyViewer />}
             {key === 'docs' && <DocsSection />}

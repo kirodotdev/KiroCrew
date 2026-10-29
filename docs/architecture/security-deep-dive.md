@@ -217,9 +217,13 @@ agent can use the operator's ssh-agent there, including a forwarded one. Under
 `strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
 records consent in the keystone leaf `ssh_auth_sock_consent.json`.
 
-To grant that consent, write `{"enabled": true}` to
-`<config_dir>/ssh_auth_sock_consent.json` from a terminal outside Kiro Crew;
-the next agent that starts picks it up. It applies to every agent whose
+To grant that consent, the dashboard owner presses **Allow** in Settings →
+Security → SSH agent; the owner-gated `POST /api/ssh-agent/consent` writes the
+leaf, the same one-step shape as the paid-AWS consent, and **Withdraw** is its
+`DELETE`. Writing `{"enabled": true}` to `<config_dir>/ssh_auth_sock_consent.json`
+from a terminal outside Kiro Crew works the same way. Either way the next agent
+that starts picks it up; sessions already running keep the environment they
+started with. It applies to every agent whose
 sandbox hides `~/.ssh`. When a spawn starts without the socket for lack of this
 consent, the gateway log carries one warning per harness that names the file and
 this remedy, and `kirocrew doctor` lists those harnesses under Sandbox.
