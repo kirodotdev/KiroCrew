@@ -83,12 +83,13 @@ def theme_css() -> str:
 def look_prefix() -> tuple[str, str]:
     """``(markup, "")`` to put in front of the page, or ``("", reason)`` when there is
     no built runtime to draw it with."""
-    from kiro_crew.publish_sync import _SCRIPT_CLOSE_RE, _tailwind_runtime_js
+    from kiro_crew.publish_sync import _tailwind_runtime_js
+    from kiro_crew.tailwind_runtime import SCRIPT_CLOSE_RE
 
     runtime = _tailwind_runtime_js()
     if not runtime:
         return "", NO_RUNTIME
-    escaped = _SCRIPT_CLOSE_RE.sub(lambda m: "<\\/" + m.group(1), runtime)
+    escaped = SCRIPT_CLOSE_RE.sub(lambda m: "<\\/" + m.group(1), runtime)
     return (
         f'<style type="text/tailwindcss">{TAILWIND_DIRECTIVES}</style>\n'
         f"<style>{theme_css()}</style>\n"
