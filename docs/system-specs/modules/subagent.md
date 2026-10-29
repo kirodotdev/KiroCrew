@@ -1196,7 +1196,15 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
 1. Policy refusals that leave no durable trace: empty task, memory identity,
    `cwd` outside `subagent_cwd_allowed_roots`, spawn governance, and the parent
    agent spec's `toolsSettings.subagent.availableAgents` (see § Parent agent
-   spec allowlist below).
+   spec allowlist below), and the lineage depth cap. `SubagentInfo.depth` is 1
+   for a child of a root session and its parent's depth + 1 for a child of a
+   sub-agent; the parent is the run the parent session key names plus every
+   running continuation of it, which runs on that run's `conversation_key`
+   (a finished continuation's lingering record is not counted). A depth carried in through `_depth` (the queued row's
+   params, a retry of a failed run, a continuation's live or `state.json`
+   depth) can only raise it, so a run whose parent's record is gone keeps its
+   place. A child past `_MAX_SPAWN_DEPTH` (4) is refused with SEL outcome
+   `rejected_depth_cap`.
 2. For persistent work, **persist** the row in the task store (write-before-ack; see § Durable task
    queue). A store write failure is a refusal with
    `error_code="task_store_unavailable"`; the id is never handed out as accepted.

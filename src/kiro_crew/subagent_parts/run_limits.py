@@ -15,6 +15,12 @@ from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_RECHECK_SECS
 
 _MAX_CONCURRENT = 3
 
+# Deepest sub-agent a spawn may create: a root session's child is depth 1, its
+# child depth 2, and so on. A spawn whose child would sit deeper is refused at
+# admission. Without a cap a recursive chain keeps spawning, and the child
+# reserve hands nested rows the last slots, so one runaway tree can hold them.
+_MAX_SPAWN_DEPTH = 4
+
 
 # Width of a run id, in hex characters. 16 characters is 8 bytes, and every one
 # of those 64 bits is random, which is what makes a uniqueness CHECK
