@@ -865,6 +865,44 @@ async def test_a_turn_on_a_committed_teardown_is_told_the_process_is_gone() -> N
 
 
 @pytest.mark.asyncio
+async def test_a_claim_that_cannot_be_recorded_ends_the_turn(monkeypatch, caplog) -> None:
+    """The tenancy is the only record admitting this session's key on a shared pid.
+
+    A turn that carried on without it would have every stub call refused
+    ``peer_session_unbound``; it ends instead, with a logged reason, as the same
+    death callers already answer by getting another runtime.
+    """
+    import logging
+
+    from kiro_crew.acp import session_provider as sp
+    from kiro_crew.acp.client import AcpProcessDied
+
+    ro._reset_for_tests()
+    runtime = _FakeSharedRuntime(pid=6207)
+    provider = _shared_provider(runtime, owns=False)
+
+    def _broken(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("tenancy table unavailable")
+
+    monkeypatch.setattr(sp, "claim_runtime_tenancy", _broken)
+    with caplog.at_level(logging.WARNING, logger=sp.logger.name):
+        with pytest.raises(AcpProcessDied, match="tenancy claim failed"):
+            provider._claim_shared_turn()  # type: ignore[attr-defined]
+    assert any("could not be recorded" in r.getMessage() for r in caplog.records)
+    assert ro.RUNTIME_TENANCY.claims_on(runtime) == 0
+    ro._reset_for_tests()
+
+
+def test_a_provider_without_a_runtime_stays_inert() -> None:
+    """Assembled without ``__init__`` (as the translation unit tests do): nothing to
+    claim, so no error is raised into the caller."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    provider = object.__new__(AcpSessionProvider)
+    assert provider._claim_shared_turn() is None  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_a_subagent_leaves_a_live_principals_runtime_running() -> None:
     """The ordinary end of a turn must not kill the process the parent is on."""
     ro._reset_for_tests()

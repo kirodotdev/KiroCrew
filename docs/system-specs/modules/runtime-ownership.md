@@ -128,7 +128,11 @@ session_key=...)`). Session claimers (a sharing sub-agent's turn, a task run) pa
 their key; the OAuth mint child passes none and binds nothing. The claim is the
 record that binds a sharing sub-agent's `X-Session-Key` to its process: a
 sub-agent holds no lease, so without the claim nothing would place its session on
-the pid (`tenant_keys_on_pid`, read through `session_keys_bound_to_pid`).
+the pid (`tenant_keys_on_pid`, read through `session_keys_bound_to_pid`). So a
+sub-agent turn whose claim cannot be recorded does not run: `_claim_shared_turn`
+logs a warning and raises `AcpProcessDied`, the answer callers already handle by
+getting another runtime, rather than running a turn whose every stub call would be
+refused `peer_session_unbound`.
 
 The two tables are separate for a reason a single refcount cannot express: a
 tenancy has to outlive the lease. A principal's last release forgets the lease
