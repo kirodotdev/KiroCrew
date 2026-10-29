@@ -1,6 +1,6 @@
 ---
 title: One work_dispatch call creates, opens, binds and seeds a work item
-status: draft
+status: accepted
 author: kirocrew agent session, directed by zejiangg
 created: 2026-10-26
 last-audited: 2026-10-28
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: One `work_dispatch` call creates, opens, binds and seeds a work item
 
-Status: draft. Acceptance requested from the maintainer who owns the conductor patrol (iamwhatever). This answers open question Q1 of [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) ("Should `session_create` create and bind the item in one call?"). Tracks [#24226](https://github.com/kirodotdev/KiroCrew/issues/24226). Every code reference below was read at `9d31193afe`.
+Status: accepted. [#24231](https://github.com/kirodotdev/KiroCrew/pull/24231) and its amendment [#25380](https://github.com/kirodotdev/KiroCrew/pull/25380) were merged by the maintainer who owns the conductor patrol (iamwhatever), who records the acceptance here. Nothing built. This answers open question Q1 of [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) ("Should `session_create` create and bind the item in one call?"). Tracks [#24226](https://github.com/kirodotdev/KiroCrew/issues/24226). Every code reference below was read at `9d31193afe`.
 
 ## Summary
 
