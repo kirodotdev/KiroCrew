@@ -167,7 +167,7 @@ binds from them. New work goes to the owner of its responsibility:
 | `history_files.py` | transcript stems and their Slack aliases (`transcript_stem(s)`, `transcript_lock_stems`, `_safe_key`), the sessions and archive directories, the durable archive write (`_archive_lines`) and its retention sweep (`_cleanup_old_archives`), the file stamps (`_safe_mtime`, `_cache_identity`, `_restore_mtime`) |
 | `history_schema.py` | which metadata keys a rebuilding writer owns (`SLOT_OWNED_META_KEYS`, `ROWS_ONLY_*`, `carry_unowned_metadata`), row provenance (`carry_provenance`), `HUMAN_TURN_META_KEY`, `mint_row_mid`, and the spelling and order of transcript timestamps (`transcript_sort_key`, `metadata_now_iso`, `monotonic_transcript_ts`, `latest_transcript_ts`) |
 | `history_offload.py` | the on-loop persistence discipline (`OnLoopPersistError`, `allow_on_loop_persist`, `on_loop_persist_strict`) and the off-loop writers (`append_off_loop`, `append_if_absent_off_loop`, `append_rows_if_absent_off_loop`, `update_metadata_off_loop`) |
-| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
+| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `_try_acquire_named_sidecar`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
 | `history_derivation.py` | the header's privacy contract (`INCOGNITO_MEMORY_MODES`, `memory_mode_from_header_line`, `is_incognito_transcript`, `transcript_privacy_mode`) and the derivation seam (`derivation_hold`, `publication_hold`, `derive_messages*`, `derive_recent`, `TranscriptWithheld`, `TranscriptBusy`) |
 | `history_threads.py` | the reply-thread sidecar: its location, `read_threads`, `append_thread_reply` and `ThreadStoreUnreadable` |
 | `history_summaries.py` | the one-line and intent summary sidecar caches |
@@ -1487,6 +1487,12 @@ no longer destroy older turns.
   patiently to a bounded deadline. The same discipline applies to every other
   session-JSONL writer: `clear_closed` (resume un-flags `closed` under `_locked`,
   offloaded via `asyncio.to_thread`) and all `ConversationLog` mutators hold `_locked`.
+  On POSIX a taken sidecar `flock` counts only while the sidecar NAME still reaches
+  the locked inode (`_try_acquire_named_sidecar`): the session janitor prunes an
+  unheld `<stem>.jsonl.lock` whose transcript is gone (`session.md`, transcript
+  staging temps), so a writer that opened the sidecar before that unlink re-opens
+  the name and retries, at most `_SIDECAR_REOPEN_LIMIT` (3) times per attempt,
+  instead of holding an inode no other process can reach.
 - **Delete-won guard**: `delete_session` unlinks the session file under the
   same `_locked` and leaves no tombstone, and the patient off-loop acquire
   means a save can legitimately sit waiting while a permanent delete runs to

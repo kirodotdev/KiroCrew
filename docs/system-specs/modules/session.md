@@ -5007,8 +5007,18 @@ a trust root on its own; publication therefore also writes a
   `mkstemp` shapes, it is a regular file by `lstat` through a pinned directory (a
   link is never followed), and it is unmodified for
   `STAGING_TEMP_MIN_AGE_SECS` (1 h), far beyond any stage-to-rename window, so a
-  write in flight in any process is never touched. Only direct children of the
-  sessions directory are examined; `*.jsonl.lock` sentinels are left alone.
+  write in flight in any process is never touched. The same pass prunes the
+  `<stem>.jsonl.lock` transcript `flock` sidecars (`history_locks._lock_path`),
+  which no writer removes and which outlive their session (a departed sub-agent, a
+  deleted or archived chat). A sentinel goes only when no `<stem>.jsonl` sits beside
+  it (re-checked under the lock), it is a regular file by `lstat` and the
+  `O_NOFOLLOW` descriptor is the same inode, it is unmodified for the same 1 h, and
+  the sweep takes its exclusive `flock` without waiting, so a held lock is never
+  removed. On POSIX it is unlinked while that `flock` is held, and a writer that
+  opened the old inode re-opens the name after its own acquire
+  (`history.md`, `_try_acquire_named_sidecar`); on Windows it is closed first and
+  the unlink fails while any process has the name open. Only direct children of
+  the sessions directory are examined.
 - **Shell audit log cap** (`SessionCleanup._sweep_shell_audit_log` →
   `shell_audit_log.rotate_shell_audit_log`): the bundled `postToolUse` hook in
   `config/defaults.json` records every `execute_bash` call as ONE
