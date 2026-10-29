@@ -252,9 +252,19 @@ def _owns_mcp_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> bool:
 
 
 def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[str, str] | None:
-    """Validate and deduplicate one MCP OAuth notification."""
+    """Validate a live attempt before deduplicating its MCP OAuth notification."""
     params = msg.params if isinstance(msg.params, dict) else {}
     server_name = str(params.get("serverName") or params.get("name") or "")
+    if "signInAttempt" in params:
+        attempt = params["signInAttempt"]
+        holds = getattr(self._runtime, "mcp_sign_in_holds", None)
+        if (
+            not self._owns_mcp_frame(msg)
+            or type(attempt) is not int
+            or holds is None
+            or not holds(self._session_id, server_name, attempt=attempt)
+        ):
+            return None
     oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
     if not _is_safe_oauth_url(oauth_url):
         if oauth_url:

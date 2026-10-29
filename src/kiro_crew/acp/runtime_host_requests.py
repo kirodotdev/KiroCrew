@@ -9,17 +9,17 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_logged``,
-``_mcp_reattempts``, ``_mcp_sign_in``.
+``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_attempt``, ``_mcp_sign_in_ended_hooks``.
 
-Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``,
-``_max_answer_tasks``, ``_pid``, ``_session_queues``, ``_subagent_owner``.
+Instance fields read: ``_agent``, ``_announce_mcp_sign_in_ended``, ``_answer_cap_wait_secs``,
+``_dead``, ``_max_answer_tasks``, ``_pid``, ``_session_queues``, ``_subagent_owner``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import redact_text
@@ -409,9 +409,13 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
         )
 
 
-def mcp_sign_in_holds(self: AcpRuntime, session_id: str, server_name: str) -> bool:
-    """Whether the runtime holds this session and server's sign-in slot."""
-    return self._mcp_sign_in == (session_id, server_name)
+def mcp_sign_in_holds(
+    self: AcpRuntime, session_id: str, server_name: str, *, attempt: int | None = None
+) -> bool:
+    """Whether the slot belongs to this session, server and optional attempt."""
+    return self._mcp_sign_in == (session_id, server_name) and (
+        attempt is None or attempt == self._mcp_sign_in_attempt
+    )
 
 
 def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bool:
@@ -440,6 +444,7 @@ def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bo
         # A consent URL the engine sent for a re-attempt would be handed
         # to this sign-in's server; wait until the re-attempts are answered.
         return False
+    self._mcp_sign_in_attempt += 1
     self._mcp_sign_in = (session_id, server_name)
     task = asyncio.ensure_future(self._run_mcp_sign_in(session_id, server_name))
     self._answer_tasks.add(task)
@@ -450,21 +455,73 @@ def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bo
 async def _run_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> None:
     """Hold the sign-in slot until the engine's reset answer arrives."""
     entry = (session_id, server_name)
+    connected = False
+    # Whether the attempt ended while its process lives. A dead process or a
+    # cancelled task is reported by the dead-child banner gate instead, whose
+    # copy says the session ended rather than pointing at a newer button.
+    attempt_ended = False
     try:
-        await self._send_and_await(
+        answer = await self._send_and_await(
             METHOD_KAS_MCP_RESET_SERVER,
             {"sessionId": session_id, "serverName": server_name, "startOAuth": True},
             timeout=_MCP_SIGN_IN_TIMEOUT,
         )
+        connected = isinstance(answer, dict) and answer.get("success") is True
+        attempt_ended = True
+    except AcpRuntimeDead as exc:
+        logger.info(
+            "MCP sign-in for %s ended with its process: %s",
+            sanitize_sink_text(server_name, NAME_CAP),
+            type(exc).__name__,
+        )
     except Exception as exc:  # noqa: BLE001 -- the next offer retries
+        attempt_ended = True
         logger.info(
             "MCP sign-in for %s ended without an answer: %s",
             sanitize_sink_text(server_name, NAME_CAP),
             type(exc).__name__,
         )
     finally:
+        if attempt_ended and not connected:
+            self._announce_mcp_sign_in_ended(session_id, server_name)
         if self._mcp_sign_in == entry:
             self._mcp_sign_in = None
+
+
+def set_mcp_sign_in_ended_hook(
+    self: AcpRuntime, session_id: str, hook: Callable[[str], None] | None
+) -> None:
+    """Install (or, with None, remove) *session_id*'s ended-attempt hook.
+
+    The hook is called with the server name when one of that session's
+    sign-in attempts ends without the server connecting, whether or not a
+    turn is reading the session's queue: an idle chat still has to retire
+    the Authorize link the attempt showed.
+    """
+    if hook is None:
+        self._mcp_sign_in_ended_hooks.pop(session_id, None)
+    else:
+        self._mcp_sign_in_ended_hooks[session_id] = hook
+
+
+def _announce_mcp_sign_in_ended(self: AcpRuntime, session_id: str, server_name: str) -> None:
+    """Tell *session_id*'s hook that a sign-in attempt ended without connecting.
+
+    Called while the slot is still held, so the next sign-in's link always
+    arrives after it and retiring the old banner can never retire the new one.
+    The hook runs whether or not a turn is reading the session, so an idle chat
+    retires its dead Authorize link too. A session that has left, or one whose
+    chat installed no hook, is told nothing.
+    """
+    if session_id not in self._session_queues:
+        return
+    hook = self._mcp_sign_in_ended_hooks.get(session_id)
+    if hook is None:
+        return
+    try:
+        hook(server_name)
+    except Exception:  # noqa: BLE001 -- a display hook never breaks the runtime
+        logger.warning("MCP sign-in ended hook failed", exc_info=True)
 
 
 def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> bool:
@@ -543,7 +600,12 @@ async def _answer_open_external_url(self: AcpRuntime, request_id: int | str, par
         await queue.put(
             JsonRpcMessage(
                 method=METHOD_MCP_OAUTH_REQUEST,
-                params={"sessionId": session_id, "serverName": server_name, "oauthUrl": url},
+                params={
+                    "sessionId": session_id,
+                    "serverName": server_name,
+                    "oauthUrl": url,
+                    "signInAttempt": self._mcp_sign_in_attempt,
+                },
             )
         )
     try:

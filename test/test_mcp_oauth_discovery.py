@@ -490,6 +490,13 @@ class _FakeProviderClient:
     def __init__(self, pending):
         self.client = _FakeAcpClient(pending)
 
+    # The LLMProvider defaults: a provider that runs no Crew-started sign-ins.
+    def set_mcp_sign_in_ended_hook(self, hook):
+        return None
+
+    def mcp_sign_in_live(self, server_name):
+        return None
+
 
 @pytest.mark.asyncio
 async def test_session_init_banner_carries_a_discovered_consent_url(configured, served):

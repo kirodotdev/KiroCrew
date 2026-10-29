@@ -347,6 +347,18 @@ class AcpProvider(LLMProvider):
             except Exception:  # pragma: no cover - read-only shapes
                 pass
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None] | None) -> None:
+        """See LLMProvider. Forwarded to the live inner client; the dashboard installs it
+        again before each link it shows, so a client swapped in later is covered."""
+        install = getattr(getattr(self, "_client", None), "set_mcp_sign_in_ended_hook", None)
+        if install is not None:
+            install(hook)
+
+    def mcp_sign_in_live(self, server_name: str) -> bool | None:
+        """See LLMProvider. Asked of the live inner client, which owns the runtime."""
+        ask = getattr(getattr(self, "_client", None), "mcp_sign_in_live", None)
+        return ask(server_name) if ask is not None else None
+
     @property
     def accepts_elicitation(self) -> bool:
         """See AcpSessionHandle.accepts_elicitation.

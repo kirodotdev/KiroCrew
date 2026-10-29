@@ -115,62 +115,6 @@ describe('McpOAuthBanner', () => {
     })
   })
 
-  // A newer authorize request kills the older flow's loopback listener, so the
-  // older banner's link would walk the user through a full provider login and
-  // dead-end on `http://127.0.0.1:<dead-port>/?code=…` — a page that looks like
-  // success and consumes nothing (issue #7580).
-  describe('superseded state', () => {
-    it('renders no authorize link', () => {
-      render(
-        <McpOAuthBanner
-          serverName="miro"
-          oauthUrl="https://mcp.miro.com/authorize"
-          completed={false}
-          superseded={true}
-        />,
-      )
-      expect(screen.queryByRole('link')).not.toBeInTheDocument()
-    })
-
-    it('tells the user the sign-in is dead and to use the newest button', () => {
-      render(
-        <McpOAuthBanner serverName="miro" oauthUrl="" completed={false} superseded={true} />,
-      )
-      expect(screen.getByText(/no longer active/i)).toBeInTheDocument()
-      expect(screen.getByText(/latest Authorize button/i)).toBeInTheDocument()
-    })
-
-    it('keeps naming the server so the user knows which sign-in died', () => {
-      render(
-        <McpOAuthBanner serverName="miro" oauthUrl="" completed={false} superseded={true} />,
-      )
-      expect(screen.getByText('miro')).toBeInTheDocument()
-    })
-
-    it('yields to failed and completed, which are the authoritative outcomes', () => {
-      const { unmount } = render(
-        <McpOAuthBanner
-          serverName="miro"
-          oauthUrl=""
-          completed={false}
-          failed={true}
-          superseded={true}
-          error="dns"
-        />,
-      )
-      expect(screen.getByText(/authentication failed: dns/i)).toBeInTheDocument()
-      unmount()
-      render(
-        <McpOAuthBanner
-          serverName="miro"
-          oauthUrl=""
-          completed={true}
-          superseded={true}
-        />,
-      )
-      expect(screen.getByText(/authenticated/)).toBeInTheDocument()
-    })
-  })
   describe('expired state', () => {
     it('renders no authorize link', () => {
       render(
@@ -185,9 +129,8 @@ describe('McpOAuthBanner', () => {
     })
 
     it('does not claim a newer request replaced it, because none did', () => {
-      // The whole reason this is a separate state from `superseded`: after a
-      // restart or a reset there is no newer request and no "latest Authorize
-      // button" to point at, so that copy would be a lie.
+      // After a restart or a reset there is no newer request and no "latest
+      // Authorize button" to point at, so that copy would be a lie.
       render(<McpOAuthBanner serverName="miro" oauthUrl="" completed={false} expired={true} />)
       expect(screen.getByText(/no longer active/i)).toBeInTheDocument()
       expect(screen.queryByText(/newer request/i)).not.toBeInTheDocument()
@@ -221,18 +164,6 @@ describe('McpOAuthBanner', () => {
       expect(screen.getByText(/authenticated/i)).toBeInTheDocument()
     })
 
-    it('yields to superseded, which names a live button to use instead', () => {
-      render(
-        <McpOAuthBanner
-          serverName="miro"
-          oauthUrl=""
-          completed={false}
-          superseded={true}
-          expired={true}
-        />,
-      )
-      expect(screen.getByText(/latest Authorize button/i)).toBeInTheDocument()
-    })
   })
 })
 
@@ -266,21 +197,49 @@ describe('renderMcpOAuthMessage', () => {
     expect(screen.getByText(/authenticated/)).toBeInTheDocument()
   })
 
-  it('renders a superseded banner even though it carries no oauth_url', () => {
-    // The backend POPS oauth_url when it retires a banner, so `superseded` is
-    // the only thing left to render on. Falling through to null here would make
-    // the dead flow vanish silently instead of telling the user what to do
-    // (issue #7580).
-    const node = renderMcpOAuthMessage(makeMsg({ server_name: 'miro', superseded: true }))
-    expect(node).not.toBeNull()
+  // A replaced card or an ended attempt is not drawn at all: its link cannot be
+  // redeemed, and the transcript keeps at most the one live card per server.
+  it('renders nothing for a replaced card, even one still carrying a url', () => {
+    expect(renderMcpOAuthMessage(makeMsg({ server_name: 'miro', superseded: true }))).toBeNull()
+    expect(
+      renderMcpOAuthMessage(
+        makeMsg({ server_name: 'miro', oauth_url: 'https://mcp.miro.com/a', superseded: true }),
+      ),
+    ).toBeNull()
+  })
+
+  it('renders nothing for an ended sign-in attempt, even one still carrying a url', () => {
+    const ended = { server_name: 'miro', expired: true, expired_reason: 'attempt_ended' }
+    expect(renderMcpOAuthMessage(makeMsg(ended))).toBeNull()
+    expect(
+      renderMcpOAuthMessage(makeMsg({ ...ended, oauth_url: 'https://mcp.miro.com/a' })),
+    ).toBeNull()
+  })
+
+  it('shows a late success on a card whose attempt had ended', () => {
+    // The backend flips that row to completed and pops expired; a tab merging the
+    // patch over the old keys can hold both, and the outcome must still win.
+    const node = renderMcpOAuthMessage(
+      makeMsg({ server_name: 'miro', completed: true, expired: true, expired_reason: 'attempt_ended' }),
+    )
     render(<>{node}</>)
-    expect(screen.getByText(/no longer active/i)).toBeInTheDocument()
-    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.getByText(/authenticated/)).toBeInTheDocument()
+  })
+
+  it('keeps the one live card beside hidden retired ones', () => {
+    const rows = [
+      makeMsg({ server_name: 'miro', expired: true, expired_reason: 'attempt_ended' }),
+      makeMsg({ server_name: 'miro', superseded: true }),
+      makeMsg({ server_name: 'miro', oauth_url: 'https://mcp.miro.com/live' }),
+    ]
+    render(<>{rows.map((m, i) => <div key={i}>{renderMcpOAuthMessage(m)}</div>)}</>)
+    expect(screen.getAllByRole('link', { name: /Authorize miro/i })).toHaveLength(1)
+    expect(screen.queryByText(/no longer active/i)).not.toBeInTheDocument()
   })
 
   it('renders an expired banner even though it carries no oauth_url', () => {
-    // Same trap as `superseded`, and the reason the flag has to be named in the
-    // presence guard: the backend withdraws the url, so `expired` is the only
+    // The reason the flag has to be named in the presence guard: the backend
+    // withdraws the url, so `expired` is the only
     // signal left. Falling through to null would make the dead sign-in vanish,
     // which reads as success -- the exact confusion #7654 is about.
     const node = renderMcpOAuthMessage(makeMsg({ server_name: 'miro', expired: true }))

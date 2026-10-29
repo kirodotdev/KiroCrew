@@ -8,9 +8,10 @@ import OAuthRelayAffordance, { isSafeOAuthUrl } from '../../components/OAuthRela
 
 /**
  * Inline banner for kiro-cli MCP OAuth flow. `meta.completed` flips it to the
- * authenticated state; `meta.failed` flips it to the error state;
- * `meta.superseded` retires it once a newer request replaced the flow, so a
- * link whose loopback listener is gone is never offered as live.
+ * authenticated state; `meta.failed` flips it to the error state. A card whose
+ * flow was replaced (`meta.superseded`) or whose sign-in attempt ended
+ * (`meta.expired_reason === 'attempt_ended'`) renders nothing: its link can no
+ * longer be redeemed, so the transcript keeps at most the one live card per server.
  */
 
 /** The chat banner's relay strings — its own `pages.chat.mcpOAuthBanner.*` keys.
@@ -48,22 +49,26 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, han
   const oauthUrl = (m.meta?.oauth_url as string) || ''
   const completed = !!m.meta?.completed
   const failed = !!m.meta?.failed
-  const superseded = !!m.meta?.superseded
   const expired = !!m.meta?.expired
   const error = (m.meta?.error as string) || ''
-  // `superseded` and `expired` carry no `oauth_url` (the backend pops it), so both
-  // have to be named here or the banner would silently vanish instead of telling
-  // the user the flow is over and what to do next — the whole point of the states.
-  // A vanished banner is the worse failure: it is indistinguishable from the
-  // sign-in having succeeded.
-  if (!oauthUrl && !completed && !failed && !superseded && !expired) return null
+  // A replaced card or an ended attempt is not shown at all. Replaced: a newer
+  // card for the same server is the one to use. Ended: the next offer mints a
+  // fresh card. A late success still shows, because the backend flips that row
+  // to `completed`, and a terminal outcome wins over both checks here.
+  if (!completed && !failed) {
+    if (m.meta?.superseded) return null
+    if (expired && m.meta?.expired_reason === 'attempt_ended') return null
+  }
+  // `expired` (the hosting process is gone) carries no `oauth_url` (the backend
+  // pops it), so it is named here or the banner would vanish instead of telling
+  // the user to send a message for a fresh link: nothing else will offer one.
+  if (!oauthUrl && !completed && !failed && !expired) return null
   return (
     <McpOAuthBanner
       serverName={serverName}
       oauthUrl={oauthUrl}
       completed={completed}
       failed={failed}
-      superseded={superseded}
       expired={expired}
       error={error}
       askAgent={handOff}
@@ -76,7 +81,6 @@ export default function McpOAuthBanner({
   oauthUrl,
   completed,
   failed,
-  superseded,
   expired,
   error,
   askAgent = true,
@@ -85,7 +89,6 @@ export default function McpOAuthBanner({
   oauthUrl: string
   completed: boolean
   failed?: boolean
-  superseded?: boolean
   expired?: boolean
   error?: string
   /** Offer the "Ask the agent" hand-off on the failed state. */
@@ -124,28 +127,11 @@ export default function McpOAuthBanner({
     )
   }
 
-  // A newer request replaced this flow, so its loopback listener is gone and the
-  // link cannot be redeemed by anyone. Say so and point at the live button
-  // instead of rendering a link that walks the user through a whole provider
-  // login and dead-ends on `127.0.0.1:<dead-port>/?code=…` (issue #7580).
-  if (superseded) {
-    return (
-      <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
-        <History className="shrink-0 text-text/50 lucide-inline" />
-        <span className="flex-1 text-text">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.superseded')}
-        </span>
-      </div>
-    )
-  }
-
-  // Same shape as `superseded`, different cause and so different advice. Nothing
-  // replaced this flow — the child process hosting it is simply gone (a gateway
-  // restart or a session reset), so there is no "latest Authorize button" to send
-  // the user to. What is true is that a still-pending request is re-announced on
-  // the next session init, so the honest instruction is to send a message and take
-  // the fresh link that appears. Rendered rather than hidden for the reason given
-  // in renderMcpOAuthMessage: a banner that vanishes reads as success.
+  // The child process hosting this flow is gone (a gateway restart or a session
+  // reset), so the link cannot be redeemed by anyone. A still-pending request is
+  // re-announced on the next session init, so the honest instruction is to send a
+  // message and take the fresh link that appears. Rendered rather than hidden:
+  // nothing else offers a way back in (issue #7654).
   if (expired) {
     return (
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">

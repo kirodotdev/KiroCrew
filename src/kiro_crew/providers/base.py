@@ -927,6 +927,25 @@ class LLMProvider(ABC):
         """
         return self.available_models()
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None] | None) -> None:
+        """Install a hook told the server name when an MCP sign-in attempt ends unconnected.
+
+        Only a provider whose host runs Crew-started MCP sign-ins calls it; the
+        default keeps none, because nothing else mints a link that such an
+        ending would invalidate.
+        """
+        return None
+
+    def mcp_sign_in_live(self, server_name: str) -> bool | None:
+        """Whether a Crew-started sign-in for *server_name* is still in flight.
+
+        A link from such a sign-in is redeemable only while it is, so a banner
+        drawn after the attempt ended must not offer it. None means this
+        provider runs no Crew-started sign-ins, so the question does not apply
+        and the link is left to the engine that minted it.
+        """
+        return None
+
     def mcp_session_report(self) -> SessionMcpReport | None:
         """This session's own MCP registration report, or None if it keeps none.
 

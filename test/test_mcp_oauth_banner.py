@@ -1522,6 +1522,13 @@ class _FakeProviderClient:
     def __init__(self, pending):
         self.client = _FakeAcpClient(pending)
 
+    # The LLMProvider defaults: a provider that runs no Crew-started sign-ins.
+    def set_mcp_sign_in_ended_hook(self, hook):
+        return None
+
+    def mcp_sign_in_live(self, server_name):
+        return None
+
 
 # A real registry slug with a rendered card, and a real slug whose launch gate is
 # closed. Read from the registry rather than hardcoded so a gate flip fails here

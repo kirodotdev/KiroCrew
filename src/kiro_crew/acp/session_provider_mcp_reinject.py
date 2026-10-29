@@ -173,6 +173,9 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
     # child permission request the dashboard can present.
     new_handle.child_fidelity_aware = old.child_fidelity_aware
     self._handle = new_handle
+    # The evict unregistered the session, and with it the chat's sign-in-ended
+    # hook; the reloaded session reports to the same chat.
+    self._install_mcp_sign_in_ended_hook()
     # The load relaunched this session's stubs with a fresh token nothing has
     # named yet; claim it against the session this provider serves.
     try:

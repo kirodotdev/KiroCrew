@@ -129,6 +129,23 @@ class TestTheApply:
         provider.reclaim.assert_called_once_with()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
+    async def test_the_chats_sign_in_ended_hook_follows_the_reloaded_session(self) -> None:
+        """The evict unregisters the session and its hook; without a re-install an
+        Authorize card shown after the apply would never hear its attempt end."""
+        runtime = _runtime()
+        installed: list[tuple[str, object]] = []
+        runtime.set_mcp_sign_in_ended_hook = lambda sid, hook: installed.append((sid, hook))
+        provider = _provider(runtime)
+
+        def hook(server_name: str) -> None:
+            return None
+
+        provider.set_mcp_sign_in_ended_hook(hook)
+        provider.mark_mcp_config_changed()
+        await provider.apply_pending_mcp_reinjection()
+        assert installed == [(_SID, hook), (_SID, hook)]
+
+    @pytest.mark.asyncio
     async def test_the_load_runs_inside_the_record_keeping_scope(self) -> None:
         """Every failure arm of the load ends the session through terminate_session,
         whose KAS verb deletes the record; the scope turns that into an eviction."""

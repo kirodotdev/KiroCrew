@@ -211,7 +211,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "load_session": ("function", True, "abdb4c5767fc", "runtime_session_load"),
     "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
-    "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
+    "mcp_sign_in_holds": ("function", False, "408b10c999d2", "runtime_host_requests"),
     "pid": ("property", False, "8dc15be1dfda", "runtime_class"),
     "probe_advertised_models": ("function", True, "d21329fd3356", "runtime_session_create"),
     "process_instance": ("property", False, "bb418bb7ece8", "runtime_class"),
