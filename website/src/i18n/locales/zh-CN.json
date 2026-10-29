@@ -10247,6 +10247,9 @@
         "tool_search_label": "工具搜索",
         "tool_search_description": "按需加载延迟的 MCP 工具规范。"
       }
+    },
+    "frontmatterCard": {
+      "heading_other": "Frontmatter · {{count}} 个字段"
     }
   },
   "hooks": {

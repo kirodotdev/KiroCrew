@@ -10393,6 +10393,10 @@
         "tool_search_label": "उपकरण खोज",
         "tool_search_description": "माँग पर स्थगित MCP उपकरण विनिर्देश लोड करें।"
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} फ़ील्ड",
+      "heading_other": "Frontmatter · {{count}} फ़ील्ड"
     }
   },
   "hooks": {

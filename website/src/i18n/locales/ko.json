@@ -10247,6 +10247,9 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "frontmatterCard": {
+      "heading_other": "Frontmatter · 필드 {{count}}개"
     }
   },
   "hooks": {

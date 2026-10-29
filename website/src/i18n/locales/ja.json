@@ -10247,6 +10247,9 @@
         "tool_search_label": "ツール検索",
         "tool_search_description": "保留中の MCP ツール仕様を必要に応じて読み込みます。"
       }
+    },
+    "frontmatterCard": {
+      "heading_other": "Frontmatter · {{count}} 個のフィールド"
     }
   },
   "hooks": {
