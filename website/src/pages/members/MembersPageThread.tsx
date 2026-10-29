@@ -433,10 +433,11 @@ export function useMembersPageThreadView({
   const [betweenHeaderRef, betweenHeaderH] = useMeasuredHeight<HTMLDivElement>()
   const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
   const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? slotRowByKey(s.dashboard.slots, pillSlotKey) : undefined))
+  const pillQueued = useAppSelector((s) => (pillSlotKey ? (s.chat.subagentQueued?.[pillSlotKey] ?? 0) > 0 : false))
   const uiLang = useLanguage().resolved
   const pillTurnAct = useSlotActivity(pillSlotKey, {
     running: !!active && !!isRunning(active),
-    delegatedOnly: !!pillLiveSlot?.subagents_running && !pillLiveSlot?.running,
+    delegatedOnly: (!!pillLiveSlot?.subagents_running || pillQueued) && !pillLiveSlot?.running,
     stopping: !!pillLiveSlot?.stopping,
   })
   // Preparation outside a turn reads as working, never as the last turn's status.

@@ -192,6 +192,13 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey))
+  // Children accepted but still queued behind the spawn caps: delegated work the
+  // slots frame's `subagents_running` does not count. Read only as the pill
+  // seam's `delegatedOnly` input, so this caption and the header pill resolve
+  // one moment the same way. The caption itself shows only while the crewmate's
+  // own turn runs (`crewmateTyping`); delegated work after the turn, started or
+  // queued, is the header pill's and the roster's to show.
+  const paneQueued = useAppSelector((s) => (s.chat.subagentQueued?.[slotKey] ?? 0) > 0)
   const paneRunsHere = useSlotRunsHere(paneSlot && paneSlot.executor !== 'remote' ? paneSlot.key : null)
   // A stop is under way on this pane's turn: the stream state's own `stopping`
   // phase, or a Stop pressed from another tab that reaches this pane only as
@@ -349,7 +356,7 @@ export default function ChatPane({
   // keep resolving one moment from one seam.
   const liveActivity = useSlotActivity(crewmate ? slotKey : '', {
     running: crewmateLive,
-    delegatedOnly: !!paneSlot?.subagents_running && !paneSlot?.running,
+    delegatedOnly: (!!paneSlot?.subagents_running || paneQueued) && !paneSlot?.running,
     stopping: !!paneSlot?.stopping,
   })
   // The host declares the conversation surface; only the gateway decides
