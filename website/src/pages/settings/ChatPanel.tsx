@@ -1119,6 +1119,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             reserveWidthFor={[titleRefreshDefault, TITLE_REFRESH_MAX]}
             configKey="dashboard.title_refresh_every_turns"
           />
+          <SettingsToggle configKey="dashboard.session_card_message_preview" label={i18nT('pages.settings.chatPanel.session_card_message_preview')} description={i18nT('pages.settings.chatPanel.session_card_message_preview_desc')} checked={dashCfg.session_card_message_preview ?? true} onChange={v => setDash({ session_card_message_preview: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} description={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />

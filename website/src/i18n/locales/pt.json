@@ -17287,7 +17287,9 @@
         "default_session_folder_none": "Nenhuma (sem pasta)",
         "default_session_folder_deleted": "Pasta excluída",
         "default_session_folder_save_failed": "Não foi possível salvar a pasta padrão. Tente novamente.",
-        "default_session_folder_load_failed": "Não foi possível carregar suas pastas da barra lateral, então elas não aparecem aqui."
+        "default_session_folder_load_failed": "Não foi possível carregar suas pastas da barra lateral, então elas não aparecem aqui.",
+        "session_card_message_preview": "Prévias de mensagens nos cartões de sessão",
+        "session_card_message_preview_desc": "Mostre a última mensagem abaixo do título de cada sessão. Os indicadores de mensagens não lidas e o status de atividade continuam visíveis."
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

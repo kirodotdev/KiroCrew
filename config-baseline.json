@@ -8035,6 +8035,7 @@
         "auto_open_git_panel": false,
         "side_panel_always_open": false,
         "side_panel_pin_summary": false,
+        "session_card_message_preview": true,
         "session_card_source_links": true,
         "terminal": {
           "enabled": true
@@ -8933,6 +8934,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.session_card_message_preview",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Message previews on session cards",
+      "help": "Show the latest message beneath each session title. Turning this off keeps unread indicators, approval requests and session status visible.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.session_card_source_links",

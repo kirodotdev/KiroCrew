@@ -16713,7 +16713,9 @@
         "default_session_folder_none": "なし（フォルダーなし）",
         "default_session_folder_deleted": "削除されたフォルダー",
         "default_session_folder_save_failed": "既定のフォルダーを保存できませんでした。もう一度お試しください。",
-        "default_session_folder_load_failed": "サイドバーのフォルダーを読み込めなかったため、ここには表示されていません。"
+        "default_session_folder_load_failed": "サイドバーのフォルダーを読み込めなかったため、ここには表示されていません。",
+        "session_card_message_preview": "セッションカードのメッセージプレビュー",
+        "session_card_message_preview_desc": "各セッションのタイトルの下に最後のメッセージを表示します。未読マークとアクティビティの状態は引き続き表示されます。"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

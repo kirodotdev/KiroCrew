@@ -5271,6 +5271,23 @@ panel's hooks run in the same order as when their statements were inline.
 facade's exports as the owners' own bindings, that no owner imports the facade,
 that no other source module imports an owner, and where the sizing hook is called.
 
+### Session-card message previews
+
+Settings → Chat → Sessions → **Message previews on session cards** controls
+`dashboard.session_card_message_preview` (default `true`). The shared session
+row hides its ordinary latest-message line when disabled, in both list and board
+views. Its unread indicator moves into the trailing meta group while previews
+are hidden, distinct from the live dot leading the title and outside the rename
+field so editing adds no marker line;
+approval requests and running, interrupted and error states retain their existing
+status presentation. The preference does not remove message data from slot
+payloads. The dashboard config GET/PUT contract persists the choice, and the
+settings change-card catalog exposes the same boolean switch. Config-read failures
+remain visible outside session rows in the full-width sessions embed and mobile
+drawer, whose chat-pane notice is hidden; the normal desktop view keeps its
+existing chat-pane notice. The sidebar notice offers agent handoff only when no
+rename draft is open and no mobile composer draft can be lost.
+
 ### Composer file uploads
 
 `POST /api/upload/file` accepts at most 20 files per request. Images and

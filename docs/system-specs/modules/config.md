@@ -3943,6 +3943,15 @@ the store would answer the solid default and undo the flip. A failed workspace
 write is not surfaced, the same as a failed theme-mode write: the browser copy
 holds for the session and nothing the user can act on has happened.
 
+### Session message previews
+
+`DashboardConfig.session_card_message_preview` defaults to `true` and persists
+in `config.json`. Missing or non-boolean file values retain that default.
+`GET /api/dashboard/config` returns it; the owner-gated PUT accepts only a boolean
+and saves it without changing other dashboard preferences. Settings → Chat →
+Sessions exposes the switch. It controls presentation only: slot summaries still
+carry `last_message`, and changing the preference requires no gateway restart.
+
 ### Sidebar folder order
 
 `DashboardConfig.folder_sort` is the chat sidebar's folder sort mode — `custom`

@@ -191,6 +191,7 @@ DASHBOARD_SETTINGS: dict[str, tuple[str, tuple[Any, ...]]] = {
     "chat.tail-only-fork": ("tail_fork_enabled", _BOOL_VALUES),
     "chat.restore-sessions": ("restore_sessions", _BOOL_VALUES),
     "chat.restore-window": ("restore_window_minutes", (15, 30, 60, 120, 360, 720, 1440, 0)),
+    "chat.message-previews-on-session-cards": ("session_card_message_preview", _BOOL_VALUES),
     "chat.pr-and-issue-chips-on-session-cards": ("session_card_source_links", _BOOL_VALUES),
     "chat.folder-suggestions": ("folder_suggestions_enabled", _BOOL_VALUES),
     "chat.default-memory-mode": ("default_memory_mode", ()),

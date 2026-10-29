@@ -97,6 +97,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "side_panel_pin_summary",
             "folder_suggestions_enabled",
             "topic_tags_enabled",
+            "session_card_message_preview",
             "session_card_source_links",
             "session_folder_root",
             "default_session_folder",
@@ -473,6 +474,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["side_panel_pin_summary"] = val
+        if "session_card_message_preview" in body:
+            val = body["session_card_message_preview"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "session_card_message_preview must be a boolean",
+                        "code": "invalid_session_card_message_preview",
+                    },
+                    status=400,
+                )
+            updates["session_card_message_preview"] = val
         if "session_card_source_links" in body:
             val = body["session_card_source_links"]
             if not isinstance(val, bool):
@@ -732,6 +747,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "side_panel_always_open": cfg.dashboard.side_panel_always_open,
             "side_panel_pin_summary": cfg.dashboard.side_panel_pin_summary,
+            "session_card_message_preview": cfg.dashboard.session_card_message_preview,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
             "default_session_folder": cfg.dashboard.default_session_folder,

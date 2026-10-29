@@ -17287,7 +17287,9 @@
         "default_session_folder_none": "Ninguna (sin carpeta)",
         "default_session_folder_deleted": "Carpeta eliminada",
         "default_session_folder_save_failed": "No se pudo guardar la carpeta predeterminada. Inténtalo de nuevo.",
-        "default_session_folder_load_failed": "No se pudieron cargar tus carpetas de la barra lateral, así que no aparecen aquí."
+        "default_session_folder_load_failed": "No se pudieron cargar tus carpetas de la barra lateral, así que no aparecen aquí.",
+        "session_card_message_preview": "Vistas previas de mensajes en las tarjetas de sesión",
+        "session_card_message_preview_desc": "Muestra el último mensaje debajo del título de cada sesión. Los indicadores de mensajes sin leer y el estado de actividad siguen visibles."
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

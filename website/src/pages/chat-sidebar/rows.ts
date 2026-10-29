@@ -179,6 +179,7 @@ export interface RowPlacement {
  *  of any member, and a view holds it by reference, so a change here re-renders every
  *  row and nothing else does. */
 export interface RowShell {
+  showMessagePreview: boolean
   connected: boolean
   mode: string | undefined
   /** A phone-width viewport or any touch screen: the single ⋯ menu instead of the

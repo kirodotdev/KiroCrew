@@ -17287,7 +17287,9 @@
         "default_session_folder_none": "Nessuna (senza cartella)",
         "default_session_folder_deleted": "Cartella eliminata",
         "default_session_folder_save_failed": "Impossibile salvare la cartella predefinita. Riprova.",
-        "default_session_folder_load_failed": "Non è stato possibile caricare le tue cartelle della barra laterale, quindi non sono elencate qui."
+        "default_session_folder_load_failed": "Non è stato possibile caricare le tue cartelle della barra laterale, quindi non sono elencate qui.",
+        "session_card_message_preview": "Anteprime dei messaggi sulle schede di sessione",
+        "session_card_message_preview_desc": "Mostra l’ultimo messaggio sotto il titolo di ogni sessione. Gli indicatori dei messaggi non letti e lo stato dell’attività restano visibili."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

@@ -16713,7 +16713,9 @@
         "default_session_folder_none": "없음(폴더 없음)",
         "default_session_folder_deleted": "삭제된 폴더",
         "default_session_folder_save_failed": "기본 폴더를 저장하지 못했습니다. 다시 시도하세요.",
-        "default_session_folder_load_failed": "사이드바 폴더를 불러오지 못해 여기에 표시되지 않습니다."
+        "default_session_folder_load_failed": "사이드바 폴더를 불러오지 못해 여기에 표시되지 않습니다.",
+        "session_card_message_preview": "세션 카드의 메시지 미리보기",
+        "session_card_message_preview_desc": "각 세션 제목 아래에 마지막 메시지를 표시합니다. 읽지 않음 표시와 활동 상태는 계속 표시됩니다."
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

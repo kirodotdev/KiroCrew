@@ -616,6 +616,14 @@ class DashboardConfig:
             "while session summaries are on.",
         ),
     )
+    session_card_message_preview: bool = field(
+        default=True,
+        metadata=_meta(
+            "Message previews on session cards",
+            "Show the latest message beneath each session title. Turning this off "
+            "keeps unread indicators, approval requests and session status visible.",
+        ),
+    )
     # Default TRUE: the chip strip shipped unconditionally before this switch
     # existed, so a config that never mentions the key must render exactly what
     # it rendered before.

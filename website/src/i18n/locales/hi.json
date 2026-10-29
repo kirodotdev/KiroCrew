@@ -17000,7 +17000,9 @@
         "default_session_folder_none": "कोई नहीं (बिना फ़ोल्डर)",
         "default_session_folder_deleted": "हटाया गया फ़ोल्डर",
         "default_session_folder_save_failed": "डिफ़ॉल्ट फ़ोल्डर सहेजा नहीं जा सका। फिर से कोशिश करो।",
-        "default_session_folder_load_failed": "तुम्हारे साइडबार फ़ोल्डर लोड नहीं हो सके, इसलिए वे यहाँ नहीं दिख रहे हैं।"
+        "default_session_folder_load_failed": "तुम्हारे साइडबार फ़ोल्डर लोड नहीं हो सके, इसलिए वे यहाँ नहीं दिख रहे हैं।",
+        "session_card_message_preview": "सत्र कार्ड पर संदेश प्रीव्यू",
+        "session_card_message_preview_desc": "हर सत्र के शीर्षक के नीचे आखिरी संदेश दिखाओ। अपठित संकेतक और गतिविधि की स्थिति दिखाई देती रहेगी।"
       },
       "computerUsePanel": {
         "accessibility": "सुगम्यता",

@@ -903,6 +903,8 @@
     "components.imageComments.box_label": "Accessible name of a box drawn on an image for an existing comment; {{number}} is the comment number in the pending list, and {{x}}, {{y}} are the box's top-left corner as horizontal and vertical percentages, already formatted. Activating it highlights that comment in the pending list.",
     "components.markdownPanel.new_badge": "Small badge before 'Tip:' on the file viewer's one-time comment tip, shown only when the tip is back for a reader who had closed its earlier, text-only wording: it marks that the tip now names a new feature (drawing a box on an image to comment on it). An adjective for the feature, not a verb like 'Create'; keep it to one short word.",
     "pages.mcpManagement.details_env": "Settings > MCP, a server row's Details: label before the list of environment variable NAMES the server's launch sets (never their values). Short for 'environment'.",
-    "pages.mcpManagement.details_new": "Settings > MCP, a paused server's Details and the Review dialog: heading over the server's NEW launch command, shown beside the 'Before' (previously approved) one. An adjective for the launch, not a 'create' action."
+    "pages.mcpManagement.details_new": "Settings > MCP, a paused server's Details and the Review dialog: heading over the server's NEW launch command, shown beside the 'Before' (previously approved) one. An adjective for the launch, not a 'create' action.",
+    "pages.settings.chatPanel.session_card_message_preview": "Settings → Chat → Sessions toggle for last-message snippets on session cards in the sidebar and board; preview is message text, not a separate preview window.",
+    "pages.settings.chatPanel.session_card_message_preview_desc": "Description of the session-card message-preview toggle: hiding snippets keeps unread markers and live activity indicators visible."
   }
 }

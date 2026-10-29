@@ -17000,7 +17000,9 @@
         "default_session_folder_none": "কোনোটিই নয় (ফোল্ডার ছাড়া)",
         "default_session_folder_deleted": "মুছে ফেলা ফোল্ডার",
         "default_session_folder_save_failed": "ডিফল্ট ফোল্ডার সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
-        "default_session_folder_load_failed": "তোমার সাইডবার ফোল্ডারগুলো লোড করা যায়নি, তাই এখানে সেগুলো দেখানো হচ্ছে না।"
+        "default_session_folder_load_failed": "তোমার সাইডবার ফোল্ডারগুলো লোড করা যায়নি, তাই এখানে সেগুলো দেখানো হচ্ছে না।",
+        "session_card_message_preview": "সেশন কার্ডে বার্তার প্রিভিউ",
+        "session_card_message_preview_desc": "প্রতিটি সেশনের শিরোনামের নিচে শেষ বার্তাটি দেখাও। অপঠিত বার্তার সূচক এবং কার্যকলাপের অবস্থা দৃশ্যমান থাকবে।"
       },
       "computerUsePanel": {
         "accessibility": "সহজগম্যতা",
