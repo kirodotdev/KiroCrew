@@ -97,7 +97,7 @@ async function main() {
 
     if (theme === 'dark' && scene === 'refused') {
       await page.getByRole('link', { name: 'Review in MCP Management' }).click()
-      await page.waitForURL(/\/developer\?tab=mcp-pool/, { timeout: 15000 })
+      await page.waitForURL(/\/settings\/developer\/mcp-pool/, { timeout: 15000 })
       await page.getByText('alpha-mcp').first().waitFor({ state: 'visible', timeout: 15000 })
       const landed = `${OUT}/${PREFIX}-mcp-management-devmode-off-${theme}.png`
       await page.screenshot({ path: landed })
