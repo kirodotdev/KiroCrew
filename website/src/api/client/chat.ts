@@ -19,6 +19,13 @@ import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
 
+/** Shared Crew first-submit-wins fields of one send (see `api/sendRace.ts`). */
+export interface SendRaceFields {
+  baseRevision?: number
+  sendNow?: boolean
+  idempotencyKey?: string
+}
+
 /**
  * Resolve the theme-consent token to transmit for an installed pack's chat.
  *
@@ -265,7 +272,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
   }
 
   const send = {
-    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean) => {
+    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean, race?: SendRaceFields) => {
       // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
       // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
       // content-binding, injecting the persona only when this token equals sha256
@@ -304,7 +311,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       // guide observation before Start asks this tab and no other. `X-UI-Lang`
       // is the language this tab renders, so the agent quotes dashboard labels
       // as this screen spells them (the gateway keeps only a shipped tag).
-      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}) }), signal }).then(sendResponseAuthRecovery)
+      // `race` (Shared Crew first submit wins): the session revision this tab
+      // last saw, whether this is a deliberate Send now after a lost race (the
+      // gateway never steers it), and the per-send Idempotency-Key a retry
+      // reuses so the host answers it once.
+      const raceHeaders: Record<string, string> = race?.idempotencyKey ? { 'Idempotency-Key': race.idempotencyKey } : {}
+      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk, ...raceHeaders }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer && !race?.sendNow ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}), ...(race?.baseRevision !== undefined ? { base_revision: race.baseRevision } : {}), ...(race?.sendNow ? { send_now: true } : {}) }), signal }).then(sendResponseAuthRecovery)
     },
   }
 

@@ -197,7 +197,12 @@ const API_KEY_ORDER = [
   'researchKnowledgeStatus', 'researchToArtifact', 'researchReportStatus', 'researchReport',
   'researchDelete', 'invokeFileMenuItem', 'artifactTeardown', 'publishProviders',
   'publishArtifactToCoreProvider', 'publishToProvider', 'deploySites', 'tipsNext', 'tipsStatus',
-  'tipsFeedback',
+  'tipsFeedback', 'sharedCrewCapabilities', 'sharedCrewSessions', 'sharedCrewPeople', 'sharedCrewMode', 'sharedCrewViewer',
+  'sharedCrewCapacity', 'sharedCrewWork', 'sharedCrewPresence', 'sharedCrewDecisions', 'sharedCrewSendState', 'sharedCrewTypingLease',
+  'tailscaleInvites', 'tailscaleConnect', 'tailscaleDisconnect', 'tailscaleCreateInvites', 'tailscaleResendInvite',
+  'tailscaleRevokeInvite', 'tailscaleUploadAvatar',
+  'sharedCrewAccess', 'sharedCrewAckFirstShare', 'sharedCrewApprove', 'sharedCrewDismiss', 'sharedCrewRemoveApproved',
+  'sharedCrewCancelWork',
 ]
 
 const NESTED_KEY_ORDER: Record<string, string[]> = {

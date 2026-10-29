@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   tailnetMobile: vi.fn(),
   tailnetMobileQr: vi.fn(),
   mobileLoginLink: vi.fn(),
+  sharedCrewCapabilities: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mocks }))
 
@@ -55,6 +56,8 @@ beforeEach(() => {
   mocks.tailnetMobileQr.mockReset()
   mocks.mobileLoginLink.mockReset()
   mocks.tailnetMobile.mockResolvedValue({ step: 'ready' })
+  mocks.sharedCrewCapabilities.mockReset()
+  mocks.sharedCrewCapabilities.mockResolvedValue(null)
 })
 
 describe('MobileConnectModal', () => {
@@ -488,3 +491,48 @@ describe('MobileConnectModal — paints above the chat chrome, below the takeove
     expect(backdropZ()).toBeLessThanOrEqual(Math.min(...railZ))
   })
 })
+
+describe('MobileConnectModal direct tailnet link', () => {
+  it('shows no direct link without the Shared Crew preview, even with the listener active', async () => {
+    mocks.sharedCrewCapabilities.mockResolvedValue({
+      tailnet_direct: {
+        state: 'active', reason: '', method: 'cli_app_bundle', owner_login: 'o@example.test',
+        urls: ['http://crew.tail1234.ts.net:5476/'], addresses: ['100.64.0.1'],
+      },
+    })
+    mount(['tailnet_qr'])
+    await waitFor(() => expect(mocks.sharedCrewCapabilities).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('Show QR code')).toBeInTheDocument())
+    expect(screen.queryByTestId('tailnet-direct-link')).toBeNull()
+    expect(screen.queryByTestId('mobile-connect-advanced')).toBeNull()
+  })
+
+  it('leads with the plain link and folds the token methods under Advanced', async () => {
+    mocks.sharedCrewCapabilities.mockResolvedValue({
+      shared_crew_preview: true,
+      tailnet_direct: {
+        state: 'active', reason: '', method: 'cli_app_bundle', owner_login: 'o@example.test',
+        urls: ['http://crew.tail1234.ts.net:5476/'], addresses: ['100.64.0.1'],
+      },
+    })
+    mount(['tailnet_qr', 'login_link'])
+    const link = await screen.findByTestId('tailnet-direct-link')
+    expect((link.querySelector('input') as HTMLInputElement).value).toBe('http://crew.tail1234.ts.net:5476/')
+    expect(link).toHaveTextContent('By default, anyone allowed by Tailscale access rules')
+    expect(link).toHaveTextContent('With local authorization on')
+    const advanced = screen.getByTestId('mobile-connect-advanced')
+    expect(advanced.tagName).toBe('DETAILS')
+    expect(advanced).not.toHaveAttribute('open')
+    expect(advanced.textContent).toMatch(/Advanced: sign-in links for devices without Tailscale/)
+    expect(mocks.tailnetMobileQr).not.toHaveBeenCalled()
+    expect(mocks.mobileLoginLink).not.toHaveBeenCalled()
+  })
+
+  it('keeps today\'s dialog when the direct listener is off', async () => {
+    mount(['tailnet_qr'])
+    await waitFor(() => expect(screen.getByText('Show QR code')).toBeInTheDocument())
+    expect(screen.queryByTestId('tailnet-direct-link')).toBeNull()
+    expect(screen.queryByTestId('mobile-connect-advanced')).toBeNull()
+  })
+})
+

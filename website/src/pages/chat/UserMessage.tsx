@@ -1,6 +1,8 @@
 import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { ReactReduxContext } from 'react-redux'
 import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
+import { MessageByline } from './shared-crew/MessageByline'
+import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, type LucideIcon } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -123,6 +125,11 @@ interface UserMessageProps {
    *  work that ended (#9037 UX review). Fail-closed: no claim without a
    *  running turn. */
   slotRunning?: boolean
+  /** Shared Crew: this is the session's newest user message, so it carries the
+   *  "Queued" line and its Cancel while the host holds a chat turn for capacity.
+   *  The host passes it only while the session has no queue-stack rows: a busy
+   *  session's queued sends are those rows instead. */
+  showQueuedSend?: boolean
   /** Draw a steer as an ORDINARY user message in every lifecycle state: no
    *  "Steered into the running turn" badge, no accent tint, no entrance ring,
    *  no "Steering…" pulse, no requeued note. For a surface that
@@ -172,7 +179,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, activeReactions, onToggleReaction, reactionError, onClearReactionError, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, activeReactions, onToggleReaction, reactionError, onClearReactionError, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -721,6 +728,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               exclusive to backend-confirmed injection (#7997). Rendering in the
               badge's slot keeps the pending -> consumed / requeued hand-off a
               content change in one place rather than a layout jump. */}
+          {/* Shared Crew: who sent this, when it was someone other than the viewer. */}
+          <MessageByline meta={meta} slotKey={slotKey} />
+          {/* Shared Crew: the host is holding this send for capacity. */}
+          {showQueuedSend && slotKey && <QueuedSendLabel slotKey={slotKey} />}
           {pendingSend && (
             /* The plain send's counterpart to the steer line below: same slot,
                same muted weight, same pulse for a wait still open (a late echo

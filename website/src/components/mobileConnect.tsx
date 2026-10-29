@@ -1,14 +1,14 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../../api/client'
-import { canRenderMobileConnectKind } from '../../components/mobileConnectRenderers'
+import { api } from '../api/client'
+import { canRenderMobileConnectKind } from './mobileConnectRenderers'
 
 // The dialog is lazy; the renderer registry it consults is NOT (imported at the
 // top of this file). The nav rail decides whether to show the "Connect your
 // phone" row before this chunk is ever fetched, so a predicate hiding inside it
 // would answer "cannot draw" for every method until the user had already opened
 // a dialog the row never offered.
-const MobileConnectModal = lazy(() => import('../../components/MobileConnectModal'))
+const MobileConnectModal = lazy(() => import('./MobileConnectModal'))
 
 /** The rail's "Connect your phone" row: its methods, and the dialog it opens. */
 export function useMobileConnect(locationKey: string) {
@@ -47,7 +47,10 @@ export function useMobileConnect(locationKey: string) {
   useEffect(() => {
     if (!hasRenderableMobileConnect) setMobileConnectOpen(false)
   }, [hasRenderableMobileConnect])
-  return { mobileConnectOpen, setMobileConnectOpen, mobileConnectKinds, hasRenderableMobileConnect }
+  return {
+    mobileConnectOpen, setMobileConnectOpen, mobileConnectKinds, hasRenderableMobileConnect,
+    mobileConnectQuery,
+  }
 }
 
 export function MobileConnectDialog({ mobileConnect }: { mobileConnect: ReturnType<typeof useMobileConnect> }) {

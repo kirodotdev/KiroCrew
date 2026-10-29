@@ -1,4 +1,7 @@
 import { useMemo } from 'react'
+import { SendRaceNotice } from '../shared-crew/SendRaceNotice'
+import { SessionCollabStrip } from '../shared-crew/SessionCollabStrip'
+import { composerTypingSignal } from '../shared-crew/typingSignal'
 import { AnimatePresence } from 'framer-motion'
 
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -29,6 +32,8 @@ interface ComposerAboveBandOptions {
   folderSuggestionDecline: () => void
   activeTip: ReturnType<typeof useTipTrigger>['tip']
   dismissTip: ReturnType<typeof useTipTrigger>['dismiss']
+  /** Send now after a lost send race: a new send of the session's draft. */
+  onSendNow: (sessionKey: string) => void
 }
 
 /** The element ChatInput renders above the composer (`aboveComposer`). */
@@ -42,6 +47,7 @@ export function useComposerAboveBand({
   folderSuggestionDecline,
   activeTip,
   dismissTip,
+  onSendNow,
 }: ComposerAboveBandOptions) {
   const { sessionControls, sessionControlsError, sessionControlStatusError, chatFolders, chatFoldersError, folderSortMode, folderSortError } = controls
   // Memoized so the composer's memo holds across page renders that change
@@ -52,6 +58,8 @@ export function useComposerAboveBand({
     return (
     <>
       <VoicePlaybackBar />
+      <SessionCollabStrip sessionKey={activeSlot} typing={composerTypingSignal} />
+      <SendRaceNotice sessionKey={activeSlot} onSendNow={onSendNow} />
       {/* Session-control failures surface HERE, beside the chips they
           are about, rather than on the chat. Both hooks fail closed —
           a failed `/api/apps` renders no chips, a failed status probe
@@ -147,5 +155,5 @@ export function useComposerAboveBand({
       </AnimatePresence>
     </>
     )
-  }, [sessionControlsError, sessionControlStatusError, chatFoldersError, sessionControls.length, folderSuggestion, activeSlot, chatFolders, folderSortMode, folderSortError, sidebarOnScreen, folderSuggestionAccept, folderSuggestionDecline, activeTip, dismissTip, langGen])
+  }, [sessionControlsError, sessionControlStatusError, chatFoldersError, sessionControls.length, folderSuggestion, activeSlot, chatFolders, folderSortMode, folderSortError, sidebarOnScreen, folderSuggestionAccept, folderSuggestionDecline, activeTip, dismissTip, langGen, onSendNow])
 }

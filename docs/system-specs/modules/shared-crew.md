@@ -376,7 +376,9 @@ invite Crew made that was revoked after the list was read admits nobody.
 
 **First share.** While nobody but the owner is in the set and the owner has not
 acknowledged it, the first invite (with a key connected) and the first approve
-answer 409 `first_share_ack_required`. People shows a confirm first: they will see
+answer 409 `first_share_ack_required`. People shows a confirm first: it names who can open the Crew (with local
+authorization off, anyone Tailscale access rules let reach this machine; on,
+only invited and approved people) and where to stop sharing; they will see
 all N sessions and Crew memory (M items), counted from the session catalog and the
 global memory store; on a laptop host it adds that teammates lose access while the
 host sleeps. The acknowledgment is stored once per Crew.
@@ -475,8 +477,9 @@ invited email (never the address) and the outcome.
 
 Share link. While the direct tailnet listener is active, People (`network` mode) and
 the phone dialog show its plain URL, `http://<magicdns-name>:<port>/` first and each
-tailnet address as a fallback, with a copy button and the note that only people on
-the owner and people they invited or approved can open it (`TailnetDirectLink`). The URL carries no token.
+tailnet address as a fallback, with a copy button. The note states that Tailscale
+access rules decide by default and that local authorization adds the Crew access
+set check (`TailnetDirectLink`). The URL carries no token.
 The phone dialog keeps its token-carrying QR and sign-in link under an Advanced fold
 for devices without Tailscale. People adds the device-owner caveat under the list,
 and the macOS empty state (`platform_unprovable`) points at the direct link.
@@ -1051,10 +1054,13 @@ Nothing else the owner set receives reaches a collaborator socket. `GET /api/sha
 
 Message attribution. The session's creator is its default owner, shown on the
 session row in the list (`SessionCreatorByline`). In the transcript a user message
-written by the creator carries no extra label; a message any other participant
-wrote carries the sender's name (`MessageByline`, `sharedCrewUi.bylineFor`). A
-session with no recorded creator (legacy) treats the viewer as the default owner, so
-a single-operator transcript is unchanged. An Unknown author reads as Unknown.
+the viewer wrote carries no extra label; a message anyone else wrote, the session's
+creator included, carries the sender's name (`MessageByline`,
+`sharedCrewUi.bylineFor`), so a right-aligned message without a name is always the
+reader's own. Until the viewer read lands, the session's recorded creator stands in
+for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
+labelled. A single-operator transcript is unchanged, and a personal Crew shows no
+bylines at all. An Unknown author reads as Unknown.
 
 ### Typing lease
 
@@ -1116,9 +1122,9 @@ it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
 stays as it was, and so does focus), replaces the button row with
 `TypingLockBanner` (initials and "<name> is typing…"), and keeps only Stop and
 Steer for a running turn. When the lease ends the box unlocks in place. A send
-refused `composer_locked` restores the draft and records the refusal's lease
-(`api/typingLease.noteComposerLocked`), so the lock shows even before the frame
-lands.
+refused `composer_locked` restores the draft and records the refusal
+(`api/typingLease.noteComposerLocked`), which starts a fresh lease read; the
+lock shown is always the server's latest answer, never the refusal's copy.
 
 ### First submit wins
 
@@ -1168,6 +1174,11 @@ the revision by one and records `{revision, principal, message_id, accepted_at}`
 A loser answers 409 `{"error", "code": "send_race", session_key, current_revision,
 winner: {revision, principal (public), message_id, accepted_at}}`. Nothing was
 accepted: no row, no queue entry, no steer, no turn.
+
+The browser restores a refused `send_race` or `composer_locked` draft to its
+session's draft store. `StableChatInput` subscribes to that store and passes the
+text as a value prop across the memoized editor boundary, so recovery redraws the
+textarea even when its other props stay unchanged.
 
 Send now is a new send with `send_now: true` and `base_revision` set to the
 conflict's `current_revision`. `send_now` forces `steer` off, so it goes through
@@ -1227,9 +1238,89 @@ The server pushes whole-value frames: `shared_crew.presence`, `shared_crew.work`
 client sends `shared_crew.activity` with a session, an `Activity` and, when the
 tab's draft is empty, `draft: "empty"`. The activity frame carries no principal and
 no text; the server stamps the connection's actor and ignores anything else. On reconnect the client refetches the HTTP state and treats the next frames as
-authoritative. It never resubmits a send on its own.
+authoritative. Send-state snapshots are not cancelled by send-state frames: a send
+already waiting on the snapshot keeps its original revision, while revision-aware
+structural sharing retains the newest value in the query cache. Presence and work
+frames invalidate People, and sidebar slot, history and catalog changes invalidate
+People and every creator-filter page, including inactive cached queries.
+The client never resubmits a send on its own.
 
 ## 7. UI states
+
+The sharing surfaces require `KIROCREW_SHARED_CREW_PREVIEW=1` on the gateway:
+the Settings > People tab (with its invite, share and access cards) and the
+direct tailnet link in the phone dialog render only while
+`GET /api/shared-crew/capabilities` reports `shared_crew_preview: true`
+(`sharedCrewUi.sharedCrewPreviewOn`). A missing field, an older gateway or a
+failed read keeps them hidden, and no browser setting turns them on.
+
+Shared Crew query failures render through `ErrorNotice`. A failed refresh keeps
+cached content mounted, including invite emails, name, picture and API-key drafts,
+access confirmations, creator filters, queued sends and collaboration state. An
+initial failure without data shows the error alone; optional routes returning
+404/null still mean unavailable, not failed. An unreadable mode remains an error.
+
+People and the invite/access cards offer retry beside cached form content and
+omit the agent hand-off to protect its drafts. Initial failures and read-only
+surfaces offer the hand-off. The phone dialog owns its capability-read failure;
+the creator-filter bar owns capabilities, mode and People failures for the sidebar.
+The open chat's collaboration strip also owns those reads for message bylines and
+the viewer/typing-lease reads for the composer, including when the sidebar is
+closed, so notices never repeat per message. The one queued-send label owns work
+and capacity failures whether or not its last successful read contains queued work.
+`SharedCrewReadFailures.test.tsx` exercises these query consumers together.
+The People Remote Control card reports a failed connection-method read with an
+error and retry, retains cached methods, and reserves unavailable copy for a
+successful empty response. Its hand-off stays off beside the invite/key drafts.
+The shared phone hook exposes its query without changing the navigation rail.
+
+Invite and credential inputs cannot change during submission. Removing a key
+also locks the invite draft until the confirmed disconnection settles. An avatar upload
+must settle before an invite can be submitted, and cannot replace a picture while
+that invite is pending. Invite creation, access approval, access removal and key
+removal acquire a synchronous submission latch before their asynchronous guard or
+confirmation. The latch releases on cancellation or mutation settlement; failed
+submissions keep the draft for retry.
+
+No list of accepted work renders above the composer, in any state or Crew mode. A
+running turn shows as the chat's own running turn (its stop button), and a finished
+or ended one as its transcript. The one Shared Crew work state with its own line is a
+chat turn the host holds for capacity: while the session has no queue-stack rows,
+its newest user message carries a small "Queued" line with its own Cancel (`QueuedSendLabel`), whose
+tooltip names the personal or Crew-wide limit. Cancel sends `POST
+/api/shared-crew/work/{id}/cancel` at the shown revision once; a stale click adopts
+the current record. A busy session's queued sends stay the queue stack's rows.
+
+| State | Shown as | Draft |
+|---|---|---|
+| `submitted` | the sent bubble | sent |
+| `queued` (chat turn, no queue-stack rows) | "Queued" and Cancel on the newest user bubble | sent |
+| `admitted`, `running`, `cancelling`, `reconciling` | the chat's running turn | sent |
+| `completed`, `failed`, `expired`, `cancelled`, `unknown_outcome` | the transcript; no extra label | sent |
+| `rejected` | refusal notice by the composer, with whose limit and the next step | restored |
+| lost send race (`send_race`, never an `OperationState`) | notice above the composer: "X sent first", Send now, Dismiss; no bubble or error row | restored |
+| someone else typing (typing lease, never an `OperationState`) | composer read-only, button row replaced by "X is typing…"; Stop and Steer stay for a running turn | kept, read-only |
+
+A memory change in a shared Crew shows in its session as one info notice row
+("Bob changed a Crew preference: Always reply in English"). The frame is kept in
+the client cache, newest first, at most 20 (`sharedCrewKeys.memoryChanges`).
+
+People, owner only (`TailscaleAccess`, theme tokens, rows wrap at narrow widths):
+
+| State | Shown as |
+|---|---|
+| someone waiting | Waiting for you: picture or initial, name, login, first try; Approve, Dismiss |
+| nobody waiting | "Nobody is waiting." |
+| approved people | Approved: name, login, when; Remove behind a confirm that names the stopped turn |
+| entries carried over from config | one line listing them |
+| access set unreadable | an inline `ErrorNotice` without the agent hand-off (the Invites card on the page can hold an unsaved invite or API-key draft): only the owner can open the Crew |
+| the first-share acknowledgement fails | the action still runs; its row shows the server's `first_share_ack_required` refusal |
+| an Approve, Dismiss or Remove fails (`not_waiting`, `first_share_ack_required`, any error) | an inline `ErrorNotice` in the row without the agent hand-off (the Invites card can hold an unsaved draft) |
+| the direct link's Copy is refused by the browser | an inline `ErrorNotice` with the agent hand-off; the link stays selectable in its field |
+| the access list read fails (not `owner_only`, not 404) | the card's title and an `ErrorNotice` without the agent hand-off |
+| first invite or approve while nobody else has access | a one-time confirm naming who can open the Crew (anyone Tailscale access rules let reach this machine, or with local authorization on only invited and approved people), the session and Crew memory counts, a laptop note on a laptop host, and where to stop sharing (revoke the invite or remove them from the tailnet; with local authorization on, Remove under Approved or revoke the invite) |
+| Remove key | a confirm, then `DELETE .../credential` with the irreversible-confirm header |
+| teammate or a gateway without the routes | nothing |
 
 ## 8. Capabilities
 
