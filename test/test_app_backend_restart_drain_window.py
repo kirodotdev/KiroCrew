@@ -394,3 +394,39 @@ def test_a_stop_during_the_drain_wins_and_the_replacement_is_stopped(
     assert stopped[1] is None, "the stop removed the reservation"
     assert bmod._lifecycle_generation[_APP][1] == bmod._LIFECYCLE_STOP
     assert _APP not in bmod._processes
+
+
+def test_the_reservation_cleanup_leaves_a_record_that_replaced_it_in_place(
+    restart_env: AppProcess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``finally`` drops the restart's own reservation only, by identity.
+
+    A stop then start during the drain puts the start's own placeholder in the slot.
+    If the cleanup removed whatever record it found, it would take that placeholder
+    with it, and the app would stay down with nothing left to restart it.
+    """
+    successor: list[AppProcess] = []
+
+    def _during() -> None:
+        # Stands in for a stop+start during the drain: a different record now owns
+        # the slot. The denial below keeps the restart from spawning over it.
+        record = bmod._starting_reservation(_APP)
+        with bmod._lock:
+            assert bmod._processes.get(_APP) is not record
+            bmod._processes[_APP] = record
+        successor.append(record)
+        drain.release.set()
+
+    drain = _HeldDrain(during=_during)
+    monkeypatch.setattr(bmod, "_drain_exited_root_tree", drain)
+    monkeypatch.setattr(
+        bmod, "_activation_denied", lambda _n, _a: bmod.ActivationVerdict(denied="policy")
+    )
+    monkeypatch.setattr(
+        bmod, "_start_app_backend_body", lambda *_a: pytest.fail("a denied restart spawned")
+    )
+
+    assert bmod._restart_exited_backend(restart_env, 1) is False
+    assert len(successor) == 1
+    with bmod._lock:
+        assert bmod._processes.get(_APP) is successor[0], "the cleanup removed the successor"
