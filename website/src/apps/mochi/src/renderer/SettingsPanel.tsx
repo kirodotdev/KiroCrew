@@ -896,22 +896,22 @@ const MemoriesSection: React.FC<{
 
   // Walk steps
   if (shouldShowStat(stats.walkSteps)) {
-    rows.push({ Icon: PawPrint, text: i18nT('apps.mochi.stats.walks', { count: fmtNumber(stats.walkSteps) }) })
+    rows.push({ Icon: PawPrint, text: i18nT('apps.mochi.stats.walks', { count: stats.walkSteps, n: fmtNumber(stats.walkSteps) }) })
   }
 
   // Screenshots
   if (shouldShowStat(stats.screenshots)) {
-    rows.push({ Icon: Camera, text: i18nT('apps.mochi.stats.screenshots', { count: fmtNumber(stats.screenshots) }) })
+    rows.push({ Icon: Camera, text: i18nT('apps.mochi.stats.screenshots', { count: stats.screenshots, n: fmtNumber(stats.screenshots) }) })
   }
 
   // Peeks
   if (shouldShowStat(stats.peeks)) {
-    rows.push({ Icon: EyeOff, text: i18nT('apps.mochi.stats.peeks', { count: fmtNumber(stats.peeks) }) })
+    rows.push({ Icon: EyeOff, text: i18nT('apps.mochi.stats.peeks', { count: stats.peeks, n: fmtNumber(stats.peeks) }) })
   }
 
   // Drags
   if (shouldShowStat(stats.drags)) {
-    rows.push({ Icon: MousePointer, text: i18nT('apps.mochi.stats.drags', { count: fmtNumber(stats.drags) }) })
+    rows.push({ Icon: MousePointer, text: i18nT('apps.mochi.stats.drags', { count: stats.drags, n: fmtNumber(stats.drags) }) })
   }
 
   // Thinking time
@@ -942,7 +942,7 @@ const MemoriesSection: React.FC<{
 
   // Longest chat
   if (shouldShowStat(stats.longestChat)) {
-    rows.push({ Icon: MessageCircle, text: i18nT('apps.mochi.stats.longest_chat', { count: fmtNumber(stats.longestChat) }) })
+    rows.push({ Icon: MessageCircle, text: i18nT('apps.mochi.stats.longest_chat', { count: stats.longestChat, n: fmtNumber(stats.longestChat) }) })
   }
 
   // First-use: show a warm welcome if almost no data yet

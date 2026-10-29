@@ -3920,19 +3920,19 @@
       "stats": {
         "busiest_day": "最话多的一天：{{date}}（{{count}} 句）",
         "companion_days": "陪伴了 {{time}}",
-        "drags": "被拽了 {{count}} 次",
+        "drags_other": "被拽了 {{n}} 次",
         "earliest_time": "最早 {{time}} 就起来了",
         "first_use": "和 {{name}} 的故事刚刚开始",
         "latest_time": "最晚陪你到 {{time}}",
-        "longest_chat": "最长一次聊了 {{count}} 句",
+        "longest_chat_other": "最长一次聊了 {{n}} 句",
         "messages": "聊了 {{total}} 句（你 {{sent}} · {{name}} {{received}}）",
         "mood_top": "心情分布",
-        "peeks": "偷瞄了 {{count}} 次",
-        "screenshots": "帮你看了 {{count}} 次屏幕",
+        "peeks_other": "偷瞄了 {{n}} 次",
+        "screenshots_other": "帮你看了 {{n}} 次屏幕",
         "streak": "（连续 {{streak}} 天）",
         "thinking_time": "想了 {{time}}",
         "title": "回忆",
-        "walks": "走了 {{count}} 步"
+        "walks_other": "走了 {{n}} 步"
       },
       "tip": {
         "bedtime": "试试：“11点提醒我该睡了”",
@@ -16073,7 +16073,7 @@
       "status_error": "已结束",
       "status_running": "运行中",
       "title": "会话拆解",
-      "tool_count": "{{count}} 个工具",
+      "tool_count_other": "{{n}} 个工具",
       "unknown_agent": "子代理",
       "unknown_model": "未知"
     },
@@ -16117,7 +16117,7 @@
       "prev_page": "上一页",
       "preview_sweep": "预览清理",
       "reclaim_by_age": "按时间回收",
-      "refused_heading": "{{count}} 个会话无法移动",
+      "refused_heading_other": "{{n}} 个会话无法移动",
       "refused_in_use": "会话正在使用中",
       "refused_resumable": "仍可继续",
       "refused_too_fresh": "会话太新",

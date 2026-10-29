@@ -248,6 +248,19 @@ describe('MochiPage memories card', () => {
     expect(screen.getByText('Scared 25%')).toBeTruthy()
   })
 
+  it('counts a single walk, look, peek, drag and chat message in the singular', async () => {
+    vi.mocked(api.getStats).mockResolvedValue({
+      ...STATS, walkSteps: 1, screenshots: 1, peeks: 1, drags: 1, longestChat: 1,
+    })
+    renderPage()
+    await waitForLive()
+    expect(await screen.findByText(/^1 step$/)).toBeTruthy()
+    expect(screen.getByText('Looked at your screen 1 time')).toBeTruthy()
+    expect(screen.getByText('Peeked 1 time')).toBeTruthy()
+    expect(screen.getByText('Dragged 1 time')).toBeTruthy()
+    expect(screen.getByText('Longest chat: 1 message')).toBeTruthy()
+  })
+
   it('drops zero-valued rows and the mood strip when nothing was recorded', async () => {
     vi.mocked(api.getStats).mockResolvedValue({
       ...STATS,
