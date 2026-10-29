@@ -30,6 +30,8 @@ import {
 import {
   BUILTIN_PROVISIONER_ID,
   shortenEcsTarget,
+  transportPresentation,
+  transportTarget,
   usesSsmTransport,
 } from '../../utils/remoteCrew'
 import { Btn, Badge, IconButton, Toggle } from '../../components/ui'
@@ -45,6 +47,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { i18nT } from '../../i18n/t'
 import { guideCaution } from '../../guide/trustRoot'
+import { transportCopy, unmappedTransportHint } from './transportCopy'
 import { StatusBadge } from './InstancesPanel'
 import CrewVersionStatus from './CrewVersionStatus'
 import {
@@ -54,21 +57,28 @@ import {
 import type { SigninNotice } from './remoteCrewPanelModel'
 import { SigninPromptBlock } from './RemoteCrewPanelLaunch'
 
-const connectionTypeLabel = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
+// An unmapped method renders as its own name with a "not supported by this
+// build" hint, rather than inheriting SSH's label and SSH's explanation the way
+// the previous `? :` chains did. The copy itself lives in `transportCopy.ts`,
+// type-bound to the mapping so a new transport without copy fails the typecheck.
+const connectionTypeLabel = (inst: InstanceView): string => {
+  const { method } = transportPresentation(inst)
+  // Unmapped: the raw method name. Not translated, because it is a machine
+  // identifier this build has no copy for — same as printing a host.
+  return transportCopy(method)?.label() ?? method
+}
 
-// The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
-// not know; the hover title spells out what each one means.
-const connectionTypeHint = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.transport_hint_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.transport_hint_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.transport_hint_ssh')
+// Always a non-empty hint: a mapped method explains itself, and an unmapped one
+// says this build cannot connect over it, so the raw name and blank address on
+// that row are never left unexplained.
+const connectionTypeHint = (inst: InstanceView): string => {
+  const { method } = transportPresentation(inst)
+  return transportCopy(method)?.hint() ?? unmappedTransportHint(method)
+}
+
+// The port segment carries its own leading separator ("· remote port"), which
+// reads as a stray dot when no target precedes it.
+const withoutLeadingSeparator = (text: string): string => text.replace(/^(\[?)·\s*/, '$1')
 
 /**
  * What a connected fargate crew offers instead of a dashboard: the loopback
@@ -264,7 +274,7 @@ export function CrewRow({
   // States that occupy the row's second control slot with an inline button.
   const transient =
     deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
-  const target = usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host
+  const target = transportTarget(inst)
   // A CHAINED row's host is a RECORD, not a target. It arrives in the announcing
   // pane's payload and this gateway never dials it: `_resolve_transport` returns the
   // PARENT's host for any row carrying `via_instance_id`, so the row's own `ssh_host`
@@ -315,7 +325,9 @@ export function CrewRow({
                 : target}
             {reportedOnly
               ? ''
-              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
+              : target
+                ? `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`
+                : ` ${withoutLeadingSeparator(i18nT('pages.settings.instancesPanel.port_2'))} ${inst.remote_port}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
             {!inst.disabled && <StatusBadge status={inst.status} />}

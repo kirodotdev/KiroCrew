@@ -51,8 +51,9 @@ import {
   BUILTIN_PROVISIONER_ID,
   WARM_SET_CAP_AUTO_CEILING,
   hasDashboardPane,
+  DEFAULT_CONNECTION_METHOD,
   launchIsInFlight,
-  usesSsmTransport,
+  transportPresentation,
 } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
@@ -661,7 +662,7 @@ export function RemoteCrewPanel() {
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
-        transport: inst && usesSsmTransport(inst) ? 'ssm' : 'ssh',
+        transport: inst ? transportPresentation(inst).method : DEFAULT_CONNECTION_METHOD,
         status: benign ? withoutDiagnosis : st,
         stage: 'connect',
         fallbackMessage: kind === 'warn' ? reason || '' : '',
