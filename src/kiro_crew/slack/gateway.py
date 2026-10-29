@@ -529,6 +529,8 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _kas_floor_gates_spawns,
     _live_session_agents,
     _live_session_work_dirs,
+    _main_stored_as_kiro,
+    _reconcile_live_config_with_kiro_verdict,
     _run_signing_key_preflight_bounded,
     _start_coder_retention,
     _start_kas_cli_floor,

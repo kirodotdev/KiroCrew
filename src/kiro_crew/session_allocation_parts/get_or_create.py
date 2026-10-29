@@ -880,6 +880,10 @@ async def _get_or_create_impl(
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
         await await_kas_floor_verdict(member=_is_member_key(key))
+        # The verdict can install a new factory before it releases this wait (a
+        # confirmed v3 reloads the live config), so a waiting spawn takes the
+        # factory in force now, not the one it copied before waiting.
+        factory = owner._provider_factory or factory
         provider = factory(
             key,
             agent=agent,

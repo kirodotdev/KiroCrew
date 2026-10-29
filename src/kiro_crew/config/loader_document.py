@@ -101,6 +101,31 @@ def member_acp_backend_declared() -> bool:
     return _backend_choice_declared("member_acp_backend")
 
 
+def acp_backend_stored_as_kiro() -> bool:
+    """Whether the stored ``agent.acp_backend`` is the Kiro CLI choice (``"kiro"``).
+
+    A load resolves that choice to KAS while kiro-cli offers its v3 engine, so the
+    in-memory field cannot say the user picked Kiro CLI; this reads the documents,
+    with the ``config.local.json`` overlay winning, like
+    :func:`acp_backend_declared`. Read by the gateway's KAS floor (a Kiro CLI pick
+    waits for the probe and keeps the v2 launch on a kiro-cli without v3), by the
+    once-only dashboard notice and by the Agent Harness panel's offer to save KAS.
+    """
+    from kiro_crew.acp_backends import STORED_BACKEND_KIRO
+
+    return _stored_agent_value("acp_backend") == STORED_BACKEND_KIRO
+
+
+def acp_backend_overlay_owned() -> bool:
+    """Whether the ``config.local.json`` overlay names ``agent.acp_backend``.
+
+    The dashboard writes ``config.json``, and the overlay wins over it, so an
+    overlay-owned choice is one the Agent Harness panel cannot change.
+    """
+    agent = _raw_agent_section(config_local_path())
+    return agent is not None and "acp_backend" in agent
+
+
 def _backend_choice_declared(key: str) -> bool:
     """Whether the stored ``agent.<key>`` holds a value other than absent or ``""``."""
     value = _stored_agent_value(key)

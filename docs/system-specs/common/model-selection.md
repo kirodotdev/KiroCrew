@@ -211,6 +211,12 @@ is the model-registry namespace of the backend that will run the session
 (`agent_sdk.backends.model_registry_namespace`), so two harnesses sharing one
 vocabulary — `kiro` and `kas`, both `acp` — share pins, and a harness added through
 the `ACP_BACKEND_*` seam is covered by having a namespace rather than by a branch.
+That sharing is also why a stored Kiro CLI pick that now runs on KAS
+([harness-parity](../modules/harness-parity.md) H1) keeps every model pin and role
+model it had: the session's namespace is still `acp`, so nothing is re-scoped, and
+reasoning effort reaches the engine as KAS's session config option
+(`ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`) instead of the `cli.json` overlay
+(`ACP_BACKENDS_EFFORT_OVERLAY`).
 
 A pin is refused only when BOTH hold:
 

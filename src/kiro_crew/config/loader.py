@@ -833,6 +833,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _stored_agent_value,
         _type_names,
         acp_backend_declared,
+        acp_backend_overlay_owned,
+        acp_backend_stored_as_kiro,
         coerce_config_field,
         coerce_dict_section,
         config_content_stamp,

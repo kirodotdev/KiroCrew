@@ -202,7 +202,13 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     // Owner-only, and absent (404) on an older gateway. Both of those reach the
     // caller as a rejection, which is the intended signal: "no probe information",
     // to be treated as fail-open rather than as a verdict.
-    acpBackends: () => fetch('/api/acp-backends').then(j) as Promise<{ backends: AcpBackendProbe[] }>,
+    // `kiro_selection_runs_on_kas`: `agent.acp_backend` is stored as Kiro CLI and
+    // sessions run it on KAS, so the Agent Harness panel offers to save KAS.
+    acpBackends: () =>
+      fetch('/api/acp-backends').then(j) as Promise<{
+        backends: AcpBackendProbe[]
+        kiro_selection_runs_on_kas?: boolean
+      }>,
     // Re-take ONE backend's verdict with this gateway's cached absence dropped first,
     // and answer with that backend's row in the shape `acpBackends` sends -- so the
     // caller splices it into the list it already holds rather than keeping a second

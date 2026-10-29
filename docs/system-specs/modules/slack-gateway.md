@@ -153,7 +153,19 @@ declarations off-loop, then releases explicitly chosen roles before running the
 probe off-loop. That same declaration read supplies the notice wording: KAS is
 named the default only when every resolved KAS role is undeclared; an explicit
 choice or failed read keeps the selected wording. The floor receives this verdict
-as `kas_defaulted` and does not reread declarations. A defaulted role waits until
+as `kas_defaulted` and does not reread declarations. A main backend that resolved
+to Kiro CLI is armed too; the declaration read releases it at once unless it is
+stored as the Kiro CLI pick (`acp_backend_stored_as_kiro`), which waits for the
+probe like a defaulted role and reaches the floor as `kiro_selected`. A probe that
+ran and names v3 then records `confirm_kiro_cli_offers_kas`, sets the field to KAS and forces one
+config-watcher cycle (`_reconcile_live_config_with_kiro_verdict`) before the floor
+task ends, so `SessionManager` rebuilds its provider factory from a fresh load; one that ran without v3 logs a notice that the pick stays on
+kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or the bundle
+route leaves the pick on kiro-cli. After `_init_dashboard`,
+`kiro_on_kas_notice.schedule` waits for the floor task, then posts one bell note
+(`system.agent`, linking `/settings/agent`) when the stored pick is Kiro CLI and it
+loads as KAS (`kiro_cli_pick_backend`); an `O_EXCL` marker in the data home makes it once per
+install. A defaulted role waits until
 the floor task finishes, including
 failure or cancellation. Every wait shares the deadline set at arm time, bounded
 by the probe timeout; releasing another role does not reset it. Waiter cancellation

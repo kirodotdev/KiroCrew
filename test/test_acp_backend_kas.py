@@ -657,3 +657,63 @@ class TestNoImportCycle:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip().split("|") == ["", ""]
+
+
+class TestAKiroCliPickRunsOnKasOnceV3IsConfirmed:
+    """A stored Kiro CLI pick runs on KAS only once this process confirmed v3.
+
+    kiro-cli serves a bare ``acp`` on its v3 (KAS) engine, and only the KAS path
+    drives it; the gateway's probe is the evidence (the a-kiro-cli-choice-runs-on-kas
+    entry in docs/decisions).
+    """
+
+    @pytest.fixture
+    def registry(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+
+        monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+        monkeypatch.setattr(backends, "_host_unservable", {})
+        monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+        return backends
+
+    def test_without_evidence_the_pick_keeps_kiro_cli(self, tmp_path, registry):
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+        assert cfg.to_dict()["agent"]["acp_backend"] == KIRO_STORED
+
+    def test_a_confirmed_v3_kiro_cli_runs_the_pick_on_kas(self, tmp_path, registry):
+        registry.confirm_kiro_cli_offers_kas()
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KAS
+        provider = cfg.create_provider_factory()(session_key="test:kiro-pick", agent="")
+        assert provider.is_kas_backend is True
+
+    def test_the_bundle_route_keeps_the_pick_on_kiro_cli(self, tmp_path, registry):
+        """A v3 kiro-cli says nothing about the bundled engine, which may be absent."""
+        registry.confirm_kiro_cli_offers_kas()
+        cfg = _load_agent_config({"acp_backend": KIRO_STORED, "kas_bundle": True}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+        provider = cfg.create_provider_factory()(session_key="test:bundle-pick", agent="")
+        assert provider.is_kiro_backend is True
+
+    def test_a_policy_that_denies_kas_keeps_kiro_cli(self, tmp_path, registry):
+        registry.confirm_kiro_cli_offers_kas()
+        registry.apply_selectable_denials({ACP_BACKEND_KAS})
+        try:
+            cfg = _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path)
+        finally:
+            registry.apply_selectable_denials(set())
+        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+
+    @pytest.mark.parametrize("bad", ["kiro-cli", "byo-harness", 7, True, [], None])
+    def test_a_degraded_value_takes_the_floor_not_kas(self, bad, tmp_path, registry):
+        """The floor a typo takes is not a pick (harness-parity H3)."""
+        registry.confirm_kiro_cli_offers_kas()
+        assert _load_agent_config({"acp_backend": bad}, tmp_path).agent.acp_backend == (
+            ACP_BACKEND_KIRO
+        )
+
+    def test_a_malformed_value_is_warned_about_once(self, tmp_path, registry, caplog):
+        caplog.set_level("WARNING")
+        _load_agent_config({"acp_backend": 7}, tmp_path)
+        assert caplog.text.count("Ignoring agent.acp_backend") == 1

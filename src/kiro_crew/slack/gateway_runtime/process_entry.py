@@ -225,7 +225,7 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
     never waits for either the declaration read or the probe.
     """
     global _KAS_CLI_FLOOR_TASK
-    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
     from kiro_crew.agent_sdk import kas_floor_wait
 
     async def _run() -> None:
@@ -235,9 +235,18 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
                 task, main=not main_default, member=not member_default
             )
             kas_defaulted = (
-                (main or member) and (not main or main_default) and (not member or member_default)
+                (kas_main or member)
+                and (not kas_main or main_default)
+                and (not member or member_default)
             )
-            await asyncio.to_thread(apply_kas_cli_floor, cfg, kas_defaulted=kas_defaulted)
+            kiro_selected = kiro_main and await asyncio.to_thread(_main_stored_as_kiro)
+            await asyncio.to_thread(
+                apply_kas_cli_floor,
+                cfg,
+                kas_defaulted=kas_defaulted,
+                kiro_selected=kiro_selected,
+            )
+            await _reconcile_live_config_with_kiro_verdict()
         except Exception:
             logging.getLogger(__name__).warning(
                 "KAS kiro-cli floor check failed; continuing", exc_info=True
@@ -245,11 +254,14 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
 
     agent = getattr(cfg, "agent", None)
     bundle = getattr(agent, "kas_bundle", False)
-    main = not bundle and getattr(agent, "acp_backend", None) == ACP_BACKEND_KAS
+    kas_main = not bundle and getattr(agent, "acp_backend", None) == ACP_BACKEND_KAS
+    # A Kiro CLI main backend may be a stored pick the probe moves onto KAS, so it
+    # is armed too; the declaration read releases it at once when it is not one.
+    kiro_main = not bundle and getattr(agent, "acp_backend", None) == ACP_BACKEND_KIRO
     member = not bundle and getattr(agent, "member_acp_backend", None) == ACP_BACKEND_KAS
     task = asyncio.create_task(_run(), name="kas-cli-floor")
     _KAS_CLI_FLOOR_TASK = task
-    kas_floor_wait.arm_kas_floor_wait(task, main=main, member=member)
+    kas_floor_wait.arm_kas_floor_wait(task, main=kas_main or kiro_main, member=member)
     return _KAS_CLI_FLOOR_TASK
 
 
@@ -260,25 +272,65 @@ def _kas_floor_gates_spawns(cfg: KiroCrewConfig) -> tuple[bool, bool]:
     the floor never probes, gates neither. A config that cannot be read releases
     both roles, leaving the spawn's configured backend unchanged.
     """
-    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
     agent = getattr(cfg, "agent", None)
     if getattr(agent, "kas_bundle", False):
         return False, False
     kas_main = getattr(agent, "acp_backend", None) == ACP_BACKEND_KAS
+    kiro_main = getattr(agent, "acp_backend", None) == ACP_BACKEND_KIRO
     kas_member = getattr(agent, "member_acp_backend", None) == ACP_BACKEND_KAS
-    if not (kas_main or kas_member):
+    if not (kas_main or kiro_main or kas_member):
         return False, False
     try:
         from kiro_crew.config.loader import acp_backend_declared, member_acp_backend_declared
+        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
 
+        # A stored Kiro CLI pick moves to KAS only on the probe's positive verdict,
+        # so it waits for that verdict: a spawn before it would start the v2 launch
+        # on a kiro-cli whose bare ``acp`` already runs v3.
         return (
-            kas_main and not acp_backend_declared(),
+            (kas_main and not acp_backend_declared())
+            or (kiro_main and acp_backend_stored_as_kiro()),
             kas_member and not member_acp_backend_declared(),
         )
     except Exception:
         logging.getLogger(__name__).debug("backend declared-check failed", exc_info=True)
         return False, False
+
+
+async def _reconcile_live_config_with_kiro_verdict() -> None:
+    """Hand a confirmed v3 verdict to the LIVE config, before any spawn waiter is released.
+
+    The verdict changes what a stored Kiro CLI pick loads as, but the provider
+    factory in force was built from whatever config the watcher last adopted --
+    the boot copy, or a later reload taken while the probe was pending. One forced
+    watcher cycle reloads ``config.json``: the stored pick now loads as KAS, the
+    diff names ``agent.acp_backend``, and ``SessionManager`` rebuilds its factory
+    from that fresh load, so a settings change made meanwhile is kept. Runs on the
+    floor task, so a waiting spawn proceeds only after it. A no-op without a
+    confirmation or a started watcher.
+    """
+    from kiro_crew.agent_sdk.backends import kiro_cli_offers_kas
+    from kiro_crew.config import live
+
+    if not kiro_cli_offers_kas():
+        return
+    watcher = live.watch()
+    if not watcher.started:
+        return
+    await watcher.refresh_now()
+
+
+def _main_stored_as_kiro() -> bool:
+    """Whether ``agent.acp_backend`` is stored as the Kiro CLI pick. Blocking; never raises."""
+    try:
+        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
+
+        return acp_backend_stored_as_kiro()
+    except Exception:
+        logging.getLogger(__name__).debug("stored backend read failed", exc_info=True)
+        return False
 
 
 def _start_coder_retention(cfg: KiroCrewConfig) -> None:

@@ -8,7 +8,7 @@ import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Badge } from '../../components/ui'
+import { Badge, Btn } from '../../components/ui'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -318,6 +318,8 @@ export function AgentBackendTab() {
    * there once the real value arrived. Resolved every render by `shown` instead.
    */
   const [highlighted, setHighlighted] = useState<string | null>(null)
+  /** The Kiro CLI → Kiro Agent callout's own save, so only that click shows its confirmation. */
+  const [savedKiroAgent, setSavedKiroAgent] = useState(false)
   /**
    * A failure of one of the STRIP's own controls -- the re-check, or the copy.
    *
@@ -358,7 +360,7 @@ export function AgentBackendTab() {
    * cheaper than the answer it re-reads, and the endpoint is a resolver read behind
    * that TTL cache rather than a fresh shell-out per request.
    */
-  const probeQ = useQuery<{ backends: AcpBackendProbe[] }>({
+  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -393,10 +395,18 @@ export function AgentBackendTab() {
     // the restart was just the next session spawn.
     clearCachedModels()
     qc.resetQueries({ queryKey: ['available-models'] })
+    // The probe carries `kiro_selection_runs_on_kas`, which reads the STORED pick, so
+    // a save that changed it must re-ask rather than wait out the poll.
+    qc.invalidateQueries({ queryKey: ['acpBackends'] })
   }
 
   const patchMut = useMutation({
     mutationFn: (value: string) => api.patchConfig(CONFIG_KEY, value),
+    // A later save of anything but Kiro Agent ends the callout's "saved" state,
+    // so a Kiro CLI pick made after it brings the callout and row marker back.
+    onMutate: (value: string) => {
+      if (value !== KAS) setSavedKiroAgent(false)
+    },
     onSuccess: () => {
       setActionError('')
       applyBackendSwitchSideEffects()
@@ -432,9 +442,12 @@ export function AgentBackendTab() {
    * survives inside the poll's TTL window.
    */
   const spliceProbeRow = (row: AcpBackendProbe) =>
-    qc.setQueryData<{ backends: AcpBackendProbe[] }>(['acpBackends'], prev =>
+    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>(['acpBackends'], prev =>
       prev
         ? {
+            // The response's other fields (the Kiro CLI → Kiro Agent flag) are
+            // not this row's to drop.
+            ...prev,
             backends: prev.backends.some(b => b.id === row.id)
               ? prev.backends.map(b => (b.id === row.id ? row : b))
               : [...prev.backends, row],
@@ -537,6 +550,9 @@ export function AgentBackendTab() {
   }
 
   const current = cfgQ.data ? configuredAcpBackend(cfgQ.data) : DEFAULT_ACP_BACKEND
+  /** A stored Kiro CLI pick that sessions run on KAS, until this panel saves KAS. */
+  const kiroPickRunsOnKas =
+    probeQ.data?.kiro_selection_runs_on_kas === true && !(savedKiroAgent && patchMut.isSuccess)
 
   /**
    * `undefined` while the schema is in flight — the switch stays enabled rather
@@ -1393,6 +1409,54 @@ export function AgentBackendTab() {
           Rendered only under a router: the panel is also rendered bare, in tests
           and captures, where there is no URL to read. */}
       {inRouter && <SignInDeepLink onSignIn={() => highlightRow(KIRO_SIGN_IN_BACKEND)} />}
+      {/* A stored Kiro CLI pick that sessions run on KAS: kiro-cli now serves its
+          v3 (KAS) engine, and the server resolves the pick there
+          (`agent_sdk.backends.KIRO_SELECTION_BACKEND`). The list below already
+          marks KAS as in use; this is the one click that makes the setting say so,
+          and where the once-only bell note about it lands. */}
+      {kiroPickRunsOnKas && (
+        <SettingsCard>
+          <div data-testid="kiro-runs-on-kas" className="flex flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1">
+              {/* Both states, side by side: what is saved and what runs. */}
+              <p
+                data-testid="kiro-runs-on-kas-states"
+                className="m-0 text-[13px] font-medium leading-relaxed text-text-strong"
+              >
+                {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_states', {
+                  saved: nameOf(KIRO),
+                  running: nameOf(KAS),
+                })}
+              </p>
+              <p className="m-0 text-[13px] leading-relaxed text-text">
+                {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas')}
+              </p>
+            </div>
+            <Btn
+              primary
+              type="button"
+              disabled={patchMut.isPending}
+              onClick={() => {
+                setSavedKiroAgent(true)
+                patchMut.mutate(ACP_BACKEND_KAS)
+              }}
+            >
+              {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_save')}
+            </Btn>
+          </div>
+        </SettingsCard>
+      )}
+      {/* Where the callout was, so the click visibly landed: the list below
+          already showed Kiro Agent in use and does not change. */}
+      {savedKiroAgent && patchMut.isSuccess && patchMut.variables === ACP_BACKEND_KAS && (
+        <p
+          role="status"
+          data-testid="kiro-runs-on-kas-saved"
+          className="m-0 text-[13px] leading-relaxed text-text"
+        >
+          {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_saved')}
+        </p>
+      )}
       <SettingsCard>
         <p className="mb-0 text-[13px] leading-relaxed text-muted">
           {i18nT('pages.developer.agentBackendTab.new_sessions_use_this_agent_a_session_that_is_al')}
@@ -1437,6 +1501,16 @@ export function AgentBackendTab() {
                         title={i18nT('pages.developer.agentBackendTab.use_button_in_use')}
                       >
                         {i18nT('pages.developer.agentBackendTab.use_button_in_use')}
+                      </span>
+                    )}
+                    {/* The stored pick, when it is not what runs: the callout above
+                        names both, and this row is the one its first half means. */}
+                    {value === KIRO && kiroPickRunsOnKas && (
+                      <span
+                        data-testid="kiro-row-your-setting"
+                        className="text-[11px] font-medium text-muted"
+                      >
+                        {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_your_setting')}
                       </span>
                     )}
                     {/* No verdict is not a verdict: a probe that did not answer gets

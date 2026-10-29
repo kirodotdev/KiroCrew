@@ -114,6 +114,8 @@ from kiro_crew.cli_doctor_parts.host_probes import (
 from kiro_crew.cli_doctor_parts.kas_relay import (
     _doctor_kas,
     _kas_relay_help,
+    _kiro_cli_selected,
+    _kiro_pick_runs_on_kas,
     _report_bundle_kiro_cli_refusal,
     _report_kas_backend,
     _report_kas_bundle,

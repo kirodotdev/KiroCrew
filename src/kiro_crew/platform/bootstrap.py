@@ -425,8 +425,17 @@ KAS_CLI_FLOOR_DEFAULT_NOTICE = (
     "Update kiro-cli and restart Kiro Crew to use KAS."
 )
 
+#: The notice when the user picked Kiro CLI: the pick runs on KAS only while
+#: kiro-cli offers its v3 engine, so on this kiro-cli it keeps the v2 launch.
+KAS_CLI_FLOOR_KIRO_NOTICE = (
+    "Kiro CLI is selected and {reason}, so Kiro Crew keeps running kiro-cli's v2 "
+    "engine. kiro-cli is retiring v2: run `kiro-cli update` and restart Kiro Crew."
+)
 
-def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -> str | None:
+
+def apply_kas_cli_floor(
+    cfg: "KiroCrewConfig", *, kas_defaulted: bool = False, kiro_selected: bool = False
+) -> str | None:
     """Fall back to kiro-cli when KAS is configured but this kiro-cli cannot serve it.
 
     The same ``acp --help`` probe ``kirocrew doctor`` reports from, turned into a
@@ -437,9 +446,11 @@ def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -
     changed.
 
     Probes only when KAS is what this install would run — the main or member
-    backend — and still selectable. An unknown verdict (no pinned kiro-cli, a
-    failed spawn) leaves KAS selected: the floor never acts on a fact it could not
-    establish.
+    backend — or the main backend is a stored Kiro CLI pick (*kiro_selected*), and
+    KAS is still selectable. An unknown verdict (no pinned kiro-cli, a failed spawn)
+    leaves KAS selected and a Kiro CLI pick on kiro-cli's v2 launch: the floor never
+    acts on a fact it could not establish. Only a probe that ran and names the v3
+    engine moves a Kiro CLI pick onto KAS (``confirm_kiro_cli_offers_kas``).
 
     Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
     policy-narrowed set. Not part of ``bootstrap_context`` itself: that runs in
@@ -451,29 +462,47 @@ def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -
     """
     from kiro_crew.acp_backends import (
         ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
         mark_backend_unservable,
         resolve_selected_backend,
         selectable_backends,
     )
+    from kiro_crew.agent_sdk.backends import confirm_kiro_cli_offers_kas, kiro_cli_pick_backend
 
     agent = cfg.agent
-    if ACP_BACKEND_KAS not in (agent.acp_backend, agent.member_acp_backend):
+    kas_roles = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
+    kiro_pick = kiro_selected and agent.acp_backend == ACP_BACKEND_KIRO
+    if not (kas_roles or kiro_pick):
         return None
     if agent.kas_bundle:
         # The bundle route spawns Kiro Crew's own engine and never runs kiro-cli,
         # so kiro-cli's engine support is not a fact about this host's KAS. Acting
-        # on it would silently move a bundle-route user back onto kiro-cli.
+        # on it would silently move a bundle-route user back onto kiro-cli, and a
+        # Kiro CLI pick there stays on kiro-cli rather than on the bundled engine.
         return None
     if ACP_BACKEND_KAS not in selectable_backends():
         return None
-    from kiro_crew.agent_sdk import kas_engine_unsupported_reason
+    from kiro_crew.agent_sdk import kas_engine_verdict
 
-    reason = kas_engine_unsupported_reason()
+    offers_kas, reason = kas_engine_verdict()
+    if offers_kas:
+        # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
+        # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
+        # process, so the verdict is recorded whatever the boot backend was.
+        confirm_kiro_cli_offers_kas()
+        if kiro_pick:
+            agent.acp_backend = kiro_cli_pick_backend()
+        return None
     if reason is None:
         return None
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
-    template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
-    notice = template.format(reason=reason)
+    parts = []
+    if kiro_pick:
+        parts.append(KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason))
+    if kas_roles:
+        template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
+        parts.append(template.format(reason=reason))
+    notice = " ".join(parts)
     logger.warning(notice)
     return notice

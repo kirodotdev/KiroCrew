@@ -128,7 +128,7 @@ provider.
 |-------|---------|-------|
 | absent or `""` | Kiro Agent (KAS) | No choice: the default. Falls back to kiro-cli when KAS is unavailable. |
 | `kas` | Kiro Agent (KAS) | Served through kiro-cli's `acp --agent-engine v3` relay. |
-| `kiro` | kiro-cli | The Kiro CLI choice. |
+| `kiro` | kiro-cli | The Kiro CLI choice. kiro-cli now serves its sessions on its v3 (KAS) engine, so once Kiro Crew confirms your kiro-cli offers v3 this choice runs through KAS, and the dashboard offers one click to save `kas`. On a kiro-cli too old for v3 it keeps the older engine, and `kirocrew doctor` names `kiro-cli update`. |
 | `claude` | Claude Code | Uses the public `claude-agent-acp` adapter. |
 | `codex` | Codex | Uses the Codex ACP adapter. |
 | `opencode` | OpenCode | Uses OpenCode's native ACP server. |

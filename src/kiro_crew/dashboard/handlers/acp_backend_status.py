@@ -267,7 +267,22 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
     if denial is not None:
         return denial
     backends = await asyncio.to_thread(_snapshot)
-    return web.json_response({"backends": backends})
+    runs_on_kas = await asyncio.to_thread(_kiro_selection_runs_on_kas)
+    # ``kiro_selection_runs_on_kas``: the stored pick is Kiro CLI and sessions run it
+    # on KAS (``agent_sdk.backends.KIRO_SELECTION_BACKEND``). The panel offers the
+    # one-click save of KAS on it, so the setting says what runs.
+    return web.json_response({"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas})
+
+
+def _kiro_selection_runs_on_kas() -> bool:
+    """BLOCKING. ``False`` on any failure: the offer is optional, the panel is not."""
+    try:
+        from kiro_crew.kiro_on_kas_notice import kiro_selection_runs_on_kas
+
+        return kiro_selection_runs_on_kas()
+    except Exception:
+        logger.debug("could not read whether Kiro CLI runs on KAS", exc_info=True)
+        return False
 
 
 async def api_acp_backend_recheck(request: web.Request) -> web.Response:

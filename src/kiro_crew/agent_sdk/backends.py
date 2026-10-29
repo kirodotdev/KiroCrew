@@ -360,6 +360,20 @@ STORED_BACKEND_KIRO = "kiro"
 # or ``""``) and KAS is selectable.
 DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
+# The harness an explicit Kiro CLI choice runs on once this host's kiro-cli is known
+# to offer its v3 (KAS) engine. kiro-cli serves ``acp`` on v3 by default and is
+# retiring v2, and a bare ``kiro-cli acp`` on v3 reads none of what Crew writes for
+# the v2 harness (the per-spawn skill-view aliases, the ``cli.json`` effort overlay,
+# the re-filtered agent specs). So :func:`resolve_selected_backend` hands the pick
+# to Crew's KAS path, which drives that engine with KAS's launch, projection,
+# permissions and compaction -- but only after the gateway's ``acp --help`` probe
+# has CONFIRMED v3 (:func:`confirm_kiro_cli_offers_kas`) and while KAS is
+# selectable. Without that evidence (another process, an unknown verdict, the
+# bundle route, a policy that denies KAS) the pick keeps the v2 launch. The stored
+# value is never rewritten: ``config.json`` still says ``"kiro"`` until the user
+# saves KAS (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+KIRO_SELECTION_BACKEND = ACP_BACKEND_KAS
+
 # Membership gate for the ``acp_backend`` kwarg. An unrecognized value would
 # otherwise fall through every ``_is_<backend>`` check and silently spawn
 # kiro-cli, so provider construction rejects it instead.
@@ -572,6 +586,12 @@ _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 # recompute subtracts it again rather than restoring what the host cannot run.
 _host_unservable: dict[str, str] = {}
 
+# Whether THIS process has positive evidence that the host's kiro-cli offers its v3
+# (KAS) engine: set by the gateway's KAS floor when ``acp --help`` ran and names the
+# engine. The one condition under which a Kiro CLI pick runs on
+# :data:`KIRO_SELECTION_BACKEND`; an unknown verdict leaves it unset.
+_kiro_cli_offers_kas: bool = False
+
 
 def register_selectable_backend(backend: str) -> None:
     """Make *backend* selectable in ``agent.acp_backend``.
@@ -692,6 +712,22 @@ def mark_backend_unservable(backend: str, reason: str) -> None:
     _selectable.discard(backend)
 
 
+def confirm_kiro_cli_offers_kas() -> None:
+    """Record that this host's kiro-cli offers its v3 (KAS) engine.
+
+    Called by the gateway's KAS floor only on a probe that RAN and names the
+    engine. From then on a Kiro CLI pick resolves to :data:`KIRO_SELECTION_BACKEND`
+    while KAS is selectable.
+    """
+    global _kiro_cli_offers_kas
+    _kiro_cli_offers_kas = True
+
+
+def kiro_cli_offers_kas() -> bool:
+    """Whether :func:`confirm_kiro_cli_offers_kas` ran in this process."""
+    return _kiro_cli_offers_kas
+
+
 def host_unservable_reason(backend: str) -> str | None:
     """Why this host cannot serve *backend*, or ``None`` when nothing was recorded."""
     return _host_unservable.get(backend)
@@ -779,6 +815,11 @@ def resolve_selected_backend(value: object) -> str:
     :func:`backend_from_stored` first, which turns "no choice" (absent or ``""``)
     into ``None`` and the stored ``"kiro"`` into :data:`ACP_BACKEND_KIRO`.
 
+    :data:`ACP_BACKEND_KIRO` resolves to itself here. Moving a stored Kiro CLI pick
+    onto KAS happens once, at config load (:func:`kiro_cli_pick_backend`, called by
+    ``_read_backend_choice``), so a value this gate already answered -- the floor a
+    degraded member backend took, say -- is never moved again by a later call.
+
     Only ``None`` (no choice) selects :data:`DEFAULT_ACP_BACKEND`, and only
     while it is selectable; otherwise it takes the floor, silently. An
     explicit value that is unselectable or unrecognized — a backend this build did
@@ -809,6 +850,24 @@ def resolve_selected_backend(value: object) -> str:
         ", ".join(repr(b) for b in selectable_stored_backend_values()),
     )
     return GOVERNANCE_FLOOR_BACKEND
+
+
+def kiro_cli_pick_backend() -> str:
+    """The runtime id a STORED Kiro CLI pick in ``agent.acp_backend`` loads as.
+
+    A Kiro CLI pick launches a bare ``kiro-cli acp``, which kiro-cli now serves on
+    its v3 (KAS) engine by default, and only Crew's KAS path drives that engine. The
+    pick moves there only on positive evidence (:func:`confirm_kiro_cli_offers_kas`)
+    and while KAS is selectable; otherwise it keeps the v2 launch. See
+    :data:`KIRO_SELECTION_BACKEND`.
+
+    Called only where the stored value is read (``_read_backend_choice``), never
+    from :func:`resolve_selected_backend`: an already-resolved Kiro CLI id may be
+    a degraded value's floor (harness-parity H3), not a pick.
+    """
+    if _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends():
+        return KIRO_SELECTION_BACKEND
+    return ACP_BACKEND_KIRO
 
 
 # ── Capability membership (harness-parity H6, H7) ──

@@ -837,7 +837,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 ```
 
 - `agent.provider` is fixed to `"acp"` (enum `["acp"]`); the provider is not a choice.
-- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites).
+- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites). A stored Kiro CLI pick (`"kiro"`) resolves to KAS once the gateway confirmed the host's kiro-cli offers v3 and while KAS is selectable, so the factory builds a KAS provider for it with KAS's launch, projection, permissions and compaction; it builds the Kiro CLI provider without that confirmation ([harness-parity](harness-parity.md) H1). The Kiro CLI provider, its skill-view aliases and the `cli.json` overlay stay for that case.
 - `create_provider_factory()` returns a `Callable` that builds an `AcpProvider` for the resolved backend.
 
 An agent spec's model is consumed by kiro-cli before Kiro Crew reaches
