@@ -2279,6 +2279,11 @@
       "unwrap": "Unwrap lines",
       "wrap": "Wrap lines"
     },
+    "blockquote": {
+      "copied": "Copied!",
+      "copy": "Copy quote",
+      "copy_failed": "Copy failed. Select the quote and copy it yourself."
+    },
     "commandPalette": {
       "min_query_chars": "Type at least {{min}} characters to search {{scope}}",
       "no_matches": "No matches",

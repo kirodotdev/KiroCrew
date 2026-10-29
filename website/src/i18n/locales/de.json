@@ -6625,6 +6625,11 @@
       "unwrap": "Zeilenumbruch aufheben",
       "wrap": "Zeilen umbrechen"
     },
+    "blockquote": {
+      "copied": "Kopiert!",
+      "copy": "Zitat kopieren",
+      "copy_failed": "Kopieren fehlgeschlagen. Markiere das Zitat und kopiere es selbst."
+    },
     "columnResizer": {
       "resize_column": "Spaltenbreite ändern: {{column}}",
       "resize_hint": "Ziehen zum Ändern der Größe (Doppelklick zum Zurücksetzen)"

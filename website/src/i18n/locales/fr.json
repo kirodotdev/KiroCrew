@@ -6739,6 +6739,11 @@
       "unwrap": "Désactiver le retour à la ligne",
       "wrap": "Retour à la ligne"
     },
+    "blockquote": {
+      "copied": "Copié !",
+      "copy": "Copier la citation",
+      "copy_failed": "Échec de la copie. Sélectionne la citation et copie-la toi-même."
+    },
     "columnResizer": {
       "resize_column": "Redimensionner la colonne : {{column}}",
       "resize_hint": "Faire glisser pour redimensionner (double-cliquer pour réinitialiser)"

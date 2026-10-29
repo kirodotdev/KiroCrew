@@ -6511,6 +6511,11 @@
       "unwrap": "折り返し解除",
       "wrap": "折り返し"
     },
+    "blockquote": {
+      "copied": "コピーしました！",
+      "copy": "引用をコピー",
+      "copy_failed": "コピーに失敗しました。引用を選択して手動でコピーしてください。"
+    },
     "columnResizer": {
       "resize_column": "列の幅を変更: {{column}}",
       "resize_hint": "ドラッグしてリサイズ (ダブルクリックでリセット)"

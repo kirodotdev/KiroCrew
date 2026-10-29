@@ -2,6 +2,7 @@ import React from 'react'
 import type { Components } from 'react-markdown'
 import type { Element as HastElement } from 'hast'
 import { TAG_ATTRS } from './sanitize'
+import { CopyableBlockquote } from './CopyableBlockquote'
 import {
   MD_EM_CLS,
   MD_HEADING_CLS,
@@ -117,7 +118,7 @@ export const ELEMENT_OVERRIDES = {
   // Headers carry the column's meaning, so never break them mid-label.
   th({ node, children }) { return <th {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
   td({ node, children }) { return <td {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td> },
-  blockquote({ node, children }) { return <blockquote {...sp(node)} className="border-l-[3px] border-accent pl-3 my-2 text-muted italic">{children}</blockquote> },
+  blockquote({ node, children }) { return <CopyableBlockquote node={node}>{children}</CopyableBlockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
   h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} id={id} className={MD_HEADING_CLS[0]}>{children}</h1> },
   h2({ node, children }) { const id = slugify(children); return <h2 {...sp(node)} id={id} className={MD_HEADING_CLS[1]}>{children}</h2> },

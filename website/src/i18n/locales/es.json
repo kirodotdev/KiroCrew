@@ -6739,6 +6739,11 @@
       "unwrap": "Desactivar ajuste de líneas",
       "wrap": "Ajustar líneas"
     },
+    "blockquote": {
+      "copied": "¡Copiado!",
+      "copy": "Copiar cita",
+      "copy_failed": "Error al copiar. Selecciona la cita y cópiala manualmente."
+    },
     "columnResizer": {
       "resize_column": "Redimensionar columna: {{column}}",
       "resize_hint": "Arrastra para redimensionar (doble clic para restablecer)"

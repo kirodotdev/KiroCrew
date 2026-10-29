@@ -6511,6 +6511,11 @@
       "unwrap": "不折行",
       "wrap": "折行"
     },
+    "blockquote": {
+      "copied": "已复制！",
+      "copy": "复制引用",
+      "copy_failed": "复制失败。请选择引用内容并手动复制。"
+    },
     "columnResizer": {
       "resize_column": "调整列宽：{{column}}",
       "resize_hint": "拖动调整大小（双击重置）"

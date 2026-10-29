@@ -6739,6 +6739,11 @@
       "unwrap": "Non mandare a capo",
       "wrap": "Manda a capo"
     },
+    "blockquote": {
+      "copied": "Copiato!",
+      "copy": "Copia citazione",
+      "copy_failed": "Copia non riuscita. Seleziona la citazione e copiala manualmente."
+    },
     "columnResizer": {
       "resize_column": "Ridimensiona colonna: {{column}}",
       "resize_hint": "Trascina per ridimensionare (doppio clic per reimpostare)"
