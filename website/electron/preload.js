@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // Live `watchCursorAway` subscriptions in this renderer; see that method.
 let cursorAwaySubscribers = 0;
+// Whether this document has sent `navigate-ready`; see `onNavigate`.
+let navigateReadySent = false;
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -124,6 +126,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onNavigate: (cb) => {
     const handler = (_e, path) => cb(path);
     ipcRenderer.on("navigate", handler);
+    // Tell the main process this document now has a `navigate` listener, so a
+    // kirocrew:// link it is holding goes to a listener instead of to nobody.
+    // Once per document: the SPA re-subscribes whenever its router callbacks
+    // change identity, and only the first subscription is news.
+    if (!navigateReadySent) {
+      navigateReadySent = true;
+      ipcRenderer.send("navigate-ready");
+    }
     return () => ipcRenderer.removeListener("navigate", handler);
   },
   // View > Toggle Focus Mode: main.js asks the dashboard to flip focus mode,
@@ -221,6 +231,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
 contextBridge.exposeInMainWorld("localGatewayAPI", {
   get: () => ipcRenderer.invoke("local-gateway:get"),
   set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
+});
+
+// First-run setup's "connect to a crew on another machine" exit. `available`
+// resolves true only where `start` can work; `start` opens the remote-crew form
+// and resolves "switching", "cancelled" or "unavailable". Neither takes an
+// argument: the main process decides everything from the sender. Absent in
+// plain browsers, where setup has no local gateway to replace.
+contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
+  available: () => ipcRenderer.invoke("first-run:can-use-remote-crew"),
+  start: () => ipcRenderer.invoke("first-run:use-remote-crew"),
 });
 
 // Crash-artifact notice for the dashboard banner (CrashReportNotice).

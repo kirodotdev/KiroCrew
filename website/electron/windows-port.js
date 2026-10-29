@@ -273,6 +273,51 @@ async function windowsListenPids(
   return parseNetstatListenPids(stdout, port);
 }
 
+function describeExecFailure(error, timeoutMs) {
+  if (error && (error.killed || error.code === "ETIMEDOUT")) {
+    return `timed out after ${timeoutMs}ms`;
+  }
+  const code = error && error.code !== undefined ? ` (exit ${error.code})` : "";
+  return `${(error && error.message) || String(error)}`.trim() + code;
+}
+
+/**
+ * windowsListenPids for the wedge-recovery force-stop, which turns ANY probe
+ * failure into a dead-end "restart required". One slow netstat spawn on a busy
+ * host (a security scanner inspecting every new process, a loop that just
+ * stalled) must not decide that. Each attempt is still bounded, and a probe that
+ * never succeeds still rejects, so the caller keeps failing closed; only a
+ * transient failure is absorbed. The rejection says how it failed, because a
+ * bare "Command failed: netstat.exe -ano" cannot tell a timeout from an exit.
+ */
+async function windowsListenPidsRetrying(
+  port,
+  {
+    attempts = 3,
+    retryDelayMs = 500,
+    timeoutMs = 10000,
+    sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+    log = () => {},
+    listenPids = windowsListenPids,
+    ...probeOptions
+  } = {}
+) {
+  const total = positiveInteger(attempts, "attempts");
+  let lastError;
+  for (let attempt = 1; attempt <= total; attempt += 1) {
+    try {
+      return await listenPids(port, { ...probeOptions, timeoutMs });
+    } catch (error) {
+      lastError = error;
+      log(`netstat probe ${attempt}/${total} on :${port} failed: ${describeExecFailure(error, timeoutMs)}`);
+      if (attempt < total) await sleep(retryDelayMs);
+    }
+  }
+  throw new Error(
+    `netstat failed ${total} times on :${port}; last: ${describeExecFailure(lastError, timeoutMs)}`
+  );
+}
+
 function processIdentity(executablePath, commandLine) {
   const executable = String(executablePath || "").trim();
   const command = String(commandLine || "").trim();
@@ -382,6 +427,7 @@ module.exports = {
   windowsGatewayExecutablePaths,
   windowsVenvBaseInterpreterLaunches,
   windowsListenPids,
+  windowsListenPidsRetrying,
   windowsProcessCommand,
   windowsTaskkill,
 };

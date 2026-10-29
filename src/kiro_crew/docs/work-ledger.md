@@ -46,7 +46,7 @@ An item is the unit of dispatch. It holds:
 | `verdict` | conductor | the acceptance evaluator's answer |
 | `fails` | conductor | how many acceptance attempts came back `fail` |
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
-| `status` | worker | `progress` / `done` / `blocked` / `question` |
+| `status` | worker | `progress` / `done` / `blocked` / `question`, and `reply` while `work_ledger.remote_dispatch` is on |
 | `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
@@ -155,7 +155,7 @@ root conductor learns it has no parent.
 
 ## `work_report` — what a worker writes
 
-One call, four statuses:
+One call, four statuses, and a fifth under a Feature Preview:
 
 | `status` | Meaning | Who acts next |
 |---|---|---|
@@ -163,6 +163,7 @@ One call, four statuses:
 | `blocked` | an external dependency stopped the work | the conductor clears or re-plans around it |
 | `question` | a decision the conductor owns is needed | the conductor answers |
 | `done` | the worker claims acceptance is met | the conductor verifies |
+| `reply` | the worker's answer to a follow-up the conductor sent it; needs no evidence and claims nothing finished. Accepted only while `work_ledger.remote_dispatch` is `true` (default `false`, read on every call); with it off, `reply` is refused as an unknown status. Like any report it replaces the item's last status, and like `done` it leaves the next move with the conductor, so it is never flagged `stale` | the conductor relays it |
 
 **`blocked` and `question` differ by who must act.** That is why they are
 separate values and not one "stuck". A build the worker does not control is
@@ -179,7 +180,8 @@ the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
 
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
-and `done` pull its `work-ledger` loop forward to within seconds. `progress`
+and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
+`work-ledger` loop forward to within seconds. `progress`
 does not, which is what makes a pause cheap: a worker that stops to wait reports
 `progress` and its conductor spends no turn hearing it. A worker turn that ends
 having reported nothing wakes nobody, and neither does a worker's session

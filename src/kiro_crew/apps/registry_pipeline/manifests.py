@@ -19,8 +19,10 @@ from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import (
+    _read_installed_manifest_cache,
     _read_manifest_cache,
     _read_manifest_negative_cache,
+    _write_installed_manifest_cache,
     _write_manifest_cache,
     _write_manifest_negative_cache,
 )
@@ -76,6 +78,7 @@ async def _fetch_app_manifest(
     owner_designated: bool = False,
     commit: str = "",
     allow_remote: bool = True,
+    provenance: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -110,6 +113,11 @@ async def _fetch_app_manifest(
     is still read, and a miss returns None without cloning. The listing passes
     False while a failed-fetch marker is fresh, so an app that is already
     installed keeps its manifest while the remote stays off.
+
+    *provenance*: when given, ``provenance["source"]`` is set to ``"installed"``
+    if the answer came from step 1. That copy is the INSTALLED tree, not what the
+    branch publishes now, so a caller that caches the answer as the source's
+    manifest needs to know (``_resolve_manifest``).
     """
 
     def _read_manifest_text(path: Path) -> str | None:
@@ -172,9 +180,13 @@ async def _fetch_app_manifest(
             and fresh_enough
         ):
             try:
-                return json.loads(local_content)
+                local_manifest_data = json.loads(local_content)
             except json.JSONDecodeError:
                 pass
+            else:
+                if provenance is not None:
+                    provenance["source"] = "installed"
+                return local_manifest_data
 
     if not allow_remote:
         return None
@@ -360,6 +372,10 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     cached = await asyncio.to_thread(_read_manifest_cache, entry)
     if cached:
         return _merge_manifest(entry, cached)
+    # Then the installed checkout's copy, cached apart (see the write below).
+    installed = await asyncio.to_thread(_read_installed_manifest_cache, entry)
+    if installed:
+        return _merge_manifest(entry, installed)
 
     # The same switch that keeps the catalog documents off the network keeps
     # the listing's clone off it too: a seed row with no cached manifest
@@ -385,6 +401,7 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     # fetch (the confused-deputy defense does not apply to the owner's own URL).
     owner_target = await asyncio.to_thread(_owner_designated_repo_target, entry)
     fetch_kwargs: dict[str, Any] = {"allow_remote": False} if negative_cached else {}
+    provenance: dict[str, str] = {}
     manifest = await _fetch_app_manifest(
         repo,
         branch,
@@ -392,10 +409,23 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         app_name=name,
         git_url=owner_target or git_url,
         owner_designated=bool(owner_target),
+        provenance=provenance,
         **fetch_kwargs,
     )
     if manifest:
-        await asyncio.to_thread(_write_manifest_cache, entry, manifest)
+        # The installed checkout's app.json is cached APART from this source's
+        # manifest. It names the INSTALLED version, while the source cache is what
+        # the listing's ``version``, the update status and the prewarm's warm check
+        # read as what the source publishes: stored there, it made an installed app
+        # read as current for the cache's life, and kept the owner-tier prewarm, the
+        # only credentialed reader of the branch tip, from renewing it. The source
+        # cache is read first above, so a tip the prewarm fetched wins.
+        writer = (
+            _write_installed_manifest_cache
+            if provenance.get("source") == "installed"
+            else _write_manifest_cache
+        )
+        await asyncio.to_thread(writer, entry, manifest)
         return _merge_manifest(entry, manifest)
 
     if negative_cached:

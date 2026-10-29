@@ -490,6 +490,7 @@ def main() -> None:
     cli_parser_admin.register_cloud_parser(sub)
     cli_parser_gateway.register_logs_parser(sub)
     cli_parser_gateway.register_token_parser(sub)
+    cli_parser_gateway.register_open_parser(sub)
     cli_parser_gateway.register_logout_parser(sub)
     cli_parser_gateway.register_status_parser(sub)
 
@@ -1035,6 +1036,10 @@ def main() -> None:
         from kiro_crew.cli_server import _token
 
         _token(args)
+    elif args.command == "open":
+        from kiro_crew.cli_open import cmd_open
+
+        sys.exit(cmd_open(args))
     elif args.command == "logout":
         from kiro_crew.cli_server import _logout, resolve_client_port
 

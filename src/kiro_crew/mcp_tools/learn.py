@@ -65,7 +65,9 @@ def schemas() -> list[dict[str, Any]]:
                 "every message. Ask a specific question when earlier decisions or "
                 "events are needed; skip it if the current conversation suffices. "
                 "Returns bounded context and sources. The caller cannot choose another "
-                "store; private members cannot access Global V1 or sibling memories."
+                "store; private members cannot access Global V1 or sibling memories. "
+                "It returns distilled facts, not transcript text: for a past "
+                "conversation's exact words, follow up with search_chat_history."
             ),
             "inputSchema": {
                 "type": "object",
@@ -94,7 +96,12 @@ def schemas() -> list[dict[str, Any]]:
                 "The check covers only a fixed set of model-ID families; other "
                 "backend IDs are not lesson-refused. A model version mentioned by "
                 "itself is allowed. Free-form wording remains a best-effort check, "
-                "so do not disguise either refused class. Give the rule (what to "
+                "so do not disguise either refused class. Save only what changes "
+                "future unrelated sessions: not ticket facts, package details, "
+                "steering duplicates or changelog notes. There is no `scope` "
+                "parameter: pass repo_scope to restrict a lesson to one codebase. "
+                "A refused, deduped or unchanged result means nothing was written: "
+                "never tell the user the lesson was saved. Give the rule (what to "
                 "do); negative (what not to do) is optional."
             ),
             "inputSchema": {

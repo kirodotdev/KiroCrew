@@ -614,6 +614,8 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/security/denied-commands/user/{id}"),
         ("DELETE", "/api/security/denied-commands/user/{id}"),
         ("PATCH", "/api/chat/folders/{id}"),
+        ("POST", "/api/workflows/definitions"),
+        ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
     }
 )
 #: The folder PATCH is hooked only so a ``folder.steering`` card can be applied
@@ -621,7 +623,10 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: memory line. The rules PUT and the import-files routes are hooked so a
 #: ``crewmate.import`` card can write a new crewmate's rules and files; the
 #: rules are the owner's private boundary and the files are code, so neither
-#: is described in Global memory.
+#: is described in Global memory. The workflow-library routes are hooked so a
+#: ``workflow.save`` or ``workflow.update`` card can be applied through them; a
+#: saved script is code, not a setting, and an ordinary save from the Workflows
+#: tab stays off the hook entirely, so neither writes a memory line.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("POST", "/api/agents/{name}/capabilities/preview"),
     ("GET", "/api/connections/mint"),
@@ -630,6 +635,8 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("PUT", "/api/members/{slug}/rules"),
     ("POST", "/api/members/{slug}/import-files"),
     ("DELETE", "/api/members/{slug}/import-files"),
+    ("POST", "/api/workflows/definitions"),
+    ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
 }
 
 
@@ -675,12 +682,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TEMPLATE_LIST_FIELDS,
         _TEMPLATE_NAME_RE,
         _TEXT_MAX,
+        _WORKFLOW_GAP_MIN,
+        _WORKFLOW_HIDDEN_BREAKS,
+        _WORKFLOW_MARKS_MAX,
+        _WORKFLOW_SLUG_RE,
         APP_ONLY_KINDS,
         CREWMATE_FORMAT_VERSIONS,
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
+        KIND_WORKFLOW_SAVE,
+        KIND_WORKFLOW_UPDATE,
         KINDS,
         NOT_IMPORTED_CODES,
         OP_UNDO,
@@ -690,6 +703,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RISK_TIGHTEN,
         RISK_WIDEN,
         SELF_ONLY_KINDS,
+        WORKFLOW_INDENT_MAX,
+        WORKFLOW_KINDS,
+        WORKFLOW_LINE_MAX,
+        WORKFLOW_SOURCE_MAX,
         CardCatalogError,
         KindDef,
         _check_mcp_spec_shapes,
@@ -703,12 +720,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_name,
         _obj,
         _only,
+        _refuse_hidden_line_tails,
+        _refuse_non_ascii_code,
         _str_list,
         _template_clear,
+        _workflow_source,
         check_editable,
+        escape_hidden_characters,
         list_kinds,
         valid_mcp_name,
         validate_params,
+        workflow_save_slug,
     )
     from kiro_crew.change_card_catalog_plans import (  # noqa: F401
         _BOOL_VALUES,
@@ -746,6 +768,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _user_fill,
         _widening_row,
         _with_fills,
+        _workflow_save_body,
         build_preview,
         import_files_path,
         is_path_fill,
@@ -763,6 +786,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         effective_pin_scope,
         normalize_agent_model,
     )
+    from kiro_crew.terminal_safe import _is_invisible  # noqa: F401
 
 # This module is the facade of the change-card catalog: every name is reached through it
 # as ``kiro_crew.change_card_catalog.<name>``. A read is served by the owner that binds

@@ -1500,7 +1500,7 @@ the routes still read that cache.
 | `decision` | string | optional | The conductor's decision text, set by `decide`. | |
 | `worker_session_key` | string | optional | The worker slot bound to the item, set by `bind`. | |
 | `fails` | int | optional | The item's failed-verdict count, when it moved. | |
-| `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question` (closed) |
+| `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
 | `summary` | string | optional | The worker's summary, set by `report`. | |
 | `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
 | `pr` | int | optional | The pull request number, set by `report`. | |

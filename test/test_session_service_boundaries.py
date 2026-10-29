@@ -160,7 +160,7 @@ async def test_hard_stop_orders_abort_reset_respawn_and_hook(cfg: KiroCrewConfig
         side_effect=lambda *_: events.append("abort-sent")
     )
     manager.reset = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda _key: events.append("session-reset")
+        side_effect=lambda _key, **_kw: events.append("session-reset")
     )
 
     async def eager_respawn(_key: str) -> None:
@@ -182,6 +182,8 @@ async def test_hard_stop_orders_abort_reset_respawn_and_hook(cfg: KiroCrewConfig
         outcome = await manager.stop_turn("key", force=True, on_hard=on_hard)
 
     assert outcome == "hard"
+    # The hard Stop's recycle stops the runs that share the process it kills.
+    manager.reset.assert_awaited_once_with("key", stop_shared_children=True)
     assert events == [
         "queue-cleared",
         "abort-sent",

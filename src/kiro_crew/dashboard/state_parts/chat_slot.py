@@ -263,6 +263,10 @@ class _ChatSlot:
         "_human_seen",
         "_origin",
         "_pending_variants",
+        "_regenerate_target",
+        "_swap_in_flight",
+        "_window_swap_epoch",
+        "_window_swap_applying",
         "_lock",
         "forked_from",
         "_fork_lock",
@@ -323,6 +327,7 @@ class _ChatSlot:
         "_steer_decision_strips",
         "_steer_possibly_delivered",
         "_steer_rpc_in_flight",
+        "_native_steer_in_flight",
         "_steer_retract",
         "_steer_clear",
         "_steer_audience_fences",
@@ -506,6 +511,16 @@ class _ChatSlot:
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]
+    # ``chat_turn.regenerate_swap.RegenerateTarget`` while a Regenerate turn runs.
+    _regenerate_target: Any
+    # Bumped under the transcript lock by each committed Regenerate swap, and
+    # the swap memory does not show yet (``slot_persistence.write_guards``):
+    # a save whose window copy predates the swap re-takes it.
+    _window_swap_epoch: int
+    # A Regenerate swap is between its snapshot and its memory update: the
+    # window's front trim waits (``slot_transcript.append``).
+    _swap_in_flight: bool
+    _window_swap_applying: Any
     _lock: asyncio.Lock
     _file_changes: list[dict[str, Any]]
     _git_repos: list[str]
@@ -600,6 +615,10 @@ class _ChatSlot:
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
     _steer_rpc_in_flight: set[str]
+    #: Native-card ids with a /question/steer delivery in flight (handlers/slot_question).
+    #: A SEPARATE set, never on the card's pending record, so a steer claim is never
+    #: serialized out through GET .../question or a question_card broadcast.
+    _native_steer_in_flight: set[str]
     _steer_retract: SteerRetract | None
     _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]

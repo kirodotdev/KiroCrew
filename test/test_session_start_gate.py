@@ -71,6 +71,10 @@ def _make_runtime(
     # Sub-second budgets through the cached seams production reads.
     rt._session_start_timeout = 0.05
     rt._start_collect_timeout = 0.4
+    # The over-ceiling check is a thread hop before the gate; these tests count the
+    # loop yields between a start and its wire request, so it answers at once here
+    # (test_acp_runtime_session_start covers the check itself).
+    rt._refuse_over_ceiling_start = AsyncMock()  # type: ignore[method-assign]
     if backend is not None:
         rt._acp_backend = backend
     return rt, reader, proc

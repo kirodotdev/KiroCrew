@@ -254,3 +254,161 @@ async def test_a_loopback_login_that_fails_leaves_no_generation_row(tmp_path, mo
     assert "lid-x" not in service._pending
     assert "lid-x" not in service._signout_gen
     assert "lid-x" not in service._replaces
+
+
+# ── sign-in generation: a re-sign-in reads as an account change ──
+
+
+async def _sign_in(store: TokenStore, monkeypatch) -> None:
+    service = KasLoginService(store, session=_FakeSession([_FakeResp(200, _AUTHORIZED)]))
+    try:
+        login_id = await _begin_social(service, monkeypatch)
+        assert (await service.poll_device(login_id))["status"] == "authorized"
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_a_second_sign_in_with_the_same_profile_arn_moves_the_fingerprint(
+    tmp_path, monkeypatch
+):
+    # Account A then account B of one kind, answered with one profileArn: every
+    # fingerprinted claim matches, so only the sign-in marker can tell them apart.
+    from kiro_crew.auth import bridge
+
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+    await _sign_in(store, monkeypatch)
+    first = bridge.vault_identity_fingerprint()
+    marker = store.signin_generation()
+    assert first and marker
+
+    await _sign_in(store, monkeypatch)
+    assert store.signin_generation() not in ("", marker)
+    assert bridge.vault_identity_fingerprint() not in ("", first)
+
+
+def test_a_refresh_write_does_not_move_the_fingerprint(tmp_path, monkeypatch):
+    # A refresh saves the token again but completes no sign-in.
+    from kiro_crew.auth import bridge
+
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+    token = KasToken(
+        access_token="at-1",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        provider="Google",
+        identity="social",
+        refresh_token="rt-1",
+        profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+    )
+    store.save(token)
+    store.bump_signin_generation()
+    before = bridge.vault_identity_fingerprint()
+    store.save(
+        KasToken(
+            access_token="at-2",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+            provider="Google",
+            identity="social",
+            refresh_token="rt-2",
+            profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+        )
+    )
+    assert bridge.vault_identity_fingerprint() == before
+
+
+def test_an_unmarked_vault_keeps_the_fingerprint_it_had(tmp_path, monkeypatch):
+    # A vault no sign-in has marked yet (signed in before the marker existed)
+    # must not read as an account change on upgrade.
+    from kiro_crew.auth import bridge
+
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+    token = KasToken(
+        access_token="at-1",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        provider="Google",
+        identity="social",
+        profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+    )
+    store.save(token)
+    assert store.signin_generation() == ""
+    assert bridge.vault_identity_fingerprint() == bridge._identity_digest(token)
+
+
+@pytest.mark.asyncio
+async def test_a_sign_in_whose_marker_cannot_be_written_saves_nothing(tmp_path, monkeypatch):
+    # A saved sign-in the fingerprint cannot see would keep serving the previous
+    # account's model catalog and sessions, so the login fails before the save.
+    from kiro_crew.auth.store import TokenStoreError
+
+    store = TokenStore(tmp_path)
+
+    def _refuse() -> None:
+        raise TokenStoreError("could not record the sign-in generation")
+
+    monkeypatch.setattr(store, "bump_signin_generation", _refuse)
+    service = KasLoginService(store, session=_FakeSession([_FakeResp(200, _AUTHORIZED)]))
+    try:
+        login_id = await _begin_social(service, monkeypatch)
+        result = await service.poll_device(login_id)
+    finally:
+        await service.close()
+    assert result == {"status": "error", "code": "token_store_failed"}
+    assert store.resolve() is None
+
+
+def test_the_fingerprint_read_waits_for_a_sign_in_between_its_marker_and_its_save(
+    tmp_path, monkeypatch
+):
+    # A login moves the marker and then saves, under the sign-out lock. A read
+    # in that gap would pair the previous account's token with the new marker,
+    # so the read must wait for the lock and see the saved sign-in.
+    import threading
+
+    from kiro_crew.auth import bridge
+    from kiro_crew.auth import store as store_module
+    from kiro_crew.testing.wait import wait_until
+
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+
+    # The reader signals as it reaches the lock, so the test waits on a positive
+    # signal that it is blocked there rather than on a timed guess.
+    reader_at_lock = threading.Event()
+    real_acquire = store_module.acquire_lock
+
+    def _signalling_acquire(fd, *, exclusive):
+        if threading.current_thread() is reader:
+            reader_at_lock.set()
+        return real_acquire(fd, exclusive=exclusive)
+
+    def _token(access: str) -> KasToken:
+        return KasToken(
+            access_token=access,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            provider="Google",
+            identity="social",
+            profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+        )
+
+    store.save(_token("at-a"))
+    store.bump_signin_generation()
+    seen: list[str] = []
+    reader = threading.Thread(target=lambda: seen.append(bridge.vault_identity_fingerprint()))
+    reader_was_waiting: list[bool] = []
+    # Installed once ``reader`` exists: the saves above take locks too.
+    monkeypatch.setattr(store_module, "acquire_lock", _signalling_acquire)
+
+    def _sign_in_b() -> None:
+        store.bump_signin_generation()
+        reader.start()
+        wait_until(reader_at_lock.is_set, describe=lambda: f"reader alive={reader.is_alive()}")
+        reader_was_waiting.append(reader.is_alive() and not seen)
+        store.save(_token("at-b"))
+
+    store.with_signout_lock(_sign_in_b)
+    reader.join(timeout=5)
+    assert reader_was_waiting == [True]
+    assert seen == [bridge._identity_digest(_token("at-b"), store.signin_generation())]

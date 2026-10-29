@@ -37,10 +37,17 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     :data:`_REAL_SLICE_PROBE`, captured past this default.
     """
     monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (-1, -1, -1))
+    # The pull tool also reads the spawn gate's own figure; pin it clear of any
+    # floor so a tool case never turns on the CI host's free memory.
+    monkeypatch.setattr(rs, "_read_spawn_floor_figure", lambda _min_gb: (32.0, ""))
+    # And the learned settled figures from the cost log: none, a fresh install.
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {})
 
 
 #: The genuine probe, bound at import before the autouse default can replace it.
 _REAL_SLICE_PROBE = rs._read_agent_slice_tasks
+#: The genuine cost-log reader, bound the same way.
+_REAL_LEARNED_SETTLED = rs._read_learned_settled
 
 
 # ── _classify ────────────────────────────────────────────────────────────────
@@ -1078,3 +1085,166 @@ def test_both_tight_reports_each_machine_with_its_own_advice():
 def test_both_healthy_stays_silent():
     assert _status(20.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB)) == ""
     assert _status(20.0).context_line(remote=True) == ""
+
+
+# ── the spawn floor ─────────────────────────────────────────────────────────
+
+
+def _spawn_cfg(floor: float, cost: float = 0.5) -> SimpleNamespace:
+    return SimpleNamespace(agent=SimpleNamespace(spawn_min_memory_gb=floor, subagent_cost_gb=cost))
+
+
+def _gate_figure(monkeypatch: pytest.MonkeyPatch, avail: float, cause: str = "") -> list[float]:
+    asked: list[float] = []
+
+    def read(min_gb: float) -> tuple[float, str]:
+        asked.append(min_gb)
+        return avail, cause
+
+    monkeypatch.setattr(rs, "_read_spawn_floor_figure", read)
+    return asked
+
+
+def test_spawn_floor_prices_starts_with_the_gate_helpers(monkeypatch) -> None:
+    from kiro_crew.subagent import _UNLEARNED_DEDICATED_START_GB, _shared_start_price_gb
+
+    asked = _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.floor_gb == 2.0
+    # Nothing learned: the gate prices a start at the unlearned figure, not
+    # the lower ``subagent_cost_gb``.
+    assert reading.min_start_gb == pytest.approx(
+        2.0 + _shared_start_price_gb(_UNLEARNED_DEDICATED_START_GB)
+    )
+    # The gate's figure is read against the cheapest bar, as the gate reads it.
+    assert asked == [pytest.approx(reading.min_start_gb)]
+    assert not reading.blocked
+    assert "BLOCKED" not in reading.summary_line()
+
+
+def test_a_fresh_install_is_blocked_between_the_cost_bar_and_the_gate_bar(monkeypatch) -> None:
+    """Floor 2 GB, cost 0.5, nothing learned: the gate's bar is 2.65 GB, so
+    2.4 GB holds every start even though it clears floor + shared(cost)."""
+    _gate_figure(monkeypatch, 2.4)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.blocked
+    assert "BLOCKED" in reading.summary_line()
+
+
+def test_a_learned_lighter_bucket_lowers_the_bar_to_its_price(monkeypatch) -> None:
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": 0.8, "heavy": 1.6})
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(2.0 + _shared_start_price_gb(0.8))
+
+
+def test_a_remote_bucket_never_sets_the_local_bar(monkeypatch) -> None:
+    from kiro_crew.subagent import (
+        _UNLEARNED_DEDICATED_START_GB,
+        REMOTE_COST_BUCKET_SUFFIX,
+        _shared_start_price_gb,
+    )
+
+    monkeypatch.setattr(
+        rs, "_read_learned_settled", lambda: {"kirocrew" + REMOTE_COST_BUCKET_SUFFIX: 0.3}
+    )
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(
+        2.0 + _shared_start_price_gb(_UNLEARNED_DEDICATED_START_GB)
+    )
+
+
+def test_an_unreadable_cost_log_falls_back_to_the_configured_cost(monkeypatch) -> None:
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: None)
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(2.0 + _shared_start_price_gb(0.5))
+
+
+def test_an_incomplete_cost_log_read_falls_back_to_the_configured_cost(monkeypatch) -> None:
+    """A partial read may miss a figure the manager still holds, so it must not
+    raise the bar to the unlearned price."""
+    from kiro_crew import subagent_cost
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", _REAL_LEARNED_SETTLED)
+    monkeypatch.setattr(subagent_cost, "read_learned_costs_checked", lambda *a, **k: ({}, False))
+    assert rs._read_learned_settled() is None
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(2.0 + _shared_start_price_gb(0.5))
+
+
+def test_a_floor_above_the_gate_figure_is_blocked(monkeypatch) -> None:
+    """The reported case: a 4 GB floor with ~3.3 GB available holds every start."""
+    _gate_figure(monkeypatch, 3.3)
+    reading = rs.spawn_floor_reading(_spawn_cfg(4.0))
+    assert reading.blocked
+    assert "BLOCKED: new top-level subagents wait in the queue" in reading.summary_line()
+    assert "the gate reads 3.3 GB" in reading.blocked_sentence()
+    # Scoped to top-level starts: a running subagent's shared nested start
+    # skips its own start charge, so it can clear a lower bar.
+    assert "new top-level subagents cannot start now" in reading.blocked_sentence()
+
+
+def test_a_remote_caller_takes_no_reading_and_is_never_blocked(monkeypatch) -> None:
+    """The gate prices a remote session's children without the floor
+    (``remote_child``), so the tool must not report the floor as holding them."""
+    asked = _gate_figure(monkeypatch, 0.5)
+    reading = rs.spawn_floor_reading(_spawn_cfg(4.0), remote=True)
+    assert asked == []
+    assert not reading.blocked
+    assert reading.blocked_sentence() == ""
+    assert "not applied to this session's subagents" in reading.summary_line()
+
+
+def test_a_disabled_floor_takes_no_reading(monkeypatch) -> None:
+    asked = _gate_figure(monkeypatch, 0.1)
+    reading = rs.spawn_floor_reading(_spawn_cfg(0.0))
+    assert asked == []
+    assert not reading.blocked
+    assert reading.summary_line() == "  Subagent spawn floor: off (agent.spawn_min_memory_gb is 0)"
+
+
+def test_an_unmeasurable_gate_figure_fails_open_like_the_gate(monkeypatch) -> None:
+    _gate_figure(monkeypatch, -1.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert not reading.blocked
+    assert "starts are not held" in reading.summary_line()
+
+
+def test_an_unreadable_cgroup_usage_is_blocked_with_its_cause(monkeypatch) -> None:
+    from kiro_crew.subagent import MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+
+    _gate_figure(monkeypatch, 0.0, MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.blocked
+    assert "usage is unreadable" in reading.blocked_sentence()
+
+
+def test_tool_says_spawning_is_blocked_on_an_ample_posture(monkeypatch) -> None:
+    """End to end through the tool: AMPLE on the posture's figure, while the
+    gate's own figure misses the floor, must not read as ample headroom."""
+    from kiro_crew import mcp_core
+
+    fake = rs.ResourceStatus(
+        available_gb=8.0,
+        cpu_count=8,
+        load_per_cpu=0.5,
+        posture=rs.POSTURE_AMPLE,
+        pressure_gb=4.0,
+        critical_gb=2.0,
+    )
+    monkeypatch.setattr(rs, "probe", lambda cfg=None: fake)
+    monkeypatch.setattr(rs, "_load_config", lambda: _spawn_cfg(4.0))
+    _gate_figure(monkeypatch, 3.3)
+    out = mcp_core._call_tool_inner("resource_status", {})
+    assert "Posture: AMPLE" in out
+    assert "Subagent spawn floor: 4 GB must stay free after a start" in out
+    assert "Guidance: new top-level subagents cannot start now" in out
+    assert "ample headroom" not in out

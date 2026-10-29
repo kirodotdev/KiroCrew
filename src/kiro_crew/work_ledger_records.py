@@ -216,6 +216,8 @@ PENDING_BUDGET_SECS = 24 * 60 * 60.0
 CODE_NO_LEDGER = "no_ledger"
 CODE_UNKNOWN_ITEM = "unknown_item"
 CODE_ALREADY_BOUND = "already_bound"
+#: A caller-chosen item id the board already holds (``create_bound_item``).
+CODE_DUPLICATE_ITEM = "duplicate_item"
 CODE_ITEM_CLOSED = "item_closed"
 CODE_ITEM_CAP_EXCEEDED = "item_cap_exceeded"
 CODE_GOAL_CONCURRENCY_CAP_REACHED = "goal_concurrency_cap_reached"

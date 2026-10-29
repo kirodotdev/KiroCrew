@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import hashlib
 import logging
 import secrets
@@ -56,6 +57,7 @@ from .library import (
     SOURCE_FORMAT_TASK_PLAN,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
+    WorkflowSlugTakenError,
 )
 from .registry import (
     STATUS_CANCELLED,
@@ -212,6 +214,7 @@ class WorkflowService:
         store: Any = None,
         pool_agents: bool = True,
         nudge_authorizer: Optional[Callable[..., Any]] = None,
+        session_port: Any = None,
         timeout_secs: Optional[int] = None,
         definition_library: Any = None,
         task_runner: Any = None,
@@ -248,6 +251,12 @@ class WorkflowService:
         # teardown drains its own arms before the terminal transition.
         self._nudge_authorizer = nudge_authorizer
         self._nudge_tasks: dict[str, set[Any]] = {}
+        # Injected by the gateway: an object with async ``open_session`` /
+        # ``send_to_session`` / ``set_session_mode`` that act AS the run's launching
+        # session through the session-control verbs (deny-by-default + SEL audit).
+        # None in tests / non-dashboard hosts, and then the three ctx methods are
+        # not wired, so a script naming them is rejected before exec.
+        self._session_port = session_port
         self._now_fn = now_fn or (lambda: "1970-01-01T00:00:00Z")
         self._concurrency = concurrency
         # Default wall-clock ceiling for runs started through this service. The
@@ -774,7 +783,24 @@ class WorkflowService:
         def _nudge(**kw: Any) -> None:
             self._nudge_port(run_id=run_id, **kw)
 
-        ports = {"nudge": _nudge}
+        ports: dict[str, Any] = {"nudge": _nudge}
+        session_port = self._session_port
+        if session_port is not None:
+            # Bound to THIS run's id so the gateway's audit names the run, and to
+            # the run's captured memory mode (the strictest it inherited, which a
+            # rerun keeps even when the caller differs) so a restricted run never
+            # reaches a persistent transcript. The runner supplies the launching
+            # session key at call time.
+            run_mode = str(getattr(memory_scope, "memory_mode", "") or "")
+            ports["open_session"] = functools.partial(
+                session_port.open_session, run_id=run_id, memory_mode=run_mode
+            )
+            ports["send_to_session"] = functools.partial(
+                session_port.send_to_session, run_id=run_id, memory_mode=run_mode
+            )
+            ports["set_session_mode"] = functools.partial(
+                session_port.set_session_mode, run_id=run_id
+            )
 
         async def _drain() -> None:
             # Awaited by the runner BEFORE each terminal event: nudge outcome
@@ -1235,8 +1261,13 @@ class WorkflowService:
         slug: str = "",
         derived_from: Any = None,
         source_format: str = SOURCE_FORMAT_PYTHON,
+        exact_slug: bool = False,
     ) -> dict[str, Any]:
-        """Validate and explicitly promote a source definition into the library."""
+        """Validate and explicitly promote a source definition into the library.
+
+        With *exact_slug* a used slug is answered ``slug_taken`` rather than saved
+        under a suffixed one.
+        """
         with self._definition_lock:
             errors: list[str] = []
             meta: dict[str, Any] = {}
@@ -1266,7 +1297,10 @@ class WorkflowService:
                     slug=slug,
                     derived_from=derived_from,
                     source_format=source_format,
+                    exact_slug=exact_slug,
                 )
+            except WorkflowSlugTakenError as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         return {"ok": True, "definition": definition}

@@ -508,6 +508,39 @@ The maintainer's auto-approval bot greps for the template's exact heading string
 because the repo's file is the single source of truth and the skill always runs
 inside a checkout.
 
+## Why the body is published before the push
+
+The reason is correctness, not throughput, and it is about the lanes that read the
+description without subscribing to `edited`.
+
+`Design Review`, `UX Review` and `First Principles Review` are those lanes today. Each
+reads the title and description through a live `gh api` call inside its own run, so a
+description published after that read is one that run never sees: its verdict answers
+the earlier text until the next push or a re-run. Publishing first is what hands them
+the description they are going to be judged against.
+
+Do not reach for a throughput argument here, because there is not one. Several lanes do
+subscribe to `edited`, so a separate body edit starts them again — but each of those
+that can be superseded keys a per-pull-request `concurrency` group with
+`cancel-in-progress`, so whichever of the two actions lands second cancels what the
+first left running. `PR Readiness` is the deliberate exception, isolated per run so it
+is never cancelled, and it runs once per event in either order. So editing before the
+push and editing after it cost about the same in completed runs.
+
+The other condition stands on its own, and does not depend on the order. When the
+regenerated body is byte-identical there is nothing to publish, so the call is skipped.
+Publishing it anyway wastes a request for certain, and a whole fan-out if GitHub raises
+`edited` for a PATCH that changes nothing. Which of those it is has not been measured
+here, so skip the call but do not quote a saving for it.
+
+Which lanes sit in which group is a property of the workflows and changes with them,
+so read it from the `on:` blocks in `.github/workflows/` and the reviewer table in
+`docs/ci/ci-and-reviews.md` rather than from a list here. Two traps when you do:
+subscribing to `edited` and reading the description are independent, and a lane can do
+either without the other; and a fork pull request is reviewed instead by the `Fork *`
+lanes started after Fast Gate, of which the ones that read the description carry no
+`edited`.
+
 ## Why screenshots are attachments, not commits
 
 `docs/` and `src/kiro_crew/**` ship in the wheel, the sdist, and the desktop DMG, so

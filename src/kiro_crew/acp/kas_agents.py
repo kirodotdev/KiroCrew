@@ -407,7 +407,9 @@ def resolve_prompt(
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise KasAgentTranslationError(
-            f"agent {agent_id!r} prompt file {path} is unreadable: {exc}"
+            f"agent {agent_id!r} prompt file {path} is unreadable: {exc}. Point the "
+            f"spec's prompt at a readable file, delete the {agent_id!r} spec in "
+            f"{agents_dir}, or choose another agent"
         ) from exc
     if not text.strip():
         raise KasAgentTranslationError(f"agent {agent_id!r} prompt file {path} is empty")

@@ -85,6 +85,16 @@ only warns unless you set it. Need a data home? Use the conftest's per-test `KIR
 pin, not a private temp home: a background worker can re-create a home you removed.
 (Details: testing-conventions.md § Rules.)
 
+Running the suite from a Kiro Crew agent needs no setup. The agent's shell inherits the
+live `KIROCREW_HOME`, and the rootdir conftest sees `KIROCREW_SCRATCH` beside it and gives
+the run its own home under `$TMPDIR` (the agent's scratch, reclaimed by the gateway)
+instead of refusing. Do not make a home under `/tmp/<name>`, and do not fake `HOME`: a
+fake `HOME` makes uv, npm and pip rebuild their caches under it, 10k+ inodes per run, and
+nothing an agent may run can delete it afterwards. If a harness must fake `HOME`, keep
+the caches shared: `XDG_CACHE_HOME=<real home>/.cache UV_CACHE_DIR=<real home>/.cache/uv
+npm_config_cache=<real home>/.npm` on the commands the harness itself runs. The conftest
+keeps only its own bytecode and hypothesis caches on the real home.
+
 Why it earns a guard: `/tmp` is often a tmpfs with a fixed **inode** budget
 (1,048,576 on the hosts this was measured on) and it returns `ENOSPC` to every other
 process on the machine while **90% of the bytes are free**. It is not a tidiness issue,

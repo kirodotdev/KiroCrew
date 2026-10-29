@@ -38,7 +38,7 @@ import posixpath
 import re
 import secrets
 import sys as _sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
@@ -938,19 +938,24 @@ class CredentialMatch(NamedTuple):
 
 
 def redact_credentials_with_records(
-    text: str, *, defer_token_param: bool = False, keep_sri_digests: bool = True
+    text: str,
+    *,
+    defer_token_param: bool = False,
+    judged_sri_values: Collection[str] = (),
 ) -> tuple[str, list[str], list[CredentialMatch]]:
     """:func:`redact_credentials`, plus one :class:`CredentialMatch` per tag written.
 
     The cleaned text and warnings are byte-identical to ``redact_credentials``
     with the same ``defer_token_param``; both share one plan, so the records
     cannot describe a redaction the text does not contain.
-    ``keep_sri_digests=False`` judges an SRI digest like any other run (see
-    ``_SRI_INTEGRITY_RE``): a streamed segment's save falls back to it when a
-    delta boundary split the value, so its deltas could not see the shape.
+    An SRI digest holding any of ``judged_sri_values`` (counting only values at
+    least ``_SECRET_KEY_LEN`` long, the shortest piece pass 3 removes) is judged like any other
+    run (see ``_SRI_INTEGRITY_RE``): a streamed segment's save passes the values
+    its deltas removed, so a digest a delta boundary cut, which its delta could
+    not see whole, keeps that delta's verdict and every other digest is kept.
     """
     spans, warnings, rules = _credential_redaction_plan(
-        text, defer_token_param=defer_token_param, keep_sri_digests=keep_sri_digests
+        text, defer_token_param=defer_token_param, judged_sri_values=judged_sri_values
     )
     if not spans:
         return text, warnings, []
@@ -970,14 +975,14 @@ def _credential_redaction_plan(
     text: str,
     *,
     defer_token_param: bool = False,
-    keep_sri_digests: bool = True,
+    judged_sri_values: Collection[str] = (),
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
 
     Returns ``(spans, warnings, rules)``: ``spans`` sorted and disjoint against
     the input, ``rules`` mapping each span's start to its ``(rule_id, label)``.
     ``defer_token_param`` is :func:`redact_credentials`'s keyword of that name;
-    ``keep_sri_digests`` is :func:`redact_credentials_with_records`'s.
+    ``judged_sri_values`` is :func:`redact_credentials_with_records`'s.
 
     Unconditional on every surface EXCEPT inside an explicit
     ``redaction_switch.owner_view()`` scope: there, and only there, the owner's
@@ -1133,8 +1138,14 @@ def _credential_redaction_plan(
         # many digests costs one set probe per run, not one pass over them all.
         if link_spans is None:
             link_spans = _document_link_spans(text)
-            if keep_sri_digests:
-                digest_spans = _sri_digest_spans(text)
+            # Only a value a key long can be a piece pass 3 cut from a digest;
+            # a shorter one would match inside unrelated digests by chance.
+            judged = [v for v in judged_sri_values if len(v) >= _SECRET_KEY_LEN]
+            digest_spans = frozenset(
+                (start, end)
+                for start, end in _sri_digest_spans(text)
+                if not any(value in text[start:end] for value in judged)
+            )
         if (m.start(), run_end) in digest_spans or any(
             start <= m.start() and run_end <= end for start, end in link_spans
         ):
@@ -1451,9 +1462,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _vowel_ratio,
     )
     from kiro_crew.security.redaction_patterns import (  # noqa: F401
+        _ARN_ACCOUNT_ID_12_DIGITS_RE,
+        _ARN_ACCOUNT_ID_PREFIX_RE,
+        _ARN_PREFIX_MAX_LOOKBACK,
+        _BOT_ID_LENGTHS,
+        _CDK_NAME_MAX_LEN,
+        _CDK_RESOURCE_NAME_RE,
+        _CDK_WORDS,
         _CREDENTIAL_PATTERNS,
         _CREDENTIAL_PATTERNS_NO_PEM_BLOCK,
         _CREDENTIAL_PATTERNS_SANS_JWT,
+        _CREDENTIAL_PATTERNS_SANS_TELEGRAM,
         _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
         _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE,
         _CREDENTIAL_PREFILTER_DISCORD_RE,
@@ -1467,6 +1486,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PREFILTER_MIN_LEN,
         _TELEGRAM_AT_RE,
         _TELEGRAM_BRANCH,
+        _TELEGRAM_DIGITS_RE,
+        _arn_exemption_withheld,
         _contains_credential_pattern,
         _credential_search,
         _jwt_branch_matches_at,

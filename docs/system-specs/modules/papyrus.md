@@ -733,6 +733,40 @@ and its main document is injected via `api.chatSlotContext` — the
 project list lands, because a name reused after a delete would otherwise
 resurrect the old paper's conversation.
 
+The embedded `ChatPage` renders the dashboard's ACTIVE slot, not a slot of its
+own. `CoAuthorPanel` calls `switchSlot` for the paper's slot key and shows the
+chat only while the active slot is that session (or its memory-mode
+replacement, below); until then it shows no chat. The switch is skipped only when the key is already active AND still in the slot
+list, since a session deleted while the panel was closed can still be the
+active slot. A remembered key whose session was deleted makes `switchSlot`
+reject with a 404, and the store then restores the previously active chat; the
+panel reports that 404, the page drops the key, and the panel offers "Start a
+session" instead of showing — and sending into — the other chat. Any other
+rejection (gateway down, 5xx) is shown in the panel's `ErrorNotice`, whose
+only action is "Try again"; it is never retried on its own. "Try again" always
+calls `switchSlot` again, even for a session that is active and listed, since a
+failed switch can leave its target active without the gateway having loaded it.
+
+While the chat is shown, the only change of the active slot the panel follows
+is a memory-mode switch. `runMemorySwitch` records the hand-over
+(`utils/slotSuccession.ts`: `recordSlotSuccession(from, next)`) before it
+makes the new session active, and forgets it if the switch is abandoned or
+fails, or the old session's delete is rejected. When the paper's slot then leaves the slot list, the page
+adopts the recorded replacement (re-injecting the paper's context into it). Any
+other active slot is never shown: if the paper's session is gone (a delete
+falling back to a neighbour, whenever that neighbour was created) the page
+drops the key; if it is still listed (a transcript link opened another chat)
+the panel makes the paper's session active again. A close of the paper's
+session (Ctrl+W, the sidebar) takes its row out of the list before the DELETE
+answers; the session is reported gone only once that close is confirmed in
+`dashboard.closingSlots`, so a rejected DELETE, which drops the hold and then
+lists the session again, leaves the paper's key in place and the panel makes
+it active again. A paper's slot that leaves the list without a close is never
+taken as deleted from the list alone: while the gateway labels its list partial
+(`dashboard.slotsListPartial`, a restart still restoring sessions) the panel
+waits, and otherwise it calls `switchSlot` again, whose 404 drops the key and
+whose success keeps the paper's session.
+
 When the session goes busy→idle the app re-reads the open file and recompiles: the
 agent edits on disk, so the pane the user is watching is stale until then. That
 transition is read from `selectComposerBusy`, the store's single answer to "is this
@@ -871,7 +905,7 @@ that host reports `supported: false` and keeps the manual install path.
 | `website/src/test/PapyrusPdfPreview.test.tsx` | The preview embeds an `<iframe>` and never `<object>`/`<embed>` (the `object-src 'none'` block), the `key={src}` remount that makes a recompile visible, the persistent download affordance, and the pre-compile empty state |
 | `website/src/test/PapyrusEditorSeed.test.tsx` | Pierre document reseeding after an async file load while preserving the caret across local edits |
 | `website/src/test/PapyrusPageCoverage.test.tsx` | Compile, git, file-tree, and co-author workspace flows beyond the leave/flush guards |
-| `website/src/apps/papyrus/CoAuthorPanel.cov80.test.tsx` | Co-author body states, header actions, and slot switching across project changes |
+| `website/src/apps/papyrus/CoAuthorPanel.cov80.test.tsx` | Co-author body states, header actions, and activating the paper's slot (another chat made active, recorded replacement, deleted session, pending and failed close, gateway failure) |
 | `website/src/apps/papyrus/FileTree.cov80.test.tsx` | Artifact filtering, file glyphs, directory collapse, main-file protection, and the empty state |
 
 The backend tests live in the repo-level `test/` tree by convention. `setup.cfg`

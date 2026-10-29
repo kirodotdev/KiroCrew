@@ -1464,9 +1464,27 @@ jobs:
             # and another run on this same head can fill the slot inside that gap.
             find_existing
             if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat "${RUNNER_TEMP:-/tmp}/ai-override-note.md")" >/dev/null || true
+              # The head was confirmed BEFORE the slot lookup, whose backoff can outlast a
+              # push; a newer run on the moved head may have published into this slot in
+              # that gap. Re-read the head right before replacing it, as the skip arm does.
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat "${RUNNER_TEMP:-/tmp}/ai-override-note.md")" >/dev/null || true
+              fi
             elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
-              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ai-override-note.md" || true
+              # The slot read answered empty, but the head check before it and its own
+              # backoff can outlast a push or a second run on this head that fills the
+              # slot. Ask both again right before adding a comment: a moved head, or an
+              # occupant that arrived, means this note would be a second one in the slot.
+              confirm_head
+              find_existing
+              if [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ] && { [ -z "$existing" ] || [ "$existing" = "null" ]; }; then
+                gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ai-override-note.md" || true
+              elif [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+                echo "::warning::This lane's slot was filled while the override note for $HEAD was pending, so no second comment was added. Re-run this lane to record the override."
+              elif [ "$lookup_ok" -eq 0 ]; then
+                echo "::warning::This lane's slot was unreadable after 6 attempts on the re-check, so the override note for $HEAD was not posted. Re-run this lane to record the override."
+              fi
             elif [ "$lookup_ok" -eq 0 ]; then
               echo "::warning::This lane's slot was unreadable after 6 attempts, so the human override note for $HEAD was not posted. Creating one here can leave two comments in the slot, and the one a later lookup does not pick keeps its own blocking line. Re-run this lane to record the override."
             fi
@@ -1971,7 +1989,7 @@ jobs:
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
-            local occupied slot_ok slot_id mine_id slot_rc ov_rc
+            local occupied slot_ok slot_id mine_id slot_rc ov_rc head_rc
             shift 4
             # Two reads here answer two DIFFERENT questions, which is why they
             # match on two different needles.
@@ -2127,8 +2145,12 @@ jobs:
               # a body pre-image or a conditional write, and this API offers
               # neither an If-Match nor an edit history.
               if [ "$attempt" -gt 1 ]; then
-                if ! head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null)" \
-                  || [ -z "$head_now" ]; then
+                head_rc=0
+                head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>"$READ_ERR_FILE")" || head_rc=$?
+                if [ "$head_rc" -ne 0 ] || [ -z "$head_now" ]; then
+                  if [ "$head_rc" -ne 0 ]; then
+                    note_read_failure "$head_rc" "reading this PR's current head to decide whether this write may be repeated" "$READ_ERR_FILE"
+                  fi
                   echo "Whether $HEAD is still this PR's head is unreadable, so this write was not repeated: a repeat can replace a newer head's verdict with a superseded one. Re-run this lane to publish this verdict."
                   retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
                   return 1

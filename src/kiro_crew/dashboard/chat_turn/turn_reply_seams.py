@@ -114,7 +114,11 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
                 _redacted,
                 "msg msg-a",
                 meta=_segment_row_meta(
-                    slot, _blocked, _redactions, links_ordered=_ordered == [True]
+                    slot,
+                    _blocked,
+                    _redactions,
+                    links_ordered=_ordered == [True],
+                    text=_redacted,
                 ),
             ),
         )

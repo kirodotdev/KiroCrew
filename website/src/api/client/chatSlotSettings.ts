@@ -74,9 +74,11 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     chatSlotModel: (slot: string, model: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string; deferred?: boolean }>,
     /** This slot's auto-compact threshold override (null = follows a default:
-     *  `agent_pct` when the session's agent declares one, else `global_pct`). */
+     *  `agent_pct` when the session's agent declares one, else `global_pct`).
+     *  `harness_managed` names the backend when the session compacts on its
+     *  own (KAS), where this threshold does not apply. */
     chatSlotAutocompact: (slot: string) =>
-      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; min: number; max: number }>,
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; harness_managed?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
     setChatSlotAutocompact: (slot: string, pct: number | null) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact', { pct }).then(j) as Promise<{ ok?: boolean; pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null }>,

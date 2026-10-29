@@ -475,8 +475,13 @@ class ResourceLimitsConfig:
         metadata=_meta(
             "Max total processes",
             "cgroup TasksMax for the whole agents SLICE, counting tasks "
-            "(threads) across every agent tree. 0 or unset uses the module "
-            "default; the aggregate ceiling is never left unset where a "
+            "(threads) across every agent tree. 0 or unset sizes it from the "
+            "host: 512 tasks for every 512 MB of the slice's memory ceiling "
+            "plus one scope ceiling, so legitimate load reaches max_total_memory_mb "
+            "first. Capped at half the tightest of kernel.pid_max, "
+            "kernel.threads-max and the user slice's TasksMax, but never below "
+            "32768 unless that tightest limit is itself lower; kirocrew doctor "
+            "shows the value and its inputs. The aggregate ceiling is never left unset where a "
             "systemd user manager is available (Linux); not enforced on "
             "Windows/macOS.",
             nullable=True,

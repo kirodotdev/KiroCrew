@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         COMPACT_FRESH_SESSION_NOTICE,
         COMPACT_REPLAY_PENDING_NOTICE,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import note_regenerate_reply
     from kiro_crew.dashboard.chat_turn.segment_flush import (
         _append_command_reply,
         _cleared_segment_text,
@@ -366,10 +367,15 @@ def _refuse_blocked_slash(turn) -> None:
         outcome="blocked",
         metadata={"slot": slot.key},
     )
-    slot.append(
-        "assistant",
-        f"⚠️ `{first_word}` is not available in the dashboard.",
-        "msg msg-a",
+    # Recorded like every command answer: a Regenerate of this command
+    # replaces its previous reply with this row (``regenerate_swap``).
+    note_regenerate_reply(
+        slot,
+        slot.append(
+            "assistant",
+            f"⚠️ `{first_word}` is not available in the dashboard.",
+            "msg msg-a",
+        ),
     )
     state.push_slots_update()
 
@@ -569,10 +575,14 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         except Exception:
             prompts = []
         if not prompts:
-            slot.append(
-                "assistant",
-                "No prompts found. Create prompts in `~/.kiro/prompts/` (or `~/.kiro/crew/prompts/`).",
-                "msg msg-a",
+            note_regenerate_reply(
+                slot,
+                slot.append(
+                    "assistant",
+                    "No prompts found. Create prompts in `~/.kiro/prompts/` "
+                    "(or `~/.kiro/crew/prompts/`).",
+                    "msg msg-a",
+                ),
             )
             sel().log_tool_invocation(
                 session_key="",
@@ -681,10 +691,13 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             # outside ``ACP_BACKENDS_COMPACT``, which is true of one of them --
             # and this is the dashboard, where the claim is most visible. The
             # markdown register matches what that helper already emits.
-            slot.append(
-                "assistant",
-                compact_unsupported_reply(_compact_unsupported),
-                "msg msg-a",
+            note_regenerate_reply(
+                slot,
+                slot.append(
+                    "assistant",
+                    compact_unsupported_reply(_compact_unsupported),
+                    "msg msg-a",
+                ),
             )
             state.push_slots_update()
             return _Flow.END

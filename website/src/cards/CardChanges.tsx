@@ -5,6 +5,7 @@
  * the chips said the same change twice, so the chips alone stand for it.
  */
 import type { ReactNode } from 'react'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { i18nT } from '../i18n/t'
 import { effortLabel } from '../lib/effort'
 import { fmtList } from '../i18n/format'
@@ -43,10 +44,149 @@ export const FIELD_LABELS: Record<string, () => string> = {
   carried_skills: () => i18nT('components.changeCards.field_carried_skills'),
   carried_scripts: () => i18nT('components.changeCards.field_carried_scripts'),
   carried_avatar: () => i18nT('components.changeCards.field_carried_avatar'),
+  workflow_command: () => i18nT('components.changeCards.field_workflow_command'),
+  workflow_source: () => i18nT('components.changeCards.field_workflow_source'),
+  workflow_diff: () => i18nT('components.changeCards.field_workflow_diff'),
 }
 
 /** The import rows whose text the crewmate reads every turn: shown whole, line breaks kept. */
 const FULL_TEXT_FIELDS: ReadonlySet<string> = new Set(['rules', 'description', 'import_crons'])
+
+/** A workflow card's script: code, shown whole in a scrolling block. */
+const CODE_FIELDS: ReadonlySet<string> = new Set(['workflow_source'])
+
+type DiffLineKind = 'add' | 'remove' | 'context'
+
+const DIFF_ROW: Record<DiffLineKind, string> = {
+  add: 'bg-ok-subtle',
+  remove: 'bg-danger-subtle',
+  context: '',
+}
+
+/** The row the server puts where a hunk starts (`⋯ lines A-B ⋯`, or `⋯ after line A ⋯`
+ *  for a hunk that only removes lines), numbered as the script block is. Script lines
+ *  always start with `+`, `-` or a space, so this shape is never one of them. */
+const DIFF_GAP_RE = /^\u22ef lines (\d+)-(\d+) \u22ef$/
+const DIFF_GAP_AFTER_RE = /^\u22ef after line (\d+) \u22ef$/
+
+type DiffGapRow = { kind: 'gap'; start: string; end: string } | { kind: 'gap'; after: string }
+
+/** One line of the server's header-free unified diff: its kind and its source text,
+ *  or the lines a hunk separator names. The server sends the whole diff or refuses
+ *  the card, so every other line is a script line. */
+function diffLine(line: string): { kind: DiffLineKind; text: string } | DiffGapRow {
+  const gap = DIFF_GAP_RE.exec(line)
+  if (gap) return { kind: 'gap', start: gap[1], end: gap[2] }
+  const after = DIFF_GAP_AFTER_RE.exec(line)
+  if (after) return { kind: 'gap', after: after[1] }
+  if (line.startsWith('+')) return { kind: 'add', text: line.slice(1) }
+  if (line.startsWith('-')) return { kind: 'remove', text: line.slice(1) }
+  return { kind: 'context', text: line.startsWith(' ') ? line.slice(1) : line }
+}
+
+/** Where unchanged lines are left out before a hunk: a dashed, muted, centered row
+ *  in the sans face, so it never reads as a script line. Its visible text and its
+ *  separator label both say lines were hidden and name the lines that follow. */
+function DiffGap({ row }: { row: DiffGapRow }) {
+  const [label, text] = 'after' in row
+    ? [
+        i18nT('components.changeCards.diff_gap_after_label', { line: row.after }),
+        i18nT('components.changeCards.diff_gap_after', { line: row.after }),
+      ]
+    : [
+        i18nT('components.changeCards.diff_gap_label', { start: row.start, end: row.end }),
+        i18nT('components.changeCards.diff_gap', { start: row.start, end: row.end }),
+      ]
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      data-testid="change-card-diff-gap"
+      className="my-0.5 flex border-y border-dashed border-border bg-bg py-0.5 font-sans text-[11px] italic leading-4 text-muted"
+    >
+      {/* Pinned to the block's left edge: the row is as wide as the longest
+          script line, and a label placed by that width could sit out of view. */}
+      <span className="sticky left-0 flex items-center gap-2 px-5">
+        <span aria-hidden="true">{'\u22ef'}</span>
+        <span aria-hidden="true">{text}</span>
+        <span aria-hidden="true">{'\u22ef'}</span>
+      </span>
+    </div>
+  )
+}
+
+/** A script line's text, never wrapped: a wrapped tail would start at column 0 of
+ *  the next row and read as a line of its own at another indent. A long line
+ *  scrolls sideways instead. */
+const CODE_TEXT = 'whitespace-pre pr-2'
+
+/** A code box that scrolls sideways, and says so. Its scrollbar stays hidden until
+ *  scrolled, so a line running past the right edge would read as ending there:
+ *  the clipped edge fades (`edge-fade-x`) and a line under the box says some
+ *  lines continue, measured rather than guessed from the line lengths. */
+function useCodeOverflow() {
+  const [attach, edges, , attachContent] = useScrollEdges<HTMLElement>()
+  const fade = { 'data-fade-left': edges.left ? 'true' : undefined, 'data-fade-right': edges.right ? 'true' : undefined }
+  const note = edges.left || edges.right
+    ? <p data-testid="change-card-code-overflow" className="mt-1 text-[11px] leading-4 text-muted">{i18nT('components.changeCards.code_scrolls')}</p>
+    : null
+  return { attach, attachContent, fade, note }
+}
+
+/** A workflow update's script diff, one row per line: the +/− mark sits in its
+ *  own gutter, and each row keeps its line whole, scrolling sideways. */
+function ScriptDiff({ diff }: { diff: string }) {
+  const overflow = useCodeOverflow()
+  return (
+    <>
+    <div ref={overflow.attach} {...overflow.fade} data-testid="change-card-diff" className="edge-fade-x mt-1 overflow-x-auto rounded bg-bg-hover py-1 font-mono text-[12px] leading-4">
+      <div ref={overflow.attachContent} className="w-max min-w-full">
+        {diff.split('\n').map((line, i) => {
+          const parsed = diffLine(line)
+          // A hunk that opens at line 1 hides nothing above it, so it gets no row.
+          if (parsed.kind === 'gap') return 'start' in parsed && parsed.start === '1' ? null : <DiffGap key={i} row={parsed} />
+          const { kind, text } = parsed
+          return (
+            <div key={i} data-testid="change-card-diff-line" data-kind={kind} className={`flex px-1 ${DIFF_ROW[kind]}`}>
+              <span aria-hidden="true" data-testid="change-card-diff-mark" className="mr-1 w-4 shrink-0 select-none border-r border-border text-center">
+                {kind === 'add' ? '+' : kind === 'remove' ? '−' : ''}
+              </span>
+              {kind === 'add' && <span className="sr-only">{i18nT('components.changeCards.added')} </span>}
+              {kind === 'remove' && <span className="sr-only">{i18nT('components.changeCards.removed')} </span>}
+              <span data-testid="change-card-line-text" className={CODE_TEXT}>{text || '\u00a0'}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+    {overflow.note}
+    </>
+  )
+}
+
+/** A workflow card's whole script, one numbered row per source line, so how many
+ *  lines there are and where each starts is read off the gutter, not the wrapping. */
+function ScriptBlock({ source }: { source: string }) {
+  // Rows are spans: a <pre> holds phrasing content only.
+  const overflow = useCodeOverflow()
+  return (
+    <>
+    <pre ref={overflow.attach} {...overflow.fade} data-testid="change-card-code" className="edge-fade-x m-0 mt-1 overflow-x-auto rounded bg-bg-hover py-1 font-mono text-[12px] leading-4">
+      <span ref={overflow.attachContent} className="block w-max min-w-full">
+        {source.split('\n').map((line, i) => (
+          <span key={i} data-testid="change-card-code-line" className="flex">
+            <span aria-hidden="true" data-testid="change-card-line-number" className="w-[5ch] shrink-0 select-none border-r border-border pr-1 text-right text-muted">
+              {i + 1}
+            </span>
+            <span data-testid="change-card-line-text" className={`pl-2 ${CODE_TEXT}`}>{line || '\u00a0'}</span>
+          </span>
+        ))}
+      </span>
+    </pre>
+    {overflow.note}
+    </>
+  )
+}
 
 /** One imported cron: its name, schedule and that it lands paused, then the
  *  full message it sends (or its script) and its time zone, so two crons that
@@ -263,6 +403,10 @@ function ChangeRow({ c }: { c: CardChange }) {
             </li>
           ))}
         </ul>
+      ) : c.field === 'workflow_diff' && typeof c.after === 'string' ? (
+        <ScriptDiff diff={c.after} />
+      ) : c.field && CODE_FIELDS.has(c.field) && typeof c.after === 'string' ? (
+        <ScriptBlock source={c.after} />
       ) : (c.before !== undefined || c.after !== undefined) && (
         <>
           <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1.5" data-testid="change-card-value">

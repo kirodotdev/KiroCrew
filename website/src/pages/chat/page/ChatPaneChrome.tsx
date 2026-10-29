@@ -188,6 +188,7 @@ export default function ChatPaneChrome({
             connected={connected}
             onSelect={selectSessionTab}
             onClose={closeSessionTab}
+            onReorder={sessionTabs.reorderTabs}
           />
         </div>
       )}

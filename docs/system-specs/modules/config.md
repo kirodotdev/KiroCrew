@@ -107,7 +107,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
 | `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
 
-**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend crewmate threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once the gateway's KAS floor confirmed this host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`), so in that gateway the field and the dashboard response read `"kas"` while `config.json` keeps `"kiro"`; a process that never ran the probe (the CLI, an MCP server) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the gateway's KAS floor, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend crewmate threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
 import of the higher owner, the idiom this package already uses for the ACP
@@ -730,7 +730,7 @@ names that test; every other report-only row gives its plain reason:
 | `stt.model` | "turbo" -> "base", 0.5.0 | reports | a picker value; adopting changes transcription accuracy |
 | `instances.warm_set_cap` | 5 -> 0, #7248 | reports | 5 is an ordinary deliberate cap |
 | `agent.subagent_max_turns` | 100 -> 1000, #12203 | reports | an explicitly stored 100 is a supported cost/turn cap |
-| `agent.session_control` | false -> true, #8375 | reports | false is the supported global withdrawal of peer-session tools |
+| `agent.session_control` | false -> true, #8375 | reports | false is the supported withdrawal of peer-session tools from ordinary agents; crew members and the owner-tab Conductor keep a creator-fenced dispatch bypass unless `agent.member_dispatch` is also false |
 | `skills.lazy_load` | false -> true, #12131 | reports | false is the supported switch to the short skill entry; its `note` reaches the load line too (`meaning_moved`, above) |
 | `agent.subagent_spawn_stagger_secs` | 2.0 -> 0.25, #12203 | reports | the knob to raise when the host or provider is the bottleneck |
 | `session.watchdog_rss_max_mb` | 1536 -> 0, #16393 | reports | 1536 is an ordinary deliberate ceiling; holding it only recycles idle sessions, which keep their history |
@@ -3244,7 +3244,7 @@ class AgentConfig:
     subagent_queue_max_wait_secs: int = 1800  # DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS; longest a spawn deferred by spawn_min_memory_gb stays parked (spawns are not gated on the memory posture tier) (time spent eligible, queued for a slot, is not counted) before it ends as 'never started: waiting for memory' (delivered, depth 0). Also the per-start and per-episode bound of the macOS kernel memory-pressure hold. 0 = no bound. Load-time clamped to [0, 86400]. Live (SubagentManager.LIVE_CONFIG_PATHS). See modules/subagent.md § Durable task queue and § macOS: the kernel memory-pressure hold
     start_collect_timeout_secs: int = 300  # how long the session-start gate's StartCollector keeps a timed-out session/new (row `recovering`) to adopt a late answer before the attempt is abandoned. Load-time clamped to [10, 3600]; restart=True
     session_start_concurrency: int | str = "auto"  # ACP session/new requests outstanding per gateway event loop (SessionStartGate; fixed, not adaptive). Queue time behind it is not start time. "auto" is sized once per process by session_start_sizing: clamp(min(cpus // 4, available_GB // 3), 2, 16), cpus = affinity capped by cgroup v2 cpu.max; an integer is load-time clamped to [1, 64]; junk falls back to "auto"; restart=True
-    child_env_defaults: dict[str, str] = {}  # env vars set on every spawned kiro-cli child (AcpRuntime via KiroHarness/KasHarness.apply_spawn_env, auxiliary AcpClient via _resolve_spawn_env(kiro_api_key=True)) ONLY when the key is absent from the inherited env (ambient or per-session overlay; an explicit empty value wins). Applied before the agent-env scrub. Opt-in tuning, e.g. {"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"} to cap kiro-cli's core-count-sized pools. Allowlist only (CHILD_ENV_DEFAULT_NAMES): TOKIO_WORKER_THREADS and RAYON_NUM_THREADS, each a decimal integer string (ASCII digits, nothing stripped) in [1, 1024], stored as str(int) ("04" -> "4"); any other name or value is dropped with a warning (key named, never value). Live (next spawn). See acp/child_env_defaults.py
+    child_env_defaults: dict[str, str] = {}  # env vars set on every spawned kiro-cli child (AcpRuntime via KiroHarness/KasHarness.apply_spawn_env, auxiliary AcpClient via _resolve_spawn_env(kiro_api_key=True)) ONLY when the key is absent from the inherited env (ambient or per-session overlay; an explicit empty value wins). Applied before the agent-env scrub. A name left out of this map gets the host-sized default min(cpus, 4) (host_task_sizing.thread_pool_env_defaults), so kiro-cli's core-count-sized pools are capped by default; a value set here wins, e.g. {"TOKIO_WORKER_THREADS": "8"}. Allowlist only (CHILD_ENV_DEFAULT_NAMES): TOKIO_WORKER_THREADS and RAYON_NUM_THREADS, each a decimal integer string (ASCII digits, nothing stripped) in [1, 1024], stored as str(int) ("04" -> "4"); any other name or value is dropped with a warning (key named, never value). Live (next spawn). See acp/child_env_defaults.py
     env: dict[str, str] = {}  # agent.env: operator env vars laid over the inherited gateway env of EVERY agent child (every backend, both drivers) by the shared launch tail (acp.launch.launch via acp/agent_env.py::agent_env_overlay), so shell tool calls and agent-started MCP servers inherit them. Precedence: gateway env < agent.env < request.extra_env < the driver's env_before_scrub (session identity, credential repair) < scrub_agent_subprocess_env (still removes any denied name) < everything set after the scrub; the set-if-unset defaults (child_env_defaults in env_before_scrub, inject_xdist_auto_cap's PYTEST_XDIST_AUTO_NUM_WORKERS after the scrub) only fill a name agent.env left unset, so agent.env wins over them. For non-sensitive values only (proxy, CA bundle, AWS profile, registry). Refused at SAVE by the config publish floor (config.loader._refuse_agent_env_entries, reached by every writer -- kirocrew config set in each form, every dashboard write, KiroCrewConfig.save): sections.agent_env_write_refusals applies the same per-entry rule as the load path plus the scrub check, and ConfigWriteRefused names each refused key and its reason (never a value) with nothing written; a write that leaves an on-disk mapping holding a refused entry exactly as it found it publishes with a warning, and an unreadable prior file refuses. Dropped with a warning (key named, never value) at load by sections.coerce_agent_env: a non-POSIX-identifier name, a non-string or NUL-bearing value, a name in AGENT_ENV_DENIED_NAMES / AGENT_ENV_DENIED_PREFIXES / AGENT_ENV_DENIED_SUFFIXES unless it is in AGENT_ENV_DATA_ONLY_NAMES (GIT_TERMINAL_PROMPT, GIT_SSL_CAINFO) (upper-cased compare; refused are the names Crew or the sandbox sets and the names known to make the loader, a shell, a runtime or a tool run code the command did not name -- a denylist that narrows that class and cannot close it; toolchain selection such as JAVA_HOME or CC is accepted: process identity and paths Crew/the sandbox sets, LD_ / DYLD_ / GCONV_PATH / GLIBC_TUNABLES / OPENSSL_ / KRB5 loader and C-library hooks, DBUS_*_BUS_ADDRESS and SYSTEMD_ read by the pre-sandbox cgroup scope, shell start-up and option names BASH* / ENV / SHELLOPTS / PS0-PS4 / ZDOTDIR / IFS, runtime hooks PYTHON / PERL / RUBY / GEM_ / LUA_ / NODE_OPTIONS / JAVA_TOOL_OPTIONS / COR_ / CORECLR_, GIT_ / SSH_ / XDG_ namespaces, config files that name a program such as AWS_CONFIG_FILE / KUBECONFIG / DOCKER_CONFIG, and every name ending PATH / LIB / LIBS / MODULE / MODULES / OPT / OPTS / OPTIONS / FLAGS / _PRELOAD / COMMAND / SHELL / EXECUTABLE / EDITOR / PAGER / ASKPASS / BROWSER / _RSH / WRAPPER / RUNNER / CONFIG / CONFIG_DIR / CONFIG_FILE / CONFIG_HOME; KIROCREW_ / KIRO_ / DSH_ / OPENCODE_ namespaces), a harness sign-in home override (every name in agent_sdk.host_auth.home_override_env_vars(), because the credential read gate anchors those from the gateway's own environment), and a credential-shaped name (AGENT_ENV_CREDENTIAL_CLASS: a _-separated name segment that is or ends in KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL, optionally plural or numbered, case-insensitive -- API_KEY, GITHUB_TOKEN, APIKEY are refused, GOPRIVATE and TOKENIZERS_PARALLELISM accepted) because values are plaintext in config.json; dropped at spawn by agent_env_overlay: a name sections.agent_env_scrub_removes() matches (sandbox.agent_env_scrub_prefixes(), upper-cased compare). Unreadable config applies nothing. Live (next agent spawn; a change also parks the shared background runtime, SessionManager._on_config_change -> retire_for_agent_env_change).
     cold_start_concurrency: int | str = "auto"   # background cold starts one SessionManager runs at once (_start_sem; a person's start has one more reserved permit). "auto" = the effective session_start_concurrency width clamped to [4, 16] (cold_start_sizing). Integer load-time clamped to [1, 32]; junk -> "auto"; restart=True
     runtime_spawn_concurrency: int | str = "auto"  # ACP runtime spawn + initialize handshakes per gateway event loop (cold-start admission). "auto" = half the effective session_start_concurrency width clamped to [2, 8]. Integer load-time clamped to [1, 32]; junk -> "auto"; restart=True
@@ -3756,8 +3756,9 @@ screenshot.
 
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
-nothing else: `coder_url`, `profiles`, and the optional `default_profile` and
-`stop_on_shutdown`. `config/session_environments.py` owns
+nothing else: `coder_url`, `profiles`, and the optional `sprites_profiles`,
+`boxd_profiles`, `default_profile` and `stop_on_shutdown`.
+`config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -3773,8 +3774,23 @@ duplicate or over-cap profile is dropped with a warning).
   digit then letters, digits, `_` or `-` (64 max, unique); `name` is 1-128
   characters, `template` 1-255, `workdir` an absolute POSIX path of at most
   1024. Text is whitespace-stripped and may not hold control characters.
-- `default_profile`: a saved profile id or `""` (this machine); a whole-section
-  save refuses a default the same save drops.
+- `sprites_profiles` (Fly.io Sprites): at most 20 `{id, name, token_secret,
+  workdir}` records. `token_secret` names the Settings > Secrets entry holding
+  the Sprites API token (a letter or `_`, then letters, digits or `_`); the token
+  itself is never stored here.
+- `boxd_profiles`: at most 20 `{id, name, snapshot, vcpu, workdir}` records.
+  `snapshot` is `""` or a boxd snapshot name or id, `vcpu` one of 0 (the org
+  default), 1, 2, 4 or 8, and a profile naming both is refused (a snapshot keeps
+  its own size). `id`, `name` and `workdir` follow the Coder profile rules.
+- One id may not name profiles of two providers, since a session's choice
+  resolves by id. Leaf and whole-section saves check the final merged section
+  under the config write lock; a load keeps such a collision visible (the picker
+  omits the id and launch refuses it as ambiguous) and drops each malformed
+  entry individually.
+- `default_profile`: a saved profile id of any provider or `""` (this machine); a whole-section
+  save refuses a default the same save drops, and a `sprites_profiles` or
+  `boxd_profiles` leaf write refuses to drop the profile the saved default names
+  (`unknown_profile`).
 - `stop_on_shutdown`: a boolean, default `true`.
 
 There is no `enabled` field (the opt-in is the per-device preview flag) and no
@@ -3783,7 +3799,7 @@ refused. An absent or non-object section loads with every key at its default,
 and an unmodelled key inside it is preserved by `save()` and omitted from the
 GET.
 
-`PATCH /api/config/kirocrew` accepts `session_environments` and each of its five
+`PATCH /api/config/kirocrew` accepts `session_environments` and each of its seven
 keys as paths, all through the `"normalized"` spec type. Whole-section saves
 require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
 value under the config lock. A write goes through `update_config_locked`,
@@ -3863,7 +3879,7 @@ read by more than one enforcement mechanism, and two of those keys mean
 | `cpu_weight` | — | `CPUWeight`, 1..10000 | — |
 | `max_cpu_percent` | — | `CPUQuota`, opt-in: unset emits no property | — |
 | `max_total_memory_mb` | — | slice `MemoryMax` (all trees together) | — |
-| `max_total_processes` | — | slice `TasksMax` | — |
+| `max_total_processes` | — | slice `TasksMax`; unset = host-sized default (`host_task_sizing.size_slice_tasks`) | — |
 | `scope_memory_high_pct` | — | per-scope `MemoryHigh` as % of `MemoryMax`, 1..100; unset = 90; `0` = emit none | — |
 | `slice_reclaim_trigger_pct` | — | slice page-cache reclaim trigger, % of slice `memory.high`; unset = `95`, `0` = off for this gateway only, `50..99` used, else `95`; never inside a pod | — |
 | `xdist_auto_cap` | — | — | `-1` auto, `0` off, `N` fixed |
@@ -3876,6 +3892,17 @@ On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 `slice_reclaim_trigger_pct`) are accepted but not enforced there,
 and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
+
+The slice task default is sized once per process from the host
+(`host_task_sizing.host_task_facts`: affinity CPUs, RAM, `kernel.pid_max`,
+`kernel.threads-max` and the user slice's `pids.max`). The slice gets 512 tasks
+for every 512 MB of the slice `MemoryMax` it is applied with, plus one 8192-task
+scope ceiling, so legitimate load reaches `MemoryMax` first. It is capped at half
+the tightest host limit, and never set below 32768 unless that limit is itself
+lower. A failed host read falls back to the fixed 32768. The per-scope default
+stays a fixed 8192. `kirocrew doctor`'s
+Task ceilings section prints the values, their source and the live slice usage;
+it is advisory and never adds an issue.
 
 On macOS no mechanism bounds the agent tree's memory: the cgroup path is a no-op,
 and the session host's rlimit profile sets only `RLIMIT_NOFILE`, so `max_memory_mb`

@@ -18,6 +18,7 @@ from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard import websocket_hub as _ws_hub
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
+from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
@@ -573,7 +574,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
         # SubagentManager._run: `conversation_key or subagent:<id>`.
         "child_session": getattr(a, "conversation_key", "") or f"subagent:{a.id}",
         "task": _r(a.task),
-        "agent": _r(a.agent),
+        "agent": _r(getattr(a, "run_agent", a.agent)),
         "label": _r(getattr(a, "label", "") or ""),
         "model": a.resolved_model,
         "requested_model": _r(a.requested_model),
@@ -848,6 +849,7 @@ async def _serve_ws(
     # False and ``_send_ws_all`` keeps its deny-by-default behaviour.
     ws["_app"] = ws_app
     ws["_is_dashboard_user"] = request.get("is_dashboard_user", False)
+    ws[RELAY_TEAMMATE_WS_FLAG] = is_relay_teammate(request)
     ws["_allowed_events"] = allowed_events
     # A tab whose bundle applies ``slot_patch`` frames says so in ``?caps=``;
     # without the declaration (an older bundle, a companion window, an app
@@ -1423,7 +1425,7 @@ async def _serve_ws(
                                                 "stopped": a.user_stopped,
                                                 "outcome": a.outcome,
                                                 "task": _r(a.task),
-                                                "agent": _r(a.agent),
+                                                "agent": _r(getattr(a, "run_agent", a.agent)),
                                                 "label": _r(getattr(a, "label", "") or ""),
                                                 "model": a.resolved_model,
                                                 "requested_model": _r(a.requested_model),

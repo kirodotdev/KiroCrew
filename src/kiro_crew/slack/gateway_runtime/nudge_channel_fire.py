@@ -320,6 +320,10 @@ async def _fire_slack_inner_nudge(
                 ),
                 closing_gate=lambda: sessions.begin_turn(key),
                 undelivered_watch_key=key,
+                # Each session's own decline bucket and audit identity, as at the
+                # other channel constructors.
+                audit_session_key=key,
+                audit_agent=_get_agent_for_session(key) or "kirocrew",
             )
             response = await asyncio.wait_for(
                 driver.run(full_msg),

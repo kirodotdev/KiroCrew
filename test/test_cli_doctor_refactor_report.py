@@ -248,6 +248,8 @@ class _Host:
         # marker goes on the family that defines it. The real section reads the
         # host's process table, which no frozen report can pin.
         mp.setattr(resources, "_doctor_acp_runtimes", self._marker("_doctor_acp_runtimes"))
+        # Same reason: the real section reads the host's kernel limits and cgroup tree.
+        mp.setattr(resources, "_doctor_task_ceilings", self._marker("_doctor_task_ceilings"))
         import kiro_crew.doctor_checks.workload as workload
 
         # Same reason: added after the move. The real section walks the host's
@@ -434,6 +436,7 @@ Configuration
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
   <<_doctor_acp_runtimes>>
+  <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
@@ -616,6 +619,7 @@ Configuration
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
   <<_doctor_acp_runtimes>>
+  <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>

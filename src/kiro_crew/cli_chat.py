@@ -331,6 +331,12 @@ def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None,
 
 async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
     """Run a single message or interactive chat session."""
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence here, before
+    # the config load below reads the pick. Probe-once, off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
     if model:
         cfg.agent.model = model

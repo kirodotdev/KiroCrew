@@ -24,7 +24,7 @@ The **Mates** row sits in the left rail, under Sessions, and opens
 | Part | What it does | Empty means |
 |---|---|---|
 | Name | Its identity everywhere: the roster row, the thread, `crew=` on a delegation | required |
-| Agent template (`kiro_agent`) | The spec it boots from — tools, MCP servers, instructions | required — the crew manager and the API both refuse a crew without one |
+| Agent template (`kiro_agent`) | Where it starts. A new mate starts as the built-in worker (`kirocrew`); you add tools, servers and skills from other agents in its editor | required — the crew manager and the API both refuse a crew without one, and refuse any template other than `kirocrew` |
 | Workspace | The folder it reads and writes | the folder your `default_workspace` names — as does a name no workspace matches |
 | Memory store | The database its learned facts, rules and briefing live in | allocated for it at creation |
 | Model | Default model for its sessions | the template's pinned model, then the global default |
@@ -97,9 +97,8 @@ roster header once one exists (its one row is **New mate**)
 shows the mate's picture (press its pencil to pick an icon and a colour);
 press
 **Create** and the mate is made at once. Below the avatar, **Advanced
-settings** unfolds the rest of the form in the same card: what the mate is
-**Built from** (the starting setup it copies; `kirocrew` unless you pick
-another), an optional **Goal**, and the workspace,
+settings** unfolds the rest of the form in the same card: an optional
+**Goal**, and the workspace,
 model, triggers and session color. Folding it again keeps whatever you set
 there. When a mate suggests a new mate, its link opens this same form
 with the suggested name and goal already filled in; nothing is created until
@@ -114,8 +113,8 @@ is a name) — and the dialog only refuses a blank name or one already on the
 roster before the request leaves the browser; the server owns every other rule
 (a credential-shaped name, hidden characters, the length cap) and its answer is
 shown in the dialog. The stable member id, path-safe slug and slot key are
-derived by the server and stay bounded identifiers, as does the **Built from**
-template id. A free-form name is kept as the mate's `display_name`, the label
+derived by the server and stay bounded identifiers. Every new mate starts as
+the built-in worker, with nothing added. A free-form name is kept as the mate's `display_name`, the label
 the dashboard shows, on a config key the server derives from it; an id-shaped
 name is used as the key itself. Creating is refused when that key is taken, or
 when another mate already shows the same name. Two mates whose names
@@ -199,18 +198,22 @@ and you add what its worker needs in its advanced settings.
 
 ### Its worker
 
-A crewmate hands longer work to a **worker**: a session it opens with
-`session_create`, which runs on the crewmate's own memory and workspace with
-the worker's built-in tools plus whatever that crewmate's settings add. To give
-the worker a ready-made set of instructions, connections and skills, open the
-crew editor, choose **Advanced**, pick an agent template under **Worker's extra
-kit**, press **Copy into the worker**, review the list of changes and press
-**Apply**. The kit is copied once; later edits to the template do not reach the
-crewmate. **Re-copy from template** brings a newer version in the same way,
-showing what would change first, and asks whether to keep anything added since
-the last copy. Nothing the kit carries can lift the worker past your security
-policy and profile. **Advanced** appears for a crewmate that owns its own
-config.
+A mate hands longer work to a **worker**: a session it opens with
+`session_create`, which runs on the mate's own memory and workspace with
+the worker's built-in tools plus whatever that mate's settings add. To see
+what it can do, open the crew editor and choose **Abilities**. **Comes with**
+lists what every worker has; you cannot change it. **Added to** lists what was
+added to this mate, and **Remove** takes one out. A new mate starts with
+nothing added. To add more, pick an agent under **Add abilities** on the same
+page: it shows at once which connections, skills and auto-approvals would be
+added and which the mate already has, then **Add** writes them and says so.
+Only what is missing is added and nothing already there is replaced. If the
+agent has its own instructions, they become the mate's **behavior
+directions**, which its worker follows after its built-in instructions. A mate
+has one set: adding another agent that has directions replaces them (the
+preview says **Replaces current**), and **Remove** clears them. Later edits to that agent do not reach the
+mate. Nothing added can lift the worker past your security policy and
+profile. **Add abilities** appears for a mate that owns its own config.
 
 ### Goals
 

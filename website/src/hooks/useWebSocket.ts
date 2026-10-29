@@ -8,7 +8,7 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, trigge
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose,
 } from '../store/chatSlice'
@@ -949,7 +949,7 @@ export function useWebSocket() {
           case 'heartbeat':
             break
           case 'context_usage':
-            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
+            dispatch(sseContextUsage(data as { slot: string; pct?: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
             break
           case 'chat_thinking':
             chatStream.onChatThinking(data)
@@ -968,7 +968,13 @@ export function useWebSocket() {
             }
             break
           case 'chat_variant_switch':
-            if (data.slot) dispatch(refreshSlot(data.slot))
+            if (data.slot) {
+              // A Regenerate swap names the rows it retired: drop them first, so
+              // the refetch's decided-row merge cannot re-seat a retired card.
+              const retired = data.retired as { mids?: unknown; approval_ids?: unknown } | undefined
+              if (retired) dispatch(retireSwappedRows({ slot: data.slot, mids: retired.mids, approvalIds: retired.approval_ids }))
+              dispatch(refreshSlot(data.slot))
+            }
             break
           case 'chat_done': {
             buffers.flushChunks()

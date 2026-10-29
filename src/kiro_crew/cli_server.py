@@ -335,6 +335,12 @@ async def _run_task(args: argparse.Namespace) -> None:
         print(f"❌ Spec file not found: {spec_path}", file=sys.stderr)
         sys.exit(1)
 
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence before the
+    # load reads the pick. Probes only for a Kiro CLI pick; off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]

@@ -710,6 +710,14 @@ class KasLoginService:
                 nonlocal saved, failed
                 if begun_gen is not None and self._store.signout_generation() != begun_gen:
                     return
+                # A new sign-in is an account change to the fingerprint even when
+                # every claim matches (two same-kind accounts, one profileArn), so
+                # the marker moves FIRST: a marker that cannot be written raises
+                # before the credential is saved, and the login reports
+                # token_store_failed rather than signing in a new account the
+                # fingerprint cannot see. A save that then fails leaves only a
+                # moved marker, which reads as an account change -- the safe side.
+                self._store.bump_signin_generation()
                 self._store.save(token)
                 saved = True
                 if not replaces:

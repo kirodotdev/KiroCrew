@@ -765,9 +765,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_segment_row_meta",
             "function",
-            # links_ordered: keyword-only and defaulted, so every old caller keeps its shape.
+            # links_ordered and text: keyword-only and defaulted, so every old caller keeps its shape.
             "(slot: '_ChatSlot', blocked_links: 'list[dict]', redactions: 'list[dict] | None' = None,"
-            " *, links_ordered: 'bool' = False) -> 'dict | None'",
+            " *, links_ordered: 'bool' = False, text: 'str | None' = None) -> 'dict | None'",
         ),
         ("_SEGMENT_RAW_MAX_CHARS", "value", "int"),
         (
@@ -785,9 +785,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_redact_segment_text",
             "function",
-            # keep_sri_digests: defaulted, so every old caller keeps its shape.
+            # judged_sri_values: defaulted, so every old caller keeps its shape.
             # _ordered_out: keyword-only and defaulted, likewise.
-            "(slot: '_ChatSlot', text: 'str', keep_sri_digests: 'bool' = True,"
+            "(slot: '_ChatSlot', text: 'str', judged_sri_values: 'Collection[str]' = (),"
             " *, _ordered_out: 'list[bool] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),

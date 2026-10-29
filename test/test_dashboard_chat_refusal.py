@@ -964,8 +964,11 @@ class TestRunChatEarlyExitHandOff:
                     ),
                     what="the error blocking response finishing",
                 )
-                assert response.status == 500
-                assert json.loads(response.text)["error"]["type"] == "server_error"
+                assert response.status == 502
+                error = json.loads(response.text)["error"]
+                assert error["type"] == "server_error"
+                assert error["code"] == "turn_failed"
+                assert "failed before it started" in error["message"]
         with pytest.raises(RuntimeError, match="setup broke"):
             await task
         assert prompts == []

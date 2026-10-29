@@ -302,6 +302,28 @@ export const messageReducers = {
     if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
   },
   removeByApprovalId(state: ChatState, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
+  /** Drop the rows a committed Regenerate swap retired, before the refetch the
+   *  swap triggers. That refetch re-seats decided rows (permissions,
+   *  elicitations) from the client's own copies, so a decided card of the
+   *  replaced turn would otherwise come back beside the new reply. A row is
+   *  retired when its `mid` is named, or, for a decided row, its approval id. */
+  retireSwappedRows(state: ChatState, action: PayloadAction<{ slot: string; mids?: unknown; approvalIds?: unknown }>) {
+    const { slot } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const strings = (v: unknown) => new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [])
+    const mids = strings(action.payload.mids)
+    const approvalIds = strings(action.payload.approvalIds)
+    if (mids.size === 0 && approvalIds.size === 0) return
+    const retired = (m: ChatMessage) => {
+      const mid = m.meta?.mid
+      if (typeof mid === 'string' && mids.has(mid)) return true
+      const aid = m.meta?.approval_id
+      return (m.role === 'permission' || m.role === 'elicitation') && typeof aid === 'string' && approvalIds.has(aid)
+    }
+    if (slot === state.activeSlot) state.messages = state.messages.filter(m => !retired(m))
+    const cached = state.slotMessages[safeKey(slot)]
+    if (cached) state.slotMessages[safeKey(slot)] = cached.filter(m => !retired(m))
+  },
   resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean; mid?: string; answer?: Record<string, unknown> }>) {
     const { id, slot, registry, allPending, mid, answer } = action.payload
     if (!slot || isUnsafeKey(slot)) return

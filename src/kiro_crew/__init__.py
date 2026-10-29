@@ -101,6 +101,34 @@ def _apply_build_version_file(base: str, package_dir: "str | None") -> str:
 
 __version__ = _apply_build_version_file(__version__, os.path.dirname(__file__ or ""))
 
+# Keep every Kiro Crew process on Windows away from WMI. CPython 3.11+
+# asks WMI (``platform._wmi_query``) for machine(), uname().processor and the
+# OS version. The query runs on a helper thread with a short timeout; when WMI
+# is slow -- a dozen MCP servers asking at once on gateway start -- the stdlib
+# gives up and ABANDONS that thread, which then spins inside wbemprox.dll for
+# the life of the process (python/cpython#125315). Every stdlib call site
+# already catches OSError and falls back to a non-WMI source (the PROCESSOR_*
+# env vars, sys.getwindowsversion), so raising it is the whole fix. Installed
+# here, before any submodule can call platform.machine() at import time.
+
+
+def _wmi_query_disabled(table: str, *keys: str) -> "list[str]":
+    raise OSError("WMI disabled by kiro_crew")
+
+
+def _install_wmi_free_platform() -> bool:
+    """Replace ``platform._wmi_query`` on Windows; return whether it did."""
+    import platform
+    import sys
+
+    if sys.platform != "win32" or not hasattr(platform, "_wmi_query"):
+        return False
+    setattr(platform, "_wmi_query", _wmi_query_disabled)
+    return True
+
+
+_install_wmi_free_platform()
+
 # What ``kirocrew --version`` appends when the code runs from a source checkout.
 # There the literal above is whatever the tree says -- often the NEXT version,
 # bumped ahead of its release -- and no ``BUILD_VERSION`` stamp or release lane

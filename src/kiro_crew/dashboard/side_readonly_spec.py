@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import stat
 import threading
 from collections.abc import Collection
@@ -180,8 +181,9 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
 
     Completes the "Agent mode ... is not available" refusal the ACP layer raises,
     which puts the cause before its "Refusing to run the backend default mode"
-    sentence and the remedy after it. For an ordinary agent the file is likely
-    missing and ``kirocrew setup --agent-only`` writes the managed ones. For a
+    sentence and the remedy after it. For an ordinary agent
+    :func:`_ordinary_mode_explanation` answers: a missing file gets
+    ``kirocrew setup --agent-only``, a present one the parse check. For a
     spec THIS module published both halves of that are wrong: setup never writes
     it (a side turn does, see :func:`publish_readonly_spec`), and it is usually
     PRESENT -- kiro-cli lists its agents once, at process start, so a process
@@ -198,16 +200,93 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
     """
     base = readonly_base_name(agent)
     if base is None or not _is_published_readonly_spec(agent):
-        return (
-            f"its ~/.kiro/agents/{agent}.json is likely missing.",
-            "Run `kirocrew setup --agent-only` to materialize the agent config.",
-        )
+        return _ordinary_mode_explanation(agent)
     return (
         f"{agent!r} is the read-only spec Kiro Crew derives from {base!r} for side "
         "replies: a side turn writes it, `kirocrew setup` does not, and kiro-cli lists "
         "only the agents present when its process started.",
         "A new session starts a kiro-cli that lists it. It is not a sub-agent: to spawn "
         f"its source agent, name {base!r}, or omit 'agent' when that is the default agent.",
+    )
+
+
+#: kiro-cli reads ``useLegacyMcpJson`` as a deprecated alias of ``includeMcpJson``,
+#: so a file that sets both is a duplicate field to its strict parser and the
+#: whole agent is dropped, while Python's ``json`` (last key wins) reads it fine.
+_ALIASED_SPEC_KEYS = (("includeMcpJson", "useLegacyMcpJson"),)
+
+
+def _shell_quoted(path: Path) -> str:
+    """*path* as one shell argument: POSIX single quotes, or Windows double quotes."""
+    text = str(path)
+    if os.name == "nt":
+        return f'"{text}"' if any(c.isspace() for c in text) else text
+    return shlex.quote(text)
+
+
+def _home_relative(path: Path) -> str:
+    """*path* as ``~/...`` when it sits under the home directory, else absolute."""
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except (RuntimeError, ValueError):
+        return str(path)
+
+
+def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
+    """``(cause, remedy)`` for an agent that is not a published read-only spec.
+
+    A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer.
+    A file that IS present was found but not listed, which means kiro-cli refused
+    it or started before it was written, so the answer says that and points at
+    ``kiro-cli agent validate``, the one check that reports kiro-cli's own parse
+    error. A file that sets a key and its alias together names both
+    keys, since that is a parse failure Python's ``json`` cannot see.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    display = f"~/.kiro/agents/{agent}.json"
+    missing = (
+        f"its {display} is likely missing.",
+        "Run `kirocrew setup --agent-only` to materialize the agent config.",
+    )
+    # A name that is not one path component cannot name a file in the agents
+    # directory, so the probe below is not tried for it.
+    if not agent or agent in (".", "..") or "/" in agent or "\\" in agent or "\0" in agent:
+        return missing
+    target = kiro_agents_dir_path() / f"{agent}.json"
+    try:
+        present = os.path.isfile(target)
+        data = (
+            _read_agent_spec(target, operation="agent_mode_refusal", source="unknown")
+            if present
+            else None
+        )
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not read %s to word a mode refusal", target, exc_info=True)
+        return missing
+    if not present:
+        return missing
+    # Name the file that was probed: ``KIRO_HOME`` can move kiro-cli's agents
+    # directory away from ``~/.kiro/agents``, and the command has to validate the
+    # file kiro-cli dropped, not a copy at the default path.
+    display = _home_relative(target)
+    validate = f"`kiro-cli agent validate --path {_shell_quoted(target)}`"
+    if isinstance(data, dict):
+        for key, alias in _ALIASED_SPEC_KEYS:
+            if key in data and alias in data:
+                return (
+                    f"its {display} is present, but kiro-cli rejected it: it sets both "
+                    f"{key!r} and {alias!r}, and kiro-cli reads {alias!r} as a deprecated "
+                    f"alias of {key!r}, so the two are one duplicate field.",
+                    f"Remove {alias!r} and keep {key!r}, then start a new session. "
+                    f"{validate} shows kiro-cli's own verdict.",
+                )
+    return (
+        f"its {display} is present, but kiro-cli did not list it: kiro-cli's own "
+        "parser rejected the file, or kiro-cli started before the file was written.",
+        f"Run {validate} to see kiro-cli's parse error. If it passes, start a new "
+        "session so a fresh kiro-cli lists the agent.",
     )
 
 

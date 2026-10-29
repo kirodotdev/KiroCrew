@@ -16,6 +16,7 @@ above POLICY ∩ PROFILE. Stateless.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -285,6 +286,23 @@ def _server_of(ref: str) -> str:
     if not ref.startswith("@"):
         return ""
     return ref[1:].split("/", 1)[0]
+
+
+def covered_by(ref: str, selectors: Iterable[str]) -> bool:
+    """Whether a strictly broader selector grants everything *ref* selects.
+
+    Grant/approval decisions use ``mcp_refs.entry_reaches``; this is deduplication.
+    """
+    refs = set(selectors)
+    return (ref != "*" and "*" in refs) or (
+        ref.startswith("@") and "/" in ref and f"@{_server_of(ref)}" in refs
+    )
+
+
+def collapse_selectors(refs: Iterable[str]) -> list[str]:
+    """Keep unique selectors in order, omitting those covered by a broader one."""
+    unique = dict.fromkeys(refs)
+    return [ref for ref in unique if not covered_by(ref, unique)]
 
 
 def _strings(value: Any) -> list[str]:

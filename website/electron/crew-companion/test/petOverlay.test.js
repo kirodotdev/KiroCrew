@@ -939,6 +939,23 @@ test("an approval with no owning session raises the dashboard but routes nowhere
   }
 });
 
+test("hostsDashboard takes an explicit backend URL, so it answers before init", () => {
+  // The kirocrew:// deep-link handler shares this predicate and can be asked
+  // before initCrewCompanion has recorded a backend URL.
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const wc = (url) => fakeDashboard({ url })._mcView.webContents;
+    assert.strictEqual(index.hostsDashboard(wc("http://127.0.0.1:9/?token=t")), false, "no base yet");
+    assert.strictEqual(index.hostsDashboard(wc("http://127.0.0.1:9/chat?sid=k"), "http://127.0.0.1:9"), true);
+    assert.strictEqual(index.hostsDashboard(wc("file:///C:/app/electron/loading.html"), "http://127.0.0.1:9"), false);
+    assert.strictEqual(index.hostsDashboard(wc("https://example.invalid/"), "http://127.0.0.1:9"), false);
+    assert.strictEqual(index.hostsDashboard(wc("about:blank"), "http://127.0.0.1:9"), false);
+  } finally {
+    stub.restore();
+  }
+});
+
 test("open-session refuses when there is no dashboard window to surface", () => {
   const stub = stubElectron();
   try {

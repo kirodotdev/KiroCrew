@@ -78,6 +78,10 @@ if TYPE_CHECKING:
         _take_context_cap_seed,
     )
     from kiro_crew.dashboard.chat_turn.queue_drain import settle_drained_subagent_notices
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import (
+        regenerate_replaced_rows,
+        rows_before_regenerate_target,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import (
         _detach_appended_context,
         _folder_steering_turn,
@@ -157,7 +161,8 @@ async def _session_replay_history(
             _budget = {"budget_chars": CONTEXT_CAP_TAIL_CHARS} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
-            # whether or not the periodic flush has persisted it yet.
+            # whether or not the periodic flush has persisted it yet, and
+            # the previous reply a Regenerate turn is replacing.
             compressed = (
                 await asyncio.to_thread(
                     build_session_replay,
@@ -165,6 +170,7 @@ async def _session_replay_history(
                     session_key,
                     pending_messages=list(slot.messages),
                     current_message=_current_replay_message,
+                    exclude_messages=regenerate_replaced_rows(slot),
                     model_window=window_for_provider_client(client),
                     **_budget,
                 )
@@ -721,7 +727,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             )
 
             preamble = build_interrupted_turn_preamble(
-                list(slot.messages),
+                rows_before_regenerate_target(slot, list(slot.messages)),
                 current=_current_replay_message,
                 opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
             )
@@ -936,6 +942,19 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 memory_store=memory_store,
                 execution_context=execution_context,
             )
+        # Skill triggers read only what the person asked: none of the context
+        # prepended above, and nothing at all on a turn whose text the person
+        # did not write (a recovery or Continue continuation, the synthesis
+        # prompt, an MCP App's message). A sub-agent completion is the parent's
+        # own work coming back, so its echoed task and result trigger nothing
+        # either. A loop's wake matches the loop's own message, not the cycle
+        # header.
+        if _is_synthetic or turn._turn_actor == "subagent":
+            _trigger_text = ""
+        elif turn._skill_trigger_text is None:
+            _trigger_text = _jev_route_text
+        else:
+            _trigger_text = turn._skill_trigger_text
         # The budgets that cut a block record the cut as they write its notice;
         # the collection gathers them for the ``context/composed`` _turn_dispatch_gates writes.
         # It opens around the build alone, so only THIS turn's composition lands in
@@ -984,22 +1003,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 needs_reinjection=_needs_reinjection,
                 steering_dirs=_folder_steering_dirs,
                 context_provider=client,
-                # Skill triggers read only what the person asked: none of
-                # the context prepended above, and nothing at all on a turn
-                # whose text the person did not write (a recovery or Continue
-                # continuation, the synthesis prompt, an MCP App's message). A
-                # sub-agent completion is the parent's own work coming back, so
-                # its echoed task and result trigger nothing either. A loop's
-                # wake matches the loop's own message, not the cycle header.
-                skill_trigger_text=(
-                    ""
-                    if _is_synthetic or turn._turn_actor == "subagent"
-                    else (
-                        _jev_route_text
-                        if turn._skill_trigger_text is None
-                        else turn._skill_trigger_text
-                    )
-                ),
+                skill_trigger_text=_trigger_text,
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)

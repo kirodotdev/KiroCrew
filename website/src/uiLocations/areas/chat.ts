@@ -109,9 +109,11 @@ export const LOCATIONS = {
     ],
   },
   // The chat pane's empty state (ChatEmptyState), drawn only while no session is
-  // open there: a different site, label and host from the sidebar button.
+  // open there: a different site, label and host from the sidebar button. In a
+  // popout whose session was closed elsewhere it reads "Start a new chat here".
   'chat.start-new-chat': {
     kind: 'button',
+    label: { from: 'text', key: 'pages.chatPage.start_a_new_chat' },
     terms: {
       en: ['new conversation', 'start a conversation', 'begin a chat', 'create a chat'],
       'zh-CN': ['新对话', '新聊天', '开始对话', '新建对话'],

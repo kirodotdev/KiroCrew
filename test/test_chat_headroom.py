@@ -365,12 +365,15 @@ def test_an_unusable_occupancy_never_refuses(monkeypatch, state):
 async def test_admitted_work_item_create_carries_headroom(tmp_path, monkeypatch, host):
     _flag(monkeypatch, True)
     state = _make_state(tmp_path)
+    # A create that is admitted also binds, so it carries a work item the binding
+    # accepts: a hub conductor, a store-shaped id, and a new unnamed slot.
+    bindable = {**WORK_ITEM, "item_id": "it_00000001", "conductor_key": "chat-hub"}
     async with TestClient(TestServer(_app(state))) as client:
-        resp = await client.post("/api/chat/slots", json={"name": "w1", "work_item": WORK_ITEM})
-        assert resp.status == 200
+        resp = await client.post("/api/chat/slots", json={"work_item": bindable})
+        assert resp.status == 200, await resp.text()
         body = await resp.json()
     assert set(body["headroom"]) == HEADROOM_FIELDS
-    assert "w1" in state._slots
+    assert body["key"] in state._slots
 
 
 @pytest.mark.asyncio

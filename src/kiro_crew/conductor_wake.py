@@ -3,8 +3,8 @@
 TWO TRIGGERS, AND BOTH ARE A WORKER TRYING TO SPEAK. A conductor is pulled forward when
 the ``work`` fold advances on the crew-log bus -- a worker's ``work/recorded`` report
 landed and was folded -- and only when that report's status is one the conductor must
-act on (:data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES`: ``done``, ``blocked``,
-``question``). And it is pulled forward when a worker's ``work_report`` / ``work_brief``
+act on (:func:`~kiro_crew.work_vocab.wake_statuses`: ``done``, ``blocked``,
+``question``, and ``reply`` while ``work_ledger.remote_dispatch`` is on). And it is pulled forward when a worker's ``work_report`` / ``work_brief``
 call never reached the ledger because the harness could not deliver it
 (:func:`wake_for_undelivered_report`, :mod:`kiro_crew.work_ledger_undelivered`): the
 worker meant to say something, and the conductor would otherwise hear nothing at all.
@@ -87,7 +87,8 @@ import os
 import time
 from typing import Any, Callable
 
-from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_WAKE_STATUSES
+from kiro_crew import work_preview
+from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_REMOTE_DISPATCH_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +315,7 @@ async def _observe_board(
     worker report needs a ``bind`` on the board before it.
 
     A MOVED STAMP IS NOT ENOUGH. Only a report whose status is in
-    :data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES` is pushed for, because that set is
+    :func:`~kiro_crew.work_vocab.wake_statuses` is pushed for, because that set is
     exactly what the conductor's own gate will act on: a ``progress`` report -- which is
     also what a worker writes when it parks itself in a wait -- advances the board and is
     read on the loop's next scheduled tick, and pulling that tick forward
@@ -342,8 +343,13 @@ async def _observe_board(
         _first, reported = _registry.observe_delta(board, items, order)
     else:
         _first, reported = _registry.observe(board, items)
+    remote_dispatch: bool | None = None
     for item_id, status in reported:
-        if status.strip() not in WORK_WAKE_STATUSES:
+        if remote_dispatch is None and status.strip() in WORK_REMOTE_DISPATCH_STATUSES:
+            # Only a preview status pays for the config read, and off the loop: it is
+            # file I/O, and every other report decides without it.
+            remote_dispatch = await asyncio.to_thread(work_preview.remote_dispatch)
+        if status.strip() not in wake_statuses(bool(remote_dispatch)):
             continue
         await _fire(svc, board, item_id)
 

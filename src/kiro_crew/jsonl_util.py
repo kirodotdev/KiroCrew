@@ -593,7 +593,9 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
     never cost the record; only a failure of the caller's own append may.
     """
     try:
-        lock_fd = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        lock_fd = platform_compat.open_create_or_existing(
+            path.with_name(path.name + ".lock"), os.O_RDWR, 0o600
+        )
         try:
             locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             try:

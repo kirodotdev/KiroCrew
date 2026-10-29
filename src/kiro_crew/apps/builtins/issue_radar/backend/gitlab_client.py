@@ -76,6 +76,7 @@ from .errors import (
     sanitize_cli_stderr,
 )
 from .gitlab_comments import post_comment_batch, reply_to_comment_thread  # noqa: F401 — public API
+from .gitlab_links import list_issue_links as list_issue_links  # noqa: F401 — public re-export
 
 # Historical aliases, mirroring github_client so provider-agnostic callers can
 # use either module interchangeably (see errors.py for why these are aliases).

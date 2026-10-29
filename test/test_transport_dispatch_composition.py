@@ -109,6 +109,7 @@ BASE_NAMES = frozenset(
         "TurnOutcome",
         "TurnRecord",
         "Verdict",
+        "_APPROVAL_REGISTRY",
         "_BUSY_OPTIONS_REFUSAL",
         "_CHANNEL",
         "_CHAT_TYPE_THREAD",

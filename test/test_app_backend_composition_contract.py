@@ -318,12 +318,14 @@ FACADE_CALL_SITES: frozenset[tuple[str, str, str]] = frozenset(
         ("termination", "_drain_exited_root_tree", "_pid_alive"),
         ("stale_reap", "_reap_stale_app_backends", "_pid_alive"),
         ("restart", "_restart_exited_backend", "_start_app_backend"),
+        ("restart", "_restart_exited_backend", "_starting_reservation"),
         ("startup", "_start_backends_concurrently", "start_app_backend"),
     }
 )
 
 #: Every function the facade defines for the backend: the spawn transaction and the
-#: entry-point helpers only it uses, and ``_pid_alive``. Repository guards read the
+#: entry-point helpers only it uses, the STARTING reservation it and the restart
+#: publish (so every record construction stays in the facade), and ``_pid_alive``. Repository guards read the
 #: spawn in ``backend.py`` by path -- ``_start_app_backend_body`` in
 #: ``test_internal_python_isolation.py``, ``_resolve_nvm_path`` in
 #: ``test_spawn_audit.py``, ``_pid_alive`` in ``test_windows_kill_probe_audit.py``, and
@@ -334,6 +336,7 @@ FACADE_RESIDENTS: frozenset[str] = frozenset(
     {
         "start_app_backend",
         "_start_app_backend",
+        "_starting_reservation",
         "_clear_failed_spawn_state",
         "_start_app_backend_body",
         "_resolve_nvm_path",
@@ -1074,7 +1077,7 @@ class TestLayering:
             assert backend.__name__ not in constants, f"{part.__name__} spells the facade"
 
     def test_the_facade_helper_is_only_ever_called_in_place(self) -> None:
-        # An alias (``f = _facade``) or a stored module would hide a fifth call site
+        # An alias (``f = _facade``) or a stored module would hide a sixth call site
         # from the reader above, so every reference to ``_facade`` in an owner is its
         # import or the callee of a call.
         for part in PARTS:

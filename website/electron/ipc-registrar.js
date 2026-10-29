@@ -526,6 +526,28 @@ function createIpcRegistrar({
       }
     });
 
+    // First-run setup's "connect to a crew on another machine" exit. It stops the
+    // gateway this app started and reconnects the main window to a crew the
+    // user names, so it is an action on the machine in front of the user and
+    // takes the full three-gate check. The supervisor then decides from its own
+    // state whether that window may switch: the main window only, on a gateway
+    // this app spawned. The renderer supplies nothing either way.
+    //
+    // `can-...` answers a bare boolean so setup shows the link only where the
+    // switch works, and never opens the form.
+    ipcMain.handle("first-run:can-use-remote-crew", async (event) => {
+      try {
+        await assertLocalDashboard(event, "first-run:can-use-remote-crew");
+      } catch {
+        return false;
+      }
+      return gateway.canSwitchToRemoteCrew(windows.windowForWebContents(event.sender)) === true;
+    });
+    ipcMain.handle("first-run:use-remote-crew", async (event) => {
+      await assertLocalDashboard(event, "first-run:use-remote-crew");
+      return gateway.switchToRemoteCrew(windows.windowForWebContents(event.sender));
+    });
+
     // Open the user's own terminal app in a project directory. Gated like
     // `dashboard:open-file` because it is a LAUNCH on the machine in front of
     // the user, and a connection window pointed at a remote gateway shares this
@@ -664,6 +686,9 @@ function createIpcRegistrar({
         // it generates/verifies feed metadata and also supports Linux.
         autoUpdater: require("electron-updater").autoUpdater,
         isPolicyGoverned: () => policyGoverned,
+        // On Windows, 'session-end' fires on BaseWindow (not App). The feed
+        // lane uses this to register its pending-update notice on the window.
+        getMainWindow: () => windows.getMainWindow(),
         dialog: electron.dialog,
         Notification,
         getFlavor: () => "stable",

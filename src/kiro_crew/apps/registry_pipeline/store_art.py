@@ -59,6 +59,7 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _EXTERNAL_REGISTRY_CACHE_TTL,
     _MANIFEST_CACHE_TTL,
     _blob_cache_dir,
+    _installed_manifest_cache_path,
     _manifest_cache_path,
     _read_manifest_cache,
     _write_manifest_cache,
@@ -1553,6 +1554,8 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
     # Rows that are not warm only because their manifest cache aged out; queued
     # after every row whose art is missing (see the ranking below).
     stale: list[dict[str, Any]] = []
+    # Rows of apps installed from this source; queued ahead of everything.
+    installed: list[dict[str, Any]] = []
     overflow = 0
     field_rejects = 0
     examined = 0
@@ -1654,11 +1657,18 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
         # every batch until the budget ran out, and rows further down would never
         # get their art. Index order is kept inside each group, and stale rows still
         # re-warm when the budget allows.
-        if await asyncio.to_thread(_stale_row_art_present, entry):
+        # An app installed from this source goes first of all: the listing reads its
+        # display copy from the installed checkout (cached apart, beside the source
+        # cache), so this clone is the only reader of what its branch now publishes,
+        # and without it the store and the app's update status stay on the installed
+        # version. Few rows are installed, so this does not starve the others.
+        if await asyncio.to_thread(_installed_manifest_cache_path(entry).is_file):
+            installed.append(slim)
+        elif await asyncio.to_thread(_stale_row_art_present, entry):
             stale.append(slim)
         else:
             todo.append(slim)
-    todo.extend(stale)
+    todo = installed + todo + stale
     if field_rejects:
         logger.warning(
             "store art prewarm: registry %r skipped %d row(s) with a non-string or "

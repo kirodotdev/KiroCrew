@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _mirror_echo_owed,
     )
     from kiro_crew.dashboard.chat_turn.recovery import _session_stop_generation_for
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import carry_regenerate_target
     from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 
 
@@ -162,6 +163,10 @@ def _queue_recovery(
         directive_user_origin=_directive_user_origin,
         directive_channel_origin=_directive_channel_origin,
     )
+    # A recovery a Regenerate turn queues before it has any reply (a replay of
+    # its message or a continuation) is the same Regenerate's next attempt: it
+    # settles the previous reply, not this turn.
+    carry_regenerate_target(slot, _recovery_qid)
     if content == turn.message and _turn_is_completion:
         # A verbatim requeue still replays the completion; runner-written
         # text queued after it (a continuation, a retry prompt) does not.

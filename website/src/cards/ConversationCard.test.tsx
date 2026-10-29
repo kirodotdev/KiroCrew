@@ -444,6 +444,12 @@ describe('change card', () => {
     expect(screen.getByTestId('change-card-cancel').textContent).toBe(L('decline_crewmate_import'))
   })
 
+  it('names the decline on a workflow save card, where nothing exists yet to change', async () => {
+    pending = [card({ kind: 'workflow.save', risk: 'code_exec', params: { source: 'X = 1', name: 'Q' } })]
+    renderCards()
+    expect((await screen.findByTestId('change-card-cancel')).textContent).toBe(L('decline_workflow_save'))
+  })
+
   it('keeps the generic decline and no press note on other kinds', async () => {
     pending = [card()]
     renderCards()

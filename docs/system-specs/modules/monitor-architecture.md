@@ -401,7 +401,18 @@ release it. `monitor_inspect` reports the hold as
 `paused_for_approval` on the loop reading.
 
 A tool's “requested” response proves receipt only. The gateway's applied notice
-and a subsequent `monitor_inspect` prove activation. Unmatched directive delivery
+and a subsequent `monitor_inspect` prove activation. For crew/member sessions,
+self-arm provenance is positive: the directive consumer vouches for a
+`monitor_start`, `monitor_watch` or `monitor_update` only when the turn carries a
+mark its dispatcher set, either the authenticated-human origin
+(`_directive_user_origin`) or the delivered wake of a loop bound to this slot
+(`_directive_self_wake`). A turn's `user` actor is a fallback for attribution and
+never authority, so a dispatcher that names no producer grants nothing: cron, app,
+native sub-agent, peer-session, restored and untagged dispatcher turns keep the
+outside-arm 409. The human-origin mark rides a steer until it is consumed or
+requeued, so a person's steer that the turn ends before consuming drains with it.
+Successful arms use the existing self-arm trust record and SEL events; no
+gateway-patrol trust kind exists. Unmatched directive delivery
 produces an application-failure notice appended to the tool's own result text; its
 agent instruction names `monitor_inspect` only for the monitor tools and stays
 tool-neutral for every other directive tool, as does the turn-end notice for a parked

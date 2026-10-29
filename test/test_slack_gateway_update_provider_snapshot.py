@@ -20,8 +20,12 @@ def _provider(order: list[str]):
     from kiro_crew.platform.update_provider import CommandProvider, UpdateCheckResult
 
     provider = CommandProvider(check_command="c", apply_command="a")
+    # The check offers 9.9.9, and the re-check after the apply finds it installed.
     provider.check = AsyncMock(  # type: ignore[method-assign]
-        return_value=UpdateCheckResult(available=True, remote_version="9.9.9")
+        side_effect=[
+            UpdateCheckResult(available=True, remote_version="9.9.9"),
+            UpdateCheckResult(available=False),
+        ]
     )
 
     async def _apply() -> bool:

@@ -643,16 +643,6 @@ def create_declared_store(store: str) -> tuple[Path, bool]:
     return target, not existed
 
 
-def member_memory_identity(store: str) -> tuple[str, int]:
-    """Read the canonical database identity without any filesystem manifest."""
-    from kiro_crew.vector_memory import read_member_database_identity
-
-    member_id, store_id = read_member_database_identity(_named_store_dir(store) / MEMORY_DB_FILE)
-    if store_id != store:
-        raise UnknownMemoryStore("Member database store identity does not match its location")
-    return member_id, 2
-
-
 def memory_store_version(store: str) -> int:
     """Use the explicit declaration; an invalid member store never becomes V1."""
     if store in ("", DEFAULT_MEMORY_STORE):
@@ -881,7 +871,9 @@ def _open_namespace_lock(directory: Path, path: Path, *, read_only_ok: bool) -> 
         platform_compat.make_owner_only_dir(directory)
         if path.resolve() != path:
             raise UnknownMemoryStore("memory store namespace lock is redirected")
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = platform_compat.open_create_or_existing(
+            path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
     except OSError as exc:
         if not (read_only_ok and is_lock_write_refusal(exc)):
             raise
@@ -1589,17 +1581,24 @@ def repair_legacy_member_stores() -> list[str]:
         return []
 
 
-def provision_member_memory(config, member: str) -> str:
-    """Validate configuration before allocating or acquiring a store write lock."""
+def provision_member_memory(config, member: str, *, upgrade: bool = False) -> str:
+    """Validate configuration before allocating or acquiring a store write lock.
+
+    *upgrade* is for a LIVE row that predates durable ids being given one (the crewmate
+    migration): the id is allocated as the upgrade allocates it
+    (``_allocate_member_id(refuse_damaged=False)``), so the row keeps the
+    name-derived slug its DM binding, member directory and thread already use. A
+    create never passes it: a same-name binding there is a deleted predecessor's.
+    """
     from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
     if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
         raise UnknownMemoryStore("Memory configuration is unreadable")
     with memory_store_namespace_lock():
-        return _provision_member_memory(config, member)
+        return _provision_member_memory(config, member, upgrade=upgrade)
 
 
-def _provision_member_memory(config, member: str) -> str:
+def _provision_member_memory(config, member: str, *, upgrade: bool = False) -> str:
     from kiro_crew import platform_compat
     from kiro_crew.config.sections import MemoryStoreConfig
     from kiro_crew.vector_memory import create_member_database
@@ -1615,7 +1614,7 @@ def _provision_member_memory(config, member: str) -> str:
         raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
     if current is not None and (current.owner_member_id or current.owner_member):
         raise UnknownMemoryStore("Existing member store identity is invalid")
-    member_id = _allocate_member_id(config, member)
+    member_id = _allocate_member_id(config, member, refuse_damaged=not upgrade)
     root = memory_stores_root()
     platform_compat.make_owner_only_dir(root)
     while True:

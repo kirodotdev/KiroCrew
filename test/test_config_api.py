@@ -318,6 +318,16 @@ class TestAgentCrudProperties:
                         assert create_data["code"] == "member_memory_required"
                         assert json.loads(tmp.read_text()) == _seed_config()
                         return
+                    if kiro_agent != "kirocrew":
+                        # A crewmate starts as the built-in worker: another
+                        # template is refused, and one named after the crew's
+                        # key is answered by the same-name rule.
+                        assert (resp.status, create_data["code"]) in {
+                            (400, "mate_template_unsupported"),
+                            (409, "template_name_in_use"),
+                        }
+                        assert json.loads(tmp.read_text()) == _seed_config()
+                        return
                     assert resp.status == 200
                     private_store = create_data["memory_store"]
                     assert private_store != "default"
@@ -339,7 +349,8 @@ class TestAgentCrudProperties:
                     assert key in agents_by_name
                     created = agents_by_name[key]
                     assert created["display_name"] == ("" if is_crew_id(name) else name)
-                    assert created["kiro_agent"] == kiro_agent
+                    # Bound to its own file, under its key.
+                    assert created["kiro_agent"] == key
                     assert created["workspace"] == workspace
                     assert created["memory_store"] == private_store
                     persisted = json.loads(tmp.read_text())
@@ -414,7 +425,8 @@ class TestAgentCrudProperties:
                     if update_kiro and not refused_rebinding:
                         assert agent["kiro_agent"] == new_kiro
                     else:
-                        assert agent["kiro_agent"] == "kirocrew"
+                        # Create gives the crew its own file and binds it there.
+                        assert agent["kiro_agent"] == "test-agent"
                     if update_ws and not refused_rebinding:
                         assert agent["workspace"] == new_ws
                     else:
@@ -1413,14 +1425,16 @@ async def test_create_rejects_foreign_private_copy(tmp_path: Path) -> None:
     agent_state.set_fork_info("owner-copy", forked_from="kirocrew", private_to="owner-crew")
     with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
         async with TestClient(TestServer(_make_crud_app())) as client:
+            # Named after the copy: the one non-default template a create
+            # admits, so the private-copy check is what answers it.
             resp = await client.post(
                 "/api/agents",
-                json={"name": "new-crew", "kiro_agent": "owner-copy"},
+                json={"name": "owner-copy", "kiro_agent": "owner-copy"},
             )
             assert resp.status == 409
             assert (await resp.json())["code"] == "foreign_private_copy"
             on_disk = json.loads(tmp.read_text(encoding="utf-8"))
-            assert "new-crew" not in on_disk["agents"]
+            assert "owner-copy" not in on_disk["agents"]
 
 
 @pytest.mark.asyncio

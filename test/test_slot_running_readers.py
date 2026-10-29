@@ -191,6 +191,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
+                # A native-card answer steers into the turn only when one runs;
+                # on a reserved-but-not-executing slot slot.running is still
+                # true, so this reads the reservation like the routes above. No
+                # running turn -> it reports unavailable and the embed hands the
+                # answer back.
+                ("handlers/slot_question.py", "api_chat_slot_question_steer"),
                 ("handlers/members_thread_turns.py", "api_member_fresh_start"),
                 ("handlers/members_thread.py", "api_member_thread"),
                 ("handlers/members_roster.py", "api_members"),

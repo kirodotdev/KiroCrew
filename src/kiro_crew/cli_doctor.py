@@ -56,6 +56,7 @@ from kiro_crew import (  # noqa: F401
     dep_sync,
     diagnostics,
     gateway_lock,
+    host_task_sizing,
     platform_compat,
     resource_status,
     sandbox,
@@ -722,6 +723,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── ACP runtimes: live count, owner and backend CPU (advisory; Linux) ──
     resources._doctor_acp_runtimes(issues)
+
+    # ── Task ceilings: slice and scope TasksMax, thread pools (Linux) ──
+    resources._doctor_task_ceilings(issues)
 
     # ── Runtime tmpfs headroom (sandbox mount-source roots; Linux only) ──
     resources._doctor_runtime_tmpfs(issues)

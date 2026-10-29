@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.slash_commands import _refuse_blocked_slash
     from kiro_crew.dashboard.chat_turn.tool_approval import _persistable_session_policy
@@ -1471,8 +1472,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # `durable_row_count` is the SHARED counting rule every
     # site that sets or advances that base uses, so the ordinal cannot disagree
     # with the base about which rows are durable.
+    # A Regenerate leaves the reply it replaces in the window until the turn
+    # ends; that reply is not counted, so the re-run draws the ordinal of the
+    # turn it repeats and the emitter's `attempt` increments.
     _crew_log_turn_no = int(getattr(slot, "_disk_older_durable_count", 0) or 0) + durable_row_count(
-        slot.messages
+        rows_before_regenerate_target(slot, slot.messages)
     )
     turn._crew_log_turn_no = _crew_log_turn_no
     # A quick prompt is a REPLACING expansion, the same class as @prompt: the

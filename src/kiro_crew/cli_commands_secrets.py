@@ -123,8 +123,8 @@ def _handle_secrets_authorize(args: argparse.Namespace) -> None:
                 )
         except FileNotFoundError:
             pass  # not yet created — os.open below creates a fresh regular file
-        lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        lock_fd = os.open(lock_path, lock_flags, 0o600)
+        lock_flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        lock_fd = platform_compat.open_create_or_existing(lock_path, lock_flags, 0o600)
     except (RuntimeError, OSError) as exc:
         # A planted symlink/hardlink/special file or an O_NOFOLLOW link race at
         # the owner-only lock path fails safe (nothing is read or written yet),

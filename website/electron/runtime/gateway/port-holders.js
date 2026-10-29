@@ -7,6 +7,7 @@ const {
   windowsGatewayExecutablePaths,
   windowsVenvBaseInterpreterLaunches,
   windowsListenPids,
+  windowsListenPidsRetrying,
   windowsProcessCommand,
   windowsTaskkill,
 } = require("../../windows-port");
@@ -245,7 +246,10 @@ function createPortHolders({
   function forceStopGatewayPort(probePort) {
     if (IS_WIN) {
       return forceStopPort(probePort, {
-        getListenPids: windowsListenPids,
+        // Recovery fails closed on a probe error, so one slow netstat spawn
+        // would strand a gateway whose kill already worked: a busy host pushed
+        // netstat past its bound once and the app stopped at "restart required".
+        getListenPids: (p) => windowsListenPidsRetrying(p, { execFileFn: execFile, log: glog }),
         getCommand: windowsProcessCommand,
         kill: (pid) => windowsTaskkill(pid, {
           isTrustedCommand: isTrustedWindowsGatewayCommand,

@@ -158,10 +158,76 @@ def test_cron_modes_and_session_ownership_remain_explicit() -> None:
         assert value in CRON
     assert "kirocrew cron preview <script:function> -m <message>" in CRON
     capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
+    _require(capabilities, r"`ask_question`.*DEFAULT TO SILENCE", r"\[OPTIONS: .*cheaper")
+
+
+def test_merged_trigger_lines_keep_every_sibling_tools_trigger() -> None:
+    """A deferred tool shows only its name, so each one keeps its own when-to-use line."""
+    capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
     _require(
         capabilities,
-        r"BLOCKING in a dashboard session: the call waits for the user and the answers are its result",
+        r"`knowledge_add_document`: add a load-bearing design/spec/RFC/runbook/wiki you READ",
+        r"`spawn_release` ends a finished workstream",
+        r"`artifact_mark_review` flags addressed comments; only humans resolve",
     )
+    # The explicit-signal restriction gates searching only, never adding a document.
+    line = next(ln for ln in capabilities.splitlines() if "explicit knowledge/docs" in ln)
+    restricted = line.split("explicit knowledge/docs", 1)[0]
+    assert "local_knowledge_search" in restricted
+    assert "knowledge_add_document" not in restricted
+    assert "knowledge_*" not in restricted
+
+
+def _tools() -> dict[str, dict]:
+    from kiro_crew import mcp_core
+
+    return {t["name"]: t for t in mcp_core._list_tools()}
+
+
+def test_moved_tool_rules_live_in_their_own_descriptions() -> None:
+    """A rule that matters only at or after the call lives on the tool.
+
+    A deferred tool is loaded before it is called, so its description is in
+    front of the model exactly when these rules apply. The prompt keeps only the
+    one-line trigger that decides whether to reach for the tool.
+    """
+    tools = _tools()
+    expected = {
+        "ask_question": (
+            r"BLOCKS until the user responds.*do NOT end your turn",
+            r"Default to silence",
+        ),
+        "nothing_to_do": (r"TERMINAL", r"REFUSES it on a turn a person opened"),
+        "spawn_run": (
+            r"~3-5s, ~400MB",
+            r"memory-pressure refusal",
+            r"awaiting_approval.*not that it failed",
+        ),
+        "spawn_continue": (r"conversation_busy", r"conversation_gone", r"end your turn"),
+        "learn_add": (r"refused, deduped or unchanged.*nothing was written", r"no `scope`"),
+        "workflow_run": (r"workflow_library_list",),
+        "memory_recall": (r"not transcript text.*search_chat_history",),
+        "set_project": (
+            r"git worktree add",
+            r"headless callers",
+            r"turn another session sent.*is refused",
+        ),
+        "reset_conversation": (r"BEFORE calling this",),
+        "send_message": (r'"origin"', r"REFUSED"),
+        "session_ledger_record": (r"subagent.*refused",),
+        "artifact_save": (
+            r"ALREADY auto-registered",
+            r"incognito or temporary session also refuses",
+        ),
+        "artifact_folder_delete": (r"count.*consent to the permanent deletion",),
+        "deploy_artifact": (r"PREVIEW-ONLY", r"artifact-deploy skill"),
+        "wait": (r"60-1800s", r"end reason", r"ended deliberately"),
+        "register_hook": (r"before ending a session",),
+    }
+    for tool, patterns in expected.items():
+        _require(tools[tool]["description"], *patterns)
+    model = tools["spawn_run"]["inputSchema"]["properties"]["model"]["description"]
+    _require(model, r"dedicated-process path")
 
 
 def test_injected_data_and_refusals_are_not_new_authority() -> None:

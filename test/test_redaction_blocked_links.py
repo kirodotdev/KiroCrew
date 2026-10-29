@@ -528,6 +528,7 @@ class TestRecordsReachTheDisplayPath:
         src = inspect.getsource(chat_runner._flush_segment)
         assert "_redact_segment( slot, assistant_text," in " ".join(src.split())
         assert "_segment_row_meta( slot, blocked_links, redactions," in " ".join(src.split())
+        assert "text=redacted," in " ".join(src.split())
         helper = inspect.getsource(chat_runner._redact_segment_text)
         assert "redact_exfiltration_urls_with_records(" in helper
         assert "redact_credentials_with_records(" in helper
@@ -558,6 +559,7 @@ class TestRecordsReachTheDisplayPath:
         src = "\n".join(body)
         assert "_redact_segment( slot, turn.assistant_text," in " ".join(src.split())
         assert "_segment_row_meta( slot, _blocked, _redactions," in " ".join(src.split())
+        assert "text=_redacted," in " ".join(src.split())
         assert "redact_exfiltration_urls(" not in src
 
 
@@ -1200,7 +1202,7 @@ class TestEveryRetentionPointIsBounded:
         assert "with_bounded_redaction_records(" in inspect.getsource(
             chat_persistence._attach_variants
         )
-        stash = inspect.getsource(chat_runner._flush_segment)
+        stash = inspect.getsource(chat_runner._adopt_pending_variants)
         assert "with_bounded_redaction_records({**v" in stash
 
 

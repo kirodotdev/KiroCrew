@@ -65,7 +65,7 @@ async def test_a_crewmate_created_through_the_create_route_chats_on_the_conducto
     await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
     async with TestClient(TestServer(_app(monkeypatch))) as client:
         response = await client.post(
-            "/api/agents", json={"name": "atlas", "kiro_agent": "docs-helper"}
+            "/api/agents", json={"name": "atlas", "kiro_agent": "kirocrew"}
         )
         assert response.status == 200, await response.text()
     assert (home / "mates" / "agents" / "atlas.json").is_file()
@@ -80,7 +80,7 @@ def test_a_crewmate_created_on_the_command_line_chats_on_the_conductor(home, mon
         argparse.Namespace(
             agent_action="create",
             name="cove",
-            kiro_agent="docs-helper",
+            kiro_agent="kirocrew",
             workspace="default",
             memory_store="default",
         )

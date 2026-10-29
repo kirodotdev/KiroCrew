@@ -740,6 +740,22 @@ def _live_adaptive_state() -> dict[str, Any] | None:
     return None
 
 
+def _caller_runs_remotely() -> bool:
+    """Whether the calling session is bound to a remote workspace; False if unknown.
+
+    Read from the durable placement choice, which this tool server can see, so
+    the spawn floor is not reported as holding children the gate prices without
+    it (``admission/gate.py``, ``remote_child``).
+    """
+    try:
+        from kiro_crew.session_environment import session_attached_remotely
+
+        return session_attached_remotely(mcp_core._resolve_session_key())
+    except Exception:
+        logger.debug("resource_status: session placement unreadable", exc_info=True)
+        return False
+
+
 def resource_status(name: str, args: dict[str, Any]) -> str:
     rstatus = host_status.probe()
     out = rstatus.summary_lines()
@@ -761,6 +777,11 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
                 "force could not be read from the gateway)"
             )
     out.extend(session_memory_lines())
+    # The posture reads a looser figure than the spawn gate and knows nothing of
+    # ``agent.spawn_min_memory_gb``, so it can read AMPLE while every start waits.
+    spawn = host_status.spawn_floor_reading(remote=_caller_runs_remotely())
+    out.append(spawn.summary_line())
+    blocked = spawn.blocked_sentence()
     if rstatus.posture == "critical":
         out.append(
             "\nGuidance: memory is critically low — do NOT start heavy work "
@@ -772,6 +793,9 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: memory is tight — prefer the lighter path (targeted "
             "tests, fewer sub-agents, deferred builds) for heavy work."
         )
+    elif blocked:
+        out.append(f"\nGuidance: {blocked}.")
+        blocked = ""  # said once, as the guidance itself
     elif rstatus.memory_pressure_held:
         # The posture is figure-based and can read AMPLE while the macOS kernel
         # reports pressure; the AMPLE guidance would then contradict the gate.
@@ -789,6 +813,8 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
             "\nGuidance: headroom could not be measured on this host — "
             "proceed with normal caution."
         )
+    if blocked:
+        out.append(f"Spawning: {blocked}.")
     # After the memory guidance, which stays about memory alone: a full /tmp
     # fails a test run with ENOSPC however much RAM is free.
     temp_lines = host_status.temp_headroom_lines()

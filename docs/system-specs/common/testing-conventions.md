@@ -1926,6 +1926,19 @@ found these further classes. Each one passed on the host that wrote it.
   treat this run's own basetemp and `tempfile` root as test-owned (`_test_owned_roots`)
   and still catch a pin that escapes to the real tree. Sixteen tests were red in every
   agent-driven run before this.
+- **An agent's shell inherits the live `KIROCREW_HOME`.** When `KIROCREW_SCRATCH` is set
+  beside it, `conftest_floor_home` treats the value as inherited rather than chosen and
+  installs the import-time floor anyway, under `$TMPDIR` first and the system temp dirs
+  after. The run's own scratch (`$KIROCREW_SCRATCH`, its `TMPDIR`, and the floor an xdist
+  worker inherits through `KIROCREW_TEST_HOME_FLOOR`) is not live data for the guard when
+  it sits strictly inside `<home>/scratch/`, so that floor passes
+  `_refuse_a_real_data_home`. Another session's scratch tree, the scratch root and a live
+  home exported by hand are still refused. Before this, the refusal sent agents to `HOME=/tmp/<name>`, and each fake
+  `HOME` rebuilt the uv, npm and bytecode caches under it: those homes exhausted the
+  `/tmp` tmpfs inode budget on a developer host. When `HOME` is faked anyway, the guard
+  also checks the password-database home, and `conftest_floor_configure` keeps the
+  bytecode and hypothesis caches under that real home's `.cache/kirocrew`, the path an
+  unfaked run uses.
 
 The third full-run audit ran five backend and five frontend runs on a **macOS** host,
 from inside a Kiro Crew agent session, with the audit hook attributing every write,

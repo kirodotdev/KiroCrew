@@ -1665,11 +1665,27 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.members import unchatted_legacy_bindings
 
     hidden = await unchatted_legacy_bindings(cfg, state)
-    agents = [
-        _agent_roster_row(name, "global", agent_cfg, redact=redact)
-        for name, agent_cfg in cfg.agents.items()
-        if name not in hidden
-    ]
+
+    # Which rows are bound to their own mate file: one file stat per row, so it
+    # runs off the loop, against the config already in hand.
+    from kiro_crew.mate_capabilities import owns_mate_file
+
+    def _mate_file_owners() -> set[str]:
+        return {
+            name
+            for name, agent_cfg in cfg.agents.items()
+            if name not in hidden and owns_mate_file(name, agent_cfg.kiro_agent)
+        }
+
+    mate_owners = await asyncio.to_thread(_mate_file_owners)
+    agents = []
+    for name, agent_cfg in cfg.agents.items():
+        if name in hidden:
+            continue
+        row = _agent_roster_row(name, "global", agent_cfg, redact=redact)
+        # Keyed on the config name: the row's own ``name`` may be masked.
+        row["owns_mate_file"] = name in mate_owners
+        agents.append(row)
 
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
@@ -1710,8 +1726,8 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
             # their config-insertion index and form a stable bottom block.
             sorted_agents = sorted(
                 enumerate(agents),
-                # ``str(...)`` because the row's value type widened to ``object``
-                # for ``avatar`` (the one structured field); ``name`` is always a
+                # ``str(...)`` because the row's value type is ``object`` for
+                # ``avatar`` and ``owns_mate_file``; ``name`` is always a
                 # ``str`` -- masked or verbatim, ``_roster_mask`` returns one.
                 key=lambda item: (
                     -usage.get(str(item[1]["name"]), (0, 0.0))[0],

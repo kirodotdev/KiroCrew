@@ -1289,6 +1289,12 @@ async def _close_slot(
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)
     state.push_refresh("history")
+    if state._slots.get(name) is None:
+        # Remote dispatch: a hub's work item bound to this slot closes with it.
+        # Imported here, never at boot, and a no-op for a slot bound to none.
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        await close_work_item_for_slot(name)
 
 
 async def api_chat_slot_delete(request: web.Request) -> web.Response:
@@ -1616,6 +1622,14 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         _sync_dashboard_slots(state)
         state.push_slots_update()
         state.push_refresh("history")
+        # Remote dispatch: an archived worker's hub item closes as on a single
+        # close, unless a successor took its key. Imported only when something
+        # was archived.
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        for name in archived:
+            if state._slots.get(name) is None:
+                await close_work_item_for_slot(name)
     if not failed:
         cleanup_outcome = "ok"
     elif archived:

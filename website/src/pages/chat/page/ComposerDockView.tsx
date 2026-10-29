@@ -91,7 +91,7 @@ interface ComposerDockViewProps {
   activityOpen: boolean
   composerBusy: boolean
   contextPct: number
-  contextTokens: { used?: number; window: number; }
+  contextTokens: { used?: number; window?: number; }
   knowledgeFetch: ReturnType<typeof useActiveSlotState>['knowledgeFetch']
   messages: ChatMessage[]
   pendingFollowup: { items: FollowupItem[]; ts: number; } | undefined
@@ -677,6 +677,7 @@ export default function ComposerDockView({
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
+              derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
               showContextPct={chatConfig.showContextPct}
               showContextTokens={chatConfig.showContextTokens}
               environmentSlot={activeSlot}

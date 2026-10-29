@@ -1698,6 +1698,13 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `channel_folder_backfill.py` | `POST /api/channel-folders/backfill`, filing a channel's existing sessions |
 | `browser_routes.py` | the browser routes: attach token, the native panel's command bus, the Playwright CLI install, the browser view and open |
 
+An owner route that parses its body with `await request.json()` and then reads it
+with `body.get()` returns `body_not_object_error(body)` right after the parse:
+valid JSON that is not an object (a list, a string, a number) is answered
+`400 body_not_object`, the answer `read_bounded_json` gives, instead of raising
+`AttributeError` as a 500. Pinned per route by
+`test/test_messaging_api_non_object_body.py`.
+
 The facade keeps the code repository guards read there by path, and the shared
 pieces. That is `api_send_message` itself, which redacts and authorizes the Slack
 target and injects into an origin session between the read and the delivery. It
@@ -6333,8 +6340,20 @@ The group gate (step 4) decides whether the agent may SPEAK in a group: is it
 configured, is the agent addressed, has the cooldown elapsed. Step 5 then applies
 the per-sender allowlist to the message, the same check every other channel makes
 on group traffic: the linked account always passes, any other member must appear
-in `allowed_wa_ids`, and an empty list admits nobody but the operator
-(`WhatsAppTransport._group_sender_admitted`). It runs for an @-mention, a reply to
+on the group's allowlist, and an empty list admits nobody but the operator
+(`WhatsAppTransport._group_sender_admitted`). The group's allowlist is the group
+entry's own `groups[].allowed_wa_ids` when the entry has the key, and the global
+`allowed_wa_ids` otherwise; a group's own list REPLACES the global one rather
+than adding to it, so a globally listed number can be kept out of one group.
+`_coerce_whatsapp_groups` carries the key only when the entry has it (absence is
+what selects the global list), coerces it digit-only like the global list, and
+turns a present value that is not a list into `[]`, so a malformed per-group list
+fails closed to operator-only rather than widening to the global list. The
+per-group lists are frozen in `_group_allowlists`, keyed through `normalize_jid`
+with the later entry winning exactly as `GroupGate` keys its entries, so the entry
+that lets the agent speak in a group is the entry that says who may make it
+speak there. The media-fetch gate (`_may_fetch_media`) asks the same per-group
+question. It runs for an @-mention, a reply to
 the agent and a rules-mode unprompted message alike, so an unlisted member cannot
 drive a turn of any kind on the operator's host; the drop is silent and SEL-audited
 (`whatsapp_transport.authorize_group`, outcome `denied`, source `whatsapp`), and
@@ -6434,13 +6453,17 @@ its path only, because WhatsApp shows the recipient whatever `fileName` carries.
 `disabled`. An unrecognized value denies everyone. Groups are invisible
 unless configured per group, then gated by mode, mention and cooldown
 (`whatsapp/group_gate.py`), and within a configured group each sender is judged
-by the `allowed_wa_ids` allowlist (operator always; empty list admits nobody
-else) whatever `dm_policy` says. `WhatsAppTransport.reconfigure` adopts all three on a
+by the group's allowlist (the entry's own `allowed_wa_ids` when present, else
+the global `allowed_wa_ids`; operator always; empty list admits nobody else)
+whatever `dm_policy` says. `WhatsAppTransport.reconfigure` adopts all three on a
 config reload: `dm_policy` (an unrecognized string is adopted, because
 `_dm_policy` denies what it does not recognize), `allowed_wa_ids`, and `groups`
-re-coerced through the loader's `_coerce_whatsapp_groups`. The `GroupGate` is
-rebuilt only when the coerced rules actually differ, because rebuilding it resets
-the unprompted-reply cooldown clock.
+re-coerced through the loader's `_coerce_whatsapp_groups`. The `GroupGate` and the
+per-group allowlists are rebuilt together, only when the coerced rules actually
+differ, because rebuilding the gate resets the unprompted-reply cooldown clock.
+The startup warning for a configured group that answers only the operator counts
+each live group's effective allowlist, so a group with numbers of its own is not
+reported when the global list is empty, and a group with its own empty list is.
 
 **A stale group entry is reported once, at the first connect.** Groups are opt-in
 and matched by exact JID, so an entry the account cannot resolve (a hand-typed

@@ -71,6 +71,95 @@ CRON_LINK_PREFIX = "cron:"
 APP_CRON_OWNER_PREFIX = "app:"
 
 
+# The agents whose shipped operating model is dispatching worker sessions: the
+# stock Conductor (Crew Mode's dispatcher) and its deprecated alias
+# (``agent_materialization.conductor_agents.DEPRECATED_AGENT_SPECS``). Spelled
+# here rather than imported: this module sits below agent materialization, and the
+# names are persisted agent identifiers. A positive list: an agent is a conductor
+# by being named here, never by not being something else.
+CONDUCTOR_AGENTS: frozenset[str] = frozenset({"kirocrew-conductor", "kirocrew-ledger-conductor"})
+
+# The key prefix of a person's own dashboard chat tab (``chat-<n>-<ts>``).
+OWNER_CHAT_SLOT_PREFIX = "chat-"
+
+
+def _owner_tab_conductor(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* is the Conductor running in the owner's own dashboard tab.
+
+    The conductor analogue of :func:`_member_caller`: Crew Mode's whole job is
+    dispatching workers, so a Conductor the person started in their own tab is
+    admitted to session control without the global ``agent.session_control``
+    opt-in, bounded the way a member is -- :func:`_caller_is_ownership_fenced`
+    restricts it to sessions it created while it is relying on that admission.
+
+    Every clause is POSITIVE identity, read live from the caller's own slot:
+
+    * the key is a dashboard chat tab (``chat-``), not a cron, workflow, member DM
+      or task-review slot;
+    * the slot's agent is one of :data:`CONDUCTOR_AGENTS`;
+    * the slot is UNATTRIBUTED (no ``_created_by``): :func:`create_session` is that
+      field's only writer, so an empty value means a person opened the tab, and a
+      session any agent created -- the Conductor's own workers included -- is
+      excluded at any depth. This is what keeps a child of the Conductor from
+      inheriting the admission and becoming an unfenced deputy;
+    * no channel link (Slack, Discord, ...) or cron link, and not channel-born;
+    * not app-scoped, and no non-user creation origin; and
+    * not a crew member (:func:`_member_caller`), which keeps its own bypass and
+      ceiling unchanged.
+
+    Any slot that is missing answers ``False``, so an unresolvable caller falls
+    back under the switch like every other.
+    """
+    if not caller_key.startswith(OWNER_CHAT_SLOT_PREFIX):
+        return False
+    slot = state.get_slot(caller_key)
+    if slot is None:
+        return False
+    if str(getattr(slot, "agent", "") or "") not in CONDUCTOR_AGENTS:
+        return False
+    if getattr(slot, "_created_by", ""):
+        return False
+    if str(getattr(slot, "linked_session_key", "") or ""):
+        return False
+    if getattr(slot, "channel_origin", False):
+        return False
+    if str(getattr(slot, "_app", None) or ""):
+        return False
+    if str(getattr(slot, "_origin", "") or "") not in ("", "user"):
+        return False
+    return not _member_caller(state, caller_key)
+
+
+def _conductor_bypass(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* may skip the ``session_control`` switch as the owner's Conductor.
+
+    Gated by the SAME operator ceiling as the member bypass,
+    ``agent.member_dispatch``: it is the one switch for "a dispatching agent works
+    without ``session_control``", so an operator who withdrew it from members has
+    withdrawn it from the Conductor too, with no second key to find. It fails
+    closed on an unreadable or degraded config exactly as for members
+    (:func:`member_dispatch_enabled`).
+    """
+    return _owner_tab_conductor(state, caller_key) and member_dispatch_enabled()
+
+
+def _conductor_fenced(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* is the owner's Conductor reaching the surface through its bypass.
+
+    With ``agent.session_control`` on, the owner's Conductor is an ordinary owner
+    caller and keeps the owner's reach, as before. With it off, its only way in is
+    :func:`_conductor_bypass`, and that admission is creator-fenced. An unreadable
+    config reads as off (:func:`session_control_enabled`), so the fence fails
+    closed too.
+    """
+    return _owner_tab_conductor(state, caller_key) and not session_control_enabled()
+
+
+def _dispatch_bypass(state: "DashboardState", caller_key: str) -> bool:
+    """The switch bypass every session-control gate reads: a member or the owner's Conductor."""
+    return _member_bypass(state, caller_key) or _conductor_bypass(state, caller_key)
+
+
 def _member_caller(state: "DashboardState", caller_key: str) -> bool:
     """Whether *caller_key* is a crew member acting through one of its slots.
 
@@ -211,10 +300,12 @@ def _cron_caller(caller_key: str) -> bool:
 def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> bool:
     """Whether *caller_key* may only reach slots it created itself.
 
-    Four populations, one predicate, so the fence and the admissions that depend
+    Five populations, one predicate, so the fence and the admissions that depend
     on it cannot drift apart:
 
     * a crew member's DM slot, which bypasses the config switch;
+    * the Conductor in the owner's own tab while ``agent.session_control`` is off
+      (:func:`_conductor_fenced`), which bypasses the switch the same way;
     * a cron job's own slot, which bypasses the unattended refusal;
     * a channel-born slot admitted as the owner's own DM (:func:`owner_dm_refusal`
       answering ``""``), which bypasses the channel-link refusals. Every non-cron
@@ -224,7 +315,7 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
       session store. What it buys is the bound on a wrong audience inference: the
       DM reaches the workers it dispatched and never the person's own tabs, the
       same reach a crew member has. A DASHBOARD-born slot the same predicate
-      admits on its outbound mirror is deliberately not a fifth population: the
+      admits on its outbound mirror is deliberately not a sixth population: the
       fence follows authority, and that slot's authority is the person's own
       dashboard session -- the words that drive it are typed into the dashboard by
       the authenticated owner, and the mirror the predicate admitted changes who
@@ -264,6 +355,10 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
     """
     if _member_caller(state, caller_key) or _cron_caller(caller_key):
         return True
+    # The owner's Conductor admitted through its switch bypass: the same fence a
+    # member gets, and only while that bypass is what lets it in.
+    if _conductor_fenced(state, caller_key):
+        return True
     slot = state.get_slot(caller_key)
     if slot is None:
         return False
@@ -278,11 +373,14 @@ def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool
     The private-member delegation gate in :func:`create_session` needs the one
     thing :func:`_caller_is_ownership_fenced` deliberately does not give it: a
     conductor the owner started in their own tab must be allowed to mint private
-    workers, while a conductor rooted in a cron, channel link or crew member must
-    not. The shared predicate answers "every agent-created session is fenced" for
-    the ownership boundary read on every verb, and that answer must stay intact;
-    this walk is read ONLY here, at the once-per-create delegation gate, so it
-    never widens :func:`authorize_target`.
+    workers while ``agent.session_control`` is on, while a conductor rooted in a
+    cron, channel link or crew member must not. With the switch off, the owner's
+    Conductor is admitted only through its bypass and is fenced
+    (:func:`_conductor_fenced`), so it gets no exemption here either. The shared
+    predicate answers "every agent-created session is fenced" for the ownership
+    boundary read on every verb, and that answer must stay intact; this walk is
+    read ONLY here, at the once-per-create delegation gate, so it never widens
+    :func:`authorize_target`.
 
     It climbs the ``_created_by`` chain LIVE at each hop -- a creator that has
     since become a crew member, acquired a channel link, or is a cron tab fences
@@ -304,6 +402,10 @@ def _delegation_lineage_fenced(state: "DashboardState", caller_key: str) -> bool
             return True
         seen.add(key)
         if _member_caller(state, key) or _cron_caller(key):
+            return True
+        # A Conductor admitted only through its switch bypass dispatches no
+        # private-member worker, and neither does anything rooted in it.
+        if _conductor_fenced(state, key):
             return True
         slot = state.get_slot(key)
         if slot is None:

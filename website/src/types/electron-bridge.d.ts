@@ -93,6 +93,14 @@ declare global {
     set: (action: CloseAction) => Promise<CloseAction>
   }
 
+  /** First-run setup's "connect to a crew on another machine" exit. `start`
+   *  opens the desktop app's remote-crew form; on "switching" the window is
+   *  about to leave this page for the crew's dashboard. */
+  interface RemoteCrewSetupAPI {
+    available: () => Promise<boolean>
+    start: () => Promise<'switching' | 'cancelled' | 'unavailable'>
+  }
+
   interface CrashReportsAPI {
     get: () => Promise<{ newCount: number }>
     reveal: () => Promise<{ ok: boolean; error?: string }>
@@ -302,6 +310,7 @@ declare global {
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
+    remoteCrewSetupAPI?: RemoteCrewSetupAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI

@@ -1,7 +1,7 @@
 /* MembersPage: what a New crewmate create leaves behind and checks — the
  * caches it marks stale, the + held until its follow-up settles, the names
  * refused before or after the request, a failed roster re-read, and the card's
- * Built from and Advanced settings fields. A create in progress is in
+ * Advanced settings fields. A create in progress is in
  * MembersPage.newCrewmate.test.tsx.
  * This file, MembersPage.test.tsx and the other files that import
  * src/test/MembersPageTestUtils.tsx (their shared fixtures) carry the same api
@@ -381,15 +381,15 @@ describe('New mate dialog', () => {
     // but an explicit invalidation would ever refetch them.
     queryClient.setQueryData(['kirocrew-agents'], { agents: [], default_agent: 'kirocrew' })
     queryClient.setQueryData(['kirocrewConfig'], { agents: {} })
-    const registryReadsBefore = (api.agentCatalog as ReturnType<typeof vi.fn>).mock.calls.length
     const configReadsBefore = (api.kirocrewConfig as ReturnType<typeof vi.fn>).mock.calls.length
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     membersMock.mockResolvedValue({ members: [row(), row({ name: 'radar', slug: 'radar', dashboard_created: true })], default_agent: 'kirocrew' })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull(), PANE_READY)
     await waitFor(() => {
-      expect((api.agentCatalog as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(registryReadsBefore)
+      expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['kirocrew-agents'] }))
       expect((api.kirocrewConfig as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(configReadsBefore)
     })
   })
@@ -473,33 +473,6 @@ describe('New mate dialog', () => {
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Oncall Sentinel')
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
-  })
-
-  it('Built from is re-read on every open, so a template installed mid-session is offered without a reload', async () => {
-    const catalogMock = api.agentCatalog as ReturnType<typeof vi.fn>
-    // The shipped client's default (api/queryClient.ts): entries never go
-    // stale on their own — under the test client's `staleTime: 0` default a
-    // frozen list would re-read anyway and the case would prove nothing.
-    await renderPage([row()], 'kirocrew', { queryDefaults: { staleTime: Infinity } })
-    await rosterRow('oncall')
-    await openDialog()
-    await waitFor(() => expect(catalogMock).toHaveBeenCalledTimes(1))
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' }))
-    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
-    // A template was installed while the dialog was closed. No server event
-    // invalidates this key, so only a per-open re-read can show it.
-    catalogMock.mockResolvedValueOnce({
-      agents: [
-        { name: 'kirocrew', selection_kind: 'template', kiro_agent: 'kirocrew', scope: 'global' },
-        { name: 'kirocrew-research', selection_kind: 'template', kiro_agent: 'kirocrew-research', scope: 'global' },
-      ],
-      default_agent: 'kirocrew',
-    })
-    await openDialog()
-    await waitFor(() => expect(catalogMock).toHaveBeenCalledTimes(2))
-    const dlg = within(screen.getByRole('dialog', { name: 'New mate' }))
-    fireEvent.keyDown(dlg.getByRole('combobox', { name: 'Built from' }), { key: 'ArrowDown' })
-    expect(await screen.findByRole('option', { name: 'kirocrew-research' })).toBeInTheDocument()
   })
 
   it('a 2xx whose body carries `error` is said in the product\'s words, not the body\'s', async () => {
@@ -666,8 +639,7 @@ describe('New mate dialog', () => {
   // A crewmate's name is free-form display text (`members.validate_member_name`
   // on the server): spaces, punctuation, any script, emoji. The dialog applies
   // no grammar of its own beyond the trim — the stable id, slug and slot key
-  // are the server's to derive, and `Built from` is the one strict identifier
-  // on the form. Each name goes out EXACTLY as typed (trimmed), and the
+  // are the server's to derive. Each name goes out EXACTLY as typed (trimmed), and the
   // follow-up opens the chat under the identity the roster returns for it.
   // The slugs are deliberately NOT what a client-side slugifier would produce
   // (`dr-eggbot-2` is a namesake allocation, `m-7f3a` is opaque): the dialog
@@ -727,15 +699,11 @@ describe('New mate dialog', () => {
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
-  // Pins the retirement of the #1684 "must pick a template" guard. Before the
-  // create doors converged on this dialog, create started with no template
-  // selected and refused to submit until one was picked. The accepted
-  // rfc-crewmates-launch.md rules the New crewmate dialog's "Built from" field
-  // is "the default agent or a custom agent" — a default, not a required pick —
-  // so submitting the untouched field posts `kiro_agent: 'kirocrew'` and there
-  // is no template-required refusal. If someone restores the old guard, this
-  // fails on the missing request.
-  it('a create that never touches "Built from" defaults to the built-in agent, with no template-required refusal (RFC-ruled retirement of #1684)', async () => {
+  // Create never requires a template: the dialog offers none, every mate
+  // starts on the built-in agent, so a create posts `kiro_agent: 'kirocrew'`
+  // with no template-required refusal. A restored "must pick a template"
+  // guard (#1684) would fail this on the missing request.
+  it('a create defaults to the built-in agent, with no template-required refusal (RFC-ruled retirement of #1684)', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -745,13 +713,11 @@ describe('New mate dialog', () => {
       members: [row(), row({ name: 'radar', slug: 'radar', slot_key: 'member-radar' })],
       default_agent: 'kirocrew',
     })
-    // Submit without ever interacting with the "Built from" select.
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
-    // No refusal hint was raised — the untouched field is a valid default,
-    // not an unsatisfied requirement.
+    // No refusal hint was raised: there is no template to pick.
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
-    // The request carries the built-in agent as the built-from value.
+    // The request carries the built-in agent as the starting binding.
     expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'radar', kiro_agent: 'kirocrew' }))
   })
 
@@ -1130,42 +1096,6 @@ describe('New mate dialog', () => {
     fireEvent.click(screen.getByTestId('member-post-create-retry'))
     await waitFor(() => expect(screen.queryByTestId('member-post-create-error')).toBeNull(), PANE_READY)
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('radar'), PANE_READY)
-  })
-
-  it('Built from lists the catalog\'s template rows with the built-in one labelled as the default — never a member row', async () => {
-    // The same catalog the chat picker reads: members and templates are
-    // separate rows tagged by kind. A member (the configured default crew
-    // included) is never a thing to build from — its alias stored as
-    // `kiro_agent` would boot a fallback — and the catalog has already dropped
-    // background-only specs, fork copies and masked names on the server.
-    ;(api.agentCatalog as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      agents: [
-        { name: 'default', selection_kind: 'member', kiro_agent: 'kirocrew' },
-        { name: 'oncall', selection_kind: 'member', kiro_agent: 'kirocrew' },
-        { name: 'kirocrew', selection_kind: 'template', kiro_agent: 'kirocrew', scope: 'global' },
-        { name: 'kirocrew-research', selection_kind: 'template', kiro_agent: 'kirocrew-research', scope: 'global' },
-        { name: 'my-lite', selection_kind: 'template', kiro_agent: 'my-lite', scope: 'global' },
-      ],
-      default_agent: 'default',
-    })
-    await renderPage([row()])
-    await rosterRow('oncall')
-    await openDialog()
-    const dlg = within(screen.getByRole('dialog', { name: 'New mate' }))
-    await waitFor(() => expect(dlg.getByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew (default)'))
-    // A crew alias (`default`) is not a template and must not be offered: a
-    // record storing it as `kiro_agent` would boot a fallback, not that crew.
-    expect(dlg.getByRole('combobox', { name: 'Built from' })).not.toHaveTextContent(/^default$/)
-    // Only template rows are offered; member rows (default, oncall) are not.
-    fireEvent.keyDown(dlg.getByRole('combobox', { name: 'Built from' }), { key: 'ArrowDown' })
-    expect(await screen.findByRole('option', { name: 'kirocrew-research' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'my-lite' })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: 'oncall' })).toBeNull()
-    expect(screen.queryByRole('option', { name: 'default' })).toBeNull()
-    fireEvent.keyDown(screen.getByRole('option', { name: 'kirocrew-research' }), { key: 'Escape' })
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Scout' } })
-    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ kiro_agent: 'kirocrew' })))
   })
 
   it('Advanced settings folds the rest of the crew manager\'s form behind one disclosure in the New mate card', async () => {

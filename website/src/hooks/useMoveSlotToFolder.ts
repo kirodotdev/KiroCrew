@@ -1,8 +1,21 @@
-import { useCallback } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { updateSlotFolder } from '../store/dashboardSlice'
+
+/* The session the user last moved here, in memory only: it marks a move, so a
+ * session created into a folder, or seen after a reload, is never marked. */
+let movedSlot: string | null = null
+const movedListeners = new Set<() => void>()
+export function setMovedSlot(key: string | null) {
+  if (movedSlot === key) return
+  movedSlot = key
+  movedListeners.forEach(l => l())
+}
+export function useMovedSlot(): string | null {
+  return useSyncExternalStore(cb => { movedListeners.add(cb); return () => { movedListeners.delete(cb) } }, () => movedSlot)
+}
 
 /** Options for a single move. */
 export type MoveSlotOptions = {
@@ -49,6 +62,7 @@ export function useMoveSlotToFolder(): (
       dispatch(updateSlotFolder({ key: slotKey, folderId: target }))
       return { slotKey, prev, target }
     },
+    onSuccess: (_data, { slotKey }) => { setMovedSlot(slotKey) },
     onError: (_err, _vars, ctx) => {
       if (!ctx) return
       // Guarded rollback: only revert if a later move hasn't already changed
@@ -64,7 +78,7 @@ export function useMoveSlotToFolder(): (
       // Per-call callback, running in addition to the hook's own rollback
       // handler: the caller learns the server ACKNOWLEDGED the write without
       // taking over the rollback.
-      onSuccess: () => opts?.onCommitted?.(),
+      onSuccess: () => { opts?.onCommitted?.() },
     })
   }, [mutate])
 }

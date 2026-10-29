@@ -92,22 +92,37 @@ function parseRemoteCrewFields(title) {
  * @returns {{saved: boolean, error: string|null}}
  */
 function saveRemoteCrewConfig(store, port, fields = {}) {
+  const error = remoteCrewFieldsError(port, fields);
+  if (error) return { saved: false, error };
   const host = String(fields.host || "").trim();
-  if (!host) return { saved: false, error: MISSING_HOST_ERROR };
-  // A port the per-port lookup cannot key on reads a tunnelled crew as a
-  // gateway on this machine, after which the host-presence heartbeat sends this
-  // machine's secret over the tunnel. Refuse the write rather than create it.
-  if (!isSelectablePort(Number(port))) {
-    return { saved: false, error: unselectablePortError(port) };
-  }
   const binPath = String(fields.binPath || "").trim() || DEFAULT_REMOTE_BIN;
   const remotePort = String(fields.remotePort || "").trim();
   const remotePath = String(fields.remotePath || "").trim();
-  const error = validateRemoteSettings(host, binPath, remotePort, remotePath);
-  if (error) return { saved: false, error };
   const manageTunnel = fields.manageTunnel === true;
   setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePath, manageTunnel });
   return { saved: true, error: null };
+}
+
+/**
+ * Why `saveRemoteCrewConfig` would refuse these fields for `port`, or null when
+ * it would write them. Writes nothing, so a caller that must undo something
+ * before the write can learn first whether the write will happen.
+ *
+ * @param {number|string} port
+ * @param {{host?: unknown, binPath?: unknown, remotePort?: unknown, remotePath?: unknown}} fields
+ * @returns {string|null}
+ */
+function remoteCrewFieldsError(port, fields = {}) {
+  const host = String(fields.host || "").trim();
+  if (!host) return MISSING_HOST_ERROR;
+  // A port the per-port lookup cannot key on reads a tunnelled crew as a
+  // gateway on this machine, after which the host-presence heartbeat sends this
+  // machine's secret over the tunnel. Refuse the write rather than create it.
+  if (!isSelectablePort(Number(port))) return unselectablePortError(port);
+  const binPath = String(fields.binPath || "").trim() || DEFAULT_REMOTE_BIN;
+  const remotePort = String(fields.remotePort || "").trim();
+  const remotePath = String(fields.remotePath || "").trim();
+  return validateRemoteSettings(host, binPath, remotePort, remotePath);
 }
 
 /** The label both remote-crew forms show on the managed-tunnel option. */
@@ -128,6 +143,7 @@ module.exports = {
   parseRemoteCrewFields,
   remoteCrewAction,
   remoteCrewDraft,
+  remoteCrewFieldsError,
   saveRemoteCrewConfig,
   tunnelOptionHint,
 };

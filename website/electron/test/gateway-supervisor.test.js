@@ -38,8 +38,11 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "stopOnQuit",
     "reopenTunnel",
     "syncTunnel",
+    "canSwitchToRemoteCrew",
+    "switchToRemoteCrew",
     "onInstallDispatched",
     "onInstallFailed",
+    "isInstallingUpdate",
   ]);
 });
 
@@ -58,6 +61,7 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
     "port-holders.js",
     "reconnect.js",
     "remote-crew-prompt.js",
+    "remote-switch.js",
     "shutdown.js",
     "successor-handoff.js",
     "token-sources.js",

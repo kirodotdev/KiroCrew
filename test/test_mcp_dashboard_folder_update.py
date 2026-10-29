@@ -293,6 +293,75 @@ async def test_a_non_name_change_is_not_checked() -> None:
     assert status == 200
 
 
+@pytest.mark.asyncio
+async def test_an_agent_cannot_move_a_folder_beside_its_namesake() -> None:
+    """chat_folder_move sends a parent_id-only PATCH; it must not make two Alphas."""
+    folders = _tree()
+    status, body = await _patch_folder(folders, _A["id"], {"parent_id": _B["id"]}, internal=True)
+    assert status == 409 and body["code"] == "folder_name_exists"
+    assert next(f for f in folders if f["id"] == _A["id"])["parent_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_an_agent_cannot_move_a_namesake_to_the_top_level() -> None:
+    folders = _tree()
+    status, body = await _patch_folder(folders, _C["id"], {"parent_id": ""}, internal=True)
+    assert status == 409 and body["code"] == "folder_name_exists"
+    assert next(f for f in folders if f["id"] == _C["id"])["parent_id"] == _B["id"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_may_move_a_folder_where_its_name_is_free() -> None:
+    folders = _tree()
+    status, _ = await _patch_folder(folders, _B["id"], {"parent_id": _A["id"]}, internal=True)
+    assert status == 200
+    assert next(f for f in folders if f["id"] == _B["id"])["parent_id"] == _A["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_move_and_rename_in_one_write_checks_the_new_name() -> None:
+    """The resulting name decides: Alpha may land beside the nested Alpha as Charlie."""
+    folders = _tree()
+    status, _ = await _patch_folder(
+        folders, _A["id"], {"parent_id": _B["id"], "name": "Charlie"}, internal=True
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_a_reposition_in_place_is_not_checked() -> None:
+    """Same parent, same name: a folder that already has a twin may still be reordered."""
+    folders = _tree() + [dict(_A, id="fldr0000000d")]
+    status, _ = await _patch_folder(folders, _A["id"], {"parent_id": "", "order": 3}, internal=True)
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_the_person_may_still_move_a_folder_beside_its_namesake() -> None:
+    folders = _tree()
+    status, _ = await _patch_folder(folders, _A["id"], {"parent_id": _B["id"]}, internal=False)
+    assert status == 200
+
+
+def test_the_move_tool_explains_a_same_name_refusal() -> None:
+    dash = InMemoryDashboardClient(
+        {
+            "GET /api/chat/folders": [dict(f) for f in _FOLDERS],
+            "GET /api/chat/slots": [dict(_CALLER_ROW)],
+            "PATCH /api/chat/folders/{folder}": {
+                "error": "a sibling folder already has that name",
+                "code": "folder_name_exists",
+            },
+        }
+    )
+    out = TABLE.call(
+        "chat_folder_move",
+        {"folder": "kirocrew/0811", "new_parent": "root"},
+        ToolContext(dash, _CALLER),
+    )
+    assert out.startswith("Error:") and "cannot be told" in out and "Rename one" in out
+
+
 # A channel conversation resumed into a dashboard session runs under that
 # session's ``dashboard:`` key, so the MCP dispatch check on the key cannot see
 # it. The endpoint refuses on what it can see: the session's channel bindings.
@@ -366,9 +435,12 @@ async def test_the_person_may_rename_in_a_channel_reachable_session(reach: dict)
 
 @pytest.mark.asyncio
 async def test_a_move_is_left_to_its_own_tool() -> None:
-    """``chat_folder_move`` reparents through the same route and keeps its own channel rule."""
+    """``chat_folder_move`` reparents through the same route and keeps its own channel rule.
+
+    Bravo moves under Alpha, where its name is free, so only the channel rule decides.
+    """
     status, _ = await _patch_folder(
-        _tree(), _C["id"], {"parent_id": ""}, internal=True, links=_Links(mirror=True)
+        _tree(), _B["id"], {"parent_id": _A["id"]}, internal=True, links=_Links(mirror=True)
     )
     assert status == 200
 

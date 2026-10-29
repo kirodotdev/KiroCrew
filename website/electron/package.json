@@ -29,6 +29,14 @@
   "build": {
     "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
+    "protocols": [
+      {
+        "name": "KiroCrew",
+        "schemes": [
+          "kirocrew"
+        ]
+      }
+    ],
     "toolsets": {
       "appimage": "1.0.3"
     },
@@ -137,6 +145,7 @@
     "files": [
       "main.js",
       "gateway-supervisor.js",
+      "shell-bundle-watch.js",
       "runtime/gateway/launch-preflight.js",
       "runtime/gateway/port-holders.js",
       "runtime/gateway/family-takeover.js",
@@ -148,6 +157,7 @@
       "runtime/gateway/holder-decision.js",
       "runtime/gateway/shutdown.js",
       "runtime/gateway/reconnect.js",
+      "runtime/gateway/remote-switch.js",
       "window-lifecycle.js",
       "runtime/window/chrome.js",
       "runtime/window/prompts.js",
@@ -248,6 +258,8 @@
       "browser-annotate.js",
       "browser-agent-channel.js",
       "external-scheme.js",
+      "deep-link.js",
+      "deep-link-handler.js",
       "validation.js",
       "context-menu.js",
       "preload.js",

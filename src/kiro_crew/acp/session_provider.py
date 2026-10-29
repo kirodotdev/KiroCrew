@@ -226,14 +226,18 @@ class AcpSessionProvider(LLMProvider):
         whole session: a second claim would defend a process that is defended, and
         would refuse its owner's teardown until the turn ended.
 
-        Guarded, like the stub re-claim at the top of ``stream``: a turn must never
-        fail because bookkeeping could not be done, and the worst case of not
-        claiming is the behaviour that shipped before this table existed. The state
-        is read directly rather than through defaults, so a wiring break surfaces
-        in the log instead of being papered over by a guessed value -- and a
-        provider assembled without ``__init__``, which the unit tests of this
-        class's exception translation do, is inert here rather than an
-        ``AttributeError`` raised into someone's turn.
+        A claim that cannot be RECORDED ends the turn. The tenancy is not only kill
+        defence: it is the one record that admits this session's declared
+        ``X-Session-Key`` on a shared pid. The principal's lease keeps that pid's
+        bound set non-empty, so a turn without its claim would have every stub call
+        refused ``403 peer_session_unbound`` for the rest of the turn, with nothing
+        to say why. Raising ``AcpProcessDied`` instead is an immediate, logged
+        death that callers already answer by getting another runtime. The state is
+        read directly rather than through defaults, so a wiring break surfaces
+        instead of being papered over by a guessed value -- and a provider
+        assembled without ``__init__``, which the unit tests of this class's
+        exception translation do, is inert here rather than an ``AttributeError``
+        raised into someone's turn: it has no runtime to claim.
 
         A committed teardown is the one refusal that must NOT be swallowed. It says
         the process is being ended right now and a claim would defend nothing -- the
@@ -250,9 +254,14 @@ class AcpSessionProvider(LLMProvider):
         try:
             if self._owns_runtime:
                 return None
+            runtime, session_key = self._runtime, self._session_key
+        except AttributeError:
+            logger.debug("_claim_shared_turn: provider has no runtime to claim", exc_info=True)
+            return None
+        try:
             return claim_runtime_tenancy(
-                self._runtime,
-                holder=f"subagent:{self._session_key or 'unnamed'}",
+                runtime,
+                holder=f"subagent:{session_key or 'unnamed'}",
                 # The same key this session's stubs declare in ``X-Session-Key``,
                 # and the reason the dashboard's peer check can admit them: a
                 # shared session holds no lease and the session manager never
@@ -260,14 +269,17 @@ class AcpSessionProvider(LLMProvider):
                 # to the process. Passed as itself rather than reused from the
                 # holder label, which carries a prefix for a human reading a
                 # refusal log.
-                session_key=self._session_key or "",
+                session_key=session_key or "",
             )
         except RuntimeTeardownCommitted as exc:
             logger.warning("_claim_shared_turn: shared runtime is being torn down: %s", exc)
             raise AcpProcessDied(str(exc)) from exc
-        except Exception:
-            logger.debug("_claim_shared_turn: tenancy claim skipped", exc_info=True)
-            return None
+        except Exception as exc:
+            logger.warning(
+                "_claim_shared_turn: tenancy claim could not be recorded, ending the turn",
+                exc_info=True,
+            )
+            raise AcpProcessDied(f"shared-runtime tenancy claim failed: {exc}") from exc
 
     async def _end_shared_turn(self, claim: str | None) -> None:
         """Stop defending the shared runtime, and end it if nobody is left on it.
@@ -1612,6 +1624,17 @@ class AcpSessionProvider(LLMProvider):
     def _start_time(self) -> int | None:
         """Process start time (for PID recycle detection)."""
         return getattr(self._runtime, "_start_time", None)
+
+    @property
+    def _mcp_gateway_socket(self) -> str | None:
+        """The runtime's gatewayd socket, read beside ``_pid`` for the abort push.
+
+        ``LLMProvider.runtime_abort_target`` reads ``_client._pid`` and
+        ``_client._mcp_gateway_socket``. After startup the provider's client is
+        this object, so without this property the socket read ``None`` and a hard
+        stop skipped the abort, leaving in-flight pooled tool calls running.
+        """
+        return getattr(self._runtime, "_mcp_gateway_socket", None)
 
     async def refresh_process_tree(self) -> None:
         """Record descendants the runtime started since its last snapshot, before a teardown.

@@ -823,7 +823,7 @@ def _setup_slack_tokens() -> None:
     # the possibly-stale snapshot read before the prompts.
     cred_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = _env_lock_path(cred_path)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
         os.close(lock_fd)
         print(

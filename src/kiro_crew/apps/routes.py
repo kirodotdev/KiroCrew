@@ -98,8 +98,12 @@ from kiro_crew.apps.proxy_auth import (
     PRINCIPAL_APP_TOKEN,
     PRINCIPAL_NONE,
     PRINCIPAL_OWNER_SESSION,
+    PROXY_NONCE_HEADER,
     PROXY_PRINCIPAL_HEADER,
+    PROXY_V2_HEADER,
+    new_proxy_nonce,
     sign_proxy_principal_claim,
+    sign_proxy_request_v2,
 )
 from kiro_crew.apps.registry import (
     _ART_IMAGE_EXTENSIONS,

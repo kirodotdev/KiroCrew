@@ -178,6 +178,26 @@ test("the folder-pick preload invokes take no renderer arguments", () => {
   );
 });
 
+test("the first-run remote-crew preload invokes take no renderer arguments", () => {
+  assert.match(
+    PRELOAD_SOURCE,
+    /available:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("first-run:can-use-remote-crew"\)/,
+    "window.remoteCrewSetupAPI.available must invoke the probe with no arguments",
+  );
+  assert.match(
+    PRELOAD_SOURCE,
+    /start:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("first-run:use-remote-crew"\)/,
+    "window.remoteCrewSetupAPI.start must invoke the switch with no arguments",
+  );
+  for (const channel of ["first-run:can-use-remote-crew", "first-run:use-remote-crew"]) {
+    assert.match(
+      IPC_REGISTRAR_SOURCE,
+      new RegExp(`ipcMain\\.handle\\("${channel}",\\s*async\\s*\\(event\\)\\s*=>`),
+      `the ${channel} handler must read nothing but the event`,
+    );
+  }
+});
+
 // The three-gate local-dashboard check guards `wsl:detect`, both
 // `crash-reports:*` channels and `pane:clear-http-cache`. It was briefly written out twice, and two
 // hand-maintained spellings of a security check is one of them being tightened
@@ -198,6 +218,8 @@ test("the local-dashboard gate has exactly one spelling", () => {
     "pane:clear-http-cache",
     "dashboard:pick-folder",
     "dashboard:can-pick-folder",
+    "first-run:use-remote-crew",
+    "first-run:can-use-remote-crew",
   ]) {
     assert.match(
       IPC_REGISTRAR_SOURCE,

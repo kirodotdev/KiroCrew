@@ -17,9 +17,13 @@ The contract these tests pin:
 * ``"kirocrew"`` stays a perfectly legal explicit CHOICE, because a crew that
   boots the built-in agent against its own workspace/memory store is the common
   case and must keep working;
-* an unknown template is accepted with a WARNING rather than refused, matching
-  the sync path's EXECUTABLE INVARIANT posture — an edition may resolve a row
-  this listing cannot see, and hard-refusing it would itself be a bug.
+* any template other than ``"kirocrew"`` or the crew's own key is REFUSED
+  (400 ``mate_template_unsupported``): the crewmate's own file is the
+  source-free worker and reads no template, so the template's tools and
+  restrictions would never reach it;
+* a ``"kirocrew"`` missing from the listing is accepted with a WARNING rather
+  than refused, matching the sync path's EXECUTABLE INVARIANT posture — an
+  edition may resolve a row this listing cannot see.
 """
 
 from __future__ import annotations
@@ -207,13 +211,16 @@ class TestTemplateNameGrammar:
 
     @pytest.mark.asyncio
     async def test_underscores_and_digits_remain_valid(self):
-        """The guard must not narrow the legitimate name space."""
+        """The guard must not narrow the legitimate name space.
+
+        The name passes the grammar and reaches the start-template rule, which is
+        what answers it.
+        """
         cfg = _fake_config()
-        status, _ = await _post(
+        status, data = await _post(
             {"name": "crew-d", "kiro_agent": "my_agent2"}, cfg, installed=("my_agent2",)
         )
-        assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-d"]["kiro_agent"] == "my_agent2"
+        assert (status, data["code"]) == (400, "mate_template_unsupported")
 
 
 class TestExplicitTemplateStillWorks:
@@ -265,7 +272,7 @@ class TestExplicitTemplateStillWorks:
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
             status, _ = await _post(
-                {"name": "crew-a", "kiro_agent": "reviewer"},
+                {"name": "crew-a", "kiro_agent": "kirocrew"},
                 cfg,
                 installed=("kirocrew", "reviewer"),
             )
@@ -278,17 +285,76 @@ class TestMissingTemplateWarnsButCreates:
     async def test_unknown_template_warns_and_still_creates(self, caplog):
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
-            status, _ = await _post(
-                {"name": "crew-c", "kiro_agent": "not-installed"},
-                cfg,
-                installed=("kirocrew",),
-            )
+            status, _ = await _post({"name": "crew-c", "kiro_agent": "kirocrew"}, cfg, installed=())
         # Accepted (an edition may resolve it even when unlisted)…
         assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "not-installed"
+        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "kirocrew"
         # …but the substitution risk is on the record rather than silent.
         assert "not in the installed agent listing" in caplog.text
-        assert "not-installed" in caplog.text
+        assert "'kirocrew'" in caplog.text
+
+
+class TestStartTemplateIsTheWorker:
+    """A crewmate starts as the built-in worker; another template is refused.
+
+    ``mate_config.adopt_own_file`` writes the source-free worker file, so a
+    template's ``excludedTools``, ``disabledTools`` and deny rules would be
+    dropped without a trace. The refusal lands before anything is written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_another_template_is_refused_and_nothing_is_written(self):
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "crew-e", "kiro_agent": "locked-down"},
+            cfg,
+            installed=("kirocrew", "locked-down"),
+        )
+        assert (status, data["code"]) == (400, "mate_template_unsupported")
+        assert "built-in worker" in data["error"]
+        assert cfg.agents == {}
+        assert cfg.saved == []
+        assert cfg.written == {}
+
+    @pytest.mark.asyncio
+    async def test_the_key_is_what_the_template_is_judged_against(self):
+        """A free-form name keys an id; the template is compared with that id.
+
+        "Release Bot" keys ``release-bot``, so naming that template is the
+        crew's own key: the start-template rule lets it through to the
+        same-name rule, which answers it.
+        """
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "Release Bot", "kiro_agent": "release-bot"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_template_named_after_the_crew_is_not_this_refusal(self):
+        """The Templates tab's Enroll sends ``{name: X, kiro_agent: X}``.
+
+        The start-template rule admits it; the same-name rule answers it.
+        """
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "reviewer", "kiro_agent": "reviewer"},
+            cfg,
+            installed=("kirocrew", "reviewer"),
+        )
+        assert data["code"] != "mate_template_unsupported"
+        assert (status, data["code"]) == (409, "template_name_in_use")
+
+
+def test_start_template_refusal_admits_the_worker_and_the_crews_own_key():
+    from kiro_crew.mate_config import MATE_TEMPLATE_UNSUPPORTED, start_template_refusal
+
+    assert start_template_refusal("kirocrew", "crew-e") == ""
+    assert start_template_refusal("crew-e", "crew-e") == ""
+    assert start_template_refusal("locked-down", "crew-e") == MATE_TEMPLATE_UNSUPPORTED
 
 
 class TestFirstGreetingOwed:

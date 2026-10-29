@@ -16,7 +16,7 @@ import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { fmtRelative, toDate } from '../i18n/format'
-import { cardsApi, CARD_FINISHED_STATUSES, type Card } from '../api/cards'
+import { cardsApi, CARD_FINISHED_STATUSES, WORKFLOW_DEFINITIONS_QUERY_KEY, type Card } from '../api/cards'
 import { CardChanges, reachNames } from './CardChanges'
 import { cardChanges, cardTitle, FALLBACK_ICON, isToolAccessCard, specFor } from './cardRegistry'
 import { oneShotRunAt } from './oneShot'
@@ -219,6 +219,8 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
       // A goal, milestone or check-in card rewrites the Goals record an open
       // Goals tab is showing, so that tab re-reads it without a page reload.
       if (GOALS_CARD_KINDS.has(card.kind)) void queryClient.invalidateQueries({ queryKey: MEMBER_GOALS_QUERY_PREFIX })
+      // A workflow card saves into the library an open Workflows tab is listing.
+      if (card.kind.startsWith('workflow.')) void queryClient.invalidateQueries({ queryKey: WORKFLOW_DEFINITIONS_QUERY_KEY })
     }
   }, [running, runAt, stranded, card, inputs, reload, store, refresh, queryClient])
 
@@ -331,7 +333,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               <div className="mt-3 rounded-md border border-warn/30 bg-warn-subtle px-3 py-2 text-[13px] leading-5 text-text" data-testid="change-card-risk">
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={14} className="mt-[3px] shrink-0 text-warn" aria-hidden="true" />
-                  <span>{card.risk === 'widen' ? widenText(card) : i18nT('components.changeCards.risk_code_exec')}</span>
+                  <span>{card.risk === 'widen' ? widenText(card) : (spec?.riskNote?.() ?? i18nT('components.changeCards.risk_code_exec'))}</span>
                 </div>
                 {/* What the press does, read beside the warning, before any code. */}
                 {spec?.pressNote && card.status === 'pending' && !expired && (

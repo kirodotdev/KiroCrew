@@ -29,7 +29,7 @@ import work_ledger_helpers
 from work_ledger_helpers import CONDUCTOR, WORKER, _bytes_on_disk, _new_item
 
 from kiro_crew import work_ledger as wl
-from kiro_crew.work_vocab import WORK_CLOSED_WINDOW
+from kiro_crew.work_vocab import WORK_CLOSED_WINDOW, worker_statuses
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _isolated_home = work_ledger_helpers._isolated_home
@@ -49,7 +49,9 @@ def test_verdicts_are_accept_evals_five_values():
 
 
 def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
-    assert wl.WORKER_STATUSES == {"progress", "done", "blocked", "question"}
+    """Four a report may be written with; ``reply`` is stored only under the preview."""
+    assert wl.WORKER_STATUSES == {"progress", "done", "blocked", "question", "reply"}
+    assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
 def test_event_kinds_are_exactly_seven():
@@ -1461,6 +1463,17 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        # Remote dispatch's peer mailbox (rfc-conductor-remote-dispatch §2, §3),
+        # behind the ``work_ledger.remote_dispatch`` Feature Preview. The same
+        # principal argument as the Crew page below: its only callers are the
+        # OWNER's slot create and the owner-gated per-slot routes, reached by a hub
+        # over its proxy with the owner token. No agent session names a ledger
+        # through it: the board is ``hub:`` plus the hub's key, the item is bound to
+        # the slot this create just minted, and the per-slot routes resolve the
+        # item from that slot's own binding. The worker itself still reports
+        # through the agent routes above, by its own X-Session-Key.
+        "remote_dispatch_mailbox.py",
+        "dashboard/handlers/remote_work_item.py",
         # The Crew page's masked, cookie-authenticated projection and its action
         # route. A third seam, and the argument is about WHICH PRINCIPAL rather
         # than about convenience.

@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, and take anot
 itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 39 of its tools, written for the agent that is about to use them.
+for all 40 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -15,7 +15,7 @@ owner modules. Two halves:
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
   `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
-  `session_move_to_column`. These reach another session.
+  `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -167,6 +167,44 @@ is heading the wrong way, or the thing it is grinding on is already done.
 
 The message lands in the target's transcript tagged as sent by your session, so
 the person reading it can tell it from their own typing.
+
+### `work_dispatch`
+
+Dispatches one work item in one call, for a conductor whose agent mounts
+`@kirocrew-work`: `work_ledger_record` `action=create`, then `session_create`,
+then `work_ledger_record` `action=bind`, then `session_send` with the seed. Each
+step is the same route the four calls use, sent as you, so it is refused
+whatever the step would be refused on its own. It is not auto-approved.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `title`, `acceptance` | yes | As `action=create` takes them |
+| `agent` | yes | The worker's agent, as `session_create` takes it |
+| `seed` | yes | The seed prompt, sent only after the bind succeeded |
+| `agent_kind`, `folder`, `model`, `reasoning_effort` | no | As `session_create` takes them |
+| **session_title** | no | The session's sidebar title; defaults to `title` |
+
+The reply names the `item_id` and `worker_session_key`. A failure names the step
+(`create`, `session_create`, `bind`, `seed`), the route's refusal code, and each
+cleanup it ran:
+
+| Failed step | Cleanup |
+|---|---|
+| `create` | none |
+| `session_create` | the item is closed `abandoned` |
+| `bind` | the session is closed, then the item |
+| `seed` | none: the item is bound and the session exists |
+
+`outcome=outcome_unknown` means a reply was lost, not that the step was refused.
+After a lost `create` or `session_create` reply, read your board and sidebar
+before dispatching again. After a lost `seed` reply, read the session with
+`session_read_message` before resending, or it may be seeded twice. To bind an
+existing session, use the four calls one at a time.
+
+`work_dispatch` never opens a work ledger. If your session owns none, step
+`create` is refused `no_ledger` and nothing is created. Open the ledger first with
+`work_ledger_record` `action=goal`, which needs the `kirocrew-work` server, then
+dispatch.
 
 ### `session_broadcast`
 
@@ -707,6 +745,7 @@ Refusals only a revive gives:
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
 | `reopen_failed` | HTTP 503: the session could not be reopened. Try again |
+| `reopen_retention_failed` | HTTP 503: the session's remote workspace is still scheduled for deletion and that could not be cancelled, so it was not reopened. Try again |
 | `reopen_rollback_failed` | HTTP 503: the revive was refused but the session's closed mark could not be put back, so it may come back as open. Close it again from the History tab |
 
 ### `session_history_list`
@@ -811,7 +850,7 @@ The sidebar tree the person organizes their sessions in.
 |---|---|---|
 | `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent, declared steering directories) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything. An app agent or crew member may nest only under a folder it owns or the folder its own session is filed in. A same-name sibling it owns is reused; any other same-name sibling is refused `409 folder_name_exists` |
-| `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
+| `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded. A move into a parent that already holds a folder of the same name (trimmed, case-folded) is refused (`folder_name_exists`): rename one of them first |
 | `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Cannot set `project_dir`, `default_agent` or `steering_dirs`; for steering, `propose_change(kind="folder.steering")` asks the person on a change card |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_delete` | `folder` (required) | Delete an **empty** folder **this session created**. Refused for the person's folders, and while it holds a subfolder, a live session or an archived session |
@@ -1063,9 +1102,9 @@ retry.
 
 | Knob | Default | Effect |
 |---|---|---|
-| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec |
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except crew member DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off |
 | `agent.session_manager_chain` | `false` | Let a session reach the whole line of sessions under it through `session_handoff`, and hand a closed manager's sessions up |
-| `agent.member_dispatch` | `true` | A crew member's DM session drives workers it created even when session control is off. Turn it off to put member callers back under the switch |
+| `agent.member_dispatch` | `true` | A crew member's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
 | `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session

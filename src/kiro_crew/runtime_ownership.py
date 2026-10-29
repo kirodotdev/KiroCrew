@@ -809,7 +809,7 @@ class RuntimeTenancy:
         with self._lock:
             return self._epochs.get(pid, 0)
 
-    def commit_teardown(self, target: object, epoch: int) -> bool:
+    def commit_teardown(self, target: object, epoch: int, *, idle_only: bool = False) -> bool:
         """Close this pid to new tenants and answer whether the signal may go.
 
         The LAST check a killer makes and the barrier it raises, in one critical
@@ -825,10 +825,19 @@ class RuntimeTenancy:
 
         False on either of two grounds, and the caller must not signal:
 
-        * a live tenant holds this pid now -- the ordinary refusal;
+        * a live tenant holds this pid now -- the ordinary refusal. Like
+          :meth:`refuse_for_tenants`, it marks each live claim ``owed`` in the same
+          critical section: the killer has already dropped the provider from every
+          registry, so the last tenant to leave is the one left to hand the
+          runtime back (:meth:`release`);
         * a claim arrived and left since *epoch*. A turn that ran after the verdict
-          means the verdict describes a state the process has left, and one deferred
-          teardown -- the next drain revisits it -- is cheaper than one killed turn.
+          means the verdict describes a state the process has left. A caller with a
+          later pass (the reconciler) simply waits for it; the provider killer, whose
+          provider is already out of every registry, asks once more with
+          ``idle_only=True``: the epoch is not consulted, only whether a live
+          tenant holds the pid, in this same critical section. So a turn that
+          comes and goes between the two asks cannot refuse it again, and an idle
+          orphan is not left running.
 
         True raises the barrier, and the caller MUST pair it with
         :meth:`release_teardown` on every exit. An unreleased barrier is a pid no
@@ -840,11 +849,14 @@ class RuntimeTenancy:
         if pid is None:
             return False
         with self._lock:
-            live = any(
-                self._names(claim, target, pid) and self._alive(claim)
+            live = [
+                claim
                 for claim in self._claims.values()
-            )
-            if live or self._epochs.get(pid, 0) != epoch:
+                if self._names(claim, target, pid) and self._alive(claim)
+            ]
+            for claim in live:
+                claim.owed = True
+            if live or (not idle_only and self._epochs.get(pid, 0) != epoch):
                 return False
             self._committed.add(pid)
             return True
@@ -1110,7 +1122,7 @@ def tenancy_epoch(target: object) -> int:
     return RUNTIME_TENANCY.epoch(target)
 
 
-def commit_runtime_teardown(target: object, epoch: int) -> bool:
+def commit_runtime_teardown(target: object, epoch: int, *, idle_only: bool = False) -> bool:
     """Close *target*'s pid to new tenants, and answer whether the signal may go.
 
     The killer's last check and its barrier in one act. False means abandon the
@@ -1119,7 +1131,7 @@ def commit_runtime_teardown(target: object, epoch: int) -> bool:
     can claim for the life of the gateway. See :meth:`RuntimeTenancy.commit_teardown`
     for why narrowing the window is not enough to close it.
     """
-    return RUNTIME_TENANCY.commit_teardown(target, epoch)
+    return RUNTIME_TENANCY.commit_teardown(target, epoch, idle_only=idle_only)
 
 
 def release_runtime_teardown(target: object) -> None:

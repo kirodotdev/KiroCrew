@@ -18,6 +18,7 @@ leaves ``preexec_fn`` unset so the fork child runs only async-signal-safe C.
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import shutil
 import subprocess
@@ -52,6 +53,42 @@ from kiro_crew.testing.wait import finished
 resource = pytest.importorskip("resource", reason="POSIX resource limits only")
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX resource limits only")
+
+
+_REAL_TOOL = '#!/bin/sh\nprintf "real:%s" "$PATH"\n'
+_PLANTED_TOOL = "#!/bin/sh\necho planted\nexit 9\n"
+
+
+async def _spawn_for_real(*argv: str, **kwargs) -> tuple[int, str, str]:
+    """Run *argv* through the real wrapper; return (returncode, stdout, stderr)."""
+    proc = await create_subprocess_limited(
+        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs
+    )
+    out, err = await proc.communicate()
+    return proc.returncode, out.decode(), err.decode()
+
+
+@pytest.fixture
+def nofile_above_tool_cap():
+    """Raise this process's soft NOFILE above the tool cap, so a capped child shows it.
+
+    Yields the inherited soft limit. Restored afterwards: the limit is process-wide.
+    """
+    default_cap = 1024
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and hard <= default_cap:
+        pytest.skip(f"host hard NOFILE limit ({hard}) is at or below the tool cap")
+    raised = soft <= default_cap
+    if raised:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (default_cap + 1, hard))
+    try:
+        yield resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    finally:
+        if raised:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+_NOFILE_PROBE = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
 
 
 @pytest.fixture(autouse=True)
@@ -392,18 +429,14 @@ class TestCreateSubprocessLimited:
     @pytest.mark.asyncio
     async def test_bare_name_is_resolved_against_the_child_path(self):
         # Discover where `true` actually lives instead of assuming /bin/true:
-        # this is the one test in the class that performs a REAL PATH lookup
-        # (the others mock the spawn, so their path never has to exist), and
-        # `true` is /usr/bin/true on macOS — the hardcoded /bin/true made this
-        # fail there with FileNotFoundError.
+        # `true` is /usr/bin/true on macOS.
         true_path = shutil.which("true")
         if not true_path:
             pytest.skip("no `true` binary on PATH")
-        spawn = AsyncMock()
-        with patch("asyncio.create_subprocess_exec", spawn):
-            await create_subprocess_limited("true", env={"PATH": os.path.dirname(true_path)})
-        # The shim execs without a PATH search, so the parent must hand it a path.
-        assert strip_spawn_shim(spawn.await_args.args)[0].endswith("/true")
+        # The shim execs without a PATH search, so an unresolved bare name would
+        # exit 127 ("cannot execute") instead of running the command.
+        rc, _out, err = await _spawn_for_real("true", env={"PATH": os.path.dirname(true_path)})
+        assert (rc, err) == (0, "")
 
     @pytest.mark.asyncio
     async def test_missing_command_still_raises_filenotfound_at_the_spawn(self):
@@ -437,18 +470,17 @@ class TestCreateSubprocessLimited:
         assert ran_on and ran_on[0] != loop_thread
 
     @pytest.mark.asyncio
-    async def test_explicit_path_takes_no_thread_hop_and_no_resolution(self):
+    async def test_explicit_path_takes_no_thread_hop_and_no_resolution(self, tmp_path):
         """Nothing to resolve, so no worker thread and no filesystem access."""
-        spawn = AsyncMock()
+        tool = self._planted_tool(tmp_path / "bin", body='#!/bin/sh\nprintf "ran:%s" "$0"\n')
         with (
-            patch("asyncio.create_subprocess_exec", spawn),
             patch.object(
                 sandbox, "_resolve_spawn_target", side_effect=AssertionError("resolved a path")
             ),
             patch.object(sandbox.os.path, "isfile", side_effect=AssertionError("stat on loop")),
         ):
-            await create_subprocess_limited("/nonexistent/tool", cwd="/tmp")
-        assert strip_spawn_shim(spawn.await_args.args) == ("/nonexistent/tool",)
+            rc, out, _err = await _spawn_for_real(str(tool), cwd="/tmp")
+        assert (rc, out) == (0, f"ran:{tool}")
 
     def test_relative_path_entries_resolve_against_the_child_cwd(self, tmp_path):
         """``execvpe`` searched from the child's cwd, not the gateway's."""
@@ -463,16 +495,14 @@ class TestCreateSubprocessLimited:
             sandbox._resolve_spawn_target(["mytool"], {"PATH": "tools"}, cwd=None)
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_preexec_rather_than_dropping_the_limits(self):
+    async def test_falls_back_to_preexec_rather_than_dropping_the_limits(
+        self, nofile_above_tool_cap
+    ):
         """A truncated install must not silently spawn children uncapped."""
-        spawn = AsyncMock()
-        with (
-            patch.object(sandbox, "_SPAWN_SHIM_CODE", ""),
-            patch("asyncio.create_subprocess_exec", spawn),
-        ):
-            await create_subprocess_limited("/bin/true")
-        assert callable(spawn.await_args.kwargs["preexec_fn"])
-        assert spawn.await_args.args == ("/bin/true",)
+        with patch.object(sandbox, "_SPAWN_SHIM_CODE", ""):
+            rc, out, _err = await _spawn_for_real(sys.executable, "-c", _NOFILE_PROBE)
+        assert rc == 0
+        assert int(out) < nofile_above_tool_cap
 
     @pytest.mark.asyncio
     async def test_chdir_fd_rides_the_shim_and_is_inherited_by_it(self):
@@ -499,48 +529,50 @@ class TestCreateSubprocessLimited:
         relative entry against the child's cwd -- the pinned workspace -- so a planted
         copy there must lose to the absolute entry.
         """
-        planted = tmp_path / "tools"
-        planted.mkdir()
-        (planted / "mytool").write_text("#!/bin/sh\nexit 9\n")
-        (planted / "mytool").chmod(0o755)
+        workspace = tmp_path / "pinned"
+        self._planted_tool(workspace / "tools", body=_PLANTED_TOOL)
+        self._planted_tool(workspace, body=_PLANTED_TOOL)
         real_dir = tmp_path / "real-bin"
-        real_dir.mkdir()
-        real = real_dir / "mytool"
-        real.write_text("#!/bin/sh\n")
-        real.chmod(0o755)
+        self._planted_tool(real_dir, body=_REAL_TOOL)
 
-        spawn = AsyncMock()
-        with patch("asyncio.create_subprocess_exec", spawn):
-            await create_subprocess_limited(
+        descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            rc, out, _err = await _spawn_for_real(
                 "mytool",
-                cwd=str(tmp_path),
-                chdir_fd=9,
+                cwd=str(workspace),
+                chdir_fd=descriptor,
                 env={"PATH": os.pathsep.join(["tools", "", ".", str(real_dir)])},
             )
-        assert strip_spawn_shim(spawn.await_args.args) == (str(real),)
-        assert "cwd" not in spawn.await_args.kwargs
+        finally:
+            os.close(descriptor)
         # The CHILD gets the same absolute-only PATH. Resolving argv[0] here is not
         # the last lookup: the wrapper this spawns looks its own target up on PATH
         # after the shim has entered the pinned workspace, so a relative entry left
         # in the child's environment would exec out of that directory one level down.
-        assert spawn.await_args.kwargs["env"]["PATH"] == str(real_dir)
+        assert (rc, out) == (0, f"real:{os.path.realpath(real_dir)}")
 
     @pytest.mark.asyncio
     async def test_an_unpinned_spawn_keeps_its_env_untouched(self):
         """The PATH narrowing is scoped to a pinned spawn, environment included."""
-        spawn = AsyncMock()
-        with patch("asyncio.create_subprocess_exec", spawn):
-            await create_subprocess_limited("/bin/true", env={"PATH": "tools:/usr/bin"})
-        assert spawn.await_args.kwargs["env"]["PATH"] == "tools:/usr/bin"
+        rc, out, _err = await _spawn_for_real(
+            "/bin/sh", "-c", 'printf %s "$PATH"', env={"PATH": "tools:/usr/bin"}
+        )
+        assert (rc, out) == (0, "tools:/usr/bin")
 
     @pytest.mark.asyncio
-    async def test_chdir_fd_narrows_the_child_path_even_with_no_env_passed(self, monkeypatch):
+    async def test_chdir_fd_narrows_the_child_path_even_with_no_env_passed(
+        self, tmp_path, monkeypatch
+    ):
         """A caller that passes no env still must not hand the child a relative entry."""
         monkeypatch.setenv("PATH", os.pathsep.join([".", "/usr/bin"]))
-        spawn = AsyncMock()
-        with patch("asyncio.create_subprocess_exec", spawn):
-            await create_subprocess_limited("/bin/true", chdir_fd=9)
-        assert spawn.await_args.kwargs["env"]["PATH"] == "/usr/bin"
+        descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            rc, out, _err = await _spawn_for_real(
+                "/bin/sh", "-c", 'printf %s "$PATH"', chdir_fd=descriptor
+            )
+        finally:
+            os.close(descriptor)
+        assert (rc, out) == (0, os.path.realpath("/usr/bin"))
 
     @pytest.mark.asyncio
     async def test_chdir_fd_with_only_relative_path_entries_resolves_nothing(self, tmp_path):
@@ -577,45 +609,39 @@ class TestCreateSubprocessLimited:
         keeps it, so this also guards against a string-prefix reimplementation.
         """
         workspace = tmp_path / "pinned"
-        self._planted_tool(workspace / "bin", body="#!/bin/sh\nexit 9\n")
+        self._planted_tool(workspace / "bin", body=_PLANTED_TOOL)
         real_dir = tmp_path / "pinned-outside"
-        self._planted_tool(real_dir)
+        self._planted_tool(real_dir, body=_REAL_TOOL)
         canonical_dir = os.path.realpath(real_dir)
         descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
-        spawn = AsyncMock()
         try:
-            with patch("asyncio.create_subprocess_exec", spawn):
-                await create_subprocess_limited(
-                    "mytool",
-                    chdir_fd=descriptor,
-                    env={"PATH": os.pathsep.join([str(workspace / "bin"), str(real_dir)])},
-                )
+            rc, out, _err = await _spawn_for_real(
+                "mytool",
+                chdir_fd=descriptor,
+                env={"PATH": os.pathsep.join([str(workspace / "bin"), str(real_dir)])},
+            )
         finally:
             os.close(descriptor)
-        assert strip_spawn_shim(spawn.await_args.args) == (os.path.join(canonical_dir, "mytool"),)
-        assert spawn.await_args.kwargs["env"]["PATH"] == canonical_dir
+        assert (rc, out) == (0, f"real:{canonical_dir}")
 
     @pytest.mark.asyncio
     async def test_chdir_fd_drops_the_pinned_directory_itself_as_a_path_entry(self, tmp_path):
         """The E-is-the-bound-directory case, distinct from the descendant case."""
         workspace = tmp_path / "pinned"
-        self._planted_tool(workspace, body="#!/bin/sh\nexit 9\n")
+        self._planted_tool(workspace, body=_PLANTED_TOOL)
         real_dir = tmp_path / "real-bin"
-        self._planted_tool(real_dir)
+        self._planted_tool(real_dir, body=_REAL_TOOL)
         canonical_dir = os.path.realpath(real_dir)
         descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
-        spawn = AsyncMock()
         try:
-            with patch("asyncio.create_subprocess_exec", spawn):
-                await create_subprocess_limited(
-                    "mytool",
-                    chdir_fd=descriptor,
-                    env={"PATH": os.pathsep.join([str(workspace), str(real_dir)])},
-                )
+            rc, out, _err = await _spawn_for_real(
+                "mytool",
+                chdir_fd=descriptor,
+                env={"PATH": os.pathsep.join([str(workspace), str(real_dir)])},
+            )
         finally:
             os.close(descriptor)
-        assert strip_spawn_shim(spawn.await_args.args) == (os.path.join(canonical_dir, "mytool"),)
-        assert spawn.await_args.kwargs["env"]["PATH"] == canonical_dir
+        assert (rc, out) == (0, f"real:{canonical_dir}")
 
     @pytest.mark.asyncio
     async def test_chdir_fd_drops_a_symlink_alias_of_the_pinned_directory(
@@ -629,26 +655,23 @@ class TestCreateSubprocessLimited:
         identity sees the same ``(st_dev, st_ino)`` regardless of spelling.
         """
         workspace = tmp_path / "pinned"
-        self._planted_tool(workspace, body="#!/bin/sh\nexit 9\n")
+        self._planted_tool(workspace, body=_PLANTED_TOOL)
         alias = tmp_path / "alias"
         os.symlink(workspace, alias)
         real_dir = tmp_path / "real-bin"
-        self._planted_tool(real_dir)
+        self._planted_tool(real_dir, body=_REAL_TOOL)
         canonical_dir = os.path.realpath(real_dir)  # before realpath is broken below
         monkeypatch.setattr(sandbox.os.path, "realpath", lambda path, **_kwargs: os.fspath(path))
         descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
-        spawn = AsyncMock()
         try:
-            with patch("asyncio.create_subprocess_exec", spawn):
-                await create_subprocess_limited(
-                    "mytool",
-                    chdir_fd=descriptor,
-                    env={"PATH": os.pathsep.join([str(alias), str(real_dir)])},
-                )
+            rc, out, _err = await _spawn_for_real(
+                "mytool",
+                chdir_fd=descriptor,
+                env={"PATH": os.pathsep.join([str(alias), str(real_dir)])},
+            )
         finally:
             os.close(descriptor)
-        assert strip_spawn_shim(spawn.await_args.args) == (os.path.join(canonical_dir, "mytool"),)
-        assert spawn.await_args.kwargs["env"]["PATH"] == canonical_dir
+        assert (rc, out) == (0, f"real:{canonical_dir}")
 
     @pytest.mark.asyncio
     async def test_chdir_fd_with_only_workspace_path_entries_resolves_nothing(self, tmp_path):
@@ -682,21 +705,18 @@ class TestCreateSubprocessLimited:
         not_a_dir = tmp_path / "not-a-dir"
         not_a_dir.write_text("")
         real_dir = tmp_path / "real-bin"
-        self._planted_tool(real_dir)
+        self._planted_tool(real_dir, body=_REAL_TOOL)
         canonical_dir = os.path.realpath(real_dir)
         descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
-        spawn = AsyncMock()
         try:
-            with patch("asyncio.create_subprocess_exec", spawn):
-                await create_subprocess_limited(
-                    "mytool",
-                    chdir_fd=descriptor,
-                    env={"PATH": os.pathsep.join([str(missing), str(not_a_dir), str(real_dir)])},
-                )
+            rc, out, _err = await _spawn_for_real(
+                "mytool",
+                chdir_fd=descriptor,
+                env={"PATH": os.pathsep.join([str(missing), str(not_a_dir), str(real_dir)])},
+            )
         finally:
             os.close(descriptor)
-        assert strip_spawn_shim(spawn.await_args.args) == (os.path.join(canonical_dir, "mytool"),)
-        assert spawn.await_args.kwargs["env"]["PATH"] == canonical_dir
+        assert (rc, out) == (0, f"real:{canonical_dir}")
 
     @pytest.mark.asyncio
     async def test_chdir_fd_respells_a_kept_entry_from_the_verified_descriptor(self, tmp_path):
@@ -711,22 +731,19 @@ class TestCreateSubprocessLimited:
         workspace = tmp_path / "pinned"
         workspace.mkdir()
         real_dir = tmp_path / "real-bin"
-        self._planted_tool(real_dir)
+        self._planted_tool(real_dir, body=_REAL_TOOL)
         canonical_dir = os.path.realpath(real_dir)
         link = tmp_path / "mutable-link"
         os.symlink(real_dir, link)
         descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
-        spawn = AsyncMock()
         try:
-            with patch("asyncio.create_subprocess_exec", spawn):
-                await create_subprocess_limited(
-                    "mytool", chdir_fd=descriptor, env={"PATH": str(link)}
-                )
+            rc, out, _err = await _spawn_for_real(
+                "mytool", chdir_fd=descriptor, env={"PATH": str(link)}
+            )
         finally:
             os.close(descriptor)
-        # Both consumers see the canonical directory; the mutable spelling is gone.
-        assert spawn.await_args.kwargs["env"]["PATH"] == canonical_dir
-        assert strip_spawn_shim(spawn.await_args.args) == (os.path.join(canonical_dir, "mytool"),)
+        # The child sees the canonical directory; the mutable spelling is gone.
+        assert (rc, out) == (0, f"real:{canonical_dir}")
 
     @pytest.mark.asyncio
     async def test_chdir_fd_drops_an_entry_whose_canonical_path_is_unreadable(self, tmp_path):
@@ -777,6 +794,10 @@ class TestCreateSubprocessLimited:
             )
         assert strip_spawn_shim(spawn.await_args.args) == (str(real),)
         assert spawn.await_args.kwargs["env"]["PATH"] == str(real_dir)
+        # A real spawn with that descriptor fails before any command runs.
+        with pytest.raises(OSError) as refused:
+            await _spawn_for_real(str(real), chdir_fd=never_open)
+        assert refused.value.errno == errno.EBADF
 
     @pytest.mark.asyncio
     async def test_an_unpinned_spawn_env_is_byte_identical(self):
@@ -786,6 +807,12 @@ class TestCreateSubprocessLimited:
         with patch("asyncio.create_subprocess_exec", spawn):
             await create_subprocess_limited("/bin/true", env=dict(env))
         assert spawn.await_args.kwargs["env"] == env
+        # The real child sees every passed entry unchanged. Only the entries the
+        # caller set are compared: the shim's interpreter may add LC_CTYPE.
+        rc, out, _err = await _spawn_for_real("/usr/bin/env", env=dict(env))
+        seen = dict(line.split("=", 1) for line in out.splitlines())
+        assert rc == 0
+        assert {name: seen.get(name) for name in env} == env
 
     @pytest.mark.asyncio
     async def test_pinned_screen_and_resolve_run_off_the_event_loop(self):
@@ -813,16 +840,9 @@ class TestCreateSubprocessLimited:
     @pytest.mark.asyncio
     async def test_an_unpinned_spawn_still_resolves_a_relative_path_entry(self, tmp_path):
         """The refusal is scoped to a pinned spawn; ordinary callers are unchanged."""
-        tools = tmp_path / "tools"
-        tools.mkdir()
-        tool = tools / "mytool"
-        tool.write_text("#!/bin/sh\n")
-        tool.chmod(0o755)
-        spawn = AsyncMock()
-        with patch("asyncio.create_subprocess_exec", spawn):
-            await create_subprocess_limited("mytool", cwd=str(tmp_path), env={"PATH": "tools"})
-        assert strip_spawn_shim(spawn.await_args.args) == (str(tool),)
-        assert spawn.await_args.kwargs["cwd"] == str(tmp_path)
+        self._planted_tool(tmp_path / "tools", body='#!/bin/sh\nprintf "ran:%s" "$(pwd -P)"\n')
+        rc, out, _err = await _spawn_for_real("mytool", cwd=str(tmp_path), env={"PATH": "tools"})
+        assert (rc, out) == (0, f"ran:{os.path.realpath(tmp_path)}")
 
     @pytest.mark.asyncio
     async def test_chdir_fd_is_refused_when_no_shim_can_carry_it(self):
@@ -1025,10 +1045,15 @@ class TestSyncLimitedSpawns:
         true_path = shutil.which("true")
         if not true_path:
             pytest.skip("no `true` binary on PATH")
-        with patch("subprocess.run") as spawn:
-            run_limited(["true"], env={"PATH": os.path.dirname(true_path)})
-        # The shim execs without a PATH search, so the parent must hand it a path.
-        assert strip_spawn_shim(spawn.call_args.args[0])[0].endswith("/true")
+        # The shim execs without a PATH search, so an unresolved bare name would
+        # exit 127 ("cannot execute") instead of running the command.
+        result = run_limited(
+            ["true"],
+            env={"PATH": os.path.dirname(true_path)},
+            capture_output=True,
+            encoding="utf-8",
+        )
+        assert (result.returncode, result.stderr) == (0, "")
 
     def test_missing_command_still_raises_filenotfound_at_the_spawn(self):
         with patch("subprocess.run"):
@@ -1051,28 +1076,31 @@ class TestSyncLimitedSpawns:
             run_limited(["true"])
         assert ran_on == [caller]
 
-    def test_explicit_path_takes_no_resolution(self):
-        with (
-            patch("subprocess.run") as spawn,
-            patch.object(
-                sandbox, "_resolve_spawn_target", side_effect=AssertionError("resolved a path")
-            ),
+    def test_explicit_path_takes_no_resolution(self, tmp_path):
+        tool = tmp_path / "tool"
+        tool.write_text('#!/bin/sh\nprintf "ran:%s" "$0"\n')
+        tool.chmod(0o755)
+        with patch.object(
+            sandbox, "_resolve_spawn_target", side_effect=AssertionError("resolved a path")
         ):
-            run_limited(["/nonexistent/tool"], cwd="/tmp")
-        assert strip_spawn_shim(spawn.call_args.args[0]) == ("/nonexistent/tool",)
+            result = run_limited([str(tool)], cwd="/tmp", capture_output=True, encoding="utf-8")
+        assert (result.returncode, result.stdout) == (0, f"ran:{tool}")
 
     @pytest.mark.parametrize(
         ("call", "target"), [(run_limited, "subprocess.run"), (popen_limited, "subprocess.Popen")]
     )
-    def test_falls_back_to_preexec_rather_than_dropping_the_limits(self, call, target):
+    def test_falls_back_to_preexec_rather_than_dropping_the_limits(
+        self, call, target, nofile_above_tool_cap
+    ):
         """A truncated install must not silently spawn children uncapped."""
-        with (
-            patch.object(sandbox, "_SPAWN_SHIM_CODE", ""),
-            patch(target) as spawn,
-        ):
-            call(["/bin/true"])
-        assert callable(spawn.call_args.kwargs["preexec_fn"])
-        assert spawn.call_args.args[0] == ["/bin/true"]
+        with patch.object(sandbox, "_SPAWN_SHIM_CODE", ""):
+            proc = call([sys.executable, "-c", _NOFILE_PROBE], stdout=subprocess.PIPE)
+        if target == "subprocess.Popen":
+            out, _ = proc.communicate()
+        else:
+            out = proc.stdout
+        assert proc.returncode == 0
+        assert int(out) < nofile_above_tool_cap
 
     def test_a_policy_free_profile_drops_both_the_shim_and_the_callable(self):
         """The negative control for the fallback: nothing to apply, nothing applied."""
@@ -1080,6 +1108,11 @@ class TestSyncLimitedSpawns:
             run_limited(["/bin/true"], profile=RLIMIT_PROFILE_NONE)
         assert spawn.call_args.kwargs["preexec_fn"] is None
         assert spawn.call_args.args[0] == ["/bin/true"]
+        inherited = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        result = run_limited(
+            [sys.executable, "-c", _NOFILE_PROBE], profile=RLIMIT_PROFILE_NONE, capture_output=True
+        )
+        assert int(result.stdout) == inherited
 
     def test_forwards_every_other_keyword_untouched(self):
         with patch("subprocess.run") as spawn:

@@ -380,6 +380,23 @@ fence itself, so a bump that cannot be written raises `TokenStoreError` and the
 sign-out reports failure rather than publishing "signed out" while a pending approval
 can still undo it.
 
+**Sign-in generation.** Two accounts of one kind (Google A, then Google B) can come
+back with the same `profileArn`, so none of the claims `auth/bridge.vault_identity_fingerprint`
+hashes tells them apart. The store carries a second marker beside the sign-out one
+(`TokenStore.signin_generation` / `bump_signin_generation`, `kas/signed-in`, a fresh
+random value per sign-in) that `_persist_and_finish` bumps right before it saves the new
+credential, inside the same flock; a token refresh does not bump it. The fingerprint
+folds the marker in when it is set, so both of its readers (the KAS bundle-route model
+catalog and the pre-turn identity sweep) see every completed sign-in as an account
+change; a same-account re-sign-in therefore turns the catalog cold and retires sessions
+once. A vault no sign-in has marked yet keeps the fingerprint it had. The bump is
+not best-effort: a marker that cannot be written fails the login with
+`token_store_failed` before the credential is saved, since a saved sign-in the
+fingerprint cannot see would keep serving the previous account's state; a save that
+fails after the bump leaves only a moved marker, which reads as an account change.
+The fingerprint reads the token and the marker together under the sign-out lock, so
+it never pairs the previous account's token with a marker a login has just moved.
+
 The remote crew uses exactly these verbs: `kirocrew cloud login|logout` and the
 launch wizard run their sign-in scripts on the instance over SSM, and every script
 asks the box's own `kirocrew kas route` which program to drive

@@ -158,7 +158,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     const anchor = body.anchor as { quote: string; prefix?: string; suffix?: string; start_offset?: number; end_offset?: number }
     expect(anchor).toBeDefined()
     expect(anchor.quote).toBe('beta')
-    // The neighbours travel with the quote: `rangeForAnchor` scores a repeated
+    // The neighbours travel with the quote: `rangesForAnchor` scores a repeated
     // quote by them, so a comment on the second "beta" must re-anchor to the
     // second, not the first. The body is "alpha beta gamma", so the prefix ends
     // in "alpha " and the suffix opens with " gamma".

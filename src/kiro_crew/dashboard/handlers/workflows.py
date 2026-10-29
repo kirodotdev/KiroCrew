@@ -257,6 +257,9 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
     source_format = body.get("format", "python")
     if source_format not in ("python", "task-plan"):
         return _error("format is invalid", "workflow_format_invalid", 400)
+    exact_slug = body.get("exact_slug", False)
+    if not isinstance(exact_slug, bool):
+        return _error("exact_slug must be a boolean", "workflow_exact_slug_invalid", 400)
     try:
         out = await asyncio.to_thread(
             svc.save_definition,
@@ -267,6 +270,7 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
             ),
             slug=body.get("slug", "") if isinstance(body.get("slug"), str) else "",
             source_format=source_format,
+            exact_slug=exact_slug,
             **lineage_kwargs,
         )
     except Exception:
@@ -274,6 +278,8 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
         return _error("could not save workflow", "workflow_definition_write_failed", 500)
     if out.get("ok"):
         return web.json_response(_redact_obj(out), status=201)
+    if out.get("slug_taken"):
+        return _error("that command is already a saved workflow", "workflow_slug_taken", 409)
     return web.json_response(
         {
             "error": _redact_obj(out.get("error") or "invalid workflow"),

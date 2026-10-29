@@ -24,6 +24,7 @@ import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -1171,7 +1172,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     queryKey: ['workflow-runs'],
     queryFn: () => api.workflowRuns().then(d => (Array.isArray(d?.runs) ? (d.runs as WfRunRow[]) : [])),
     enabled: open,
-    refetchInterval: 2500,
+    // Fast only on the Workflows view or while this chat has a running run;
+    // a slow heal tick otherwise, and no tick at all on a hidden tab.
+    refetchInterval: query => workflowRunsPollInterval(view ?? tab, query.state.data, slot),
+    refetchIntervalInBackground: false,
   })
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
   const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length

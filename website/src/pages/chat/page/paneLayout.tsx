@@ -18,6 +18,7 @@ import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels
 import { sidePanelDockMotion } from '../sidePanelMount'
 import { errMessage } from '../../../utils/thunkError'
 import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
+import { forgetSlotSuccession } from '../../../utils/slotSuccession'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
 import { crewWindowShown } from '../crew-window/crewWindowStore'
 import { i18nT } from '../../../i18n/t'
@@ -476,6 +477,8 @@ export function usePanelLayout({
       try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch (error) {
         // A rejected delete leaves the moved uploads with the replacement,
         // where the user is, and the old slot keeps its own later work.
+        // The old slot is still alive, so it is no longer replaced.
+        forgetSlotSuccession(activeSlot)
         showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
       }
     }

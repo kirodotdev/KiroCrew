@@ -91,7 +91,7 @@ describe('Code Review Sage rail at narrow widths', () => {
 
   it('keeps the drag handle off touch, where it costs width and does nothing', async () => {
     const src = await shell()
-    expect(src).toMatch(/\{!isMobile && \(\s*<Splitter/)
+    expect(src).toMatch(/\{!isMobile && \(\s*<ResizeHandle/)
   })
 
   it('has a strip narrower than the column minimum it replaces', async () => {

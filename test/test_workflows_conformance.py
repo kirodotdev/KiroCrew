@@ -165,6 +165,32 @@ EXPECTED_CTX_METHODS: dict[str, tuple[bool, list[tuple[str, str, bool]]]] = {
             ("text", "POSITIONAL_OR_KEYWORD", False),
         ],
     ),
+    "open_session": (
+        True,
+        [
+            ("self", "POSITIONAL_OR_KEYWORD", False),
+            ("name", "POSITIONAL_OR_KEYWORD", True),
+            ("folder_id", "KEYWORD_ONLY", True),
+            ("agent", "KEYWORD_ONLY", True),
+            ("model", "KEYWORD_ONLY", True),
+        ],
+    ),
+    "send_to_session": (
+        True,
+        [
+            ("self", "POSITIONAL_OR_KEYWORD", False),
+            ("slot", "POSITIONAL_OR_KEYWORD", False),
+            ("message", "POSITIONAL_OR_KEYWORD", False),
+        ],
+    ),
+    "set_session_mode": (
+        True,
+        [
+            ("self", "POSITIONAL_OR_KEYWORD", False),
+            ("slot", "POSITIONAL_OR_KEYWORD", False),
+            ("mode", "POSITIONAL_OR_KEYWORD", False),
+        ],
+    ),
 }
 
 # Port protocols: name -> (is_async, ordered param list) for each declared method.

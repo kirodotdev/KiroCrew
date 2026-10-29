@@ -92,6 +92,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: _TeardownScope | None = None,
 ) -> bool:
     """Kill a live session while preserving the exact reset semantics.
@@ -132,6 +133,15 @@ async def reset(
     is why the default stays the recycle. Nothing structural catches an omission,
     because a keyword is invisible to the AST ratchet, which is exactly why
     ``test_the_conversation_ending_reset_callers_say_so`` pins the callers BY PATH.
+
+    ``stop_shared_children=True`` is the hard Stop's recycle (``stop_turn``). The
+    conversation survives, but the provider shutdown below kills the process this
+    parent's session-sharing runs live on, which would record each as a runtime
+    death. The flag stops exactly those runs first, as a user stop named after the
+    hard Stop, between the pop and the shutdown: after the pop so a holder of the
+    popped permit is already recorded as orphaned, and before the shutdown so each
+    run ends through its own teardown. Runs on a dedicated process keep running.
+    Ignored with ``ends_conversation``, which stops every run of the parent.
 
     ``refuse_only_on_active_turn`` narrows ``skip_if_busy`` to a DECLARED turn, which a
     caller acting on an explicit user request needs: a channel member holds its lease for
@@ -191,6 +201,13 @@ async def reset(
         # name the successor's runs. A recycle takes no snapshot at all -- its children
         # keep running and deliver into the resumed conversation.
         teardown_children = self._snapshot_parent_children(key) if ends_conversation else ()
+        # Same lock hold, for the same reason: named before any await lets a
+        # successor's runs register under this key.
+        shared_children = (
+            self._select_shared_children(key)
+            if stop_shared_children and not ends_conversation and session is not None
+            else ()
+        )
         owner._advance_session_generation(key)
         owner._compact_cooldown_until.pop(key, None)
         # ``clear_conversation`` means the conversation is being THROWN AWAY,
@@ -266,6 +283,8 @@ async def reset(
         # wakes its waiter without yielding, so control reaches this line before
         # any of them runs, and this clear cannot erase a successor's pointer.
         owner._session_map.clear_sid(key)
+    if shared_children:
+        await self._stop_shared_children(key, shared_children)
     shutdown_error: BaseException | None = None
     if session:
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)

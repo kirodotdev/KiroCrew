@@ -354,21 +354,29 @@ class TestApiSpawnHandler:
         request.json = _json
         return request, mgr
 
+    def _real_request(self, body: dict) -> tuple[Any, Any]:
+        """Like ``_request``, but on a real manager whose runs never start."""
+        request, _ = self._request(body)
+        mgr = _mgr()
+        mgr._run = AsyncMock()  # type: ignore[method-assign]
+        request.app["state"].subagents = mgr
+        return request, mgr
+
     @pytest.mark.asyncio
     async def test_value_reaches_spawn(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = self._request({"task": "x", "reasoning_effort": "xhigh"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["reasoning_effort"] == "xhigh"
+        request, mgr = self._real_request({"task": "x", "reasoning_effort": "xhigh"})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).reasoning_effort == "xhigh"
 
     @pytest.mark.asyncio
     async def test_absent_value_reaches_spawn_as_empty(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = self._request({"task": "x"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["reasoning_effort"] == ""
+        request, mgr = self._real_request({"task": "x"})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).reasoning_effort == ""
 
     @pytest.mark.asyncio
     async def test_invalid_value_is_rejected_with_400(self):
@@ -456,29 +464,20 @@ class TestRecordAndRetry:
     async def test_retry_re_spawns_at_the_same_effort(self, crew):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.subagent import SubagentInfo
 
-        old = SimpleNamespace(
+        old = SubagentInfo(
             id="a1",
             task="t",
             _raw_task="t",
             parent_session_key="dash:1",
-            agent="",
-            max_turns=0,
-            cwd="",
-            model="",
             reasoning_effort="xhigh",
-            approval_mode="",
-            silent=False,
-            delegation={},
-            include_memory=True,
-            include_lessons=True,
-            include_project=True,
             # Reused by the retry alongside the context triple: a retry must not
             # widen a delegated run to the global store.
             memory_store="member-coding" if crew else "",
             crew=crew,
             done=True,
-            outcome="failed",
+            error="boom",
             execution_context=ExecutionContext(
                 "coding-id" if crew else None,
                 MemoryStoreRef("member-coding", "coding-id") if crew else MemoryStoreRef("default"),
@@ -486,18 +485,19 @@ class TestRecordAndRetry:
                 "kirocrew",
             ),
         )
-        mgr = MagicMock()
-        mgr.get.return_value = old
-        mgr.spawn.return_value = SimpleNamespace(id="a2", done=False, error="")
+        mgr = _mgr()
+        mgr._run = AsyncMock()  # type: ignore[method-assign]
+        mgr._agents["a1"] = old
         state = SimpleNamespace(subagents=mgr)
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {}
         request.match_info = {"agent_id": "a1"}
-        await api_spawn_retry(request)
-        assert mgr.spawn.call_args.kwargs["reasoning_effort"] == "xhigh"
-        assert mgr.spawn.call_args.kwargs["crew"] == crew
-        assert mgr.spawn.call_args.kwargs["memory_store"] == old.memory_store
+        resp = await api_spawn_retry(request)
+        retried = mgr.get(json.loads(resp.text)["id"])
+        assert retried.reasoning_effort == "xhigh"
+        assert retried.crew == crew
+        assert retried.memory_store == old.memory_store
 
 
 class TestResolutionPrecedence:

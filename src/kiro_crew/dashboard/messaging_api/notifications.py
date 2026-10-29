@@ -11,15 +11,32 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
+        APPS_OFF_FOR_TEAMMATES,
         CronStoreBusy,
         CronStoreUnreadable,
         DashboardState,
+        audit_teammate_withheld,
+        body_not_object_error,
+        is_app_channel,
+        is_relay_teammate,
         logger,
+        notification_source_app,
+        refuse_relayed,
     )
 
 
 async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
+    if is_relay_teammate(request):
+        # A relayed teammate has no app surface, so an app's push notifications are
+        # withheld, as the live WebSocket and SSE feeds withhold them. Unread is the
+        # delivery counter capped at what this view still counts.
+        notes = [note for note in state._notification_log if not _is_app_note(note)]
+        if len(notes) != len(state._notification_log):
+            audit_teammate_withheld("notification")
+        counted = sum(1 for note in notes if note.get("priority") != "passive")
+        unread = min(state._unread_count, counted)
+        return web.json_response({"notifications": notes, "unread": unread})
     return web.json_response(
         {"notifications": state._notification_log, "unread": state._unread_count}
     )
@@ -32,16 +49,53 @@ async def api_notification_delete(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
+    refused = _refuse_hidden_note(request, state, ts, "notifications.delete")
+    if refused is not None:
+        return refused
     ok = await state.delete_notification(ts)
     return web.json_response({"ok": ok})
+
+
+def _is_app_note(note: dict) -> bool:
+    """Whether *note* is an app's push notification, which a relayed teammate never sees."""
+    return bool(notification_source_app(str(note.get("source", ""))))
+
+
+def _refuse_hidden_note(
+    request: web.Request, state: DashboardState, ts: str, operation: str
+) -> web.Response | None:
+    """A relayed teammate's refusal for one notification withheld from them, else ``None``.
+
+    The list never shows a teammate an app's notification, so one they name by its
+    timestamp is refused rather than changed on the owner's behalf.
+    """
+    if not is_relay_teammate(request):
+        return None
+    if any(note.get("ts") == ts and _is_app_note(note) for note in state._notification_log):
+        return refuse_relayed(request, APPS_OFF_FOR_TEAMMATES, operation=operation)
+    return None
 
 
 async def api_notifications_clear(request: web.Request) -> web.Response:
     """POST /api/notifications/clear — clear all notifications."""
     state: DashboardState = request.app["state"]
+    if is_relay_teammate(request):
+        hidden = [note for note in state._notification_log if _is_app_note(note)]
+        if hidden:
+            # Clear what the teammate sees and keep what they are withheld: no
+            # whole-feed clear, and no clear broadcast that would empty the owner's.
+            state._notification_log = hidden
+            still_counted = sum(1 for note in hidden if note.get("priority") != "passive")
+            state._unread_count = min(state._unread_count, still_counted)
+            await state._rewrite_notifications_async()
+            audit_teammate_withheld("notifications_clear")
+            return web.json_response({"ok": True})
     await state.clear_notifications()
     return web.json_response({"ok": True})
 
@@ -53,9 +107,15 @@ async def api_notification_ack(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
+    refused = _refuse_hidden_note(request, state, ts, "notifications.ack")
+    if refused is not None:
+        return refused
     ok = await state.ack_notification(ts)
     return web.json_response({"ok": ok})
 
@@ -67,9 +127,15 @@ async def api_notification_unack(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     ts = body.get("ts", "")
     if not ts:
         return web.json_response({"error": "ts is required"}, status=400)
+    refused = _refuse_hidden_note(request, state, ts, "notifications.unack")
+    if refused is not None:
+        return refused
     # If this is a cron notification, also remove the last acked item from the job
     for n in state._notification_log:
         if n.get("ts") == ts and n.get("kind") == "cron" and n.get("job_id"):
@@ -93,6 +159,23 @@ async def api_notification_unack(request: web.Request) -> web.Response:
 async def api_notifications_ack_all(request: web.Request) -> web.Response:
     """POST /api/notifications/ack-all — mark all notifications as read."""
     state: DashboardState = request.app["state"]
+    if is_relay_teammate(request):
+        # Acknowledge what the teammate sees: an app notification withheld from them
+        # keeps its read state, so the ack goes out per entry rather than as "*".
+        acknowledged = []
+        withheld = False
+        for note in state._notification_log:
+            if _is_app_note(note):
+                withheld = True
+            elif not note.get("acked"):
+                note["acked"] = True
+                acknowledged.append(note.get("ts"))
+        await state._rewrite_notifications_async()
+        for ts in acknowledged:
+            state.broadcast_ws("notification_ack", {"ts": ts})
+        if withheld:
+            audit_teammate_withheld("notification_ack")
+        return web.json_response({"ok": True})
     for n in state._notification_log:
         n["acked"] = True
     # Same ordered executor as every other notification-file mutation: a
@@ -117,8 +200,14 @@ async def api_notification_channels(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     registered = state.notification_bus.channels()
     stored = state.notification_channel_settings.all_settings()
+    # A relayed teammate has no app surface, so an app's channels are left out.
+    teammate = is_relay_teammate(request)
+    withheld = False
     channels = []
     for channel in sorted(set(registered) | set(stored)):
+        if teammate and is_app_channel(channel):
+            withheld = True
+            continue
         source = channel.split(".", 1)[0]
         channels.append(
             {
@@ -130,6 +219,8 @@ async def api_notification_channels(request: web.Request) -> web.Response:
                 "settings": stored.get(channel, {}),
             }
         )
+    if withheld:
+        audit_teammate_withheld("notification_channel_settings")
     return web.json_response({"channels": channels})
 
 
@@ -157,6 +248,12 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
     channel = channel.strip()
     if len(channel) > 256:
         return web.json_response({"error": "channel name too long"}, status=400)
+    if is_relay_teammate(request) and is_app_channel(channel):
+        # The same refusal, and SEL row, the remote limits give a teammate on an app
+        # route: the channel is named in the body, so the ingress cannot decide it.
+        return refuse_relayed(
+            request, APPS_OFF_FOR_TEAMMATES, operation="notifications.channel_settings"
+        )
     muted = body.get("muted")
     if muted is not None and not isinstance(muted, bool):
         return web.json_response({"error": "muted must be a boolean"}, status=400)

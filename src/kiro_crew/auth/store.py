@@ -246,7 +246,9 @@ class TokenStore:
         (``save`` and ``delete`` do), never the other way round.
         """
         try:
-            fd = os.open(str(self.signout_lock_path()), os.O_RDWR | os.O_CREAT, 0o600)
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            fd = open_create_or_existing(str(self.signout_lock_path()), os.O_RDWR, 0o600)
         except OSError as err:
             raise TokenStoreError("could not take the sign-out lock") from err
         try:
@@ -272,7 +274,9 @@ class TokenStore:
         rather than proceeding unserialized); lock failures are ``TokenStoreError``.
         """
         try:
-            fd = os.open(str(self.lock_path(identity)), os.O_RDWR | os.O_CREAT, 0o600)
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            fd = open_create_or_existing(str(self.lock_path(identity)), os.O_RDWR, 0o600)
         except OSError as err:
             raise TokenStoreError(f"could not take the refresh lock for {identity}") from err
         try:
@@ -495,6 +499,46 @@ class TokenStore:
         except OSError as err:
             raise TokenStoreError("could not record the sign-out generation") from err
 
+    # ── sign-in generation: one marker every completed sign-in bumps ──
+
+    def _signin_generation_path(self) -> Path:
+        return self._kas_dir / "signed-in"
+
+    def signin_generation(self) -> str:
+        """An opaque value that changes on every completed sign-in, ``""`` before the first.
+
+        Folded into the vault's identity fingerprint
+        (:func:`kiro_crew.auth.bridge.vault_identity_claims`). Two accounts of the
+        same kind can come back with the same ``profileArn``, so none of the
+        fingerprinted claims tells them apart; this marker does, because every
+        sign-in writes a new value and a token refresh writes none. An unreadable
+        marker reads as ``""``.
+        """
+        try:
+            return self._signin_generation_path().read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def bump_signin_generation(self) -> None:
+        """Record a completed sign-in, so the fingerprint reads it as an account change.
+
+        Called by the login service right before it saves the new credential,
+        inside :meth:`with_signout_lock`. A same-account re-sign-in bumps it too:
+        the model catalog then goes cold and the session sweep retires once,
+        which is the safe answer when the server cannot say which account it is.
+        A fresh random value rather than a counter, like
+        :meth:`bump_signout_generation`. NOT best-effort: raises
+        ``TokenStoreError`` when the marker cannot be written, and the login then
+        fails before the credential is saved, because a saved sign-in the
+        fingerprint cannot see would keep serving the previous account's state.
+        """
+        try:
+            self._assert_unlinked()
+            make_owner_only_dir(self._kas_dir)
+            self._signin_generation_path().write_text(secrets.token_hex(16), encoding="utf-8")
+        except OSError as err:
+            raise TokenStoreError("could not record the sign-in generation") from err
+
     def resolve(self) -> KasToken | None:
         """Return the highest-priority stored token (External > Builder > Social).
 
@@ -530,3 +574,22 @@ class TokenStore:
             return True
         stored = set(self._vault.list_names())
         return not any(identity in stored for identity in _PRIORITY)
+
+    def write_stamp(self) -> str:
+        """An opaque value that changes whenever the vault file is rewritten.
+
+        One ``stat`` of ``secrets.enc``; nothing is read or decrypted, so it is
+        cheap enough to call on every dashboard poll. Every write is an atomic
+        replace, so a sign-in, a refresh that persisted a token, and a sign-out
+        each yield a new inode and a new value. ``"absent"`` when the file does
+        not exist; ``""`` when it could not be examined (unknown, and stable, so
+        a caller comparing two unknowns sees no change rather than churning).
+        """
+        try:
+            self._assert_unlinked()
+            st = os.stat(self._vault._store_path)
+        except FileNotFoundError:
+            return "absent"
+        except (OSError, TokenStoreError):
+            return ""
+        return f"{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"

@@ -201,6 +201,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
             sys.exit(1)
         args.name, display_name = keyed.key, keyed.display_name
         _kiro_agent_or_exit(args.kiro_agent)
+        from kiro_crew.mate_config import start_template_refusal
+
+        template_refusal = start_template_refusal(args.kiro_agent, args.name)
+        if template_refusal:
+            print(f"Error: {template_refusal}", file=sys.stderr)
+            sys.exit(1)
         memory_store = _memory_store_or_exit(args.memory_store)
         if memory_store not in ("", DEFAULT_MEMORY_STORE):
             print(

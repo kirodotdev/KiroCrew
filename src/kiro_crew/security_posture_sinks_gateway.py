@@ -120,6 +120,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "prose that happens to contain one.",
     ),
     (
+        "A crew's work-item copy read by a hub",
+        "dashboard/handlers/remote_work_item.py",
+        "Every key and string in the worker-owned fields and event tail of a hub's "
+        "work item on this crew, on its way to the hub over its proxy (remote "
+        "dispatch, a Feature Preview). The worker wrote them and nothing between "
+        "that write and this read inspects them. It reuses the Crew page's "
+        "`_redact_deep`, which runs `redact_via_context`, so both scanners run in "
+        "the shared order.",
+    ),
+    (
         "Conductor work items shown on the Crew page",
         "dashboard/handlers/work_ledger_board.py",
         "Every string in one conductor's work-item board on its way to a browser: "

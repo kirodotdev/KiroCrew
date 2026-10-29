@@ -36,6 +36,8 @@ export const CARD_KINDS = [
   'trust.app',
   'denied_command',
   'folder.steering',
+  'workflow.save',
+  'workflow.update',
 ] as const
 export type CardKind = typeof CARD_KINDS[number]
 
@@ -265,7 +267,18 @@ export function mergeCard(list: readonly Card[] | undefined, c: Card): Card[] {
 }
 
 /** Fold one owner `card_update` frame into that slot's cards cache. */
+/** The Workflows tab's library query, which a workflow card's save changes. */
+export const WORKFLOW_DEFINITIONS_QUERY_KEY = ['workflow-definitions'] as const
+
+/** Whether *card* is a workflow-library card that has written to the library. */
+export function wroteWorkflowLibrary(card: Pick<Card, 'kind' | 'status'>): boolean {
+  return card.kind.startsWith('workflow.') && (card.status === 'applied' || card.status === 'partial')
+}
+
 export function applyCardUpdate(queryClient: QueryClient, card: unknown): void {
   if (!isCard(card)) return
   queryClient.setQueryData<Card[]>(cardsQueryKey(card.slot_key), prev => mergeCard(prev, card))
+  // The library list is cached without expiry; a save another tab pressed must
+  // show there without a reload.
+  if (wroteWorkflowLibrary(card)) void queryClient.invalidateQueries({ queryKey: WORKFLOW_DEFINITIONS_QUERY_KEY })
 }

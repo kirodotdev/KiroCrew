@@ -951,11 +951,11 @@ def _coerce_int(value: object) -> object:
 
 def _write_locked(path: Path, payload: str) -> None:
     from kiro_crew.atomic_write import atomic_write
-    from kiro_crew.platform_compat import file_lock
+    from kiro_crew.platform_compat import file_lock, open_create_or_existing
 
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".lock")
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             atomic_write(path, payload, restrict_to_owner=True)
@@ -979,8 +979,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CARD_CAPABILITY_SECTIONS,
         _CREWMATE_SPEC_FIELDS,
         _CRON_CONFIG_FIELDS,
+        _HUNK_HEADER_RE,
         _MCP_SCOPE_UNREADABLE,
         KR_RECORDS_KEY,
+        WORKFLOW_DIFF_MAX,
+        WORKFLOW_DIFF_SEPARATOR,
         _capability_service,
         _capability_state,
         _connection_grant_fingerprint,
@@ -992,6 +995,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_job_revision,
         _folder,
         _goal_state,
+        _hunk_separator,
         _import_after_is_written,
         _import_rules_digest,
         _import_state,
@@ -1008,7 +1012,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _server_reach,
         _sync_read_state,
         _template_state_with_skills,
+        _unified_hunks,
+        _unified_range,
         _valid_refs,
+        _workflow_context,
+        _workflow_diff,
+        _workflow_service,
+        _workflow_state,
         after_shows_the_write,
         build,
         capability_ref_hint,

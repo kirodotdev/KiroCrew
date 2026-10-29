@@ -33,7 +33,14 @@ class TestActionableEvents:
 
     @pytest.mark.parametrize("status", sorted(lw.WAKE_STATUSES))
     def test_a_worker_report_with_a_waking_status_wakes(self, status):
-        assert lw.is_actionable_event("report", status)
+        assert lw.is_actionable_event("report", status, remote_dispatch=True)
+
+    def test_a_reply_wakes_only_under_the_remote_dispatch_preview(self):
+        """Off (the default) the gate's wake set is the one from before ``reply``."""
+        assert lw.is_actionable_event("report", "reply", remote_dispatch=True)
+        assert not lw.is_actionable_event("report", "reply")
+        for status in ("done", "blocked", "question"):
+            assert lw.is_actionable_event("report", status)
 
     def test_a_progress_report_does_not_wake(self):
         """It advances the revision instead, so chatter stays free."""

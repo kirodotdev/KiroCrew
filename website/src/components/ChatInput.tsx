@@ -17,7 +17,8 @@ import { switchSlot } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
 import { emitComposeIntent } from '../lib/composeIntent'
 import { ToolDetails } from '../pages/chat/ToolDetails'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useReducedMotion } from '../hooks/useReducedMotion'
@@ -96,6 +97,8 @@ const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
+/** Set once the user dismisses the visible list-indent hint under the composer. */
+const LIST_HINT_DISMISSED_KEY = 'kirocrew:list-indent-hint-dismissed'
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
 // Video containers the server accepts (see `_ALLOWED_VIDEO_EXT`). MIME form, not
 // extensions, because this string is also what the MOBILE photo picker filters
@@ -243,6 +246,7 @@ function ChatInput({
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
+  derivePctFromUsed,
   showContextPct,
   showContextTokens,
   isRunning = false,
@@ -470,7 +474,17 @@ function ChatInput({
   const fileInputId = useId()
   const listIndentHintId = useId()
   const draftHasListLine = useMemo(() => hasListLine(value), [value])
+  // True while the textarea or the hint's own Dismiss button has focus, so a
+  // Tab from the textarea lands on Dismiss instead of unmounting it mid-move.
   const [textareaFocused, setTextareaFocused] = useState(false)
+  const listHintDismissRef = useRef<HTMLButtonElement>(null)
+  // Dismiss hides the visible line only; screen readers still get the hint
+  // through aria-describedby. Nothing is written until the user clicks, and the
+  // click goes through savePrefExplicitly so lib/uiPrefs.ts treats it as the
+  // user's choice: a host backup never overwrites it with another origin's value.
+  // Re-read the durable choice on focus so sibling composers pick it up.
+  const [listHintDismissed, setListHintDismissed] = useState(() => safeGetItem(LIST_HINT_DISMISSED_KEY) === '1')
+  const [listHintSaveError, setListHintSaveError] = useState<string | null>(null)
   const { shelfRef, shelfHeight, shelfCompact, shelfTiny } = useShelfMeasure()
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
@@ -849,7 +863,11 @@ function ChatInput({
   // On the one-row shape it stays screen-reader only: a visible row would sit
   // beside the text and squeeze it, and reshaping the box on every focus and
   // blur moves the toolbar under the pointer. Focus never changes the shape.
-  const listHintVisible = draftHasListLine && textareaFocused && !(lexicalComposer && !lexicalLoadFailed) && !inlineToolbar
+  const listHintVisible = draftHasListLine && textareaFocused && !listHintDismissed && !(lexicalComposer && !lexicalLoadFailed) && !inlineToolbar
+  const listHintShown = listHintVisible && !(showDictation || voiceHoldMode)
+  useEffect(() => {
+    if (!listHintShown) setListHintSaveError(null)
+  }, [listHintShown])
   inlineRef.current = inlineToolbar
   const reduceMotion = useReducedMotion()
   // The box's height (`inlineToolbarWhileFits` only), measured off the inner
@@ -1520,8 +1538,12 @@ function ChatInput({
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
             // in the binding itself, so these handlers only carry what is local here.
-            onFocus: () => { setTextareaFocused(true); prefetchSkills() },
-            onBlur: () => { setTextareaFocused(false); if (hoverRef.current) hoverRef.current.handleMouseLeave() },
+            onFocus: () => {
+              setTextareaFocused(true)
+              if (!listHintDismissed && safeGetItem(LIST_HINT_DISMISSED_KEY) === '1') setListHintDismissed(true)
+              prefetchSkills()
+            },
+            onBlur: e => { if (!listHintDismissRef.current || e.relatedTarget !== listHintDismissRef.current) setTextareaFocused(false); if (hoverRef.current) hoverRef.current.handleMouseLeave() },
           })}
           onPaste={disabled ? e => e.preventDefault() : handlePaste}
           onCopy={handleCopy}
@@ -1541,9 +1563,36 @@ function ChatInput({
             textarea's aria-describedby; sighted keyboard users see the same
             line while the textarea has focus, except on the one-row shape. */}
         {draftHasListLine && !(lexicalComposer && !lexicalLoadFailed) && (
-          <p id={listIndentHintId} data-testid="list-indent-hint" className={listHintVisible ? `px-4 pt-1 text-[12px] text-muted ${showDictation || voiceHoldMode ? 'sr-only' : ''}` : 'sr-only'}>
-            {i18nT('components.chatInput.list_indent_hint')}
-          </p>
+          <div className={listHintShown ? 'flex flex-wrap items-baseline gap-x-2 px-4 pt-1 text-[12px] text-muted' : 'sr-only'}>
+            <p id={listIndentHintId} data-testid="list-indent-hint" className={listHintShown ? 'min-w-0' : 'sr-only'}>
+              {i18nT('components.chatInput.list_indent_hint')}
+            </p>
+            {listHintShown && (
+              <button
+                ref={listHintDismissRef}
+                type="button"
+                data-testid="list-indent-hint-dismiss"
+                className="shrink-0 underline underline-offset-2 hover:text-text focus-visible:text-text"
+                // Keep the textarea focused on a pointer press; its blur would
+                // hide this button before the click lands.
+                onMouseDown={e => e.preventDefault()}
+                onBlur={e => { if (e.relatedTarget !== inputRef.current) setTextareaFocused(false) }}
+                onClick={() => {
+                  if (!savePrefExplicitly(LIST_HINT_DISMISSED_KEY, '1')) {
+                    setListHintSaveError(i18nT('components.shortcutsModal.save_refused'))
+                    return
+                  }
+                  setListHintSaveError(null)
+                  setListHintDismissed(true)
+                  inputRef.current?.focus()
+                }}
+              >
+                {i18nT('app.dismiss')}
+              </button>
+            )}
+            {/* No agent hand-off: navigation could discard the unsent composer draft. */}
+            <ErrorNotice variant="inline" message={listHintSaveError} testId="list-indent-hint-save-error" className="basis-full" />
+          </div>
         )}
 
         {voiceHoldMode && (
@@ -1885,7 +1934,7 @@ function ChatInput({
           </div>
           <div className="flex items-center shrink-0">
           {contextPct != null && (
-            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
+            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (
             <ModelChip modelName={modelName} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />

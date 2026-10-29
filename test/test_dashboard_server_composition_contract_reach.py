@@ -658,13 +658,17 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 
 #: The full middleware chain of each entrypoint, outermost first, by the name of each
 #: layer and the factory that built it. The order is a security contract: latency is
-#: outermost, the client-sent relay-header strip is next, the deny-audit boundary is
-#: outer to every barrier that can refuse, the SEL request audit is inner to them, the
-#: per-slot ownership checkpoint is inner to token auth and the audit record, and the
-#: workflow and crewmate-prune gates and the change-card hook (innermost, after auth
-#: has classified the caller) are appended after the explicit list.
+#: outermost, the relay-path header rule is next so it reads a verified handover before
+#: any inner layer, the client-sent relay-header strip sits just inside it so no inner
+#: layer reads a client-sent relay header, the
+#: deny-audit boundary is outer to every barrier that can refuse, the SEL request
+#: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
+#: and the audit record, and the workflow and crewmate-prune gates and the
+#: change-card hook (innermost, after auth has classified the caller) are appended
+#: after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
@@ -682,6 +686,7 @@ _DASHBOARD_CHAIN = (
 )
 _API_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
@@ -789,6 +794,7 @@ _DASHBOARD_BOOT = tuple("""
     build_allowed_origins _make_host_validation_middleware _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
+    relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
@@ -836,6 +842,7 @@ _API_BOOT = tuple("""
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
+    relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred
