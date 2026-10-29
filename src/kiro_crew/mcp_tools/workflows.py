@@ -73,7 +73,8 @@ def schemas() -> list[dict[str, Any]]:
                 "same orchestration with spawn tools. Returns a run_id immediately; "
                 "the result is injected back into this chat on completion. Monitor "
                 "with workflow_status / workflow_result; restart parts with "
-                "workflow_rerun_subtree."
+                "workflow_rerun_subtree. Check workflow_library_list for a saved "
+                "workflow before authoring a new one."
             ),
             "inputSchema": {
                 "type": "object",

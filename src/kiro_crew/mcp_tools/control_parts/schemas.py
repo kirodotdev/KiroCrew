@@ -170,7 +170,12 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "description": (
                 "Pause execution for a specified duration while preserving full session "
                 "context. Use when waiting for external systems (code review, CI "
-                "pipeline, deployment). Max 1800s (30 min)."
+                "pipeline, deployment). Range 60-1800s (max 30 min). After it "
+                "returns, check the results yourself. A wait can end before its "
+                "deadline (the user's End-wait button or a mid-turn steer stops "
+                "it), so read the returned end reason instead of assuming the full "
+                "duration elapsed, and do not re-issue a wait that was ended "
+                "deliberately."
             ),
             "inputSchema": {
                 "type": "object",
@@ -248,7 +253,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "into a dedicated agent session later. Returns the webhook URL and session "
                 "key. Use this when you need to hand off to an external process (e.g. "
                 "submit a code review, then wait for the review bot to call back with results). "
-                "The external system POSTs to the returned URL with the results."
+                "The external system POSTs to the returned URL with the results. "
+                "Call it before ending a session whose ongoing workflow another "
+                "system will call back on."
             ),
             "inputSchema": {
                 "type": "object",
@@ -299,7 +306,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "or why no card could be shown (then ask in plain text). "
                 "Use it when a decision is genuinely "
                 "needed before the work can continue (which of these approaches, "
-                "which account, confirm before I refactor). When you are ending "
+                "which account, confirm before I refactor). Default to silence: "
+                "decide everything you can read, run or infer yourself and say in "
+                "one line what you picked; never ask just because a choice exists. "
+                "When you are ending "
                 "your turn anyway a final [OPTIONS: a | b | c] tag is cheaper and "
                 "renders on every channel — the card's advantage is several "
                 "questions at once, multi-select and the free-text field. "

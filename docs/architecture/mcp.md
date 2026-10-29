@@ -2599,6 +2599,20 @@ respawned backend's result replaces the cache. Pinned by
 `test_pooled_stubs_get_the_backends_instructions_after_a_respawn_too` and
 `test_mcp_instructions.py`.
 
+### A `kirocrew-core` tool's own rules live in its description
+
+`kirocrew-core` passes no `instructions` yet. Its per-tool text is split by when it
+matters:
+
+| Rule | Lives in | Why |
+|---|---|---|
+| How the call behaves: results, errors, refusals, limits | the tool's description | a deferred tool is loaded before it is called, so the description is in front of the model exactly when the rule applies |
+| When to reach for the tool | one line in `config/prompt.md` | a deferred tool shows only its name, so a trigger kept only in its description is unseen until the tool is already chosen |
+| Policy across tools (turn-end contract, the spawn default, Rules) | `config/prompt.md` | not any one tool's usage |
+
+`test_moved_tool_rules_live_in_their_own_descriptions` pins the moved rules to
+their descriptions.
+
 ### A `kirocrew-core` tool has two halves
 
 Each tool is declared twice in the same per-domain module under

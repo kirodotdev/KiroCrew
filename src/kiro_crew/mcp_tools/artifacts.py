@@ -63,7 +63,9 @@ def schemas() -> list[dict[str, Any]]:
                 "artifact (except in an incognito or temporary session), so do not "
                 "call this on emitted widget content (it makes a duplicate); the "
                 "user's star pins it. Use this for content you never emitted as a "
-                "widget. Iterate with artifact_get + artifact_update."
+                "widget. Iterate with artifact_get + artifact_update. An incognito "
+                "or temporary session also refuses artifact writes, so there is "
+                "nothing to save there."
             ),
             "inputSchema": {
                 "type": "object",
@@ -535,7 +537,8 @@ def schemas() -> list[dict[str, Any]]:
                 "re-parented up to the folder's parent, and only the folder itself is "
                 "removed. Pass delete_contents=true to permanently delete the entire "
                 "subtree, INCLUDING every descendant artifact — echo the affected "
-                "count to the user before doing so. ``folder`` = folder id or human path."
+                "count to the user and get their consent to the permanent deletion "
+                "before doing so. ``folder`` = folder id or human path."
             ),
             "inputSchema": {
                 "type": "object",
@@ -583,7 +586,8 @@ def schemas() -> list[dict[str, Any]]:
                 "page shows its Artifact Deploy button only when the Artifact "
                 "Deploy Feature Preview is on, and /deploy works either way. "
                 "Restricted-session guard and SEL audit apply identically to the "
-                "HTTP endpoint."
+                "HTTP endpoint. Load the artifact-deploy skill first. A preview "
+                "never proves a deployment."
             ),
             "inputSchema": {
                 "type": "object",
