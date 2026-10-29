@@ -63,6 +63,7 @@ from .redaction_entropy import (  # noqa: F401
     _is_code_literal,
     _looks_like_secret_key,
     _plantuml_source,
+    _run_url_path_spans,
     _text_contains_bare_secret,
 )
 from .redaction_patterns import _is_json_object_segment  # noqa: F401
@@ -1095,12 +1096,14 @@ def _credential_redaction_plan(
     pass3: list[_RedactionSpan] = []
     link_spans: list[tuple[int, int]] | None = None
     digest_spans: frozenset[tuple[int, int]] = frozenset()
+    url_paths: list[list[tuple[int, int]]] = []
     for m in bare_runs:
         run_end = m.start() + len(m.group().rstrip("="))
         run = text[m.start() : run_end]
+        path_spans = _run_url_path_spans(text, m.start(), run_end, url_paths)
         pieces = _uncovered(m.start(), run_end, withheld)
         if pieces == [(m.start(), run_end)]:
-            if not _contains_bare_secret(run):
+            if not _contains_bare_secret(run, path_spans):
                 continue
         else:
             first = bisect.bisect_right(withheld, m.start(), key=_span_end)
@@ -1114,7 +1117,7 @@ def _credential_redaction_plan(
             # touches. Windows ascend, so per piece advance past windows ending
             # at or before its start, then it is keyed if the current window
             # starts before its end.
-            windows = _bare_secret_window_starts(run, skip_spans)
+            windows = _bare_secret_window_starts(run, skip_spans, path_spans)
             hit = next(windows, None)
             keyed_pieces = []
             for start, end in pieces:
@@ -1425,9 +1428,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DATA_URI_BEFORE_RE,
         _DATA_URI_PAYLOAD_MIN,
         _DATA_URI_REACH,
+        _DIGEST_LENGTHS,
+        _DIGEST_PIECE_MIN,
         _DOCUMENT_ID,
         _ENTROPY_TERMS_KEY_LEN,
         _GOOGLE_USER,
+        _HEX_DIGEST_SEGMENT_RE,
         _HEX_ONLY_RE,
         _HOST_ID_EXEMPT_OVERLAP,
         _PLANTUML_ALPHABET,
@@ -1440,13 +1446,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SECRET_MAX_SLASHES,
         _SECRET_MAX_VOWEL_RATIO,
         _SECRET_PRINTABLE_DECODE_RATIO,
+        _URL_PATH_RE,
         _VOWELS,
+        _crosses_into_a_digest,
         _crosses_into_a_routed_commit,
         _decode_b64_safe,
         _decodes_to_printable_text,
+        _ends_on_a_segment_edge,
         _has_all_three_char_classes,
         _lowercase_run_exceeds,
         _shannon_entropy,
+        _splits_into_key_and_digest,
         _steps_up,
         _vowel_ratio,
     )

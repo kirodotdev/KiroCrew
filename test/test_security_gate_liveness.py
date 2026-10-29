@@ -552,7 +552,14 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 32,798, by one line: the per-template MCP additions record joins
 #: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
 #: ``headers`` can hold an API key and only the floor masks it from a foreign child.
-_PACKAGE_LINE_BUDGET = 32_799
+#: Raised by 147, from 32,799, for ``redaction_entropy._HEX_DIGEST_SEGMENT_RE``: a
+#: key-shaped window cut out of a longer run is declined when it crosses the opening
+#: ``/`` of a segment of 32+ hex digits inside a URL path (``_URL_PATH_RE``)
+#: and takes thirteen of them, because an artifact URL's window straddling a short
+#: mixed-case segment and a digest clears every gate. Two regexes and one floor with
+#: their measured reason, three helpers, one clause beside the commit ceiling, and the
+#: path spans threaded to both callers. No pass widened and no existing threshold moved.
+_PACKAGE_LINE_BUDGET = 32_946
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

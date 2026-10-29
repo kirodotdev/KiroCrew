@@ -183,6 +183,51 @@ _ROUTED_COMMIT_RE = re.compile(
 )
 _ROUTED_COMMIT_PIECE_MIN = 8
 
+# The third ceiling a window CUT OUT OF A LONGER RUN is held to: it may not cross
+# the opening `/` of a hex-digest segment -- exactly 32, 40 or 64 hex digits (md5,
+# sha1, sha256) between `/`s or ending at the run's edge, routed or not -- and take
+# `_DIGEST_PIECE_MIN` of its digits. An object-store or artifact URL is one run
+# (`com/getObject/Kx9/<sha1>`, `com/bucket/Artifacts/Build123/<sha1>/output`), and
+# its window straddling a short mixed-case segment and the digest clears every
+# gate: capitals from the segment, lowercase and digits from the hex. Only an exact
+# digest length counts, so a key whose hex tail runs on into a digest (a longer
+# hex run) is still judged. The floor is set by the keys: at thirteen, a key whose
+# last `/`-segment holds twelve hex digits and runs on into a commit is still
+# found. Four windows are never declined: one starting inside the digest (a key
+# glued after a digest is found at its own offset, so `bucket/<sha1>/<seg>/file`
+# is still redacted for some segments); one ending on a `/` or the run's edge (a
+# key shaped `<7 chars>/<32 hex>` is its own digest-shaped segment); one reaching
+# the digest's end or past it (a key shaped `<a>/<32 hex>/<b>` holds the whole
+# segment); and one that leaves a digest length of the segment's digits after it
+# (see `_DIGEST_LENGTHS`).
+# The ceiling holds only inside the path of a `scheme://` URL in the text
+# (`_URL_PATH_RE`). Residuals: a key whose hex tail and the hex glued after it
+# total exactly 32, 40 or 64 digits when the glued part is not itself a digest
+# length; and a key carrying more `/` than `_SECRET_MAX_SLASHES` beside a digest
+# in a URL path, which main finds only through a window reaching into the digest
+# (1,500 random keys in 13 placements: 1 such key kept here, 0 on main).
+_HEX_DIGEST_SEGMENT_RE = re.compile(
+    r"(?<=/)(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40}|[0-9a-fA-F]{32})(?=/|\Z)"
+)
+# A window that leaves a digest length of the segment's digits after it is
+# still judged: `<key tail><md5 or sha1>` is the same text as a sha256
+# segment, so declining it would keep a key the plain pass finds. That
+# redacts some sha256 links again (on 2,000 random segments,
+# `bucket/<seg>/<sha256>/output` 236 and `getObject/<seg>/<sha256>` 430 fire,
+# against 627 and 1,355 with no ceiling); sha1 and md5 links fire 0.
+_DIGEST_LENGTHS = frozenset((32, 40, 64))
+_DIGEST_PIECE_MIN = 13
+# A URL's path: from the first `/` after its authority up to its query, fragment
+# or the next character a path does not carry. The authority and the path take
+# only the characters a URL holds there, so a `,` `)` `|`, quote or backtick ends
+# the URL and a `/` after it is not read as its path.
+# The scheme starts where no scheme character precedes it and is at most 32 long,
+# so a long run of scheme characters is read once, not once per offset.
+_URL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}://[A-Za-z0-9\-._~%!$&+;=:@\[\]]*"
+    r"(/[A-Za-z0-9\-._~%!$&*+;=:@/]*)"
+)
+
 # A token that base64-decodes to >=85% printable ASCII is encoded *text*, not a
 # random key (random 40-char keys decode to mostly non-printable bytes). Such a
 # token is left to the existing base64 decode-and-scan path in redact_credentials
@@ -488,7 +533,7 @@ def _looks_like_secret_key(token: str) -> bool:
     return not _decodes_to_printable_text(token)
 
 
-def _contains_bare_secret(run: str) -> bool:
+def _contains_bare_secret(run: str, path_spans: tuple[tuple[int, int], ...] = ()) -> bool:
     """Return True if any 40-char window of *run* looks like a bare secret key.
 
     :func:`_looks_like_secret_key` only accepts an EXACTLY-40-char token, but the
@@ -513,22 +558,27 @@ def _contains_bare_secret(run: str) -> bool:
     glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
     cleanly as a whole run, so it still reaches the sliding window below.
 
-    SEPARATOR AND COMMIT CEILINGS FOR A FRAGMENT. ``/`` is in the run alphabet, so
-    a deep absolute path, or a permalink carrying a commit hash, is one run whose
-    straddling sub-windows clear every per-window gate. A key-shaped window
-    carrying a path's separator density (``_SECRET_MAX_SLASHES``) or crossing into a
-    routed commit (``_ROUTED_COMMIT_RE``, ``_ROUTED_COMMIT_PIECE_MIN``) is declined,
+    SEPARATOR, COMMIT AND DIGEST CEILINGS FOR A FRAGMENT. ``/`` is in the run
+    alphabet, so a deep absolute path, a permalink carrying a commit hash, or an
+    artifact URL carrying a digest is one run whose straddling sub-windows clear
+    every per-window gate. A key-shaped window carrying a path's separator density
+    (``_SECRET_MAX_SLASHES``), crossing into a routed commit (``_ROUTED_COMMIT_RE``,
+    ``_ROUTED_COMMIT_PIECE_MIN``) or into a hex-digest segment inside one of the
+    run-relative URL *path_spans* (``_HEX_DIGEST_SEGMENT_RE``, ``_DIGEST_PIECE_MIN``,
+    see :func:`_run_url_path_spans`) is declined,
     on two conditions that keep this a gate rather than a hole: only when the run is
     LONGER than one whole key (a 40-char run IS the token somebody wrote, so a
     standalone key is never subject to it), and only AFTER
     :func:`_looks_like_secret_key` has answered, so every offset is still classified
     and a glued key is still found at its own offset.
     """
-    return next(_bare_secret_window_starts(run), None) is not None
+    return next(_bare_secret_window_starts(run, path_spans=path_spans), None) is not None
 
 
 def _bare_secret_window_starts(
-    run: str, skip_spans: tuple[tuple[int, int], ...] = ()
+    run: str,
+    skip_spans: tuple[tuple[int, int], ...] = (),
+    path_spans: tuple[tuple[int, int], ...] = (),
 ) -> Iterator[int]:
     """Omit windows with >= _HOST_ID_EXEMPT_OVERLAP bytes in a run-relative *skip_spans* entry."""
     if len(run) < _SECRET_KEY_LEN:
@@ -556,6 +606,16 @@ def _bare_secret_window_starts(
     commit_starts = (
         [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)] if is_fragment else []
     )
+    digest_spans = (
+        [
+            match.span()
+            for match in _HEX_DIGEST_SEGMENT_RE.finditer(run)
+            if any(begin < match.start() and match.end() <= end for begin, end in path_spans)
+        ]
+        if is_fragment and path_spans
+        else []
+    )
+    digest_starts = [begin for begin, _ in digest_spans]
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
         if skip_spans and any(
             min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
@@ -568,10 +628,43 @@ def _bare_secret_window_starts(
         if is_fragment and (
             window.count("/") > _SECRET_MAX_SLASHES
             or _crosses_into_a_routed_commit(start, commit_starts)
+            or (
+                _crosses_into_a_digest(start, digest_starts)
+                and not _ends_on_a_segment_edge(run, start)
+                and not _splits_into_key_and_digest(start, digest_spans)
+            )
         ):
-            # Key-shaped, but a fragment carrying a path's separators or a commit.
+            # Key-shaped, but a fragment carrying a path's separators, a commit
+            # or a digest.
             continue
         yield start
+
+
+def _ends_on_a_segment_edge(run: str, start: int) -> bool:
+    """Whether the window at *start* ends on a ``/`` of *run* or at its edge.
+
+    The digest ceiling never declines such a window: it ends where the digest
+    segment ends, so the digest-shaped segment is the window's own, as in a key
+    shaped ``<7 chars>/<32 hex>`` with any characters glued before it. The
+    artifact-URL windows the ceiling exists for end inside the digest.
+    """
+    end = start + _SECRET_KEY_LEN
+    return end == len(run) or run[end] == "/"
+
+
+def _splits_into_key_and_digest(start: int, digest_spans: list[tuple[int, int]]) -> bool:
+    """Whether the window at *start* could be a key rather than a straddle into
+    the digest it crosses into, so the ceiling must not decline it.
+
+    Two cases. The window reaches the digest's end or runs past it: it holds the
+    whole segment, as a key shaped ``<a>/<32 hex>/<b>`` does, and an artifact
+    window straddling a segment and a digest ends inside the digest. Or the
+    digits it leaves are themselves a digest length: the segment then reads as
+    well as ``<key tail><digest>`` as one digest.
+    """
+    index = bisect.bisect_right(digest_spans, start, key=lambda span: span[0])
+    left = digest_spans[index][1] - (start + _SECRET_KEY_LEN)
+    return left <= 0 or left in _DIGEST_LENGTHS
 
 
 def _crosses_into_a_routed_commit(start: int, commit_starts: list[int]) -> bool:
@@ -586,6 +679,44 @@ def _crosses_into_a_routed_commit(start: int, commit_starts: list[int]) -> bool:
         index < len(commit_starts)
         and commit_starts[index] + _ROUTED_COMMIT_PIECE_MIN <= start + _SECRET_KEY_LEN
     )
+
+
+def _crosses_into_a_digest(start: int, digest_starts: list[int]) -> bool:
+    """Whether the window at *start* crosses a hex-digest segment's opening ``/`` and
+    takes ``_DIGEST_PIECE_MIN`` of its digits.
+
+    Segments are at least 32 long and a ``/`` apart, so only the first one starting
+    after *start* can be crossed: one bisect, however many the run holds.
+    """
+    index = bisect.bisect_right(digest_starts, start)
+    return (
+        index < len(digest_starts)
+        and digest_starts[index] + _DIGEST_PIECE_MIN <= start + _SECRET_KEY_LEN
+    )
+
+
+def _run_url_path_spans(
+    text: str, start: int, end: int, cache: list[list[tuple[int, int]]]
+) -> tuple[tuple[int, int], ...]:
+    """The URL-path spans of *text* that overlap ``text[start:end]``, run-relative.
+
+    Only a run holding a digest segment asks, and *cache* keeps one scan of the
+    text for every run that does.
+    """
+    if not _HEX_DIGEST_SEGMENT_RE.search(text, start, end):
+        return ()
+    if not cache:
+        cache.append([match.span(1) for match in _URL_PATH_RE.finditer(text)])
+    paths = cache[0]
+    # The spans are disjoint and ascending: start at the first one ending after
+    # the run, so each run reads only the spans it overlaps.
+    index = bisect.bisect_right(paths, start, key=lambda span: span[1])
+    spans = []
+    while index < len(paths) and paths[index][0] < end:
+        begin, stop = paths[index]
+        spans.append((max(begin, start) - start, min(stop, end) - start))
+        index += 1
+    return tuple(spans)
 
 
 def _decode_b64_chunk(chunk: str) -> str:
@@ -663,7 +794,13 @@ def _contains_fixed_credential(text: str) -> bool:
 
 def _text_contains_bare_secret(text: str) -> bool:
     """Return True when *text* contains an isolated bare AWS-secret run."""
-    return any(_contains_bare_secret(match.group()) for match in _BARE_SECRET_RUN_RE.finditer(text))
+    paths: list[list[tuple[int, int]]] = []
+    return any(
+        _contains_bare_secret(
+            match.group(), _run_url_path_spans(text, match.start(), match.end(), paths)
+        )
+        for match in _BARE_SECRET_RUN_RE.finditer(text)
+    )
 
 
 # ── Document links the bare-secret pass leaves alone ──

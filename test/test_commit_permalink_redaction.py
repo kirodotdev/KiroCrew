@@ -65,6 +65,8 @@ FIRING_LINKS = [
 
 def _without_the_commit_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_redaction, "_ROUTED_COMMIT_RE", re.compile(r"(?!)"))
+    # The digest ceiling would decline the same windows a 40-digit commit makes.
+    monkeypatch.setattr(_redaction, "_HEX_DIGEST_SEGMENT_RE", re.compile(r"(?!)"))
 
 
 def test_the_fixtures_are_what_they_claim() -> None:
