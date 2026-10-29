@@ -1025,8 +1025,10 @@ class TestApiSpawnRetry:
     def test_falls_back_to_redacted_task_when_raw_is_empty(self) -> None:
         mgr = _mgr()
         mgr.get.return_value = _info(done=True, outcome="failed", _raw_task="", task="shown")
-        mgr.spawn.return_value = _info()
-        _run(mod.api_spawn_retry, self._req(mgr))
+        mgr.spawn.return_value = _info(id="new")
+        resp = _run(mod.api_spawn_retry, self._req(mgr))
+        assert resp.status == 200
+        assert _payload(resp) == {"id": "new", "retried_from": "a1", "status": "spawned"}
         assert mgr.spawn.call_args.args[0] == "shown"
 
     def test_retry_reuses_the_failed_run_context_scope(self) -> None:
