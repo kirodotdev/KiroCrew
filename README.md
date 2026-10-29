@@ -407,6 +407,7 @@ make this tool possible:
 <a href="https://github.com/amergrgic" title="Amer Grgic"><img src="https://github.com/amergrgic.png?size=64" width="64" height="64" alt="Amer Grgic" /></a>
 <a href="https://github.com/AmirNaghibi" title="Amir Naghibi"><img src="https://github.com/AmirNaghibi.png?size=64" width="64" height="64" alt="Amir Naghibi" /></a>
 <a href="https://github.com/amulya349" title="Amulya Kumar Sahoo"><img src="https://github.com/amulya349.png?size=64" width="64" height="64" alt="Amulya Kumar Sahoo" /></a>
+<a href="https://github.com/analisaperlengkapan" title="Irhas Abdul Rosyid"><img src="https://github.com/analisaperlengkapan.png?size=64" width="64" height="64" alt="Irhas Abdul Rosyid" /></a>
 <a href="https://github.com/anant-kaushik" title="Anant Kaushik"><img src="https://github.com/anant-kaushik.png?size=64" width="64" height="64" alt="Anant Kaushik" /></a>
 <a href="https://github.com/andreaschiappacasse" title="Andrea Schiappacasse"><img src="https://github.com/andreaschiappacasse.png?size=64" width="64" height="64" alt="Andrea Schiappacasse" /></a>
 <a href="https://github.com/AndrewSDHarsh" title="AndrewSDHarsh"><img src="https://github.com/AndrewSDHarsh.png?size=64" width="64" height="64" alt="AndrewSDHarsh" /></a>
