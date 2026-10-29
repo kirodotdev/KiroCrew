@@ -441,7 +441,7 @@ def test_cron_sequence_step_loss_does_not_reset_a_key_another_turn_holds(gw_and_
     """A lost step whose key another turn took after the release (the job's
     dashboard tab shares it) leaves that turn running: neither reset tears
     it down, and the step is given up rather than re-run on the stale
-    binding (#25273)."""
+    binding."""
     gw, get_cb, capture_cron = gw_and_cb
     gw.cron_svc = None
     held = {"cron:seqbusy:a"}

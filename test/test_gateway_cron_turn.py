@@ -233,7 +233,7 @@ async def test_a_tab_turn_that_takes_the_key_after_the_release_survives_the_rese
 ) -> None:
     # The job's dashboard tab runs on the same key. A turn it starts after
     # the run ended takes the session in the gap the release opens, and the
-    # end-of-run reset must leave that turn running (#25273).
+    # end-of-run reset must leave that turn running.
     fire.tab_turn_after_release = True
 
     result = await fire.fire(_make_llm_job())

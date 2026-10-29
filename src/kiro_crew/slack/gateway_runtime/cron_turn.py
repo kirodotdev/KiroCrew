@@ -386,7 +386,7 @@ async def _cron_run_sequence(
                     else:
                         # skip_if_busy: as in the single-agent finally, a tab
                         # turn that took the key after the release above is
-                        # left running rather than killed (#25273).
+                        # left running rather than killed.
                         if not await self.sessions.reset(
                             agent_session_key, skip_if_busy=True
                         ) and self.sessions.is_busy(agent_session_key):
@@ -424,8 +424,8 @@ async def _cron_run_sequence(
                 )
                 raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
             # A turn that took the key after the finally's release (the
-            # job's dashboard tab shares it) is not torn down for the retry
-            # (#25273); a retry against the un-reset stale binding would
+            # job's dashboard tab shares it) is not torn down for the retry.
+            # A retry against the un-reset stale binding would
             # only hit Session not found again, so give the step up.
             if not await self.sessions.reset(
                 agent_session_key, skip_if_busy=True
@@ -954,7 +954,7 @@ async def _cron_run_single(
                 # skip_if_busy: the job's dashboard tab runs on this same
                 # key, and a tab turn can take the session in the gap the
                 # release above opened. Declined, the reset leaves that
-                # turn running instead of killing it (#25273).
+                # turn running instead of killing it.
                 if not await self.sessions.reset(
                     session_key, skip_if_busy=True
                 ) and self.sessions.is_busy(session_key):
