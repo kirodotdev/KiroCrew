@@ -20376,6 +20376,7 @@
     "apiTokenRetry": "Choisis Enregistrer les paramètres pour réessayer, ou enregistre-le toi-même dans Paramètres → Secrets sous {{name}}.",
     "apiTokenRename": "Pour l’enregistrer sous un autre nom, change le nom dans Avancé : nom du secret, ci-dessous, puis choisis Enregistrer les paramètres.",
     "apiTokenMoved": "Le nom du secret est devenu {{name}} après la saisie du jeton, peut-être dans une autre fenêtre. Choisis à nouveau Enregistrer les paramètres pour l’enregistrer sous {{name}}.",
+    "apiTokenConflict": "Un autre profil a un jeton différent saisi pour {{name}}, et le coffre garde un jeton par nom. Donne à l’un des profils son propre nom de secret dans Avancé, ou saisis le même jeton dans les deux, puis choisis à nouveau Enregistrer les paramètres.",
     "apiTokenHint": "Aucun jeton n’est encore enregistré sous {{name}}. Crée-en un sur sprites.dev/account, colle-le ici et choisis Enregistrer les paramètres ; il est stocké de façon sécurisée sur cette machine et n’est plus jamais affiché.",
     "apiTokenListError": "Impossible de vérifier si un jeton est enregistré. Réessaie pour vérifier à nouveau.",
     "apiTokenPlaceholder": "Colle un jeton d'API Sprites",

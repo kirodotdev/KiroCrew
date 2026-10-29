@@ -412,13 +412,13 @@ async def test_a_boxd_choice_is_prepared_by_the_boxd_provider(monkeypatch, tmp_p
     )
     seen = []
 
-    async def prepare(self, key, profile_id):
-        seen.append((key, profile_id))
+    async def prepare(self, key, profile_id, *, progress_key=None):
+        seen.append((key, profile_id, progress_key))
         return "prepared"
 
     monkeypatch.setattr(boxd_launch.BoxdSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("dashboard:chat-8") == "prepared"
-    assert seen == [("dashboard:chat-8", "bx-dev")]
+    assert seen == [("dashboard:chat-8", "bx-dev", "dashboard:chat-8")]
 
 
 def test_names_are_validated_before_any_argv_is_built():
@@ -571,6 +571,40 @@ async def test_a_reopen_that_cannot_cancel_the_deletion_says_so(tmp_path, fake, 
 
 
 @sync
+async def test_a_reopen_whose_registry_write_fails_refuses_instead_of_publishing(
+    tmp_path, fake, monkeypatch
+):
+    # A rotated credential makes the reopen record the one that answered. If that
+    # registry write fails, the resume refuses: a tab published with its deadline
+    # still standing would be swept with its files. Only a replacement machine
+    # under the recorded name is "nothing to keep".
+    from kiro_crew.coder import retention
+    from kiro_crew.session_environments.persistent_vm import SessionResourceRegistry
+
+    envs = _envs(tmp_path, fake)
+    _live_section(monkeypatch, tmp_path, envs, fake)
+    await envs.prepare("dashboard:chat-19", "bx-dev")
+    name = envs.registry.get("dashboard:chat-19").name
+    retention.schedule_archived(["dashboard:chat-19"])
+    await asyncio.gather(*retention._TASKS)
+    looked_up = type(envs).remote_get
+
+    async def rotated(self, profile, name):
+        record, _used = await looked_up(self, profile, name)
+        return record, "rotated-credential"
+
+    monkeypatch.setattr(type(envs), "remote_get", rotated)
+
+    def unreadable(self, session_key, name, credential_id):
+        raise SessionEnvironmentUnavailable("boxd session registry is unreadable")
+
+    monkeypatch.setattr(SessionResourceRegistry, "set_credential_id", unreadable)
+    reason = await retention.keep_reopened(["dashboard:chat-19"])
+    assert reason and "unreadable" in reason
+    assert fake.read()["machines"][name]["delete-after"] == "7d"
+
+
+@sync
 async def test_a_reopen_never_keeps_a_replacement_under_the_recorded_name(
     tmp_path, fake, monkeypatch
 ):
@@ -599,8 +633,8 @@ async def test_a_reopen_never_keeps_a_replacement_under_the_recorded_name(
 async def test_a_blank_working_folder_runs_in_the_machines_login_home(tmp_path, fake, monkeypatch):
     # Blank in the profile: the session, Files and the terminal all use the
     # folder the machine reports as its login home. Coder still requires one.
-    from kiro_crew.coder import session_browse
     from kiro_crew.config import session_environments as se
+    from kiro_crew.session_environments import browse as vm_browse
 
     assert se.validate_boxd_profiles([{**PROFILE, "workdir": ""}])[0]["workdir"] == ""
     with pytest.raises(se.SessionEnvironmentsError, match="workdir"):
@@ -610,7 +644,7 @@ async def test_a_blank_working_folder_runs_in_the_machines_login_home(tmp_path, 
     prepared = await envs.prepare("dashboard:chat-16", "bx-dev")
     assert prepared.workdir == str(fake.home)
     assert envs.registry.get("dashboard:chat-16").home == str(fake.home)
-    target = await session_browse._resolve_persistent(
+    target = await vm_browse._resolve_persistent(
         "boxd", envs._config, tmp_path / "data", "dashboard:chat-16", "bx-dev"
     )
     assert target.workdir == str(fake.home)
@@ -631,9 +665,9 @@ async def test_the_sweeper_deletes_due_machines_without_a_coder_url(tmp_path, fa
 
 
 def test_the_dashboard_lists_machines_and_keeps_a_used_choice(tmp_path, fake, monkeypatch):
-    from kiro_crew.coder.persistent_vm import SessionResource
     from kiro_crew.config import paths
     from kiro_crew.dashboard.handlers import session_environments as handlers
+    from kiro_crew.session_environments.persistent_vm import SessionResource
 
     monkeypatch.setattr(paths, "data_home", lambda: tmp_path / "data")
     envs = _envs(tmp_path, fake)
