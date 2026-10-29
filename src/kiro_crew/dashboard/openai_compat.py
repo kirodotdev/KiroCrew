@@ -28,7 +28,7 @@ from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified, turn_gate_target
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
@@ -162,7 +162,26 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # turn that ends on its `error` card answers the generic `turn_failed`
     # (`_TurnOutcome`); a missing sign-in is refused here first, so the caller
     # gets the code that names its fix instead of a failed turn.
-    blocked = await reject_if_kiro_unverified(request)
+    state: DashboardState = request.app["state"]
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": {"message": "invalid JSON", "type": "invalid_request_error"}},
+            status=400,
+        )
+
+    # The gate needs the session the turn runs on, because that names its
+    # harness: an existing slot named by ``id`` (a member thread runs on
+    # agent.member_acp_backend), otherwise a new slot on the default backend.
+    # Read only for the gate; the slot is resolved again below.
+    raw_id = body.get("id", "") if isinstance(body, dict) else ""
+    target_key = _normalize_slot_key(raw_id) if raw_id and isinstance(raw_id, str) else None
+    harness_turn, turn_session = turn_gate_target(state, target_key)
+    blocked = await reject_if_kiro_unverified(
+        request, harness_turn=harness_turn, session_key=turn_session
+    )
     if blocked is not None:
         return web.json_response(
             {
@@ -173,15 +192,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 }
             },
             status=503,
-        )
-    state: DashboardState = request.app["state"]
-
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response(
-            {"error": {"message": "invalid JSON", "type": "invalid_request_error"}},
-            status=400,
         )
     from kiro_crew.dashboard.handlers._shared import body_not_object_error
 

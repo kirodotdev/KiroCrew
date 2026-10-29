@@ -921,7 +921,9 @@ shown. A signed-out CLI is reported by the turn itself as an actionable
 dashboard does not guide the user to sign in"). Only the endpoints that act
 BEFORE a turn still return 503: the poll-driven `kiro-cli` spawn sites
 (`/api/models`, `/api/sessions/usage`) and the destructive reruns (regenerate,
-edit-resend, rewind), which rewrite persisted history up front.
+edit-resend, rewind), which rewrite persisted history up front. On the KAS
+engine bundle route the reruns and `/v1/chat/completions` accept Crew's own
+sign-in instead of a ready `kiro-cli`, since their turn needs no `kiro-cli`.
 
 ### Custom Domain
 

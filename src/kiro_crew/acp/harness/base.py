@@ -203,6 +203,14 @@ class SpawnPlan:
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
 
+    engine_bundle: bool = field(default=False, kw_only=True)
+    """This spawn runs Crew's own installed KAS engine bundle, with no kiro-cli.
+
+    Set only by the KAS harness's bundle route. A gate that asks whether a LIVE
+    session's next turn needs kiro-cli reads this from the process that is
+    running, not from the configuration, which may have changed since the spawn.
+    """
+
     kiro_cli_internal_sandbox: bool = field(default=False, kw_only=True)
     """kiro-cli's internal sandbox confines this spawn.
 
