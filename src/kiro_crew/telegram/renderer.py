@@ -93,6 +93,8 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.split import (
     bounded_for_delivery,
+    fence_line_safe_offset,
+    rebalance_fenced_cuts,
     repaired_for_delivery,
     split_markdown_safe,
 )
@@ -778,25 +780,37 @@ class TelegramRenderer(Renderer):
             # rejected answer is the same answer every rotation and nothing ever goes
             # out. Off the loop for the cost reason the redaction above carries -- each
             # sampled offset is two full-buffer redaction passes.
-            budget, head, offset = limit, "", 0
+            #
+            # A source slice cut inside an open fence is sealed with the fence's
+            # closer and the remainder reopened, so the budget is measured on the
+            # head as it will actually be sealed.
+            budget, offset = limit, 0
+            cut: list[str] = []
             while True:
                 offset = await asyncio.to_thread(
                     safe_split_offset, raw, budget, _default_redactor, _delivered_form
                 )
-                head = raw[:offset]
-                worst = await asyncio.to_thread(_rendered_len, head)
+                offset = fence_line_safe_offset(raw, offset)
+                cut = rebalance_fenced_cuts([raw[:offset], raw[offset:]])
+                worst = await asyncio.to_thread(_rendered_len, cut[0])
                 if not offset or worst <= rendered_cap:
                     break
                 if budget <= _MIN_SPLIT_LIMIT:
                     offset = 0
                     break
                 budget = _shrunk_limit(budget, rendered_cap, worst)
+            # The fence repair adds delimiter lines the search did not grade, so
+            # what is sealed is graded again before anything goes out.
+            if offset and await asyncio.to_thread(
+                severs_a_credential, cut, _default_redactor, _delivered_form
+            ):
+                offset = 0
             if not offset:
                 # Deliver NOTHING: the withheld text rides the next rotation, and the
                 # final seal re-splits and seals an over-cap segment chunk by chunk.
                 self._buf = [raw + protocol_suffix]
                 return
-            chunks = [head, raw[offset:]]
+            chunks = cut
         for ch in chunks[:-1]:
             self._buf = [ch]
             # A length rotation never extracts: only a SEMANTIC seal (steer
@@ -835,6 +849,7 @@ class TelegramRenderer(Renderer):
                 offset = await asyncio.to_thread(
                     safe_split_offset, rest, budget, _default_redactor, _delivered_form
                 )
+                offset = fence_line_safe_offset(rest, offset)
                 if not offset:
                     return None
                 head = rest[:offset]
@@ -846,7 +861,12 @@ class TelegramRenderer(Renderer):
                 budget = _shrunk_limit(budget, rendered_cap, worst)
             graded.append(head)
             rest = rest[offset:]
-        chunks = [*graded, rest]
+        # Every piece is sealed, so one cut inside an open fence is closed on its
+        # piece and reopened on the next; a repaired piece is held to the cap too.
+        chunks = rebalance_fenced_cuts([*graded, rest])
+        for chunk in chunks:
+            if await asyncio.to_thread(_rendered_len, chunk) > rendered_cap:
+                return None
         if await asyncio.to_thread(severs_a_credential, chunks, _default_redactor, _delivered_form):
             return None
         return chunks
