@@ -137,12 +137,17 @@ def _fork_execution_context(
 
 
 def _bind_fork_execution(source, child_key: str, execution) -> None:
-    from kiro_crew.execution_context import bind_session_execution
+    from kiro_crew.execution_context import bind_session_execution, source_vouch_agrees
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     if _fork_execution_context(*source) != execution:
         raise UnknownMemoryStore("The fork source's execution changed")
-    bind_session_execution(child_key, execution)
+    # The child's identity is copied from the source's own record, which the
+    # source can write, so the fork never vouches on that record's word. It
+    # carries own-store authority only when the gateway already vouches the source
+    # for the same member and store; otherwise a fork of a member conversation
+    # could never open a worker on its own memory.
+    bind_session_execution(child_key, execution, vouch=source_vouch_agrees(source[0], execution))
 
 
 def _forget_fork_child_binding(child_key: str) -> None:
