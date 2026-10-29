@@ -1259,6 +1259,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           ) : (
             <div className="text-muted text-[13px] pt-8 px-6 text-center">
               {i18nT('pages.chat.activityViewer.no_pull_requests_yet')}
+              {/* Says what the tab holds, so a first-time reader who expected
+                  edited files under "Changes" learns where those live. */}
+              <div className="mt-1 text-[12px] leading-snug">
+                {i18nT('pages.chat.activityViewer.changes_empty_hint')}
+              </div>
             </div>
           )}
         </div>

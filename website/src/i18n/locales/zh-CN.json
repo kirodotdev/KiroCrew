@@ -11229,6 +11229,7 @@
         "no_output_never_started": "（无输出：从未开始）",
         "no_matches": "无匹配项",
         "no_pull_requests_yet": "此会话中还没有拉取请求",
+        "changes_empty_hint": "此标签页列出此会话链接的拉取请求和合并请求。已编辑的文件在“文件”标签页中。",
         "no_subagents_running": "没有运行中的子代理",
         "no_workflow_runs": "无工作流运行",
         "open_artifact": "打开产物",

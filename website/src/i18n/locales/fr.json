@@ -11555,6 +11555,7 @@
         "no_output_never_started": "(aucune sortie : jamais démarré)",
         "no_matches": "Aucun résultat",
         "no_pull_requests_yet": "Aucune pull request dans cette session pour l'instant",
+        "changes_empty_hint": "Cet onglet liste les pull requests et merge requests liées à cette session. Les fichiers modifiés se trouvent dans l'onglet Fichiers.",
         "no_subagents_running": "Aucun sous-agent en cours",
         "no_workflow_runs": "Aucune exécution de workflow",
         "open_artifact": "Ouvrir l'artefact",

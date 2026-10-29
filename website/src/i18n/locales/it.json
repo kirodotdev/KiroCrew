@@ -11555,6 +11555,7 @@
         "no_output_never_started": "(nessun output: mai avviato)",
         "no_matches": "Nessuna corrispondenza",
         "no_pull_requests_yet": "Ancora nessuna pull request in questa sessione",
+        "changes_empty_hint": "Questa scheda elenca le pull request e le merge request collegate a questa sessione. I file modificati sono nella scheda File.",
         "no_subagents_running": "Nessun subagente in esecuzione",
         "no_workflow_runs": "Nessuna esecuzione di workflow",
         "open_artifact": "Apri artefatto",

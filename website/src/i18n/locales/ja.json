@@ -11229,6 +11229,7 @@
         "no_output_never_started": "（出力なし: 開始されませんでした）",
         "no_matches": "一致するものがありません",
         "no_pull_requests_yet": "このセッションにはまだプルリクエストがありません",
+        "changes_empty_hint": "このタブには、このセッションがリンクしたプルリクエストとマージリクエストが表示されます。編集したファイルは「ファイル」タブにあります。",
         "no_subagents_running": "実行中のサブエージェントはありません",
         "no_workflow_runs": "ワークフロー実行がありません",
         "open_artifact": "アーティファクトを開く",

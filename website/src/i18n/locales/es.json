@@ -11555,6 +11555,7 @@
         "no_output_never_started": "(sin salida: nunca se inició)",
         "no_matches": "Sin coincidencias",
         "no_pull_requests_yet": "Aún no hay pull requests en esta sesión",
+        "changes_empty_hint": "Esta pestaña muestra los pull requests y merge requests que enlaza esta sesión. Los archivos editados están en la pestaña Archivos.",
         "no_subagents_running": "No hay subagentes en ejecución",
         "no_workflow_runs": "No hay ejecuciones de flujos de trabajo",
         "open_artifact": "Abrir artefacto",

@@ -11392,6 +11392,7 @@
         "no_output_never_started": "(keine Ausgabe: nie gestartet)",
         "no_matches": "Keine Treffer",
         "no_pull_requests_yet": "Noch keine Pull Requests in dieser Sitzung",
+        "changes_empty_hint": "Dieser Tab listet die Pull Requests und Merge Requests auf, auf die diese Sitzung verlinkt. Bearbeitete Dateien findest du im Tab Dateien.",
         "no_subagents_running": "Keine Subagenten laufen",
         "no_workflow_runs": "Keine Workflow-Ausführungen",
         "open_artifact": "Artefakt öffnen",

@@ -5038,6 +5038,7 @@
         "no_issues_in_this_session_yet_mention_a_github_o": "No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.",
         "no_matches": "No matches",
         "no_pull_requests_yet": "No pull requests in this session yet",
+        "changes_empty_hint": "This tab lists the pull requests and merge requests this session links to. Edited files are in the Files tab.",
         "pending_approval": "Pending Approval",
         "resolved": "Resolved",
         "no_record": "No record",

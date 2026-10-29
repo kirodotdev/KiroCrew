@@ -11229,6 +11229,7 @@
         "no_output_never_started": "(출력 없음: 시작되지 않음)",
         "no_matches": "일치하는 항목 없음",
         "no_pull_requests_yet": "이 세션에는 아직 풀 리퀘스트가 없습니다",
+        "changes_empty_hint": "이 탭에는 이 세션이 링크한 풀 리퀘스트와 머지 리퀘스트가 표시됩니다. 편집한 파일은 파일 탭에 있습니다.",
         "no_subagents_running": "실행 중인 서브에이전트 없음",
         "no_workflow_runs": "워크플로 실행 없음",
         "open_artifact": "아티팩트 열기",
