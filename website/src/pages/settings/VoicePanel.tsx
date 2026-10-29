@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Btn, FormSkeleton } from '../../components/ui'
@@ -94,14 +94,19 @@ export function VoicePanel() {
   // follows above.
   const systemVoicesQ = useQuery<{ available: boolean; voices: SystemVoice[] }>({ queryKey: ['voiceSystemVoices'], queryFn: () => api.voiceSystemVoices(), staleTime: 3600_000, enabled: voiceQ.data?.provider === 'system' })
 
-  const initializedRef = useRef(false)
-  useEffect(() => {
-    if (voiceQ.data && !initializedRef.current) {
-      initializedRef.current = true
-      setLocalProfile(voiceQ.data.aws_profile || '')
-      setLocalRegion(voiceQ.data.region || '')
-    }
-  }, [voiceQ.data])
+  // The served config seeds the editable rows ONCE, in the render that first has
+  // it. Setting state during render is React's shape for state derived from a
+  // value that just arrived: the in-progress output is discarded and the
+  // component re-renders before anything commits, so the commit that first shows
+  // the Polly rows already shows the stored profile and region in them. Seeding
+  // from an effect instead commits one frame where the rows are on screen and
+  // empty, which a user can see and a test can land on.
+  const [seeded, setSeeded] = useState(false)
+  if (voiceQ.data && !seeded) {
+    setSeeded(true)
+    setLocalProfile(voiceQ.data.aws_profile || '')
+    setLocalRegion(voiceQ.data.region || '')
+  }
 
   // `voice` takes the first fallback entry rather than respelling the VoiceId:
   // one source for the same value, and the id is provider-supplied data that no

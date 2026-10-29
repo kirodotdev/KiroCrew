@@ -187,16 +187,31 @@ const fmtIn = (ts?: number | null) => {
  * Empty-state folder chip with confirm-before-delete, inline rename, and error display.
  * Uses the same inline-edit pattern as CronFolderHeader (Enter=commit, Escape=cancel).
  */
-function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFolder; onRename: (name: string) => void; onDelete: () => void; error: string | null }) {
+export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFolder; onRename: (name: string) => void; onDelete: () => void; error: string | null }) {
   const [confirming, setConfirming] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
   const ime = useImeGuard()
 
+  // The chip name is a plain span, so the folder-actions trigger is the only
+  // control that opens the rename and stays mounted through it. Closing the
+  // editor unmounts the focused input, and a browser then drops focus to
+  // `document.body`, so Enter and Escape hand focus back to that trigger. A
+  // pointer blur moves nothing: the user already chose where focus goes. The
+  // move waits a frame so it runs after the render that closes the editor.
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // Set when the Rename item is picked, read once when the menu finishes
+  // closing (see `onCloseAutoFocus` below).
+  const renamePickedRef = useRef(false)
+
   const commitRename = () => {
     const trimmed = editName.trim()
     if (trimmed && trimmed !== folder.name) onRename(trimmed)
+  }
+  const closeEditor = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason !== 'escape') commitRename()
     setEditing(false)
+    if (reason !== 'blur') requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
   }
 
   return (
@@ -211,9 +226,9 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
             value={editName}
             onChange={e => setEditName(e.target.value)}
             {...ime.bindEnter({
-              onEnter: commitRename,
-              onEscape: () => setEditing(false),
-              onBlur: commitRename,
+              onEnter: () => closeEditor('enter'),
+              onEscape: () => closeEditor('escape'),
+              onBlur: () => closeEditor('blur'),
             })}
           />
         ) : (
@@ -222,12 +237,27 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
         <span className="text-[12px] text-muted">{i18nT('pages.schedulePage.cronFolders.job_count', { count: 0 })}</span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Btn className="!p-1 !border-none ml-auto" aria-label={i18nT('pages.schedulePage.cronFolders.folder_actions')}>
+            <Btn ref={triggerRef} className="!p-1 !border-none ml-auto" aria-label={i18nT('pages.schedulePage.cronFolders.folder_actions')}>
               <MoreHorizontal size={14} />
             </Btn>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[140px]">
-            <DropdownMenuItem onSelect={() => { setEditName(folder.name); setTimeout(() => setEditing(true), 0) }}>
+          <DropdownMenuContent
+            align="end"
+            className="min-w-[140px]"
+            // Radix restores focus to the trigger when the menu closes, on a
+            // timer that runs AFTER the rename input has mounted and taken
+            // focus. That restore blurs the input, and the blur commits the
+            // unchanged name and closes the editor the user just opened. When
+            // Rename was picked the input already holds focus, so skip the
+            // restore; Delete keeps it, so its confirmation appears with focus
+            // still on the trigger beside it.
+            onCloseAutoFocus={e => {
+              if (!renamePickedRef.current) return
+              renamePickedRef.current = false
+              e.preventDefault()
+            }}
+          >
+            <DropdownMenuItem onSelect={() => { setEditName(folder.name); renamePickedRef.current = true; setTimeout(() => setEditing(true), 0) }}>
               <Pencil size={13} className="shrink-0" />
               <span>{i18nT('pages.schedulePage.cronFolders.rename')}</span>
             </DropdownMenuItem>

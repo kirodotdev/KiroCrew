@@ -14738,6 +14738,12 @@
         "default_crewmate_unknown_reason": "{{name}} non è più nell’elenco dei compagni"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} server che vuoi condividere non è condiviso: {{names}}. Il suo avvio richiede la tua approvazione, quindi ogni chat avvia una propria copia.",
+        "share_refused_many": "{{count}} server che vuoi condividere non sono condivisi: {{names}}. Il loro avvio richiede la tua approvazione, quindi ogni chat avvia una propria copia.",
+        "share_refused_other": "{{count}} server che vuoi condividere non sono condivisi: {{names}}. Il loro avvio richiede la tua approvazione, quindi ogni chat avvia una propria copia.",
+        "share_refused_restart": "In Gestione MCP, approva la condivisione di ciascuno. Poi riavvia il gateway (Impostazioni → Informazioni → Riavvia il gateway) così le nuove chat usano la copia condivisa.",
+        "share_refused_review": "Controlla in Gestione MCP",
+        "share_status_failed": "Impossibile verificare se i server che vuoi condividere sono approvati.",
         "actions": "Azioni",
         "add_custom": "Aggiungi personalizzato",
         "add_server": "Aggiungi server",
@@ -16723,7 +16729,7 @@
         "immediate": "Immediato",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "La modalità immediata mostra i blocchi grezzi appena arrivano. La modalità fluida li mette in buffer e fa comparire il testo con un ritmo costante.",
         "it_ops": "IT / Ops",
-        "keep_your_computer_awake_while_a_task_is_running": "Mantieni il computer attivo mentre è in esecuzione un'attività",
+        "keep_your_computer_awake_while_a_task_is_running": "Mantieni il computer attivo mentre è in esecuzione un'attività. Su alcuni portatili Windows (Modern Standby), bloccare lo schermo può comunque mandarlo in sospensione, quindi lascia lo schermo acceso per le attività lunghe.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro adatta il vocabolario e gli esempi al tuo background professionale",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro usa questa descrizione per adattare vocabolario ed esempi al tuo ruolo.",
         "knowledge_library": "Libreria delle conoscenze",
@@ -19620,6 +19626,8 @@
       "switch_sessions": "cambiare sessione"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "Nell'app desktop le finestre pop-out non funzionano dentro una crew remota. Continua a lavorare in questa crew qui.",
+      "desktop_app_could_not_open_pop_out_window": "L'app desktop non è riuscita ad aprire la finestra pop-out. Continua a lavorare in questa finestra.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Il browser ha bloccato la finestra pop-out. Consenti i pop-up per questo sito e riprova."
     },
     "sanitize": {

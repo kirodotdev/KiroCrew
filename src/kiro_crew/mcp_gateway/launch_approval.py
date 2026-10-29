@@ -784,6 +784,36 @@ def load_approvals(path: Path | None = None) -> LaunchApprovals:
     return _parse(raw)
 
 
+def approvals_store_problem(path: Path | None = None) -> str | None:
+    """Why the store cannot be read, or ``None`` when it reads.
+
+    For diagnostics only. :func:`load_approvals` reads every one of these
+    outcomes as "approves nothing", which is right for launch authorization and
+    wrong for a report: an unreadable store and an empty one look the same there.
+    An absent or blank store is not a problem; it records nothing yet.
+    """
+    target = path or approvals_path()
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError:
+        return "not valid UTF-8"
+    except OSError as exc:
+        return f"unreadable ({type(exc).__name__})"
+    if not text.strip():
+        return None
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return "not valid JSON"
+    if not isinstance(raw, dict):
+        return "not a JSON object"
+    if raw.get("version") != _VERSION:
+        return "written in a format this version does not read"
+    return None
+
+
 def _document(approvals: LaunchApprovals, refused: Mapping[str, Mapping[str, Any]]) -> str:
     server_records = [
         (stem, fps)
@@ -1254,6 +1284,29 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
                 else {}
             ),
         }
+    return result
+
+
+def refused_shares(
+    asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
+) -> dict[str, str]:
+    """Refusal reason per share-list name whose launch is refused, keyed as configured.
+
+    ``asked`` is ``mcp_gateway.stub_servers`` as config states it; ``refused`` is
+    :func:`refused_servers`. The rewriter admits a slash-named server under its
+    slash-free alias (``npm:@playwright/mcp`` is recorded as ``playwright-mcp``),
+    so each configured name is looked up under itself and then under its alias.
+    A refusal for a server that is not on the share list matches nothing here.
+    """
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    result: dict[str, str] = {}
+    for name in asked:
+        rec = refused.get(name)
+        if rec is None:
+            rec = refused.get(mcp_server_alias(name))
+        if rec is not None:
+            result[name] = str(rec.get("reason", ""))
     return result
 
 

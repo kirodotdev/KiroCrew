@@ -14738,6 +14738,12 @@
         "default_crewmate_unknown_reason": "{{name}} ya no aparece en la lista de compañeros"
       },
       "mcpTab": {
+        "share_refused_one": "{{count}} servidor que quieres compartir no se comparte: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
+        "share_refused_many": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
+        "share_refused_other": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
+        "share_refused_restart": "En Gestión de MCP, aprueba compartir cada uno. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela) para que los chats nuevos usen la copia compartida.",
+        "share_refused_review": "Revisar en Gestión de MCP",
+        "share_status_failed": "No se pudo comprobar si los servidores que quieres compartir están aprobados.",
         "actions": "Acciones",
         "add_custom": "Añadir personalizado",
         "add_server": "Añadir servidor",
@@ -16723,7 +16729,7 @@
         "immediate": "Inmediato",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "El modo inmediato muestra los fragmentos sin procesar a medida que llegan. El modo suave los almacena en búfer y muestra el texto a un ritmo constante.",
         "it_ops": "TI / Operaciones",
-        "keep_your_computer_awake_while_a_task_is_running": "Mantén el ordenador activo mientras se ejecuta una tarea",
+        "keep_your_computer_awake_while_a_task_is_running": "Mantén el ordenador activo mientras se ejecuta una tarea. En algunos portátiles con Windows (Modern Standby), bloquear la pantalla puede seguir dejando que entre en suspensión, así que deja la pantalla encendida en las tareas largas.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro adapta el vocabulario y los ejemplos a tu perfil profesional",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro usa esta descripción para adaptar el vocabulario y los ejemplos a tu rol.",
         "knowledge_library": "Biblioteca de conocimiento",
@@ -19620,6 +19626,8 @@
       "switch_sessions": "cambiar de sesión"
     },
     "popoutController": {
+      "crew_pane_cannot_pop_out_in_desktop_app": "En la app de escritorio, las ventanas desacopladas no funcionan dentro de un crew remoto. Sigue trabajando en este crew aquí.",
+      "desktop_app_could_not_open_pop_out_window": "La app de escritorio no pudo abrir la ventana desacoplada. Sigue trabajando en esta ventana.",
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."
     },
     "sanitize": {

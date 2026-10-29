@@ -610,6 +610,7 @@ class _Scratch:
         self._fail = fail
         self.allocated_labels: list[str] = []
         self.validated: list[Path] = []
+        self.dropped_from: dict[str, str] = {}
 
     def allocate_scratch(self, label: str) -> Path | None:
         self.allocated_labels.append(label)
@@ -623,6 +624,10 @@ class _Scratch:
 
     def scratch_env(self, path: Path, shared: Path | None = None) -> dict[str, str]:
         return {"KIROCREW_SCRATCH": str(path), "TMPDIR": str(path)}
+
+    def drop_inherited_scratch_env(self, env: dict[str, str]) -> tuple[str, ...]:
+        self.dropped_from = dict(env)
+        return ()
 
 
 class _Recording:
@@ -951,6 +956,20 @@ def test_a_scratch_that_cannot_be_allocated_spawns_with_the_inherited_temp(
     assert rec.wrap_kwargs["extra_private_dirs"] == ()
     assert "KIROCREW_SCRATCH" not in rec.factory_kwargs["env"]
     assert any("could not allocate" in r.getMessage() for r in caplog.records)
+
+
+def test_the_inherited_scratch_exports_are_judged_before_any_configured_layer(
+    monkeypatch, tmp_path
+) -> None:
+    """The drop sees the gateway's own environment, not ``agent.env`` or ``extra_env``."""
+    _launch_env(monkeypatch, TMPDIR="/gateway/inherited")
+    scratch = _Scratch(None, fail=True)
+    tools = dataclasses.replace(
+        _launch_tools(_Recording(), scratch=scratch),
+        agent_env_overlay=lambda: {"TMPDIR": "/operator/agent-env"},
+    )
+    _run_launch(_FakeHost(tmp_path), _request(extra_env={"TMPDIR": "/driver/extra"}), tools)
+    assert scratch.dropped_from["TMPDIR"] == "/gateway/inherited"
 
 
 def test_only_the_guarding_driver_allocates_scratch_through_its_guarded_hop(

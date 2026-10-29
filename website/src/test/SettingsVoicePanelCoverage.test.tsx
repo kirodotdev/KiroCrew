@@ -16,6 +16,7 @@
  *  - `renderWithProviders` supplies a QueryClient with `retry: false`, so a
  *    rejected query surfaces on the first attempt.
  */
+import { Profiler } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 
@@ -94,6 +95,8 @@ interface SeedOpts {
   systemUnavailable?: boolean
   /** Reject the host-voice probe, driving the inline notice + retry. */
   systemVoicesFail?: boolean
+  /** Called once per commit of the panel, after the DOM is written. */
+  onCommit?: () => void
 }
 
 function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
@@ -118,7 +121,13 @@ function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
   if (opts.saveFails) save.mockRejectedValue(new Error('write refused'))
   else save.mockImplementation(async (patch: object) => ({ ...cfg, ...patch }) as VoiceConfig)
 
-  const view = renderWithProviders(<VoicePanel />)
+  // `onRender` runs in the commit phase, after the DOM is written and before
+  // passive effects, so a probe there sees exactly what one commit shows.
+  const view = renderWithProviders(
+    <Profiler id="voice" onRender={() => opts.onCommit?.()}>
+      <VoicePanel />
+    </Profiler>,
+  )
   return { ...view, cfg, load, voices, systemVoices, save }
 }
 
@@ -324,6 +333,23 @@ describe('VoicePanel polly fields', () => {
     expect(select(/^Voice$/)).toBeTruthy()
     expect(select(/^Engine$/)).toBeTruthy()
     await waitFor(() => expect(voices).toHaveBeenCalled())
+  })
+
+  it('shows the stored profile and region in the first commit that has the rows', async () => {
+    // The rows are seeded from the served config in the render that first has
+    // it, not latched by a later effect: a commit showing the rows empty is a
+    // frame a user can see and a test can land on.
+    const commits: { rows: boolean; profile: string | null; region: string | null }[] = []
+    seed({ provider: 'polly', aws_profile: 'voice-prod', region: 'eu-west-1' }, {
+      onCommit: () => {
+        const profile = screen.queryByLabelText('AWS Profile (Amazon Polly)') as HTMLInputElement | null
+        const region = screen.queryByLabelText('AWS Region (Amazon Polly)') as HTMLInputElement | null
+        commits.push({ rows: profile !== null, profile: profile?.value ?? null, region: region?.value ?? null })
+      },
+    })
+    await field('AWS Profile (Amazon Polly)')
+    const first = commits.find(c => c.rows)
+    expect(first).toEqual({ rows: true, profile: 'voice-prod', region: 'eu-west-1' })
   })
 
   it('labels catalogue voices as name (locale gender-initial)', async () => {
