@@ -247,6 +247,9 @@ class CleanupDeps:
     cleanup_orphaned_session_roots: Callable[[], int]
     cleanup_stale_sandbox_profiles: Callable[[], int]
     prune_session_pid_mappings: Callable[[], int]
+    # Removes ``session_token_*.sig`` identity mappings past their age limit;
+    # answers how many. See ``session_pid._prune_stale_session_token_files``.
+    prune_session_token_mappings: Callable[[], int]
     prune_member_pid_bindings: Callable[[], int]
     # Removes staging temps a killed writer left in the sessions directory and
     # unheld lock sentinels whose transcript is gone; answers how many. See
@@ -1224,6 +1227,7 @@ class SessionCleanup:
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
             await self._sweep_session_pid_mappings()
+            await self._sweep_session_token_mappings()
             await self._sweep_member_pid_bindings()
             await self._sweep_session_staging_temps()
             await self._sweep_shell_audit_log()
@@ -1315,6 +1319,39 @@ class SessionCleanup:
         except Exception as exc:
             self._deps.logger.debug(
                 "session pid mapping sweep failed: %s",
+                type(exc).__name__,
+            )
+
+    async def _sweep_session_token_mappings(self) -> None:
+        """Retract ``session_token_*.sig`` mappings unrefreshed past their age limit.
+
+        Every started session publishes one, and the pass that removes them,
+        ``session_pid._prune_stale_session_token_files``, is otherwise reached
+        only from ``cleanup_orphaned_sessions`` (startup and graceful shutdown).
+        A gateway that keeps running, or that is only ever stopped by a kill,
+        would hold one file per session it has started. The pass needs nothing
+        added, only a caller on a bounded cadence, which this tick is.
+
+        Age is the pass's only signal and it is safe at any cadence: a live
+        session republishes its mapping at the start of every turn, before
+        anything in that turn can call a tool, so the TTL never costs a
+        live session its identity. Blocking glob and unlinks over the same-uid
+        agent-writable data home, so it runs on the maintenance executor like
+        the session-pid mapping sweep.
+        """
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.prune_session_token_mappings,
+            )
+            if removed:
+                self._deps.logger.info(
+                    "Periodic sweep: retracted %d stale session-token mappings",
+                    removed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "session token mapping sweep failed: %s",
                 type(exc).__name__,
             )
 

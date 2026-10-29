@@ -5003,6 +5003,26 @@ a trust root on its own; publication therefore also writes a
   alternative leaves every tokenless caller under that pid refused for the life
   of the unrelated process, and closing it fully needs a lock shared with
   `publish_session_pid`, which runs on the turn path.
+- **Session-token mappings** (`SessionCleanup._sweep_session_token_mappings` →
+  `session_pid._prune_stale_session_token_files`): every started session
+  publishes one `session_token_<sha256>.sig` identity mapping in the data home
+  (`session_token_sig`). The pass removes a mapping unrefreshed for
+  `_SESSION_TOKEN_TTL_SECS` (7 days); age is its only signal, since the name is
+  a token hash with no process to probe. It runs from `cleanup_orphaned_sessions`
+  at startup and shutdown and from the same periodic tick that retracts
+  session-pid mappings, on the maintenance executor for the same
+  `no-blocking-call-on-event-loop` reason. Without the tick, a gateway that
+  keeps running, or is only ever stopped by a kill, would hold one mapping per
+  session it has started. The TTL is unchanged and cannot cost a live session its
+  identity: the mapping is republished at the start of every turn, before
+  anything in that turn can call a tool. Because that republish can land while
+  the tick's pass runs, the pass reads each file's age and unlinks it under
+  `session_token_sig.MAPPING_WRITE_LOCK`, which `publish_session_token` holds
+  around its write; a mapping written after the age check is never removed or
+  moved aside. The lock orders publications in the gateway process, where every
+  publisher runs. Removal is not prompt at teardown; a
+  mapping outliving its session names a session that does not exist, so the
+  bound is on accumulation, not on latency.
 - **Legacy per-pid member-memory bindings**
   (`SessionCleanup._sweep_member_pid_bindings` →
   `member_memory_auth.prune_legacy_member_pid_bindings`):
