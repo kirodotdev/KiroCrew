@@ -16458,6 +16458,7 @@
       "created_by": "{{name}} द्वारा बनाया गया (चल नहीं रहा, इसलिए शीर्ष स्तर पर दिखाया गया)",
       "created_by_closed_unnamed": "एक बंद सत्र द्वारा बनाया गया",
       "credits": "क्रेडिट",
+      "sort_credit_hungry": "सबसे अधिक क्रेडिट",
       "done": "हो गया",
       "expand_sessions": "{{name}} के सत्र दिखाएँ",
       "expand_tasks": "{{name}} के कार्य दिखाएँ",

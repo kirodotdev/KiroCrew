@@ -929,6 +929,25 @@ class TestReadSurfaces:
         assert rows["fresh"]["procs"] is None
         assert rows["fresh"]["mcp"] is None
 
+    def test_task_memory_rows_report_credits(self) -> None:
+        mgr = _manager()
+        burned = _info("burned", parent_session_key="dash:1")
+        burned.credits = 2.3456
+        fresh = _info("fresh", parent_session_key="dash:1")
+        mgr._agents.update({"burned": burned, "fresh": fresh})
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert rows["burned"]["credits"] == pytest.approx(2.346)
+        assert rows["fresh"]["credits"] is None
+
+    def test_task_memory_rows_skip_unusable_credit_values(self) -> None:
+        mgr = _manager()
+        for name, value in (("nan", math.nan), ("inf", math.inf), ("bool", True)):
+            info = _info(name, parent_session_key="dash:1")
+            info.credits = value  # type: ignore[assignment]
+            mgr._agents[name] = info
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert all(row["credits"] is None for row in rows.values())
+
     def test_task_memory_rows_skips_done_and_queued(self) -> None:
         mgr = _manager()
         mgr._agents["done"] = _info("done", done=True)

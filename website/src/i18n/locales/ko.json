@@ -16173,6 +16173,7 @@
       "created_by": "{{name}}이(가) 생성 (실행 중이 아니므로 최상위에 표시)",
       "created_by_closed_unnamed": "종료된 세션이 생성",
       "credits": "크레딧",
+      "sort_credit_hungry": "크레딧 소모가 많은 순",
       "done": "완료",
       "expand_sessions": "{{name}}의 세션 펼치기",
       "expand_tasks": "{{name}}의 작업 펼치기",

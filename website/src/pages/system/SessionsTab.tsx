@@ -142,6 +142,23 @@ export default function SessionsTab({ planeStateRef }: Props) {
   const totals = data?.totals
   const hostMb = totals?.host_mb ?? null
   const rows = useMemo(() => buildTree(sessions, tasks), [sessions, tasks])
+  const totalCredits = useMemo(() => {
+    let total = 0
+    let measured = false
+    for (const s of sessions) {
+      if (s.credits != null && Number.isFinite(s.credits)) {
+        total += s.credits
+        measured = true
+      }
+    }
+    for (const t of tasks) {
+      if (t.credits != null && Number.isFinite(t.credits)) {
+        total += t.credits
+        measured = true
+      }
+    }
+    return measured ? total : null
+  }, [sessions, tasks])
   const maxima = useMemo(() => columnMaxima(rows), [rows])
   // The creator's display name for a created session's citation, keyed by the
   // full session key `parent.key` carries and by the bare slot key a crew log
@@ -240,12 +257,45 @@ export default function SessionsTab({ planeStateRef }: Props) {
             return v == null ? '—' : fmtNumber(v)
           },
         }),
-        helper.accessor('credits', {
+        helper.accessor('creditsTotal', {
+          id: 'credits',
           header: i18nT('pages.sessionsTab.credits'),
           enableGrouping: false,
-          aggregationFn: 'sum',
+          // A row's total already holds its nested tasks, so the header adds
+          // only rows whose parent is not also a leaf here: a single-level fold
+          // hands this the top-level rows, a nested one their flattened subRows
+          // as well.
+          aggregationFn: (_id, leafRows) => {
+            const ids = new Set(leafRows.map(r => r.id))
+            let total = 0
+            let measured = false
+            for (const r of leafRows) {
+              if (r.getParentRows().some(p => ids.has(p.id))) continue
+              const v = r.original.creditsTotal
+              if (v != null) {
+                total += v
+                measured = true
+              }
+            }
+            return measured ? total : null
+          },
           size: 82,
-          cell: c => fmtCredits(c.getValue<number | null>()),
+          cell: c => {
+            const v = c.getValue<number | null>()
+            const share = v != null && totalCredits != null && totalCredits > 0
+              ? Math.min(100, (v / totalCredits) * 100)
+              : 0
+            return (
+              <div className="flex flex-col items-end">
+                <span>{fmtCredits(v)}</span>
+                {v != null && (
+                  <div data-testid="credit-bar" aria-hidden="true" className="mt-1 h-[2px] w-12 overflow-hidden rounded-full bg-border">
+                    <div className="h-full rounded-full bg-accent" style={{ width: `${share}%` }} />
+                  </div>
+                )}
+              </div>
+            )
+          },
         }),
         helper.accessor('turns', {
           header: i18nT('pages.sessionsTab.turns'),
@@ -286,7 +336,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
           },
         }),
     ],
-    [hostMb],
+    [hostMb, totalCredits],
   )
   const table = useReactTable({
     data: rows,
@@ -347,6 +397,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
     { key: 'channel', label: i18nT('pages.sessionsTab.group_channel') },
   ]
   const hideable = table.getAllLeafColumns().filter(c => c.getCanHide())
+  const creditHungry = sorting.length > 0 && sorting[0].id === 'credits' && sorting[0].desc
 
 
   /** Radix returns focus to the trigger when the popover closes. */
@@ -388,6 +439,16 @@ export default function SessionsTab({ planeStateRef }: Props) {
           onChange={e => setFilter(e.currentTarget.value)}
           className="w-[150px]"
         />
+        <Btn
+          type="button"
+          aria-pressed={creditHungry}
+          onClick={() => setSorting([{ id: 'credits', desc: true }])}
+          className={creditHungry
+            ? 'text-[11.5px] bg-accent-subtle text-accent border-accent/40'
+            : 'text-[11.5px]'}
+        >
+          {i18nT('pages.sessionsTab.sort_credit_hungry')}
+        </Btn>
         {/* The Radix popover primitive owns what a menu surface needs to get
             right: focus moves into the panel on open and back to the trigger on
             close, Escape and outside-press dismiss, and the panel stays anchored

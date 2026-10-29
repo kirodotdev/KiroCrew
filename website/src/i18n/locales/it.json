@@ -16743,6 +16743,7 @@
       "created_by": "Creata da {{name}} (non in esecuzione, quindi mostrata al primo livello)",
       "created_by_closed_unnamed": "Creata da una sessione chiusa",
       "credits": "Crediti",
+      "sort_credit_hungry": "Affamato di crediti",
       "done": "Fatto",
       "expand_sessions": "Mostra le sessioni di {{name}}",
       "expand_tasks": "Mostra le attività di {{name}}",

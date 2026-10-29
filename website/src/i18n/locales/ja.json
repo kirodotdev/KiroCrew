@@ -16173,6 +16173,7 @@
       "created_by": "{{name}} が作成（実行されていないため、トップレベルに表示）",
       "created_by_closed_unnamed": "終了済みのセッションが作成",
       "credits": "クレジット",
+      "sort_credit_hungry": "クレジット消費が多い順",
       "done": "完了",
       "expand_sessions": "{{name}} のセッションを展開する",
       "expand_tasks": "{{name}} のタスクを展開する",

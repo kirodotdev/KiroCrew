@@ -9379,6 +9379,7 @@
       "created_by": "Created by {{name}} (not running, so shown top-level)",
       "created_by_closed_unnamed": "Created by a closed session",
       "credits": "Credits",
+      "sort_credit_hungry": "Credit hungry",
       "done": "Done",
       "expand_sessions": "Expand sessions under {{name}}",
       "expand_tasks": "Expand tasks for {{name}}",

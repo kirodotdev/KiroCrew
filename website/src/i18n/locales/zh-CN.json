@@ -16173,6 +16173,7 @@
       "created_by": "由 {{name}} 创建（未在运行，故显示在顶层）",
       "created_by_closed_unnamed": "由已关闭的会话创建",
       "credits": "额度",
+      "sort_credit_hungry": "积分消耗最多",
       "done": "完成",
       "expand_sessions": "展开 {{name}} 下的会话",
       "expand_tasks": "展开 {{name}} 的任务",

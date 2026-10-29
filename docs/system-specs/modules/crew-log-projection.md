@@ -1562,6 +1562,16 @@ nothing else that says it. The table re-checks the edge it is handed --
 a key naming no row in the payload, or a chain returning to its own start --
 because a table must never fail to paint on a payload it did not produce.
 
+Credits follow the other rule, deliberately. A session row states its own measured
+spend plus the credits of every subagent task nested under it: a task row carries
+`credits` from its live run, so a subagent's spend is charged to the session that
+spawned it, while a nested created SESSION is never folded in because it is a
+different conversation. The Credits cell draws a bar whose length is that figure's
+share of the measured credits across the payload, and the toolbar's **Credit hungry**
+control sorts by it descending with the tasks included. A group header sums the
+top-level rows' totals, which already hold their nested tasks, so a nested task is
+counted exactly once.
+
 ### 6.1 The succession walk -- one slot's own chain of logs
 
 The same first entry carries a second edge, and the two are on different axes.
