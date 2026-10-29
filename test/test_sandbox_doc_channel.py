@@ -387,6 +387,54 @@ async def test_a_dashboard_page_at_the_frames_ceiling_fits_one_document() -> Non
 
 
 @pytest.mark.asyncio
+async def test_the_document_is_served_with_its_tailwind_runtime_inline(
+    tmp_path, monkeypatch
+) -> None:
+    """The frame's own request for the runtime carries no cookie, so a proxy that
+    authenticates by cookie (a single-sign-on tunnel) refuses it. The runtime
+    therefore arrives inside the document, whose navigation does carry the cookie.
+    """
+    from kiro_crew import tailwind_runtime
+
+    runtime = tmp_path / "tailwindcss-browser.js"
+    runtime.write_text("/*tw*/", encoding="utf-8")
+    monkeypatch.setattr(tailwind_runtime, "TAILWIND_RUNTIME_FILE", runtime)
+    monkeypatch.setattr(tailwind_runtime, "_cached", None)
+    linked = (
+        '<!DOCTYPE html>\n<html><head><script src="http://localhost:5476/vendor/'
+        'tailwindcss-browser.js" crossorigin="anonymous" onerror="x()"></script></head>'
+        '<body><p class="p-4">x</p></body></html>'
+    )
+    doc_id, token = await _mint(linked)
+    # The stash holds what the dashboard sent; the runtime is added on the way out,
+    # so the byte cap keeps measuring the documents rather than 260 KB per entry.
+    assert sd._stash[doc_id][1] == linked.encode("utf-8")
+
+    served = await sd.serve_sandbox_doc(_serve_req(doc_id, token))
+
+    assert b"<script>/*tw*/</script>" in served.body
+    assert b"<script src=" not in served.body
+
+
+@pytest.mark.asyncio
+async def test_a_failed_runtime_swap_still_serves_the_document(monkeypatch) -> None:
+    """The entry is spent before the swap runs, so the swap must not be able to
+    turn a served document into a 500 and a document nobody can fetch again."""
+    from kiro_crew import tailwind_runtime
+
+    def _boom(doc: bytes) -> bytes:
+        raise RuntimeError("inline failed")
+
+    monkeypatch.setattr(tailwind_runtime, "inline_into_document", _boom)
+    doc_id, token = await _mint("<p>as minted</p>")
+
+    served = await sd.serve_sandbox_doc(_serve_req(doc_id, token))
+
+    assert served.status == 200
+    assert served.body == b"<p>as minted</p>"
+
+
+@pytest.mark.asyncio
 async def test_the_served_response_carries_the_sandbox_headers() -> None:
     """Asserted on the RESPONSE, not on the source line that sets it."""
     doc_id, token = await _mint("<p>hi</p>")
