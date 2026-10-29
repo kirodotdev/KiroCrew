@@ -141,8 +141,8 @@ def run(ctx):
 
 A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
 
-- `ctx.list_session_folders()` returns the dashboard's session folders.
-- `ctx.create_session_folder(name)` creates a folder and returns it.
+- `ctx.list_session_folders()` returns the dashboard's session folders. Each folder carries its `id` and `parent_id` (empty for a top-level folder), so a script can find an existing child folder before creating one.
+- `ctx.create_session_folder(name, parent_id=...)` creates a folder and returns it. With a non-empty `parent_id` the folder is created inside that folder, so a script can build a nested layout such as `Project/<run>`; without it the folder is created at the top level. A name already used under the same parent is refused with `folder_name_exists`, so reuse the existing folder from `list_session_folders()` instead.
 - `ctx.open_session(name, folder_id=..., agent=..., model=...)` opens a session and returns its slot key. Omitted arguments take the gateway's defaults. A non-empty `name` is also the session's title, so the sidebar shows it instead of an auto-generated one. The title is set only when the session is created; reopening the same name keeps its current title, including one you renamed.
 - `ctx.send_to_session(slot, message)` queues the message as that slot's next turn and returns at once: `{"ok": True, "slot": <key>}` when the slot was idle, or `{"ok": True, "queued": True, "queue_id": <id>}` when it was busy.
 - `ctx.set_session_mode(slot, mode)` sets that session's tool approval mode to `trust` or `trust_reads` and returns `{"ok": True, "mode": <mode>}`. Any other mode is refused with `mode_not_allowed` and an unnamed slot with `slot_required`.

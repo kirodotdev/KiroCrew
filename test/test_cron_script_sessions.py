@@ -112,6 +112,23 @@ class TestCreateSessionFolder:
         assert json.loads(req.data) == {"name": "Ops"}
         assert _cron_headers(req)["key"] == f"cron:{_JOB}"
 
+    def test_a_parent_id_creates_the_folder_inside_that_folder(self, ctx, gateway):
+        made = {"id": "f10", "name": "run-7", "parent_id": "f9"}
+        gateway.answers[("POST", "/api/chat/folders")] = made
+
+        assert ctx.create_session_folder("run-7", parent_id="f9") == made
+
+        (req,) = gateway.seen
+        assert json.loads(req.data) == {"name": "run-7", "parent_id": "f9"}
+
+    def test_an_empty_parent_id_is_left_out_of_the_request(self, ctx, gateway):
+        gateway.answers[("POST", "/api/chat/folders")] = {"id": "f9"}
+
+        ctx.create_session_folder("Ops", parent_id="")
+
+        (req,) = gateway.seen
+        assert "parent_id" not in json.loads(req.data)
+
     def test_a_refusal_raises_with_the_gateway_reason(self, ctx, gateway):
         gateway.answers[("POST", "/api/chat/folders")] = {
             "error": "folder name taken",

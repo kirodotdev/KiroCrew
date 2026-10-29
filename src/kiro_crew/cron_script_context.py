@@ -167,14 +167,21 @@ class ScriptContext:
             raise RuntimeError(f"list_session_folders() failed: {self._reason(result)}")
         return result
 
-    def create_session_folder(self, name: str) -> dict:
+    def create_session_folder(self, name: str, *, parent_id: str = "") -> dict:
         """Create a session folder and return it (``POST /api/chat/folders``).
 
+        A non-empty ``parent_id`` creates the folder inside that folder, so a
+        script can build a nested layout; an empty one creates it at the top
+        level. ``list_session_folders()`` returns each folder's ``id`` and
+        ``parent_id``, which is how a script finds an existing child to reuse.
         The name is redacted the way ``notify()`` redacts its text, because it
         is rendered in the dashboard sidebar. Raises RuntimeError if the gateway
         refuses or cannot be reached.
         """
-        result = self._post("/api/chat/folders", {"name": redact(name)})
+        body = {"name": redact(name)}
+        if parent_id:
+            body["parent_id"] = parent_id
+        result = self._post("/api/chat/folders", body)
         if not isinstance(result, dict) or "error" in result:
             raise RuntimeError(f"create_session_folder() failed: {self._reason(result)}")
         return result
