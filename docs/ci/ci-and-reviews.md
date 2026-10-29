@@ -919,7 +919,9 @@ unconditional Fast Gate. Pages and the main ratchet audit also admit manual
 runs from listed actors. The four non-agentic code-review checks
 (`autosde-rules`, `inclusive-language`, `pr-hygiene`, `sast`) use the PR
 route; the merge-conflict label job and the reusable wheel/dependency-audit
-jobs use the fleet only for push events, keeping scheduled/manual callers hosted.
+jobs use the fleet only for push events, keeping scheduled and manual callers
+off it -- on the `kirocrew-runners` group in this repository, and on
+`ubuntu-latest` in a fork, which cannot reach that group.
 Their permissions and triggers are unchanged. `sast` alone changed its steps:
 it dropped its job container and installs the pinned Semgrep on the runner.
 Sensitive Change Review uses the fleet on every PR and review event, not just
@@ -1055,7 +1057,10 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 ### Larger runners for the review lanes and CodeQL
 
 Twenty-five `runs-on` sites draw on the `kirocrew-runners` larger-runner group
-rather than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
+rather than `ubuntu-latest`, and five more reach it conditionally as a fallback
+(see **Five sites reach the group by LABEL** below), so thirty sites in all
+can land on its cap -- which is the figure **Capacity** below is about. The
+twenty-five are the six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
 `fork-ux-review`, and the three credentialed jobs of
 `fork-security-scope-review` -- `generate`, `validate` and `publish`), the five
@@ -1135,8 +1140,11 @@ and it already excludes forks through the `Analyze` job's own `if`. Its load is
 also permanent for an unrelated reason: GitHub's CodeQL default setup, which
 this workflow replaced, is off, so there is no second scan to fall back to.
 
-**Every lane moved here can hold merges, so treat any stuck run as an immediate
-rollback.** `pr-readiness.yml` resolves them all through one per-lane loop:
+**Every review lane and CodeQL moved here can hold merges, so treat any stuck
+run as an immediate rollback.** (The five label-routed fallbacks below hold no
+merge: none is polled by `pr-readiness.yml` or `merge-queue-readiness.yml`, and
+none fires on `pull_request` or `merge_group`. The rollback rule still covers
+them.) `pr-readiness.yml` resolves them all through one per-lane loop:
 `claude-review.yml`, `codex-review.yml`, `design-review.yml`, `ux-review.yml`,
 `first-principles-review.yml` and CodeQL sit in `workflow_specs` on the
 same-repo path, and on a fork pull request the fork lanes are read as
@@ -1149,7 +1157,9 @@ CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
 once rather than waiting to see whether the queue clears -- for any of the
-twenty-five sites, not just CodeQL.
+twenty-five sites, not just CodeQL. The five label-routed sites below are covered
+by the same rule but have their own recipe, since a whole-line replacement there
+would take the fleet route out with it.
 
 **Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
 and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
@@ -1224,6 +1234,52 @@ reading one leg per pull request off the matrix. A stuck leg rolls back the same
 way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
+**Five sites reach the group by LABEL instead, because they must choose at run
+time.** `build-wheel.yml`, `dependency-vulnerability.yml`,
+`pr-merge-conflict-label.yml` and both `pages.yml` jobs keep their CodeBuild
+fleet route and changed only what happens when the fleet does not admit the run.
+A conditional cannot name the group: the fleet's runners are REPOSITORY-level
+self-hosted runners and are not members of this organization group, so no single
+`runs-on` names both destinations. The rename exposure that group targeting
+avoids therefore applies to these five lines -- **rename the definition and they
+must move with it** -- which is why the expected strings live in one place,
+`_GROUP_THEN_HOSTED_TAIL` in `test/test_ci_fleet_routing_expression_parity.py`.
+
+Each of those expressions falls back TWICE, and the second branch is
+load-bearing rather than defensive. A run executing in THIS repository takes
+the group; a run executing anywhere else -- a fork running one of these
+workflows on its own `main`, which `push`, `schedule` and `workflow_dispatch`
+all allow -- stays on `ubuntu-latest`, because an organization runner group is
+unreachable from a fork and a job asking for a label no runner there carries
+waits out GitHub's pending limit before being cancelled. That is strictly worse
+than the shared pool, so the fork branch is not optional.
+`test/test_ci_additional_fleet_routes.py` evaluates each expression across the
+actor, event and repository truth table rather than string-matching it, and
+reads the expected non-fleet value off the policy's own expression, so a policy
+that moves later is covered without editing the assertion.
+
+**Why these five and not the rest.** None of them fires on `pull_request`, so
+none adds PR-time occupancy to a cap the review lanes already compete for. The
+two reusable ones are called only by `nightly.yml` and `release.yml`, and
+neither of those is itself called by anything.
+
+`main-ratchet-audit.yml` meets that test and is still **deliberately left
+hosted**, which is the more useful rule to carry away: "not a pull-request
+event" is not the same as "off the merge path". It admits `merge_group`, and
+`merge-queue-readiness.yml` polls it on every merge group, treating a queued run
+as pending and failing the group closed once its budget runs out. Routing it to
+a capped group would put merge capacity behind the pull-request lanes that
+already compete for that cap, which is the failure **Capacity** below describes.
+Moving it needs the merge-group leg handled on purpose, not as a side effect, so
+it waits for its own change. `test/test_ci_additional_fleet_routes.py` covers
+its policy while it is still hosted, and
+`test_the_ratchet_audit_route_stays_off_the_larger_runner_group` pins the hosted
+tail directly, so moving it means deleting that assertion on purpose rather than
+discovering the merge-queue hazard afterwards. The direct pin is there because
+the truth table alone would not catch it: that table derives its expected value
+from the expression under test, so a change editing the constant and the
+workflow together carries the expectation along and passes.
+
 **What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets
 `in_scope=true` while giving the model no shell, flow or cron surface to propose
@@ -1255,7 +1311,15 @@ shared pool, and because these lanes feed `PR Readiness` the cost of being
 wrong shows up as slower merges rather than as a broken check.
 
 Rollback is per site and needs no AWS or runner-group change: restore
-`runs-on: ubuntu-latest` on the affected line. A job dispatched to a group that
+`runs-on: ubuntu-latest` on the affected line. The five label-routed sites are
+the exception twice over. It is not a whole-line replacement there, because the
+fleet route has to survive: drop the middle branch so the expression's tail is
+`|| 'ubuntu-latest' }}` again, and drop `_GROUP_THEN_HOSTED_TAIL` from that
+policy's constant. And it is **not per site but per policy** -- the three
+`_CANONICAL_PUSH_EXPR` sites revert together, as do both `_CANONICAL_DISPATCH_EXPR`
+ones -- because the parity test pins one whole string per policy and stays red
+until every site sharing it agrees. Rolling back one site alone means splitting
+its policy into its own constant first. A job dispatched to a group that
 does not admit this repository stays queued for up to 24 hours before
 auto-cancelling, so cancel the run and fix the group's repository access rather
 than waiting out the timeout.

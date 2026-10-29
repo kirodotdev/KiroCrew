@@ -26,6 +26,27 @@ _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 _FAST_GATE_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
 
 _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)"
+# A route that the fleet did not admit falls back TWICE, and both branches are
+# load-bearing. A run EXECUTING in this repository takes the `kirocrew-runners`
+# group's own runner label, which keeps it off the standard pool whose
+# concurrency is shared enterprise-wide. A run executing anywhere else -- a fork
+# running one of these workflows on its own `main` -- cannot reach an
+# organization runner group at all, so it stays on the hosted image: a label no
+# runner there carries would leave the job queued until GitHub cancelled it,
+# which is worse than the shared pool, not better.
+#
+# The repository test appears twice in the full expression for different
+# reasons. The first is ANDed into fleet eligibility alongside the actor and
+# event tests; this one decides only which non-fleet destination is reachable,
+# so neither can be derived from the other.
+#
+# Not every constant below carries this tail yet. The ones that do not are the
+# ones whose workflows have not moved, and their literal hosted fallback is the
+# current contract, not an oversight.
+_GROUP_THEN_HOSTED_TAIL = (
+    "|| github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+    "|| 'ubuntu-latest' }}"
+)
 _CANONICAL_ROUTING_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
@@ -53,14 +74,14 @@ _CANONICAL_PUSH_EXPR = (
     + _ACTOR_PREDICATE
     + " && github.event_name == 'push' && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 _CANONICAL_DISPATCH_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
     + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # The sensitive-change gate runs only default-branch scripts, never PR code, so
 # every pull_request and pull_request_review event may use the fleet.

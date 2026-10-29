@@ -38,9 +38,11 @@ concurrency:
 jobs:
   label:
     name: Sync merge-conflict label
-    # Schedule and dispatch stay hosted; only admitted same-repository pushes
-    # request a fleet runner. The AWS webhook remains the security boundary.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Only admitted same-repository pushes request a fleet runner. Schedule and
+    # dispatch take the `kirocrew-runners` group in THIS repository, and the
+    # hosted image in a fork, which cannot reach an organization group. The AWS
+    # webhook remains the security boundary.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Sync "merge conflict" label across open pull requests
