@@ -782,6 +782,29 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
 
 
+def _redacted_json(value: object) -> str:
+    """*value* as JSON for ``cron preview``'s terminal output, with credentials redacted.
+
+    Each string is redacted before it is serialised: JSON writes a line break as
+    ``\\n``, and a credential that spans lines, such as a private key with no END
+    line, stops matching once its line breaks are escaped. The JSON is then
+    redacted as a whole, for patterns that need a key and its value together.
+    A value JSON cannot encode is shown as its redacted ``str()``.
+    """
+
+    def strings_redacted(item: object) -> object:
+        if isinstance(item, str):
+            return redact(item)
+        if isinstance(item, dict):
+            return {key: strings_redacted(inner) for key, inner in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [strings_redacted(inner) for inner in item]
+        return item
+
+    encoded = json.dumps(strings_redacted(value), default=lambda other: redact(str(other)))
+    return redact(encoded)
+
+
 def _cron_preview(args: argparse.Namespace) -> None:
     """Dry-run a script cron with real MCP tools but suppressed hooks."""
     # Imported here (not at module top) to avoid a cron_script import cycle.
@@ -879,6 +902,51 @@ def _cron_preview(args: argparse.Namespace) -> None:
             routing = f" (kwargs: {safe_kwargs})" if safe_kwargs else ""
             print(f"[notify suppressed]: {safe_text}{routing}")
             return {}
+
+        # The session and crew-log methods of production ScriptContext, with its
+        # signatures, so a script that calls them previews instead of failing on a
+        # missing attribute. Each one changes dashboard state in production, so here it
+        # prints the call and returns a stand-in of the shape production returns.
+        def list_session_folders(self) -> list[dict]:
+            self._suppressed("list_session_folders", [])
+            return []
+
+        def create_session_folder(self, name: str, *, parent_id: str = "") -> dict:
+            folder = {"id": f"{self.job.id}-folder", "name": name, "parent_id": parent_id}
+            self._suppressed("create_session_folder", folder, name=name, parent_id=parent_id)
+            return folder
+
+        def open_session(
+            self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = ""
+        ) -> str:
+            slot = f"{self.job.id}-slot"
+            self._suppressed(
+                "open_session", slot, name=name, folder_id=folder_id, agent=agent, model=model
+            )
+            return slot
+
+        def send_to_session(self, slot: str, message: str) -> dict:
+            receipt = {"ok": True, "slot": slot}
+            self._suppressed("send_to_session", receipt, slot=slot, message=message)
+            return receipt
+
+        def set_session_mode(self, slot: str, mode: str) -> dict:
+            receipt = {"ok": True, "mode": mode}
+            self._suppressed("set_session_mode", receipt, slot=slot, mode=mode)
+            return receipt
+
+        def crew_log_append(self, type: str, data: dict) -> dict:
+            recorded = {"type": type, "writer": f"cron:{self.job.id}", "member": ""}
+            receipt = {"ok": True, "recorded": recorded}
+            self._suppressed("crew_log_append", receipt, type=type, data=data)
+            return receipt
+
+        @staticmethod
+        def _suppressed(method: str, stand_in: object, **fields: object) -> None:
+            # Printed to the user's terminal, and every value is script-supplied, so
+            # both sides go through _redacted_json.
+            shown = _redacted_json(fields)
+            print(f"[{method} suppressed]: {shown} -> {_redacted_json(stand_in)}")
 
         def close(self):
             self._kept_servers.close()
