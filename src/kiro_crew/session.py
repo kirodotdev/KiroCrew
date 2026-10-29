@@ -893,6 +893,10 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired after a turn lease is released (``release``), with the folded
+        # key. Also a seam: the dashboard uses it to land a model pick at a
+        # channel turn's end, which no dashboard turn boundary sees.
+        self.on_session_released: Callable[[str], None] | None = None
 
         self._compaction = CompactionCoordinator(
             self,

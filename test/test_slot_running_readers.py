@@ -208,6 +208,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control_parts/session_messaging.py", "send_to_target"),
                 # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
                 ("session_control_parts/model_switch.py", "set_model_target"),
+                # A pick waiting for a channel turn's end is left to the slot's
+                # own dashboard turn from the moment a send reserves the slot.
+                ("session_control_parts/model_switch.py", "land_model_pick_after_channel_turn"),
+                ("state_parts/session_events.py", "wire_session_release_listener"),
                 ("openai_compat.py", "api_completions"),
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.

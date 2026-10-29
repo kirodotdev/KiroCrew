@@ -1116,6 +1116,7 @@ class DashboardState:
     wire_session_compact_callback = _session_events.wire_session_compact_callback
     _notify_channel_compaction = _session_events._notify_channel_compaction
     wire_session_bind_listener = _session_events.wire_session_bind_listener
+    wire_session_release_listener = _session_events.wire_session_release_listener
     wire_session_unbind_listener = _session_events.wire_session_unbind_listener
     _spawn_unbind_notice = _session_events._spawn_unbind_notice
     _on_unbind_notice_done = _session_events._on_unbind_notice_done

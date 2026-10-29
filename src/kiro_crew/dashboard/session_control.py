@@ -178,10 +178,13 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         send_origin_tab,
     )
     from kiro_crew.dashboard.session_control_parts.model_switch import (  # noqa: F401
+        _CHANNEL_PICK_LANDINGS,
         _JEV_ROUTE_SPELLINGS,
+        _LANDING_LEASES,
         PendingModelPick,
         _another_alias_is_mid_turn,
         _caller_tab_id,
+        _log_landing_failure,
         _pending_pick_view,
         _pick_audit_fields,
         _pick_fields,
@@ -189,9 +192,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         apply_deferred_model_switch,
         apply_pending_model_pick,
         arm_model_switch_reset,
+        channel_drives_session,
+        channel_pick_waits_on,
         effort_commit_needs_reset,
+        land_model_pick_after_channel_turn,
+        landing_holds_lease,
         legacy_effort_base,
         model_switch_deferred,
+        schedule_channel_pick_landing,
         set_model_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_create import (  # noqa: F401
@@ -451,6 +459,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.memory_stores import named_store_or_empty  # noqa: F401
     from kiro_crew.messaging.link import CHAT_TYPE_DIRECT  # noqa: F401
     from kiro_crew.messaging.link import ChannelLink  # noqa: F401
+    from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
     from kiro_crew.messaging.link import parse_session_key  # noqa: F401
     from kiro_crew.messaging.transport import DM_TARGET_PREFIX  # noqa: F401
     from kiro_crew.messaging.transport import sole_direct_target  # noqa: F401
