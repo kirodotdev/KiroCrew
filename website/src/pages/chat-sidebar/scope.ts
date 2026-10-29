@@ -229,6 +229,10 @@ export interface SidebarScope {
   filterCounts: SidebarRows['statusCounts']
   boardLaneActive: boolean
   flatLaneActive: boolean
+  /** The conductor lane (lineage nesting) is the one actually on screen. The
+   *  "Group by kind" option is hidden there: it groups a flat list, which the
+   *  conductor lane is not. */
+  conductorLaneActive: boolean
   folderRowsDrawn: boolean
   setLaneScrollEl: (el: HTMLDivElement | null) => void
   rowAnimEnabled: boolean
@@ -294,6 +298,12 @@ export interface SidebarScope {
   foldersShelved: ReturnType<typeof useSessionFilterState>['foldersShelved']
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
+  groupByKind: ReturnType<typeof useSessionFilterState>['groupByKind']
+  /** `groupByKind` AND the rendered lane groups (flat or tree, never board or
+   *  conductor): the one decision listLanes' grouping and the manual-order drag
+   *  both read. */
+  kindGroupingActive: boolean
+  toggleGroupByKind: ReturnType<typeof useSessionFilterState>['toggleGroupByKind']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']
   hiddenFilters: ReturnType<typeof useSessionFilterState>['hiddenFilters']
   toggleHideFilter: ReturnType<typeof useSessionFilterState>['toggleHideFilter']

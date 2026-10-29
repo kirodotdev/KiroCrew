@@ -52,6 +52,7 @@ import { crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnabl
 import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
 import { useSessionRename, useSessionAutoTitle, useFolderRename } from './chat-sidebar/rename'
 import { useSidebarLane, useLaneCycle, renderedLane } from './chat-sidebar/lanes'
+import { kindGroupingActiveForLane } from './chat-sidebar/kindGroups'
 import { useHistoryPane } from './chat-sidebar/history'
 import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorder } from './chat-sidebar/pinnedOrder'
 import { useManualSessionOrder, useManualKeyboardReorder } from './chat-sidebar/manualOrder'
@@ -279,7 +280,7 @@ function ChatSidebar({
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
-    toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    toggleFoldersShelved, groupByKind, toggleGroupByKind, toggleFilter, disableFilter, enableFilter,
     hiddenFilters, toggleHideFilter, clearHiddenFilters,
     filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   } = useSessionFilterState()
@@ -313,12 +314,6 @@ function ChatSidebar({
     pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
     orderState: pinnedOrderState,
   } = usePinnedSessionOrder({ localSlots, sortKey })
-  // The manual order (sort "Manual"): the unpinned rows' places, the drop that
-  // writes them in any sort, and the "Sorted by hand" undo it offers.
-  const {
-    manualRank, drawnIndex, drawnOrder, reorderManual, pickSort, manualOrderError, setManualOrderError,
-    offer: manualSortOffer, undo: undoManualSort, dismiss: dismissManualSort, bar: manualSortBar,
-  } = useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey })
 
   const {
     staleCollapseMs, setStaleCollapseMs, staleExpanded, setStaleExpanded, setStaleRecentlyMoved,
@@ -368,6 +363,27 @@ function ChatSidebar({
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
     hideEmptyFolderBody, orderedColumns,
   } = useBoardColumns()
+  // The manual order (sort "Manual"): the unpinned rows' places, the drop that
+  // writes them in any sort, and the "Sorted by hand" undo it offers. Placed
+  // after the folder query and the board columns so it can take
+  // `kindGroupingActive`, the ONE decision of whether "Group by kind" is live:
+  // on, AND the rendered lane groups (flat or tree, never board or conductor).
+  // listLanes' grouping and the menu's toggle all key on the same value, so the
+  // drag/order math can never bucket a list the lane paints ungrouped. The
+  // rendered lane is read via `renderedLane`; `lineageAvailable` here is taken
+  // from the raw live-slot citations (the same `parent` fields the canonical
+  // `useLineageAvailable` reads, independent of the manual order), which is what
+  // lets this sit above the row model the hook feeds without a cycle.
+  const lineageAvailableEarly = useMemo(
+    () => allLiveSlots.some(s => s.parent?.key != null || s.parent?.slot),
+    [allLiveSlots],
+  )
+  const renderedLaneForGrouping = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable: lineageAvailableEarly })
+  const kindGroupingActive = kindGroupingActiveForLane(groupByKind, renderedLaneForGrouping)
+  const {
+    manualRank, drawnIndex, drawnOrder, reorderManual, pickSort, manualOrderError, setManualOrderError,
+    offer: manualSortOffer, undo: undoManualSort, dismiss: dismissManualSort, bar: manualSortBar,
+  } = useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey, kindGroupingActive, flatLaneActive: renderedLaneForGrouping === 'flat', installedAgents })
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
     paintedSidebarWidth, rootStyle, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
@@ -807,6 +823,7 @@ function ChatSidebar({
   const scope: SidebarScope = { activeDrag, activeFilters, activeModelKeys, activeModelRows, activeSlot,
     activeTagIds, activeTagNames, addColumnAfterMutation, allHiddenFolders, armHold, attachStripEdges,
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
+    conductorLaneActive,
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
     closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
@@ -820,7 +837,7 @@ function ChatSidebar({
     folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
-    foldersShelved, folderSubtrees, foldersWithActiveSubtree, handleSidebarDragCancel, handleSidebarDragEnd,
+    foldersShelved, folderSubtrees, foldersWithActiveSubtree, groupByKind, kindGroupingActive, handleSidebarDragCancel, handleSidebarDragEnd,
     handleSidebarDragOver, handleSidebarDragStart, hasRemoteExecutedRow, heldDisplacedRef, heldLane,
     hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchResults,
@@ -846,7 +863,7 @@ function ChatSidebar({
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
     subagentApprovalCounts, suppressMenuRestore, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
-    toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
+    toggleFolderFilter, toggleFoldersShelved, toggleGroupByKind, toggleHideFilter, toggleModelFilter, toggleReveal,
     toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
     updateFolderMutation, visibleRootFolders, warmCrews }
   const laneRows = createLaneRows(scope)

@@ -779,3 +779,72 @@ describe('the Manual sort', () => {
     expect(order(['a', 'b'])).toEqual(['b', 'a'])
   })
 })
+
+
+describe('manual order with "Group by kind" on', () => {
+  // c1 is a Crew Mode root; n1/n2 are normal chats. Grouping draws Crew Mode
+  // first, then Normal -- so the drawn order is c1, n1, n2 (within Normal the
+  // date sort keeps n1 before n2).
+  const KIND_SLOTS = [
+    slot('c1', '2026-03-01T00:00:00Z', { crew_mode_root: true }),
+    slot('n1', '2026-02-01T00:00:00Z'),
+    slot('n2', '2026-01-01T00:00:00Z'),
+  ]
+
+  it('a reorder WITHIN one section writes the expected order', async () => {
+    localStorage.setItem('mc-sidebar-group-by-kind', '1')
+    renderSidebar(KIND_SLOTS)
+    // Drawn: c1 (Crew Mode), then n1, n2 (Normal). Drop n2 onto n1 -- a move up
+    // inside the Normal section: n2 lands above n1.
+    expect(order(['c1', 'n1', 'n2'])).toEqual(['c1', 'n1', 'n2'])
+    drop('n2', onRow('n1'))
+    // The first drag seeds the grouped drawn order with the move applied, then
+    // switches the sort to Manual. Await BOTH settles so no state update lands
+    // after the test (the seed write, then the sort switch).
+    await waitFor(() => expect(manualWrites()).toEqual([{ op: 'seed', keys: ['c1', 'n2', 'n1'] }]))
+    await waitFor(() => expect(sortWrites()).toEqual(['manual']))
+    await screen.findByTestId('manual-sort-undo')
+  })
+
+  it('a drop onto a row in ANOTHER section writes nothing', async () => {
+    localStorage.setItem('mc-sidebar-group-by-kind', '1')
+    renderSidebar(KIND_SLOTS)
+    // n1 (Normal) dropped onto c1 (Crew Mode): refused, no write, no sort switch.
+    // The refusal returns before any async work, so there is nothing to settle;
+    // assert the negative stays stable and no undo bar appears.
+    drop('n1', onRow('c1'))
+    await waitFor(() => expect(manualWrites()).toEqual([]))
+    expect(sortWrites()).toEqual([])
+    expect(screen.queryByTestId('manual-sort-undo')).toBeNull()
+  })
+
+  it('with the option OFF a cross-kind drop is an ordinary reorder (unchanged)', async () => {
+    // Option off: no sections, so dropping n1 onto c1 is a normal reorder and
+    // writes, exactly as on main.
+    renderSidebar(KIND_SLOTS)
+    drop('n1', onRow('c1'))
+    await waitFor(() => expect(manualWrites().length).toBe(1))
+    expect(manualWrites()[0]).toMatchObject({ op: 'seed' })
+    await waitFor(() => expect(sortWrites()).toEqual(['manual']))
+    await screen.findByTestId('manual-sort-undo')
+  })
+
+  it('inside a folder body (never grouped) a cross-kind reorder is NOT refused', async () => {
+    // The tree lane groups only the top-level UNFILED list; a folder body keeps
+    // its own order. So two different-kind rows in folder f1 reorder normally
+    // even with the option on -- the guard is scoped to grouped containers.
+    localStorage.setItem('mc-sidebar-group-by-kind', '1')
+    const FOLDER_SLOTS = [
+      slot('fc', '2026-03-01T00:00:00Z', { crew_mode_root: true, folder_id: 'f1' }),
+      slot('fn', '2026-02-01T00:00:00Z', { folder_id: 'f1' }),
+    ]
+    renderSidebar(FOLDER_SLOTS)
+    // fn (Normal) dropped onto fc (Crew Mode), both inside folder f1 (container
+    // 'f1'): a plain reorder, so it writes and switches to Manual.
+    drop('fn', onRow('fc', 'f1'), 'f1')
+    await waitFor(() => expect(manualWrites().length).toBe(1))
+    expect(manualWrites()[0]).toMatchObject({ op: 'seed' })
+    await waitFor(() => expect(sortWrites()).toEqual(['manual']))
+    await screen.findByTestId('manual-sort-undo')
+  })
+})

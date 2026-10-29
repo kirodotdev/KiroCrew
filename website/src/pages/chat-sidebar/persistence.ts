@@ -52,6 +52,23 @@ export function readStoredStaleCollapse(): number {
 
 /** Whether the filter menu's Folders section is rolled up to its heading. */
 export const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
+
+/** The flat-lane "Group by kind" view option: '1' splits the one flat list into
+ *  Crew Mode / Normal / From crewmates sections, off ('0' / absent) renders it as
+ *  today. A view-only display preference like FOLDERS_SHELVED_LS_KEY above, stored
+ *  as the same '1'/'0' boolean string. */
+export const GROUP_BY_KIND_LS_KEY = 'mc-sidebar-group-by-kind'
+
+/** Read the persisted "Group by kind" flag. Runs in a useState initializer during
+ *  render, so a throwing localStorage (private mode / disabled storage) must not
+ *  crash the component -- fall back to off, the documented default. */
+export function readStoredGroupByKind(): boolean {
+  try {
+    return localStorage.getItem(GROUP_BY_KIND_LS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 // A status chip's HIDE state ('1' = drop its matching rows). One per chip that
 // can hide; referenced from that chip's `SESSION_FILTERS` entry in ./filters.
 export const UNREAD_HIDDEN_LS_KEY = 'mc-session-unread-hidden'

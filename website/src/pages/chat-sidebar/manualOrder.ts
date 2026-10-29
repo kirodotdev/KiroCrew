@@ -17,7 +17,8 @@ import { fetchSlots, setManualOrderError, setManualRanks, setPendingManualOrder 
 import { movePinnedSession } from '../../utils/pinnedSessionOrder'
 import { compareBySort, compareManual, SORT_LABEL_KEY, type SortKey } from '../chat/sessionOrder'
 import { keyboardReorderTarget } from './pinnedOrder'
-import type { Slot } from './types'
+import { sessionKind, orderKeysByKindScoped, type SessionKind } from './kindGroups'
+import type { AgentInfo, Slot } from './types'
 
 /** Keys of rows that have a place in the manual order, in that order. */
 export function rankedManualKeys(rows: readonly { key: string; manual_rank?: number | null }[]): string[] {
@@ -125,11 +126,24 @@ function manualOrderQueue(store: object): { tail: Promise<unknown> } {
   return queue
 }
 
-export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey }: {
+export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey, kindGroupingActive, flatLaneActive, installedAgents }: {
   localSlots: Slot[]
   pinned: ReadonlySet<string>
   sortKey: SortKey
   setSortKey: (key: SortKey) => void
+  /** "Group by kind" is ON AND the rendered lane groups (flat or tree) -- the
+   *  single `kindGroupingActive` decision ChatSidebar computes once, so the
+   *  drag/order math can never bucket a list the lane paints ungrouped (a board
+   *  or conductor lane leaves this false). Only two containers are drawn grouped
+   *  -- the flat lane's one list, and the tree lane's top-level UNFILED list --
+   *  so the drawn order is bucketed and the cross-section guard fires ONLY for
+   *  rows in those. A folder body keeps its own order (never grouped), so a
+   *  reorder inside a folder is a plain reorder whatever the two rows' kinds. */
+  kindGroupingActive: boolean
+  /** The flat lane is the one on screen: then EVERY row is in the one grouped
+   *  list. In the tree lane only the unfiled rows (no `folder_id`) are grouped. */
+  flatLaneActive: boolean
+  installedAgents: readonly AgentInfo[]
 }) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
@@ -143,12 +157,46 @@ export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey 
   const pending = useAppSelector(state => state.dashboard.pendingManualOrder ?? null)
   const manualOrder = pending ?? stored
   const manualRank = useMemo(() => new Map(manualOrder.map((key, index) => [key, index])), [manualOrder])
+  // The kind of each session by key, for the grouped drawn order and the
+  // cross-section guard. Keyed once off localSlots so a drop handler reads it in
+  // O(1). A key with no slot (a race) falls to 'normal', the sessionKind default.
+  const kindByKey = useMemo(() => {
+    const m = new Map<string, SessionKind>()
+    for (const slot of localSlots) m.set(slot.key, sessionKind(slot, installedAgents))
+    return m
+  }, [localSlots, installedAgents])
+  const kindOfKey = useCallback((key: string): SessionKind => kindByKey.get(key) ?? 'normal', [kindByKey])
+  // Whether a row is foldered (any truthy folder_id). A foldered row is drawn in
+  // its folder body, which is NEVER grouped; only an UNFILED row is grouped in
+  // the tree lane.
+  const folderedByKey = useMemo(() => {
+    const m = new Set<string>()
+    for (const slot of localSlots) if (slot.folder_id) m.add(slot.key)
+    return m
+  }, [localSlots])
+  // A key is drawn GROUPED (so the kind bucketing and the cross-section guard
+  // apply to it) only when kind grouping is active for the rendered lane AND the
+  // row is in a grouped container: the flat lane groups every row; the tree lane
+  // groups only the unfiled rows. A foldered row in the tree lane is drawn in
+  // its folder's own order, so it is never grouped and a reorder touching it is
+  // a plain reorder. `kindGroupingActive` already excludes the board and
+  // conductor lanes, so neither buckets `drawnOrder`.
+  const isGroupedKey = useCallback(
+    (key: string): boolean => kindGroupingActive && (flatLaneActive || !folderedByKey.has(key)),
+    [kindGroupingActive, flatLaneActive, folderedByKey],
+  )
   // The unpinned rows in the order they are drawn now, whatever the sort: a
-  // drop lands in this order, and a first drag seeds it.
-  const drawnOrder = useMemo(() => (sortKey === 'manual'
-    ? manualDrawnOrder(localSlots, pinned, manualRank)
-    : localSlots.filter(slot => !pinned.has(slot.key)).sort((a, b) => compareBySort(a, b, sortKey)).map(slot => slot.key)),
-  [sortKey, localSlots, pinned, manualRank])
+  // drop lands in this order, and a first drag seeds it. When "Group by kind"
+  // is on, only the GROUPED-container rows are re-bucketed into KIND_ORDER (the
+  // flat lane's whole list, or the tree lane's unfiled rows), matching exactly
+  // what each container paints; a foldered row keeps its position so a drop in a
+  // folder still lands where it is drawn.
+  const drawnOrder = useMemo(() => {
+    const base = sortKey === 'manual'
+      ? manualDrawnOrder(localSlots, pinned, manualRank)
+      : localSlots.filter(slot => !pinned.has(slot.key)).sort((a, b) => compareBySort(a, b, sortKey)).map(slot => slot.key)
+    return kindGroupingActive ? orderKeysByKindScoped(base, kindOfKey, isGroupedKey) : base
+  }, [sortKey, localSlots, pinned, manualRank, kindGroupingActive, kindOfKey, isGroupedKey])
   const drawnIndex = useMemo(() => new Map(drawnOrder.map((key, index) => [key, index])), [drawnOrder])
   const manualOrderError = useAppSelector(state => state.dashboard.manualOrderError ?? '')
   const setManualOrderErrorText = useCallback((message: string) => { dispatch(setManualOrderError(message)) }, [dispatch])
@@ -255,6 +303,14 @@ export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey 
    *  The row lands where the drop showed it, by the same rule the pinned rows
    *  use: below the target when it moved down, above it when it moved up. */
   const reorderManual = useCallback((activeKey: string, overKey: string) => {
+    // "Group by kind" draws the GROUPED containers (the flat lane, the tree
+    // lane's unfiled list) in kind sections; a manual reorder across two
+    // sections THERE would write a place the row is not drawn at, so refuse it.
+    // A drop where either row is NOT drawn grouped -- any reorder inside a
+    // folder body, which keeps its own order -- is a plain reorder, never
+    // refused. A drop WITHIN one grouped section is fine (the drawn order is
+    // grouped, so the indices line up).
+    if (isGroupedKey(activeKey) && isGroupedKey(overKey) && kindOfKey(activeKey) !== kindOfKey(overKey)) return
     const from = drawnIndex.get(activeKey) ?? -1
     const to = drawnIndex.get(overKey) ?? -1
     if (from < 0 || to < 0 || from === to) return
@@ -300,7 +356,7 @@ export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey 
       // stored; a failed follow-up leaves another browser's order standing.
       .then(res => { landed(); arm(activeKey, prevSort, retryPlan ?? { kind: 'clear', rev: res.rev, after: undoAfter }) },
         err => failDrop(err, retryPlan === undefined))
-  }, [drawnIndex, drawnOrder, manualOrder, sortKey, showSort, moveIn, prepareMove, write, arm, fail])
+  }, [drawnIndex, drawnOrder, manualOrder, sortKey, showSort, moveIn, prepareMove, write, arm, fail, isGroupedKey, kindOfKey])
 
   /** A sort menu pick. Picking Manual with nothing saved seeds the order on
    *  screen first, so the list does not jump; a stored order, even one saved
