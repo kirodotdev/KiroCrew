@@ -1222,8 +1222,10 @@ def get_semantic_context(
             val = json.loads(r["value_json"])
         except (json.JSONDecodeError, TypeError):
             val = r["value_json"]
-        # Format complex values as JSON, simple values as-is
-        val_str = json.dumps(val) if isinstance(val, (dict, list)) else str(val)
+        # Format complex values as JSON, simple values as-is. Non-ASCII stays
+        # as written, as in the preferences block: an escaped "\uac00" costs six
+        # characters of the cap for one the model reads.
+        val_str = json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else str(val)
         line = f"{store._fact_label(dict(r))}: {val_str}"
         if total + len(line) > cap:
             # Skip a line that does not fit; a shorter, lower-ranked one may.
