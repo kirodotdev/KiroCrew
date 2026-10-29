@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 
 from .store_repos import logger, repo_data_dir
 
@@ -152,7 +152,7 @@ def read_deps_cache(owner: str, repo: str, root: Path | None = None) -> dict | N
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != DEPS_CACHE_SCHEMA:
@@ -206,7 +206,7 @@ def _read_deps_fetched_at_raw(owner: str, repo: str, root: Path | None = None) -
     """
     path = deps_cache_path(owner, repo, root)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != DEPS_CACHE_SCHEMA:
